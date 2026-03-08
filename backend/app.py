@@ -14,7 +14,7 @@ from etl.transform_orders import transform_orders
 # ---------------------------------------------------
 
 app = Flask(__name__)
-CORS(app, origins=["http://localhost:5173"])
+CORS(app)
 
 
 # ---------------------------------------------------
@@ -830,4 +830,4 @@ def add_issue():
 # ---------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(port=5001, debug=True)
+    app.run(host="0.0.0.0", port=8000)  
