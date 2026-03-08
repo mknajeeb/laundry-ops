@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# virtual env
+venv/
+.env
+
+# uploads
+uploads/
+
+# OS
+.DS_Store
+
+# node
+node_modules/
+
+# build
+dist/
+build/
+
+# logs
+*.log
