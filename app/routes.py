@@ -14,4 +14,3 @@ def get_orders():
     conn.close()
 
     return orders
-

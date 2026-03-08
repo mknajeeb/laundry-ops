@@ -168,43 +168,28 @@ function OrdersPage() {
         <thead>
           <tr>
             <th>#</th>
-            <th></th>
             <th>Date</th>
             <th>Name</th>
             <th>Weight</th>
             <th>Service</th>
+            <th>Status</th>
             <th>Actions</th>
           </tr>
         </thead>
 
         <tbody>
-          {filtered.map((o, index) => (
+          {orders.map((o) => (
             <tr key={o.id}>
-              <td>{index + 1}</td>
-
-              <td>
-                <input type="checkbox" />
-              </td>
-
-              <td>
-                {o.date_clean
-                  ? new Date(o.date_clean).toLocaleDateString()
-                  : ""}
-              </td>
-
+              <td>{o.id}</td>
+              <td>{o.date_clean}</td>
               <td>{o.name_clean}</td>
-
-              <td>
-                {o.service_type === "HD"
-                  ? Math.round(o.weight_num || 0)
-                  : Number(o.weight_num || 0).toFixed(2)}
-              </td>
-
+              <td>{o.weight_num || "-"}</td>
               <td>{o.service_type}</td>
+              <td>{o.status}</td>
 
               <td>
-                <button className="edit-btn">Edit</button>
-                <button className="delete-btn">Delete</button>
+                <button>Edit</button>
+                <button>Delete</button>
               </td>
             </tr>
           ))}
