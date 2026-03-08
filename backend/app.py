@@ -826,9 +826,20 @@ def add_issue():
 
     return jsonify({"status":"added"})
 # ---------------------------------------------------
+# Root Health Endpoint
+# ---------------------------------------------------
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "service": "LaundryOps API",
+        "status": "running"
+    })
+
+
+# ---------------------------------------------------
 # Run Server
 # ---------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)  
-    
+    app.run(host="0.0.0.0", port=8000)
