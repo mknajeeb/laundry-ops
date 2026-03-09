@@ -64,6 +64,20 @@ export const uploadOrders = (formData) =>
     }
   });
 
+export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
+  axios.get(`${API_BASE}/upload_conflicts`, {
+    params: {
+      ...(batch_id ? { batch_id } : {}),
+      status
+    }
+  });
+
+export const overrideUploadConflicts = (conflict_ids, overridden_by = "admin") =>
+  axios.post(`${API_BASE}/upload_conflicts/override`, {
+    conflict_ids,
+    overridden_by
+  });
+
 /* =========================================
    EMPLOYEES
 ========================================= */

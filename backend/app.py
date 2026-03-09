@@ -87,6 +87,36 @@ def build_fingerprint(name_clean, weight_num, service_type):
     return f"{name_part}|{weight_part}|{service_part}"
 
 
+def normalize_name(value):
+    if value is None:
+        return ""
+    return " ".join(str(value).strip().upper().split())
+
+
+def normalize_measure_by_service(weight_num, service_type):
+    service = (service_type or "").strip().upper()
+    if weight_num is None:
+        return ""
+
+    try:
+        n = float(weight_num)
+    except Exception:
+        return ""
+
+    if service == "HD":
+        return str(int(round(n)))
+
+    return f"{round(n, 2):.2f}"
+
+
+def build_identity_key(name_clean, weight_num, service_type):
+    return "|".join([
+        normalize_name(name_clean),
+        normalize_measure_by_service(weight_num, service_type),
+        (service_type or "").strip().upper()
+    ])
+
+
 def haversine_meters(lat1, lon1, lat2, lon2):
     radius_m = 6371000
     d_lat = math.radians(lat2 - lat1)
@@ -751,34 +781,48 @@ def upload_orders():
 
         batch_date = date.today()
 
+        # Create batch first so conflicts can be tied to it
         cursor.execute("""
+            INSERT INTO upload_batches
+            (file_name, batch_date, orders_loaded)
+            VALUES (%s, %s, %s)
+        """, (
+            file.filename,
+            batch_date,
+            0
+        ))
+        upload_batch_id = cursor.lastrowid
 
+        # Build existing identity index from current active staging + final
+        cursor.execute("""
             SELECT
                 name_clean,
                 weight_num,
                 service_type
-
-            FROM orders_final
-
-            WHERE cleaned_at >= NOW() - INTERVAL 2 DAY
-
+            FROM orders_staging
+            WHERE status <> 'CHECKED_OUT'
         """)
+        staging_rows = cursor.fetchall()
 
-        recent_final_rows = cursor.fetchall()
+        cursor.execute("""
+            SELECT
+                name_clean,
+                weight_num,
+                service_type
+            FROM orders_final
+        """)
+        final_rows = cursor.fetchall()
 
-        recent_final_fingerprints = set(
+        existing_identity_keys = set()
 
-            build_fingerprint(
-                r["name_clean"],
-                r["weight_num"],
-                r["service_type"]
+        for r in staging_rows + final_rows:
+            existing_identity_keys.add(
+                build_identity_key(
+                    r.get("name_clean"),
+                    r.get("weight_num"),
+                    r.get("service_type")
+                )
             )
-
-            for r in recent_final_rows
-
-        )
-
-        cursor.execute("DELETE FROM orders_staging")
 
         insert_query = """
 
@@ -799,6 +843,7 @@ def upload_orders():
 
         inserted = 0
         conflicts = []
+        seen_in_upload = set()
 
         for _, row in orders_df.iterrows():
 
@@ -806,7 +851,7 @@ def upload_orders():
             name_clean = row.get("Name_Clean")
             weight_num = row.get("Weight_Num")
             service_type = row.get("ServiceType")
-            rush_type = row.get("RushType")
+            rush_type_raw = row.get("RushType")
 
             if pd.isna(date_clean) or pd.isna(name_clean):
                 continue
@@ -814,23 +859,91 @@ def upload_orders():
             if pd.isna(weight_num):
                 weight_num = None
 
-            fingerprint = row.get("fingerprint")
+            # New rush logic:
+            # 1) Explicit TODAY/RUSH markers remain RUSH
+            # 2) Any row with date matching current batch_date is also RUSH
+            row_date = date_clean if isinstance(date_clean, date) else parse_date_value(date_clean)
+            is_batch_date_rush = (row_date == batch_date)
+            rush_type = "RUSH" if (str(rush_type_raw).upper() == "RUSH" or is_batch_date_rush) else "NON-RUSH"
 
-            if fingerprint in recent_final_fingerprints:
+            identity_key = build_identity_key(name_clean, weight_num, service_type)
+
+            if identity_key in seen_in_upload:
+                conflicts.append({
+                    "name": name_clean,
+                    "weight": weight_num,
+                    "service": service_type,
+                    "date": str(date_clean),
+                    "action_needed": "review",
+                    "reason": "DUPLICATE_IN_UPLOAD",
+                    "batch_id": upload_batch_id
+                })
+
+                cursor.execute("""
+                    INSERT INTO upload_conflicts
+                    (
+                        upload_batch_id,
+                        name_clean,
+                        weight_num,
+                        service_type,
+                        date_clean,
+                        rush_type,
+                        reason,
+                        status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
+                """, (
+                    upload_batch_id,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    row_date,
+                    rush_type,
+                    "DUPLICATE_IN_UPLOAD"
+                ))
+
+                continue
+
+            if identity_key in existing_identity_keys:
 
                 conflicts.append({
                     "name": name_clean,
                     "weight": weight_num,
                     "service": service_type,
                     "date": str(date_clean),
-                    "action_needed": "review"
+                    "action_needed": "review",
+                    "reason": "MATCH_FOUND_IN_DB",
+                    "batch_id": upload_batch_id
                 })
+
+                cursor.execute("""
+                    INSERT INTO upload_conflicts
+                    (
+                        upload_batch_id,
+                        name_clean,
+                        weight_num,
+                        service_type,
+                        date_clean,
+                        rush_type,
+                        reason,
+                        status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
+                """, (
+                    upload_batch_id,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    row_date,
+                    rush_type,
+                    "MATCH_FOUND_IN_DB"
+                ))
 
                 continue
 
             cursor.execute(insert_query, (
 
-                date_clean,
+                row_date,
                 name_clean,
                 weight_num,
                 service_type,
@@ -840,20 +953,16 @@ def upload_orders():
             ))
 
             inserted += 1
+            seen_in_upload.add(identity_key)
+            existing_identity_keys.add(identity_key)
 
         cursor.execute("""
-
-            INSERT INTO upload_batches
-            (file_name, batch_date, orders_loaded)
-
-            VALUES (%s, %s, %s)
-
+            UPDATE upload_batches
+            SET orders_loaded = %s
+            WHERE id = %s
         """, (
-
-            file.filename,
-            batch_date,
-            inserted
-
+            inserted,
+            upload_batch_id
         ))
 
         conn.commit()
@@ -861,6 +970,7 @@ def upload_orders():
         return jsonify({
 
             "status": "uploaded",
+            "batch_id": upload_batch_id,
             "rows_inserted": inserted,
             "conflicts": len(conflicts),
             "conflict_rows": conflicts,
@@ -1657,6 +1767,149 @@ def attendance_events_today():
 
         rows = cursor.fetchall()
         return jsonify(rows)
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Upload Conflict Review APIs
+# ---------------------------------------------------
+
+@app.route("/upload_conflicts", methods=["GET"])
+def get_upload_conflicts():
+
+    batch_id = request.args.get("batch_id")
+    status = (request.args.get("status") or "PENDING").strip().upper()
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        if batch_id not in [None, ""]:
+            cursor.execute("""
+                SELECT
+                    id,
+                    upload_batch_id,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    date_clean,
+                    rush_type,
+                    reason,
+                    status,
+                    created_at
+                FROM upload_conflicts
+                WHERE upload_batch_id = %s
+                AND status = %s
+                ORDER BY id ASC
+            """, (int(batch_id), status))
+        else:
+            cursor.execute("""
+                SELECT
+                    id,
+                    upload_batch_id,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    date_clean,
+                    rush_type,
+                    reason,
+                    status,
+                    created_at
+                FROM upload_conflicts
+                WHERE status = %s
+                ORDER BY id ASC
+                LIMIT 500
+            """, (status,))
+
+        return jsonify(cursor.fetchall())
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/upload_conflicts/override", methods=["POST"])
+def override_upload_conflicts():
+
+    data = request.json or {}
+    conflict_ids = data.get("conflict_ids") or []
+    overridden_by = (data.get("overridden_by") or "").strip() or "admin"
+
+    if not isinstance(conflict_ids, list) or not conflict_ids:
+        return jsonify({"error": "conflict_ids must be a non-empty array"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        placeholders = ",".join(["%s"] * len(conflict_ids))
+        cursor.execute(f"""
+            SELECT
+                id,
+                name_clean,
+                weight_num,
+                service_type,
+                date_clean,
+                rush_type,
+                upload_batch_id
+            FROM upload_conflicts
+            WHERE id IN ({placeholders})
+            AND status = 'PENDING'
+        """, tuple(conflict_ids))
+        rows = cursor.fetchall()
+
+        inserted = 0
+        today_batch_date = date.today()
+
+        for row in rows:
+            cursor.execute("""
+                INSERT INTO orders_staging
+                (
+                    date_clean,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    rush_type,
+                    status,
+                    batch_date
+                )
+                VALUES (%s, %s, %s, %s, %s, 'PENDING', %s)
+            """, (
+                row["date_clean"],
+                row["name_clean"],
+                row["weight_num"],
+                row["service_type"],
+                row["rush_type"],
+                today_batch_date
+            ))
+            inserted += 1
+
+            cursor.execute("""
+                UPDATE upload_conflicts
+                SET
+                    status = 'OVERRIDDEN',
+                    overridden_by = %s,
+                    overridden_at = NOW()
+                WHERE id = %s
+            """, (
+                overridden_by,
+                row["id"]
+            ))
+
+        conn.commit()
+
+        return jsonify({
+            "status": "overridden",
+            "requested": len(conflict_ids),
+            "overridden": inserted
+        })
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
 
     finally:
         cursor.close()

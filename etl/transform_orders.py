@@ -116,24 +116,47 @@ def extract_name(cells):
 
 
 def classify_service(cells):
+    has_hd_int = False
 
     for c in cells:
 
         if c is None:
             continue
 
-        text = c.upper().replace("LBS", "").strip()
+        text = c.upper().strip()
+        text_no_lbs = text.replace("LBS", "").strip()
 
+        # Explicit WF markers
         if "?" in text:
             return "WF"
 
-        if "." in text and any(ch.isdigit() for ch in text):
+        if "LBS" in text:
             return "WF"
 
-        if text.isdigit():
-            return "HD"
+        # Decimal numeric values are WF by definition
+        if re.search(r"\d+\.\d+", text_no_lbs):
+            return "WF"
 
-    return "HD"
+        # Pure integer values are HD candidates
+        if re.fullmatch(r"\d+", text_no_lbs):
+            has_hd_int = True
+
+    if has_hd_int:
+        return "HD"
+
+    return "WF"
+
+
+def detect_rush_hint(cells):
+
+    for c in cells:
+        if c is None:
+            continue
+        u = c.upper()
+        if ("TODAY" in u) or ("RUSH" in u):
+            return True
+
+    return False
 
 
 def build_ops_summary(df):
@@ -237,23 +260,9 @@ def transform_orders(df_raw):
 
     df["ServiceType"] = df["Cells"].apply(classify_service)
 
-    rush_rows = df[
-        df["Cells"].apply(
-            lambda cells: any(
-                ("TODAY" in c.upper()) or ("RUSH" in c.upper())
-                for c in cells if c
-            )
-        )
-    ]
-
-    rush_date = None
-
-    if len(rush_rows) > 0:
-        rush_date = rush_rows.iloc[0]["Date_Clean"]
-
-    df["RushType"] = df["Date_Clean"].apply(
-        lambda d: "RUSH" if rush_date and d == rush_date else "NON-RUSH"
-    )
+    # Keep direct rush marker from upload row; batch-date rush is applied in backend upload logic
+    df["RushHint"] = df["Cells"].apply(detect_rush_hint)
+    df["RushType"] = df["RushHint"].apply(lambda x: "RUSH" if x else "NON-RUSH")
 
     final = df[
         [
