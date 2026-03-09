@@ -108,7 +108,8 @@ function AppShell() {
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 900px)");
   const pathname = location.pathname || "/";
-  const hideMobileTopBar = pathname === "/checkout";
+  const isCheckoutRoute = pathname.startsWith("/checkout");
+  const hideMobileTopBar = isCheckoutRoute;
   const [updateReady, setUpdateReady] = useState(false);
 
   useEffect(() => {
@@ -151,7 +152,7 @@ function AppShell() {
           {isMobile && <Box sx={{ height: 72 }} />}
         </Box>
       </div>
-      {isMobile && <MobileBottomTabs pathname={pathname} />}
+      {isMobile && !isCheckoutRoute && <MobileBottomTabs pathname={pathname} />}
       <Snackbar
         open={updateReady}
         anchorOrigin={{ vertical: "top", horizontal: "center" }}
