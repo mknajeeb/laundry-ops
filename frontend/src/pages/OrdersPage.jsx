@@ -43,35 +43,31 @@ function OrdersPage(){
       <div className="orders-actions">
 
         <select
-        value={service}
-        onChange={(e)=>setService(e.target.value)}
-        className="filter">
+          value={service}
+          onChange={(e)=>setService(e.target.value)}
+          className="filter">
           <option value="">All Services</option>
           <option value="WF">Wash & Fold</option>
           <option value="HD">Hang Dry</option>
         </select>
 
         <select
-        value={rush}
-        onChange={(e)=>setRush(e.target.value)}
-        className="filter">
+          value={rush}
+          onChange={(e)=>setRush(e.target.value)}
+          className="filter">
           <option value="">All Rush</option>
           <option value="RUSH">Rush</option>
           <option value="NON-RUSH">Normal</option>
         </select>
 
         <select
-        value={status}
-        onChange={(e)=>setStatus(e.target.value)}
-        className="filter">
+          value={status}
+          onChange={(e)=>setStatus(e.target.value)}
+          className="filter">
           <option value="">All Status</option>
           <option value="PENDING">Pending</option>
           <option value="COMPLETE">Complete</option>
         </select>
-
-        <button className="action-btn">
-          Refresh
-        </button>
 
       </div>
 

@@ -1,44 +1,55 @@
-import { useEffect, useState } from "react";
-import axios from "axios";
-import { motion } from "framer-motion";
+import { useEffect, useState } from "react"
+import axios from "axios"
+import { motion } from "framer-motion"
 
-function OrdersTable() {
+function OrdersTable({ service, rush, status }) {
 
-  const [orders, setOrders] = useState([]);
-  const [search, setSearch] = useState("");
+  const [orders,setOrders] = useState([])
+  const [search,setSearch] = useState("")
 
-  useEffect(() => {
-    axios
-      .get("/orders")
-      .then((res) => {
+  useEffect(()=>{
 
-        if (Array.isArray(res.data)) {
-          setOrders(res.data);
-        }
+    axios.get("/orders")
+      .then(res=>{
 
-        else if (Array.isArray(res.data.orders)) {
-          setOrders(res.data.orders);
-        }
-
-        else {
-          console.log("Unexpected API response:", res.data);
-          setOrders([]);
+        if(Array.isArray(res.data)){
+          setOrders(res.data)
+        }else if(Array.isArray(res.data.orders)){
+          setOrders(res.data.orders)
+        }else{
+          console.log("Unexpected response",res.data)
+          setOrders([])
         }
 
       })
-      .catch((err) => {
-        console.error(err);
-        setOrders([]);
-      });
-  }, []);
+      .catch(err=>{
+        console.error(err)
+        setOrders([])
+      })
+
+  },[])
 
   const filtered = Array.isArray(orders)
-    ? orders.filter((o) =>
-        (o.name_clean || "")
+    ? orders.filter(o => {
+
+        const nameMatch =
+          (o.name_clean || "")
           .toLowerCase()
           .includes(search.toLowerCase())
-      )
-    : [];
+
+        const serviceMatch =
+          !service || o.service_type === service
+
+        const rushMatch =
+          !rush || o.rush_type === rush
+
+        const statusMatch =
+          !status || o.status === status
+
+        return nameMatch && serviceMatch && rushMatch && statusMatch
+
+      })
+    : []
 
   return (
 
@@ -48,17 +59,17 @@ function OrdersTable() {
         className="search-box"
         placeholder="Search name..."
         value={search}
-        onChange={(e) => setSearch(e.target.value)}
+        onChange={(e)=>setSearch(e.target.value)}
       />
 
       <div className="orders-grid">
 
-        {filtered.map((order) => (
+        {filtered.map(order=>(
 
           <motion.div
             key={order.id}
-            className={`order-card ${order.rush_type === "RUSH" ? "rush" : ""}`}
-            whileHover={{ scale: 1.03 }}
+            className={`order-card ${order.rush_type === "RUSH" ? "rush":""}`}
+            whileHover={{scale:1.03}}
           >
 
             <div className="order-name">
@@ -66,17 +77,12 @@ function OrdersTable() {
             </div>
 
             <div className="order-meta">
-
-              <span>
-                {order.service_type || "-"}
-              </span>
-
+              <span>{order.service_type || "-"}</span>
               <span>
                 {order.date_clean
                   ? new Date(order.date_clean).toLocaleDateString()
                   : "-"}
               </span>
-
             </div>
 
             <div className="order-status">
@@ -91,7 +97,8 @@ function OrdersTable() {
 
     </div>
 
-  );
+  )
+
 }
 
-export default OrdersTable;
+export default OrdersTable
