@@ -43,6 +43,16 @@ export const checkoutBulk = (order_ids, employee) =>
     employee: employee
   });
 
+export const getCheckoutLog = (dateValue = "") =>
+  axios.get(`${API_BASE}/checkout_log`, {
+    params: dateValue ? { date: dateValue } : {}
+  });
+
+export const undoCheckout = (order_id) =>
+  axios.post(`${API_BASE}/checkout_undo`, {
+    order_id: order_id
+  });
+
 /* =========================================
    UPLOAD ORDERS
 ========================================= */

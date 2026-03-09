@@ -8,6 +8,15 @@ body {
   background: #f5f6fa;
 }
 
+/* Checkout-specific mobile shell */
+.app-layout-checkout-mobile {
+  display: block;
+}
+
+.main-content-checkout-mobile {
+  padding: 0;
+}
+
 /* =========================
    APP LAYOUT
 ========================= */

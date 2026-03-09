@@ -1,88 +1,197 @@
-import { useState } from "react"
-import OrdersTable from "../components/OrdersTable"
+import { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Box,
+  Chip,
+  CircularProgress,
+  InputAdornment,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { FlashOn, Search } from "@mui/icons-material";
+import { getOrders } from "../api";
 
-function OrdersPage(){
+function OrdersPage() {
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const [service,setService] = useState("")
-  const [rush,setRush] = useState("")
-  const [status,setStatus] = useState("")
+  const [search, setSearch] = useState("");
+  const [service, setService] = useState("ALL");
+  const [rush, setRush] = useState("ALL");
+  const [status, setStatus] = useState("ALL");
 
-  return(
+  useEffect(() => {
+    async function load() {
+      try {
+        setLoading(true);
+        const res = await getOrders();
+        const rows = Array.isArray(res.data) ? res.data : [];
+        setOrders(rows);
+      } catch (error) {
+        console.error(error);
+        setOrders([]);
+      } finally {
+        setLoading(false);
+      }
+    }
 
-  <div className="page">
+    load();
+  }, []);
 
-    <div className="orders-header">
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
 
-      <div>
+    return orders.filter((row) => {
+      const rowService = String(row?.service_type || "").toUpperCase();
+      const rowRush = String(row?.rush_type || "").toUpperCase();
+      const rowStatus = String(row?.status || "").toUpperCase();
 
-        <h1 className="page-title">
-          Laundry Orders
-        </h1>
+      const matchSearch =
+        !q ||
+        String(row?.name_clean || "").toLowerCase().includes(q) ||
+        String(row?.id || "").includes(q);
 
-        <div className="orders-stats">
+      const matchService = service === "ALL" || rowService === service;
+      const matchRush = rush === "ALL" || rowRush === rush;
+      const matchStatus = status === "ALL" || rowStatus === status;
 
-          <div className="stat-box">
-            <div className="stat-label">Orders</div>
-            <div className="stat-value">87</div>
-          </div>
+      return matchSearch && matchService && matchRush && matchStatus;
+    });
+  }, [orders, search, service, rush, status]);
 
-          <div className="stat-box">
-            <div className="stat-label">WF</div>
-            <div className="stat-value">82</div>
-          </div>
+  const stats = useMemo(() => {
+    const total = filtered.length;
+    const wf = filtered.filter((row) => String(row?.service_type || "").toUpperCase() === "WF").length;
+    const hd = filtered.filter((row) => String(row?.service_type || "").toUpperCase() === "HD").length;
+    const rushCount = filtered.filter((row) => String(row?.rush_type || "").toUpperCase() === "RUSH").length;
 
-          <div className="stat-box">
-            <div className="stat-label">HD</div>
-            <div className="stat-value">5</div>
-          </div>
+    return { total, wf, hd, rushCount };
+  }, [filtered]);
 
-        </div>
+  const formatMeasure = (row) => {
+    const serviceType = String(row?.service_type || "").toUpperCase();
+    const raw = Number(row?.weight_num ?? 0);
 
-      </div>
+    if (serviceType === "WF") return `${raw.toFixed(2)} lb`;
+    if (serviceType === "HD") return `${Math.round(raw)} pcs`;
+    return "-";
+  };
 
-      <div className="orders-actions">
+  const formatDateOnly = (value) => {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value).split(" ")[0];
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  };
 
-        <select
-          value={service}
-          onChange={(e)=>setService(e.target.value)}
-          className="filter">
-          <option value="">All Services</option>
-          <option value="WF">Wash & Fold</option>
-          <option value="HD">Hang Dry</option>
-        </select>
+  return (
+    <Box sx={{ minHeight: "100vh", background: "#f3f4f6", px: { xs: 1.2, md: 2.4 }, py: 1.5 }}>
+      <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Orders</Typography>
+      <Typography sx={{ color: "#6b7280", mt: 0.4 }}>Live staging queue</Typography>
 
-        <select
-          value={rush}
-          onChange={(e)=>setRush(e.target.value)}
-          className="filter">
-          <option value="">All Rush</option>
-          <option value="RUSH">Rush</option>
-          <option value="NON-RUSH">Normal</option>
-        </select>
+      <Stack direction="row" spacing={1} sx={{ mt: 1.2, overflowX: "auto", pb: 0.4 }}>
+        <Chip label={`${stats.total} visible`} color="primary" />
+        <Chip label={`WF ${stats.wf}`} />
+        <Chip label={`HD ${stats.hd}`} />
+        <Chip icon={<FlashOn />} label={`RUSH ${stats.rushCount}`} color="error" variant="outlined" />
+      </Stack>
 
-        <select
-          value={status}
-          onChange={(e)=>setStatus(e.target.value)}
-          className="filter">
-          <option value="">All Status</option>
-          <option value="PENDING">Pending</option>
-          <option value="COMPLETE">Complete</option>
-        </select>
+      <Paper sx={{ p: 1.2, borderRadius: 2, mt: 1.2 }}>
+        <TextField
+          fullWidth
+          size="small"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name or id"
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <Search fontSize="small" />
+              </InputAdornment>
+            ),
+          }}
+        />
 
-      </div>
+        <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: "auto", pb: 0.5 }}>
+          {["ALL", "WF", "HD"].map((item) => (
+            <Chip
+              key={item}
+              label={item}
+              clickable
+              color={service === item ? "warning" : "default"}
+              onClick={() => setService(item)}
+            />
+          ))}
+          {["ALL", "RUSH", "NON-RUSH"].map((item) => (
+            <Chip
+              key={item}
+              label={item}
+              clickable
+              color={rush === item ? "error" : "default"}
+              onClick={() => setRush(item)}
+            />
+          ))}
+          {["ALL", "PENDING", "PROCESSED", "CHECKED_OUT"].map((item) => (
+            <Chip
+              key={item}
+              label={item}
+              clickable
+              color={status === item ? "success" : "default"}
+              onClick={() => setStatus(item)}
+            />
+          ))}
+        </Stack>
+      </Paper>
 
-    </div>
+      {loading ? (
+        <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.2}>
+          <CircularProgress />
+          <Typography color="text.secondary">Loading orders...</Typography>
+        </Stack>
+      ) : filtered.length === 0 ? (
+        <Alert severity="info" sx={{ mt: 1.5 }}>
+          No orders found for this filter.
+        </Alert>
+      ) : (
+        <Stack spacing={1} sx={{ mt: 1.2 }}>
+          {filtered.map((row) => {
+            const isRush = String(row?.rush_type || "").toUpperCase() === "RUSH";
+            const rowStatus = String(row?.status || "PENDING").toUpperCase();
 
-    <OrdersTable
-      service={service}
-      rush={rush}
-      status={status}
-    />
+            return (
+              <Paper
+                key={row.id}
+                sx={{
+                  p: 1.2,
+                  borderRadius: 2,
+                  border: `1px solid ${isRush ? "#fca5a5" : "#d1d5db"}`,
+                }}
+              >
+                <Stack spacing={0.7}>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between">
+                    <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{row.name_clean || "-"}</Typography>
+                    <Chip size="small" label={`#${row.id}`} />
+                  </Stack>
 
-  </div>
+                  <Typography sx={{ color: "#4b5563", fontWeight: 600 }}>
+                    {formatMeasure(row)} • {formatDateOnly(row.date_clean)}
+                  </Typography>
 
-  )
-
+                  <Stack direction="row" spacing={1}>
+                    <Chip size="small" label={row.service_type || "-"} color="warning" />
+                    <Chip size="small" label={isRush ? "RUSH" : "NON-RUSH"} color={isRush ? "error" : "success"} />
+                    <Chip size="small" label={rowStatus} variant="outlined" />
+                  </Stack>
+                </Stack>
+              </Paper>
+            );
+          })}
+        </Stack>
+      )}
+    </Box>
+  );
 }
 
-export default OrdersPage
+export default OrdersPage;

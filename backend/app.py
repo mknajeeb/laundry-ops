@@ -318,6 +318,122 @@ def checkout_bulk():
 
 
 # ---------------------------------------------------
+# Get Checkout Log
+# ---------------------------------------------------
+
+@app.route("/checkout_log", methods=["GET"])
+def get_checkout_log():
+
+    checkout_date = (request.args.get("date") or "").strip()
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+
+        if checkout_date:
+            cursor.execute("""
+                SELECT
+                    id,
+                    order_id,
+                    name,
+                    weight,
+                    service,
+                    rush_date,
+                    checkout_time,
+                    employee
+                FROM checkout_log
+                WHERE DATE(checkout_time) = %s
+                ORDER BY checkout_time DESC, id DESC
+            """, (checkout_date,))
+        else:
+            cursor.execute("""
+                SELECT
+                    id,
+                    order_id,
+                    name,
+                    weight,
+                    service,
+                    rush_date,
+                    checkout_time,
+                    employee
+                FROM checkout_log
+                WHERE DATE(checkout_time) = CURDATE()
+                ORDER BY checkout_time DESC, id DESC
+            """)
+
+        return jsonify(cursor.fetchall())
+
+    finally:
+
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Undo Checkout (Mistake Recovery)
+# ---------------------------------------------------
+
+@app.route("/checkout_undo", methods=["POST"])
+def checkout_undo():
+
+    data = request.json or {}
+    order_id = data.get("order_id")
+
+    if order_id in [None, ""]:
+        return jsonify({"error": "order_id is required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+
+        cursor.execute("""
+            SELECT id, status
+            FROM orders_staging
+            WHERE id = %s
+        """, (order_id,))
+        order_row = cursor.fetchone()
+
+        if not order_row:
+            return jsonify({"error": "Order not found"}), 404
+
+        cursor.execute("""
+            SELECT id
+            FROM checkout_log
+            WHERE order_id = %s
+            ORDER BY checkout_time DESC, id DESC
+            LIMIT 1
+        """, (order_id,))
+        log_row = cursor.fetchone()
+
+        if log_row:
+            cursor.execute(
+                "DELETE FROM checkout_log WHERE id = %s",
+                (log_row["id"],)
+            )
+
+        cursor.execute("""
+            UPDATE orders_staging
+            SET status = 'PROCESSED'
+            WHERE id = %s
+        """, (order_id,))
+
+        conn.commit()
+        return jsonify({"status": "checkout_undone", "order_id": order_id})
+
+    except Exception as e:
+
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
 # Get Final Orders
 # ---------------------------------------------------
 
