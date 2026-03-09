@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 import { motion } from "framer-motion"
 import { getDashboard } from "../api"
 
+const MotionDiv = motion.div
+
 function Dashboard(){
 
   const [stats,setStats] = useState({})
@@ -20,30 +22,30 @@ function Dashboard(){
 
     <div className="cards">
 
-      <motion.div className="card" whileHover={{scale:1.04}}>
+      <MotionDiv className="card" whileHover={{scale:1.04}}>
         <div className="card-label">Total Orders</div>
         <div className="card-value">{stats.total_orders}</div>
-      </motion.div>
+      </MotionDiv>
 
-      <motion.div className="card" whileHover={{scale:1.04}}>
+      <MotionDiv className="card" whileHover={{scale:1.04}}>
         <div className="card-label">WF Orders</div>
         <div className="card-value">{stats.wf_total}</div>
-      </motion.div>
+      </MotionDiv>
 
-      <motion.div className="card" whileHover={{scale:1.04}}>
+      <MotionDiv className="card" whileHover={{scale:1.04}}>
         <div className="card-label">HD Orders</div>
         <div className="card-value">{stats.hd_total}</div>
-      </motion.div>
+      </MotionDiv>
 
-      <motion.div className="card" whileHover={{scale:1.04}}>
+      <MotionDiv className="card" whileHover={{scale:1.04}}>
         <div className="card-label">WF Rush</div>
         <div className="card-value">{stats.wf_rush}</div>
-      </motion.div>
+      </MotionDiv>
 
-      <motion.div className="card" whileHover={{scale:1.04}}>
+      <MotionDiv className="card" whileHover={{scale:1.04}}>
         <div className="card-label">HD Rush</div>
         <div className="card-value">{stats.hd_rush}</div>
-      </motion.div>
+      </MotionDiv>
 
     </div>
 

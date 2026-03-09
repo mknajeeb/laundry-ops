@@ -2,6 +2,8 @@ import { useEffect, useState } from "react"
 import axios from "axios"
 import { motion } from "framer-motion"
 
+const MotionDiv = motion.div
+
 function OrdersTable({ service, rush, status }) {
 
   const [orders,setOrders] = useState([])
@@ -66,7 +68,7 @@ function OrdersTable({ service, rush, status }) {
 
         {filtered.map(order=>(
 
-          <motion.div
+          <MotionDiv
             key={order.id}
             className={`order-card ${order.rush_type === "RUSH" ? "rush":""}`}
             whileHover={{scale:1.03}}
@@ -89,7 +91,7 @@ function OrdersTable({ service, rush, status }) {
               {order.status || "PENDING"}
             </div>
 
-          </motion.div>
+          </MotionDiv>
 
         ))}
 

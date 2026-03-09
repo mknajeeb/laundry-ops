@@ -116,6 +116,7 @@ def get_orders():
                 created_at
 
             FROM orders_staging
+            WHERE status <> 'CHECKED_OUT'
 
             ORDER BY date_clean ASC, id ASC
 
@@ -124,6 +125,191 @@ def get_orders():
         orders = cursor.fetchall()
 
         return jsonify(orders)
+
+    finally:
+
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Checkout Single Order
+# ---------------------------------------------------
+
+@app.route("/checkout", methods=["POST"])
+def checkout_order():
+
+    data = request.json or {}
+    order_id = data.get("order_id")
+    employee = (data.get("employee") or "").strip() or "Unknown"
+
+    if order_id in [None, ""]:
+        return jsonify({"error": "order_id is required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+
+        cursor.execute("""
+            SELECT
+                id,
+                date_clean,
+                name_clean,
+                weight_num,
+                service_type,
+                status
+            FROM orders_staging
+            WHERE id = %s
+        """, (order_id,))
+
+        order = cursor.fetchone()
+
+        if not order:
+            return jsonify({"error": "Order not found"}), 404
+
+        if (order.get("status") or "").upper() == "CHECKED_OUT":
+            return jsonify({"error": "Order already checked out"}), 409
+
+        cursor.execute("""
+            INSERT INTO checkout_log
+            (
+                order_id,
+                name,
+                weight,
+                service,
+                rush_date,
+                employee
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            order["id"],
+            order["name_clean"],
+            order["weight_num"],
+            order["service_type"],
+            order["date_clean"],
+            employee
+        ))
+
+        cursor.execute("""
+            UPDATE orders_staging
+            SET status = 'CHECKED_OUT'
+            WHERE id = %s
+        """, (order_id,))
+
+        conn.commit()
+        return jsonify({"status": "checked_out", "order_id": order_id})
+
+    except Exception as e:
+
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Checkout Bulk Orders
+# ---------------------------------------------------
+
+@app.route("/checkout_bulk", methods=["POST"])
+def checkout_bulk():
+
+    data = request.json or {}
+    order_ids = data.get("order_ids") or []
+    employee = (data.get("employee") or "").strip() or "Unknown"
+
+    if not isinstance(order_ids, list) or not order_ids:
+        return jsonify({"error": "order_ids must be a non-empty array"}), 400
+
+    # Ensure stable ordering and avoid duplicates
+    order_ids = list(dict.fromkeys(order_ids))
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+
+        format_strings = ",".join(["%s"] * len(order_ids))
+        cursor.execute(f"""
+            SELECT
+                id,
+                date_clean,
+                name_clean,
+                weight_num,
+                service_type,
+                status
+            FROM orders_staging
+            WHERE id IN ({format_strings})
+        """, tuple(order_ids))
+
+        rows = cursor.fetchall()
+        rows_by_id = {row["id"]: row for row in rows}
+
+        not_found = []
+        already_checked_out = []
+        checkout_candidates = []
+
+        for oid in order_ids:
+            row = rows_by_id.get(oid)
+
+            if not row:
+                not_found.append(oid)
+                continue
+
+            if (row.get("status") or "").upper() == "CHECKED_OUT":
+                already_checked_out.append(oid)
+                continue
+
+            checkout_candidates.append(row)
+
+        for order in checkout_candidates:
+            cursor.execute("""
+                INSERT INTO checkout_log
+                (
+                    order_id,
+                    name,
+                    weight,
+                    service,
+                    rush_date,
+                    employee
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                order["id"],
+                order["name_clean"],
+                order["weight_num"],
+                order["service_type"],
+                order["date_clean"],
+                employee
+            ))
+
+        if checkout_candidates:
+            checkout_ids = [row["id"] for row in checkout_candidates]
+            update_strings = ",".join(["%s"] * len(checkout_ids))
+            cursor.execute(f"""
+                UPDATE orders_staging
+                SET status = 'CHECKED_OUT'
+                WHERE id IN ({update_strings})
+            """, tuple(checkout_ids))
+
+        conn.commit()
+
+        return jsonify({
+            "status": "bulk_checkout_complete",
+            "requested": len(order_ids),
+            "checked_out": len(checkout_candidates),
+            "not_found": not_found,
+            "already_checked_out": already_checked_out
+        })
+
+    except Exception as e:
+
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
 
     finally:
 
@@ -323,6 +509,7 @@ def dashboard():
                 SUM(service_type = 'HD' AND date_clean >= CURDATE()) AS hd_non_rush
 
             FROM orders_staging
+            WHERE status <> 'CHECKED_OUT'
 
         """)
 
