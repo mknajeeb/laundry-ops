@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import axios from "axios";
+import { getOrders } from "../api";
 import { useSearchParams } from "react-router-dom";
 
 function OrdersPage() {
@@ -15,8 +15,7 @@ function OrdersPage() {
   }, []);
 
   const loadOrders = () => {
-    axios
-      .get("http://localhost:8000/orders")
+    getOrders()
       .then((res) => setOrders(res.data))
       .catch((err) => console.error(err));
   };
@@ -30,24 +29,20 @@ function OrdersPage() {
   }, [params]);
 
   const filtered = orders
-
     .filter((o) => {
       if (service === "WF") return o.service_type === "WF";
       if (service === "HD") return o.service_type === "HD";
       return true;
     })
-
     .filter((o) => {
       if (delivery === "RUSH") return o.rush_type === "RUSH";
       if (delivery === "NON-RUSH") return o.rush_type === "NON-RUSH";
       return true;
     })
-
     .filter((o) => {
       if (!search) return true;
       return o.name_clean.toLowerCase().startsWith(search.toLowerCase());
     })
-
     .sort((a, b) => a.name_clean.localeCompare(b.name_clean));
 
   const totalWeight = filtered
@@ -178,7 +173,7 @@ function OrdersPage() {
         </thead>
 
         <tbody>
-          {orders.map((o) => (
+          {filtered.map((o) => (
             <tr key={o.id}>
               <td>{o.id}</td>
               <td>{o.date_clean}</td>
@@ -206,7 +201,6 @@ function OrdersPage() {
           <h1 className="print-title">{batchTitle}</h1>
 
           <div className="print-subtitle">Batch Date: {batchDate}</div>
-
           <div className="print-subtitle">Total Orders: {filtered.length}</div>
         </div>
 
@@ -215,11 +209,8 @@ function OrdersPage() {
             {filtered.slice(0, Math.ceil(filtered.length / 2)).map((o, i) => (
               <div key={o.id} className="print-row">
                 <span className="num">{i + 1}</span>
-
                 <span className="check">□</span>
-
                 <span className="name">{o.name_clean}</span>
-
                 <span className="weight">
                   {o.service_type === "HD"
                     ? o.weight_num
@@ -235,11 +226,8 @@ function OrdersPage() {
                 <span className="num">
                   {i + 1 + Math.ceil(filtered.length / 2)}
                 </span>
-
                 <span className="check">□</span>
-
                 <span className="name">{o.name_clean}</span>
-
                 <span className="weight">
                   {o.service_type === "HD"
                     ? o.weight_num

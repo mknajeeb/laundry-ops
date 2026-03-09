@@ -1,4 +1,5 @@
-import axios from "axios";
+// production api
+import axios from "axios";import axios from "axios";
 
 const API_BASE =
   "https://laundryops-api-dsccuxa8c6dbghd9.centralus-01.azurewebsites.net";
