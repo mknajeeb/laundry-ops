@@ -31,7 +31,6 @@ import EmployeesPage from "./pages/EmployeesPage";
 import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
-import WashproLogo from "./assets/Washpro.png";
 
 const MOBILE_TABS = [
   { label: "Dashboard", value: "/dashboard", icon: <DashboardIcon /> },
@@ -56,14 +55,9 @@ function MobileTopBar({ pathname }) {
         borderBottom: "1px solid #e5e7eb",
       }}
     >
-      <Toolbar sx={{ minHeight: "56px !important", px: 1.5 }}>
-        <Typography sx={{ fontSize: 20, fontWeight: 900, lineHeight: 1 }}>
-          <Box
-            component="img"
-            src={WashproLogo}
-            alt="WashPro"
-            sx={{ height: 28, width: "auto", display: "block" }}
-          />
+      <Toolbar sx={{ minHeight: "48px !important", px: 1.2 }}>
+        <Typography sx={{ fontSize: 16, fontWeight: 900, lineHeight: 1 }}>
+          WashPro
         </Typography>
         <Box sx={{ flex: 1 }} />
         <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#6b7280" }}>
@@ -114,6 +108,7 @@ function AppShell() {
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 900px)");
   const pathname = location.pathname || "/";
+  const hideMobileTopBar = pathname === "/checkout";
   const [updateReady, setUpdateReady] = useState(false);
 
   useEffect(() => {
@@ -139,8 +134,8 @@ function AppShell() {
     <div className={`app-layout ${isMobile ? "app-layout-checkout-mobile" : ""}`}>
       {!isMobile && <Sidebar />}
       <div className={`main-content ${isMobile ? "main-content-checkout-mobile" : ""}`}>
-        {isMobile && <MobileTopBar pathname={pathname} />}
-        <Box className={isMobile ? "route-scroll-mobile" : ""}>
+        {isMobile && !hideMobileTopBar && <MobileTopBar pathname={pathname} />}
+        <Box className={isMobile ? (hideMobileTopBar ? "route-scroll-mobile-no-top" : "route-scroll-mobile") : ""}>
           <Routes>
             <Route path="/" element={<OrdersPage />} />
             <Route path="/dashboard" element={<Dashboard />} />

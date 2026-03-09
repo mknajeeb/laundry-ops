@@ -32,6 +32,12 @@ body,
   overflow-x: hidden;
 }
 
+.route-scroll-mobile-no-top {
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 /* =========================
    APP LAYOUT
 ========================= */
