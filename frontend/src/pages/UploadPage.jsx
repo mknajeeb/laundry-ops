@@ -1,5 +1,5 @@
 import { useState } from "react";
-import axios from "axios";
+import { uploadOrders } from "../api";
 
 function UploadPage() {
 
@@ -22,15 +22,7 @@ function UploadPage() {
       setLoading(true);
       setConflicts([]);
 
-      const res = await axios.post(
-        "http://localhost:5001/upload_orders",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data"
-          }
-        }
-      );
+      const res = await uploadOrders(formData);
 
       alert(
         `Orders Loaded: ${res.data.rows_inserted}\nConflicts: ${res.data.conflicts}`
@@ -60,34 +52,38 @@ function UploadPage() {
 
   };
 
-
   return (
 
-    <div>
+    <div className="page">
 
-      <h2>Upload Orders Excel</h2>
+      <h1>Upload Orders</h1>
 
-      <input
-        type="file"
-        onChange={(e) => setFile(e.target.files[0] || null)}
-      />
+      <div className="card">
 
-      <br /><br />
+        <input
+          type="file"
+          onChange={(e) => setFile(e.target.files[0] || null)}
+        />
 
-      <button onClick={uploadFile} disabled={loading}>
-        {loading ? "Uploading..." : "Upload Orders"}
-      </button>
+        <br /><br />
 
+        <button
+          className="primary-btn"
+          onClick={uploadFile}
+          disabled={loading}
+        >
+          {loading ? "Uploading..." : "Upload Orders"}
+        </button>
 
-      {/* Show conflicts if any */}
+      </div>
 
       {conflicts.length > 0 && (
 
-        <div style={{ marginTop: 30 }}>
+        <div className="card">
 
           <h3>Possible Duplicate Orders</h3>
 
-          <table border="1" cellPadding="6">
+          <table className="table">
 
             <thead>
               <tr>
