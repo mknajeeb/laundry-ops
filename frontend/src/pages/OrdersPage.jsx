@@ -12,15 +12,26 @@ import {
 } from "@mui/material";
 import { FlashOn, Search } from "@mui/icons-material";
 import { getOrders } from "../api";
+import { useSearchParams } from "react-router-dom";
 
 function OrdersPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
-  const [service, setService] = useState("ALL");
-  const [rush, setRush] = useState("ALL");
-  const [status, setStatus] = useState("ALL");
+  const [service, setService] = useState((searchParams.get("service") || "ALL").toUpperCase());
+  const [rush, setRush] = useState((searchParams.get("rush") || "ALL").toUpperCase());
+  const [status, setStatus] = useState((searchParams.get("status") || "ALL").toUpperCase());
+
+  useEffect(() => {
+    const nextService = (searchParams.get("service") || "ALL").toUpperCase();
+    const nextRush = (searchParams.get("rush") || "ALL").toUpperCase();
+    const nextStatus = (searchParams.get("status") || "ALL").toUpperCase();
+    setService(nextService);
+    setRush(nextRush);
+    setStatus(nextStatus);
+  }, [searchParams]);
 
   useEffect(() => {
     async function load() {
@@ -86,6 +97,14 @@ function OrdersPage() {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
+  const applyParamFilters = (nextService, nextRush, nextStatus) => {
+    const next = {};
+    if (nextService !== "ALL") next.service = nextService;
+    if (nextRush !== "ALL") next.rush = nextRush;
+    if (nextStatus !== "ALL") next.status = nextStatus;
+    setSearchParams(next);
+  };
+
   return (
     <Box sx={{ minHeight: "100vh", background: "#f3f4f6", px: { xs: 1.2, md: 2.4 }, py: 1.5 }}>
       <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Orders</Typography>
@@ -121,7 +140,10 @@ function OrdersPage() {
               label={item}
               clickable
               color={service === item ? "warning" : "default"}
-              onClick={() => setService(item)}
+              onClick={() => {
+                setService(item);
+                applyParamFilters(item, rush, status);
+              }}
             />
           ))}
           {["ALL", "RUSH", "NON-RUSH"].map((item) => (
@@ -130,7 +152,10 @@ function OrdersPage() {
               label={item}
               clickable
               color={rush === item ? "error" : "default"}
-              onClick={() => setRush(item)}
+              onClick={() => {
+                setRush(item);
+                applyParamFilters(service, item, status);
+              }}
             />
           ))}
           {["ALL", "PENDING", "PROCESSED", "CHECKED_OUT"].map((item) => (
@@ -139,7 +164,10 @@ function OrdersPage() {
               label={item}
               clickable
               color={status === item ? "success" : "default"}
-              onClick={() => setStatus(item)}
+              onClick={() => {
+                setStatus(item);
+                applyParamFilters(service, rush, item);
+              }}
             />
           ))}
         </Stack>

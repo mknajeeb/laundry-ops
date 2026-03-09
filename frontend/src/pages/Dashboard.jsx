@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, CircularProgress, Paper, Stack, Typography } from "@mui/material";
 import { getDashboard } from "../api";
+import { useNavigate } from "react-router-dom";
 
 function Dashboard() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -72,21 +74,59 @@ function Dashboard() {
             <Typography sx={{ fontSize: 36, fontWeight: 900, lineHeight: 1.1 }}>{safe.total_orders ?? 0}</Typography>
           </Paper>
 
-          <Paper sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #f59e0b" }}>
+          <Paper
+            onClick={() => navigate("/orders?service=WF")}
+            sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #f59e0b", cursor: "pointer" }}
+          >
             <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>WF</Typography>
             <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>{safe.wf_total ?? 0}</Typography>
             <Stack direction="row" spacing={1} sx={{ mt: 0.8 }}>
-              <ChipStat label="Rush" value={safe.wf_rush ?? 0} tone="#ef4444" />
-              <ChipStat label="Non-Rush" value={safe.wf_non_rush ?? 0} tone="#16a34a" />
+              <ChipStat
+                label="Rush"
+                value={safe.wf_rush ?? 0}
+                tone="#ef4444"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate("/orders?service=WF&rush=RUSH");
+                }}
+              />
+              <ChipStat
+                label="Non-Rush"
+                value={safe.wf_non_rush ?? 0}
+                tone="#16a34a"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate("/orders?service=WF&rush=NON-RUSH");
+                }}
+              />
             </Stack>
           </Paper>
 
-          <Paper sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #a855f7" }}>
+          <Paper
+            onClick={() => navigate("/orders?service=HD")}
+            sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #a855f7", cursor: "pointer" }}
+          >
             <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>HD</Typography>
             <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>{safe.hd_total ?? 0}</Typography>
             <Stack direction="row" spacing={1} sx={{ mt: 0.8 }}>
-              <ChipStat label="Rush" value={safe.hd_rush ?? 0} tone="#ef4444" />
-              <ChipStat label="Non-Rush" value={safe.hd_non_rush ?? 0} tone="#16a34a" />
+              <ChipStat
+                label="Rush"
+                value={safe.hd_rush ?? 0}
+                tone="#ef4444"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate("/orders?service=HD&rush=RUSH");
+                }}
+              />
+              <ChipStat
+                label="Non-Rush"
+                value={safe.hd_non_rush ?? 0}
+                tone="#16a34a"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate("/orders?service=HD&rush=NON-RUSH");
+                }}
+              />
             </Stack>
           </Paper>
         </Stack>
@@ -95,15 +135,17 @@ function Dashboard() {
   );
 }
 
-function ChipStat({ label, value, tone }) {
+function ChipStat({ label, value, tone, onClick }) {
   return (
     <Box
+      onClick={onClick}
       sx={{
         flex: 1,
         background: "#f9fafb",
         border: "1px solid #e5e7eb",
         borderRadius: 1.5,
         p: 0.8,
+        cursor: onClick ? "pointer" : "default",
       }}
     >
       <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>{label}</Typography>

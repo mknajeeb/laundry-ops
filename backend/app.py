@@ -184,6 +184,20 @@ def get_upload_conflicts_pk(cursor):
     raise ValueError("upload_conflicts table must include 'id' or 'conflict_id' primary key")
 
 
+def get_upload_batches_pk(cursor):
+    cursor.execute("SHOW COLUMNS FROM upload_batches LIKE 'id'")
+    has_id = cursor.fetchone()
+    if has_id:
+        return "id"
+
+    cursor.execute("SHOW COLUMNS FROM upload_batches LIKE 'batch_id'")
+    has_batch_id = cursor.fetchone()
+    if has_batch_id:
+        return "batch_id"
+
+    raise ValueError("upload_batches table must include 'id' or 'batch_id' primary key")
+
+
 # ---------------------------------------------------
 # Get Active Orders
 # ---------------------------------------------------
@@ -971,11 +985,12 @@ def upload_orders():
             seen_in_upload.add(identity_key)
             existing_identity_keys.add(identity_key)
 
+        upload_batches_pk = get_upload_batches_pk(cursor)
         cursor.execute("""
             UPDATE upload_batches
             SET orders_loaded = %s
-            WHERE id = %s
-        """, (
+            WHERE {pk} = %s
+        """.format(pk=upload_batches_pk), (
             inserted,
             upload_batch_id
         ))
