@@ -22,6 +22,7 @@ import {
 
 function UploadPage() {
   const [file, setFile] = useState(null);
+  const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(false);
   const [batchId, setBatchId] = useState(null);
   const [conflicts, setConflicts] = useState([]);
@@ -36,6 +37,9 @@ function UploadPage() {
 
     const formData = new FormData();
     formData.append("file", file);
+    if (batchDate) {
+      formData.append("batch_date", batchDate);
+    }
 
     try {
       setLoading(true);
@@ -127,6 +131,16 @@ function UploadPage() {
       )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+        <Stack spacing={1.2} sx={{ mb: 1.2 }}>
+          <Typography sx={{ fontWeight: 700, fontSize: 14 }}>Batch Date</Typography>
+          <input
+            type="date"
+            value={batchDate}
+            onChange={(e) => setBatchDate(e.target.value)}
+            style={{ maxWidth: 220, padding: 8 }}
+          />
+        </Stack>
+
         <input
           type="file"
           onChange={(e) => setFile(e.target.files?.[0] || null)}

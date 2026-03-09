@@ -4,15 +4,15 @@ import {
   Alert,
   AppBar,
   Button,
-  BottomNavigation,
-  BottomNavigationAction,
   Box,
+  IconButton,
   Snackbar,
   Toolbar,
   Typography,
   useMediaQuery,
 } from "@mui/material";
 import {
+  ArrowBack,
   Home as HomeIcon,
   Dashboard as DashboardIcon,
   Inventory2,
@@ -52,7 +52,9 @@ function getActiveMobileTab(pathname) {
 }
 
 function MobileTopBar({ pathname }) {
+  const navigate = useNavigate();
   const activeTab = getActiveMobileTab(pathname);
+  const canGoBack = pathname !== "/";
 
   return (
     <AppBar
@@ -66,6 +68,17 @@ function MobileTopBar({ pathname }) {
       }}
     >
       <Toolbar sx={{ minHeight: "48px !important", px: 1.2 }}>
+        {canGoBack ? (
+          <IconButton
+            size="small"
+            onClick={() => navigate(-1)}
+            sx={{ mr: 0.5, border: "1px solid #e5e7eb" }}
+          >
+            <ArrowBack sx={{ fontSize: 16 }} />
+          </IconButton>
+        ) : (
+          <Box sx={{ width: 34 }} />
+        )}
         <Typography sx={{ fontSize: 16, fontWeight: 900, lineHeight: 1 }}>
           WashPro
         </Typography>
@@ -78,47 +91,10 @@ function MobileTopBar({ pathname }) {
   );
 }
 
-function MobileBottomTabs({ pathname }) {
-  const navigate = useNavigate();
-  const selected = getActiveMobileTab(pathname).value;
-
-  return (
-    <BottomNavigation
-      showLabels
-      value={selected}
-      onChange={(_, value) => navigate(value)}
-      sx={{
-        position: "fixed",
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 1200,
-        borderTop: "1px solid #e5e7eb",
-        height: 62,
-      }}
-    >
-      {MOBILE_TABS.map((tab) => (
-        <BottomNavigationAction
-          key={tab.value}
-          label={tab.label}
-          value={tab.value}
-          icon={tab.icon}
-          sx={{
-            minWidth: 0,
-            ".MuiBottomNavigationAction-label": { fontSize: 11, fontWeight: 700 },
-          }}
-        />
-      ))}
-    </BottomNavigation>
-  );
-}
-
 function AppShell() {
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 900px)");
   const pathname = location.pathname || "/";
-  const isCheckoutRoute = pathname.startsWith("/checkout");
-  const hideMobileTopBar = isCheckoutRoute;
   const [updateReady, setUpdateReady] = useState(false);
 
   useEffect(() => {
@@ -144,8 +120,8 @@ function AppShell() {
     <div className={`app-layout ${isMobile ? "app-layout-checkout-mobile" : ""}`}>
       {!isMobile && <Sidebar />}
       <div className={`main-content ${isMobile ? "main-content-checkout-mobile" : ""}`}>
-        {isMobile && !hideMobileTopBar && <MobileTopBar pathname={pathname} />}
-        <Box className={isMobile ? (hideMobileTopBar ? "route-scroll-mobile-no-top" : "route-scroll-mobile") : ""}>
+        {isMobile && <MobileTopBar pathname={pathname} />}
+        <Box className={isMobile ? "route-scroll-mobile" : ""}>
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -159,10 +135,8 @@ function AppShell() {
             <Route path="/scoreboard" element={<ScoreboardPage />} />
             <Route path="/maintenance" element={<MaintenancePage />} />
           </Routes>
-          {isMobile && <Box sx={{ height: 72 }} />}
         </Box>
       </div>
-      {isMobile && !isCheckoutRoute && <MobileBottomTabs pathname={pathname} />}
       <Snackbar
         open={updateReady}
         anchorOrigin={{ vertical: "top", horizontal: "center" }}

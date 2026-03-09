@@ -15,7 +15,6 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  ArrowBack,
   Bolt,
   CheckCircle,
   ChevronRight,
@@ -25,13 +24,11 @@ import {
   Undo,
 } from "@mui/icons-material";
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
-import { useNavigate } from "react-router-dom";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
 
 function CheckoutPage() {
-  const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [checkedLogs, setCheckedLogs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -128,15 +125,6 @@ function CheckoutPage() {
 
   const remainingCount = filteredActive.length;
   const sentCount = filteredChecked.length;
-  const batchDate = useMemo(() => {
-    const fromOrders = orders.find((row) => row?.batch_date)?.batch_date;
-    const value = fromOrders || null;
-    if (!value) return "";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return String(value).split(" ")[0];
-    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-  }, [orders]);
-
   const remainingRushCount = useMemo(
     () => ({
       rush: filteredActive.filter((row) => rushOf(row) === "RUSH").length,
@@ -225,42 +213,6 @@ function CheckoutPage() {
 
   return (
     <Box sx={{ minHeight: "100%", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
-      <Paper
-        sx={{
-          height: 44,
-          borderRadius: 1.6,
-          border: "1px solid #e5e7eb",
-          boxShadow: "none",
-          px: 0.8,
-          mb: 0.9,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          bgcolor: "#ffffff",
-        }}
-      >
-        <Button
-          size="small"
-          onClick={() => navigate(-1)}
-          sx={{
-            minWidth: 32,
-            width: 32,
-            height: 32,
-            p: 0,
-            borderRadius: "50%",
-            border: "1px solid #d1d5db",
-          }}
-        >
-          <ArrowBack sx={{ fontSize: 18 }} />
-        </Button>
-        <Typography sx={{ fontSize: 14, fontWeight: 800 }}>Washpro to Rinse</Typography>
-        <Chip
-          size="small"
-          label={batchDate || "No Batch"}
-          sx={{ height: 24, fontWeight: 700, bgcolor: "#f3f4f6" }}
-        />
-      </Paper>
-
       <Stack direction="row" spacing={0.8}>
         <Segment
           label="Remaining"

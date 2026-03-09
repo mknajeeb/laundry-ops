@@ -170,6 +170,20 @@ def fetch_active_geofence(cursor):
     return cursor.fetchone()
 
 
+def get_upload_conflicts_pk(cursor):
+    cursor.execute("SHOW COLUMNS FROM upload_conflicts LIKE 'id'")
+    has_id = cursor.fetchone()
+    if has_id:
+        return "id"
+
+    cursor.execute("SHOW COLUMNS FROM upload_conflicts LIKE 'conflict_id'")
+    has_conflict_id = cursor.fetchone()
+    if has_conflict_id:
+        return "conflict_id"
+
+    raise ValueError("upload_conflicts table must include 'id' or 'conflict_id' primary key")
+
+
 # ---------------------------------------------------
 # Get Active Orders
 # ---------------------------------------------------
@@ -779,7 +793,8 @@ def upload_orders():
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
 
-        batch_date = date.today()
+        requested_batch_date = request.form.get("batch_date")
+        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
 
         # Create batch first so conflicts can be tied to it
         cursor.execute("""
@@ -1787,10 +1802,11 @@ def get_upload_conflicts():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        pk_col = get_upload_conflicts_pk(cursor)
         if batch_id not in [None, ""]:
             cursor.execute("""
                 SELECT
-                    id,
+                    {pk} AS id,
                     upload_batch_id,
                     name_clean,
                     weight_num,
@@ -1803,12 +1819,12 @@ def get_upload_conflicts():
                 FROM upload_conflicts
                 WHERE upload_batch_id = %s
                 AND status = %s
-                ORDER BY id ASC
-            """, (int(batch_id), status))
+                ORDER BY {pk} ASC
+            """.format(pk=pk_col), (int(batch_id), status))
         else:
             cursor.execute("""
                 SELECT
-                    id,
+                    {pk} AS id,
                     upload_batch_id,
                     name_clean,
                     weight_num,
@@ -1820,9 +1836,9 @@ def get_upload_conflicts():
                     created_at
                 FROM upload_conflicts
                 WHERE status = %s
-                ORDER BY id ASC
+                ORDER BY {pk} ASC
                 LIMIT 500
-            """, (status,))
+            """.format(pk=pk_col), (status,))
 
         return jsonify(cursor.fetchall())
 
@@ -1845,10 +1861,11 @@ def override_upload_conflicts():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        pk_col = get_upload_conflicts_pk(cursor)
         placeholders = ",".join(["%s"] * len(conflict_ids))
         cursor.execute(f"""
             SELECT
-                id,
+                {pk_col} AS id,
                 name_clean,
                 weight_num,
                 service_type,
@@ -1856,7 +1873,7 @@ def override_upload_conflicts():
                 rush_type,
                 upload_batch_id
             FROM upload_conflicts
-            WHERE id IN ({placeholders})
+            WHERE {pk_col} IN ({placeholders})
             AND status = 'PENDING'
         """, tuple(conflict_ids))
         rows = cursor.fetchall()
@@ -1893,8 +1910,8 @@ def override_upload_conflicts():
                     status = 'OVERRIDDEN',
                     overridden_by = %s,
                     overridden_at = NOW()
-                WHERE id = %s
-            """, (
+                WHERE {pk} = %s
+            """.format(pk=pk_col), (
                 overridden_by,
                 row["id"]
             ))
