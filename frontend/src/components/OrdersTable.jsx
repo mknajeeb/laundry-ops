@@ -13,10 +13,23 @@ function OrdersTable(){
   const loadOrders = ()=>{
     axios.get("/orders")
       .then(res=>{
-        setOrders(res.data)
+
+        // SAFELY handle different API shapes
+        let data = []
+
+        if(Array.isArray(res.data)){
+          data = res.data
+        }
+        else if(Array.isArray(res.data.orders)){
+          data = res.data.orders
+        }
+
+        setOrders(data)
+
       })
       .catch(err=>{
         console.error("Error loading orders:", err)
+        setOrders([])
       })
   }
 
