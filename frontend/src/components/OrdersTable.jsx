@@ -1,73 +1,97 @@
-import { useEffect, useState } from "react"
-import axios from "axios"
-import { motion } from "framer-motion"
+import { useEffect, useState } from "react";
+import axios from "axios";
+import { motion } from "framer-motion";
 
-function OrdersGrid(){
+function OrdersTable() {
 
-  const [orders,setOrders] = useState([])
-  const [search,setSearch] = useState("")
+  const [orders, setOrders] = useState([]);
+  const [search, setSearch] = useState("");
 
-  useEffect(()=>{
-    axios.get("/orders")
-      .then(res => setOrders(res.data))
-      .catch(err => console.error(err))
-  },[])
+  useEffect(() => {
+    axios
+      .get("/orders")
+      .then((res) => {
 
-  const filtered = orders.filter(o =>
-    (o.name_clean || "").toLowerCase().includes(search.toLowerCase())
-  )
+        if (Array.isArray(res.data)) {
+          setOrders(res.data);
+        }
 
-  return(
+        else if (Array.isArray(res.data.orders)) {
+          setOrders(res.data.orders);
+        }
 
-  <div className="page">
+        else {
+          console.log("Unexpected API response:", res.data);
+          setOrders([]);
+        }
 
-    <h1 className="page-title">Laundry Orders</h1>
+      })
+      .catch((err) => {
+        console.error(err);
+        setOrders([]);
+      });
+  }, []);
 
-    <input
-      className="search-box"
-      placeholder="Search name..."
-      value={search}
-      onChange={(e)=>setSearch(e.target.value)}
-    />
+  const filtered = Array.isArray(orders)
+    ? orders.filter((o) =>
+        (o.name_clean || "")
+          .toLowerCase()
+          .includes(search.toLowerCase())
+      )
+    : [];
 
-    <div className="orders-grid">
+  return (
 
-      {filtered.map(order => (
+    <div>
 
-        <motion.div
-          key={order.id}
-          className={`order-card ${order.rush_type === "RUSH" ? "rush" : ""}`}
-          whileHover={{scale:1.03}}
-        >
+      <input
+        className="search-box"
+        placeholder="Search name..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
 
-          <div className="order-name">
-            {order.name_clean}
-          </div>
+      <div className="orders-grid">
 
-          <div className="order-meta">
+        {filtered.map((order) => (
 
-            <span>{order.service_type}</span>
+          <motion.div
+            key={order.id}
+            className={`order-card ${order.rush_type === "RUSH" ? "rush" : ""}`}
+            whileHover={{ scale: 1.03 }}
+          >
 
-            <span>
-              {new Date(order.date_clean).toLocaleDateString()}
-            </span>
+            <div className="order-name">
+              {order.name_clean || "-"}
+            </div>
 
-          </div>
+            <div className="order-meta">
 
-          <div className="order-status">
-            {order.status}
-          </div>
+              <span>
+                {order.service_type || "-"}
+              </span>
 
-        </motion.div>
+              <span>
+                {order.date_clean
+                  ? new Date(order.date_clean).toLocaleDateString()
+                  : "-"}
+              </span>
 
-      ))}
+            </div>
+
+            <div className="order-status">
+              {order.status || "PENDING"}
+            </div>
+
+          </motion.div>
+
+        ))}
+
+      </div>
 
     </div>
 
-  </div>
-
-  )
-
+  );
 }
 
-export default OrdersGrid
+export default OrdersTable;
