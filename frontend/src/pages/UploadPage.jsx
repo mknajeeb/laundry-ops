@@ -24,10 +24,28 @@ function UploadPage() {
   const [file, setFile] = useState(null);
   const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(false);
+  const [loadingConflicts, setLoadingConflicts] = useState(false);
   const [batchId, setBatchId] = useState(null);
   const [conflicts, setConflicts] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
   const [message, setMessage] = useState({ type: "info", text: "" });
+
+  const loadConflictsForBatch = async (newBatchId) => {
+    if (!newBatchId) return;
+    try {
+      setLoadingConflicts(true);
+      const conflictRes = await getUploadConflicts(newBatchId, "PENDING");
+      setConflicts(Array.isArray(conflictRes.data) ? conflictRes.data : []);
+    } catch (error) {
+      console.error(error);
+      setMessage({
+        type: "warning",
+        text: "Upload completed, but duplicate queue did not load. Refresh and open Upload again.",
+      });
+    } finally {
+      setLoadingConflicts(false);
+    }
+  };
 
   const uploadFile = async () => {
     if (!file) {
@@ -41,24 +59,22 @@ function UploadPage() {
       formData.append("batch_date", batchDate);
     }
 
+    let newBatchId = null;
+
     try {
       setLoading(true);
       setConflicts([]);
       setSelectedIds([]);
 
       const res = await uploadOrders(formData);
-      const newBatchId = res?.data?.batch_id || null;
+      newBatchId = res?.data?.batch_id || null;
       setBatchId(newBatchId);
 
       setMessage({
         type: "success",
         text: `Uploaded. Inserted: ${res.data.rows_inserted}, Duplicates parked: ${res.data.conflicts}`,
       });
-
-      if (newBatchId) {
-        const conflictRes = await getUploadConflicts(newBatchId, "PENDING");
-        setConflicts(Array.isArray(conflictRes.data) ? conflictRes.data : []);
-      } else if (res.data.conflict_rows) {
+      if (!newBatchId && res.data.conflict_rows) {
         setConflicts(res.data.conflict_rows);
       }
     } catch (err) {
@@ -73,6 +89,10 @@ function UploadPage() {
       setMessage({ type: "error", text: msg });
     } finally {
       setLoading(false);
+    }
+
+    if (newBatchId) {
+      await loadConflictsForBatch(newBatchId);
     }
   };
 
@@ -155,7 +175,7 @@ function UploadPage() {
             {loading ? "Uploading..." : "Upload Orders"}
           </Button>
 
-          {loading && <CircularProgress size={22} />}
+          {(loading || loadingConflicts) && <CircularProgress size={22} />}
         </Stack>
       </Paper>
 

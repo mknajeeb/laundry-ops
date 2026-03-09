@@ -59,6 +59,7 @@ export const undoCheckout = (order_id) =>
 
 export const uploadOrders = (formData) =>
   axios.post(`${API_BASE}/upload_orders`, formData, {
+    timeout: 60000,
     headers: {
       "Content-Type": "multipart/form-data"
     }
@@ -66,6 +67,7 @@ export const uploadOrders = (formData) =>
 
 export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
   axios.get(`${API_BASE}/upload_conflicts`, {
+    timeout: 30000,
     params: {
       ...(batch_id ? { batch_id } : {}),
       status
