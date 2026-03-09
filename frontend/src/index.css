@@ -30,12 +30,28 @@ body,
   height: calc(100dvh - 56px);
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .route-scroll-mobile-no-top {
   height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+.route-scroll-mobile::-webkit-scrollbar,
+.route-scroll-mobile-no-top::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 /* =========================

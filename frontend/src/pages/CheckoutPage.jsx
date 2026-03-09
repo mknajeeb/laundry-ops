@@ -21,7 +21,6 @@ import {
   ChevronRight,
   ExpandLess,
   ExpandMore,
-  FilterAltOff,
   LocalShipping,
   Undo,
 } from "@mui/icons-material";
@@ -39,7 +38,6 @@ function CheckoutPage() {
   const [busy, setBusy] = useState(false);
 
   const [viewMode, setViewMode] = useState("REMAINING"); // REMAINING | SENT_TO_RINSE
-  const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON_RUSH
 
   const [openAlpha, setOpenAlpha] = useState(null);
   const [activeOrder, setActiveOrder] = useState(null);
@@ -119,21 +117,13 @@ function CheckoutPage() {
   }, [loadAll]);
 
   const filteredActive = useMemo(
-    () =>
-      orders.filter((row) => {
-        const rush = rushOf(row);
-        return rushFilter === "ALL" || rush === rushFilter;
-      }),
-    [orders, rushFilter]
+    () => orders,
+    [orders]
   );
 
   const filteredChecked = useMemo(
-    () =>
-      checkedLogs.filter((row) => {
-        const rush = rushOf(row);
-        return rushFilter === "ALL" || rush === rushFilter;
-      }),
-    [checkedLogs, rushFilter]
+    () => checkedLogs,
+    [checkedLogs]
   );
 
   const remainingCount = filteredActive.length;
@@ -252,12 +242,18 @@ function CheckoutPage() {
         <Button
           size="small"
           onClick={() => navigate(-1)}
-          startIcon={<ArrowBack sx={{ fontSize: 16 }} />}
-          sx={{ minWidth: 0, px: 0.7, textTransform: "none", fontWeight: 700 }}
+          sx={{
+            minWidth: 32,
+            width: 32,
+            height: 32,
+            p: 0,
+            borderRadius: "50%",
+            border: "1px solid #d1d5db",
+          }}
         >
-          Back
+          <ArrowBack sx={{ fontSize: 18 }} />
         </Button>
-        <Typography sx={{ fontSize: 14, fontWeight: 800 }}>Checkout Rinse Bags</Typography>
+        <Typography sx={{ fontSize: 14, fontWeight: 800 }}>Washpro to Rinse</Typography>
         <Chip
           size="small"
           label={batchDate || "No Batch"}
@@ -291,29 +287,6 @@ function CheckoutPage() {
           activeBg="#0097b2"
         />
       </Stack>
-
-      {viewMode === "REMAINING" && (
-        <Stack direction="row" spacing={0.8} sx={{ mt: 0.9 }}>
-          <IconFilter
-            active={rushFilter === "RUSH"}
-            icon={<Bolt sx={{ fontSize: 16 }} />}
-            count={remainingRushCount.rush}
-            onClick={() => setRushFilter(rushFilter === "RUSH" ? "ALL" : "RUSH")}
-          />
-          <IconFilter
-            active={rushFilter === "NON_RUSH"}
-            icon={<CheckCircle sx={{ fontSize: 16 }} />}
-            count={remainingRushCount.nonRush}
-            onClick={() => setRushFilter(rushFilter === "NON_RUSH" ? "ALL" : "NON_RUSH")}
-          />
-          <IconFilter
-            active={rushFilter === "ALL"}
-            icon={<FilterAltOff sx={{ fontSize: 16 }} />}
-            count={remainingCount}
-            onClick={() => setRushFilter("ALL")}
-          />
-        </Stack>
-      )}
 
       {viewMode === "REMAINING" && remainingCount > 0 && remainingRushCount.rush === 0 && (
         <Alert severity="success" sx={{ mt: 0.9 }}>
@@ -401,13 +374,13 @@ function CheckoutPage() {
                               cursor: "pointer",
                             }}
                           >
-                            <Stack spacing={0.62}>
-                              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography sx={{ fontSize: 19, fontWeight: 900, color: "#fff" }}>
-                                  {nameOf(row)}
-                                </Typography>
-                                <ChevronRight sx={{ color: "#fff" }} />
-                              </Stack>
+                              <Stack spacing={0.62}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                  <Typography sx={{ fontSize: 19, fontWeight: 900, color: "#fff" }}>
+                                    {nameOf(row)}
+                                  </Typography>
+                                  <ChevronRight sx={{ color: "#fff" }} />
+                                </Stack>
 
                               <Typography sx={{ color: isHD ? "#ecfeff" : "#f8fafc", fontWeight: 700, fontSize: 14 }}>
                                 {formatDate(viewMode === "REMAINING" ? row.date_clean : row.rush_date)} • {measureOf(row)}
@@ -416,14 +389,25 @@ function CheckoutPage() {
                               <Stack direction="row" spacing={0.7}>
                                 <Chip
                                   size="small"
+                                  label={service}
+                                  sx={{
+                                    height: 24,
+                                    fontWeight: 700,
+                                    bgcolor: isHD ? "#ffffff" : "#fff4d9",
+                                    color: "#111827",
+                                    border: isHD ? "1px solid #ffffff" : "1px solid #ffbd59",
+                                  }}
+                                />
+                                <Chip
+                                  size="small"
                                   label={isRush ? "RUSH" : "NON-RUSH"}
                                   icon={isRush ? <Bolt sx={{ fontSize: 14 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
                                   sx={{
                                     height: 24,
                                     fontWeight: 700,
-                                    bgcolor: isHD ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.14)",
-                                    color: "#fff",
-                                    border: isHD ? "1px solid rgba(255,255,255,0.42)" : "1px solid #ffbd59",
+                                    bgcolor: "#ffffff",
+                                    color: "#111827",
+                                    border: "1px solid #e5e7eb",
                                   }}
                                 />
                               </Stack>
@@ -518,33 +502,12 @@ function Segment({ label, value, rush, nonRush, active, onClick, activeBg }) {
         <Typography sx={{ fontSize: 14, fontWeight: 800 }}>{label}</Typography>
         <Stack direction="row" spacing={0.7} alignItems="center" sx={{ opacity: active ? 0.95 : 0.85 }}>
           <Bolt sx={{ fontSize: 14 }} />
-          <Typography sx={{ fontSize: 12, fontWeight: 800 }}>{rush}</Typography>
+          <Typography sx={{ fontSize: 13, fontWeight: 900 }}>{rush}</Typography>
           <CheckCircle sx={{ fontSize: 14 }} />
-          <Typography sx={{ fontSize: 12, fontWeight: 800 }}>{nonRush}</Typography>
+          <Typography sx={{ fontSize: 13, fontWeight: 900 }}>{nonRush}</Typography>
         </Stack>
       </Stack>
       <Typography sx={{ fontSize: 18, fontWeight: 900 }}>{value}</Typography>
-    </Button>
-  );
-}
-
-function IconFilter({ active, icon, count, onClick }) {
-  return (
-    <Button
-      onClick={onClick}
-      sx={{
-        minWidth: 56,
-        px: 1,
-        py: 0.5,
-        borderRadius: 1.4,
-        bgcolor: active ? "#111827" : "#e5e7eb",
-        color: active ? "#fff" : "#111827",
-      }}
-    >
-      <Stack direction="row" spacing={0.6} alignItems="center">
-        {icon}
-        <Typography sx={{ fontWeight: 900, fontSize: 13 }}>{count}</Typography>
-      </Stack>
     </Button>
   );
 }

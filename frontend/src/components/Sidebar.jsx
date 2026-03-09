@@ -9,6 +9,7 @@ function Sidebar(){
       <h2>WashPro</h2>
 
       <div className="sidebar-menu">
+        <Link className="menu-item" to="/">Home</Link>
 
         <Link className="menu-item" to="/dashboard">Dashboard</Link>
 

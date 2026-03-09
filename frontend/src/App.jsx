@@ -13,6 +13,7 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import {
+  Home as HomeIcon,
   Dashboard as DashboardIcon,
   Inventory2,
   LocalShipping,
@@ -33,8 +34,10 @@ import ClockPage from "./pages/ClockPage";
 import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
+import HomePage from "./pages/HomePage";
 
 const MOBILE_TABS = [
+  { label: "Home", value: "/", icon: <HomeIcon /> },
   { label: "Dashboard", value: "/dashboard", icon: <DashboardIcon /> },
   { label: "Orders", value: "/orders", icon: <Inventory2 /> },
   { label: "Checkout", value: "/checkout", icon: <LocalShipping /> },
@@ -43,9 +46,13 @@ const MOBILE_TABS = [
   { label: "Prod", value: "/production", icon: <PrecisionManufacturing /> },
 ];
 
+function getActiveMobileTab(pathname) {
+  if (pathname === "/") return MOBILE_TABS[0];
+  return MOBILE_TABS.find((tab) => tab.value !== "/" && pathname.startsWith(tab.value)) || MOBILE_TABS[0];
+}
+
 function MobileTopBar({ pathname }) {
-  const activeTab =
-    MOBILE_TABS.find((tab) => pathname.startsWith(tab.value)) || MOBILE_TABS[0];
+  const activeTab = getActiveMobileTab(pathname);
 
   return (
     <AppBar
@@ -73,8 +80,7 @@ function MobileTopBar({ pathname }) {
 
 function MobileBottomTabs({ pathname }) {
   const navigate = useNavigate();
-  const selected =
-    MOBILE_TABS.find((tab) => pathname.startsWith(tab.value))?.value || "/dashboard";
+  const selected = getActiveMobileTab(pathname).value;
 
   return (
     <BottomNavigation
@@ -141,7 +147,7 @@ function AppShell() {
         {isMobile && !hideMobileTopBar && <MobileTopBar pathname={pathname} />}
         <Box className={isMobile ? (hideMobileTopBar ? "route-scroll-mobile-no-top" : "route-scroll-mobile") : ""}>
           <Routes>
-            <Route path="/" element={<OrdersPage />} />
+            <Route path="/" element={<HomePage />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/checkout" element={<CheckoutPage />} />
