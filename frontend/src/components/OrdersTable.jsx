@@ -1,124 +1,73 @@
 import { useEffect, useState } from "react"
 import axios from "axios"
+import { motion } from "framer-motion"
 
-function OrdersTable(){
+function OrdersGrid(){
 
   const [orders,setOrders] = useState([])
   const [search,setSearch] = useState("")
 
   useEffect(()=>{
-    loadOrders()
+    axios.get("/orders")
+      .then(res => setOrders(res.data))
+      .catch(err => console.error(err))
   },[])
 
-  const loadOrders = ()=>{
-    axios.get("https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net/orders")
-      .then(res=>{
-        setOrders(res.data)
-      })
-      .catch(err=>{
-        console.error("Error loading orders:", err)
-      })
-  }
-
-  const filtered = orders.filter(order =>
-    (order.name_clean || "")
-      .toLowerCase()
-      .includes(search.toLowerCase())
-  )
-
-  const totalWeight = orders.reduce(
-    (sum,order)=>sum + (order.weight_num || 0),
-    0
+  const filtered = orders.filter(o =>
+    (o.name_clean || "").toLowerCase().includes(search.toLowerCase())
   )
 
   return(
 
-  <>
+  <div className="page">
 
-    <div className="orders-top">
+    <h1 className="page-title">Laundry Orders</h1>
 
-      <div className="orders-filters">
+    <input
+      className="search-box"
+      placeholder="Search name..."
+      value={search}
+      onChange={(e)=>setSearch(e.target.value)}
+    />
 
-        <input
-          className="search-box"
-          placeholder="Search name..."
-          value={search}
-          onChange={(e)=>setSearch(e.target.value)}
-        />
-
-      </div>
-
-      <div className="orders-stats">
-
-        <div className="stat-box">
-          <div className="stat-label">Orders</div>
-          <div className="stat-value">{orders.length}</div>
-        </div>
-
-        <div className="stat-box">
-          <div className="stat-label">Weight</div>
-          <div className="stat-value">{totalWeight} lbs</div>
-        </div>
-
-      </div>
-
-    </div>
-
-    <table className="orders-table">
-
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Date</th>
-          <th>Name</th>
-          <th>Weight</th>
-          <th>Service</th>
-          <th>Rush</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-
-      <tbody>
+    <div className="orders-grid">
 
       {filtered.map(order => (
 
-        <tr key={order.id}>
+        <motion.div
+          key={order.id}
+          className={`order-card ${order.rush_type === "RUSH" ? "rush" : ""}`}
+          whileHover={{scale:1.03}}
+        >
 
-          <td>{order.id}</td>
+          <div className="order-name">
+            {order.name_clean}
+          </div>
 
-          <td>
-            {order.date_clean
-              ? new Date(order.date_clean).toLocaleDateString()
-              : "-"
-            }
-          </td>
+          <div className="order-meta">
 
-          <td>{order.name_clean}</td>
+            <span>{order.service_type}</span>
 
-          <td>{order.weight_num || "-"}</td>
-
-          <td>{order.service_type}</td>
-
-          <td>{order.rush_type}</td>
-
-          <td>
-            <span className="status pending">
-              {order.status || "PENDING"}
+            <span>
+              {new Date(order.date_clean).toLocaleDateString()}
             </span>
-          </td>
 
-        </tr>
+          </div>
+
+          <div className="order-status">
+            {order.status}
+          </div>
+
+        </motion.div>
 
       ))}
 
-      </tbody>
+    </div>
 
-    </table>
-
-  </>
+  </div>
 
   )
 
 }
 
-export default OrdersTable
+export default OrdersGrid
