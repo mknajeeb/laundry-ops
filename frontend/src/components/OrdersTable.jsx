@@ -11,44 +11,29 @@ function OrdersTable(){
   },[])
 
   const loadOrders = ()=>{
-    axios.get("/orders")
+    axios.get("https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net/orders")
       .then(res=>{
-
-        // SAFELY handle different API shapes
-        let data = []
-
-        if(Array.isArray(res.data)){
-          data = res.data
-        }
-        else if(Array.isArray(res.data.orders)){
-          data = res.data.orders
-        }
-
-        setOrders(data)
-
+        setOrders(res.data)
       })
       .catch(err=>{
         console.error("Error loading orders:", err)
-        setOrders([])
       })
   }
 
   const filtered = orders.filter(order =>
-    (order.name || "")
+    (order.name_clean || "")
       .toLowerCase()
       .includes(search.toLowerCase())
   )
 
   const totalWeight = orders.reduce(
-    (sum,order)=>sum + (order.weight || 0),
+    (sum,order)=>sum + (order.weight_num || 0),
     0
   )
 
   return(
 
   <>
-
-    {/* TOP BAR */}
 
     <div className="orders-top">
 
@@ -79,8 +64,6 @@ function OrdersTable(){
 
     </div>
 
-    {/* TABLE */}
-
     <table className="orders-table">
 
       <thead>
@@ -90,6 +73,7 @@ function OrdersTable(){
           <th>Name</th>
           <th>Weight</th>
           <th>Service</th>
+          <th>Rush</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -103,17 +87,19 @@ function OrdersTable(){
           <td>{order.id}</td>
 
           <td>
-            {order.date
-              ? new Date(order.date).toLocaleDateString()
+            {order.date_clean
+              ? new Date(order.date_clean).toLocaleDateString()
               : "-"
             }
           </td>
 
-          <td>{order.name}</td>
+          <td>{order.name_clean}</td>
 
-          <td>{order.weight || "-"}</td>
+          <td>{order.weight_num || "-"}</td>
 
-          <td>{order.service}</td>
+          <td>{order.service_type}</td>
+
+          <td>{order.rush_type}</td>
 
           <td>
             <span className="status pending">
