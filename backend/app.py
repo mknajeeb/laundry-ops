@@ -106,6 +106,7 @@ def get_orders():
                 name_clean,
                 weight_num,
                 service_type,
+                batch_date,
 
                 CASE
                     WHEN date_clean < CURDATE() THEN 'RUSH'

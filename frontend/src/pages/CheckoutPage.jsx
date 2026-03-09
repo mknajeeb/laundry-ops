@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -15,28 +14,33 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  ArrowBack,
   Bolt,
   CheckCircle,
   ChevronRight,
   ExpandLess,
   ExpandMore,
+  FilterAltOff,
   LocalShipping,
   Undo,
 } from "@mui/icons-material";
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
+import { useNavigate } from "react-router-dom";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
 
 function CheckoutPage() {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   const [checkedLogs, setCheckedLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const [viewMode, setViewMode] = useState("REMAINING"); // REMAINING | SENT_TO_RINSE
-  const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON-RUSH
+  const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON_RUSH
 
-  const [expandedAlpha, setExpandedAlpha] = useState({});
+  const [openAlpha, setOpenAlpha] = useState(null);
   const [activeOrder, setActiveOrder] = useState(null);
   const [activeChecked, setActiveChecked] = useState(null);
 
@@ -73,6 +77,8 @@ function CheckoutPage() {
     return "-";
   };
 
+  const serviceOf = (row) => String(row?.service_type || row?.service || "").toUpperCase();
+
   const rushOf = (row) => {
     if (row?.rush_type) return String(row.rush_type).toUpperCase();
 
@@ -80,10 +86,10 @@ function CheckoutPage() {
       const due = new Date(row.rush_date);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      return due < today ? "RUSH" : "NON-RUSH";
+      return due < today ? "RUSH" : "NON_RUSH";
     }
 
-    return "NON-RUSH";
+    return "NON_RUSH";
   };
 
   const loadAll = useCallback(async () => {
@@ -111,24 +117,50 @@ function CheckoutPage() {
     loadAll();
   }, [loadAll]);
 
-  const filteredActive = useMemo(() => {
-    return orders.filter((row) => rushFilter === "ALL" || rushOf(row) === rushFilter);
-  }, [orders, rushFilter]);
+  const filteredActive = useMemo(
+    () =>
+      orders.filter((row) => {
+        const rush = rushOf(row);
+        return rushFilter === "ALL" || rush === rushFilter;
+      }),
+    [orders, rushFilter]
+  );
 
-  const filteredChecked = useMemo(() => {
-    return checkedLogs.filter((row) => rushFilter === "ALL" || rushOf(row) === rushFilter);
-  }, [checkedLogs, rushFilter]);
+  const filteredChecked = useMemo(
+    () =>
+      checkedLogs.filter((row) => {
+        const rush = rushOf(row);
+        return rushFilter === "ALL" || rush === rushFilter;
+      }),
+    [checkedLogs, rushFilter]
+  );
 
   const remainingCount = filteredActive.length;
-  const sentToRinseCount = filteredChecked.length;
+  const sentCount = filteredChecked.length;
+  const batchDate = useMemo(() => {
+    const fromOrders = orders.find((row) => row?.batch_date)?.batch_date;
+    const value = fromOrders || null;
+    if (!value) return "";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value).split(" ")[0];
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  }, [orders]);
 
-  const rushCounts = useMemo(() => {
-    const source = viewMode === "REMAINING" ? filteredActive : filteredChecked;
-    return {
-      rush: source.filter((row) => rushOf(row) === "RUSH").length,
-      nonRush: source.filter((row) => rushOf(row) === "NON-RUSH").length,
-    };
-  }, [filteredActive, filteredChecked, viewMode]);
+  const remainingRushCount = useMemo(
+    () => ({
+      rush: filteredActive.filter((row) => rushOf(row) === "RUSH").length,
+      nonRush: filteredActive.filter((row) => rushOf(row) === "NON_RUSH").length,
+    }),
+    [filteredActive]
+  );
+
+  const sentRushCount = useMemo(
+    () => ({
+      rush: filteredChecked.filter((row) => rushOf(row) === "RUSH").length,
+      nonRush: filteredChecked.filter((row) => rushOf(row) === "NON_RUSH").length,
+    }),
+    [filteredChecked]
+  );
 
   const groupedRows = useMemo(() => {
     const source = viewMode === "REMAINING" ? filteredActive : filteredChecked;
@@ -140,19 +172,21 @@ function CheckoutPage() {
       groups[alpha].push(row);
     });
 
-    const keys = [...ALPHAS];
-    if (groups["#"]?.length) keys.push("#");
-
-    keys.forEach((k) => {
+    ALPHAS.forEach((k) => {
       if (!groups[k]) groups[k] = [];
       groups[k].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
     });
 
-    return { keys, groups };
+    if (groups["#"]?.length) {
+      groups["#"].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+      return { keys: [...ALPHAS, "#"], groups };
+    }
+
+    return { keys: ALPHAS, groups };
   }, [alphaOf, filteredActive, filteredChecked, viewMode]);
 
-  const toggleAlpha = (alpha) => {
-    setExpandedAlpha((prev) => ({ ...prev, [alpha]: !prev[alpha] }));
+  const handleAlphaToggle = (alpha) => {
+    setOpenAlpha((prev) => (prev === alpha ? null : alpha));
   };
 
   const handleCheckout = async () => {
@@ -200,71 +234,102 @@ function CheckoutPage() {
 
   return (
     <Box sx={{ minHeight: "100%", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
+      <Paper
+        sx={{
+          height: 44,
+          borderRadius: 1.6,
+          border: "1px solid #e5e7eb",
+          boxShadow: "none",
+          px: 0.8,
+          mb: 0.9,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          bgcolor: "#ffffff",
+        }}
+      >
+        <Button
+          size="small"
+          onClick={() => navigate(-1)}
+          startIcon={<ArrowBack sx={{ fontSize: 16 }} />}
+          sx={{ minWidth: 0, px: 0.7, textTransform: "none", fontWeight: 700 }}
+        >
+          Back
+        </Button>
+        <Typography sx={{ fontSize: 14, fontWeight: 800 }}>Checkout Rinse Bags</Typography>
+        <Chip
+          size="small"
+          label={batchDate || "No Batch"}
+          sx={{ height: 24, fontWeight: 700, bgcolor: "#f3f4f6" }}
+        />
+      </Paper>
+
       <Stack direction="row" spacing={0.8}>
         <Segment
           label="Remaining"
           value={remainingCount}
+          rush={remainingRushCount.rush}
+          nonRush={remainingRushCount.nonRush}
           active={viewMode === "REMAINING"}
-          onClick={() => setViewMode("REMAINING")}
+          onClick={() => {
+            setViewMode("REMAINING");
+            setOpenAlpha(null);
+          }}
           activeBg="#111827"
         />
         <Segment
           label="Sent to Rinse"
-          value={sentToRinseCount}
+          value={sentCount}
+          rush={sentRushCount.rush}
+          nonRush={sentRushCount.nonRush}
           active={viewMode === "SENT_TO_RINSE"}
-          onClick={() => setViewMode("SENT_TO_RINSE")}
+          onClick={() => {
+            setViewMode("SENT_TO_RINSE");
+            setOpenAlpha(null);
+          }}
           activeBg="#0097b2"
         />
       </Stack>
 
       {viewMode === "REMAINING" && (
         <Stack direction="row" spacing={0.8} sx={{ mt: 0.9 }}>
-          <Chip
+          <IconFilter
+            active={rushFilter === "RUSH"}
             icon={<Bolt sx={{ fontSize: 16 }} />}
-            label={`Rush ${rushCounts.rush}`}
-            clickable
-            size="small"
+            count={remainingRushCount.rush}
             onClick={() => setRushFilter(rushFilter === "RUSH" ? "ALL" : "RUSH")}
-            sx={{
-              height: 32,
-              bgcolor: rushFilter === "RUSH" ? "#111827" : "#e5e7eb",
-              color: rushFilter === "RUSH" ? "#fff" : "#111827",
-              fontWeight: 800,
-            }}
           />
-
-          <Chip
+          <IconFilter
+            active={rushFilter === "NON_RUSH"}
             icon={<CheckCircle sx={{ fontSize: 16 }} />}
-            label={`Non-Rush ${rushCounts.nonRush}`}
-            clickable
-            size="small"
-            onClick={() => setRushFilter(rushFilter === "NON-RUSH" ? "ALL" : "NON-RUSH")}
-            sx={{
-              height: 32,
-              bgcolor: rushFilter === "NON-RUSH" ? "#111827" : "#e5e7eb",
-              color: rushFilter === "NON-RUSH" ? "#fff" : "#111827",
-              fontWeight: 800,
-            }}
+            count={remainingRushCount.nonRush}
+            onClick={() => setRushFilter(rushFilter === "NON_RUSH" ? "ALL" : "NON_RUSH")}
+          />
+          <IconFilter
+            active={rushFilter === "ALL"}
+            icon={<FilterAltOff sx={{ fontSize: 16 }} />}
+            count={remainingCount}
+            onClick={() => setRushFilter("ALL")}
           />
         </Stack>
       )}
 
-      {viewMode === "REMAINING" && remainingCount > 0 && rushCounts.rush === 0 && (
+      {viewMode === "REMAINING" && remainingCount > 0 && remainingRushCount.rush === 0 && (
         <Alert severity="success" sx={{ mt: 0.9 }}>
           All rush bags are checked out.
         </Alert>
       )}
 
       <Box sx={{ mt: 1.1 }}>
-        {groupedRows.keys.map((alpha) => {
+        {groupedRows.keys.map((alpha, idx) => {
           const rows = groupedRows.groups[alpha] || [];
-          const expanded = Boolean(expandedAlpha[alpha]);
+          const expanded = openAlpha === alpha;
 
           return (
             <Paper
               key={alpha}
               sx={{
-                mb: 1.05,
+                mb: 1.1,
                 borderRadius: 2,
                 overflow: "hidden",
                 border: "1px solid #e5e7eb",
@@ -274,21 +339,21 @@ function CheckoutPage() {
             >
               <Button
                 fullWidth
-                onClick={() => toggleAlpha(alpha)}
+                onClick={() => handleAlphaToggle(alpha)}
                 sx={{
                   px: 1.1,
-                  py: 1.05,
+                  py: 1.1,
                   justifyContent: "space-between",
                   color: "#111827",
                   textTransform: "none",
-                  bgcolor: "#ffffff",
+                  bgcolor: HEADER_BG[idx % HEADER_BG.length],
                 }}
               >
-                <Stack direction="row" spacing={1.2} alignItems="center">
+                <Stack direction="row" spacing={1.3} alignItems="center">
                   <Box
                     sx={{
-                      width: 30,
-                      height: 30,
+                      width: 31,
+                      height: 31,
                       borderRadius: "50%",
                       display: "grid",
                       placeItems: "center",
@@ -300,7 +365,7 @@ function CheckoutPage() {
                   >
                     {alpha}
                   </Box>
-                  <Typography sx={{ fontSize: 16, fontWeight: 800, letterSpacing: 0.1 }}>
+                  <Typography sx={{ fontSize: 16, fontWeight: 800, letterSpacing: 0.2 }}>
                     {rows.length} bags
                   </Typography>
                 </Stack>
@@ -310,13 +375,13 @@ function CheckoutPage() {
               {expanded && (
                 <Box sx={{ p: 1, bgcolor: "transparent" }}>
                   {rows.length === 0 ? (
-                    <Typography sx={{ color: "#6b7280", fontSize: 14, px: 0.2, py: 0.6 }}>
+                    <Typography sx={{ color: "#6b7280", fontSize: 14, px: 0.25, py: 0.5 }}>
                       No bags in this section.
                     </Typography>
                   ) : (
-                    <Stack spacing={1}>
+                    <Stack spacing={1.05}>
                       {rows.map((row) => {
-                        const service = String(row?.service_type || row?.service || "").toUpperCase();
+                        const service = serviceOf(row);
                         const isHD = service === "HD";
                         const isRush = rushOf(row) === "RUSH";
 
@@ -335,40 +400,29 @@ function CheckoutPage() {
                               cursor: "pointer",
                             }}
                           >
-                            <Stack spacing={0.6}>
+                            <Stack spacing={0.62}>
                               <Stack direction="row" justifyContent="space-between" alignItems="center">
                                 <Typography sx={{ fontSize: 19, fontWeight: 900, color: "#fff" }}>
                                   {nameOf(row)}
                                 </Typography>
-                                <ChevronRight sx={{ color: "#ffffff" }} />
+                                <ChevronRight sx={{ color: "#fff" }} />
                               </Stack>
 
                               <Typography sx={{ color: isHD ? "#ecfeff" : "#f8fafc", fontWeight: 700, fontSize: 14 }}>
                                 {formatDate(viewMode === "REMAINING" ? row.date_clean : row.rush_date)} • {measureOf(row)}
                               </Typography>
 
-                              <Stack direction="row" spacing={0.6}>
+                              <Stack direction="row" spacing={0.7}>
                                 <Chip
                                   size="small"
-                                  label={service}
-                                  sx={{
-                                    height: 24,
-                                    fontWeight: 700,
-                                    bgcolor: isHD ? "rgba(255,255,255,0.16)" : "rgba(255,189,89,0.17)",
-                                    color: "#fff",
-                                    border: isHD ? "1px solid rgba(255,255,255,0.42)" : "1px solid #ffbd59",
-                                  }}
-                                />
-                                <Chip
-                                  size="small"
-                                  icon={isRush ? <Bolt sx={{ fontSize: 14 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
                                   label={isRush ? "RUSH" : "NON-RUSH"}
+                                  icon={isRush ? <Bolt sx={{ fontSize: 14 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
                                   sx={{
                                     height: 24,
                                     fontWeight: 700,
                                     bgcolor: isHD ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.14)",
                                     color: "#fff",
-                                    border: isHD ? "1px solid rgba(255,255,255,0.42)" : "1px solid #d1d5db",
+                                    border: isHD ? "1px solid rgba(255,255,255,0.42)" : "1px solid #ffbd59",
                                   }}
                                 />
                               </Stack>
@@ -393,7 +447,7 @@ function CheckoutPage() {
               <Typography sx={{ fontWeight: 900, fontSize: 22 }}>{nameOf(activeOrder)}</Typography>
               <Typography>{formatDate(activeOrder.date_clean)}</Typography>
               <Typography>{measureOf(activeOrder)}</Typography>
-              <Typography>{String(activeOrder.service_type || "").toUpperCase()} • {rushOf(activeOrder)}</Typography>
+              <Typography>{serviceOf(activeOrder)} • {rushOf(activeOrder).replace("_", "-")}</Typography>
               <Alert severity="warning">Confirm physical tag before sending.</Alert>
             </Stack>
           )}
@@ -444,7 +498,7 @@ function CheckoutPage() {
   );
 }
 
-function Segment({ label, value, active, onClick, activeBg }) {
+function Segment({ label, value, rush, nonRush, active, onClick, activeBg }) {
   return (
     <Button
       fullWidth
@@ -453,14 +507,43 @@ function Segment({ label, value, active, onClick, activeBg }) {
         borderRadius: 1.8,
         py: 0.75,
         textTransform: "none",
-        bgcolor: active ? activeBg : "#e5e7eb",
+        bgcolor: active ? activeBg : "#eef1f4",
         color: active ? "#fff" : "#111827",
         justifyContent: "space-between",
         px: 1.1,
       }}
     >
-      <Typography sx={{ fontSize: 14, fontWeight: 800 }}>{label}</Typography>
-      <Typography sx={{ fontSize: 14, fontWeight: 900 }}>{value}</Typography>
+      <Stack alignItems="flex-start" spacing={0.2}>
+        <Typography sx={{ fontSize: 14, fontWeight: 800 }}>{label}</Typography>
+        <Stack direction="row" spacing={0.7} alignItems="center" sx={{ opacity: active ? 0.95 : 0.85 }}>
+          <Bolt sx={{ fontSize: 14 }} />
+          <Typography sx={{ fontSize: 12, fontWeight: 800 }}>{rush}</Typography>
+          <CheckCircle sx={{ fontSize: 14 }} />
+          <Typography sx={{ fontSize: 12, fontWeight: 800 }}>{nonRush}</Typography>
+        </Stack>
+      </Stack>
+      <Typography sx={{ fontSize: 18, fontWeight: 900 }}>{value}</Typography>
+    </Button>
+  );
+}
+
+function IconFilter({ active, icon, count, onClick }) {
+  return (
+    <Button
+      onClick={onClick}
+      sx={{
+        minWidth: 56,
+        px: 1,
+        py: 0.5,
+        borderRadius: 1.4,
+        bgcolor: active ? "#111827" : "#e5e7eb",
+        color: active ? "#fff" : "#111827",
+      }}
+    >
+      <Stack direction="row" spacing={0.6} alignItems="center">
+        {icon}
+        <Typography sx={{ fontWeight: 900, fontSize: 13 }}>{count}</Typography>
+      </Stack>
     </Button>
   );
 }
