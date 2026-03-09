@@ -1,3 +1,7 @@
-const API = "http://localhost:8000";
+import axios from "axios";
 
-export default API;
+const API_BASE =
+  "https://laundryops-api-dsccuxa8c6dbghd9.centralus-01.azurewebsites.net";
+
+export const getOrders = () => axios.get(`${API_BASE}/orders`);
+export const getDashboard = () => axios.get(`${API_BASE}/dashboard`);
