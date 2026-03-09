@@ -2,17 +2,19 @@ import OrdersTable from "../components/OrdersTable"
 
 function OrdersPage(){
 
-return(
+  return(
 
-<div className="page">
+  <div className="page">
 
-<h1 className="page-title">Laundry Orders</h1>
+    <h1 className="page-title">
+      Laundry Orders
+    </h1>
 
-<OrdersTable />
+    <OrdersTable />
 
-</div>
+  </div>
 
-)
+  )
 
 }
 
