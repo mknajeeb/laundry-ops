@@ -102,3 +102,27 @@ export const startFolderShift = (employee_id, start_time) =>
 
 export const getCurrentShift = () =>
   axios.get(`${API_BASE}/folder_shift/current`);
+
+/* =========================================
+   GEOFENCE / ATTENDANCE
+========================================= */
+
+export const getGeofenceConfig = () =>
+  axios.get(`${API_BASE}/geofence/config`);
+
+export const saveGeofenceConfig = (payload) =>
+  axios.post(`${API_BASE}/geofence/config`, payload);
+
+export const punchAttendance = (payload) =>
+  axios.post(`${API_BASE}/attendance/punch`, payload);
+
+export const pingAttendanceLocation = (payload) =>
+  axios.post(`${API_BASE}/attendance/location_ping`, payload);
+
+export const getAttendanceAlerts = (since_id = null) =>
+  axios.get(`${API_BASE}/attendance/alerts`, {
+    params: since_id ? { since_id } : {}
+  });
+
+export const getAttendanceLive = () =>
+  axios.get(`${API_BASE}/attendance/live`);

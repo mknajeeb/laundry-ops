@@ -16,6 +16,7 @@ import {
   Dashboard as DashboardIcon,
   Inventory2,
   LocalShipping,
+  AccessTime,
   UploadFile,
   PrecisionManufacturing,
 } from "@mui/icons-material";
@@ -28,6 +29,7 @@ import ScoreboardPage from "./pages/ScoreboardPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import IssuePage from "./pages/IssuePage";
 import EmployeesPage from "./pages/EmployeesPage";
+import ClockPage from "./pages/ClockPage";
 import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
@@ -36,6 +38,7 @@ const MOBILE_TABS = [
   { label: "Dashboard", value: "/dashboard", icon: <DashboardIcon /> },
   { label: "Orders", value: "/orders", icon: <Inventory2 /> },
   { label: "Checkout", value: "/checkout", icon: <LocalShipping /> },
+  { label: "Clock", value: "/clock", icon: <AccessTime /> },
   { label: "Upload", value: "/upload", icon: <UploadFile /> },
   { label: "Prod", value: "/production", icon: <PrecisionManufacturing /> },
 ];
@@ -144,6 +147,7 @@ function AppShell() {
             <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/upload" element={<UploadPage />} />
             <Route path="/employees" element={<EmployeesPage />} />
+            <Route path="/clock" element={<ClockPage />} />
             <Route path="/issues" element={<IssuePage />} />
             <Route path="/production" element={<ProductionPage />} />
             <Route path="/scoreboard" element={<ScoreboardPage />} />

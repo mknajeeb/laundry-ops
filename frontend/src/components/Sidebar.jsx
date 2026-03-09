@@ -19,6 +19,7 @@ function Sidebar(){
         <Link className="menu-item" to="/upload">Upload Orders</Link>
 
         <Link className="menu-item" to="/employees">Employees</Link>
+        <Link className="menu-item" to="/clock">Clock</Link>
 
         <Link className="menu-item" to="/issues">Issues</Link>
 

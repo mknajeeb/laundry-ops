@@ -1,4 +1,5 @@
 import os
+import math
 import pandas as pd
 from datetime import datetime, date
 
@@ -84,6 +85,59 @@ def build_fingerprint(name_clean, weight_num, service_type):
     service_part = (service_type or "").strip().upper()
 
     return f"{name_part}|{weight_part}|{service_part}"
+
+
+def haversine_meters(lat1, lon1, lat2, lon2):
+    radius_m = 6371000
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius_m * c
+
+
+def fetch_active_geofence(cursor):
+    cursor.execute("""
+        SELECT
+            id,
+            label,
+            latitude,
+            longitude,
+            radius_m,
+            active,
+            updated_at
+        FROM geofence_settings
+        WHERE active = TRUE
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    """)
+
+    geofence = cursor.fetchone()
+
+    if geofence:
+        return geofence
+
+    cursor.execute("""
+        SELECT
+            id,
+            label,
+            latitude,
+            longitude,
+            radius_m,
+            active,
+            updated_at
+        FROM geofence_settings
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+    """)
+
+    return cursor.fetchone()
 
 
 # ---------------------------------------------------
@@ -1131,6 +1185,443 @@ def add_issue():
     conn.close()
 
     return jsonify({"status":"added"})
+
+
+# ---------------------------------------------------
+# Geofence Config APIs
+# ---------------------------------------------------
+
+@app.route("/geofence/config", methods=["GET"])
+def get_geofence_config():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        geofence = fetch_active_geofence(cursor)
+
+        if not geofence:
+            return jsonify({"configured": False, "geofence": None})
+
+        return jsonify({"configured": True, "geofence": geofence})
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/geofence/config", methods=["POST"])
+def save_geofence_config():
+
+    data = request.json or {}
+
+    label = (data.get("label") or "").strip() or "Primary"
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+    radius_m = data.get("radius_m")
+    updated_by = (data.get("updated_by") or "").strip() or "admin"
+    active = bool(data.get("active", True))
+
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+        radius_m = int(radius_m)
+    except Exception:
+        return jsonify({"error": "latitude, longitude, radius_m are required numeric values"}), 400
+
+    if radius_m <= 0:
+        return jsonify({"error": "radius_m must be > 0"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    try:
+        if active:
+            cursor.execute("UPDATE geofence_settings SET active = FALSE")
+
+        cursor.execute("""
+            INSERT INTO geofence_settings
+            (
+                label,
+                latitude,
+                longitude,
+                radius_m,
+                active,
+                updated_by
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            label,
+            latitude,
+            longitude,
+            radius_m,
+            active,
+            updated_by
+        ))
+
+        conn.commit()
+        return jsonify({"status": "saved"})
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Attendance / Clock APIs
+# ---------------------------------------------------
+
+@app.route("/attendance/punch", methods=["POST"])
+def attendance_punch():
+
+    data = request.json or {}
+
+    employee_id = data.get("employee_id")
+    event_type = (data.get("event_type") or "").strip().upper()
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+    notes = (data.get("notes") or "").strip() or None
+    personal_bags = data.get("personal_bags")
+    device_time = data.get("device_time")
+
+    allowed_events = {
+        "CLOCK_IN",
+        "CLOCK_OUT",
+        "BREAK_START",
+        "BREAK_END",
+        "RINSE_SHIFT_START",
+        "RINSE_SHIFT_END"
+    }
+
+    if event_type not in allowed_events:
+        return jsonify({"error": "Invalid event_type"}), 400
+
+    if employee_id in [None, ""]:
+        return jsonify({"error": "employee_id is required"}), 400
+
+    try:
+        employee_id = int(employee_id)
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except Exception:
+        return jsonify({"error": "employee_id, latitude, longitude must be numeric"}), 400
+
+    if personal_bags in [None, ""]:
+        personal_bags = None
+    else:
+        try:
+            personal_bags = int(personal_bags)
+        except Exception:
+            return jsonify({"error": "personal_bags must be numeric"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        geofence = fetch_active_geofence(cursor)
+
+        if not geofence:
+            return jsonify({"error": "No geofence configured"}), 400
+
+        distance_m = haversine_meters(
+            latitude,
+            longitude,
+            float(geofence["latitude"]),
+            float(geofence["longitude"])
+        )
+        within_geofence = distance_m <= float(geofence["radius_m"])
+
+        if not within_geofence:
+            return jsonify({
+                "error": "Outside geofence",
+                "distance_m": round(distance_m, 2),
+                "radius_m": geofence["radius_m"]
+            }), 403
+
+        cursor.execute("""
+            INSERT INTO attendance_events
+            (
+                employee_id,
+                event_type,
+                event_time,
+                device_time,
+                latitude,
+                longitude,
+                within_geofence,
+                distance_m,
+                geofence_id,
+                notes,
+                personal_bags
+            )
+            VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            employee_id,
+            event_type,
+            device_time,
+            latitude,
+            longitude,
+            within_geofence,
+            round(distance_m, 2),
+            geofence["id"],
+            notes,
+            personal_bags
+        ))
+
+        # Update latest known presence for near-real-time monitoring
+        cursor.execute("""
+            INSERT INTO employee_geo_presence
+            (
+                employee_id,
+                is_inside,
+                latitude,
+                longitude,
+                last_seen_at
+            )
+            VALUES (%s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                is_inside = VALUES(is_inside),
+                latitude = VALUES(latitude),
+                longitude = VALUES(longitude),
+                last_seen_at = VALUES(last_seen_at)
+        """, (
+            employee_id,
+            within_geofence,
+            latitude,
+            longitude
+        ))
+
+        conn.commit()
+
+        return jsonify({
+            "status": "recorded",
+            "event_type": event_type,
+            "within_geofence": within_geofence,
+            "distance_m": round(distance_m, 2),
+            "radius_m": geofence["radius_m"]
+        })
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/attendance/location_ping", methods=["POST"])
+def attendance_location_ping():
+
+    data = request.json or {}
+    employee_id = data.get("employee_id")
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+
+    if employee_id in [None, ""] or latitude in [None, ""] or longitude in [None, ""]:
+        return jsonify({"error": "employee_id, latitude, longitude are required"}), 400
+
+    try:
+        employee_id = int(employee_id)
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except Exception:
+        return jsonify({"error": "employee_id, latitude, longitude must be numeric"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        geofence = fetch_active_geofence(cursor)
+
+        if not geofence:
+            return jsonify({"error": "No geofence configured"}), 400
+
+        distance_m = haversine_meters(
+            latitude,
+            longitude,
+            float(geofence["latitude"]),
+            float(geofence["longitude"])
+        )
+        is_inside = distance_m <= float(geofence["radius_m"])
+
+        cursor.execute("""
+            SELECT is_inside
+            FROM employee_geo_presence
+            WHERE employee_id = %s
+        """, (employee_id,))
+        prev_row = cursor.fetchone()
+        previous_inside = None if not prev_row else bool(prev_row["is_inside"])
+
+        cursor.execute("""
+            INSERT INTO employee_geo_presence
+            (
+                employee_id,
+                is_inside,
+                latitude,
+                longitude,
+                last_seen_at
+            )
+            VALUES (%s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                is_inside = VALUES(is_inside),
+                latitude = VALUES(latitude),
+                longitude = VALUES(longitude),
+                last_seen_at = VALUES(last_seen_at)
+        """, (
+            employee_id,
+            is_inside,
+            latitude,
+            longitude
+        ))
+
+        transition = None
+
+        if previous_inside is not None and previous_inside != is_inside:
+            transition = "ENTER" if is_inside else "EXIT"
+
+            cursor.execute("""
+                INSERT INTO geofence_alerts
+                (
+                    employee_id,
+                    transition_type,
+                    geofence_id,
+                    latitude,
+                    longitude,
+                    distance_m,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            """, (
+                employee_id,
+                transition,
+                geofence["id"],
+                latitude,
+                longitude,
+                round(distance_m, 2)
+            ))
+
+        conn.commit()
+
+        return jsonify({
+            "status": "ok",
+            "is_inside": is_inside,
+            "transition": transition,
+            "distance_m": round(distance_m, 2),
+            "radius_m": geofence["radius_m"]
+        })
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/attendance/alerts", methods=["GET"])
+def attendance_alerts():
+
+    since_id = request.args.get("since_id")
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        if since_id not in [None, ""]:
+            cursor.execute("""
+                SELECT
+                    a.id,
+                    a.employee_id,
+                    e.name AS employee_name,
+                    a.transition_type,
+                    a.distance_m,
+                    a.created_at
+                FROM geofence_alerts a
+                LEFT JOIN employees e
+                ON e.id = a.employee_id
+                WHERE a.id > %s
+                ORDER BY a.id ASC
+                LIMIT 200
+            """, (int(since_id),))
+        else:
+            cursor.execute("""
+                SELECT
+                    a.id,
+                    a.employee_id,
+                    e.name AS employee_name,
+                    a.transition_type,
+                    a.distance_m,
+                    a.created_at
+                FROM geofence_alerts a
+                LEFT JOIN employees e
+                ON e.id = a.employee_id
+                ORDER BY a.id DESC
+                LIMIT 200
+            """)
+
+        return jsonify(cursor.fetchall())
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/attendance/live", methods=["GET"])
+def attendance_live():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT
+                t.employee_id,
+                e.name,
+                t.last_event,
+                p.is_inside,
+                p.last_seen_at
+            FROM
+            (
+                SELECT
+                    employee_id,
+                    SUBSTRING_INDEX(
+                        GROUP_CONCAT(event_type ORDER BY event_time DESC, id DESC),
+                        ',',
+                        1
+                    ) AS last_event
+                FROM attendance_events
+                WHERE DATE(event_time) = CURDATE()
+                AND event_type IN ('CLOCK_IN', 'CLOCK_OUT')
+                GROUP BY employee_id
+            ) t
+            LEFT JOIN employees e
+            ON e.id = t.employee_id
+            LEFT JOIN employee_geo_presence p
+            ON p.employee_id = t.employee_id
+            ORDER BY e.name
+        """)
+
+        rows = cursor.fetchall()
+
+        at_work = [
+            row for row in rows
+            if (row.get("last_event") or "").upper() == "CLOCK_IN"
+        ]
+
+        return jsonify({
+            "at_work_count": len(at_work),
+            "at_work": at_work,
+            "all_today": rows
+        })
+
+    finally:
+        cursor.close()
+        conn.close()
 # ---------------------------------------------------
 # Root Health Endpoint
 # ---------------------------------------------------
