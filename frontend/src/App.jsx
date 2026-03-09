@@ -8,7 +8,7 @@ import ScoreboardPage from "./pages/ScoreboardPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import IssuePage from "./pages/IssuePage";
 import EmployeesPage from "./pages/EmployeesPage";
-import CheckoutPage from "./pages/Checkoutpage";
+import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
 
