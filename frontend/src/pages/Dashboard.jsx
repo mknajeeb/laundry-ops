@@ -25,31 +25,36 @@ function Dashboard() {
     loadStats();
   }, []);
 
-  const cards = useMemo(() => {
-    const safe = stats || {};
+  const safe = stats || {};
 
-    return [
-      { label: "Total", value: safe.total_orders ?? 0, tone: "#0ea5e9" },
-      { label: "WF", value: safe.wf_total ?? 0, tone: "#f59e0b" },
-      { label: "HD", value: safe.hd_total ?? 0, tone: "#a855f7" },
-      { label: "WF Rush", value: safe.wf_rush ?? 0, tone: "#ef4444" },
-      { label: "WF Non-Rush", value: safe.wf_non_rush ?? 0, tone: "#16a34a" },
-      { label: "HD Rush", value: safe.hd_rush ?? 0, tone: "#fb7185" },
-      { label: "HD Non-Rush", value: safe.hd_non_rush ?? 0, tone: "#22c55e" },
-    ];
-  }, [stats]);
+  const batchDateLabel = useMemo(() => {
+    if (!safe.batch_date) return "No batch date";
+
+    const dt = new Date(safe.batch_date);
+    const dateLabel = Number.isNaN(dt.getTime())
+      ? String(safe.batch_date).split(" ")[0]
+      : dt.toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+
+    const dayLabel = safe.batch_day || (Number.isNaN(dt.getTime()) ? "" : dt.toLocaleDateString(undefined, { weekday: "long" }));
+
+    return dayLabel ? `${dayLabel}, ${dateLabel}` : dateLabel;
+  }, [safe.batch_date, safe.batch_day]);
 
   return (
     <Box
       sx={{
-        minHeight: "100vh",
-        px: { xs: 1.2, md: 2.4 },
-        py: 1.5,
-        background: "radial-gradient(circle at top left, #e0f2fe 0%, #f8fafc 36%, #f8fafc 100%)",
+        minHeight: "100%",
+        px: { xs: 1.2, md: 2.2 },
+        py: 1.2,
+        background: "radial-gradient(circle at top left, #e0f2fe 0%, #f8fafc 35%, #f8fafc 100%)",
       }}
     >
       <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Operations Dashboard</Typography>
-      <Typography sx={{ color: "#6b7280", mt: 0.4 }}>Today snapshot</Typography>
+      <Typography sx={{ color: "#6b7280", mt: 0.3 }}>Batch: {batchDateLabel}</Typography>
 
       {loading ? (
         <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.2}>
@@ -61,31 +66,48 @@ function Dashboard() {
           {error}
         </Alert>
       ) : (
-        <Box
-          sx={{
-            mt: 1.5,
-            display: "grid",
-            gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" },
-            gap: 1,
-          }}
-        >
-          {cards.map((card) => (
-            <Paper
-              key={card.label}
-              sx={{
-                p: 1.4,
-                borderRadius: 2,
-                borderTop: `4px solid ${card.tone}`,
-              }}
-            >
-              <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>{card.label}</Typography>
-              <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1.1, mt: 0.5 }}>
-                {card.value}
-              </Typography>
-            </Paper>
-          ))}
-        </Box>
+        <Stack spacing={1.2} sx={{ mt: 1.5 }}>
+          <Paper sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #0ea5e9" }}>
+            <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>All Orders</Typography>
+            <Typography sx={{ fontSize: 36, fontWeight: 900, lineHeight: 1.1 }}>{safe.total_orders ?? 0}</Typography>
+          </Paper>
+
+          <Paper sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #f59e0b" }}>
+            <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>WF</Typography>
+            <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>{safe.wf_total ?? 0}</Typography>
+            <Stack direction="row" spacing={1} sx={{ mt: 0.8 }}>
+              <ChipStat label="Rush" value={safe.wf_rush ?? 0} tone="#ef4444" />
+              <ChipStat label="Non-Rush" value={safe.wf_non_rush ?? 0} tone="#16a34a" />
+            </Stack>
+          </Paper>
+
+          <Paper sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #a855f7" }}>
+            <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>HD</Typography>
+            <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>{safe.hd_total ?? 0}</Typography>
+            <Stack direction="row" spacing={1} sx={{ mt: 0.8 }}>
+              <ChipStat label="Rush" value={safe.hd_rush ?? 0} tone="#ef4444" />
+              <ChipStat label="Non-Rush" value={safe.hd_non_rush ?? 0} tone="#16a34a" />
+            </Stack>
+          </Paper>
+        </Stack>
       )}
+    </Box>
+  );
+}
+
+function ChipStat({ label, value, tone }) {
+  return (
+    <Box
+      sx={{
+        flex: 1,
+        background: "#f9fafb",
+        border: "1px solid #e5e7eb",
+        borderRadius: 1.5,
+        p: 0.8,
+      }}
+    >
+      <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>{label}</Typography>
+      <Typography sx={{ fontSize: 20, fontWeight: 900, color: tone, lineHeight: 1.1 }}>{value}</Typography>
     </Box>
   );
 }

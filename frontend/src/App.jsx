@@ -31,6 +31,7 @@ import EmployeesPage from "./pages/EmployeesPage";
 import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
+import WashproLogo from "./assets/Washpro.png";
 
 const MOBILE_TABS = [
   { label: "Dashboard", value: "/dashboard", icon: <DashboardIcon /> },
@@ -57,7 +58,12 @@ function MobileTopBar({ pathname }) {
     >
       <Toolbar sx={{ minHeight: "56px !important", px: 1.5 }}>
         <Typography sx={{ fontSize: 20, fontWeight: 900, lineHeight: 1 }}>
-          WashPro
+          <Box
+            component="img"
+            src={WashproLogo}
+            alt="WashPro"
+            sx={{ height: 28, width: "auto", display: "block" }}
+          />
         </Typography>
         <Box sx={{ flex: 1 }} />
         <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#6b7280" }}>
@@ -134,19 +140,21 @@ function AppShell() {
       {!isMobile && <Sidebar />}
       <div className={`main-content ${isMobile ? "main-content-checkout-mobile" : ""}`}>
         {isMobile && <MobileTopBar pathname={pathname} />}
-        <Routes>
-          <Route path="/" element={<OrdersPage />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/orders" element={<OrdersPage />} />
-          <Route path="/checkout" element={<CheckoutPage />} />
-          <Route path="/upload" element={<UploadPage />} />
-          <Route path="/employees" element={<EmployeesPage />} />
-          <Route path="/issues" element={<IssuePage />} />
-          <Route path="/production" element={<ProductionPage />} />
-          <Route path="/scoreboard" element={<ScoreboardPage />} />
-          <Route path="/maintenance" element={<MaintenancePage />} />
-        </Routes>
-        {isMobile && <Box sx={{ height: 70 }} />}
+        <Box className={isMobile ? "route-scroll-mobile" : ""}>
+          <Routes>
+            <Route path="/" element={<OrdersPage />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/orders" element={<OrdersPage />} />
+            <Route path="/checkout" element={<CheckoutPage />} />
+            <Route path="/upload" element={<UploadPage />} />
+            <Route path="/employees" element={<EmployeesPage />} />
+            <Route path="/issues" element={<IssuePage />} />
+            <Route path="/production" element={<ProductionPage />} />
+            <Route path="/scoreboard" element={<ScoreboardPage />} />
+            <Route path="/maintenance" element={<MaintenancePage />} />
+          </Routes>
+          {isMobile && <Box sx={{ height: 72 }} />}
+        </Box>
       </div>
       {isMobile && <MobileBottomTabs pathname={pathname} />}
       <Snackbar

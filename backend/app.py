@@ -614,6 +614,8 @@ def dashboard():
             SELECT
 
                 COUNT(*) AS total_orders,
+                MAX(batch_date) AS batch_date,
+                DAYNAME(MAX(batch_date)) AS batch_day,
 
                 SUM(service_type = 'WF') AS wf_total,
                 SUM(service_type = 'HD') AS hd_total,

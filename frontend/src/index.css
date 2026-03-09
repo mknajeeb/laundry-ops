@@ -8,13 +8,28 @@ body {
   background: #f5f6fa;
 }
 
+html,
+body,
+#root {
+  height: 100%;
+}
+
 /* Checkout-specific mobile shell */
 .app-layout-checkout-mobile {
   display: block;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .main-content-checkout-mobile {
   padding: 0;
+  height: 100dvh;
+}
+
+.route-scroll-mobile {
+  height: calc(100dvh - 56px);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* =========================
