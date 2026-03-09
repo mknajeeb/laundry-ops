@@ -1,12 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Paper,
   Stack,
+  TextField,
   Typography,
 } from "@mui/material";
 import {
@@ -18,6 +23,7 @@ import {
   Stop,
 } from "@mui/icons-material";
 import {
+  getAttendanceEventsToday,
   getAttendanceLive,
   getEmployees,
   pingAttendanceLocation,
@@ -27,10 +33,39 @@ import {
 function ClockPage() {
   const [employees, setEmployees] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
+
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+
   const [message, setMessage] = useState({ type: "info", text: "" });
-  const [live, setLive] = useState({ at_work_count: 0, at_work: [] });
+  const [live, setLive] = useState({ at_work_count: 0, at_work: [], all_today: [] });
+  const [todayEvents, setTodayEvents] = useState([]);
+
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [clockOutDialogOpen, setClockOutDialogOpen] = useState(false);
+  const [personalBags, setPersonalBags] = useState("");
+
+  const selectedEmployeeName = useMemo(
+    () => employees.find((emp) => String(emp.id) === String(employeeId))?.name || "",
+    [employees, employeeId]
+  );
+
+  const employeeLiveRow = useMemo(
+    () => (live.all_today || []).find((row) => String(row.employee_id) === String(employeeId)),
+    [live.all_today, employeeId]
+  );
+
+  const isClockedIn = (employeeLiveRow?.last_event || "").toUpperCase() === "CLOCK_IN";
+
+  const rinseStart = useMemo(
+    () => todayEvents.find((e) => e.event_type === "RINSE_SHIFT_START")?.event_time || null,
+    [todayEvents]
+  );
+
+  const rinseEnd = useMemo(
+    () => todayEvents.find((e) => e.event_type === "RINSE_SHIFT_END")?.event_time || null,
+    [todayEvents]
+  );
 
   useEffect(() => {
     async function load() {
@@ -39,10 +74,8 @@ function ClockPage() {
         const [empRes, liveRes] = await Promise.all([getEmployees(), getAttendanceLive()]);
         const emp = Array.isArray(empRes.data) ? empRes.data : [];
         setEmployees(emp);
-        if (emp.length) {
-          setEmployeeId((prev) => prev || String(emp[0].id));
-        }
-        setLive(liveRes.data || { at_work_count: 0, at_work: [] });
+        setEmployeeId((prev) => prev || (emp[0] ? String(emp[0].id) : ""));
+        setLive(liveRes.data || { at_work_count: 0, at_work: [], all_today: [] });
       } catch (error) {
         console.error(error);
         setMessage({ type: "error", text: "Failed to load employees/live status." });
@@ -53,6 +86,20 @@ function ClockPage() {
 
     load();
   }, []);
+
+  useEffect(() => {
+    async function loadEvents() {
+      if (!employeeId) return;
+      try {
+        const res = await getAttendanceEventsToday(Number(employeeId));
+        setTodayEvents(Array.isArray(res.data) ? res.data : []);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    loadEvents();
+  }, [employeeId]);
 
   useEffect(() => {
     if (!employeeId) return;
@@ -67,7 +114,6 @@ function ClockPage() {
               longitude: pos.coords.longitude,
             });
           } catch (error) {
-            // silent background ping failure
             console.error(error);
           }
         },
@@ -79,7 +125,17 @@ function ClockPage() {
     return () => clearInterval(intervalId);
   }, [employeeId]);
 
-  const runPunch = (event_type) => {
+  const refreshLiveAndEvents = async () => {
+    const [liveRes, eventsRes] = await Promise.all([
+      getAttendanceLive(),
+      employeeId ? getAttendanceEventsToday(Number(employeeId)) : Promise.resolve({ data: [] }),
+    ]);
+
+    setLive(liveRes.data || { at_work_count: 0, at_work: [], all_today: [] });
+    setTodayEvents(Array.isArray(eventsRes.data) ? eventsRes.data : []);
+  };
+
+  const runPunch = (event_type, extra = {}) => {
     if (!employeeId) {
       setMessage({ type: "warning", text: "Select employee first." });
       return;
@@ -96,14 +152,8 @@ function ClockPage() {
             latitude: position.coords.latitude,
             longitude: position.coords.longitude,
             device_time: new Date().toISOString(),
+            ...extra,
           };
-
-          if (event_type === "RINSE_SHIFT_START" || event_type === "RINSE_SHIFT_END") {
-            const personal = window.prompt("Enter personal bags count for today (optional):", "0");
-            if (personal !== null && personal !== "") {
-              payload.personal_bags = Number(personal);
-            }
-          }
 
           const res = await punchAttendance(payload);
           setMessage({
@@ -111,8 +161,7 @@ function ClockPage() {
             text: `${event_type.replaceAll("_", " ")} recorded (${Math.round(res.data.distance_m)}m).`,
           });
 
-          const liveRes = await getAttendanceLive();
-          setLive(liveRes.data || { at_work_count: 0, at_work: [] });
+          await refreshLiveAndEvents();
         } catch (error) {
           console.error(error);
           const text =
@@ -131,6 +180,29 @@ function ClockPage() {
     );
   };
 
+  const handlePrimaryPunch = () => {
+    if (isClockedIn) {
+      setClockOutDialogOpen(true);
+    } else {
+      runPunch("CLOCK_IN");
+    }
+  };
+
+  const handleConfirmClockOut = () => {
+    const bags = personalBags === "" ? null : Number(personalBags);
+    runPunch("CLOCK_OUT", { personal_bags: bags });
+    setClockOutDialogOpen(false);
+    setPersonalBags("");
+    setLeaveDialogOpen(false);
+  };
+
+  const formatTime = (value) => {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  };
+
   if (loading) {
     return (
       <Stack alignItems="center" justifyContent="center" sx={{ minHeight: "60vh" }} spacing={1.2}>
@@ -143,7 +215,7 @@ function ClockPage() {
   return (
     <Box sx={{ minHeight: "100%", bgcolor: "#ffffff", px: { xs: 1.2, md: 2 }, py: 1.2 }}>
       <Typography sx={{ fontSize: 26, fontWeight: 900 }}>Clock</Typography>
-      <Typography sx={{ color: "#6b7280", mt: 0.3 }}>Geo-fenced time punches</Typography>
+      <Typography sx={{ color: "#6b7280", mt: 0.3 }}>Simple geo-fenced attendance</Typography>
 
       <Paper sx={{ mt: 1.2, p: 1.2, borderRadius: 2, border: "1px solid #e5e7eb", boxShadow: "none" }}>
         <Typography sx={{ fontWeight: 800, mb: 0.6 }}>Employee</Typography>
@@ -167,14 +239,72 @@ function ClockPage() {
       )}
 
       <Paper sx={{ mt: 1.2, p: 1.2, borderRadius: 2, border: "1px solid #e5e7eb", boxShadow: "none" }}>
-        <Typography sx={{ fontWeight: 800, mb: 0.8 }}>Punch Actions</Typography>
+        <Typography sx={{ fontWeight: 800 }}>{selectedEmployeeName || "Select employee"}</Typography>
+        <Typography sx={{ color: "#6b7280", mb: 1 }}>
+          Status: {isClockedIn ? "Clocked In" : "Clocked Out"}
+        </Typography>
+
+        <Button
+          fullWidth
+          size="large"
+          startIcon={isClockedIn ? <Logout /> : <PlayArrow />}
+          variant="contained"
+          onClick={handlePrimaryPunch}
+          disabled={busy}
+          sx={{ textTransform: "none", py: 1.2, fontWeight: 800, borderRadius: 1.8 }}
+        >
+          {isClockedIn ? "Clock Out" : "Clock In"}
+        </Button>
+
+        {isClockedIn && (
+          <Button
+            fullWidth
+            variant="outlined"
+            onClick={() => setLeaveDialogOpen(true)}
+            disabled={busy}
+            sx={{ mt: 0.9, textTransform: "none", py: 1.1, borderRadius: 1.8 }}
+          >
+            Leaving Work
+          </Button>
+        )}
+      </Paper>
+
+      <Paper sx={{ mt: 1.2, p: 1.2, borderRadius: 2, border: "1px solid #e5e7eb", boxShadow: "none" }}>
+        <Typography sx={{ fontWeight: 800, mb: 0.8 }}>Rinse Shift</Typography>
         <Stack spacing={0.8}>
-          <ActionButton icon={<PlayArrow />} label="Clock In" onClick={() => runPunch("CLOCK_IN")} disabled={busy} />
-          <ActionButton icon={<Logout />} label="Clock Out" onClick={() => runPunch("CLOCK_OUT")} disabled={busy} />
-          <ActionButton icon={<Coffee />} label="Break Start" onClick={() => runPunch("BREAK_START")} disabled={busy} />
-          <ActionButton icon={<AccessTime />} label="Break End" onClick={() => runPunch("BREAK_END")} disabled={busy} />
-          <ActionButton icon={<LocalShipping />} label="Rinse Shift Start" onClick={() => runPunch("RINSE_SHIFT_START")} disabled={busy} />
-          <ActionButton icon={<Stop />} label="Rinse Shift End" onClick={() => runPunch("RINSE_SHIFT_END")} disabled={busy} />
+          <Button
+            fullWidth
+            startIcon={<AccessTime />}
+            variant="outlined"
+            onClick={() => runPunch("BREAK_END")}
+            disabled={busy}
+            sx={{ textTransform: "none", justifyContent: "flex-start" }}
+          >
+            End Break
+          </Button>
+          <Button
+            fullWidth
+            startIcon={<LocalShipping />}
+            variant="outlined"
+            onClick={() => runPunch("RINSE_SHIFT_START")}
+            disabled={busy}
+            sx={{ textTransform: "none", justifyContent: "flex-start" }}
+          >
+            Rinse Shift Start
+          </Button>
+          <Button
+            fullWidth
+            startIcon={<Stop />}
+            variant="outlined"
+            onClick={() => runPunch("RINSE_SHIFT_END")}
+            disabled={busy}
+            sx={{ textTransform: "none", justifyContent: "flex-start" }}
+          >
+            Rinse Shift End
+          </Button>
+          <Typography sx={{ fontSize: 13, color: "#6b7280" }}>
+            Start: {formatTime(rinseStart)} • End: {formatTime(rinseEnd)}
+          </Typography>
         </Stack>
       </Paper>
 
@@ -191,22 +321,58 @@ function ClockPage() {
           )}
         </Stack>
       </Paper>
-    </Box>
-  );
-}
 
-function ActionButton({ icon, label, onClick, disabled }) {
-  return (
-    <Button
-      fullWidth
-      startIcon={icon}
-      variant="contained"
-      onClick={onClick}
-      disabled={disabled}
-      sx={{ justifyContent: "flex-start", textTransform: "none", py: 1.1, borderRadius: 1.5 }}
-    >
-      {label}
-    </Button>
+      <Dialog open={leaveDialogOpen} onClose={() => setLeaveDialogOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Leaving Work</DialogTitle>
+        <DialogContent dividers>
+          <Typography>Choose an action:</Typography>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button
+            startIcon={<Coffee />}
+            variant="outlined"
+            onClick={() => {
+              runPunch("BREAK_START");
+              setLeaveDialogOpen(false);
+            }}
+          >
+            Start Break
+          </Button>
+          <Button
+            startIcon={<Logout />}
+            variant="contained"
+            onClick={() => {
+              setLeaveDialogOpen(false);
+              setClockOutDialogOpen(true);
+            }}
+          >
+            Clock Out
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={clockOutDialogOpen} onClose={() => setClockOutDialogOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Clock Out</DialogTitle>
+        <DialogContent dividers>
+          <Typography sx={{ mb: 1 }}>How many personal laundry bags today?</Typography>
+          <TextField
+            fullWidth
+            size="small"
+            type="number"
+            inputProps={{ min: 0 }}
+            value={personalBags}
+            onChange={(e) => setPersonalBags(e.target.value)}
+            placeholder="0"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setClockOutDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={handleConfirmClockOut}>
+            Confirm Clock Out
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Box>
   );
 }
 

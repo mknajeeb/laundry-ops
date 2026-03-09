@@ -126,3 +126,8 @@ export const getAttendanceAlerts = (since_id = null) =>
 
 export const getAttendanceLive = () =>
   axios.get(`${API_BASE}/attendance/live`);
+
+export const getAttendanceEventsToday = (employee_id) =>
+  axios.get(`${API_BASE}/attendance/events_today`, {
+    params: { employee_id }
+  });

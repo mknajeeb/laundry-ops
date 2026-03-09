@@ -1622,6 +1622,45 @@ def attendance_live():
     finally:
         cursor.close()
         conn.close()
+
+
+@app.route("/attendance/events_today", methods=["GET"])
+def attendance_events_today():
+
+    employee_id = request.args.get("employee_id")
+
+    if employee_id in [None, ""]:
+        return jsonify({"error": "employee_id is required"}), 400
+
+    try:
+        employee_id = int(employee_id)
+    except Exception:
+        return jsonify({"error": "employee_id must be numeric"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT
+                id,
+                employee_id,
+                event_type,
+                event_time,
+                notes,
+                personal_bags
+            FROM attendance_events
+            WHERE employee_id = %s
+            AND DATE(event_time) = CURDATE()
+            ORDER BY event_time DESC, id DESC
+        """, (employee_id,))
+
+        rows = cursor.fetchall()
+        return jsonify(rows)
+
+    finally:
+        cursor.close()
+        conn.close()
 # ---------------------------------------------------
 # Root Health Endpoint
 # ---------------------------------------------------
