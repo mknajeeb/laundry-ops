@@ -944,7 +944,12 @@ def upload_orders():
             if pd.isna(weight_num):
                 weight_num = None
 
-            row_date = date_clean if isinstance(date_clean, date) else parse_date_value(date_clean)
+            if isinstance(date_clean, datetime):
+                row_date = date_clean.date()
+            elif isinstance(date_clean, date):
+                row_date = date_clean
+            else:
+                row_date = parse_date_value(date_clean)
             is_batch_date_rush = (row_date == batch_date)
             rush_type = "RUSH" if (str(rush_type_raw).upper() == "RUSH" or is_batch_date_rush) else "NON-RUSH"
 
@@ -953,9 +958,10 @@ def upload_orders():
             reason = "OK"
 
             if identity_key in seen_in_upload:
-                row_status = "REJECTED_DUPLICATE"
-                reason = "DUPLICATE_IN_BATCH"
-                rejected += 1
+                # Same-file duplicates are allowed; we only detect duplicates against existing staging.
+                row_status = "ACCEPTED"
+                reason = "DUPLICATE_IN_BATCH_ALLOWED"
+                inserted += 1
             elif row_date < batch_date:
                 row_status = "NEEDS_ATTENTION"
                 reason = "OLDER_THAN_BATCH_DATE"
@@ -1834,17 +1840,44 @@ def get_current_upload_batch():
 
     try:
         pk_col = get_upload_batches_pk(cursor)
+        selected_cols = [
+            f"{pk_col} AS id",
+            "file_name",
+            "batch_date",
+            "orders_loaded",
+        ]
+
+        if table_has_column(cursor, "upload_batches", "state"):
+            selected_cols.append("state")
+        else:
+            selected_cols.append("'DRAFT' AS state")
+
+        # Pick whichever time columns exist in this environment.
+        if table_has_column(cursor, "upload_batches", "created_at"):
+            selected_cols.append("created_at")
+        elif table_has_column(cursor, "upload_batches", "uploaded_at"):
+            selected_cols.append("uploaded_at AS created_at")
+        else:
+            selected_cols.append("NULL AS created_at")
+
+        if table_has_column(cursor, "upload_batches", "updated_at"):
+            selected_cols.append("updated_at")
+        else:
+            selected_cols.append("NULL AS updated_at")
+
+        if table_has_column(cursor, "upload_batches", "confirmed_at"):
+            selected_cols.append("confirmed_at")
+        else:
+            selected_cols.append("NULL AS confirmed_at")
+
+        if table_has_column(cursor, "upload_batches", "closed_at"):
+            selected_cols.append("closed_at")
+        else:
+            selected_cols.append("NULL AS closed_at")
+
         cursor.execute(f"""
             SELECT
-                {pk_col} AS id,
-                file_name,
-                batch_date,
-                orders_loaded,
-                state,
-                created_at,
-                updated_at,
-                confirmed_at,
-                closed_at
+                {", ".join(selected_cols)}
             FROM upload_batches
             ORDER BY batch_date DESC, {pk_col} DESC
             LIMIT 1
@@ -2235,7 +2268,7 @@ def confirm_upload_batch(batch_id):
             WHERE status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')
         """)
         current_staging_rows = cursor.fetchall()
-        current_identity = set(
+        existing_identity_before_insert = set(
             build_identity_key(r["name_clean"], r["weight_num"], r["service_type"])
             for r in current_staging_rows
         )
@@ -2243,7 +2276,7 @@ def confirm_upload_batch(batch_id):
         inserted = 0
         for row in accepted_rows:
             identity_key = build_identity_key(row["name_clean"], row["weight_num"], row["service_type"])
-            if identity_key in current_identity:
+            if identity_key in existing_identity_before_insert:
                 continue
 
             cursor.execute("""
@@ -2267,17 +2300,21 @@ def confirm_upload_batch(batch_id):
                 batch["batch_date"]
             ))
             inserted += 1
-            current_identity.add(identity_key)
 
-        cursor.execute(f"""
-            UPDATE upload_batches
-            SET
-                state = 'CONFIRMED',
-                confirmed_at = NOW(),
-                closed_at = NOW(),
-                updated_at = NOW()
-            WHERE {batch_pk} = %s
-        """, (batch_id,))
+        set_parts = ["state = 'CONFIRMED'"] if table_has_column(cursor, "upload_batches", "state") else []
+        if table_has_column(cursor, "upload_batches", "confirmed_at"):
+            set_parts.append("confirmed_at = NOW()")
+        if table_has_column(cursor, "upload_batches", "closed_at"):
+            set_parts.append("closed_at = NOW()")
+        if table_has_column(cursor, "upload_batches", "updated_at"):
+            set_parts.append("updated_at = NOW()")
+
+        if set_parts:
+            cursor.execute(f"""
+                UPDATE upload_batches
+                SET {", ".join(set_parts)}
+                WHERE {batch_pk} = %s
+            """, (batch_id,))
 
         conn.commit()
         return jsonify({
