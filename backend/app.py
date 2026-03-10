@@ -1,7 +1,7 @@
 import os
 import math
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -109,11 +109,25 @@ def normalize_measure_by_service(weight_num, service_type):
     return f"{round(n, 2):.2f}"
 
 
-def build_identity_key(name_clean, weight_num, service_type):
+def normalize_date_key(date_value):
+    if date_value is None or date_value == "":
+        return ""
+    if isinstance(date_value, datetime):
+        return date_value.date().isoformat()
+    if isinstance(date_value, date):
+        return date_value.isoformat()
+    try:
+        return parse_date_value(date_value).isoformat()
+    except Exception:
+        return str(date_value).strip()
+
+
+def build_identity_key(name_clean, weight_num, service_type, date_clean):
     return "|".join([
         normalize_name(name_clean),
         normalize_measure_by_service(weight_num, service_type),
-        (service_type or "").strip().upper()
+        (service_type or "").strip().upper(),
+        normalize_date_key(date_clean)
     ])
 
 
@@ -904,26 +918,66 @@ def upload_orders():
         """, tuple(insert_args))
         upload_batch_id = cursor.lastrowid
 
-        # Build identity index from active staging rows.
+        # Configurable lookback window for duplicate checks against final records.
+        try:
+            duplicate_lookback_days = int(os.getenv("DUPLICATE_LOOKBACK_DAYS", "3"))
+        except Exception:
+            duplicate_lookback_days = 3
+        duplicate_lookback_days = max(1, min(duplicate_lookback_days, 30))
+
+        # Build identity index from all staging rows (including checked/forced/processed).
         cursor.execute("""
             SELECT
                 id,
+                date_clean,
+                name_clean,
+                weight_num,
+                service_type,
+                status
+            FROM orders_staging
+        """)
+        staging_rows = cursor.fetchall()
+        existing_identity_reasons = {}
+
+        def staging_reason_for_status(raw_status):
+            status = (raw_status or "").strip().upper()
+            if status in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCE_CHECKOUT"]:
+                return "ALREADY_SENT_OR_FORCED"
+            return "DUPLICATE_IN_ACTIVE_STAGING"
+
+        for r in staging_rows:
+            identity_key = build_identity_key(
+                r.get("name_clean"),
+                r.get("weight_num"),
+                r.get("service_type"),
+                r.get("date_clean")
+            )
+            next_reason = staging_reason_for_status(r.get("status"))
+            prev_reason = existing_identity_reasons.get(identity_key)
+            # Keep the stronger signal if we already have one.
+            if prev_reason != "ALREADY_SENT_OR_FORCED":
+                existing_identity_reasons[identity_key] = next_reason
+
+        final_cutoff = datetime.utcnow() - timedelta(days=duplicate_lookback_days)
+        cursor.execute("""
+            SELECT
+                date_clean,
                 name_clean,
                 weight_num,
                 service_type
-            FROM orders_staging
-            WHERE status <> 'CHECKED_OUT'
-        """)
-        staging_rows = cursor.fetchall()
-        existing_identity_keys = set()
-        for r in staging_rows:
-            existing_identity_keys.add(
-                build_identity_key(
-                    r.get("name_clean"),
-                    r.get("weight_num"),
-                    r.get("service_type")
-                )
+            FROM orders_final
+            WHERE cleaned_at >= %s
+        """, (final_cutoff,))
+        final_rows = cursor.fetchall()
+        final_identity_keys = set(
+            build_identity_key(
+                r.get("name_clean"),
+                r.get("weight_num"),
+                r.get("service_type"),
+                r.get("date_clean")
             )
+            for r in final_rows
+        )
 
         inserted = 0
         rejected = 0
@@ -951,7 +1005,7 @@ def upload_orders():
             is_batch_date_rush = (row_date == batch_date)
             rush_type = "RUSH" if (str(rush_type_raw).upper() == "RUSH" or is_batch_date_rush) else "NON-RUSH"
 
-            identity_key = build_identity_key(name_clean, weight_num, service_type)
+            identity_key = build_identity_key(name_clean, weight_num, service_type, row_date)
             row_status = "ACCEPTED"
             reason = "OK"
 
@@ -959,9 +1013,13 @@ def upload_orders():
                 row_status = "NEEDS_ATTENTION"
                 reason = "OLDER_THAN_BATCH_DATE"
                 needs_attention += 1
-            elif identity_key in existing_identity_keys:
+            elif identity_key in final_identity_keys:
                 row_status = "REJECTED_DUPLICATE"
-                reason = "POSSIBLE_DUPLICATE_IN_STAGING"
+                reason = "ALREADY_IN_FINAL"
+                rejected += 1
+            elif identity_key in existing_identity_reasons:
+                row_status = "REJECTED_DUPLICATE"
+                reason = existing_identity_reasons[identity_key]
                 rejected += 1
             else:
                 inserted += 1
@@ -1020,6 +1078,7 @@ def upload_orders():
             "rows_inserted": inserted,
             "rejected_rows": rejected,
             "needs_attention_rows": needs_attention,
+            "duplicate_lookback_days": duplicate_lookback_days,
             "summary": summary,
             "summary_rows": 0 if summary_df is None else len(summary_df)
 
@@ -2425,7 +2484,7 @@ def confirm_upload_batch(batch_id):
         uploaded_identity_keys = set()
         for row in accepted_rows:
             uploaded_identity_keys.add(
-                build_identity_key(row["name_clean"], row["weight_num"], row["service_type"])
+                build_identity_key(row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"])
             )
 
         cursor.execute("""
@@ -2450,7 +2509,7 @@ def confirm_upload_batch(batch_id):
         forced_pending = 0
         moved_to_final = 0
         for row in staging_rows:
-            identity_key = build_identity_key(row["name_clean"], row["weight_num"], row["service_type"])
+            identity_key = build_identity_key(row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"])
             if identity_key in uploaded_identity_keys:
                 continue
 
@@ -2494,13 +2553,13 @@ def confirm_upload_batch(batch_id):
         """)
         current_staging_rows = cursor.fetchall()
         existing_identity_before_insert = set(
-            build_identity_key(r["name_clean"], r["weight_num"], r["service_type"])
+            build_identity_key(r["name_clean"], r["weight_num"], r["service_type"], r["date_clean"])
             for r in current_staging_rows
         )
 
         inserted = 0
         for row in accepted_rows:
-            identity_key = build_identity_key(row["name_clean"], row["weight_num"], row["service_type"])
+            identity_key = build_identity_key(row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"])
             if identity_key in existing_identity_before_insert:
                 continue
 
