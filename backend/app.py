@@ -2216,10 +2216,15 @@ def confirm_upload_batch(batch_id):
                 weight_num,
                 service_type,
                 rush_type,
-                status
+                status,
+                batch_date
             FROM orders_staging
             WHERE status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')
-        """)
+            AND (
+                batch_date IS NULL
+                OR batch_date < %s
+            )
+        """, (batch["batch_date"],))
         staging_rows = cursor.fetchall()
 
         forced_pending = 0
