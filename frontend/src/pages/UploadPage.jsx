@@ -272,6 +272,14 @@ function UploadPage() {
     await loadRows(batch?.id, nextFilter);
   };
 
+  const handleFullRefresh = async () => {
+    setMessage({ type: "info", text: "" });
+    setRowStatusFilter("ALL");
+    setBatch(null);
+    setRows([]);
+    await loadCurrentBatch("ALL");
+  };
+
   return (
     <Box className="page">
       <Typography sx={{ fontSize: 28, fontWeight: 900 }}>Upload Orders</Typography>
@@ -312,6 +320,15 @@ function UploadPage() {
             disabled={loading || loadingRows}
           >
             Refresh
+          </Button>
+
+          <Button
+            variant="outlined"
+            color="secondary"
+            onClick={handleFullRefresh}
+            disabled={loading || loadingRows}
+          >
+            Full Refresh
           </Button>
         </Stack>
       </Paper>

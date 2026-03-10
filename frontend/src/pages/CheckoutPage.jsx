@@ -21,6 +21,7 @@ import {
   ExpandLess,
   ExpandMore,
   LocalShipping,
+  Refresh,
   Undo,
 } from "@mui/icons-material";
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
@@ -202,6 +203,14 @@ function CheckoutPage() {
     }
   };
 
+  const handleFullRefresh = async () => {
+    setViewMode("REMAINING");
+    setOpenAlpha(null);
+    setActiveOrder(null);
+    setActiveChecked(null);
+    await loadAll();
+  };
+
   if (loading) {
     return (
       <Stack alignItems="center" justifyContent="center" sx={{ minHeight: "70vh" }} spacing={1.2}>
@@ -238,6 +247,18 @@ function CheckoutPage() {
           }}
           activeBg="#0097b2"
         />
+      </Stack>
+
+      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.8 }}>
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<Refresh />}
+          onClick={handleFullRefresh}
+          disabled={loading || busy}
+        >
+          Full Refresh
+        </Button>
       </Stack>
 
       {viewMode === "REMAINING" && remainingCount > 0 && remainingRushCount.rush === 0 && (

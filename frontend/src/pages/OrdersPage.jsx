@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -42,23 +42,33 @@ function OrdersPage() {
     setStatus(nextStatus);
   }, [searchParams]);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        setLoading(true);
-        const res = await getOrders();
-        const rows = Array.isArray(res.data) ? res.data : [];
-        setOrders(rows);
-      } catch (error) {
-        console.error(error);
-        setOrders([]);
-      } finally {
-        setLoading(false);
-      }
+  const loadOrders = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await getOrders();
+      const rows = Array.isArray(res.data) ? res.data : [];
+      setOrders(rows);
+    } catch (error) {
+      console.error(error);
+      setOrders([]);
+    } finally {
+      setLoading(false);
     }
-
-    load();
   }, []);
+
+  useEffect(() => {
+    loadOrders();
+  }, [loadOrders]);
+
+  const handleFullRefresh = async () => {
+    setSearch("");
+    setService("ALL");
+    setRush("ALL");
+    setStatus("ALL");
+    setAlpha("ALL");
+    setSearchParams({});
+    await loadOrders();
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -129,6 +139,9 @@ function OrdersPage() {
         <Chip icon={<FlashOn />} label={`RUSH ${stats.rushCount}`} color="error" variant="outlined" />
         <Button size="small" variant="outlined" onClick={() => window.print()}>
           Print
+        </Button>
+        <Button size="small" variant="outlined" onClick={handleFullRefresh} disabled={loading}>
+          Full Refresh
         </Button>
       </Stack>
 
