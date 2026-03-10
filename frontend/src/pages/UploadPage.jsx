@@ -12,23 +12,26 @@ import {
   MenuItem,
   Paper,
   Stack,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableRow,
+  Tabs,
   TextField,
   Typography,
 } from "@mui/material";
 import {
   addUploadBatchRow,
   confirmUploadBatch,
+  deleteUploadBatch,
   deleteUploadBatchRow,
   getUploadBatches,
   getCurrentUploadBatch,
   getUploadBatchRows,
   overrideUploadBatchRow,
-  resetCurrentDraftBatch,
+  resetAllUploadBatches,
   uploadOrders,
 } from "../api";
 
@@ -50,6 +53,7 @@ function UploadPage() {
   const [batch, setBatch] = useState(null);
   const [batches, setBatches] = useState([]);
   const [rows, setRows] = useState([]);
+  const [viewTab, setViewTab] = useState("REVIEW");
   const [rowStatusFilter, setRowStatusFilter] = useState("ALL");
 
   const [editOpen, setEditOpen] = useState(false);
@@ -134,6 +138,7 @@ function UploadPage() {
 
       if (current?.id) {
         await loadRows(current.id, statusFilter);
+        setViewTab("REVIEW");
       } else {
         setRows([]);
       }
@@ -317,18 +322,45 @@ function UploadPage() {
     setRowStatusFilter("ALL");
     setBatch(null);
     setRows([]);
-    const resetDraft = window.confirm(
-      "Full refresh only reloads data. Do you also want to reset (delete) the current DRAFT batch rows?"
+    const resetAll = window.confirm(
+      "This will delete ALL upload batches (open + closed) and all batch rows. Continue?"
     );
-    if (resetDraft) {
+    if (resetAll) {
       try {
-        await resetCurrentDraftBatch();
+        await resetAllUploadBatches();
+        setMessage({ type: "success", text: "All upload batches were deleted." });
       } catch (error) {
         console.error(error);
+        setMessage({ type: "error", text: error?.response?.data?.error || "Reset failed." });
       }
     }
     await loadCurrentBatch("ALL");
     await loadBatchHistory();
+  };
+
+  const handleDeleteBatch = async (batchId) => {
+    const ok = window.confirm(`Delete batch #${batchId}? This removes all rows in that batch.`);
+    if (!ok) return;
+
+    try {
+      setLoading(true);
+      await deleteUploadBatch(batchId);
+      if (batch?.id === batchId) {
+        setBatch(null);
+        setRows([]);
+      }
+      setMessage({ type: "success", text: `Batch #${batchId} deleted.` });
+      await loadCurrentBatch("ALL");
+      await loadBatchHistory();
+    } catch (error) {
+      console.error(error);
+      setMessage({
+        type: "error",
+        text: error?.response?.data?.error || "Batch delete failed.",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -404,7 +436,18 @@ function UploadPage() {
         </Stack>
       </Paper>
 
-      {batch && (
+      <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>
+        <Tabs
+          value={viewTab}
+          onChange={(_, next) => setViewTab(next)}
+          variant="fullWidth"
+        >
+          <Tab value="REVIEW" label="Draft Review" />
+          <Tab value="BATCHES" label="Uploaded Batches" />
+        </Tabs>
+      </Paper>
+
+      {batch && viewTab === "REVIEW" && (
         <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1} justifyContent="space-between" alignItems={{ md: "center" }}>
             <Box>
@@ -610,6 +653,7 @@ function UploadPage() {
         </DialogActions>
       </Dialog>
 
+      {viewTab === "BATCHES" && (
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
         <Typography sx={{ fontSize: 18, fontWeight: 800, mb: 1 }}>Uploaded Batches</Typography>
         <Stack spacing={0.8}>
@@ -625,7 +669,7 @@ function UploadPage() {
                 justifyContent="space-between"
                 sx={{ border: "1px solid #e5e7eb", borderRadius: 1.5, p: 1 }}
               >
-                <Stack direction="row" spacing={1} alignItems="center">
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
                   <Typography sx={{ fontWeight: 700 }}>{formatBatchLabel(b)}</Typography>
                   <Chip
                     size="small"
@@ -633,14 +677,38 @@ function UploadPage() {
                     color={String(b.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
                   />
                 </Stack>
-                <Typography color="text.secondary">
-                  Loaded {b.orders_loaded || 0}
-                </Typography>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Typography color="text.secondary">
+                    Loaded {b.orders_loaded || 0}
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={async () => {
+                      setBatch(b);
+                      await loadRows(b.id, "ALL");
+                      setRowStatusFilter("ALL");
+                      setViewTab("REVIEW");
+                    }}
+                  >
+                    View
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    onClick={() => handleDeleteBatch(b.id)}
+                    disabled={loading}
+                  >
+                    Delete
+                  </Button>
+                </Stack>
               </Stack>
             ))
           )}
         </Stack>
       </Paper>
+      )}
     </Box>
   );
 }

@@ -928,8 +928,6 @@ def upload_orders():
         inserted = 0
         rejected = 0
         needs_attention = 0
-        seen_in_upload = set()
-
         for _, row in orders_df.iterrows():
 
             date_clean = row.get("Date_Clean")
@@ -957,12 +955,7 @@ def upload_orders():
             row_status = "ACCEPTED"
             reason = "OK"
 
-            if identity_key in seen_in_upload:
-                # Same-file duplicates are allowed; we only detect duplicates against existing staging.
-                row_status = "ACCEPTED"
-                reason = "DUPLICATE_IN_BATCH_ALLOWED"
-                inserted += 1
-            elif row_date < batch_date:
+            if row_date < batch_date:
                 row_status = "NEEDS_ATTENTION"
                 reason = "OLDER_THAN_BATCH_DATE"
                 needs_attention += 1
@@ -972,7 +965,6 @@ def upload_orders():
                 rejected += 1
             else:
                 inserted += 1
-                seen_in_upload.add(identity_key)
 
             cursor.execute("""
                 INSERT INTO upload_batch_rows
@@ -2003,6 +1995,99 @@ def reset_current_draft_batch():
             "status": "draft_reset",
             "batch_id": batch_id,
             "deleted_row_count": summary.get("total_rows", 0)
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/upload_batches/reset_all", methods=["POST"])
+def reset_all_upload_batches():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        row_pk = get_upload_batch_rows_pk(cursor)
+        batch_pk = get_upload_batches_pk(cursor)
+
+        cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batch_rows")
+        rows_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+
+        cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batches")
+        batches_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+
+        cursor.execute("DELETE FROM upload_batch_rows")
+        cursor.execute("DELETE FROM upload_batches")
+
+        # Reset auto-increment where possible for cleaner testing
+        try:
+            cursor.execute("ALTER TABLE upload_batch_rows AUTO_INCREMENT = 1")
+        except Exception:
+            pass
+        try:
+            cursor.execute("ALTER TABLE upload_batches AUTO_INCREMENT = 1")
+        except Exception:
+            pass
+
+        conn.commit()
+        return jsonify({
+            "status": "reset_complete",
+            "deleted_rows": rows_before,
+            "deleted_batches": batches_before,
+            "row_pk": row_pk,
+            "batch_pk": batch_pk
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/upload_batches/<int:batch_id>/delete", methods=["POST"])
+def delete_upload_batch(batch_id):
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        batch_pk = get_upload_batches_pk(cursor)
+        cursor.execute(f"""
+            SELECT {batch_pk} AS id, state
+            FROM upload_batches
+            WHERE {batch_pk} = %s
+        """, (batch_id,))
+        batch = cursor.fetchone()
+        if not batch:
+            return jsonify({"error": "Batch not found"}), 404
+
+        cursor.execute("""
+            SELECT COUNT(*) AS cnt
+            FROM upload_batch_rows
+            WHERE upload_batch_id = %s
+        """, (batch_id,))
+        row_count = (cursor.fetchone() or {}).get("cnt", 0) or 0
+
+        cursor.execute("""
+            DELETE FROM upload_batch_rows
+            WHERE upload_batch_id = %s
+        """, (batch_id,))
+
+        cursor.execute(f"""
+            DELETE FROM upload_batches
+            WHERE {batch_pk} = %s
+        """, (batch_id,))
+
+        conn.commit()
+        return jsonify({
+            "status": "batch_deleted",
+            "batch_id": batch_id,
+            "deleted_rows": row_count
         })
     except Exception as e:
         conn.rollback()

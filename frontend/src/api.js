@@ -110,6 +110,12 @@ export const confirmUploadBatch = (batch_id, force_confirm = false) =>
 export const resetCurrentDraftBatch = () =>
   axios.post(`${API_BASE}/upload_batches/current/reset`);
 
+export const resetAllUploadBatches = () =>
+  axios.post(`${API_BASE}/upload_batches/reset_all`);
+
+export const deleteUploadBatch = (batch_id) =>
+  axios.post(`${API_BASE}/upload_batches/${batch_id}/delete`);
+
 /* =========================================
    EMPLOYEES
 ========================================= */
