@@ -239,6 +239,78 @@ def upload_batches_time_col(cursor):
     return None
 
 
+def orders_status_capabilities(cursor):
+    return {
+        "has_logistics": table_has_column(cursor, "orders_staging", "logistics_status"),
+        "has_processing": table_has_column(cursor, "orders_staging", "processing_status"),
+        "has_status": table_has_column(cursor, "orders_staging", "status"),
+    }
+
+
+def orders_logistics_select_sql(cap):
+    if cap["has_logistics"]:
+        if cap["has_status"]:
+            return """
+                COALESCE(
+                    logistics_status,
+                    CASE
+                        WHEN status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                        WHEN status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                        ELSE 'AT_WASHPRO'
+                    END
+                ) AS logistics_status
+            """
+        return "COALESCE(logistics_status, 'AT_WASHPRO') AS logistics_status"
+
+    if cap["has_status"]:
+        return """
+            CASE
+                WHEN status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                WHEN status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                ELSE 'AT_WASHPRO'
+            END AS logistics_status
+        """
+
+    return "'AT_WASHPRO' AS logistics_status"
+
+
+def orders_processing_select_sql(cap):
+    if cap["has_processing"]:
+        if cap["has_status"]:
+            return """
+                COALESCE(
+                    processing_status,
+                    CASE WHEN status = 'PROCESSED' THEN 'PROCESSED' ELSE 'PENDING' END
+                ) AS processing_status
+            """
+        return "COALESCE(processing_status, 'PENDING') AS processing_status"
+
+    if cap["has_status"]:
+        return "CASE WHEN status = 'PROCESSED' THEN 'PROCESSED' ELSE 'PENDING' END AS processing_status"
+
+    return "'PENDING' AS processing_status"
+
+
+def where_active_at_washpro_sql(cap):
+    if cap["has_logistics"]:
+        if cap["has_status"]:
+            return """
+                COALESCE(logistics_status, CASE
+                    WHEN status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                    WHEN status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                    ELSE 'AT_WASHPRO'
+                END) NOT IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT')
+            """
+        return "COALESCE(logistics_status, 'AT_WASHPRO') NOT IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT')"
+    if cap["has_status"]:
+        return "status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')"
+    return "1 = 1"
+
+
+def where_not_sent_or_forced_sql(cap):
+    return where_active_at_washpro_sql(cap)
+
+
 # ---------------------------------------------------
 # Get Active Orders
 # ---------------------------------------------------
@@ -251,7 +323,12 @@ def get_orders():
 
     try:
 
-        cursor.execute("""
+        cap = orders_status_capabilities(cursor)
+        logistics_sql = orders_logistics_select_sql(cap)
+        processing_sql = orders_processing_select_sql(cap)
+        active_where = where_active_at_washpro_sql(cap)
+
+        cursor.execute(f"""
 
             SELECT
                 id,
@@ -266,11 +343,13 @@ def get_orders():
                     ELSE 'NON-RUSH'
                 END AS rush_type,
 
+                {logistics_sql},
+                {processing_sql},
                 status,
                 created_at
 
             FROM orders_staging
-            WHERE status <> 'CHECKED_OUT'
+            WHERE {active_where}
 
             ORDER BY date_clean ASC, id ASC
 
@@ -305,13 +384,17 @@ def checkout_order():
 
     try:
 
-        cursor.execute("""
+        cap = orders_status_capabilities(cursor)
+        logistics_sql = orders_logistics_select_sql(cap)
+
+        cursor.execute(f"""
             SELECT
                 id,
                 date_clean,
                 name_clean,
                 weight_num,
                 service_type,
+                {logistics_sql},
                 status
             FROM orders_staging
             WHERE id = %s
@@ -322,7 +405,7 @@ def checkout_order():
         if not order:
             return jsonify({"error": "Order not found"}), 404
 
-        if (order.get("status") or "").upper() == "CHECKED_OUT":
+        if (order.get("logistics_status") or "").upper() in ["SENT_TO_RINSE", "CHECKED_OUT"]:
             return jsonify({"error": "Order already checked out"}), 409
 
         cursor.execute("""
@@ -345,9 +428,17 @@ def checkout_order():
             employee
         ))
 
-        cursor.execute("""
+        set_parts = []
+        if cap["has_logistics"]:
+            set_parts.append("logistics_status = 'SENT_TO_RINSE'")
+        if cap["has_status"]:
+            set_parts.append("status = 'CHECKED_OUT'")
+        if not set_parts:
+            set_parts.append("status = 'CHECKED_OUT'")
+
+        cursor.execute(f"""
             UPDATE orders_staging
-            SET status = 'CHECKED_OUT'
+            SET {", ".join(set_parts)}
             WHERE id = %s
         """, (order_id,))
 
@@ -387,6 +478,9 @@ def checkout_bulk():
 
     try:
 
+        cap = orders_status_capabilities(cursor)
+        logistics_sql = orders_logistics_select_sql(cap)
+
         format_strings = ",".join(["%s"] * len(order_ids))
         cursor.execute(f"""
             SELECT
@@ -395,6 +489,7 @@ def checkout_bulk():
                 name_clean,
                 weight_num,
                 service_type,
+                {logistics_sql},
                 status
             FROM orders_staging
             WHERE id IN ({format_strings})
@@ -414,7 +509,7 @@ def checkout_bulk():
                 not_found.append(oid)
                 continue
 
-            if (row.get("status") or "").upper() == "CHECKED_OUT":
+            if (row.get("logistics_status") or "").upper() in ["SENT_TO_RINSE", "CHECKED_OUT"]:
                 already_checked_out.append(oid)
                 continue
 
@@ -444,9 +539,17 @@ def checkout_bulk():
         if checkout_candidates:
             checkout_ids = [row["id"] for row in checkout_candidates]
             update_strings = ",".join(["%s"] * len(checkout_ids))
+            set_parts = []
+            if cap["has_logistics"]:
+                set_parts.append("logistics_status = 'SENT_TO_RINSE'")
+            if cap["has_status"]:
+                set_parts.append("status = 'CHECKED_OUT'")
+            if not set_parts:
+                set_parts.append("status = 'CHECKED_OUT'")
+
             cursor.execute(f"""
                 UPDATE orders_staging
-                SET status = 'CHECKED_OUT'
+                SET {", ".join(set_parts)}
                 WHERE id IN ({update_strings})
             """, tuple(checkout_ids))
 
@@ -542,6 +645,7 @@ def checkout_undo():
 
     try:
 
+        cap = orders_status_capabilities(cursor)
         cursor.execute("""
             SELECT id, status
             FROM orders_staging
@@ -567,9 +671,17 @@ def checkout_undo():
                 (log_row["id"],)
             )
 
-        cursor.execute("""
+        set_parts = []
+        if cap["has_logistics"]:
+            set_parts.append("logistics_status = 'AT_WASHPRO'")
+        if cap["has_status"]:
+            set_parts.append("status = 'PROCESSED'")
+        if not set_parts:
+            set_parts.append("status = 'PROCESSED'")
+
+        cursor.execute(f"""
             UPDATE orders_staging
-            SET status = 'PROCESSED'
+            SET {", ".join(set_parts)}
             WHERE id = %s
         """, (order_id,))
 
@@ -763,7 +875,10 @@ def dashboard():
 
     try:
 
-        cursor.execute("""
+        cap = orders_status_capabilities(cursor)
+        active_where = where_active_at_washpro_sql(cap)
+
+        cursor.execute(f"""
 
             SELECT
 
@@ -781,7 +896,7 @@ def dashboard():
                 SUM(service_type = 'HD' AND date_clean >= CURDATE()) AS hd_non_rush
 
             FROM orders_staging
-            WHERE status <> 'CHECKED_OUT'
+            WHERE {active_where}
 
         """)
 
@@ -925,23 +1040,32 @@ def upload_orders():
             duplicate_lookback_days = 3
         duplicate_lookback_days = max(1, min(duplicate_lookback_days, 30))
 
+        cap = orders_status_capabilities(cursor)
+
         # Build identity index from all staging rows (including checked/forced/processed).
-        cursor.execute("""
+        logistics_sql = orders_logistics_select_sql(cap)
+        processing_sql = orders_processing_select_sql(cap)
+        cursor.execute(f"""
             SELECT
                 id,
                 date_clean,
                 name_clean,
                 weight_num,
                 service_type,
+                {logistics_sql},
+                {processing_sql},
                 status
             FROM orders_staging
         """)
         staging_rows = cursor.fetchall()
         existing_identity_reasons = {}
 
-        def staging_reason_for_status(raw_status):
+        def staging_reason_for_status(raw_logistics, raw_status):
+            logistics = (raw_logistics or "").strip().upper()
             status = (raw_status or "").strip().upper()
-            if status in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCE_CHECKOUT"]:
+            if logistics in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
+                return "ALREADY_SENT_OR_FORCED"
+            if status in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCED_CHECKOUT", "FORCE_CHECKOUT"]:
                 return "ALREADY_SENT_OR_FORCED"
             return "DUPLICATE_IN_ACTIVE_STAGING"
 
@@ -952,7 +1076,7 @@ def upload_orders():
                 r.get("service_type"),
                 r.get("date_clean")
             )
-            next_reason = staging_reason_for_status(r.get("status"))
+            next_reason = staging_reason_for_status(r.get("logistics_status"), r.get("status"))
             prev_reason = existing_identity_reasons.get(identity_key)
             # Keep the stronger signal if we already have one.
             if prev_reason != "ALREADY_SENT_OR_FORCED":
@@ -1131,32 +1255,37 @@ def create_manual_order():
 
         conn = get_db()
         cursor = conn.cursor()
+        cap = orders_status_capabilities(cursor)
 
-        cursor.execute("""
+        cols = [
+            "date_clean",
+            "name_clean",
+            "weight_num",
+            "service_type",
+            "rush_type",
+            "batch_date",
+        ]
+        vals = ["%s", "%s", "%s", "%s", "%s", "%s"]
+        args = [date_clean, name_clean, weight_num, service_type, rush_type, batch_date]
 
+        if cap["has_logistics"]:
+            cols.append("logistics_status")
+            vals.append("%s")
+            args.append("AT_WASHPRO")
+        if cap["has_processing"]:
+            cols.append("processing_status")
+            vals.append("%s")
+            args.append("PENDING")
+        if cap["has_status"]:
+            cols.append("status")
+            vals.append("%s")
+            args.append("PENDING")
+
+        cursor.execute(f"""
             INSERT INTO orders_staging
-            (
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type,
-                rush_type,
-                status,
-                batch_date
-            )
-
-            VALUES (%s, %s, %s, %s, %s, 'PENDING', %s)
-
-        """, (
-
-            date_clean,
-            name_clean,
-            weight_num,
-            service_type,
-            rush_type,
-            batch_date
-
-        ))
+            ({", ".join(cols)})
+            VALUES ({", ".join(vals)})
+        """, tuple(args))
 
         conn.commit()
 
@@ -1299,6 +1428,7 @@ def process_order():
 
     conn = get_db()
     cursor = conn.cursor()
+    cap = orders_status_capabilities(cursor)
 
     cursor.execute("""
 
@@ -1325,10 +1455,18 @@ def process_order():
         rinse_case
     ))
 
-    cursor.execute("""
+    set_parts = []
+    if cap["has_processing"]:
+        set_parts.append("processing_status='PROCESSED'")
+    if cap["has_status"]:
+        set_parts.append("status='PROCESSED'")
+    if not set_parts:
+        set_parts.append("status='PROCESSED'")
+
+    cursor.execute(f"""
 
         UPDATE orders_staging
-        SET status='PROCESSED'
+        SET {", ".join(set_parts)}
         WHERE id=%s
 
     """, (order_id,))
@@ -2442,6 +2580,7 @@ def confirm_upload_batch(batch_id):
     try:
         batch_pk = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
+        cap = orders_status_capabilities(cursor)
 
         cursor.execute(f"""
             SELECT {batch_pk} AS id, batch_date, state
@@ -2487,7 +2626,11 @@ def confirm_upload_batch(batch_id):
                 build_identity_key(row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"])
             )
 
-        cursor.execute("""
+        logistics_sql = orders_logistics_select_sql(cap)
+        processing_sql = orders_processing_select_sql(cap)
+        not_sent_where = where_not_sent_or_forced_sql(cap)
+
+        cursor.execute(f"""
             SELECT
                 id,
                 date_clean,
@@ -2495,10 +2638,12 @@ def confirm_upload_batch(batch_id):
                 weight_num,
                 service_type,
                 rush_type,
+                {logistics_sql},
+                {processing_sql},
                 status,
                 batch_date
             FROM orders_staging
-            WHERE status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')
+            WHERE {not_sent_where}
             AND (
                 batch_date IS NULL
                 OR batch_date < %s
@@ -2513,8 +2658,8 @@ def confirm_upload_batch(batch_id):
             if identity_key in uploaded_identity_keys:
                 continue
 
-            row_status = (row.get("status") or "").upper()
-            if row_status == "PROCESSED":
+            row_processing = (row.get("processing_status") or row.get("status") or "").upper()
+            if row_processing == "PROCESSED":
                 cursor.execute("""
                     INSERT INTO orders_final
                     (
@@ -2539,17 +2684,25 @@ def confirm_upload_batch(batch_id):
                 cursor.execute("DELETE FROM orders_staging WHERE id = %s", (row["id"],))
                 moved_to_final += 1
             else:
-                cursor.execute("""
+                set_parts = []
+                if cap["has_logistics"]:
+                    set_parts.append("logistics_status = 'FORCE_CHECKOUT'")
+                if cap["has_status"]:
+                    set_parts.append("status = 'FORCED_CHECKOUT'")
+                if not set_parts:
+                    set_parts.append("status = 'FORCED_CHECKOUT'")
+
+                cursor.execute(f"""
                     UPDATE orders_staging
-                    SET status = 'FORCED_CHECKOUT'
+                    SET {", ".join(set_parts)}
                     WHERE id = %s
                 """, (row["id"],))
                 forced_pending += 1
 
-        cursor.execute("""
-            SELECT name_clean, weight_num, service_type
+        cursor.execute(f"""
+            SELECT date_clean, name_clean, weight_num, service_type
             FROM orders_staging
-            WHERE status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')
+            WHERE {not_sent_where}
         """)
         current_staging_rows = cursor.fetchall()
         existing_identity_before_insert = set(
@@ -2563,26 +2716,42 @@ def confirm_upload_batch(batch_id):
             if identity_key in existing_identity_before_insert:
                 continue
 
-            cursor.execute("""
-                INSERT INTO orders_staging
-                (
-                    date_clean,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    status,
-                    batch_date
-                )
-                VALUES (%s, %s, %s, %s, %s, 'PENDING', %s)
-            """, (
+            cols = [
+                "date_clean",
+                "name_clean",
+                "weight_num",
+                "service_type",
+                "rush_type",
+                "batch_date",
+            ]
+            vals = ["%s", "%s", "%s", "%s", "%s", "%s"]
+            args = [
                 row["date_clean"],
                 row["name_clean"],
                 row["weight_num"],
                 row["service_type"],
                 row["rush_type"],
-                batch["batch_date"]
-            ))
+                batch["batch_date"],
+            ]
+
+            if cap["has_logistics"]:
+                cols.append("logistics_status")
+                vals.append("%s")
+                args.append("AT_WASHPRO")
+            if cap["has_processing"]:
+                cols.append("processing_status")
+                vals.append("%s")
+                args.append("PENDING")
+            if cap["has_status"]:
+                cols.append("status")
+                vals.append("%s")
+                args.append("PENDING")
+
+            cursor.execute(f"""
+                INSERT INTO orders_staging
+                ({", ".join(cols)})
+                VALUES ({", ".join(vals)})
+            """, tuple(args))
             inserted += 1
 
         set_parts = ["state = 'CONFIRMED'"] if table_has_column(cursor, "upload_batches", "state") else []
@@ -2691,6 +2860,7 @@ def override_upload_conflicts():
 
     try:
         pk_col = get_upload_conflicts_pk(cursor)
+        cap = orders_status_capabilities(cursor)
         placeholders = ",".join(["%s"] * len(conflict_ids))
         cursor.execute(f"""
             SELECT
@@ -2711,26 +2881,42 @@ def override_upload_conflicts():
         today_batch_date = date.today()
 
         for row in rows:
-            cursor.execute("""
-                INSERT INTO orders_staging
-                (
-                    date_clean,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    status,
-                    batch_date
-                )
-                VALUES (%s, %s, %s, %s, %s, 'PENDING', %s)
-            """, (
+            cols = [
+                "date_clean",
+                "name_clean",
+                "weight_num",
+                "service_type",
+                "rush_type",
+                "batch_date",
+            ]
+            vals = ["%s", "%s", "%s", "%s", "%s", "%s"]
+            args = [
                 row["date_clean"],
                 row["name_clean"],
                 row["weight_num"],
                 row["service_type"],
                 row["rush_type"],
-                today_batch_date
-            ))
+                today_batch_date,
+            ]
+
+            if cap["has_logistics"]:
+                cols.append("logistics_status")
+                vals.append("%s")
+                args.append("AT_WASHPRO")
+            if cap["has_processing"]:
+                cols.append("processing_status")
+                vals.append("%s")
+                args.append("PENDING")
+            if cap["has_status"]:
+                cols.append("status")
+                vals.append("%s")
+                args.append("PENDING")
+
+            cursor.execute(f"""
+                INSERT INTO orders_staging
+                ({", ".join(cols)})
+                VALUES ({", ".join(vals)})
+            """, tuple(args))
             inserted += 1
 
             cursor.execute("""
