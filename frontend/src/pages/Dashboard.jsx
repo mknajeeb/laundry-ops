@@ -69,7 +69,10 @@ function Dashboard() {
         </Alert>
       ) : (
         <Stack spacing={1.2} sx={{ mt: 1.5 }}>
-          <Paper sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #0ea5e9" }}>
+          <Paper
+            onClick={() => navigate("/orders")}
+            sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #0ea5e9", cursor: "pointer" }}
+          >
             <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>All Orders</Typography>
             <Typography sx={{ fontSize: 36, fontWeight: 900, lineHeight: 1.1 }}>{safe.total_orders ?? 0}</Typography>
           </Paper>

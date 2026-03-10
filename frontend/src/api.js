@@ -80,6 +80,27 @@ export const overrideUploadConflicts = (conflict_ids, overridden_by = "admin") =
     overridden_by
   });
 
+export const getCurrentUploadBatch = () =>
+  axios.get(`${API_BASE}/upload_batches/current`, { timeout: 30000 });
+
+export const getUploadBatchRows = (batch_id, row_status = "") =>
+  axios.get(`${API_BASE}/upload_batches/${batch_id}/rows`, {
+    timeout: 30000,
+    params: row_status ? { row_status } : {}
+  });
+
+export const overrideUploadBatchRow = (batch_id, row_id, payload) =>
+  axios.post(`${API_BASE}/upload_batches/${batch_id}/rows/${row_id}/override`, payload);
+
+export const deleteUploadBatchRow = (batch_id, row_id) =>
+  axios.post(`${API_BASE}/upload_batches/${batch_id}/rows/${row_id}/delete`);
+
+export const addUploadBatchRow = (batch_id, payload) =>
+  axios.post(`${API_BASE}/upload_batches/${batch_id}/rows/add`, payload);
+
+export const confirmUploadBatch = (batch_id, force_confirm = false) =>
+  axios.post(`${API_BASE}/upload_batches/${batch_id}/confirm`, { force_confirm });
+
 /* =========================================
    EMPLOYEES
 ========================================= */

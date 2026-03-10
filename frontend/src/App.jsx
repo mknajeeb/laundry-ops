@@ -13,6 +13,7 @@ import {
 } from "@mui/material";
 import {
   ArrowBack,
+  Refresh,
   Home as HomeIcon,
   Dashboard as DashboardIcon,
   Inventory2,
@@ -83,6 +84,13 @@ function MobileTopBar({ pathname }) {
           WashPro
         </Typography>
         <Box sx={{ flex: 1 }} />
+        <IconButton
+          size="small"
+          onClick={() => window.location.reload()}
+          sx={{ mr: 0.5, border: "1px solid #e5e7eb" }}
+        >
+          <Refresh sx={{ fontSize: 16 }} />
+        </IconButton>
         <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#6b7280" }}>
           {activeTab.label}
         </Typography>
