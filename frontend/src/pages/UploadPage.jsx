@@ -24,9 +24,11 @@ import {
   addUploadBatchRow,
   confirmUploadBatch,
   deleteUploadBatchRow,
+  getUploadBatches,
   getCurrentUploadBatch,
   getUploadBatchRows,
   overrideUploadBatchRow,
+  resetCurrentDraftBatch,
   uploadOrders,
 } from "../api";
 
@@ -36,6 +38,8 @@ const EMPTY_FORM = {
   weight_num: "",
   service_type: "WF",
   rush_type: "NON-RUSH",
+  row_status: "OVERRIDDEN",
+  reason: "",
 };
 
 function UploadPage() {
@@ -44,6 +48,7 @@ function UploadPage() {
   const [loading, setLoading] = useState(false);
   const [loadingRows, setLoadingRows] = useState(false);
   const [batch, setBatch] = useState(null);
+  const [batches, setBatches] = useState([]);
   const [rows, setRows] = useState([]);
   const [rowStatusFilter, setRowStatusFilter] = useState("ALL");
 
@@ -57,6 +62,23 @@ function UploadPage() {
   const [message, setMessage] = useState({ type: "info", text: "" });
 
   const isConfirmed = (batch?.state || "").toUpperCase() === "CONFIRMED";
+  const isDraft = (batch?.state || "").toUpperCase() === "DRAFT";
+
+  const formatBatchLabel = (row) => {
+    if (!row) return "No active batch";
+    const dtSource = row.created_at || row.updated_at || row.confirmed_at || row.closed_at;
+    const dt = dtSource ? new Date(dtSource) : null;
+    const dtLabel = dt && !Number.isNaN(dt.getTime())
+      ? dt.toLocaleString(undefined, {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : "No time";
+    return `Batch #${row.id} • ${dtLabel}`;
+  };
 
   const filteredRows = useMemo(() => {
     if (rowStatusFilter === "ALL") return rows;
@@ -121,8 +143,18 @@ function UploadPage() {
     }
   };
 
+  const loadBatchHistory = async () => {
+    try {
+      const res = await getUploadBatches(15);
+      setBatches(Array.isArray(res.data) ? res.data : []);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
   useEffect(() => {
     loadCurrentBatch("ALL");
+    loadBatchHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -144,6 +176,7 @@ function UploadPage() {
         text: `Draft uploaded. Accepted: ${res.data.rows_inserted}, Rejected: ${res.data.rejected_rows}, Needs Attention: ${res.data.needs_attention_rows}`,
       });
       await loadCurrentBatch("ALL");
+      await loadBatchHistory();
     } catch (error) {
       console.error(error);
       const msg =
@@ -165,6 +198,8 @@ function UploadPage() {
       weight_num: row.weight_num ?? "",
       service_type: row.service_type || "WF",
       rush_type: row.rush_type || "NON-RUSH",
+      row_status: row.row_status || "OVERRIDDEN",
+      reason: row.reason || "",
     });
     setEditOpen(true);
   };
@@ -181,6 +216,7 @@ function UploadPage() {
       setEditOpen(false);
       setMessage({ type: "success", text: "Row updated." });
       await loadCurrentBatch(rowStatusFilter);
+      await loadBatchHistory();
     } catch (error) {
       console.error(error);
       setMessage({
@@ -200,6 +236,7 @@ function UploadPage() {
       await deleteUploadBatchRow(batch.id, rowId);
       setMessage({ type: "success", text: "Row deleted from batch." });
       await loadCurrentBatch(rowStatusFilter);
+      await loadBatchHistory();
     } catch (error) {
       console.error(error);
       setMessage({
@@ -224,6 +261,7 @@ function UploadPage() {
       setAddForm(EMPTY_FORM);
       setMessage({ type: "success", text: "Row added to batch." });
       await loadCurrentBatch(rowStatusFilter);
+      await loadBatchHistory();
     } catch (error) {
       console.error(error);
       setMessage({
@@ -243,6 +281,7 @@ function UploadPage() {
       await confirmUploadBatch(batch.id, false);
       setMessage({ type: "success", text: "Batch confirmed and applied to staging." });
       await loadCurrentBatch(rowStatusFilter);
+      await loadBatchHistory();
     } catch (error) {
       const status = error?.response?.status;
       const data = error?.response?.data || {};
@@ -255,6 +294,7 @@ function UploadPage() {
           await confirmUploadBatch(batch.id, true);
           setMessage({ type: "success", text: "Batch force-confirmed and applied." });
           await loadCurrentBatch(rowStatusFilter);
+          await loadBatchHistory();
         }
       } else {
         setMessage({
@@ -277,16 +317,47 @@ function UploadPage() {
     setRowStatusFilter("ALL");
     setBatch(null);
     setRows([]);
+    const resetDraft = window.confirm(
+      "Full refresh only reloads data. Do you also want to reset (delete) the current DRAFT batch rows?"
+    );
+    if (resetDraft) {
+      try {
+        await resetCurrentDraftBatch();
+      } catch (error) {
+        console.error(error);
+      }
+    }
     await loadCurrentBatch("ALL");
+    await loadBatchHistory();
   };
 
   return (
     <Box className="page">
       <Typography sx={{ fontSize: 28, fontWeight: 900 }}>Upload Orders</Typography>
 
+      {batch && (
+        <Stack direction="row" spacing={1} sx={{ mt: 0.8, flexWrap: "wrap" }}>
+          <Chip
+            label={formatBatchLabel(batch)}
+            color="primary"
+            variant="outlined"
+          />
+          <Chip
+            label={(batch.state || "DRAFT").toUpperCase()}
+            color={isConfirmed ? "success" : "warning"}
+          />
+        </Stack>
+      )}
+
       {message.text && (
         <Alert severity={message.type} sx={{ mt: 1.2 }}>
           {message.text}
+        </Alert>
+      )}
+
+      {isDraft && (
+        <Alert severity="warning" sx={{ mt: 1 }}>
+          Draft only. Not live until Confirm Batch.
         </Alert>
       )}
 
@@ -337,7 +408,7 @@ function UploadPage() {
         <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1} justifyContent="space-between" alignItems={{ md: "center" }}>
             <Box>
-              <Typography sx={{ fontSize: 20, fontWeight: 900 }}>Batch #{batch.id}</Typography>
+              <Typography sx={{ fontSize: 20, fontWeight: 900 }}>{formatBatchLabel(batch)}</Typography>
               <Typography color="text.secondary">
                 Date {String(batch.batch_date || "").slice(0, 10)} • State {batch.state || "DRAFT"}
               </Typography>
@@ -466,6 +537,23 @@ function UploadPage() {
               <MenuItem value="RUSH">RUSH</MenuItem>
               <MenuItem value="NON-RUSH">NON-RUSH</MenuItem>
             </TextField>
+            <TextField
+              select
+              label="Row Status"
+              value={editForm.row_status}
+              onChange={(e) => setEditForm((p) => ({ ...p, row_status: e.target.value }))}
+            >
+              <MenuItem value="ACCEPTED">ACCEPTED</MenuItem>
+              <MenuItem value="OVERRIDDEN">OVERRIDDEN</MenuItem>
+              <MenuItem value="NEEDS_ATTENTION">NEEDS_ATTENTION</MenuItem>
+              <MenuItem value="REJECTED_DUPLICATE">REJECTED_DUPLICATE</MenuItem>
+              <MenuItem value="DELETED">DELETED</MenuItem>
+            </TextField>
+            <TextField
+              label="Reason"
+              value={editForm.reason}
+              onChange={(e) => setEditForm((p) => ({ ...p, reason: e.target.value }))}
+            />
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -521,6 +609,38 @@ function UploadPage() {
           <Button variant="contained" onClick={handleAdd} disabled={loading}>Add</Button>
         </DialogActions>
       </Dialog>
+
+      <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+        <Typography sx={{ fontSize: 18, fontWeight: 800, mb: 1 }}>Uploaded Batches</Typography>
+        <Stack spacing={0.8}>
+          {batches.length === 0 ? (
+            <Typography color="text.secondary">No batches yet.</Typography>
+          ) : (
+            batches.map((b) => (
+              <Stack
+                key={b.id}
+                direction="row"
+                spacing={1}
+                alignItems="center"
+                justifyContent="space-between"
+                sx={{ border: "1px solid #e5e7eb", borderRadius: 1.5, p: 1 }}
+              >
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Typography sx={{ fontWeight: 700 }}>{formatBatchLabel(b)}</Typography>
+                  <Chip
+                    size="small"
+                    label={(b.state || "DRAFT").toUpperCase()}
+                    color={String(b.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
+                  />
+                </Stack>
+                <Typography color="text.secondary">
+                  Loaded {b.orders_loaded || 0}
+                </Typography>
+              </Stack>
+            ))
+          )}
+        </Stack>
+      </Paper>
     </Box>
   );
 }

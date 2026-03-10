@@ -36,6 +36,7 @@ import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
 import HomePage from "./pages/HomePage";
+import { getCurrentUploadBatch } from "./api";
 
 const MOBILE_TABS = [
   { label: "Home", value: "/", icon: <HomeIcon /> },
@@ -52,7 +53,7 @@ function getActiveMobileTab(pathname) {
   return MOBILE_TABS.find((tab) => tab.value !== "/" && pathname.startsWith(tab.value)) || MOBILE_TABS[0];
 }
 
-function MobileTopBar({ pathname }) {
+function MobileTopBar({ pathname, activeBatch }) {
   const navigate = useNavigate();
   const activeTab = getActiveMobileTab(pathname);
   const canGoBack = pathname !== "/";
@@ -95,6 +96,13 @@ function MobileTopBar({ pathname }) {
           {activeTab.label}
         </Typography>
       </Toolbar>
+      {activeBatch && (
+        <Toolbar sx={{ minHeight: "28px !important", px: 1.2, borderTop: "1px solid #f3f4f6" }}>
+          <Typography sx={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
+            Active Batch: #{activeBatch.id} ({String(activeBatch.state || "DRAFT").toUpperCase()})
+          </Typography>
+        </Toolbar>
+      )}
     </AppBar>
   );
 }
@@ -104,12 +112,26 @@ function AppShell() {
   const isMobile = useMediaQuery("(max-width: 900px)");
   const pathname = location.pathname || "/";
   const [updateReady, setUpdateReady] = useState(false);
+  const [activeBatch, setActiveBatch] = useState(null);
 
   useEffect(() => {
     const onUpdateReady = () => setUpdateReady(true);
     window.addEventListener("washpro:update-ready", onUpdateReady);
     return () => window.removeEventListener("washpro:update-ready", onUpdateReady);
   }, []);
+
+  useEffect(() => {
+    async function loadActiveBatch() {
+      try {
+        const res = await getCurrentUploadBatch();
+        setActiveBatch(res?.data || null);
+      } catch (error) {
+        console.error(error);
+        setActiveBatch(null);
+      }
+    }
+    loadActiveBatch();
+  }, [pathname]);
 
   const handleRefreshApp = async () => {
     try {
@@ -126,9 +148,9 @@ function AppShell() {
 
   return (
     <div className={`app-layout ${isMobile ? "app-layout-checkout-mobile" : ""}`}>
-      {!isMobile && <Sidebar />}
+      {!isMobile && <Sidebar activeBatch={activeBatch} />}
       <div className={`main-content ${isMobile ? "main-content-checkout-mobile" : ""}`}>
-        {isMobile && <MobileTopBar pathname={pathname} />}
+        {isMobile && <MobileTopBar pathname={pathname} activeBatch={activeBatch} />}
         <Box className={isMobile ? "route-scroll-mobile" : ""}>
           <Routes>
             <Route path="/" element={<HomePage />} />

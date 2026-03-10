@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, CircularProgress, Paper, Stack, Typography } from "@mui/material";
-import { getDashboard } from "../api";
+import { getCurrentUploadBatch, getDashboard } from "../api";
 import { useNavigate } from "react-router-dom";
 
 function Dashboard() {
@@ -8,6 +8,7 @@ function Dashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activeBatch, setActiveBatch] = useState(null);
 
   useEffect(() => {
     async function loadStats() {
@@ -25,6 +26,19 @@ function Dashboard() {
     }
 
     loadStats();
+  }, []);
+
+  useEffect(() => {
+    async function loadBatch() {
+      try {
+        const res = await getCurrentUploadBatch();
+        setActiveBatch(res?.data || null);
+      } catch (err) {
+        console.error(err);
+        setActiveBatch(null);
+      }
+    }
+    loadBatch();
   }, []);
 
   const safe = stats || {};
@@ -57,6 +71,15 @@ function Dashboard() {
     >
       <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Operations Dashboard</Typography>
       <Typography sx={{ color: "#6b7280", mt: 0.3 }}>Batch: {batchDateLabel}</Typography>
+      {activeBatch && (
+        <Box sx={{ mt: 0.7 }}>
+          <Alert
+            severity={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
+          >
+            Batch #{activeBatch.id} • {String(activeBatch.batch_date || "").slice(0, 10)} • {String(activeBatch.state || "DRAFT").toUpperCase()}
+          </Alert>
+        </Box>
+      )}
 
       {loading ? (
         <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.2}>

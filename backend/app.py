@@ -1895,6 +1895,123 @@ def get_current_upload_batch():
         conn.close()
 
 
+@app.route("/upload_batches", methods=["GET"])
+def list_upload_batches():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        pk_col = get_upload_batches_pk(cursor)
+        limit = request.args.get("limit", default=20, type=int) or 20
+        limit = max(1, min(limit, 100))
+
+        selected_cols = [
+            f"{pk_col} AS id",
+            "file_name",
+            "batch_date",
+            "orders_loaded",
+        ]
+
+        if table_has_column(cursor, "upload_batches", "state"):
+            selected_cols.append("state")
+        else:
+            selected_cols.append("'DRAFT' AS state")
+
+        if table_has_column(cursor, "upload_batches", "created_at"):
+            selected_cols.append("created_at")
+        elif table_has_column(cursor, "upload_batches", "uploaded_at"):
+            selected_cols.append("uploaded_at AS created_at")
+        else:
+            selected_cols.append("NULL AS created_at")
+
+        if table_has_column(cursor, "upload_batches", "updated_at"):
+            selected_cols.append("updated_at")
+        else:
+            selected_cols.append("NULL AS updated_at")
+
+        if table_has_column(cursor, "upload_batches", "confirmed_at"):
+            selected_cols.append("confirmed_at")
+        else:
+            selected_cols.append("NULL AS confirmed_at")
+
+        if table_has_column(cursor, "upload_batches", "closed_at"):
+            selected_cols.append("closed_at")
+        else:
+            selected_cols.append("NULL AS closed_at")
+
+        cursor.execute(f"""
+            SELECT
+                {", ".join(selected_cols)}
+            FROM upload_batches
+            ORDER BY batch_date DESC, {pk_col} DESC
+            LIMIT %s
+        """, (limit,))
+        rows = cursor.fetchall() or []
+
+        row_pk = get_upload_batch_rows_pk(cursor)
+        for row in rows:
+            row["summary"] = summarize_batch_rows(cursor, row["id"], row_pk)
+
+        return jsonify(rows)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/upload_batches/current/reset", methods=["POST"])
+def reset_current_draft_batch():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        pk_col = get_upload_batches_pk(cursor)
+        where_state = "WHERE state = 'DRAFT'" if table_has_column(cursor, "upload_batches", "state") else ""
+
+        cursor.execute(f"""
+            SELECT {pk_col} AS id, state
+            FROM upload_batches
+            {where_state}
+            ORDER BY batch_date DESC, {pk_col} DESC
+            LIMIT 1
+        """)
+        batch = cursor.fetchone()
+
+        if not batch:
+            return jsonify({
+                "status": "nothing_to_reset",
+                "message": "No draft batch available."
+            })
+
+        batch_id = batch["id"]
+        row_pk = get_upload_batch_rows_pk(cursor)
+        summary = summarize_batch_rows(cursor, batch_id, row_pk)
+
+        cursor.execute("""
+            DELETE FROM upload_batch_rows
+            WHERE upload_batch_id = %s
+        """, (batch_id,))
+
+        cursor.execute(f"""
+            DELETE FROM upload_batches
+            WHERE {pk_col} = %s
+        """, (batch_id,))
+
+        conn.commit()
+        return jsonify({
+            "status": "draft_reset",
+            "batch_id": batch_id,
+            "deleted_row_count": summary.get("total_rows", 0)
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/upload_batches/<int:batch_id>/rows", methods=["GET"])
 def get_upload_batch_rows(batch_id):
 
@@ -1994,11 +2111,29 @@ def override_upload_batch_row(batch_id, row_id):
         if rush_type not in ["RUSH", "NON-RUSH"]:
             return jsonify({"error": "rush_type must be RUSH or NON-RUSH"}), 400
 
+        requested_row_status = (data.get("row_status") or "").strip().upper()
+        requested_reason = (data.get("reason") or "").strip()
+
         reason = "OVERRIDDEN_BY_USER"
         row_status = "OVERRIDDEN"
         if date_clean and date_clean < batch["batch_date"]:
             row_status = "NEEDS_ATTENTION"
             reason = "OLDER_THAN_BATCH_DATE"
+
+        allowed_manual_statuses = {
+            "ACCEPTED",
+            "OVERRIDDEN",
+            "NEEDS_ATTENTION",
+            "REJECTED_DUPLICATE",
+            "DELETED",
+        }
+        if requested_row_status:
+            if requested_row_status not in allowed_manual_statuses:
+                return jsonify({"error": "row_status is invalid"}), 400
+            row_status = requested_row_status
+
+        if requested_reason:
+            reason = requested_reason
 
         cursor.execute(f"""
             UPDATE upload_batch_rows

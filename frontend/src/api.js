@@ -83,6 +83,12 @@ export const overrideUploadConflicts = (conflict_ids, overridden_by = "admin") =
 export const getCurrentUploadBatch = () =>
   axios.get(`${API_BASE}/upload_batches/current`, { timeout: 30000 });
 
+export const getUploadBatches = (limit = 20) =>
+  axios.get(`${API_BASE}/upload_batches`, {
+    timeout: 30000,
+    params: { limit }
+  });
+
 export const getUploadBatchRows = (batch_id, row_status = "") =>
   axios.get(`${API_BASE}/upload_batches/${batch_id}/rows`, {
     timeout: 30000,
@@ -100,6 +106,9 @@ export const addUploadBatchRow = (batch_id, payload) =>
 
 export const confirmUploadBatch = (batch_id, force_confirm = false) =>
   axios.post(`${API_BASE}/upload_batches/${batch_id}/confirm`, { force_confirm });
+
+export const resetCurrentDraftBatch = () =>
+  axios.post(`${API_BASE}/upload_batches/current/reset`);
 
 /* =========================================
    EMPLOYEES

@@ -17,12 +17,13 @@ import {
   Typography,
 } from "@mui/material";
 import { FlashOn, Search } from "@mui/icons-material";
-import { deleteOrder, getOrders, updateOrder } from "../api";
+import { deleteOrder, getCurrentUploadBatch, getOrders, updateOrder } from "../api";
 import { useSearchParams } from "react-router-dom";
 
 function OrdersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState([]);
+  const [activeBatch, setActiveBatch] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState("");
@@ -59,6 +60,19 @@ function OrdersPage() {
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
+  useEffect(() => {
+    async function loadBatch() {
+      try {
+        const res = await getCurrentUploadBatch();
+        setActiveBatch(res?.data || null);
+      } catch (error) {
+        console.error(error);
+        setActiveBatch(null);
+      }
+    }
+    loadBatch();
+  }, []);
 
   const handleFullRefresh = async () => {
     setSearch("");
@@ -131,6 +145,14 @@ function OrdersPage() {
     <Box sx={{ minHeight: "100vh", background: "#f3f4f6", px: { xs: 1.2, md: 2.4 }, py: 1.5 }}>
       <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Orders</Typography>
       <Typography sx={{ color: "#6b7280", mt: 0.4 }}>Live staging queue</Typography>
+      {activeBatch && (
+        <Chip
+          size="small"
+          sx={{ mt: 0.8 }}
+          color={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
+          label={`Batch #${activeBatch.id} • ${String(activeBatch.batch_date || "").slice(0, 10)} • ${String(activeBatch.state || "DRAFT").toUpperCase()}`}
+        />
+      )}
 
       <Stack direction="row" spacing={1} sx={{ mt: 1.2, overflowX: "auto", pb: 0.4 }}>
         <Chip label={`${stats.total} visible`} color="primary" />

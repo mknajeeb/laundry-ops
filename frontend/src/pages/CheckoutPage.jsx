@@ -24,7 +24,7 @@ import {
   Refresh,
   Undo,
 } from "@mui/icons-material";
-import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
+import { checkoutOrder, getCheckoutLog, getCurrentUploadBatch, getOrders, undoCheckout } from "../api";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
@@ -32,6 +32,7 @@ const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
 function CheckoutPage() {
   const [orders, setOrders] = useState([]);
   const [checkedLogs, setCheckedLogs] = useState([]);
+  const [activeBatch, setActiveBatch] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -50,6 +51,7 @@ function CheckoutPage() {
   const showSnack = useCallback((severity, message) => {
     setSnack({ open: true, severity, message });
   }, []);
+  const isDraftBatch = String(activeBatch?.state || "").toUpperCase() === "DRAFT";
 
   const nameOf = (row) => String(row?.name_clean || row?.name || "").trim();
 
@@ -92,7 +94,11 @@ function CheckoutPage() {
   const loadAll = useCallback(async () => {
     try {
       setLoading(true);
-      const [ordersRes, checkedRes] = await Promise.all([getOrders(), getCheckoutLog()]);
+      const [ordersRes, checkedRes, batchRes] = await Promise.all([
+        getOrders(),
+        getCheckoutLog(),
+        getCurrentUploadBatch(),
+      ]);
 
       const activeRows = (Array.isArray(ordersRes.data) ? ordersRes.data : []).filter(
         (row) => String(row?.status || "").toUpperCase() !== "CHECKED_OUT"
@@ -102,9 +108,11 @@ function CheckoutPage() {
 
       setOrders(activeRows);
       setCheckedLogs(checkedRows);
+      setActiveBatch(batchRes?.data || null);
     } catch (error) {
       console.error(error);
       showSnack("error", "Failed to load checkout data.");
+      setActiveBatch(null);
     } finally {
       setLoading(false);
     }
@@ -171,6 +179,10 @@ function CheckoutPage() {
 
   const handleCheckout = async () => {
     if (!activeOrder) return;
+    if (isDraftBatch) {
+      showSnack("warning", "Current batch is still DRAFT. Confirm batch before checkout.");
+      return;
+    }
 
     try {
       setBusy(true);
@@ -248,6 +260,16 @@ function CheckoutPage() {
           activeBg="#0097b2"
         />
       </Stack>
+
+      {activeBatch && (
+        <Alert
+          severity={isDraftBatch ? "warning" : "success"}
+          sx={{ mt: 0.8 }}
+        >
+          Batch #{activeBatch.id} • {String(activeBatch.batch_date || "").slice(0, 10)} • {String(activeBatch.state || "DRAFT").toUpperCase()}
+          {isDraftBatch ? " — Current batch not confirmed." : ""}
+        </Alert>
+      )}
 
       <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.8 }}>
         <Button
@@ -336,6 +358,7 @@ function CheckoutPage() {
                           <Paper
                             key={`${viewMode}-${row.id || row.order_id}`}
                             onClick={() => {
+                              if (isDraftBatch && viewMode === "REMAINING") return;
                               if (viewMode === "REMAINING") setActiveOrder(row);
                               else setActiveChecked(row);
                             }}
@@ -345,6 +368,7 @@ function CheckoutPage() {
                               border: isHD ? "1px solid #0097b2" : "1.5px solid #ffbd59",
                               bgcolor: isHD ? "#0097b2" : "#111827",
                               cursor: "pointer",
+                              opacity: isDraftBatch && viewMode === "REMAINING" ? 0.7 : 1,
                             }}
                           >
                               <Stack spacing={0.62}>
@@ -412,7 +436,7 @@ function CheckoutPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setActiveOrder(null)}>Cancel</Button>
-          <Button variant="contained" disabled={busy} onClick={handleCheckout} startIcon={<LocalShipping />}>
+          <Button variant="contained" disabled={busy || isDraftBatch} onClick={handleCheckout} startIcon={<LocalShipping />}>
             Confirm Send
           </Button>
         </DialogActions>
