@@ -1,22 +1,12 @@
 import { Link } from "react-router-dom";
-import { Chip } from "@mui/material";
 
-function Sidebar({ activeBatch }){
+function Sidebar(){
 
   return(
 
     <div className="sidebar">
 
-      <h2>WashPro</h2>
-
-      {activeBatch && (
-        <Chip
-          size="small"
-          label={`Active Batch: #${activeBatch.id} (${String(activeBatch.state || "DRAFT").toUpperCase()})`}
-          color={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
-          sx={{ mb: 1.2, bgcolor: "#ffffff", color: "#111827" }}
-        />
-      )}
+      <h2>Washpro</h2>
 
       <div className="sidebar-menu">
         <Link className="menu-item" to="/">Home</Link>
@@ -26,8 +16,6 @@ function Sidebar({ activeBatch }){
         <Link className="menu-item" to="/orders">Orders</Link>
 
         <Link className="menu-item" to="/checkout">Checkout</Link>
-
-        <Link className="menu-item" to="/upload">Upload Orders</Link>
 
         <Link className="menu-item" to="/employees">Employees</Link>
         <Link className="menu-item" to="/clock">Clock</Link>

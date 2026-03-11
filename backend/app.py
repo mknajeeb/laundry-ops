@@ -1103,11 +1103,16 @@ def upload_orders():
         def staging_reason_for_status(raw_logistics, raw_status):
             logistics = (raw_logistics or "").strip().upper()
             status = (raw_status or "").strip().upper()
-            if logistics in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
-                return "ALREADY_SENT_OR_FORCED"
+            # If logistics_status exists, trust it as source of truth.
+            if logistics:
+                if logistics in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
+                    return "ALREADY_SENT_OR_FORCED"
+                return "DUPLICATE_IN_STAGING"
+
+            # Legacy fallback only when logistics_status column is not present.
             if status in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCED_CHECKOUT", "FORCE_CHECKOUT"]:
                 return "ALREADY_SENT_OR_FORCED"
-            return "DUPLICATE_IN_ACTIVE_STAGING"
+            return "DUPLICATE_IN_STAGING"
 
         for r in staging_rows:
             identity_key = build_identity_key(
@@ -1456,15 +1461,56 @@ def current_shift():
 @app.route("/order_processing", methods=["POST"])
 def process_order():
 
-    data = request.json
+    data = request.json or {}
 
-    order_id = data["order_id"]
-    washer_id = data["washer_employee_id"]
-    folder_id = data["folder_employee_id"]
-    end_time = data["fold_end_time"]
-    pieces = data["pieces"]
-    issue = data["issue_type"]
-    rinse_case = data["rinse_case_id"]
+    order_id = data.get("order_id")
+    washer_id = data.get("washer_employee_id")
+    folder_id = data.get("folder_employee_id")
+    end_time = data.get("fold_end_time")
+    pieces = data.get("pieces")
+    issue = data.get("issue_type")
+    rinse_case = data.get("rinse_case_id")
+    processing_date = data.get("processing_date")
+
+    if order_id in [None, ""]:
+        return jsonify({"error": "order_id is required"}), 400
+    if washer_id in [None, ""] or folder_id in [None, ""]:
+        return jsonify({"error": "washer_employee_id and folder_employee_id are required"}), 400
+
+    try:
+        order_id = int(order_id)
+        washer_id = int(washer_id)
+        folder_id = int(folder_id)
+    except Exception:
+        return jsonify({"error": "order_id, washer_employee_id, folder_employee_id must be numeric"}), 400
+
+    if pieces in [None, ""]:
+        pieces = None
+    else:
+        try:
+            pieces = int(pieces)
+        except Exception:
+            return jsonify({"error": "pieces must be numeric"}), 400
+
+    end_dt = None
+    if end_time not in [None, ""]:
+        # Accept ISO datetime, HH:MM (24h), or HH:MM AM/PM with optional processing_date.
+        raw_end_time = str(end_time).strip()
+        if processing_date not in [None, ""]:
+            try:
+                d = parse_date_value(processing_date)
+                try:
+                    t = datetime.strptime(raw_end_time, "%I:%M %p").time()
+                except Exception:
+                    t = datetime.strptime(raw_end_time, "%H:%M").time()
+                end_dt = datetime.combine(d, t)
+            except Exception:
+                end_dt = None
+        if end_dt is None:
+            try:
+                end_dt = datetime.fromisoformat(raw_end_time)
+            except Exception:
+                end_dt = None
 
     conn = get_db()
     cursor = conn.cursor()
@@ -1489,7 +1535,7 @@ def process_order():
         order_id,
         washer_id,
         folder_id,
-        end_time,
+        end_dt,
         pieces,
         issue,
         rinse_case
@@ -2769,6 +2815,13 @@ def confirm_upload_batch(batch_id):
             AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
         """, (batch_id,))
         accepted_rows = cursor.fetchall()
+
+        # Safety guard: do not let a fully rejected draft mutate live staging/final.
+        if len(accepted_rows) == 0:
+            return jsonify({
+                "error": "Batch has no ACCEPTED/OVERRIDDEN rows. Nothing to apply.",
+                "accepted_count": 0
+            }), 409
 
         uploaded_identity_keys = set()
         for row in accepted_rows:

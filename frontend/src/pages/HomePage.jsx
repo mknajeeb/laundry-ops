@@ -22,7 +22,7 @@ const TILE_BASE = {
   justifyContent: "flex-start",
   py: 1.5,
   px: 1.5,
-  fontWeight: 800,
+  fontWeight: 500,
   fontSize: 16,
 };
 
@@ -32,17 +32,17 @@ function HomePage() {
   return (
     <Box sx={{ minHeight: "100%", bgcolor: "#ffffff", p: { xs: 1.2, sm: 2 } }}>
       <Stack spacing={1.2} sx={{ mb: 1.5 }}>
-        <Typography sx={{ fontSize: { xs: 26, sm: 32 }, fontWeight: 900, lineHeight: 1.05 }}>
-          WashPro Operations
+        <Typography sx={{ fontSize: { xs: 26, sm: 32 }, fontWeight: 500, lineHeight: 1.05 }}>
+          Washpro Operations
         </Typography>
-        <Typography sx={{ color: "#6b7280", fontWeight: 600 }}>
+        <Typography sx={{ color: "#6b7280", fontWeight: 500 }}>
           Choose a module to continue.
         </Typography>
       </Stack>
 
       <Stack spacing={1.2}>
         <Paper sx={SECTION_CARD}>
-          <Typography sx={{ mb: 1, fontWeight: 900, fontSize: 14, letterSpacing: 0.3 }}>
+          <Typography sx={{ mb: 1, fontWeight: 500, fontSize: 14, letterSpacing: 0.3 }}>
             RINSE FLOW
           </Typography>
           <Stack spacing={1}>
@@ -55,9 +55,9 @@ function HomePage() {
                 color: "#ffffff",
                 "&:hover": { bgcolor: "#007f95" },
               }}
-              onClick={() => navigate("/checkout")}
+              onClick={() => navigate("/dashboard")}
             >
-              WashPro to Rinse
+              Dashboard
             </Button>
             <Button
               fullWidth
@@ -71,7 +71,7 @@ function HomePage() {
               }}
               onClick={() => navigate("/upload")}
             >
-              Upload Batch
+              Upload Orders
             </Button>
             <Button
               fullWidth
@@ -91,7 +91,7 @@ function HomePage() {
         </Paper>
 
         <Paper sx={SECTION_CARD}>
-          <Typography sx={{ mb: 1, fontWeight: 900, fontSize: 14, letterSpacing: 0.3 }}>
+          <Typography sx={{ mb: 1, fontWeight: 500, fontSize: 14, letterSpacing: 0.3 }}>
             EMPLOYEE FLOW
           </Typography>
           <Stack spacing={1}>

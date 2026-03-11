@@ -79,16 +79,19 @@ function CheckoutPage() {
   const serviceOf = (row) => String(row?.service_type || row?.service || "").toUpperCase();
 
   const rushOf = (row) => {
-    if (row?.rush_type) return String(row.rush_type).toUpperCase();
+    if (row?.rush_type) {
+      const rt = String(row.rush_type).toUpperCase().replace("_", "-");
+      return rt === "RUSH" ? "RUSH" : "NON-RUSH";
+    }
 
     if (row?.rush_date) {
       const due = new Date(row.rush_date);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      return due < today ? "RUSH" : "NON_RUSH";
+      return due < today ? "RUSH" : "NON-RUSH";
     }
 
-    return "NON_RUSH";
+    return "NON-RUSH";
   };
 
   const loadAll = useCallback(async () => {
@@ -140,7 +143,7 @@ function CheckoutPage() {
   const remainingRushCount = useMemo(
     () => ({
       rush: filteredActive.filter((row) => rushOf(row) === "RUSH").length,
-      nonRush: filteredActive.filter((row) => rushOf(row) === "NON_RUSH").length,
+      nonRush: filteredActive.filter((row) => rushOf(row) === "NON-RUSH").length,
     }),
     [filteredActive]
   );
@@ -148,7 +151,7 @@ function CheckoutPage() {
   const sentRushCount = useMemo(
     () => ({
       rush: filteredChecked.filter((row) => rushOf(row) === "RUSH").length,
-      nonRush: filteredChecked.filter((row) => rushOf(row) === "NON_RUSH").length,
+      nonRush: filteredChecked.filter((row) => rushOf(row) === "NON-RUSH").length,
     }),
     [filteredChecked]
   );
@@ -209,7 +212,7 @@ function CheckoutPage() {
       await undoCheckout(activeChecked.order_id);
       await loadAll();
       setActiveChecked(null);
-      showSnack("success", `Moved back to WashPro (#${activeChecked.order_id}).`);
+      showSnack("success", `Moved back to Washpro (#${activeChecked.order_id}).`);
     } catch (error) {
       console.error(error);
       showSnack("error", "Undo failed.");
@@ -264,25 +267,20 @@ function CheckoutPage() {
         />
       </Stack>
 
-      {activeBatch && (
-        <Alert
-          severity={isDraftBatch ? "warning" : "success"}
-          sx={{ mt: 0.8 }}
-        >
-          Batch #{activeBatch.id} • {String(activeBatch.batch_date || "").slice(0, 10)} • {String(activeBatch.state || "DRAFT").toUpperCase()}
-          {isDraftBatch ? " — Current batch not confirmed." : ""}
-        </Alert>
+      {activeBatch?.batch_date && (
+        <Typography sx={{ mt: 0.8, color: "#4b5563", fontSize: 14 }}>
+          {new Date(activeBatch.batch_date).toLocaleDateString(undefined, {
+            weekday: "short",
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })}
+        </Typography>
       )}
 
-      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.8 }}>
-        <Button
-          size="small"
-          variant="outlined"
-          startIcon={<Refresh />}
-          onClick={handleFullRefresh}
-          disabled={loading || busy}
-        >
-          Full Refresh
+      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.4 }}>
+        <Button size="small" variant="text" startIcon={<Refresh />} onClick={handleFullRefresh} disabled={loading || busy}>
+          Refresh
         </Button>
       </Stack>
 
@@ -331,13 +329,13 @@ function CheckoutPage() {
                       placeItems: "center",
                       bgcolor: "#111827",
                       color: "#fff",
-                      fontWeight: 900,
+                      fontWeight: 500,
                       fontSize: 14,
                     }}
                   >
                     {alpha}
                   </Box>
-                  <Typography sx={{ fontSize: 16, fontWeight: 800, letterSpacing: 0.2 }}>
+                  <Typography sx={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.2 }}>
                     {rows.length} bags
                   </Typography>
                 </Stack>
@@ -377,13 +375,13 @@ function CheckoutPage() {
                           >
                               <Stack spacing={0.62}>
                                 <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                  <Typography sx={{ fontSize: 19, fontWeight: 900, color: "#fff" }}>
+                                  <Typography sx={{ fontSize: 19, fontWeight: 500, color: "#fff" }}>
                                     {nameOf(row)}
                                   </Typography>
                                   <ChevronRight sx={{ color: "#fff" }} />
                                 </Stack>
 
-                              <Typography sx={{ color: isHD ? "#ecfeff" : "#f8fafc", fontWeight: 700, fontSize: 14 }}>
+                              <Typography sx={{ color: isHD ? "#ecfeff" : "#f8fafc", fontWeight: 500, fontSize: 14 }}>
                                 {formatDate(viewMode === "REMAINING" ? row.date_clean : row.rush_date)} • {measureOf(row)}
                               </Typography>
 
@@ -393,7 +391,7 @@ function CheckoutPage() {
                                   label={service}
                                   sx={{
                                     height: 24,
-                                    fontWeight: 700,
+                                    fontWeight: 500,
                                     bgcolor: isHD ? "#ffffff" : "#fff4d9",
                                     color: "#111827",
                                     border: isHD ? "1px solid #ffffff" : "1px solid #ffbd59",
@@ -405,7 +403,7 @@ function CheckoutPage() {
                                   icon={isRush ? <Bolt sx={{ fontSize: 14 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
                                   sx={{
                                     height: 24,
-                                    fontWeight: 700,
+                                    fontWeight: 500,
                                     bgcolor: "#ffffff",
                                     color: "#111827",
                                     border: "1px solid #e5e7eb",
@@ -416,7 +414,7 @@ function CheckoutPage() {
                                   label={processingStatus}
                                   sx={{
                                     height: 24,
-                                    fontWeight: 700,
+                                    fontWeight: 500,
                                     bgcolor: "#ffffff",
                                     color: "#111827",
                                     border: "1px solid #e5e7eb",
@@ -441,7 +439,7 @@ function CheckoutPage() {
         <DialogContent dividers>
           {activeOrder && (
             <Stack spacing={1}>
-              <Typography sx={{ fontWeight: 900, fontSize: 22 }}>{nameOf(activeOrder)}</Typography>
+              <Typography sx={{ fontWeight: 500, fontSize: 22 }}>{nameOf(activeOrder)}</Typography>
               <Typography>{formatDate(activeOrder.date_clean)}</Typography>
               <Typography>{measureOf(activeOrder)}</Typography>
               <Typography>{serviceOf(activeOrder)} • {rushOf(activeOrder).replace("_", "-")}</Typography>
@@ -458,11 +456,11 @@ function CheckoutPage() {
       </Dialog>
 
       <Dialog open={Boolean(activeChecked)} onClose={() => setActiveChecked(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Move Back to WashPro</DialogTitle>
+        <DialogTitle>Move Back to Washpro</DialogTitle>
         <DialogContent dividers>
           {activeChecked && (
             <Stack spacing={1}>
-              <Typography sx={{ fontWeight: 900, fontSize: 22 }}>{nameOf(activeChecked)}</Typography>
+              <Typography sx={{ fontWeight: 500, fontSize: 22 }}>{nameOf(activeChecked)}</Typography>
               <Typography>Order #{activeChecked.order_id}</Typography>
               <Typography>{formatDate(activeChecked.rush_date)}</Typography>
               <Alert severity="info">Use this only if sent by mistake.</Alert>
@@ -511,15 +509,15 @@ function Segment({ label, value, rush, nonRush, active, onClick, activeBg }) {
       }}
     >
       <Stack alignItems="flex-start" spacing={0.2}>
-        <Typography sx={{ fontSize: 14, fontWeight: 800 }}>{label}</Typography>
+        <Typography sx={{ fontSize: 14, fontWeight: 500 }}>{label}</Typography>
         <Stack direction="row" spacing={0.7} alignItems="center" sx={{ opacity: active ? 0.95 : 0.85 }}>
           <Bolt sx={{ fontSize: 14 }} />
-          <Typography sx={{ fontSize: 13, fontWeight: 900 }}>{rush}</Typography>
+          <Typography sx={{ fontSize: 13, fontWeight: 500 }}>{rush}</Typography>
           <CheckCircle sx={{ fontSize: 14 }} />
-          <Typography sx={{ fontSize: 13, fontWeight: 900 }}>{nonRush}</Typography>
+          <Typography sx={{ fontSize: 13, fontWeight: 500 }}>{nonRush}</Typography>
         </Stack>
       </Stack>
-      <Typography sx={{ fontSize: 18, fontWeight: 900 }}>{value}</Typography>
+      <Typography sx={{ fontSize: 18, fontWeight: 500 }}>{value}</Typography>
     </Button>
   );
 }

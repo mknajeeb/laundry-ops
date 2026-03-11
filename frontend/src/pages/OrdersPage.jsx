@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Alert,
   Box,
   Button,
   Dialog,
@@ -16,8 +15,8 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { FlashOn, Search } from "@mui/icons-material";
-import { deleteOrder, getCurrentUploadBatch, getOrders, updateOrder } from "../api";
+import { FlashOn, Refresh, Search } from "@mui/icons-material";
+import { deleteOrder, getCurrentUploadBatch, getEmployees, getOrders, processOrder, updateOrder } from "../api";
 import { useSearchParams } from "react-router-dom";
 
 function OrdersPage() {
@@ -34,6 +33,8 @@ function OrdersPage() {
   const [alpha, setAlpha] = useState("ALL");
   const [editRow, setEditRow] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [processRow, setProcessRow] = useState(null);
 
   useEffect(() => {
     const nextService = (searchParams.get("service") || "ALL").toUpperCase();
@@ -63,6 +64,19 @@ function OrdersPage() {
   useEffect(() => {
     loadOrders();
   }, [loadOrders]);
+
+  useEffect(() => {
+    async function loadEmployees() {
+      try {
+        const res = await getEmployees();
+        setEmployees(Array.isArray(res.data) ? res.data : []);
+      } catch (error) {
+        console.error(error);
+        setEmployees([]);
+      }
+    }
+    loadEmployees();
+  }, []);
 
   useEffect(() => {
     async function loadBatch() {
@@ -154,14 +168,19 @@ function OrdersPage() {
 
   return (
     <Box sx={{ minHeight: "100vh", background: "#f3f4f6", px: { xs: 1.2, md: 2.4 }, py: 1.5 }}>
-      <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Orders</Typography>
+      <Stack direction="row" justifyContent="space-between" alignItems="center">
+        <Typography sx={{ fontSize: 30, fontWeight: 500, lineHeight: 1 }}>Orders</Typography>
+        <Button size="small" variant="text" startIcon={<Refresh />} onClick={loadOrders} disabled={loading}>
+          Refresh
+        </Button>
+      </Stack>
       <Typography sx={{ color: "#6b7280", mt: 0.4 }}>Live staging queue</Typography>
       {activeBatch && (
         <Chip
           size="small"
           sx={{ mt: 0.8 }}
           color={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
-          label={`Batch #${activeBatch.id} • ${String(activeBatch.batch_date || "").slice(0, 10)} • ${String(activeBatch.state || "DRAFT").toUpperCase()}`}
+          label={`${new Date(activeBatch.batch_date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })} • ${String(activeBatch.state || "DRAFT").toUpperCase()}`}
         />
       )}
 
@@ -173,9 +192,7 @@ function OrdersPage() {
         <Button size="small" variant="outlined" onClick={() => window.print()}>
           Print
         </Button>
-        <Button size="small" variant="outlined" onClick={handleFullRefresh} disabled={loading}>
-          Full Refresh
-        </Button>
+        <Button size="small" variant="outlined" onClick={handleFullRefresh} disabled={loading}>Reset Filters</Button>
       </Stack>
 
       <Paper sx={{ p: 1.2, borderRadius: 2, mt: 1.2 }}>
@@ -264,13 +281,12 @@ function OrdersPage() {
           <Typography color="text.secondary">Loading orders...</Typography>
         </Stack>
       ) : filtered.length === 0 ? (
-        <Alert severity="info" sx={{ mt: 1.5 }}>
-          No orders found for this filter.
-        </Alert>
+        <Paper sx={{ p: 2, mt: 1.5, borderRadius: 2, color: "#6b7280" }}>No orders found for this filter.</Paper>
       ) : (
         <Stack spacing={1} sx={{ mt: 1.2 }}>
           {filtered.map((row) => {
             const isRush = String(row?.rush_type || "").toUpperCase() === "RUSH";
+            const isHD = String(row?.service_type || "").toUpperCase() === "HD";
             const rowLogistics = String(
               row?.logistics_status || (String(row?.status || "").toUpperCase() === "CHECKED_OUT" ? "SENT_TO_RINSE" : "AT_WASHPRO")
             ).toUpperCase();
@@ -284,24 +300,25 @@ function OrdersPage() {
                 sx={{
                   p: 1.2,
                   borderRadius: 2,
-                  border: `1px solid ${isRush ? "#fca5a5" : "#d1d5db"}`,
+                  border: isHD ? "1px solid #0097b2" : "1px solid #ffbd59",
+                  bgcolor: isHD ? "#0097b2" : "#111827",
                 }}
               >
                 <Stack spacing={0.7}>
                   <Stack direction="row" alignItems="center" justifyContent="space-between">
-                    <Typography sx={{ fontSize: 20, fontWeight: 800 }}>{row.name_clean || "-"}</Typography>
-                    <Chip size="small" label={`#${row.id}`} />
+                    <Typography sx={{ fontSize: 20, fontWeight: 500, color: "#fff" }}>{row.name_clean || "-"}</Typography>
+                    <Chip size="small" label={`#${row.id}`} sx={{ bgcolor: "#fff", color: "#111827" }} />
                   </Stack>
 
-                  <Typography sx={{ color: "#4b5563", fontWeight: 600 }}>
+                  <Typography sx={{ color: "#f8fafc", fontWeight: 500 }}>
                     {formatMeasure(row)} • {formatDateOnly(row.date_clean)}
                   </Typography>
 
                   <Stack direction="row" spacing={1}>
-                    <Chip size="small" label={row.service_type || "-"} color="warning" />
-                    <Chip size="small" label={isRush ? "RUSH" : "NON-RUSH"} color={isRush ? "error" : "success"} />
-                    <Chip size="small" label={rowLogistics} color="info" variant="outlined" />
-                    <Chip size="small" label={rowProcessing} color="success" variant="outlined" />
+                    <Chip size="small" label={row.service_type || "-"} sx={{ bgcolor: "#fff", color: "#111827" }} />
+                    <Chip size="small" label={isRush ? "RUSH" : "NON-RUSH"} sx={{ bgcolor: "#fff", color: "#111827" }} />
+                    <Chip size="small" label={rowLogistics} sx={{ bgcolor: "#fff", color: "#111827" }} />
+                    <Chip size="small" label={rowProcessing} sx={{ bgcolor: "#fff", color: "#111827" }} />
                   </Stack>
 
                   <Stack direction="row" spacing={1}>
@@ -313,6 +330,22 @@ function OrdersPage() {
                       service_type: row.service_type || "WF",
                     })}>
                       Edit
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      sx={{ bgcolor: "#ffffff", color: "#111827", "&:hover": { bgcolor: "#f3f4f6" } }}
+                      onClick={() =>
+                        setProcessRow({
+                          order_id: row.id,
+                          washer_employee_id: "",
+                          folder_employee_id: "",
+                          processing_date: new Date().toISOString().slice(0, 10),
+                          fold_end_time: "",
+                        })
+                      }
+                    >
+                      Process
                     </Button>
                     <Button
                       size="small"
@@ -402,6 +435,81 @@ function OrdersPage() {
                   )
                 );
                 setEditRow(null);
+              } catch (error) {
+                console.error(error);
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!processRow} onClose={() => setProcessRow(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Enter Processing Data</DialogTitle>
+        <DialogContent>
+          {processRow && (
+            <Stack spacing={1.2} sx={{ mt: 0.6 }}>
+              <TextField
+                select
+                label="Washed By"
+                value={processRow.washer_employee_id}
+                onChange={(e) => setProcessRow((p) => ({ ...p, washer_employee_id: e.target.value }))}
+              >
+                {employees.map((emp) => (
+                  <MenuItem key={emp.id} value={emp.id}>{emp.name}</MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                select
+                label="Folded By"
+                value={processRow.folder_employee_id}
+                onChange={(e) => setProcessRow((p) => ({ ...p, folder_employee_id: e.target.value }))}
+              >
+                {employees.map((emp) => (
+                  <MenuItem key={emp.id} value={emp.id}>{emp.name}</MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                type="date"
+                label="Processing Date"
+                value={processRow.processing_date}
+                InputLabelProps={{ shrink: true }}
+                onChange={(e) => setProcessRow((p) => ({ ...p, processing_date: e.target.value }))}
+              />
+              <TextField
+                label="Folding End Time (e.g. 03:45 PM)"
+                value={processRow.fold_end_time}
+                onChange={(e) => setProcessRow((p) => ({ ...p, fold_end_time: e.target.value }))}
+              />
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setProcessRow(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!processRow || !processRow.washer_employee_id || !processRow.folder_employee_id}
+            onClick={async () => {
+              if (!processRow) return;
+              try {
+                setSaving(true);
+                await processOrder({
+                  ...processRow,
+                  pieces: null,
+                  issue_type: null,
+                  rinse_case_id: null,
+                });
+                setOrders((prev) =>
+                  prev.map((r) =>
+                    r.id === processRow.order_id
+                      ? { ...r, processing_status: "PROCESSED", status: "PROCESSED" }
+                      : r
+                  )
+                );
+                setProcessRow(null);
               } catch (error) {
                 console.error(error);
               } finally {

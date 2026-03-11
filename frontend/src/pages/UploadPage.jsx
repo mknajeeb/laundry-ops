@@ -22,6 +22,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { Refresh } from "@mui/icons-material";
 import {
   addUploadBatchRow,
   confirmUploadBatch,
@@ -317,31 +318,6 @@ function UploadPage() {
     await loadRows(batch?.id, nextFilter);
   };
 
-  const handleFullRefresh = async () => {
-    setMessage({ type: "info", text: "" });
-    setRowStatusFilter("ALL");
-    setBatch(null);
-    setRows([]);
-    const resetAll = window.confirm(
-      "This will delete ALL batches (open + closed) and also clear staging/final/checkout/processing data. Continue?"
-    );
-    if (resetAll) {
-      try {
-        const res = await resetAllUploadBatches(true);
-        const c = res?.data?.cascade_deleted || {};
-        setMessage({
-          type: "success",
-          text: `Reset complete. Deleted batches + rows and cleared staging:${c.orders_staging || 0}, final:${c.orders_final || 0}, checkout:${c.checkout_log || 0}, processing:${c.order_processing || 0}.`,
-        });
-      } catch (error) {
-        console.error(error);
-        setMessage({ type: "error", text: error?.response?.data?.error || "Reset failed." });
-      }
-    }
-    await loadCurrentBatch("ALL");
-    await loadBatchHistory();
-  };
-
   const handleDeleteBatch = async (batchId) => {
     const ok = window.confirm(
       `Delete batch #${batchId}? This removes the batch and will also clean matching staging/final/checkout/processing records.`
@@ -375,7 +351,21 @@ function UploadPage() {
 
   return (
     <Box className="page">
-      <Typography sx={{ fontSize: 28, fontWeight: 900 }}>Upload Orders</Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between">
+        <Typography sx={{ fontSize: 28, fontWeight: 500 }}>Upload Orders</Typography>
+        <Button
+          variant="text"
+          size="small"
+          startIcon={<Refresh />}
+          onClick={() => {
+            loadCurrentBatch("ALL");
+            loadBatchHistory();
+          }}
+          disabled={loading || loadingRows}
+        >
+          Refresh
+        </Button>
+      </Stack>
 
       {batch && (
         <Stack direction="row" spacing={1} sx={{ mt: 0.8, flexWrap: "wrap" }}>
@@ -391,22 +381,27 @@ function UploadPage() {
         </Stack>
       )}
 
-      {message.text && (
-        <Alert severity={message.type} sx={{ mt: 1.2 }}>
-          {message.text}
-        </Alert>
-      )}
-
-      {isDraft && (
-        <Alert severity="warning" sx={{ mt: 1 }}>
-          Draft only. Not live until Confirm Batch.
-        </Alert>
-      )}
+      <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: "wrap" }}>
+        {message.text && (
+          <Chip
+            label={message.text}
+            color={message.type === "error" ? "error" : message.type === "warning" ? "warning" : "success"}
+            sx={{ borderRadius: 2, bgcolor: "#eef4ef", color: "#355a3d" }}
+          />
+        )}
+        {isDraft && (
+          <Chip
+            label="Draft only. Not live until confirm."
+            color="warning"
+            sx={{ borderRadius: 2, bgcolor: "#faf3e6", color: "#7a5a1f" }}
+          />
+        )}
+      </Stack>
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
           <Stack spacing={0.6}>
-            <Typography sx={{ fontWeight: 700, fontSize: 14 }}>Batch Date</Typography>
+            <Typography sx={{ fontWeight: 500, fontSize: 14 }}>Batch Date</Typography>
             <TextField
               type="date"
               size="small"
@@ -416,7 +411,7 @@ function UploadPage() {
           </Stack>
 
           <Stack spacing={0.6}>
-            <Typography sx={{ fontWeight: 700, fontSize: 14 }}>File</Typography>
+            <Typography sx={{ fontWeight: 500, fontSize: 14 }}>File</Typography>
             <input
               type="file"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
@@ -427,21 +422,8 @@ function UploadPage() {
             {loading ? "Uploading..." : "Upload Draft"}
           </Button>
 
-          <Button
-            variant="outlined"
-            onClick={() => loadCurrentBatch(rowStatusFilter)}
-            disabled={loading || loadingRows}
-          >
+          <Button variant="outlined" onClick={() => loadCurrentBatch(rowStatusFilter)} disabled={loading || loadingRows}>
             Refresh
-          </Button>
-
-          <Button
-            variant="outlined"
-            color="secondary"
-            onClick={handleFullRefresh}
-            disabled={loading || loadingRows}
-          >
-            Full Refresh
           </Button>
         </Stack>
       </Paper>
@@ -461,7 +443,7 @@ function UploadPage() {
         <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1} justifyContent="space-between" alignItems={{ md: "center" }}>
             <Box>
-              <Typography sx={{ fontSize: 20, fontWeight: 900 }}>{formatBatchLabel(batch)}</Typography>
+              <Typography sx={{ fontSize: 20, fontWeight: 500 }}>{formatBatchLabel(batch)}</Typography>
               <Typography color="text.secondary">
                 Date {String(batch.batch_date || "").slice(0, 10)} • State {batch.state || "DRAFT"}
               </Typography>
@@ -521,7 +503,13 @@ function UploadPage() {
                     <TableCell>{row.id}</TableCell>
                     <TableCell>{String(row.date_clean || "").slice(0, 10)}</TableCell>
                     <TableCell>{row.name_clean}</TableCell>
-                    <TableCell>{row.weight_num ?? "-"}</TableCell>
+                    <TableCell>
+                      {String(row.service_type || "").toUpperCase() === "HD"
+                        ? `${Math.round(Number(row.weight_num || 0))} pcs`
+                        : row.weight_num == null
+                          ? "-"
+                          : `${Number(row.weight_num).toFixed(2)} lb`}
+                    </TableCell>
                     <TableCell>{row.service_type}</TableCell>
                     <TableCell>{row.rush_type}</TableCell>
                     <TableCell>{row.row_status}</TableCell>
@@ -665,7 +653,7 @@ function UploadPage() {
 
       {viewTab === "BATCHES" && (
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
-        <Typography sx={{ fontSize: 18, fontWeight: 800, mb: 1 }}>Uploaded Batches</Typography>
+        <Typography sx={{ fontSize: 18, fontWeight: 500, mb: 1 }}>Uploaded Batches</Typography>
         <Stack spacing={0.8}>
           {batches.length === 0 ? (
             <Typography color="text.secondary">No batches yet.</Typography>
@@ -680,7 +668,7 @@ function UploadPage() {
                 sx={{ border: "1px solid #e5e7eb", borderRadius: 1.5, p: 1 }}
               >
                 <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
-                  <Typography sx={{ fontWeight: 700 }}>{formatBatchLabel(b)}</Typography>
+                  <Typography sx={{ fontWeight: 500 }}>{formatBatchLabel(b)}</Typography>
                   <Chip
                     size="small"
                     label={(b.state || "DRAFT").toUpperCase()}
