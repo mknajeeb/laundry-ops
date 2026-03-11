@@ -101,7 +101,10 @@ function CheckoutPage() {
       ]);
 
       const activeRows = (Array.isArray(ordersRes.data) ? ordersRes.data : []).filter(
-        (row) => String(row?.status || "").toUpperCase() !== "CHECKED_OUT"
+        (row) =>
+          !["SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT"].includes(
+            String(row?.logistics_status || row?.status || "").toUpperCase()
+          )
       );
 
       const checkedRows = Array.isArray(checkedRes.data) ? checkedRes.data : [];
@@ -353,6 +356,7 @@ function CheckoutPage() {
                         const service = serviceOf(row);
                         const isHD = service === "HD";
                         const isRush = rushOf(row) === "RUSH";
+                        const processingStatus = String(row?.processing_status || "PENDING").toUpperCase();
 
                         return (
                           <Paper
@@ -399,6 +403,17 @@ function CheckoutPage() {
                                   size="small"
                                   label={isRush ? "RUSH" : "NON-RUSH"}
                                   icon={isRush ? <Bolt sx={{ fontSize: 14 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
+                                  sx={{
+                                    height: 24,
+                                    fontWeight: 700,
+                                    bgcolor: "#ffffff",
+                                    color: "#111827",
+                                    border: "1px solid #e5e7eb",
+                                  }}
+                                />
+                                <Chip
+                                  size="small"
+                                  label={processingStatus}
                                   sx={{
                                     height: 24,
                                     fontWeight: 700,

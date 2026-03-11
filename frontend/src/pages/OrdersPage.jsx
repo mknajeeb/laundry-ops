@@ -29,7 +29,8 @@ function OrdersPage() {
   const [search, setSearch] = useState("");
   const [service, setService] = useState((searchParams.get("service") || "ALL").toUpperCase());
   const [rush, setRush] = useState((searchParams.get("rush") || "ALL").toUpperCase());
-  const [status, setStatus] = useState((searchParams.get("status") || "ALL").toUpperCase());
+  const [logistics, setLogistics] = useState((searchParams.get("logistics") || "ALL").toUpperCase());
+  const [processing, setProcessing] = useState((searchParams.get("processing") || searchParams.get("status") || "ALL").toUpperCase());
   const [alpha, setAlpha] = useState("ALL");
   const [editRow, setEditRow] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -37,10 +38,12 @@ function OrdersPage() {
   useEffect(() => {
     const nextService = (searchParams.get("service") || "ALL").toUpperCase();
     const nextRush = (searchParams.get("rush") || "ALL").toUpperCase();
-    const nextStatus = (searchParams.get("status") || "ALL").toUpperCase();
+    const nextLogistics = (searchParams.get("logistics") || "ALL").toUpperCase();
+    const nextProcessing = (searchParams.get("processing") || searchParams.get("status") || "ALL").toUpperCase();
     setService(nextService);
     setRush(nextRush);
-    setStatus(nextStatus);
+    setLogistics(nextLogistics);
+    setProcessing(nextProcessing);
   }, [searchParams]);
 
   const loadOrders = useCallback(async () => {
@@ -78,7 +81,8 @@ function OrdersPage() {
     setSearch("");
     setService("ALL");
     setRush("ALL");
-    setStatus("ALL");
+    setLogistics("ALL");
+    setProcessing("ALL");
     setAlpha("ALL");
     setSearchParams({});
     await loadOrders();
@@ -90,7 +94,12 @@ function OrdersPage() {
     return orders.filter((row) => {
       const rowService = String(row?.service_type || "").toUpperCase();
       const rowRush = String(row?.rush_type || "").toUpperCase();
-      const rowStatus = String(row?.status || "").toUpperCase();
+      const rowLogistics = String(
+        row?.logistics_status || (String(row?.status || "").toUpperCase() === "CHECKED_OUT" ? "SENT_TO_RINSE" : "AT_WASHPRO")
+      ).toUpperCase();
+      const rowProcessing = String(
+        row?.processing_status || (String(row?.status || "").toUpperCase() === "PROCESSED" ? "PROCESSED" : "PENDING")
+      ).toUpperCase();
 
       const matchSearch =
         !q ||
@@ -99,14 +108,15 @@ function OrdersPage() {
 
       const matchService = service === "ALL" || rowService === service;
       const matchRush = rush === "ALL" || rowRush === rush;
-      const matchStatus = status === "ALL" || rowStatus === status;
+      const matchLogistics = logistics === "ALL" || rowLogistics === logistics;
+      const matchProcessing = processing === "ALL" || rowProcessing === processing;
       const name = String(row?.name_clean || "").trim().toUpperCase();
       const first = name.charAt(0);
       const matchAlpha = alpha === "ALL" || first === alpha;
 
-      return matchSearch && matchService && matchRush && matchStatus && matchAlpha;
+      return matchSearch && matchService && matchRush && matchLogistics && matchProcessing && matchAlpha;
     });
-  }, [orders, search, service, rush, status, alpha]);
+  }, [orders, search, service, rush, logistics, processing, alpha]);
 
   const stats = useMemo(() => {
     const total = filtered.length;
@@ -133,11 +143,12 @@ function OrdersPage() {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
-  const applyParamFilters = (nextService, nextRush, nextStatus) => {
+  const applyParamFilters = (nextService, nextRush, nextLogistics, nextProcessing) => {
     const next = {};
     if (nextService !== "ALL") next.service = nextService;
     if (nextRush !== "ALL") next.rush = nextRush;
-    if (nextStatus !== "ALL") next.status = nextStatus;
+    if (nextLogistics !== "ALL") next.logistics = nextLogistics;
+    if (nextProcessing !== "ALL") next.processing = nextProcessing;
     setSearchParams(next);
   };
 
@@ -192,7 +203,7 @@ function OrdersPage() {
               color={service === item ? "warning" : "default"}
               onClick={() => {
                 setService(item);
-                applyParamFilters(item, rush, status);
+                applyParamFilters(item, rush, logistics, processing);
               }}
             />
           ))}
@@ -204,19 +215,31 @@ function OrdersPage() {
               color={rush === item ? "error" : "default"}
               onClick={() => {
                 setRush(item);
-                applyParamFilters(service, item, status);
+                applyParamFilters(service, item, logistics, processing);
               }}
             />
           ))}
-          {["ALL", "PENDING", "PROCESSED", "CHECKED_OUT"].map((item) => (
+          {["ALL", "AT_WASHPRO", "SENT_TO_RINSE", "FORCE_CHECKOUT"].map((item) => (
             <Chip
               key={item}
               label={item}
               clickable
-              color={status === item ? "success" : "default"}
+              color={logistics === item ? "info" : "default"}
               onClick={() => {
-                setStatus(item);
-                applyParamFilters(service, rush, item);
+                setLogistics(item);
+                applyParamFilters(service, rush, item, processing);
+              }}
+            />
+          ))}
+          {["ALL", "PENDING", "PROCESSED"].map((item) => (
+            <Chip
+              key={item}
+              label={item}
+              clickable
+              color={processing === item ? "success" : "default"}
+              onClick={() => {
+                setProcessing(item);
+                applyParamFilters(service, rush, logistics, item);
               }}
             />
           ))}
@@ -248,7 +271,12 @@ function OrdersPage() {
         <Stack spacing={1} sx={{ mt: 1.2 }}>
           {filtered.map((row) => {
             const isRush = String(row?.rush_type || "").toUpperCase() === "RUSH";
-            const rowStatus = String(row?.status || "PENDING").toUpperCase();
+            const rowLogistics = String(
+              row?.logistics_status || (String(row?.status || "").toUpperCase() === "CHECKED_OUT" ? "SENT_TO_RINSE" : "AT_WASHPRO")
+            ).toUpperCase();
+            const rowProcessing = String(
+              row?.processing_status || (String(row?.status || "").toUpperCase() === "PROCESSED" ? "PROCESSED" : "PENDING")
+            ).toUpperCase();
 
             return (
               <Paper
@@ -272,7 +300,8 @@ function OrdersPage() {
                   <Stack direction="row" spacing={1}>
                     <Chip size="small" label={row.service_type || "-"} color="warning" />
                     <Chip size="small" label={isRush ? "RUSH" : "NON-RUSH"} color={isRush ? "error" : "success"} />
-                    <Chip size="small" label={rowStatus} variant="outlined" />
+                    <Chip size="small" label={rowLogistics} color="info" variant="outlined" />
+                    <Chip size="small" label={rowProcessing} color="success" variant="outlined" />
                   </Stack>
 
                   <Stack direction="row" spacing={1}>
