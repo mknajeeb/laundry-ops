@@ -323,12 +323,16 @@ function UploadPage() {
     setBatch(null);
     setRows([]);
     const resetAll = window.confirm(
-      "This will delete ALL upload batches (open + closed) and all batch rows. Continue?"
+      "This will delete ALL batches (open + closed) and also clear staging/final/checkout/processing data. Continue?"
     );
     if (resetAll) {
       try {
-        await resetAllUploadBatches();
-        setMessage({ type: "success", text: "All upload batches were deleted." });
+        const res = await resetAllUploadBatches(true);
+        const c = res?.data?.cascade_deleted || {};
+        setMessage({
+          type: "success",
+          text: `Reset complete. Deleted batches + rows and cleared staging:${c.orders_staging || 0}, final:${c.orders_final || 0}, checkout:${c.checkout_log || 0}, processing:${c.order_processing || 0}.`,
+        });
       } catch (error) {
         console.error(error);
         setMessage({ type: "error", text: error?.response?.data?.error || "Reset failed." });
@@ -339,17 +343,23 @@ function UploadPage() {
   };
 
   const handleDeleteBatch = async (batchId) => {
-    const ok = window.confirm(`Delete batch #${batchId}? This removes all rows in that batch.`);
+    const ok = window.confirm(
+      `Delete batch #${batchId}? This removes the batch and will also clean matching staging/final/checkout/processing records.`
+    );
     if (!ok) return;
 
     try {
       setLoading(true);
-      await deleteUploadBatch(batchId);
+      const res = await deleteUploadBatch(batchId, true);
       if (batch?.id === batchId) {
         setBatch(null);
         setRows([]);
       }
-      setMessage({ type: "success", text: `Batch #${batchId} deleted.` });
+      const c = res?.data?.cascade_deleted || {};
+      setMessage({
+        type: "success",
+        text: `Batch #${batchId} deleted. Cleared staging:${c.orders_staging || 0}, final:${c.orders_final || 0}, checkout:${c.checkout_log || 0}, processing:${c.order_processing || 0}.`,
+      });
       await loadCurrentBatch("ALL");
       await loadBatchHistory();
     } catch (error) {

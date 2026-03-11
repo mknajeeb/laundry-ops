@@ -231,6 +231,46 @@ def table_has_column(cursor, table_name, col_name):
     return cursor.fetchone() is not None
 
 
+def table_exists(cursor, table_name):
+    cursor.execute("SHOW TABLES LIKE %s", (table_name,))
+    return cursor.fetchone() is not None
+
+
+def as_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def delete_identity_rows(cursor, table_name, rows, name_col, weight_col, service_col, date_col):
+    if not rows:
+        return 0
+
+    deleted = 0
+    for row in rows:
+        cursor.execute(
+            f"""
+                DELETE FROM {table_name}
+                WHERE UPPER(TRIM({name_col})) = UPPER(TRIM(%s))
+                  AND {service_col} = %s
+                  AND (({weight_col} IS NULL AND %s IS NULL) OR {weight_col} = %s)
+                  AND {date_col} = %s
+            """,
+            (
+                row.get("name_clean"),
+                row.get("service_type"),
+                row.get("weight_num"),
+                row.get("weight_num"),
+                row.get("date_clean"),
+            ),
+        )
+        deleted += cursor.rowcount or 0
+
+    return deleted
+
+
 def upload_batches_time_col(cursor):
     if table_has_column(cursor, "upload_batches", "created_at"):
         return "created_at"
@@ -2204,6 +2244,9 @@ def reset_current_draft_batch():
 @app.route("/upload_batches/reset_all", methods=["POST"])
 def reset_all_upload_batches():
 
+    data = request.json or {}
+    cascade_data = as_bool(data.get("cascade_data"), True)
+
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
 
@@ -2220,6 +2263,20 @@ def reset_all_upload_batches():
         cursor.execute("DELETE FROM upload_batch_rows")
         cursor.execute("DELETE FROM upload_batches")
 
+        cascade_deleted = {
+            "orders_staging": 0,
+            "orders_final": 0,
+            "checkout_log": 0,
+            "order_processing": 0,
+        }
+        if cascade_data:
+            for table_name in ["order_processing", "checkout_log", "orders_final", "orders_staging"]:
+                if table_exists(cursor, table_name):
+                    cursor.execute(f"SELECT COUNT(*) AS cnt FROM {table_name}")
+                    before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+                    cursor.execute(f"DELETE FROM {table_name}")
+                    cascade_deleted[table_name] = before
+
         # Reset auto-increment where possible for cleaner testing
         try:
             cursor.execute("ALTER TABLE upload_batch_rows AUTO_INCREMENT = 1")
@@ -2235,6 +2292,8 @@ def reset_all_upload_batches():
             "status": "reset_complete",
             "deleted_rows": rows_before,
             "deleted_batches": batches_before,
+            "cascade_data": cascade_data,
+            "cascade_deleted": cascade_deleted,
             "row_pk": row_pk,
             "batch_pk": batch_pk
         })
@@ -2248,6 +2307,9 @@ def reset_all_upload_batches():
 
 @app.route("/upload_batches/<int:batch_id>/delete", methods=["POST"])
 def delete_upload_batch(batch_id):
+
+    data = request.json or {}
+    cascade_data = as_bool(data.get("cascade_data"), True)
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -2270,6 +2332,92 @@ def delete_upload_batch(batch_id):
         """, (batch_id,))
         row_count = (cursor.fetchone() or {}).get("cnt", 0) or 0
 
+        cascade_deleted = {
+            "orders_staging": 0,
+            "orders_final": 0,
+            "checkout_log": 0,
+            "order_processing": 0,
+        }
+        if cascade_data:
+            cursor.execute("""
+                SELECT
+                    date_clean,
+                    name_clean,
+                    weight_num,
+                    service_type
+                FROM upload_batch_rows
+                WHERE upload_batch_id = %s
+                  AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
+            """, (batch_id,))
+            identity_rows = cursor.fetchall()
+
+            staging_ids = []
+            if table_exists(cursor, "orders_staging"):
+                for row in identity_rows:
+                    cursor.execute("""
+                        SELECT id
+                        FROM orders_staging
+                        WHERE UPPER(TRIM(name_clean)) = UPPER(TRIM(%s))
+                          AND service_type = %s
+                          AND ((weight_num IS NULL AND %s IS NULL) OR weight_num = %s)
+                          AND date_clean = %s
+                    """, (
+                        row.get("name_clean"),
+                        row.get("service_type"),
+                        row.get("weight_num"),
+                        row.get("weight_num"),
+                        row.get("date_clean"),
+                    ))
+                    staging_ids.extend([r["id"] for r in cursor.fetchall()])
+
+                cascade_deleted["orders_staging"] = delete_identity_rows(
+                    cursor,
+                    "orders_staging",
+                    identity_rows,
+                    "name_clean",
+                    "weight_num",
+                    "service_type",
+                    "date_clean",
+                )
+
+            if table_exists(cursor, "orders_final"):
+                has_date_clean_final = table_has_column(cursor, "orders_final", "date_clean")
+                if has_date_clean_final:
+                    cascade_deleted["orders_final"] = delete_identity_rows(
+                        cursor,
+                        "orders_final",
+                        identity_rows,
+                        "name_clean",
+                        "weight_num",
+                        "service_type",
+                        "date_clean",
+                    )
+
+            if table_exists(cursor, "checkout_log"):
+                for row in identity_rows:
+                    cursor.execute("""
+                        DELETE FROM checkout_log
+                        WHERE UPPER(TRIM(name)) = UPPER(TRIM(%s))
+                          AND service = %s
+                          AND ((weight IS NULL AND %s IS NULL) OR weight = %s)
+                          AND rush_date = %s
+                    """, (
+                        row.get("name_clean"),
+                        row.get("service_type"),
+                        row.get("weight_num"),
+                        row.get("weight_num"),
+                        row.get("date_clean"),
+                    ))
+                    cascade_deleted["checkout_log"] += cursor.rowcount or 0
+
+            if staging_ids and table_exists(cursor, "order_processing"):
+                placeholders = ", ".join(["%s"] * len(staging_ids))
+                cursor.execute(
+                    f"DELETE FROM order_processing WHERE order_id IN ({placeholders})",
+                    tuple(staging_ids),
+                )
+                cascade_deleted["order_processing"] = cursor.rowcount or 0
+
         cursor.execute("""
             DELETE FROM upload_batch_rows
             WHERE upload_batch_id = %s
@@ -2284,7 +2432,9 @@ def delete_upload_batch(batch_id):
         return jsonify({
             "status": "batch_deleted",
             "batch_id": batch_id,
-            "deleted_rows": row_count
+            "deleted_rows": row_count,
+            "cascade_data": cascade_data,
+            "cascade_deleted": cascade_deleted,
         })
     except Exception as e:
         conn.rollback()
