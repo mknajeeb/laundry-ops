@@ -37,7 +37,9 @@ function parseAsLocalDate(value) {
     return new Date(y, m - 1, d);
   }
   const dt = new Date(raw);
-  return Number.isNaN(dt.getTime()) ? null : dt;
+  if (Number.isNaN(dt.getTime())) return null;
+  // Normalize UTC-like datetime payloads to local date-only to avoid day shift.
+  return new Date(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
 }
 
 function CheckoutPage() {

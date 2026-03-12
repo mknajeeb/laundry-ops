@@ -381,22 +381,15 @@ function UploadPage() {
         </Stack>
       )}
 
-      <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: "wrap" }}>
-        {message.text && (
-          <Chip
-            label={message.text}
-            color={message.type === "error" ? "error" : message.type === "warning" ? "warning" : "success"}
-            sx={{ borderRadius: 2, bgcolor: "#eef4ef", color: "#355a3d" }}
-          />
-        )}
-        {isDraft && (
-          <Chip
-            label="Draft only. Not live until confirm."
-            color="warning"
-            sx={{ borderRadius: 2, bgcolor: "#faf3e6", color: "#7a5a1f" }}
-          />
-        )}
-      </Stack>
+      {(message.text || isDraft) && (
+        <Alert
+          severity={message.type === "error" ? "error" : message.type === "warning" ? "warning" : "success"}
+          sx={{ mt: 1, borderRadius: 2 }}
+        >
+          {message.text || "Ready."}
+          {isDraft ? " • Draft only, not live until Confirm Batch." : ""}
+        </Alert>
+      )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
