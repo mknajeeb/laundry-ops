@@ -7,6 +7,58 @@ import axios from "axios";
 const API_BASE =
   "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net";
 
+const AUTH_TOKEN_KEY = "washpro_token";
+const AUTH_USER_KEY = "washpro_user";
+
+export const getAuthToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || "";
+export const setAuthSession = ({ token, user }) => {
+  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+  if (user) localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+};
+export const clearAuthSession = () => {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_USER_KEY);
+};
+export const getSavedUser = () => {
+  try {
+    const raw = localStorage.getItem(AUTH_USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+axios.interceptors.request.use((config) => {
+  const token = getAuthToken();
+  if (token) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+/* =========================================
+   AUTH
+========================================= */
+
+export const authLogin = (username, password) =>
+  axios.post(`${API_BASE}/auth/login`, { username, password });
+
+export const authMe = () =>
+  axios.get(`${API_BASE}/auth/me`);
+
+export const authLogout = () =>
+  axios.post(`${API_BASE}/auth/logout`);
+
+export const getRoles = () =>
+  axios.get(`${API_BASE}/auth/roles`);
+
+export const getUsers = () =>
+  axios.get(`${API_BASE}/auth/users`);
+
+export const createUser = (payload) =>
+  axios.post(`${API_BASE}/auth/users`, payload);
+
 /* =========================================
    DASHBOARD
 ========================================= */
@@ -183,3 +235,52 @@ export const getAttendanceEventsToday = (employee_id) =>
   axios.get(`${API_BASE}/attendance/events_today`, {
     params: { employee_id }
   });
+
+/* =========================================
+   MAINTENANCE
+========================================= */
+
+export const getMaintenanceTasks = () =>
+  axios.get(`${API_BASE}/maintenance/tasks`);
+
+export const createMaintenanceTask = (payload) =>
+  axios.post(`${API_BASE}/maintenance/tasks`, payload);
+
+export const getMaintenanceAssignments = (status = "") =>
+  axios.get(`${API_BASE}/maintenance/assignments`, {
+    params: status ? { status } : {}
+  });
+
+export const createMaintenanceAssignment = (payload) =>
+  axios.post(`${API_BASE}/maintenance/assignments`, payload);
+
+export const getMaintenanceLogs = () =>
+  axios.get(`${API_BASE}/maintenance/logs`);
+
+export const createMaintenanceLog = (payload) =>
+  axios.post(`${API_BASE}/maintenance/logs`, payload);
+
+export const getMaintenanceAgenda = () =>
+  axios.get(`${API_BASE}/maintenance/agenda`);
+
+/* =========================================
+   INVENTORY
+========================================= */
+
+export const getInventoryItems = () =>
+  axios.get(`${API_BASE}/inventory/items`);
+
+export const createInventoryItem = (payload) =>
+  axios.post(`${API_BASE}/inventory/items`, payload);
+
+export const saveInventoryCount = (payload) =>
+  axios.post(`${API_BASE}/inventory/counts`, payload);
+
+export const getBagSales = () =>
+  axios.get(`${API_BASE}/inventory/bag_sales`);
+
+export const createBagSale = (payload) =>
+  axios.post(`${API_BASE}/inventory/bag_sales`, payload);
+
+export const getLowStockItems = () =>
+  axios.get(`${API_BASE}/inventory/low_stock`);

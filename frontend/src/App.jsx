@@ -1,27 +1,17 @@
-import { BrowserRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   AppBar,
-  Button,
   Box,
+  Button,
   IconButton,
   Snackbar,
   Toolbar,
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import {
-  ArrowBack,
-  Refresh,
-  Home as HomeIcon,
-  Dashboard as DashboardIcon,
-  Inventory2,
-  LocalShipping,
-  AccessTime,
-  PrecisionManufacturing,
-} from "@mui/icons-material";
-
+import { ArrowBack, Refresh } from "@mui/icons-material";
 import Sidebar from "./components/Sidebar";
 
 import OrdersPage from "./pages/OrdersPage";
@@ -35,75 +25,69 @@ import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
 import HomePage from "./pages/HomePage";
-import { getCurrentUploadBatch } from "./api";
-
-const MOBILE_TABS = [
-  { label: "Home", value: "/", icon: <HomeIcon /> },
-  { label: "Dashboard", value: "/dashboard", icon: <DashboardIcon /> },
-  { label: "Orders", value: "/orders", icon: <Inventory2 /> },
-  { label: "Checkout", value: "/checkout", icon: <LocalShipping /> },
-  { label: "Clock", value: "/clock", icon: <AccessTime /> },
-  { label: "Prod", value: "/production", icon: <PrecisionManufacturing /> },
-];
-
-function getActiveMobileTab(pathname) {
-  if (pathname === "/") return MOBILE_TABS[0];
-  return MOBILE_TABS.find((tab) => tab.value !== "/" && pathname.startsWith(tab.value)) || MOBILE_TABS[0];
-}
+import LoginPage from "./pages/LoginPage";
+import InventoryPage from "./pages/InventoryPage";
+import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname }) {
   const navigate = useNavigate();
-  const activeTab = getActiveMobileTab(pathname);
   const canGoBack = pathname !== "/";
-
   return (
-    <AppBar
-      position="sticky"
-      elevation={0}
-      sx={{
-        top: 0,
-        background: "#ffffff",
-        color: "#111827",
-        borderBottom: "1px solid #e5e7eb",
-      }}
-    >
-      <Toolbar sx={{ minHeight: "48px !important", px: 1.2 }}>
+    <AppBar position="sticky" elevation={0} sx={{ top: 0, background: "#ffffff", color: "#0f172a", borderBottom: "1px solid #e2e8f0" }}>
+      <Toolbar sx={{ minHeight: "50px !important", px: 1 }}>
         {canGoBack ? (
-          <IconButton
-            size="small"
-            onClick={() => navigate(-1)}
-            sx={{ mr: 0.5, border: "1px solid #e5e7eb" }}
-          >
-            <ArrowBack sx={{ fontSize: 16 }} />
-          </IconButton>
-        ) : (
-          <Box sx={{ width: 34 }} />
-        )}
-        <Typography sx={{ fontSize: 16, fontWeight: 600, lineHeight: 1 }}>
-          Washpro
-        </Typography>
-        <Box sx={{ flex: 1 }} />
-        <IconButton
-          size="small"
-          onClick={() => window.location.reload()}
-          sx={{ mr: 0.5, border: "1px solid #e5e7eb" }}
-        >
-          <Refresh sx={{ fontSize: 16 }} />
-        </IconButton>
-        <Typography sx={{ fontSize: 13, fontWeight: 500, color: "#6b7280" }}>
-          {activeTab.label}
-        </Typography>
+          <IconButton size="small" onClick={() => navigate(-1)} sx={{ mr: 1 }}><ArrowBack sx={{ fontSize: 18 }} /></IconButton>
+        ) : <Box sx={{ width: 36 }} />}
+        <Typography sx={{ fontSize: 18, flex: 1 }}>Washpro</Typography>
+        <IconButton size="small" onClick={() => window.location.reload()}><Refresh sx={{ fontSize: 18 }} /></IconButton>
       </Toolbar>
     </AppBar>
   );
 }
 
+function GuardedRoute({ user, roles, children }) {
+  if (!user) return <Navigate to="/login" replace />;
+  if (!roles?.length) return children;
+  const userRoles = (user.roles || []).map((r) => String(r).toUpperCase());
+  const ok = roles.some((r) => userRoles.includes(String(r).toUpperCase()));
+  return ok ? children : <Navigate to="/" replace />;
+}
+
 function AppShell() {
   const location = useLocation();
   const isMobile = useMediaQuery("(max-width: 900px)");
-  const pathname = location.pathname || "/";
   const [updateReady, setUpdateReady] = useState(false);
   const [activeBatch, setActiveBatch] = useState(null);
+  const [user, setUser] = useState(getSavedUser());
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const pathname = location.pathname || "/";
+
+  const doLogout = async () => {
+    try { await authLogout(); } catch (_) { /* ignore */ }
+    clearAuthSession();
+    setUser(null);
+  };
+
+  useEffect(() => {
+    async function bootstrap() {
+      if (pathname === "/login") {
+        setAuthLoading(false);
+        return;
+      }
+      try {
+        const res = await authMe();
+        setUser(res.data || null);
+      } catch (e) {
+        console.error(e);
+        clearAuthSession();
+        setUser(null);
+      } finally {
+        setAuthLoading(false);
+      }
+    }
+    bootstrap();
+  }, [pathname]);
 
   useEffect(() => {
     const onUpdateReady = () => setUpdateReady(true);
@@ -112,85 +96,68 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
-    async function loadActiveBatch() {
+    async function loadBatch() {
       try {
         const res = await getCurrentUploadBatch();
         setActiveBatch(res?.data || null);
-      } catch (error) {
-        console.error(error);
+      } catch (_) {
         setActiveBatch(null);
       }
     }
-    loadActiveBatch();
+    loadBatch();
   }, [pathname]);
 
-  const handleRefreshApp = async () => {
-    try {
-      const registration = await navigator.serviceWorker.getRegistration();
-      if (registration?.waiting) {
-        registration.waiting.postMessage({ type: "SKIP_WAITING" });
-      }
-      window.location.reload();
-    } catch (error) {
-      console.error("Failed to refresh app:", error);
-      window.location.reload();
-    }
-  };
+  const shellBackground = useMemo(
+    () => "linear-gradient(145deg, #f8fbff 0%, #f2f6ff 45%, #f7fafc 100%)",
+    []
+  );
+
+  if (authLoading && pathname !== "/login") {
+    return <Box sx={{ minHeight: "100vh", display: "grid", placeItems: "center" }}><Typography>Loading...</Typography></Box>;
+  }
+
+  if (!user && pathname !== "/login") return <Navigate to="/login" replace />;
 
   return (
-    <div className={`app-layout ${isMobile ? "app-layout-checkout-mobile" : ""}`}>
-      {!isMobile && <Sidebar activeBatch={activeBatch} />}
-      <div className={`main-content ${isMobile ? "main-content-checkout-mobile" : ""}`}>
-        {isMobile && <MobileTopBar pathname={pathname} />}
-        <Box className={isMobile ? "route-scroll-mobile" : ""}>
+    <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
+      {!isMobile && user && <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />}
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        {isMobile && user && <MobileTopBar pathname={pathname} />}
+        <Box sx={{ p: { xs: 0, md: 1 } }}>
           <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/orders" element={<OrdersPage />} />
-            <Route path="/checkout" element={<CheckoutPage />} />
-            <Route path="/upload" element={<UploadPage />} />
-            <Route path="/employees" element={<EmployeesPage />} />
-            <Route path="/clock" element={<ClockPage />} />
-            <Route path="/issues" element={<IssuePage />} />
-            <Route path="/production" element={<ProductionPage />} />
-            <Route path="/scoreboard" element={<ScoreboardPage />} />
-            <Route path="/maintenance" element={<MaintenancePage />} />
+            <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
+            <Route path="/" element={<GuardedRoute user={user}><HomePage /></GuardedRoute>} />
+            <Route path="/dashboard" element={<GuardedRoute user={user}><Dashboard /></GuardedRoute>} />
+            <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage /></GuardedRoute>} />
+            <Route path="/checkout" element={<GuardedRoute user={user}><CheckoutPage /></GuardedRoute>} />
+            <Route path="/upload" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute>} />
+            <Route path="/employees" element={<GuardedRoute user={user} roles={["ADMIN"]}><EmployeesPage user={user} /></GuardedRoute>} />
+            <Route path="/clock" element={<GuardedRoute user={user}><ClockPage /></GuardedRoute>} />
+            <Route path="/issues" element={<GuardedRoute user={user}><IssuePage /></GuardedRoute>} />
+            <Route path="/production" element={<GuardedRoute user={user}><ProductionPage /></GuardedRoute>} />
+            <Route path="/scoreboard" element={<GuardedRoute user={user}><ScoreboardPage /></GuardedRoute>} />
+            <Route path="/maintenance" element={<GuardedRoute user={user}><MaintenancePage /></GuardedRoute>} />
+            <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage /></GuardedRoute>} />
           </Routes>
         </Box>
-      </div>
-      <Snackbar
-        open={updateReady}
-        anchorOrigin={{ vertical: "top", horizontal: "center" }}
-        onClose={() => setUpdateReady(false)}
-      >
-        <Alert
-          severity="info"
-          variant="filled"
-          action={
-            <Button color="inherit" size="small" onClick={handleRefreshApp}>
-              Refresh
-            </Button>
-          }
-          onClose={() => setUpdateReady(false)}
-        >
+      </Box>
+
+      <Snackbar open={updateReady} anchorOrigin={{ vertical: "top", horizontal: "center" }} onClose={() => setUpdateReady(false)}>
+        <Alert severity="info" variant="filled" action={<Button color="inherit" size="small" onClick={() => window.location.reload()}>Refresh</Button>}>
           New app update is ready.
         </Alert>
       </Snackbar>
-    </div>
+    </Box>
   );
 }
 
-function App(){
-
-  return(
-
+function App() {
+  return (
     <BrowserRouter>
       <AppShell />
-
     </BrowserRouter>
-
-  )
-
+  );
 }
 
 export default App;
+

@@ -6,6 +6,7 @@ import {
   Inventory2,
   LocalShipping,
   PrecisionManufacturing,
+  Checklist,
 } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 
@@ -86,6 +87,20 @@ function HomePage() {
               onClick={() => navigate("/orders")}
             >
               Orders
+            </Button>
+            <Button
+              fullWidth
+              startIcon={<Checklist />}
+              sx={{
+                ...TILE_BASE,
+                bgcolor: "#f8fafc",
+                color: "#111827",
+                border: "1px solid #e5e7eb",
+                "&:hover": { bgcolor: "#f1f5f9" },
+              }}
+              onClick={() => navigate("/inventory")}
+            >
+              Inventory
             </Button>
           </Stack>
         </Paper>
