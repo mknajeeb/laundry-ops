@@ -101,3 +101,81 @@
 - Add order activity event log table for full audit.
 - Add role-based login with PIN + permissions per module.
 - Add issue maintenance enhancements and linked external order reference URL.
+
+## 13. Maintenance Module (New Requirement)
+### 13.1 Objective
+- Track routine and ad-hoc maintenance tasks with assignment, due dates, completion logs, and overdue notifications.
+
+### 13.2 Core entities
+- `maintenance_tasks`
+  - task catalog (e.g., `Pit 1 Cleaning`, `Pit 2 Cleaning`, `Big Pit`, `Washer Cleaning`, `Dryer Cleaning`, `Roof Cleaning`, `Floor Mopping`, `Machine Cleaning`).
+  - supports add/remove/deactivate.
+- `maintenance_task_assignments`
+  - task + assignee + due date + recurrence settings.
+  - supports random/one-off assignment and repeating schedules.
+- `maintenance_task_logs`
+  - captures execution: employee name/id, date, day, start time, end time, notes, status, evidence optional.
+  - supports boolean checkpoints (Pit1/Pit2/BigPit) and optional washer number.
+- `maintenance_notifications`
+  - generated reminders/escalations for due/overdue tasks.
+  - recipient types: responsible employee + admin.
+
+### 13.3 Screen behavior
+- Maintenance landing:
+  - `Assigned Tasks` (due today/overdue/upcoming).
+  - `Ad-hoc Task Entry` (choose or type task, submit log immediately).
+- Assignment workflow:
+  - assign person, due date, recurrence pattern.
+- Completion workflow:
+  - enter start/end times, date, task-specific checkboxes, save log.
+
+## 14. Inventory Module (New Requirement)
+### 14.1 Objective
+- Manage supplies and Washpro branded bag inventory with thresholds and task-driven counting.
+
+### 14.2 Core entities
+- `inventory_items`
+  - item master: name, category (`SUPPLY`, `BAG`), vendor, unit, reorder threshold, active.
+- `inventory_counts`
+  - periodic stock counts (weekly for supplies, live sales for bags).
+- `bag_sales`
+  - per-sale records: date, customer name, type (drop-off/pickup-delivery), quantity, amount paid.
+- `inventory_tasks`
+  - task links for scheduled counting and reminders.
+
+### 14.3 Rules
+- Supplies: manual weekly count update.
+- Bags: decrement on each sale entry.
+- Threshold alerts: trigger when `on_hand <= reorder_threshold`.
+
+## 15. Authentication and RBAC (New Requirement)
+### 15.1 Objective
+- Add secure login and role-based authorization by module and action.
+
+### 15.2 Core entities
+- `users`
+  - username, password hash (bcrypt/argon2), active, employee link optional.
+- `roles`
+  - admin, operations, front_desk, maintenance, etc.
+- `permissions`
+  - module-level and function-level permissions.
+- `user_roles` / `role_permissions`
+  - many-to-many mappings.
+- `auth_sessions` (or JWT + refresh token table)
+  - login session control + revoke support.
+- `auth_audit_log`
+  - login/logout/failed attempts/permission denials.
+
+### 15.3 Security baseline
+- Store hashed passwords only.
+- Enforce account lockout/rate-limit after repeated failures.
+- Server-side permission checks on every protected API.
+- Hide/disable unauthorized UI actions.
+
+## 16. Implementation Phasing (Recommended)
+1. Maintenance backend schema + CRUD + assignment/log APIs.
+2. Maintenance UI (assigned + ad-hoc + history).
+3. Inventory schema + count/sales APIs.
+4. Inventory UI + threshold alerts.
+5. Login + RBAC backend, then frontend guards and role-based navigation.
+6. Notifications pipeline (push first, SMS second).

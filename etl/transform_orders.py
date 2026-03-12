@@ -223,21 +223,26 @@ def transform_orders(df_raw):
     df = df[df["Cells"].apply(len) > 0].copy()
 
     def get_date(row):
+        # Prefer row-level date detection from all cells to avoid
+        # over-defaulting to an early date when sheet layout changes.
+        cells = row.get("Cells") or []
+        for c in cells:
+            d = extract_date_from_text(c)
+            if d is not None:
+                return d
 
+        # Fallback legacy behavior
         c1 = clean(row.get("Column1"))
         c2 = clean(row.get("Column2"))
-
         d1 = extract_date_from_text(c1)
         d2 = extract_date_from_text(c2)
-
         if d1 is not None:
             return d1
-
         return d2
 
     df["Date_Clean"] = df.apply(get_date, axis=1)
-
-    df["Date_Clean"] = df["Date_Clean"].ffill().bfill()
+    # Keep forward fill only; do not backfill from future rows.
+    df["Date_Clean"] = df["Date_Clean"].ffill()
 
     df["Weight_Num"] = df["Cells"].apply(extract_weight)
 

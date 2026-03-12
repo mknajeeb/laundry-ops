@@ -1,11 +1,13 @@
 import os
 import math
+import uuid
 import pandas as pd
 from datetime import datetime, date, timedelta
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import mysql.connector
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from etl.transform_orders import transform_orders
 
@@ -269,6 +271,67 @@ def delete_identity_rows(cursor, table_name, rows, name_col, weight_col, service
         deleted += cursor.rowcount or 0
 
     return deleted
+
+
+def get_bearer_token():
+    auth = request.headers.get("Authorization") or ""
+    if auth.startswith("Bearer "):
+        return auth.split(" ", 1)[1].strip()
+    return None
+
+
+def current_user_from_token(cursor):
+    token = get_bearer_token()
+    if not token:
+        return None
+
+    cursor.execute("""
+        SELECT
+            s.id AS session_id,
+            s.user_id,
+            s.token,
+            s.expires_at,
+            s.revoked,
+            u.username,
+            u.display_name,
+            u.active
+        FROM auth_sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.token = %s
+        LIMIT 1
+    """, (token,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    if row.get("revoked"):
+        return None
+    expires_at = row.get("expires_at")
+    if isinstance(expires_at, datetime) and expires_at < datetime.utcnow():
+        return None
+    if not row.get("active", False):
+        return None
+    return row
+
+
+def fetch_user_roles(cursor, user_id):
+    cursor.execute("""
+        SELECT r.code
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s
+    """, (user_id,))
+    return [str(r["code"]).upper() for r in cursor.fetchall()]
+
+
+def require_admin(cursor):
+    me = current_user_from_token(cursor)
+    if not me:
+        return None, jsonify({"error": "Unauthorized"}), 401
+    roles = fetch_user_roles(cursor, me["user_id"])
+    if "ADMIN" not in roles:
+        return None, jsonify({"error": "Forbidden"}), 403
+    me["roles"] = roles
+    return me, None, None
 
 
 def upload_batches_time_col(cursor):
@@ -1645,6 +1708,544 @@ def get_geofence_config():
 
         return jsonify({"configured": True, "geofence": geofence})
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Auth / RBAC APIs
+# ---------------------------------------------------
+
+@app.route("/auth/login", methods=["POST"])
+def auth_login():
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+
+    if not username or not password:
+        return jsonify({"error": "username and password are required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        cursor.execute("""
+            SELECT id, username, password_hash, display_name, active
+            FROM users
+            WHERE username = %s
+            LIMIT 1
+        """, (username,))
+        user = cursor.fetchone()
+        if not user or not user.get("active"):
+            return jsonify({"error": "Invalid credentials"}), 401
+
+        if not check_password_hash(user["password_hash"], password):
+            return jsonify({"error": "Invalid credentials"}), 401
+
+        token = uuid.uuid4().hex
+        expires_at = datetime.utcnow() + timedelta(hours=12)
+        cursor.execute("""
+            INSERT INTO auth_sessions
+            (user_id, token, expires_at, revoked, created_at, last_seen_at)
+            VALUES (%s, %s, %s, FALSE, NOW(), NOW())
+        """, (user["id"], token, expires_at))
+
+        roles = fetch_user_roles(cursor, user["id"])
+        conn.commit()
+        return jsonify({
+            "token": token,
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "display_name": user.get("display_name") or user["username"],
+                "roles": roles,
+            }
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/me", methods=["GET"])
+def auth_me():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me = current_user_from_token(cursor)
+        if not me:
+            return jsonify({"error": "Unauthorized"}), 401
+        roles = fetch_user_roles(cursor, me["user_id"])
+        cursor.execute("UPDATE auth_sessions SET last_seen_at = NOW() WHERE id = %s", (me["session_id"],))
+        conn.commit()
+        return jsonify({
+            "id": me["user_id"],
+            "username": me["username"],
+            "display_name": me.get("display_name") or me["username"],
+            "roles": roles
+        })
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/logout", methods=["POST"])
+def auth_logout():
+    token = get_bearer_token()
+    if not token:
+        return jsonify({"status": "ok"})
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("UPDATE auth_sessions SET revoked = TRUE WHERE token = %s", (token,))
+        conn.commit()
+        return jsonify({"status": "ok"})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/roles", methods=["GET"])
+def auth_roles():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT id, code, name FROM roles ORDER BY code")
+        return jsonify(cursor.fetchall())
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/users", methods=["GET", "POST"])
+def auth_users():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err, status_code = require_admin(cursor)
+        if err:
+            return err, status_code
+
+        if request.method == "GET":
+            cursor.execute("""
+                SELECT id, username, display_name, active, created_at
+                FROM users
+                ORDER BY username
+            """)
+            users = cursor.fetchall()
+            for u in users:
+                u["roles"] = fetch_user_roles(cursor, u["id"])
+            return jsonify(users)
+
+        data = request.json or {}
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
+        display_name = (data.get("display_name") or "").strip() or username
+        active = bool(data.get("active", True))
+        role_codes = [str(r).upper() for r in (data.get("roles") or [])]
+        if not username or not password:
+            return jsonify({"error": "username and password are required"}), 400
+
+        password_hash = generate_password_hash(password)
+        cursor.execute("""
+            INSERT INTO users
+            (username, password_hash, display_name, active, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, NOW(), NOW())
+        """, (username, password_hash, display_name, active))
+        user_id = cursor.lastrowid
+
+        if role_codes:
+            cursor.execute("SELECT id, code FROM roles WHERE code IN ({})".format(",".join(["%s"] * len(role_codes))), tuple(role_codes))
+            role_map = {r["code"].upper(): r["id"] for r in cursor.fetchall()}
+            for code in role_codes:
+                rid = role_map.get(code)
+                if rid:
+                    cursor.execute("INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s)", (user_id, rid))
+
+        conn.commit()
+        return jsonify({"status": "created", "user_id": user_id})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Maintenance APIs
+# ---------------------------------------------------
+
+@app.route("/maintenance/tasks", methods=["GET", "POST"])
+def maintenance_tasks_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if request.method == "GET":
+            cursor.execute("""
+                SELECT id, task_code, task_name, category, active, created_at, updated_at
+                FROM maintenance_tasks
+                ORDER BY task_name
+            """)
+            return jsonify(cursor.fetchall())
+
+        data = request.json or {}
+        task_code = (data.get("task_code") or "").strip().upper()
+        task_name = (data.get("task_name") or "").strip()
+        category = (data.get("category") or "CLEANING").strip().upper()
+        active = bool(data.get("active", True))
+        if not task_code or not task_name:
+            return jsonify({"error": "task_code and task_name are required"}), 400
+
+        cursor.execute("""
+            INSERT INTO maintenance_tasks
+            (task_code, task_name, category, active, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, NOW(), NOW())
+        """, (task_code, task_name, category, active))
+        conn.commit()
+        return jsonify({"status": "created", "id": cursor.lastrowid})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/maintenance/assignments", methods=["GET", "POST"])
+def maintenance_assignments_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if request.method == "GET":
+            status = (request.args.get("status") or "").strip().upper()
+            where = ""
+            args = []
+            if status:
+                where = "WHERE a.status = %s"
+                args.append(status)
+            cursor.execute(f"""
+                SELECT
+                    a.id,
+                    a.task_id,
+                    t.task_name,
+                    a.assigned_to_employee_id,
+                    a.assigned_to_name,
+                    a.due_date,
+                    a.frequency_type,
+                    a.frequency_interval,
+                    a.weekdays_csv,
+                    a.status,
+                    a.notes,
+                    a.created_at
+                FROM maintenance_assignments a
+                JOIN maintenance_tasks t ON t.id = a.task_id
+                {where}
+                ORDER BY a.due_date ASC, a.id ASC
+            """, tuple(args))
+            return jsonify(cursor.fetchall())
+
+        data = request.json or {}
+        task_id = data.get("task_id")
+        assigned_to_employee_id = data.get("assigned_to_employee_id")
+        assigned_to_name = (data.get("assigned_to_name") or "").strip() or None
+        due_date = parse_date_value(data.get("due_date"))
+        frequency_type = (data.get("frequency_type") or "ONE_TIME").strip().upper()
+        frequency_interval = int(data.get("frequency_interval") or 1)
+        weekdays_csv = (data.get("weekdays_csv") or "").strip() or None
+        notes = (data.get("notes") or "").strip() or None
+        created_by = (data.get("created_by") or "admin").strip()
+
+        if task_id in [None, ""] or due_date is None:
+            return jsonify({"error": "task_id and due_date are required"}), 400
+
+        cursor.execute("""
+            INSERT INTO maintenance_assignments
+            (
+              task_id, assigned_to_employee_id, assigned_to_name, due_date,
+              frequency_type, frequency_interval, weekdays_csv, status, notes, created_by, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 'ASSIGNED', %s, %s, NOW(), NOW())
+        """, (
+            int(task_id),
+            int(assigned_to_employee_id) if assigned_to_employee_id not in [None, ""] else None,
+            assigned_to_name,
+            due_date,
+            frequency_type,
+            frequency_interval,
+            weekdays_csv,
+            notes,
+            created_by
+        ))
+        conn.commit()
+        return jsonify({"status": "assigned", "id": cursor.lastrowid})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/maintenance/logs", methods=["GET", "POST"])
+def maintenance_logs_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if request.method == "GET":
+            cursor.execute("""
+                SELECT
+                    l.id,
+                    l.assignment_id,
+                    l.task_id,
+                    t.task_name,
+                    l.performed_by_employee_id,
+                    l.performed_by_name,
+                    l.performed_date,
+                    l.start_time,
+                    l.end_time,
+                    l.pit1_done,
+                    l.pit2_done,
+                    l.big_pit_done,
+                    l.washer_no,
+                    l.notes,
+                    l.source_type,
+                    l.created_at
+                FROM maintenance_logs l
+                JOIN maintenance_tasks t ON t.id = l.task_id
+                ORDER BY l.performed_date DESC, l.id DESC
+                LIMIT 500
+            """)
+            return jsonify(cursor.fetchall())
+
+        data = request.json or {}
+        assignment_id = data.get("assignment_id")
+        task_id = data.get("task_id")
+        if task_id in [None, ""]:
+            return jsonify({"error": "task_id is required"}), 400
+
+        performed_by_employee_id = data.get("performed_by_employee_id")
+        performed_by_name = (data.get("performed_by_name") or "").strip()
+        performed_date = parse_date_value(data.get("performed_date")) or date.today()
+        start_time_raw = (data.get("start_time") or "").strip()
+        end_time_raw = (data.get("end_time") or "").strip()
+        notes = (data.get("notes") or "").strip() or None
+        washer_no = (data.get("washer_no") or "").strip() or None
+        source_type = (data.get("source_type") or ("ASSIGNED" if assignment_id else "ADHOC")).strip().upper()
+
+        if not performed_by_name:
+            return jsonify({"error": "performed_by_name is required"}), 400
+
+        def parse_dt(s):
+            if not s:
+                return None
+            try:
+                t = datetime.strptime(s, "%I:%M %p").time()
+                return datetime.combine(performed_date, t)
+            except Exception:
+                pass
+            try:
+                t = datetime.strptime(s, "%H:%M").time()
+                return datetime.combine(performed_date, t)
+            except Exception:
+                pass
+            try:
+                return datetime.fromisoformat(s)
+            except Exception:
+                return None
+
+        start_dt = parse_dt(start_time_raw)
+        end_dt = parse_dt(end_time_raw)
+
+        cursor.execute("""
+            INSERT INTO maintenance_logs
+            (
+              assignment_id, task_id, performed_by_employee_id, performed_by_name, performed_date,
+              start_time, end_time, pit1_done, pit2_done, big_pit_done, washer_no, notes, source_type, created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        """, (
+            int(assignment_id) if assignment_id not in [None, ""] else None,
+            int(task_id),
+            int(performed_by_employee_id) if performed_by_employee_id not in [None, ""] else None,
+            performed_by_name,
+            performed_date,
+            start_dt,
+            end_dt,
+            bool(data.get("pit1_done", False)),
+            bool(data.get("pit2_done", False)),
+            bool(data.get("big_pit_done", False)),
+            washer_no,
+            notes,
+            source_type
+        ))
+
+        if assignment_id not in [None, ""]:
+            cursor.execute("UPDATE maintenance_assignments SET status = 'COMPLETED', updated_at = NOW() WHERE id = %s", (int(assignment_id),))
+
+        conn.commit()
+        return jsonify({"status": "logged", "id": cursor.lastrowid})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Inventory APIs
+# ---------------------------------------------------
+
+@app.route("/inventory/items", methods=["GET", "POST"])
+def inventory_items_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if request.method == "GET":
+            cursor.execute("""
+                SELECT
+                    id, item_name, category, vendor_name, unit_label,
+                    reorder_threshold, on_hand_qty, active, created_at, updated_at
+                FROM inventory_items
+                ORDER BY category, item_name
+            """)
+            return jsonify(cursor.fetchall())
+
+        data = request.json or {}
+        item_name = (data.get("item_name") or "").strip()
+        category = (data.get("category") or "SUPPLY").strip().upper()
+        vendor_name = (data.get("vendor_name") or "").strip() or None
+        unit_label = (data.get("unit_label") or "unit").strip()
+        reorder_threshold = float(data.get("reorder_threshold") or 0)
+        on_hand_qty = float(data.get("on_hand_qty") or 0)
+        active = bool(data.get("active", True))
+        if not item_name:
+            return jsonify({"error": "item_name is required"}), 400
+        cursor.execute("""
+            INSERT INTO inventory_items
+            (item_name, category, vendor_name, unit_label, reorder_threshold, on_hand_qty, active, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        """, (item_name, category, vendor_name, unit_label, reorder_threshold, on_hand_qty, active))
+        conn.commit()
+        return jsonify({"status": "created", "id": cursor.lastrowid})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/counts", methods=["POST"])
+def inventory_count_api():
+    data = request.json or {}
+    item_id = data.get("item_id")
+    counted_qty = data.get("counted_qty")
+    counted_by = (data.get("counted_by") or "").strip() or "system"
+    notes = (data.get("notes") or "").strip() or None
+
+    if item_id in [None, ""] or counted_qty in [None, ""]:
+        return jsonify({"error": "item_id and counted_qty are required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO inventory_counts
+            (item_id, counted_qty, counted_by, counted_at, notes)
+            VALUES (%s, %s, %s, NOW(), %s)
+        """, (int(item_id), float(counted_qty), counted_by, notes))
+
+        cursor.execute("""
+            UPDATE inventory_items
+            SET on_hand_qty = %s, updated_at = NOW()
+            WHERE id = %s
+        """, (float(counted_qty), int(item_id)))
+
+        conn.commit()
+        return jsonify({"status": "count_saved"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/bag_sales", methods=["GET", "POST"])
+def inventory_bag_sales_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if request.method == "GET":
+            cursor.execute("""
+                SELECT id, sale_date, customer_name, sale_type, qty, amount_paid, entered_by, created_at
+                FROM bag_sales
+                ORDER BY sale_date DESC, id DESC
+                LIMIT 500
+            """)
+            return jsonify(cursor.fetchall())
+
+        data = request.json or {}
+        sale_date = parse_date_value(data.get("sale_date")) or date.today()
+        customer_name = (data.get("customer_name") or "").strip()
+        sale_type = (data.get("sale_type") or "DROP_OFF").strip().upper()
+        qty = int(data.get("qty") or 0)
+        amount_paid = (data.get("amount_paid") or "").strip() or None
+        entered_by = (data.get("entered_by") or "").strip() or None
+        if not customer_name or qty <= 0:
+            return jsonify({"error": "customer_name and qty>0 are required"}), 400
+
+        cursor.execute("""
+            INSERT INTO bag_sales
+            (sale_date, customer_name, sale_type, qty, amount_paid, entered_by, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+        """, (sale_date, customer_name, sale_type, qty, amount_paid, entered_by))
+
+        # Auto-decrement first active BAG item (if configured).
+        cursor.execute("""
+            SELECT id, on_hand_qty
+            FROM inventory_items
+            WHERE category = 'BAG' AND active = TRUE
+            ORDER BY id ASC
+            LIMIT 1
+        """)
+        bag_item = cursor.fetchone()
+        if bag_item:
+            next_qty = float(bag_item["on_hand_qty"] or 0) - float(qty)
+            cursor.execute(
+                "UPDATE inventory_items SET on_hand_qty = %s, updated_at = NOW() WHERE id = %s",
+                (next_qty, bag_item["id"]),
+            )
+
+        conn.commit()
+        return jsonify({"status": "sale_saved"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/low_stock", methods=["GET"])
+def inventory_low_stock():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT
+                id, item_name, category, vendor_name, unit_label, on_hand_qty, reorder_threshold
+            FROM inventory_items
+            WHERE active = TRUE
+              AND on_hand_qty <= reorder_threshold
+            ORDER BY category, item_name
+        """)
+        return jsonify(cursor.fetchall())
     finally:
         cursor.close()
         conn.close()
