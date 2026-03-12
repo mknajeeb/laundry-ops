@@ -29,6 +29,17 @@ import { checkoutOrder, getCheckoutLog, getCurrentUploadBatch, getOrders, undoCh
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
 
+function parseAsLocalDate(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 function CheckoutPage() {
   const [orders, setOrders] = useState([]);
   const [checkedLogs, setCheckedLogs] = useState([]);
@@ -62,8 +73,8 @@ function CheckoutPage() {
 
   const formatDate = (value) => {
     if (!value) return "-";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return String(value).split(" ")[0];
+    const d = parseAsLocalDate(value);
+    if (!d || Number.isNaN(d.getTime())) return String(value).split(" ")[0];
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
@@ -85,7 +96,7 @@ function CheckoutPage() {
     }
 
     if (row?.rush_date) {
-      const due = new Date(row.rush_date);
+      const due = parseAsLocalDate(row.rush_date);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       return due < today ? "RUSH" : "NON-RUSH";
@@ -269,7 +280,7 @@ function CheckoutPage() {
 
       {activeBatch?.batch_date && (
         <Typography sx={{ mt: 0.8, color: "#4b5563", fontSize: 14 }}>
-          {new Date(activeBatch.batch_date).toLocaleDateString(undefined, {
+          {parseAsLocalDate(activeBatch.batch_date).toLocaleDateString(undefined, {
             weekday: "short",
             year: "numeric",
             month: "short",

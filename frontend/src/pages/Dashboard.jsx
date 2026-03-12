@@ -3,6 +3,17 @@ import { Alert, Box, CircularProgress, Paper, Stack, Typography } from "@mui/mat
 import { getCurrentUploadBatch, getDashboard } from "../api";
 import { useNavigate } from "react-router-dom";
 
+function parseAsLocalDate(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
@@ -46,7 +57,7 @@ function Dashboard() {
   const batchDateLabel = useMemo(() => {
     if (!safe.batch_date) return "No batch date";
 
-    const dt = new Date(safe.batch_date);
+    const dt = parseAsLocalDate(safe.batch_date) || new Date(safe.batch_date);
     const dateLabel = Number.isNaN(dt.getTime())
       ? String(safe.batch_date).split(" ")[0]
       : dt.toLocaleDateString(undefined, {

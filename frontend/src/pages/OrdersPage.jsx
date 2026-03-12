@@ -19,6 +19,17 @@ import { FlashOn, Refresh, Search } from "@mui/icons-material";
 import { deleteOrder, getCurrentUploadBatch, getEmployees, getOrders, processOrder, updateOrder } from "../api";
 import { useSearchParams } from "react-router-dom";
 
+function parseAsLocalDate(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+  const dt = new Date(raw);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
 function OrdersPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [orders, setOrders] = useState([]);
@@ -152,8 +163,8 @@ function OrdersPage() {
 
   const formatDateOnly = (value) => {
     if (!value) return "-";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return String(value).split(" ")[0];
+    const d = parseAsLocalDate(value);
+    if (!d || Number.isNaN(d.getTime())) return String(value).split(" ")[0];
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
@@ -180,7 +191,7 @@ function OrdersPage() {
           size="small"
           sx={{ mt: 0.8 }}
           color={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
-          label={`${new Date(activeBatch.batch_date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })} • ${String(activeBatch.state || "DRAFT").toUpperCase()}`}
+          label={`${(parseAsLocalDate(activeBatch.batch_date) || new Date(activeBatch.batch_date)).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })} • ${String(activeBatch.state || "DRAFT").toUpperCase()}`}
         />
       )}
 
