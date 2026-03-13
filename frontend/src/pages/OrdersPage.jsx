@@ -240,16 +240,15 @@ function OrdersPage({ user }) {
       setTicketViewLoading(true);
       const res = await getOrderTicket(row.id);
       const data = res?.data || {};
-      if (!data?.ticket_image_base64) {
+      if (!data?.ticket_image_base64 && !data?.ticket_image_url) {
         setNotice("No ticket image found.");
         return;
       }
-      const mime = inferMimeType(data.ticket_file_name);
       setTicketView({
         order_id: row.id,
         name_clean: row.name_clean,
         ticket_file_name: data.ticket_file_name,
-        src: `data:${mime};base64,${data.ticket_image_base64}`,
+        src: data.ticket_image_url || `data:${inferMimeType(data.ticket_file_name)};base64,${data.ticket_image_base64}`,
       });
     } catch (error) {
       console.error(error);

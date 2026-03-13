@@ -1,6 +1,7 @@
 import os
 import math
 import uuid
+import base64
 import pandas as pd
 from datetime import datetime, date, timedelta
 
@@ -8,6 +9,20 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import mysql.connector
 from werkzeug.security import check_password_hash, generate_password_hash
+from urllib.parse import urlparse
+
+try:
+    from azure.storage.blob import (
+        BlobServiceClient,
+        BlobSasPermissions,
+        ContentSettings,
+        generate_blob_sas,
+    )
+except Exception:
+    BlobServiceClient = None
+    BlobSasPermissions = None
+    ContentSettings = None
+    generate_blob_sas = None
 
 from etl.transform_orders import transform_orders
 
@@ -352,10 +367,22 @@ def ensure_process_submissions_table(cursor):
             username VARCHAR(100) NULL,
             ticket_image_base64 LONGTEXT NULL,
             ticket_file_name VARCHAR(255) NULL,
+            ticket_blob_url VARCHAR(1024) NULL,
+            ticket_blob_name VARCHAR(512) NULL,
+            ticket_storage VARCHAR(20) NULL,
+            ticket_size_bytes INT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NULL
         )
     """)
+    if not table_has_column(cursor, "order_process_submissions", "ticket_blob_url"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_blob_url VARCHAR(1024) NULL")
+    if not table_has_column(cursor, "order_process_submissions", "ticket_blob_name"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_blob_name VARCHAR(512) NULL")
+    if not table_has_column(cursor, "order_process_submissions", "ticket_storage"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_storage VARCHAR(20) NULL")
+    if not table_has_column(cursor, "order_process_submissions", "ticket_size_bytes"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_size_bytes INT NULL")
 
 
 def ticket_retention_days():
@@ -366,16 +393,163 @@ def ticket_retention_days():
     return max(1, min(days, 365))
 
 
+def ticket_storage_mode():
+    mode = str(os.getenv("ORDER_TICKET_STORAGE_MODE", "") or "").strip().lower()
+    if mode in {"blob", "db"}:
+        return mode
+    return "blob" if os.getenv("AZURE_STORAGE_CONNECTION_STRING") else "db"
+
+
+def _blob_container_name():
+    return str(os.getenv("ORDER_TICKET_CONTAINER", "order-tickets") or "order-tickets").strip()
+
+
+def _blob_service_client():
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str or BlobServiceClient is None:
+        return None
+    return BlobServiceClient.from_connection_string(conn_str)
+
+
+def _ensure_blob_container():
+    client = _blob_service_client()
+    if client is None:
+        return None
+    container = _blob_container_name()
+    cc = client.get_container_client(container)
+    try:
+        cc.create_container()
+    except Exception:
+        pass
+    return cc
+
+
+def _infer_content_type(file_name):
+    name = str(file_name or "").lower()
+    if name.endswith(".png"):
+        return "image/png"
+    if name.endswith(".webp"):
+        return "image/webp"
+    if name.endswith(".gif"):
+        return "image/gif"
+    return "image/jpeg"
+
+
+def _blob_name_from_url(url):
+    try:
+        parsed = urlparse(url or "")
+        path = parsed.path or ""
+        parts = [p for p in path.split("/") if p]
+        if len(parts) < 2:
+            return None
+        # /container/blob/path -> remove container segment
+        return "/".join(parts[1:])
+    except Exception:
+        return None
+
+
+def save_ticket_image(ticket_image_base64, ticket_file_name, order_id):
+    if not ticket_image_base64:
+        return None
+
+    data = base64.b64decode(ticket_image_base64)
+    size = len(data)
+
+    if ticket_storage_mode() == "blob":
+        cc = _ensure_blob_container()
+        if cc is not None:
+            now = datetime.utcnow()
+            blob_name = f"orders/{now.strftime('%Y/%m/%d')}/{order_id}_{uuid.uuid4().hex}_{ticket_file_name or 'ticket.jpg'}"
+            bc = cc.get_blob_client(blob_name)
+            kwargs = {}
+            if ContentSettings is not None:
+                kwargs["content_settings"] = ContentSettings(content_type=_infer_content_type(ticket_file_name))
+            bc.upload_blob(data, overwrite=True, **kwargs)
+            return {
+                "ticket_storage": "blob",
+                "ticket_blob_url": bc.url,
+                "ticket_blob_name": blob_name,
+                "ticket_image_base64": None,
+                "ticket_size_bytes": size,
+            }
+
+    return {
+        "ticket_storage": "db",
+        "ticket_blob_url": None,
+        "ticket_blob_name": None,
+        "ticket_image_base64": ticket_image_base64,
+        "ticket_size_bytes": size,
+    }
+
+
+def build_ticket_read_url(blob_name, blob_url):
+    if not blob_name:
+        return blob_url
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str or generate_blob_sas is None or BlobSasPermissions is None:
+        return blob_url
+    try:
+        client = _blob_service_client()
+        if client is None:
+            return blob_url
+        account_name = client.account_name
+        cred = client.credential
+        account_key = getattr(cred, "account_key", None)
+        if not account_key:
+            return blob_url
+        token = generate_blob_sas(
+            account_name=account_name,
+            container_name=_blob_container_name(),
+            blob_name=blob_name,
+            account_key=account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.utcnow() + timedelta(minutes=30),
+        )
+        if not token:
+            return blob_url
+        return f"https://{account_name}.blob.core.windows.net/{_blob_container_name()}/{blob_name}?{token}"
+    except Exception:
+        return blob_url
+
+
+def delete_ticket_blob(blob_name=None, blob_url=None):
+    cc = _ensure_blob_container()
+    if cc is None:
+        return
+    name = blob_name or _blob_name_from_url(blob_url)
+    if not name:
+        return
+    try:
+        cc.get_blob_client(name).delete_blob(delete_snapshots="include")
+    except Exception:
+        pass
+
+
 def prune_old_ticket_images(cursor):
     days = ticket_retention_days()
+    cursor.execute("""
+        SELECT id, ticket_blob_name, ticket_blob_url
+        FROM order_process_submissions
+        WHERE
+            (ticket_image_base64 IS NOT NULL OR ticket_blob_url IS NOT NULL)
+            AND COALESCE(updated_at, created_at) < (NOW() - INTERVAL %s DAY)
+    """, (days,))
+    old_rows = cursor.fetchall() or []
+    for r in old_rows:
+        delete_ticket_blob(r.get("ticket_blob_name"), r.get("ticket_blob_url"))
+
     cursor.execute("""
         UPDATE order_process_submissions
         SET
             ticket_image_base64 = NULL,
             ticket_file_name = NULL,
+            ticket_blob_url = NULL,
+            ticket_blob_name = NULL,
+            ticket_storage = NULL,
+            ticket_size_bytes = NULL,
             updated_at = NOW()
         WHERE
-            ticket_image_base64 IS NOT NULL
+            (ticket_image_base64 IS NOT NULL OR ticket_blob_url IS NOT NULL)
             AND COALESCE(updated_at, created_at) < (NOW() - INTERVAL %s DAY)
     """, (days,))
 
@@ -483,7 +657,11 @@ def get_orders():
             , ops.user_id AS processed_by_user_id
             , ops.username AS processed_by_username
             , ops.updated_at AS processed_at
-            , CASE WHEN ops.ticket_image_base64 IS NULL OR ops.ticket_image_base64 = '' THEN 0 ELSE 1 END AS has_ticket_image
+            , CASE
+                WHEN (ops.ticket_blob_url IS NOT NULL AND ops.ticket_blob_url <> '')
+                  OR (ops.ticket_image_base64 IS NOT NULL AND ops.ticket_image_base64 <> '')
+                THEN 1 ELSE 0
+              END AS has_ticket_image
             , ops.ticket_file_name AS ticket_file_name
             , ops.id AS ticket_id
         """ if has_submissions else ""
@@ -1092,6 +1270,10 @@ def submit_processed_order(order_id):
             WHERE id = %s
         """, (order_id,))
 
+        cursor.execute("SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1", (order_id,))
+        prev = cursor.fetchone() or {}
+        ticket_payload = save_ticket_image(ticket_image_base64, ticket_file_name, order_id) if ticket_image_base64 else None
+
         cursor.execute("""
             INSERT INTO order_process_submissions
             (
@@ -1100,23 +1282,38 @@ def submit_processed_order(order_id):
                 username,
                 ticket_image_base64,
                 ticket_file_name,
+                ticket_blob_url,
+                ticket_blob_name,
+                ticket_storage,
+                ticket_size_bytes,
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
             ON DUPLICATE KEY UPDATE
                 user_id = VALUES(user_id),
                 username = VALUES(username),
-                ticket_image_base64 = VALUES(ticket_image_base64),
-                ticket_file_name = VALUES(ticket_file_name),
+                ticket_image_base64 = IFNULL(VALUES(ticket_image_base64), ticket_image_base64),
+                ticket_file_name = IFNULL(VALUES(ticket_file_name), ticket_file_name),
+                ticket_blob_url = IFNULL(VALUES(ticket_blob_url), ticket_blob_url),
+                ticket_blob_name = IFNULL(VALUES(ticket_blob_name), ticket_blob_name),
+                ticket_storage = IFNULL(VALUES(ticket_storage), ticket_storage),
+                ticket_size_bytes = IFNULL(VALUES(ticket_size_bytes), ticket_size_bytes),
                 updated_at = NOW()
         """, (
             order_id,
             me["user_id"],
             me.get("username"),
-            ticket_image_base64,
-            ticket_file_name
+            ticket_payload["ticket_image_base64"] if ticket_payload else None,
+            ticket_file_name,
+            ticket_payload["ticket_blob_url"] if ticket_payload else None,
+            ticket_payload["ticket_blob_name"] if ticket_payload else None,
+            ticket_payload["ticket_storage"] if ticket_payload else None,
+            ticket_payload["ticket_size_bytes"] if ticket_payload else None,
         ))
+
+        if ticket_payload and prev.get("ticket_blob_name") and prev.get("ticket_blob_name") != ticket_payload.get("ticket_blob_name"):
+            delete_ticket_blob(prev.get("ticket_blob_name"), prev.get("ticket_blob_url"))
 
         conn.commit()
         return jsonify({"status": "processed_submitted", "order_id": order_id})
@@ -1154,6 +1351,10 @@ def add_order_ticket(order_id):
         if not cursor.fetchone():
             return jsonify({"error": "Order not found"}), 404
 
+        cursor.execute("SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1", (order_id,))
+        prev = cursor.fetchone() or {}
+        ticket_payload = save_ticket_image(ticket_image_base64, ticket_file_name, order_id)
+
         cursor.execute("""
             INSERT INTO order_process_submissions
             (
@@ -1162,23 +1363,38 @@ def add_order_ticket(order_id):
                 username,
                 ticket_image_base64,
                 ticket_file_name,
+                ticket_blob_url,
+                ticket_blob_name,
+                ticket_storage,
+                ticket_size_bytes,
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
             ON DUPLICATE KEY UPDATE
                 user_id = VALUES(user_id),
                 username = VALUES(username),
                 ticket_image_base64 = VALUES(ticket_image_base64),
                 ticket_file_name = VALUES(ticket_file_name),
+                ticket_blob_url = VALUES(ticket_blob_url),
+                ticket_blob_name = VALUES(ticket_blob_name),
+                ticket_storage = VALUES(ticket_storage),
+                ticket_size_bytes = VALUES(ticket_size_bytes),
                 updated_at = NOW()
         """, (
             order_id,
             me["user_id"],
             me.get("username"),
-            ticket_image_base64,
-            ticket_file_name
+            ticket_payload["ticket_image_base64"],
+            ticket_file_name,
+            ticket_payload["ticket_blob_url"],
+            ticket_payload["ticket_blob_name"],
+            ticket_payload["ticket_storage"],
+            ticket_payload["ticket_size_bytes"],
         ))
+
+        if prev.get("ticket_blob_name") and prev.get("ticket_blob_name") != ticket_payload.get("ticket_blob_name"):
+            delete_ticket_blob(prev.get("ticket_blob_name"), prev.get("ticket_blob_url"))
 
         conn.commit()
         return jsonify({"status": "ticket_saved", "order_id": order_id})
@@ -1213,6 +1429,10 @@ def get_order_ticket(order_id):
                 username,
                 ticket_image_base64,
                 ticket_file_name,
+                ticket_blob_url,
+                ticket_blob_name,
+                ticket_storage,
+                ticket_size_bytes,
                 created_at,
                 updated_at
             FROM order_process_submissions
@@ -1229,6 +1449,8 @@ def get_order_ticket(order_id):
         if not is_admin and not owner:
             return jsonify({"error": "Forbidden"}), 403
 
+        row["ticket_image_url"] = build_ticket_read_url(row.get("ticket_blob_name"), row.get("ticket_blob_url"))
+        row["has_ticket_image"] = 1 if row.get("ticket_image_base64") or row.get("ticket_blob_url") else 0
         return jsonify(row)
 
     except Exception as e:
@@ -1252,7 +1474,7 @@ def delete_order_ticket(order_id):
 
         ensure_process_submissions_table(cursor)
         cursor.execute("""
-            SELECT id, user_id
+            SELECT id, user_id, ticket_blob_name, ticket_blob_url
             FROM order_process_submissions
             WHERE order_id = %s
             LIMIT 1
@@ -1269,9 +1491,17 @@ def delete_order_ticket(order_id):
 
         cursor.execute("""
             UPDATE order_process_submissions
-            SET ticket_image_base64 = NULL, ticket_file_name = NULL, updated_at = NOW()
+            SET
+                ticket_image_base64 = NULL,
+                ticket_file_name = NULL,
+                ticket_blob_url = NULL,
+                ticket_blob_name = NULL,
+                ticket_storage = NULL,
+                ticket_size_bytes = NULL,
+                updated_at = NOW()
             WHERE order_id = %s
         """, (order_id,))
+        delete_ticket_blob(row.get("ticket_blob_name"), row.get("ticket_blob_url"))
         conn.commit()
         return jsonify({"status": "ticket_deleted", "order_id": order_id})
 
@@ -1315,7 +1545,15 @@ def list_order_tickets():
                 s.user_id,
                 s.username,
                 s.ticket_file_name,
-                CASE WHEN s.ticket_image_base64 IS NULL OR s.ticket_image_base64 = '' THEN 0 ELSE 1 END AS has_ticket_image,
+                s.ticket_blob_url,
+                s.ticket_blob_name,
+                s.ticket_storage,
+                s.ticket_size_bytes,
+                CASE
+                    WHEN (s.ticket_blob_url IS NOT NULL AND s.ticket_blob_url <> '')
+                      OR (s.ticket_image_base64 IS NOT NULL AND s.ticket_image_base64 <> '')
+                    THEN 1 ELSE 0
+                END AS has_ticket_image,
                 s.created_at,
                 s.updated_at,
                 o.name_clean,
@@ -1328,7 +1566,10 @@ def list_order_tickets():
             LIMIT %s
         """, (limit,))
 
-        return jsonify(cursor.fetchall())
+        rows = cursor.fetchall() or []
+        for r in rows:
+            r["ticket_image_url"] = build_ticket_read_url(r.get("ticket_blob_name"), r.get("ticket_blob_url"))
+        return jsonify(rows)
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
