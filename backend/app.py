@@ -358,6 +358,28 @@ def ensure_process_submissions_table(cursor):
     """)
 
 
+def ticket_retention_days():
+    try:
+        days = int(os.getenv("ORDER_TICKET_RETENTION_DAYS", "60"))
+    except Exception:
+        days = 60
+    return max(1, min(days, 365))
+
+
+def prune_old_ticket_images(cursor):
+    days = ticket_retention_days()
+    cursor.execute("""
+        UPDATE order_process_submissions
+        SET
+            ticket_image_base64 = NULL,
+            ticket_file_name = NULL,
+            updated_at = NOW()
+        WHERE
+            ticket_image_base64 IS NOT NULL
+            AND COALESCE(updated_at, created_at) < (NOW() - INTERVAL %s DAY)
+    """, (days,))
+
+
 def upload_batches_time_col(cursor):
     if table_has_column(cursor, "upload_batches", "created_at"):
         return "created_at"
@@ -457,7 +479,14 @@ def get_orders():
         include_all = as_bool(request.args.get("include_all"), default=False)
         where_clause = "1 = 1" if include_all else active_where
         has_submissions = table_exists(cursor, "order_process_submissions")
-        submission_select = ", ops.user_id AS processed_by_user_id, ops.username AS processed_by_username, ops.updated_at AS processed_at" if has_submissions else ""
+        submission_select = """
+            , ops.user_id AS processed_by_user_id
+            , ops.username AS processed_by_username
+            , ops.updated_at AS processed_at
+            , CASE WHEN ops.ticket_image_base64 IS NULL OR ops.ticket_image_base64 = '' THEN 0 ELSE 1 END AS has_ticket_image
+            , ops.ticket_file_name AS ticket_file_name
+            , ops.id AS ticket_id
+        """ if has_submissions else ""
         submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id" if has_submissions else ""
 
         cursor.execute(f"""
@@ -1023,6 +1052,7 @@ def submit_processed_order(order_id):
             return err_resp, err_code
 
         ensure_process_submissions_table(cursor)
+        prune_old_ticket_images(cursor)
         cap = orders_status_capabilities(cursor)
 
         logistics_sql = orders_logistics_select_sql(cap)
@@ -1119,6 +1149,7 @@ def add_order_ticket(order_id):
             return err_resp, err_code
 
         ensure_process_submissions_table(cursor)
+        prune_old_ticket_images(cursor)
         cursor.execute("SELECT id FROM orders_staging WHERE id = %s LIMIT 1", (order_id,))
         if not cursor.fetchone():
             return jsonify({"error": "Order not found"}), 404
@@ -1154,6 +1185,152 @@ def add_order_ticket(order_id):
 
     except Exception as e:
         conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/ticket", methods=["GET"])
+def get_order_ticket(order_id):
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        ensure_process_submissions_table(cursor)
+        prune_old_ticket_images(cursor)
+        cursor.execute("""
+            SELECT
+                id,
+                order_id,
+                user_id,
+                username,
+                ticket_image_base64,
+                ticket_file_name,
+                created_at,
+                updated_at
+            FROM order_process_submissions
+            WHERE order_id = %s
+            LIMIT 1
+        """, (order_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Ticket not found"}), 404
+
+        roles = fetch_user_roles(cursor, me["user_id"])
+        is_admin = "ADMIN" in roles
+        owner = int(row.get("user_id") or 0) == int(me["user_id"])
+        if not is_admin and not owner:
+            return jsonify({"error": "Forbidden"}), 403
+
+        return jsonify(row)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/ticket", methods=["DELETE"])
+def delete_order_ticket(order_id):
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        ensure_process_submissions_table(cursor)
+        cursor.execute("""
+            SELECT id, user_id
+            FROM order_process_submissions
+            WHERE order_id = %s
+            LIMIT 1
+        """, (order_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Ticket not found"}), 404
+
+        roles = fetch_user_roles(cursor, me["user_id"])
+        is_admin = "ADMIN" in roles
+        owner = int(row.get("user_id") or 0) == int(me["user_id"])
+        if not is_admin and not owner:
+            return jsonify({"error": "Forbidden"}), 403
+
+        cursor.execute("""
+            UPDATE order_process_submissions
+            SET ticket_image_base64 = NULL, ticket_file_name = NULL, updated_at = NOW()
+            WHERE order_id = %s
+        """, (order_id,))
+        conn.commit()
+        return jsonify({"status": "ticket_deleted", "order_id": order_id})
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/order_tickets", methods=["GET"])
+def list_order_tickets():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        roles = fetch_user_roles(cursor, me["user_id"])
+        if "ADMIN" not in roles:
+            return jsonify({"error": "Forbidden"}), 403
+
+        ensure_process_submissions_table(cursor)
+        prune_old_ticket_images(cursor)
+
+        try:
+            limit = int(request.args.get("limit", 200))
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 1000))
+
+        cursor.execute("""
+            SELECT
+                s.id,
+                s.order_id,
+                s.user_id,
+                s.username,
+                s.ticket_file_name,
+                CASE WHEN s.ticket_image_base64 IS NULL OR s.ticket_image_base64 = '' THEN 0 ELSE 1 END AS has_ticket_image,
+                s.created_at,
+                s.updated_at,
+                o.name_clean,
+                o.date_clean,
+                o.service_type,
+                o.weight_num
+            FROM order_process_submissions s
+            LEFT JOIN orders_staging o ON o.id = s.order_id
+            ORDER BY COALESCE(s.updated_at, s.created_at) DESC
+            LIMIT %s
+        """, (limit,))
+
+        return jsonify(cursor.fetchall())
+
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
     finally:

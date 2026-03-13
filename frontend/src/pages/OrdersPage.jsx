@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -17,14 +16,21 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Bolt, CheckCircle, Image, Refresh, Search } from "@mui/icons-material";
+import { Bolt, CheckCircle, DeleteOutline, ExpandLess, ExpandMore, Image, Refresh, Search, Visibility } from "@mui/icons-material";
 import {
+  deleteOrderTicket,
   deleteOrder,
+  getOrderTicket,
+  getOrderTickets,
   getOrders,
   submitProcessedOrder,
   updateOrder,
   uploadOrderTicket,
 } from "../api";
+
+const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const WF_BG = "#141922";
+const HD_BG = "#0a869d";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -50,6 +56,14 @@ async function fileToBase64(file) {
   });
 }
 
+function inferMimeType(fileName) {
+  const name = String(fileName || "").toLowerCase();
+  if (name.endsWith(".png")) return "image/png";
+  if (name.endsWith(".webp")) return "image/webp";
+  if (name.endsWith(".gif")) return "image/gif";
+  return "image/jpeg";
+}
+
 function OrdersPage({ user }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -57,18 +71,26 @@ function OrdersPage({ user }) {
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
 
-  const [logisticsTab, setLogisticsTab] = useState("AT_WASHPRO");
-  const [processingTab, setProcessingTab] = useState("QUEUE"); // QUEUE | PROCESSED
+  const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON-RUSH
+  const [showProcessed, setShowProcessed] = useState(false);
+  const [openAlpha, setOpenAlpha] = useState("A");
 
   const [submitDialogRow, setSubmitDialogRow] = useState(null);
   const [submitFile, setSubmitFile] = useState(null);
-  const [submitConfirm, setSubmitConfirm] = useState("");
-
   const [ticketDialogRow, setTicketDialogRow] = useState(null);
   const [ticketFile, setTicketFile] = useState(null);
+  const [ticketView, setTicketView] = useState(null);
+  const [ticketViewLoading, setTicketViewLoading] = useState(false);
+  const [adminTicketsOpen, setAdminTicketsOpen] = useState(false);
+  const [adminTicketsLoading, setAdminTicketsLoading] = useState(false);
+  const [adminTickets, setAdminTickets] = useState([]);
+  const [notice, setNotice] = useState("");
 
   const [editRow, setEditRow] = useState(null);
-  const isAdmin = (user?.roles || []).map((r) => String(r).toUpperCase()).includes("ADMIN");
+
+  const roleCodes = (user?.roles || []).map((r) => String(r).toUpperCase());
+  const isAdmin = roleCodes.includes("ADMIN");
+  const userId = Number(user?.user_id || 0);
 
   const load = async () => {
     try {
@@ -103,54 +125,72 @@ function OrdersPage({ user }) {
     return s === "PROCESSED" ? "PROCESSED" : "PENDING";
   };
 
-  const isRush = (r) => String(r?.rush_type || "").toUpperCase() === "RUSH";
-  const isHD = (r) => String(r?.service_type || "").toUpperCase() === "HD";
+  const rushOf = (r) => String(r?.rush_type || "").toUpperCase() === "RUSH" ? "RUSH" : "NON-RUSH";
+  const serviceOf = (r) => String(r?.service_type || "").toUpperCase();
+  const isHD = (r) => serviceOf(r) === "HD";
+
   const formatMeasure = (r) => {
     const n = Number(r?.weight_num ?? 0);
     return isHD(r) ? `${Math.round(n)} pcs` : `${n.toFixed(2)} lb`;
   };
+
   const formatDate = (value) => {
     const d = parseAsLocalDate(value);
     if (!d) return "-";
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
-  const scopedRows = useMemo(() => {
+  const visibleRows = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
-    return rows.filter((r) => {
-      const logisticsOk = logisticsTab === "ALL" || normalizeLogistics(r) === logisticsTab;
-      const proc = normalizeProcessing(r);
-      const processOk = processingTab === "QUEUE" ? proc === "PENDING" : proc === "PROCESSED";
-      const byMe =
-        processingTab !== "PROCESSED" ||
-        !user?.user_id ||
-        Number(r?.processed_by_user_id || 0) === Number(user.user_id);
 
-      const searchOk =
-        !q ||
+    return rows.filter((r) => {
+      if (normalizeLogistics(r) !== "AT_WASHPRO") return false;
+
+      const proc = normalizeProcessing(r);
+      if (showProcessed) {
+        if (proc !== "PROCESSED") return false;
+        if (userId && Number(r?.processed_by_user_id || 0) !== userId) return false;
+      } else if (proc !== "PENDING") {
+        return false;
+      }
+
+      if (rushFilter !== "ALL" && rushOf(r) !== rushFilter) return false;
+
+      if (!q) return true;
+      return (
         String(r?.name_clean || "").toLowerCase().includes(q) ||
         String(r?.id || "").includes(q) ||
         String(r?.service_type || "").toLowerCase().includes(q) ||
-        String(r?.weight_num ?? "").toLowerCase().includes(q);
-
-      return logisticsOk && processOk && byMe && searchOk;
+        String(r?.weight_num ?? "").toLowerCase().includes(q)
+      );
     });
-  }, [rows, logisticsTab, processingTab, deferredSearch, user?.user_id]);
+  }, [rows, deferredSearch, rushFilter, showProcessed, userId]);
 
-  const counters = useMemo(() => {
-    const base = rows.filter((r) => normalizeLogistics(r) === logisticsTab);
-    const queue = base.filter((r) => normalizeProcessing(r) === "PENDING");
-    const done = base.filter((r) => normalizeProcessing(r) === "PROCESSED");
-    const rushQueue = queue.filter((r) => isRush(r)).length;
-    const nonRushQueue = queue.length - rushQueue;
+  const grouped = useMemo(() => {
+    const out = {};
+    for (const a of ALPHAS) out[a] = [];
+    for (const r of visibleRows) {
+      const c = String(r?.name_clean || "").trim().charAt(0).toUpperCase();
+      const k = /^[A-Z]$/.test(c) ? c : "A";
+      out[k].push(r);
+    }
+    return out;
+  }, [visibleRows]);
+
+  const counts = useMemo(() => {
+    const base = rows.filter((r) => normalizeLogistics(r) === "AT_WASHPRO");
+    const pending = base.filter((r) => normalizeProcessing(r) === "PENDING");
+    const mine = base.filter(
+      (r) => normalizeProcessing(r) === "PROCESSED" && (!userId || Number(r?.processed_by_user_id || 0) === userId)
+    );
     return {
-      queue: queue.length,
-      done: done.length,
-      rushQueue,
-      nonRushQueue,
-      visible: scopedRows.length,
+      all: showProcessed ? mine.length : pending.length,
+      rush: (showProcessed ? mine : pending).filter((r) => rushOf(r) === "RUSH").length,
+      nonRush: (showProcessed ? mine : pending).filter((r) => rushOf(r) === "NON-RUSH").length,
     };
-  }, [rows, scopedRows, logisticsTab]);
+  }, [rows, showProcessed, userId]);
+
+  const toggleAlpha = (alpha) => setOpenAlpha((prev) => (prev === alpha ? null : alpha));
 
   const onSubmitOrder = async () => {
     if (!submitDialogRow) return;
@@ -162,13 +202,13 @@ function OrdersPage({ user }) {
         payload.ticket_file_name = submitFile.name;
       }
       await submitProcessedOrder(submitDialogRow.id, payload);
-      setSubmitConfirm(`Order #${submitDialogRow.id} submitted.`);
+      setNotice(`Order ${submitDialogRow.name_clean} submitted.`);
       setSubmitDialogRow(null);
       setSubmitFile(null);
       await load();
     } catch (error) {
       console.error(error);
-      setSubmitConfirm("Failed to submit order.");
+      setNotice("Failed to submit.");
     } finally {
       setSaving(false);
     }
@@ -182,76 +222,158 @@ function OrdersPage({ user }) {
         ticket_image_base64: await fileToBase64(ticketFile),
         ticket_file_name: ticketFile.name,
       });
-      setSubmitConfirm(`Ticket saved for #${ticketDialogRow.id}.`);
+      setNotice(`Ticket saved for ${ticketDialogRow.name_clean}.`);
       setTicketDialogRow(null);
       setTicketFile(null);
       await load();
     } catch (error) {
       console.error(error);
-      setSubmitConfirm("Failed to save ticket.");
+      setNotice("Ticket upload failed.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const onViewTicket = async (row) => {
+    if (!row?.id) return;
+    try {
+      setTicketViewLoading(true);
+      const res = await getOrderTicket(row.id);
+      const data = res?.data || {};
+      if (!data?.ticket_image_base64) {
+        setNotice("No ticket image found.");
+        return;
+      }
+      const mime = inferMimeType(data.ticket_file_name);
+      setTicketView({
+        order_id: row.id,
+        name_clean: row.name_clean,
+        ticket_file_name: data.ticket_file_name,
+        src: `data:${mime};base64,${data.ticket_image_base64}`,
+      });
+    } catch (error) {
+      console.error(error);
+      setNotice("Failed to load ticket image.");
+    } finally {
+      setTicketViewLoading(false);
+    }
+  };
+
+  const onDeleteTicket = async (row) => {
+    if (!row?.id) return;
+    if (!window.confirm(`Delete ticket image for ${row.name_clean}?`)) return;
+    try {
+      setSaving(true);
+      await deleteOrderTicket(row.id);
+      setNotice(`Ticket removed for ${row.name_clean}.`);
+      await load();
+    } catch (error) {
+      console.error(error);
+      setNotice("Failed to delete ticket image.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openAdminTickets = async () => {
+    try {
+      setAdminTicketsOpen(true);
+      setAdminTicketsLoading(true);
+      const res = await getOrderTickets({ limit: 500 });
+      setAdminTickets(Array.isArray(res?.data) ? res.data : []);
+    } catch (error) {
+      console.error(error);
+      setNotice("Failed to load all ticket images.");
+      setAdminTickets([]);
+    } finally {
+      setAdminTicketsLoading(false);
     }
   };
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography sx={{ fontSize: 30, fontWeight: 500 }}>Orders</Typography>
-        <Button size="small" variant="text" startIcon={<Refresh />} onClick={load} disabled={loading || saving}>
-          Refresh
-        </Button>
+        <Typography sx={{ fontSize: 30, fontWeight: 400 }}>Orders</Typography>
+        <Stack direction="row" spacing={1}>
+          <Button
+            size="small"
+            variant={showProcessed ? "outlined" : "contained"}
+            onClick={() => setShowProcessed(false)}
+            sx={{ textTransform: "none", fontWeight: 400 }}
+          >
+            Queue
+          </Button>
+          <Button
+            size="small"
+            variant={showProcessed ? "contained" : "outlined"}
+            onClick={() => setShowProcessed(true)}
+            sx={{ textTransform: "none", fontWeight: 400 }}
+          >
+            Processed
+          </Button>
+          <Button size="small" variant="text" startIcon={<Refresh />} onClick={load} sx={{ textTransform: "none", fontWeight: 400 }}>
+            Refresh
+          </Button>
+          {showProcessed && isAdmin && (
+            <Button size="small" variant="text" startIcon={<Image />} onClick={openAdminTickets} sx={{ textTransform: "none", fontWeight: 400 }}>
+              All Pictures
+            </Button>
+          )}
+        </Stack>
       </Stack>
-      <Typography sx={{ color: "#6b7280", mt: 0.2 }}>Individual processing queue</Typography>
 
       <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: "auto", pb: 0.2 }}>
-        {[
-          { key: "AT_WASHPRO", label: "At Washpro" },
-          { key: "SENT_TO_RINSE", label: "Sent to Rinse" },
-        ].map((t) => (
-          <Button
-            key={t.key}
-            onClick={() => setLogisticsTab(t.key)}
-            sx={{
-              textTransform: "none",
-              borderRadius: 2,
-              px: 1.4,
-              py: 0.7,
-              bgcolor: logisticsTab === t.key ? "#0f172a" : "#eef2f7",
-              color: logisticsTab === t.key ? "#ffffff" : "#111827",
-              opacity: counters.visible === 0 ? 0.45 : 1,
-            }}
-          >
-            {t.label}
-          </Button>
-        ))}
-      </Stack>
-
-      <Stack direction="row" spacing={1} sx={{ mt: 0.8, overflowX: "auto", pb: 0.2 }}>
-        <Chip
-          label={`Queue ${counters.queue}`}
-          color={processingTab === "QUEUE" ? "error" : "default"}
-          onClick={() => setProcessingTab("QUEUE")}
-          clickable
-          sx={{ opacity: counters.queue === 0 ? 0.45 : 1 }}
-        />
-        <Chip
-          label={`Processed ${counters.done}`}
-          color={processingTab === "PROCESSED" ? "success" : "default"}
-          onClick={() => setProcessingTab("PROCESSED")}
-          clickable
-          sx={{ opacity: counters.done === 0 ? 0.45 : 1 }}
-        />
-        <Chip icon={<Bolt />} label={`Rush ${counters.rushQueue}`} variant="outlined" />
-        <Chip icon={<CheckCircle />} label={`Non-Rush ${counters.nonRushQueue}`} variant="outlined" />
-        <Chip label={`Visible ${counters.visible}`} />
+        <Button
+          onClick={() => setRushFilter("ALL")}
+          sx={{
+            textTransform: "none",
+            borderRadius: 2,
+            px: 1.2,
+            py: 0.6,
+            fontWeight: 400,
+            bgcolor: rushFilter === "ALL" ? "#0f172a" : "#eef2f7",
+            color: rushFilter === "ALL" ? "#ffffff" : "#111827",
+          }}
+        >
+          All {counts.all}
+        </Button>
+        <Button
+          onClick={() => setRushFilter("RUSH")}
+          sx={{
+            textTransform: "none",
+            borderRadius: 2,
+            px: 1.2,
+            py: 0.6,
+            fontWeight: 400,
+            bgcolor: rushFilter === "RUSH" ? "#b91c1c" : "#eef2f7",
+            color: rushFilter === "RUSH" ? "#ffffff" : "#111827",
+          }}
+          startIcon={<Bolt sx={{ fontSize: 18 }} />}
+        >
+          Rush {counts.rush}
+        </Button>
+        <Button
+          onClick={() => setRushFilter("NON-RUSH")}
+          sx={{
+            textTransform: "none",
+            borderRadius: 2,
+            px: 1.2,
+            py: 0.6,
+            fontWeight: 400,
+            bgcolor: rushFilter === "NON-RUSH" ? "#0f766e" : "#eef2f7",
+            color: rushFilter === "NON-RUSH" ? "#ffffff" : "#111827",
+          }}
+          startIcon={<CheckCircle sx={{ fontSize: 16 }} />}
+        >
+          Non-Rush {counts.nonRush}
+        </Button>
       </Stack>
 
       <Paper sx={{ mt: 1.1, p: 1.1, borderRadius: 2, border: "1px solid #e5e7eb" }}>
         <TextField
           fullWidth
           size="small"
-          placeholder="Search name, id, service, weight/count"
+          placeholder="Search name, type, weight/count"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           InputProps={{
@@ -269,114 +391,188 @@ function OrdersPage({ user }) {
           <CircularProgress size={26} />
           <Typography color="text.secondary">Loading...</Typography>
         </Stack>
-      ) : scopedRows.length === 0 ? (
-        <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2, opacity: 0.55 }}>
-          <Typography>No orders in this queue.</Typography>
-        </Paper>
       ) : (
         <Stack spacing={1} sx={{ mt: 1.2 }}>
-          {scopedRows.map((r) => {
-            const rush = isRush(r);
-            const hd = isHD(r);
-            const pending = normalizeProcessing(r) === "PENDING";
+          {ALPHAS.map((alpha) => {
+            const list = grouped[alpha] || [];
+            const expanded = openAlpha === alpha;
             return (
               <Paper
-                key={r.id}
+                key={alpha}
                 sx={{
-                  p: 1.2,
                   borderRadius: 2,
-                  bgcolor: hd ? "#0097b2" : "#0b1324",
-                  border: hd ? "1px solid #48c8dc" : "1px solid #1f2d4a",
-                  color: "#ffffff",
+                  border: "1px solid #e5e7eb",
+                  overflow: "hidden",
+                  opacity: list.length === 0 ? 0.36 : 1,
                 }}
               >
-                <Stack spacing={0.8}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between">
-                    <Stack direction="row" spacing={0.8} alignItems="center">
-                      <Chip
-                        size="small"
-                        icon={rush ? <Bolt sx={{ fontSize: 16 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
-                        label={rush ? "RUSH" : "NON-RUSH"}
-                        sx={{
-                          bgcolor: "#ffffff",
-                          color: rush ? "#b91c1c" : "#0f172a",
-                          height: 26,
-                        }}
-                      />
-                      <Typography sx={{ fontSize: 20, fontWeight: 500 }}>{r.name_clean || "-"}</Typography>
-                    </Stack>
-                    <Chip size="small" label={pending ? "PENDING" : "PROCESSED"} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
+                <Button
+                  fullWidth
+                  onClick={() => toggleAlpha(alpha)}
+                  sx={{
+                    px: 1.1,
+                    py: 1,
+                    justifyContent: "space-between",
+                    textTransform: "none",
+                    color: "#111827",
+                    bgcolor: "#f8fafc",
+                  }}
+                >
+                  <Stack direction="row" spacing={1.2} alignItems="center">
+                    <Box
+                      sx={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: "50%",
+                        display: "grid",
+                        placeItems: "center",
+                        bgcolor: "#111827",
+                        color: "#ffffff",
+                        fontSize: 14,
+                        fontWeight: 400,
+                      }}
+                    >
+                      {alpha}
+                    </Box>
+                    <Typography sx={{ fontSize: 16, fontWeight: 400 }}>{list.length} bags</Typography>
                   </Stack>
+                  {expanded ? <ExpandLess /> : <ExpandMore />}
+                </Button>
 
-                  <Typography sx={{ opacity: 0.95, fontSize: 15 }}>
-                    {formatDate(r.date_clean)} • {formatMeasure(r)}
-                  </Typography>
+                {expanded && (
+                  <Box sx={{ p: 1 }}>
+                    {list.length === 0 ? (
+                      <Typography sx={{ color: "#6b7280", fontSize: 14 }}>No orders.</Typography>
+                    ) : (
+                      <Stack spacing={1}>
+                        {list.map((r) => {
+                          const rush = rushOf(r) === "RUSH";
+                          const hd = isHD(r);
+                          const pending = normalizeProcessing(r) === "PENDING";
+                          return (
+                            <Paper
+                              key={r.id}
+                              sx={{
+                                p: 1.2,
+                                borderRadius: 2,
+                                bgcolor: hd ? HD_BG : WF_BG,
+                                color: "#ffffff",
+                                border: hd ? "1px solid #44c3d6" : "1px solid #2b3342",
+                              }}
+                            >
+                              <Stack spacing={0.9}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                  <Stack direction="row" spacing={0.7} alignItems="center">
+                                    {rush ? <Bolt sx={{ fontSize: 20, color: "#ffcb5b" }} /> : <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />}
+                                    <Typography sx={{ fontSize: 13, letterSpacing: 0.5, opacity: 0.9, fontWeight: 400 }}>
+                                      {rush ? "RUSH" : "NON-RUSH"}
+                                    </Typography>
+                                  </Stack>
+                                  <Typography sx={{ fontSize: 13, opacity: 0.85, fontWeight: 400 }}>
+                                    {pending ? "Pending" : "Processed"}
+                                  </Typography>
+                                </Stack>
 
-                  <Stack direction="row" spacing={0.8}>
-                    <Chip size="small" label={String(r.service_type || "").toUpperCase()} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
-                    <Chip size="small" label={`#${r.id}`} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
-                  </Stack>
+                                <Typography sx={{ fontSize: 38 > String(r?.name_clean || "").length ? 20 : 18, lineHeight: 1.15, fontWeight: 400 }}>
+                                  {r.name_clean}
+                                </Typography>
 
-                  <Divider sx={{ borderColor: "rgba(255,255,255,0.25)" }} />
+                                <Typography sx={{ fontSize: 16, opacity: 0.92, fontWeight: 400 }}>
+                                  {formatDate(r.date_clean)} • {formatMeasure(r)}
+                                </Typography>
 
-                  <Stack direction="row" spacing={1}>
-                    {processingTab === "QUEUE" && pending && (
-                      <Button
-                        variant="contained"
-                        size="small"
-                        onClick={() => setSubmitDialogRow(r)}
-                        disabled={saving}
-                        sx={{ bgcolor: "#ffffff", color: "#111827", textTransform: "none" }}
-                      >
-                        Submit
-                      </Button>
+                                <Box sx={{ pt: 0.45 }}>
+                                  {showProcessed ? (
+                                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                      {Number(r?.has_ticket_image || 0) > 0 && (
+                                        <Button
+                                          size="small"
+                                          variant="outlined"
+                                          startIcon={<Visibility />}
+                                          onClick={() => onViewTicket(r)}
+                                          sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
+                                        >
+                                          View picture
+                                        </Button>
+                                      )}
+                                      <Button
+                                        size="small"
+                                        variant="outlined"
+                                        startIcon={<Image />}
+                                        onClick={() => setTicketDialogRow(r)}
+                                        sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
+                                      >
+                                        {Number(r?.has_ticket_image || 0) > 0 ? "Replace picture" : "Add picture"}
+                                      </Button>
+                                      {Number(r?.has_ticket_image || 0) > 0 && (
+                                        <Button
+                                          size="small"
+                                          variant="outlined"
+                                          color="error"
+                                          startIcon={<DeleteOutline />}
+                                          onClick={() => onDeleteTicket(r)}
+                                          sx={{ textTransform: "none", fontWeight: 400 }}
+                                        >
+                                          Delete picture
+                                        </Button>
+                                      )}
+                                    </Stack>
+                                  ) : (
+                                    <Button
+                                      size="small"
+                                      variant="contained"
+                                      onClick={() => setSubmitDialogRow(r)}
+                                      sx={{ textTransform: "none", bgcolor: "#ffffff", color: "#111827", fontWeight: 400 }}
+                                    >
+                                      Submit
+                                    </Button>
+                                  )}
+                                </Box>
+
+                                {isAdmin && (
+                                  <>
+                                    <Divider sx={{ borderColor: "rgba(255,255,255,0.2)" }} />
+                                    <Stack direction="row" spacing={1}>
+                                      <Button
+                                        size="small"
+                                        variant="outlined"
+                                        onClick={() =>
+                                          setEditRow({
+                                            id: r.id,
+                                            date_clean: String(r.date_clean || "").slice(0, 10),
+                                            name_clean: r.name_clean || "",
+                                            weight_num: r.weight_num ?? "",
+                                            service_type: r.service_type || "WF",
+                                          })
+                                        }
+                                        sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
+                                      >
+                                        Edit
+                                      </Button>
+                                      <Button
+                                        size="small"
+                                        variant="outlined"
+                                        color="error"
+                                        onClick={async () => {
+                                          if (!window.confirm(`Delete #${r.id}?`)) return;
+                                          await deleteOrder(r.id);
+                                          await load();
+                                        }}
+                                        sx={{ textTransform: "none", fontWeight: 400 }}
+                                      >
+                                        Delete
+                                      </Button>
+                                    </Stack>
+                                  </>
+                                )}
+                              </Stack>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
                     )}
-                    {processingTab === "PROCESSED" && (
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        startIcon={<Image />}
-                        onClick={() => setTicketDialogRow(r)}
-                        sx={{ borderColor: "#ffffff", color: "#ffffff", textTransform: "none" }}
-                      >
-                        Add missed picture
-                      </Button>
-                    )}
-                    {isAdmin && (
-                      <>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          onClick={() =>
-                            setEditRow({
-                              id: r.id,
-                              date_clean: String(r.date_clean || "").slice(0, 10),
-                              name_clean: r.name_clean || "",
-                              weight_num: r.weight_num ?? "",
-                              service_type: r.service_type || "WF",
-                            })
-                          }
-                          sx={{ borderColor: "#ffffff", color: "#ffffff", textTransform: "none" }}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          variant="outlined"
-                          size="small"
-                          color="error"
-                          onClick={async () => {
-                            if (!window.confirm(`Delete #${r.id}?`)) return;
-                            await deleteOrder(r.id);
-                            await load();
-                          }}
-                          sx={{ textTransform: "none" }}
-                        >
-                          Delete
-                        </Button>
-                      </>
-                    )}
-                  </Stack>
-                </Stack>
+                  </Box>
+                )}
               </Paper>
             );
           })}
@@ -384,13 +580,13 @@ function OrdersPage({ user }) {
       )}
 
       <Dialog open={Boolean(submitDialogRow)} onClose={() => setSubmitDialogRow(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Submit Processed Order</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 400 }}>Submit Processed Order</DialogTitle>
         <DialogContent dividers>
           {submitDialogRow && (
             <Stack spacing={1.1}>
-              <Typography sx={{ fontSize: 20 }}>{submitDialogRow.name_clean}</Typography>
-              <Typography>{formatDate(submitDialogRow.date_clean)} • {formatMeasure(submitDialogRow)}</Typography>
-              <Button variant="outlined" component="label" sx={{ textTransform: "none" }}>
+              <Typography sx={{ fontSize: 20, fontWeight: 400 }}>{submitDialogRow.name_clean}</Typography>
+              <Typography sx={{ fontWeight: 400 }}>{formatDate(submitDialogRow.date_clean)} • {formatMeasure(submitDialogRow)}</Typography>
+              <Button variant="outlined" component="label" sx={{ textTransform: "none", fontWeight: 400 }}>
                 {submitFile ? submitFile.name : "Take / Upload Ticket Photo"}
                 <input
                   hidden
@@ -400,25 +596,25 @@ function OrdersPage({ user }) {
                   onChange={(e) => setSubmitFile(e.target.files?.[0] || null)}
                 />
               </Button>
-              <Alert severity="info">You can submit without a picture and add it later.</Alert>
+              <Alert severity="info">Picture is optional. You can add it later.</Alert>
             </Stack>
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setSubmitDialogRow(null)}>Cancel</Button>
-          <Button variant="contained" onClick={onSubmitOrder} disabled={saving}>
+          <Button onClick={() => setSubmitDialogRow(null)} sx={{ fontWeight: 400 }}>Cancel</Button>
+          <Button variant="contained" onClick={onSubmitOrder} disabled={saving} sx={{ fontWeight: 400 }}>
             Confirm Submit
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog open={Boolean(ticketDialogRow)} onClose={() => setTicketDialogRow(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Add Ticket Picture</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 400 }}>Add Ticket Picture</DialogTitle>
         <DialogContent dividers>
           {ticketDialogRow && (
             <Stack spacing={1.1}>
-              <Typography sx={{ fontSize: 20 }}>{ticketDialogRow.name_clean}</Typography>
-              <Button variant="outlined" component="label" sx={{ textTransform: "none" }}>
+              <Typography sx={{ fontSize: 20, fontWeight: 400 }}>{ticketDialogRow.name_clean}</Typography>
+              <Button variant="outlined" component="label" sx={{ textTransform: "none", fontWeight: 400 }}>
                 {ticketFile ? ticketFile.name : "Select Ticket Photo"}
                 <input
                   hidden
@@ -432,15 +628,85 @@ function OrdersPage({ user }) {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setTicketDialogRow(null)}>Cancel</Button>
-          <Button variant="contained" onClick={onAddTicket} disabled={!ticketFile || saving}>
+          <Button onClick={() => setTicketDialogRow(null)} sx={{ fontWeight: 400 }}>Cancel</Button>
+          <Button variant="contained" onClick={onAddTicket} disabled={!ticketFile || saving} sx={{ fontWeight: 400 }}>
             Save Picture
           </Button>
         </DialogActions>
       </Dialog>
 
+      <Dialog open={Boolean(ticketView)} onClose={() => setTicketView(null)} fullWidth maxWidth="sm">
+        <DialogTitle sx={{ fontWeight: 400 }}>Ticket Picture</DialogTitle>
+        <DialogContent dividers>
+          {ticketViewLoading ? (
+            <Stack alignItems="center" sx={{ py: 2 }}>
+              <CircularProgress size={24} />
+            </Stack>
+          ) : (
+            ticketView && (
+              <Stack spacing={1.1}>
+                <Typography sx={{ fontWeight: 400 }}>{ticketView.name_clean}</Typography>
+                <Box
+                  component="img"
+                  alt="ticket"
+                  src={ticketView.src}
+                  sx={{ width: "100%", borderRadius: 1.5, border: "1px solid #e5e7eb" }}
+                />
+                <Typography sx={{ fontSize: 13, color: "#6b7280", fontWeight: 400 }}>
+                  {ticketView.ticket_file_name || "ticket.jpg"}
+                </Typography>
+              </Stack>
+            )
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTicketView(null)} sx={{ fontWeight: 400 }}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={adminTicketsOpen} onClose={() => setAdminTicketsOpen(false)} fullWidth maxWidth="md">
+        <DialogTitle sx={{ fontWeight: 400 }}>All Ticket Pictures</DialogTitle>
+        <DialogContent dividers>
+          {adminTicketsLoading ? (
+            <Stack alignItems="center" sx={{ py: 2 }}>
+              <CircularProgress size={24} />
+            </Stack>
+          ) : adminTickets.length === 0 ? (
+            <Typography sx={{ color: "#6b7280", fontWeight: 400 }}>No ticket records found.</Typography>
+          ) : (
+            <Stack spacing={1}>
+              {adminTickets.map((t) => (
+                <Paper key={`${t.id}-${t.order_id}`} sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb" }}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 400 }}>{t.name_clean || `Order #${t.order_id}`}</Typography>
+                      <Typography sx={{ fontSize: 13, color: "#6b7280", fontWeight: 400 }}>
+                        {t.username || "unknown"} • {t.ticket_file_name || "no filename"}
+                      </Typography>
+                    </Box>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={async () => {
+                        await onViewTicket({ id: t.order_id, name_clean: t.name_clean || `Order #${t.order_id}` });
+                      }}
+                      sx={{ textTransform: "none", fontWeight: 400 }}
+                    >
+                      View
+                    </Button>
+                  </Stack>
+                </Paper>
+              ))}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAdminTicketsOpen(false)} sx={{ fontWeight: 400 }}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={Boolean(editRow)} onClose={() => setEditRow(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Edit Order</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 400 }}>Edit Order</DialogTitle>
         <DialogContent dividers>
           {editRow && (
             <Stack spacing={1.1}>
@@ -475,7 +741,7 @@ function OrdersPage({ user }) {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setEditRow(null)}>Cancel</Button>
+          <Button onClick={() => setEditRow(null)} sx={{ fontWeight: 400 }}>Cancel</Button>
           <Button
             variant="contained"
             onClick={async () => {
@@ -495,19 +761,20 @@ function OrdersPage({ user }) {
               }
             }}
             disabled={saving}
+            sx={{ fontWeight: 400 }}
           >
             Save
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(submitConfirm)} onClose={() => setSubmitConfirm("")} maxWidth="xs" fullWidth>
-        <DialogTitle>Confirmation</DialogTitle>
+      <Dialog open={Boolean(notice)} onClose={() => setNotice("")} fullWidth maxWidth="xs">
+        <DialogTitle sx={{ fontWeight: 400 }}>Confirmation</DialogTitle>
         <DialogContent dividers>
-          <Typography>{submitConfirm}</Typography>
+          <Typography sx={{ fontWeight: 400 }}>{notice}</Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setSubmitConfirm("")}>OK</Button>
+          <Button onClick={() => setNotice("")} sx={{ fontWeight: 400 }}>OK</Button>
         </DialogActions>
       </Dialog>
     </Box>

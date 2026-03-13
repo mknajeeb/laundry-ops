@@ -204,6 +204,15 @@ export const submitProcessedOrder = (order_id, payload) =>
 export const uploadOrderTicket = (order_id, payload) =>
   axios.post(`${API_BASE}/orders/${order_id}/ticket`, payload);
 
+export const getOrderTicket = (order_id) =>
+  axios.get(`${API_BASE}/orders/${order_id}/ticket`);
+
+export const deleteOrderTicket = (order_id) =>
+  axios.delete(`${API_BASE}/orders/${order_id}/ticket`);
+
+export const getOrderTickets = (params = {}) =>
+  axios.get(`${API_BASE}/order_tickets`, { params });
+
 /* =========================================
    FOLDER SHIFT
 ========================================= */

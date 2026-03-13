@@ -35,6 +35,8 @@ function CheckoutPage() {
   const [busy, setBusy] = useState(false);
   const [rushTab, setRushTab] = useState("RUSH");
   const [activeRow, setActiveRow] = useState(null);
+  const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
+  const [nameConfirmSelectedId, setNameConfirmSelectedId] = useState(null);
   const [undoRow, setUndoRow] = useState(null);
 
   const load = useCallback(async () => {
@@ -80,6 +82,8 @@ function CheckoutPage() {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
+  const normalizeName = (value) => String(value || "").trim().toLowerCase();
+
   const queues = useMemo(() => {
     const rushRows = rows.filter((r) => rushOf(r) === "RUSH");
     const nonRushRows = rows.filter((r) => rushOf(r) === "NON-RUSH");
@@ -117,6 +121,20 @@ function CheckoutPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onSelectForCheckout = (row) => {
+    const key = normalizeName(row?.name_clean);
+    const sameName = rows.filter((r) => normalizeName(r?.name_clean) === key);
+    if (sameName.length > 1) {
+      setNameConfirmDialog({
+        name_clean: row?.name_clean,
+        options: sameName.sort((a, b) => Number(a?.id || 0) - Number(b?.id || 0)),
+      });
+      setNameConfirmSelectedId(row?.id);
+      return;
+    }
+    setActiveRow(row);
   };
 
   const confirmUndo = async () => {
@@ -221,7 +239,7 @@ function CheckoutPage() {
                   {list.map((r) => (
                     <Paper
                       key={r.id}
-                      onClick={() => setActiveRow(r)}
+                      onClick={() => onSelectForCheckout(r)}
                       sx={{
                         p: 1.1,
                         borderRadius: 2,
@@ -289,6 +307,46 @@ function CheckoutPage() {
           <Button onClick={() => setActiveRow(null)}>Cancel</Button>
           <Button variant="contained" disabled={busy} startIcon={<LocalShipping />} onClick={confirmCheckout}>
             Confirm Send
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(nameConfirmDialog)} onClose={() => setNameConfirmDialog(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Confirm Customer Order</DialogTitle>
+        <DialogContent dividers>
+          {nameConfirmDialog && (
+            <Stack spacing={1}>
+              <Alert severity="warning">
+                Multiple active orders found for {nameConfirmDialog.name_clean}. Verify ticket weight/count and date.
+              </Alert>
+              <Stack spacing={0.8}>
+                {nameConfirmDialog.options.map((opt) => (
+                  <Button
+                    key={opt.id}
+                    variant={nameConfirmSelectedId === opt.id ? "contained" : "outlined"}
+                    onClick={() => setNameConfirmSelectedId(opt.id)}
+                    sx={{ textTransform: "none", justifyContent: "space-between" }}
+                  >
+                    <span>{formatDate(opt.date_clean)} • {measureOf(opt)}</span>
+                    <span style={{ marginLeft: 8 }}>#{opt.id}</span>
+                  </Button>
+                ))}
+              </Stack>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setNameConfirmDialog(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              const chosen = nameConfirmDialog?.options?.find((o) => o.id === nameConfirmSelectedId);
+              if (!chosen) return;
+              setNameConfirmDialog(null);
+              setActiveRow(chosen);
+            }}
+          >
+            Continue
           </Button>
         </DialogActions>
       </Dialog>
