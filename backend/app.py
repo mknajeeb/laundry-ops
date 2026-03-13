@@ -98,7 +98,8 @@ def normalize_name(value):
 def normalize_measure_by_service(weight_num, service_type):
     service = (service_type or "").strip().upper()
     if weight_num is None:
-        return ""
+        # For HD, blank and 0 are operationally treated the same.
+        return "0" if service == "HD" else ""
 
     try:
         n = float(weight_num)
@@ -334,6 +335,29 @@ def require_admin(cursor):
     return me, None, None
 
 
+def require_user(cursor):
+    me = current_user_from_token(cursor)
+    if not me:
+        return None, jsonify({"error": "Unauthorized"}), 401
+    me["roles"] = fetch_user_roles(cursor, me["user_id"])
+    return me, None, None
+
+
+def ensure_process_submissions_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS order_process_submissions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL UNIQUE,
+            user_id INT NULL,
+            username VARCHAR(100) NULL,
+            ticket_image_base64 LONGTEXT NULL,
+            ticket_file_name VARCHAR(255) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL
+        )
+    """)
+
+
 def upload_batches_time_col(cursor):
     if table_has_column(cursor, "upload_batches", "created_at"):
         return "created_at"
@@ -430,31 +454,38 @@ def get_orders():
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
         active_where = where_active_at_washpro_sql(cap)
+        include_all = as_bool(request.args.get("include_all"), default=False)
+        where_clause = "1 = 1" if include_all else active_where
+        has_submissions = table_exists(cursor, "order_process_submissions")
+        submission_select = ", ops.user_id AS processed_by_user_id, ops.username AS processed_by_username, ops.updated_at AS processed_at" if has_submissions else ""
+        submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id" if has_submissions else ""
 
         cursor.execute(f"""
 
             SELECT
-                id,
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type,
-                batch_date,
+                o.id,
+                o.date_clean,
+                o.name_clean,
+                o.weight_num,
+                o.service_type,
+                o.batch_date,
 
                 CASE
-                    WHEN date_clean < CURDATE() THEN 'RUSH'
+                    WHEN o.date_clean < CURDATE() THEN 'RUSH'
                     ELSE 'NON-RUSH'
                 END AS rush_type,
 
                 {logistics_sql},
                 {processing_sql},
-                status,
-                created_at
+                o.status,
+                o.created_at
+                {submission_select}
 
-            FROM orders_staging
-            WHERE {active_where}
+            FROM orders_staging o
+            {submission_join}
+            WHERE {where_clause}
 
-            ORDER BY date_clean ASC, id ASC
+            ORDER BY o.date_clean ASC, o.id ASC
 
         """)
 
@@ -856,6 +887,9 @@ def update_order(order_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
+        _, err_resp, err_code = require_admin(cursor)
+        if err_resp:
+            return err_resp, err_code
 
         cursor.execute("""
             SELECT
@@ -944,6 +978,9 @@ def delete_order(order_id):
     cursor = conn.cursor()
 
     try:
+        _, err_resp, err_code = require_admin(cursor)
+        if err_resp:
+            return err_resp, err_code
 
         cursor.execute(
             "DELETE FROM orders_staging WHERE id = %s",
@@ -962,6 +999,164 @@ def delete_order(order_id):
 
     finally:
 
+        cursor.close()
+        conn.close()
+
+
+# ---------------------------------------------------
+# Self Processing + Ticket Upload
+# ---------------------------------------------------
+
+@app.route("/orders/<int:order_id>/submit_processed", methods=["POST"])
+def submit_processed_order(order_id):
+
+    data = request.json or {}
+    ticket_image_base64 = data.get("ticket_image_base64")
+    ticket_file_name = data.get("ticket_file_name")
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        ensure_process_submissions_table(cursor)
+        cap = orders_status_capabilities(cursor)
+
+        logistics_sql = orders_logistics_select_sql(cap)
+        processing_sql = orders_processing_select_sql(cap)
+        cursor.execute(f"""
+            SELECT
+                id,
+                {logistics_sql},
+                {processing_sql},
+                status
+            FROM orders_staging
+            WHERE id = %s
+            LIMIT 1
+        """, (order_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return jsonify({"error": "Order not found"}), 404
+
+        logistics_status = (row.get("logistics_status") or "").upper()
+        if logistics_status in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
+            return jsonify({"error": "Order already sent/checked out"}), 409
+
+        set_parts = []
+        if cap["has_processing"]:
+            set_parts.append("processing_status = 'PROCESSED'")
+        if cap["has_status"]:
+            current = (row.get("status") or "").upper()
+            if current not in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCED_CHECKOUT", "FORCE_CHECKOUT"]:
+                set_parts.append("status = 'PROCESSED'")
+        if not set_parts:
+            set_parts.append("status = 'PROCESSED'")
+
+        cursor.execute(f"""
+            UPDATE orders_staging
+            SET {", ".join(set_parts)}
+            WHERE id = %s
+        """, (order_id,))
+
+        cursor.execute("""
+            INSERT INTO order_process_submissions
+            (
+                order_id,
+                user_id,
+                username,
+                ticket_image_base64,
+                ticket_file_name,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                user_id = VALUES(user_id),
+                username = VALUES(username),
+                ticket_image_base64 = VALUES(ticket_image_base64),
+                ticket_file_name = VALUES(ticket_file_name),
+                updated_at = NOW()
+        """, (
+            order_id,
+            me["user_id"],
+            me.get("username"),
+            ticket_image_base64,
+            ticket_file_name
+        ))
+
+        conn.commit()
+        return jsonify({"status": "processed_submitted", "order_id": order_id})
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/ticket", methods=["POST"])
+def add_order_ticket(order_id):
+
+    data = request.json or {}
+    ticket_image_base64 = data.get("ticket_image_base64")
+    ticket_file_name = data.get("ticket_file_name")
+
+    if not ticket_image_base64:
+        return jsonify({"error": "ticket_image_base64 is required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        ensure_process_submissions_table(cursor)
+        cursor.execute("SELECT id FROM orders_staging WHERE id = %s LIMIT 1", (order_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Order not found"}), 404
+
+        cursor.execute("""
+            INSERT INTO order_process_submissions
+            (
+                order_id,
+                user_id,
+                username,
+                ticket_image_base64,
+                ticket_file_name,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                user_id = VALUES(user_id),
+                username = VALUES(username),
+                ticket_image_base64 = VALUES(ticket_image_base64),
+                ticket_file_name = VALUES(ticket_file_name),
+                updated_at = NOW()
+        """, (
+            order_id,
+            me["user_id"],
+            me.get("username"),
+            ticket_image_base64,
+            ticket_file_name
+        ))
+
+        conn.commit()
+        return jsonify({"status": "ticket_saved", "order_id": order_id})
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+    finally:
         cursor.close()
         conn.close()
 

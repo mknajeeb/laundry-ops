@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useDeferredValue } from "react";
 import {
+  Alert,
   Box,
   Button,
+  Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  Chip,
-  CircularProgress,
+  Divider,
   InputAdornment,
   MenuItem,
   Paper,
@@ -15,9 +17,14 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { FlashOn, Refresh, Search } from "@mui/icons-material";
-import { deleteOrder, getCurrentUploadBatch, getEmployees, getOrders, processOrder, updateOrder } from "../api";
-import { useSearchParams } from "react-router-dom";
+import { Bolt, CheckCircle, Image, Refresh, Search } from "@mui/icons-material";
+import {
+  deleteOrder,
+  getOrders,
+  submitProcessedOrder,
+  updateOrder,
+  uploadOrderTicket,
+} from "../api";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -31,189 +38,222 @@ function parseAsLocalDate(value) {
   return new Date(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
 }
 
-function OrdersPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [orders, setOrders] = useState([]);
-  const [activeBatch, setActiveBatch] = useState(null);
+async function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const out = String(reader.result || "");
+      resolve(out.includes(",") ? out.split(",")[1] : out);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function OrdersPage({ user }) {
+  const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  const [search, setSearch] = useState("");
-  const [service, setService] = useState((searchParams.get("service") || "ALL").toUpperCase());
-  const [rush, setRush] = useState((searchParams.get("rush") || "ALL").toUpperCase());
-  const [logistics, setLogistics] = useState((searchParams.get("logistics") || "ALL").toUpperCase());
-  const [processing, setProcessing] = useState((searchParams.get("processing") || searchParams.get("status") || "ALL").toUpperCase());
-  const [alpha, setAlpha] = useState("ALL");
-  const [editRow, setEditRow] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [employees, setEmployees] = useState([]);
-  const [processRow, setProcessRow] = useState(null);
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
 
-  useEffect(() => {
-    const nextService = (searchParams.get("service") || "ALL").toUpperCase();
-    const nextRush = (searchParams.get("rush") || "ALL").toUpperCase();
-    const nextLogistics = (searchParams.get("logistics") || "ALL").toUpperCase();
-    const nextProcessing = (searchParams.get("processing") || searchParams.get("status") || "ALL").toUpperCase();
-    setService(nextService);
-    setRush(nextRush);
-    setLogistics(nextLogistics);
-    setProcessing(nextProcessing);
-  }, [searchParams]);
+  const [logisticsTab, setLogisticsTab] = useState("AT_WASHPRO");
+  const [processingTab, setProcessingTab] = useState("QUEUE"); // QUEUE | PROCESSED
 
-  const loadOrders = useCallback(async () => {
+  const [submitDialogRow, setSubmitDialogRow] = useState(null);
+  const [submitFile, setSubmitFile] = useState(null);
+  const [submitConfirm, setSubmitConfirm] = useState("");
+
+  const [ticketDialogRow, setTicketDialogRow] = useState(null);
+  const [ticketFile, setTicketFile] = useState(null);
+
+  const [editRow, setEditRow] = useState(null);
+  const isAdmin = (user?.roles || []).map((r) => String(r).toUpperCase()).includes("ADMIN");
+
+  const load = async () => {
     try {
       setLoading(true);
-      const res = await getOrders();
-      const rows = Array.isArray(res.data) ? res.data : [];
-      setOrders(rows);
+      const res = await getOrders({ include_all: true });
+      setRows(Array.isArray(res.data) ? res.data : []);
     } catch (error) {
       console.error(error);
-      setOrders([]);
+      setRows([]);
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    loadOrders();
-  }, [loadOrders]);
-
-  useEffect(() => {
-    async function loadEmployees() {
-      try {
-        const res = await getEmployees();
-        setEmployees(Array.isArray(res.data) ? res.data : []);
-      } catch (error) {
-        console.error(error);
-        setEmployees([]);
-      }
-    }
-    loadEmployees();
-  }, []);
-
-  useEffect(() => {
-    async function loadBatch() {
-      try {
-        const res = await getCurrentUploadBatch();
-        setActiveBatch(res?.data || null);
-      } catch (error) {
-        console.error(error);
-        setActiveBatch(null);
-      }
-    }
-    loadBatch();
-  }, []);
-
-  const handleFullRefresh = async () => {
-    setSearch("");
-    setService("ALL");
-    setRush("ALL");
-    setLogistics("ALL");
-    setProcessing("ALL");
-    setAlpha("ALL");
-    setSearchParams({});
-    await loadOrders();
   };
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+  useEffect(() => {
+    load();
+  }, []);
 
-    return orders.filter((row) => {
-      const rowService = String(row?.service_type || "").toUpperCase();
-      const rowRush = String(row?.rush_type || "").toUpperCase();
-      const rowLogistics = String(
-        row?.logistics_status || (String(row?.status || "").toUpperCase() === "CHECKED_OUT" ? "SENT_TO_RINSE" : "AT_WASHPRO")
-      ).toUpperCase();
-      const rowProcessing = String(
-        row?.processing_status || (String(row?.status || "").toUpperCase() === "PROCESSED" ? "PROCESSED" : "PENDING")
-      ).toUpperCase();
-
-      const matchSearch =
-        !q ||
-        String(row?.name_clean || "").toLowerCase().includes(q) ||
-        String(row?.id || "").includes(q);
-
-      const matchService = service === "ALL" || rowService === service;
-      const matchRush = rush === "ALL" || rowRush === rush;
-      const matchLogistics = logistics === "ALL" || rowLogistics === logistics;
-      const matchProcessing = processing === "ALL" || rowProcessing === processing;
-      const name = String(row?.name_clean || "").trim().toUpperCase();
-      const first = name.charAt(0);
-      const matchAlpha = alpha === "ALL" || first === alpha;
-
-      return matchSearch && matchService && matchRush && matchLogistics && matchProcessing && matchAlpha;
-    });
-  }, [orders, search, service, rush, logistics, processing, alpha]);
-
-  const stats = useMemo(() => {
-    const total = filtered.length;
-    const wf = filtered.filter((row) => String(row?.service_type || "").toUpperCase() === "WF").length;
-    const hd = filtered.filter((row) => String(row?.service_type || "").toUpperCase() === "HD").length;
-    const rushCount = filtered.filter((row) => String(row?.rush_type || "").toUpperCase() === "RUSH").length;
-
-    return { total, wf, hd, rushCount };
-  }, [filtered]);
-
-  const formatMeasure = (row) => {
-    const serviceType = String(row?.service_type || "").toUpperCase();
-    const raw = Number(row?.weight_num ?? 0);
-
-    if (serviceType === "WF") return `${raw.toFixed(2)} lb`;
-    if (serviceType === "HD") return `${Math.round(raw)} pcs`;
-    return "-";
+  const normalizeLogistics = (r) => {
+    const v = String(r?.logistics_status || "").toUpperCase();
+    if (v) return v;
+    const s = String(r?.status || "").toUpperCase();
+    if (["CHECKED_OUT", "SENT_TO_RINSE"].includes(s)) return "SENT_TO_RINSE";
+    if (["FORCE_CHECKOUT", "FORCED_CHECKOUT"].includes(s)) return "FORCE_CHECKOUT";
+    return "AT_WASHPRO";
   };
 
-  const formatDateOnly = (value) => {
-    if (!value) return "-";
+  const normalizeProcessing = (r) => {
+    const v = String(r?.processing_status || "").toUpperCase();
+    if (v) return v;
+    const s = String(r?.status || "").toUpperCase();
+    return s === "PROCESSED" ? "PROCESSED" : "PENDING";
+  };
+
+  const isRush = (r) => String(r?.rush_type || "").toUpperCase() === "RUSH";
+  const isHD = (r) => String(r?.service_type || "").toUpperCase() === "HD";
+  const formatMeasure = (r) => {
+    const n = Number(r?.weight_num ?? 0);
+    return isHD(r) ? `${Math.round(n)} pcs` : `${n.toFixed(2)} lb`;
+  };
+  const formatDate = (value) => {
     const d = parseAsLocalDate(value);
-    if (!d || Number.isNaN(d.getTime())) return String(value).split(" ")[0];
+    if (!d) return "-";
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
-  const applyParamFilters = (nextService, nextRush, nextLogistics, nextProcessing) => {
-    const next = {};
-    if (nextService !== "ALL") next.service = nextService;
-    if (nextRush !== "ALL") next.rush = nextRush;
-    if (nextLogistics !== "ALL") next.logistics = nextLogistics;
-    if (nextProcessing !== "ALL") next.processing = nextProcessing;
-    setSearchParams(next);
+  const scopedRows = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    return rows.filter((r) => {
+      const logisticsOk = logisticsTab === "ALL" || normalizeLogistics(r) === logisticsTab;
+      const proc = normalizeProcessing(r);
+      const processOk = processingTab === "QUEUE" ? proc === "PENDING" : proc === "PROCESSED";
+      const byMe =
+        processingTab !== "PROCESSED" ||
+        !user?.user_id ||
+        Number(r?.processed_by_user_id || 0) === Number(user.user_id);
+
+      const searchOk =
+        !q ||
+        String(r?.name_clean || "").toLowerCase().includes(q) ||
+        String(r?.id || "").includes(q) ||
+        String(r?.service_type || "").toLowerCase().includes(q) ||
+        String(r?.weight_num ?? "").toLowerCase().includes(q);
+
+      return logisticsOk && processOk && byMe && searchOk;
+    });
+  }, [rows, logisticsTab, processingTab, deferredSearch, user?.user_id]);
+
+  const counters = useMemo(() => {
+    const base = rows.filter((r) => normalizeLogistics(r) === logisticsTab);
+    const queue = base.filter((r) => normalizeProcessing(r) === "PENDING");
+    const done = base.filter((r) => normalizeProcessing(r) === "PROCESSED");
+    const rushQueue = queue.filter((r) => isRush(r)).length;
+    const nonRushQueue = queue.length - rushQueue;
+    return {
+      queue: queue.length,
+      done: done.length,
+      rushQueue,
+      nonRushQueue,
+      visible: scopedRows.length,
+    };
+  }, [rows, scopedRows, logisticsTab]);
+
+  const onSubmitOrder = async () => {
+    if (!submitDialogRow) return;
+    try {
+      setSaving(true);
+      const payload = {};
+      if (submitFile) {
+        payload.ticket_image_base64 = await fileToBase64(submitFile);
+        payload.ticket_file_name = submitFile.name;
+      }
+      await submitProcessedOrder(submitDialogRow.id, payload);
+      setSubmitConfirm(`Order #${submitDialogRow.id} submitted.`);
+      setSubmitDialogRow(null);
+      setSubmitFile(null);
+      await load();
+    } catch (error) {
+      console.error(error);
+      setSubmitConfirm("Failed to submit order.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onAddTicket = async () => {
+    if (!ticketDialogRow || !ticketFile) return;
+    try {
+      setSaving(true);
+      await uploadOrderTicket(ticketDialogRow.id, {
+        ticket_image_base64: await fileToBase64(ticketFile),
+        ticket_file_name: ticketFile.name,
+      });
+      setSubmitConfirm(`Ticket saved for #${ticketDialogRow.id}.`);
+      setTicketDialogRow(null);
+      setTicketFile(null);
+      await load();
+    } catch (error) {
+      console.error(error);
+      setSubmitConfirm("Failed to save ticket.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <Box sx={{ minHeight: "100vh", background: "#f3f4f6", px: { xs: 1.2, md: 2.4 }, py: 1.5 }}>
+    <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography sx={{ fontSize: 30, fontWeight: 500, lineHeight: 1 }}>Orders</Typography>
-        <Button size="small" variant="text" startIcon={<Refresh />} onClick={loadOrders} disabled={loading}>
+        <Typography sx={{ fontSize: 30, fontWeight: 500 }}>Orders</Typography>
+        <Button size="small" variant="text" startIcon={<Refresh />} onClick={load} disabled={loading || saving}>
           Refresh
         </Button>
       </Stack>
-      <Typography sx={{ color: "#6b7280", mt: 0.4 }}>Live staging queue</Typography>
-      {activeBatch && (
-        <Chip
-          size="small"
-          sx={{ mt: 0.8 }}
-          color={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
-          label={`${(parseAsLocalDate(activeBatch.batch_date) || new Date(activeBatch.batch_date)).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })} • ${String(activeBatch.state || "DRAFT").toUpperCase()}`}
-        />
-      )}
+      <Typography sx={{ color: "#6b7280", mt: 0.2 }}>Individual processing queue</Typography>
 
-      <Stack direction="row" spacing={1} sx={{ mt: 1.2, overflowX: "auto", pb: 0.4 }}>
-        <Chip label={`${stats.total} visible`} color="primary" />
-        <Chip label={`WF ${stats.wf}`} />
-        <Chip label={`HD ${stats.hd}`} />
-        <Chip icon={<FlashOn />} label={`RUSH ${stats.rushCount}`} color="error" variant="outlined" />
-        <Button size="small" variant="outlined" onClick={() => window.print()}>
-          Print
-        </Button>
-        <Button size="small" variant="outlined" onClick={handleFullRefresh} disabled={loading}>Reset Filters</Button>
+      <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: "auto", pb: 0.2 }}>
+        {[
+          { key: "AT_WASHPRO", label: "At Washpro" },
+          { key: "SENT_TO_RINSE", label: "Sent to Rinse" },
+        ].map((t) => (
+          <Button
+            key={t.key}
+            onClick={() => setLogisticsTab(t.key)}
+            sx={{
+              textTransform: "none",
+              borderRadius: 2,
+              px: 1.4,
+              py: 0.7,
+              bgcolor: logisticsTab === t.key ? "#0f172a" : "#eef2f7",
+              color: logisticsTab === t.key ? "#ffffff" : "#111827",
+              opacity: counters.visible === 0 ? 0.45 : 1,
+            }}
+          >
+            {t.label}
+          </Button>
+        ))}
       </Stack>
 
-      <Paper sx={{ p: 1.2, borderRadius: 2, mt: 1.2 }}>
+      <Stack direction="row" spacing={1} sx={{ mt: 0.8, overflowX: "auto", pb: 0.2 }}>
+        <Chip
+          label={`Queue ${counters.queue}`}
+          color={processingTab === "QUEUE" ? "error" : "default"}
+          onClick={() => setProcessingTab("QUEUE")}
+          clickable
+          sx={{ opacity: counters.queue === 0 ? 0.45 : 1 }}
+        />
+        <Chip
+          label={`Processed ${counters.done}`}
+          color={processingTab === "PROCESSED" ? "success" : "default"}
+          onClick={() => setProcessingTab("PROCESSED")}
+          clickable
+          sx={{ opacity: counters.done === 0 ? 0.45 : 1 }}
+        />
+        <Chip icon={<Bolt />} label={`Rush ${counters.rushQueue}`} variant="outlined" />
+        <Chip icon={<CheckCircle />} label={`Non-Rush ${counters.nonRushQueue}`} variant="outlined" />
+        <Chip label={`Visible ${counters.visible}`} />
+      </Stack>
+
+      <Paper sx={{ mt: 1.1, p: 1.1, borderRadius: 2, border: "1px solid #e5e7eb" }}>
         <TextField
           fullWidth
           size="small"
+          placeholder="Search name, id, service, weight/count"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name or id"
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
@@ -222,159 +262,119 @@ function OrdersPage() {
             ),
           }}
         />
-
-        <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: "auto", pb: 0.5 }}>
-          {["ALL", "WF", "HD"].map((item) => (
-            <Chip
-              key={item}
-              label={item}
-              clickable
-              color={service === item ? "warning" : "default"}
-              onClick={() => {
-                setService(item);
-                applyParamFilters(item, rush, logistics, processing);
-              }}
-            />
-          ))}
-          {["ALL", "RUSH", "NON-RUSH"].map((item) => (
-            <Chip
-              key={item}
-              label={item}
-              clickable
-              color={rush === item ? "error" : "default"}
-              onClick={() => {
-                setRush(item);
-                applyParamFilters(service, item, logistics, processing);
-              }}
-            />
-          ))}
-          {["ALL", "AT_WASHPRO", "SENT_TO_RINSE", "FORCE_CHECKOUT"].map((item) => (
-            <Chip
-              key={item}
-              label={item}
-              clickable
-              color={logistics === item ? "info" : "default"}
-              onClick={() => {
-                setLogistics(item);
-                applyParamFilters(service, rush, item, processing);
-              }}
-            />
-          ))}
-          {["ALL", "PENDING", "PROCESSED"].map((item) => (
-            <Chip
-              key={item}
-              label={item}
-              clickable
-              color={processing === item ? "success" : "default"}
-              onClick={() => {
-                setProcessing(item);
-                applyParamFilters(service, rush, logistics, item);
-              }}
-            />
-          ))}
-        </Stack>
-
-        <Stack direction="row" spacing={0.7} sx={{ mt: 0.5, overflowX: "auto", pb: 0.3 }}>
-          {["ALL", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"].map((letter) => (
-            <Chip
-              key={letter}
-              label={letter}
-              clickable
-              color={alpha === letter ? "primary" : "default"}
-              onClick={() => setAlpha(letter)}
-            />
-          ))}
-        </Stack>
       </Paper>
 
       {loading ? (
-        <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.2}>
-          <CircularProgress />
-          <Typography color="text.secondary">Loading orders...</Typography>
+        <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.1}>
+          <CircularProgress size={26} />
+          <Typography color="text.secondary">Loading...</Typography>
         </Stack>
-      ) : filtered.length === 0 ? (
-        <Paper sx={{ p: 2, mt: 1.5, borderRadius: 2, color: "#6b7280" }}>No orders found for this filter.</Paper>
+      ) : scopedRows.length === 0 ? (
+        <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2, opacity: 0.55 }}>
+          <Typography>No orders in this queue.</Typography>
+        </Paper>
       ) : (
         <Stack spacing={1} sx={{ mt: 1.2 }}>
-          {filtered.map((row) => {
-            const isRush = String(row?.rush_type || "").toUpperCase() === "RUSH";
-            const isHD = String(row?.service_type || "").toUpperCase() === "HD";
-            const rowLogistics = String(
-              row?.logistics_status || (String(row?.status || "").toUpperCase() === "CHECKED_OUT" ? "SENT_TO_RINSE" : "AT_WASHPRO")
-            ).toUpperCase();
-            const rowProcessing = String(
-              row?.processing_status || (String(row?.status || "").toUpperCase() === "PROCESSED" ? "PROCESSED" : "PENDING")
-            ).toUpperCase();
-
+          {scopedRows.map((r) => {
+            const rush = isRush(r);
+            const hd = isHD(r);
+            const pending = normalizeProcessing(r) === "PENDING";
             return (
               <Paper
-                key={row.id}
+                key={r.id}
                 sx={{
                   p: 1.2,
                   borderRadius: 2,
-                  border: isHD ? "1px solid #0097b2" : "1px solid #ffbd59",
-                  bgcolor: isHD ? "#0097b2" : "#111827",
+                  bgcolor: hd ? "#0097b2" : "#0b1324",
+                  border: hd ? "1px solid #48c8dc" : "1px solid #1f2d4a",
+                  color: "#ffffff",
                 }}
               >
-                <Stack spacing={0.7}>
+                <Stack spacing={0.8}>
                   <Stack direction="row" alignItems="center" justifyContent="space-between">
-                    <Typography sx={{ fontSize: 20, fontWeight: 500, color: "#fff" }}>{row.name_clean || "-"}</Typography>
-                    <Chip size="small" label={`#${row.id}`} sx={{ bgcolor: "#fff", color: "#111827" }} />
+                    <Stack direction="row" spacing={0.8} alignItems="center">
+                      <Chip
+                        size="small"
+                        icon={rush ? <Bolt sx={{ fontSize: 16 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
+                        label={rush ? "RUSH" : "NON-RUSH"}
+                        sx={{
+                          bgcolor: "#ffffff",
+                          color: rush ? "#b91c1c" : "#0f172a",
+                          height: 26,
+                        }}
+                      />
+                      <Typography sx={{ fontSize: 20, fontWeight: 500 }}>{r.name_clean || "-"}</Typography>
+                    </Stack>
+                    <Chip size="small" label={pending ? "PENDING" : "PROCESSED"} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
                   </Stack>
 
-                  <Typography sx={{ color: "#f8fafc", fontWeight: 500 }}>
-                    {formatMeasure(row)} • {formatDateOnly(row.date_clean)}
+                  <Typography sx={{ opacity: 0.95, fontSize: 15 }}>
+                    {formatDate(r.date_clean)} • {formatMeasure(r)}
                   </Typography>
 
-                  <Stack direction="row" spacing={1}>
-                    <Chip size="small" label={row.service_type || "-"} sx={{ bgcolor: "#fff", color: "#111827" }} />
-                    <Chip size="small" label={isRush ? "RUSH" : "NON-RUSH"} sx={{ bgcolor: "#fff", color: "#111827" }} />
-                    <Chip size="small" label={rowLogistics} sx={{ bgcolor: "#fff", color: "#111827" }} />
-                    <Chip size="small" label={rowProcessing} sx={{ bgcolor: "#fff", color: "#111827" }} />
+                  <Stack direction="row" spacing={0.8}>
+                    <Chip size="small" label={String(r.service_type || "").toUpperCase()} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
+                    <Chip size="small" label={`#${r.id}`} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
                   </Stack>
 
+                  <Divider sx={{ borderColor: "rgba(255,255,255,0.25)" }} />
+
                   <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="outlined" onClick={() => setEditRow({
-                      id: row.id,
-                      date_clean: String(row.date_clean || "").slice(0, 10),
-                      name_clean: row.name_clean || "",
-                      weight_num: row.weight_num ?? "",
-                      service_type: row.service_type || "WF",
-                    })}>
-                      Edit
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="contained"
-                      sx={{ bgcolor: "#ffffff", color: "#111827", "&:hover": { bgcolor: "#f3f4f6" } }}
-                      onClick={() =>
-                        setProcessRow({
-                          order_id: row.id,
-                          washer_employee_id: "",
-                          folder_employee_id: "",
-                          processing_date: new Date().toISOString().slice(0, 10),
-                          fold_end_time: "",
-                        })
-                      }
-                    >
-                      Process
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="error"
-                      onClick={async () => {
-                        if (!window.confirm(`Delete order #${row.id}?`)) return;
-                        try {
-                          await deleteOrder(row.id);
-                          setOrders((prev) => prev.filter((r) => r.id !== row.id));
-                        } catch (error) {
-                          console.error(error);
-                        }
-                      }}
-                    >
-                      Delete
-                    </Button>
+                    {processingTab === "QUEUE" && pending && (
+                      <Button
+                        variant="contained"
+                        size="small"
+                        onClick={() => setSubmitDialogRow(r)}
+                        disabled={saving}
+                        sx={{ bgcolor: "#ffffff", color: "#111827", textTransform: "none" }}
+                      >
+                        Submit
+                      </Button>
+                    )}
+                    {processingTab === "PROCESSED" && (
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<Image />}
+                        onClick={() => setTicketDialogRow(r)}
+                        sx={{ borderColor: "#ffffff", color: "#ffffff", textTransform: "none" }}
+                      >
+                        Add missed picture
+                      </Button>
+                    )}
+                    {isAdmin && (
+                      <>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          onClick={() =>
+                            setEditRow({
+                              id: r.id,
+                              date_clean: String(r.date_clean || "").slice(0, 10),
+                              name_clean: r.name_clean || "",
+                              weight_num: r.weight_num ?? "",
+                              service_type: r.service_type || "WF",
+                            })
+                          }
+                          sx={{ borderColor: "#ffffff", color: "#ffffff", textTransform: "none" }}
+                        >
+                          Edit
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          color="error"
+                          onClick={async () => {
+                            if (!window.confirm(`Delete #${r.id}?`)) return;
+                            await deleteOrder(r.id);
+                            await load();
+                          }}
+                          sx={{ textTransform: "none" }}
+                        >
+                          Delete
+                        </Button>
+                      </>
+                    )}
                   </Stack>
                 </Stack>
               </Paper>
@@ -383,11 +383,67 @@ function OrdersPage() {
         </Stack>
       )}
 
-      <Dialog open={!!editRow} onClose={() => setEditRow(null)} fullWidth maxWidth="sm">
+      <Dialog open={Boolean(submitDialogRow)} onClose={() => setSubmitDialogRow(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Submit Processed Order</DialogTitle>
+        <DialogContent dividers>
+          {submitDialogRow && (
+            <Stack spacing={1.1}>
+              <Typography sx={{ fontSize: 20 }}>{submitDialogRow.name_clean}</Typography>
+              <Typography>{formatDate(submitDialogRow.date_clean)} • {formatMeasure(submitDialogRow)}</Typography>
+              <Button variant="outlined" component="label" sx={{ textTransform: "none" }}>
+                {submitFile ? submitFile.name : "Take / Upload Ticket Photo"}
+                <input
+                  hidden
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => setSubmitFile(e.target.files?.[0] || null)}
+                />
+              </Button>
+              <Alert severity="info">You can submit without a picture and add it later.</Alert>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSubmitDialogRow(null)}>Cancel</Button>
+          <Button variant="contained" onClick={onSubmitOrder} disabled={saving}>
+            Confirm Submit
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(ticketDialogRow)} onClose={() => setTicketDialogRow(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Add Ticket Picture</DialogTitle>
+        <DialogContent dividers>
+          {ticketDialogRow && (
+            <Stack spacing={1.1}>
+              <Typography sx={{ fontSize: 20 }}>{ticketDialogRow.name_clean}</Typography>
+              <Button variant="outlined" component="label" sx={{ textTransform: "none" }}>
+                {ticketFile ? ticketFile.name : "Select Ticket Photo"}
+                <input
+                  hidden
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => setTicketFile(e.target.files?.[0] || null)}
+                />
+              </Button>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTicketDialogRow(null)}>Cancel</Button>
+          <Button variant="contained" onClick={onAddTicket} disabled={!ticketFile || saving}>
+            Save Picture
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(editRow)} onClose={() => setEditRow(null)} fullWidth maxWidth="sm">
         <DialogTitle>Edit Order</DialogTitle>
-        <DialogContent>
+        <DialogContent dividers>
           {editRow && (
-            <Stack spacing={1.2} sx={{ mt: 0.6 }}>
+            <Stack spacing={1.1}>
               <TextField
                 label="Date"
                 type="date"
@@ -422,115 +478,36 @@ function OrdersPage() {
           <Button onClick={() => setEditRow(null)}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={!editRow || saving}
             onClick={async () => {
               if (!editRow) return;
+              setSaving(true);
               try {
-                setSaving(true);
                 await updateOrder(editRow.id, {
                   date_clean: editRow.date_clean,
                   name_clean: editRow.name_clean,
                   weight_num: Number(editRow.weight_num),
                   service_type: editRow.service_type,
                 });
-                setOrders((prev) =>
-                  prev.map((r) =>
-                    r.id === editRow.id
-                      ? {
-                          ...r,
-                          date_clean: editRow.date_clean,
-                          name_clean: editRow.name_clean,
-                          weight_num: Number(editRow.weight_num),
-                          service_type: editRow.service_type,
-                        }
-                      : r
-                  )
-                );
                 setEditRow(null);
-              } catch (error) {
-                console.error(error);
+                await load();
               } finally {
                 setSaving(false);
               }
             }}
+            disabled={saving}
           >
             Save
           </Button>
         </DialogActions>
       </Dialog>
 
-      <Dialog open={!!processRow} onClose={() => setProcessRow(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Enter Processing Data</DialogTitle>
-        <DialogContent>
-          {processRow && (
-            <Stack spacing={1.2} sx={{ mt: 0.6 }}>
-              <TextField
-                select
-                label="Washed By"
-                value={processRow.washer_employee_id}
-                onChange={(e) => setProcessRow((p) => ({ ...p, washer_employee_id: e.target.value }))}
-              >
-                {employees.map((emp) => (
-                  <MenuItem key={emp.id} value={emp.id}>{emp.name}</MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                select
-                label="Folded By"
-                value={processRow.folder_employee_id}
-                onChange={(e) => setProcessRow((p) => ({ ...p, folder_employee_id: e.target.value }))}
-              >
-                {employees.map((emp) => (
-                  <MenuItem key={emp.id} value={emp.id}>{emp.name}</MenuItem>
-                ))}
-              </TextField>
-              <TextField
-                type="date"
-                label="Processing Date"
-                value={processRow.processing_date}
-                InputLabelProps={{ shrink: true }}
-                onChange={(e) => setProcessRow((p) => ({ ...p, processing_date: e.target.value }))}
-              />
-              <TextField
-                label="Folding End Time (e.g. 03:45 PM)"
-                value={processRow.fold_end_time}
-                onChange={(e) => setProcessRow((p) => ({ ...p, fold_end_time: e.target.value }))}
-              />
-            </Stack>
-          )}
+      <Dialog open={Boolean(submitConfirm)} onClose={() => setSubmitConfirm("")} maxWidth="xs" fullWidth>
+        <DialogTitle>Confirmation</DialogTitle>
+        <DialogContent dividers>
+          <Typography>{submitConfirm}</Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setProcessRow(null)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={!processRow || !processRow.washer_employee_id || !processRow.folder_employee_id}
-            onClick={async () => {
-              if (!processRow) return;
-              try {
-                setSaving(true);
-                await processOrder({
-                  ...processRow,
-                  pieces: null,
-                  issue_type: null,
-                  rinse_case_id: null,
-                });
-                setOrders((prev) =>
-                  prev.map((r) =>
-                    r.id === processRow.order_id
-                      ? { ...r, processing_status: "PROCESSED", status: "PROCESSED" }
-                      : r
-                  )
-                );
-                setProcessRow(null);
-              } catch (error) {
-                console.error(error);
-              } finally {
-                setSaving(false);
-              }
-            }}
-          >
-            Save
-          </Button>
+          <Button onClick={() => setSubmitConfirm("")}>OK</Button>
         </DialogActions>
       </Dialog>
     </Box>

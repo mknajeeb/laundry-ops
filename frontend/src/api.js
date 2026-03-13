@@ -70,8 +70,12 @@ export const getDashboard = () =>
    ORDERS
 ========================================= */
 
-export const getOrders = () =>
-  axios.get(`${API_BASE}/orders`);
+export const getOrders = (options = {}) =>
+  axios.get(`${API_BASE}/orders`, {
+    params: {
+      ...(options.include_all ? { include_all: 1 } : {}),
+    },
+  });
 
 export const updateOrder = (id, data) =>
   axios.put(`${API_BASE}/orders/${id}`, data);
@@ -193,6 +197,12 @@ export const addIssue = (issue_name) =>
 
 export const processOrder = (payload) =>
   axios.post(`${API_BASE}/order_processing`, payload);
+
+export const submitProcessedOrder = (order_id, payload) =>
+  axios.post(`${API_BASE}/orders/${order_id}/submit_processed`, payload);
+
+export const uploadOrderTicket = (order_id, payload) =>
+  axios.post(`${API_BASE}/orders/${order_id}/ticket`, payload);
 
 /* =========================================
    FOLDER SHIFT

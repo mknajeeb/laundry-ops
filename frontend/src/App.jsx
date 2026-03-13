@@ -128,8 +128,8 @@ function AppShell() {
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/" element={<GuardedRoute user={user}><HomePage /></GuardedRoute>} />
             <Route path="/dashboard" element={<GuardedRoute user={user}><Dashboard /></GuardedRoute>} />
-            <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage /></GuardedRoute>} />
-            <Route path="/checkout" element={<GuardedRoute user={user}><CheckoutPage /></GuardedRoute>} />
+            <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute>} />
+            <Route path="/checkout" element={<GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute>} />
             <Route path="/upload" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute>} />
             <Route path="/employees" element={<GuardedRoute user={user} roles={["ADMIN"]}><EmployeesPage user={user} /></GuardedRoute>} />
             <Route path="/clock" element={<GuardedRoute user={user}><ClockPage /></GuardedRoute>} />
@@ -160,4 +160,3 @@ function App() {
 }
 
 export default App;
-
