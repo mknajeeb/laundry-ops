@@ -653,8 +653,6 @@ def get_orders():
     cursor = conn.cursor(dictionary=True)
 
     try:
-
-        ensure_ticket_id_columns(cursor)
         cap = orders_status_capabilities(cursor)
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
