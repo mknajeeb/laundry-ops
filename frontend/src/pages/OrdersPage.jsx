@@ -68,6 +68,10 @@ function normalizeName(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeCode(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
 function parseTicketText(rawText) {
   const text = String(rawText || "");
   const lower = text.toLowerCase();
@@ -172,23 +176,23 @@ function OrdersPage({ user }) {
   }, []);
 
   const normalizeLogistics = (r) => {
-    const v = String(r?.logistics_status || "").toUpperCase();
+    const v = normalizeCode(r?.logistics_status);
     if (v) return v;
-    const s = String(r?.status || "").toUpperCase();
+    const s = normalizeCode(r?.status);
     if (["CHECKED_OUT", "SENT_TO_RINSE"].includes(s)) return "SENT_TO_RINSE";
     if (["FORCE_CHECKOUT", "FORCED_CHECKOUT"].includes(s)) return "FORCE_CHECKOUT";
     return "AT_WASHPRO";
   };
 
   const normalizeProcessing = (r) => {
-    const v = String(r?.processing_status || "").toUpperCase();
+    const v = normalizeCode(r?.processing_status);
     if (v) return v;
-    const s = String(r?.status || "").toUpperCase();
+    const s = normalizeCode(r?.status);
     return s === "PROCESSED" ? "PROCESSED" : "PENDING";
   };
 
-  const rushOf = (r) => String(r?.rush_type || "").toUpperCase() === "RUSH" ? "RUSH" : "NON-RUSH";
-  const serviceOf = (r) => String(r?.service_type || "").toUpperCase();
+  const rushOf = (r) => normalizeCode(r?.rush_type) === "RUSH" ? "RUSH" : "NON-RUSH";
+  const serviceOf = (r) => normalizeCode(r?.service_type);
   const isHD = (r) => serviceOf(r) === "HD";
 
   const formatMeasure = (r) => {

@@ -28,6 +28,10 @@ function parseAsLocalDate(value) {
   return new Date(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
 }
 
+function normalizeCode(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
 function CheckoutPage() {
   const [rows, setRows] = useState([]);
   const [checkedRows, setCheckedRows] = useState([]);
@@ -48,7 +52,7 @@ function CheckoutPage() {
       ]);
       const allRows = Array.isArray(ordersRes.data) ? ordersRes.data : [];
       const active = allRows.filter((r) => {
-        const l = String(r?.logistics_status || r?.status || "").toUpperCase();
+        const l = normalizeCode(r?.logistics_status || r?.status);
         return !["SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT", "FORCED_CHECKOUT"].includes(l);
       });
       setRows(active);
@@ -67,10 +71,10 @@ function CheckoutPage() {
   }, [load]);
 
   const rushOf = (r) => {
-    const raw = String(r?.rush_type || "").toUpperCase();
+    const raw = normalizeCode(r?.rush_type);
     return raw === "RUSH" ? "RUSH" : "NON-RUSH";
   };
-  const serviceOf = (r) => String(r?.service_type || "").toUpperCase();
+  const serviceOf = (r) => normalizeCode(r?.service_type);
   const isHD = (r) => serviceOf(r) === "HD";
   const measureOf = (r) => {
     const n = Number(r?.weight_num ?? r?.weight ?? 0);
