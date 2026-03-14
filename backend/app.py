@@ -567,7 +567,15 @@ def orders_status_capabilities(cursor):
         "has_logistics": table_has_column(cursor, "orders_staging", "logistics_status"),
         "has_processing": table_has_column(cursor, "orders_staging", "processing_status"),
         "has_status": table_has_column(cursor, "orders_staging", "status"),
+        "has_ticket_id": table_has_column(cursor, "orders_staging", "ticket_id"),
     }
+
+
+def ensure_ticket_id_columns(cursor):
+    if table_exists(cursor, "orders_staging") and not table_has_column(cursor, "orders_staging", "ticket_id"):
+        cursor.execute("ALTER TABLE orders_staging ADD COLUMN ticket_id VARCHAR(120) NULL")
+    if table_exists(cursor, "orders_final") and not table_has_column(cursor, "orders_final", "ticket_id"):
+        cursor.execute("ALTER TABLE orders_final ADD COLUMN ticket_id VARCHAR(120) NULL")
 
 
 def orders_logistics_select_sql(cap):
@@ -646,6 +654,7 @@ def get_orders():
 
     try:
 
+        ensure_ticket_id_columns(cursor)
         cap = orders_status_capabilities(cursor)
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
@@ -676,6 +685,7 @@ def get_orders():
                 o.weight_num,
                 o.service_type,
                 o.batch_date,
+                {"o.ticket_id" if cap["has_ticket_id"] else "NULL"} AS ticket_id,
 
                 CASE
                     WHEN o.date_clean < CURDATE() THEN 'RUSH'
@@ -1097,6 +1107,8 @@ def update_order(order_id):
         _, err_resp, err_code = require_admin(cursor)
         if err_resp:
             return err_resp, err_code
+        ensure_ticket_id_columns(cursor)
+        has_ticket_id = table_has_column(cursor, "orders_staging", "ticket_id")
 
         cursor.execute("""
             SELECT
@@ -1105,9 +1117,10 @@ def update_order(order_id):
                 name_clean,
                 weight_num,
                 service_type
+                {ticket_select}
             FROM orders_staging
             WHERE id = %s
-        """, (order_id,))
+        """.format(ticket_select=", ticket_id" if has_ticket_id else ""), (order_id,))
 
         existing = cursor.fetchone()
 
@@ -1137,26 +1150,48 @@ def update_order(order_id):
             if data.get("service_type") not in [None, ""]
             else existing["service_type"]
         )
+        ticket_id = (
+            str(data.get("ticket_id")).strip()
+            if has_ticket_id and data.get("ticket_id") not in [None, ""]
+            else (existing.get("ticket_id") if has_ticket_id else None)
+        )
+        if has_ticket_id and ticket_id == "":
+            ticket_id = None
 
-        cursor.execute("""
-
-            UPDATE orders_staging
-
-            SET
-                date_clean = %s,
-                name_clean = %s,
-                weight_num = %s,
-                service_type = %s
-
-            WHERE id = %s
-
-        """, (
-            date_clean,
-            name_clean,
-            weight_num,
-            service_type,
-            order_id
-        ))
+        if has_ticket_id:
+            cursor.execute("""
+                UPDATE orders_staging
+                SET
+                    date_clean = %s,
+                    name_clean = %s,
+                    weight_num = %s,
+                    service_type = %s,
+                    ticket_id = %s
+                WHERE id = %s
+            """, (
+                date_clean,
+                name_clean,
+                weight_num,
+                service_type,
+                ticket_id,
+                order_id
+            ))
+        else:
+            cursor.execute("""
+                UPDATE orders_staging
+                SET
+                    date_clean = %s,
+                    name_clean = %s,
+                    weight_num = %s,
+                    service_type = %s
+                WHERE id = %s
+            """, (
+                date_clean,
+                name_clean,
+                weight_num,
+                service_type,
+                order_id
+            ))
 
         conn.commit()
 
@@ -1220,6 +1255,9 @@ def submit_processed_order(order_id):
     data = request.json or {}
     ticket_image_base64 = data.get("ticket_image_base64")
     ticket_file_name = data.get("ticket_file_name")
+    ticket_id = str(data.get("ticket_id") or "").strip()
+    weight_num = data.get("weight_num")
+    parsed_weight = normalize_weight(weight_num) if weight_num not in [None, ""] else None
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -1230,6 +1268,7 @@ def submit_processed_order(order_id):
             return err_resp, err_code
 
         ensure_process_submissions_table(cursor)
+        ensure_ticket_id_columns(cursor)
         prune_old_ticket_images(cursor)
         cap = orders_status_capabilities(cursor)
 
@@ -1264,11 +1303,23 @@ def submit_processed_order(order_id):
         if not set_parts:
             set_parts.append("status = 'PROCESSED'")
 
+        if parsed_weight is not None:
+            set_parts.append("weight_num = %s")
+        if cap.get("has_ticket_id", False) and ticket_id:
+            set_parts.append("ticket_id = %s")
+
+        update_vals = []
+        if parsed_weight is not None:
+            update_vals.append(parsed_weight)
+        if cap.get("has_ticket_id", False) and ticket_id:
+            update_vals.append(ticket_id)
+        update_vals.append(order_id)
+
         cursor.execute(f"""
             UPDATE orders_staging
             SET {", ".join(set_parts)}
             WHERE id = %s
-        """, (order_id,))
+        """, tuple(update_vals))
 
         cursor.execute("SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1", (order_id,))
         prev = cursor.fetchone() or {}

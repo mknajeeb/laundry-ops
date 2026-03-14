@@ -64,6 +64,61 @@ function inferMimeType(fileName) {
   return "image/jpeg";
 }
 
+function normalizeName(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parseTicketText(rawText) {
+  const text = String(rawText || "");
+  const lower = text.toLowerCase();
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const ticketMatch = text.match(/ticket\s*#?\s*([a-z0-9-]{5,})/i);
+  const lbsMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:lb|lbs)\b/i);
+  const pcsMatch = text.match(/(\d+)\s*(?:pcs|pc|pieces)\b/i);
+
+  let service = "";
+  if (lower.includes("wash and fold")) service = "WF";
+  if (lower.includes("hang dry")) service = "HD";
+  if (!service && pcsMatch) service = "HD";
+  if (!service && lbsMatch) service = "WF";
+
+  const rush = /\brush\b/.test(lower) ? "RUSH" : "NON-RUSH";
+
+  const badLine = /(ticket|due|rush|order|nyc|created|wash|fold|hang|dry|fabric|softener|rinse|new customer)/i;
+  let name = "";
+  const ncIdx = lines.findIndex((l) => /new customer/i.test(l));
+  if (ncIdx >= 0) {
+    for (let i = ncIdx + 1; i < lines.length; i += 1) {
+      if (!badLine.test(lines[i]) && /[a-z]/i.test(lines[i])) {
+        name = lines[i];
+        break;
+      }
+    }
+  }
+  if (!name) {
+    for (const l of lines) {
+      if (badLine.test(l)) continue;
+      if (/[a-z]/i.test(l) && l.length >= 4) {
+        name = l;
+        break;
+      }
+    }
+  }
+
+  return {
+    ticket_id: ticketMatch ? ticketMatch[1].toUpperCase() : "",
+    name_clean: name,
+    service_type: service,
+    rush_type: rush,
+    weight_num: lbsMatch ? Number(lbsMatch[1]) : (pcsMatch ? Number(pcsMatch[1]) : null),
+    raw_text: text,
+  };
+}
+
 function OrdersPage({ user }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -76,6 +131,8 @@ function OrdersPage({ user }) {
   const [openAlpha, setOpenAlpha] = useState("A");
 
   const [submitDialogRow, setSubmitDialogRow] = useState(null);
+  const [submitMeasure, setSubmitMeasure] = useState("");
+  const [submitTicketId, setSubmitTicketId] = useState("");
   const [submitFile, setSubmitFile] = useState(null);
   const [ticketDialogRow, setTicketDialogRow] = useState(null);
   const [ticketFile, setTicketFile] = useState(null);
@@ -85,6 +142,11 @@ function OrdersPage({ user }) {
   const [adminTicketsLoading, setAdminTicketsLoading] = useState(false);
   const [adminTickets, setAdminTickets] = useState([]);
   const [notice, setNotice] = useState("");
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scanFile, setScanFile] = useState(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanParsed, setScanParsed] = useState(null);
+  const [scanCandidates, setScanCandidates] = useState([]);
 
   const [editRow, setEditRow] = useState(null);
 
@@ -192,18 +254,36 @@ function OrdersPage({ user }) {
 
   const toggleAlpha = (alpha) => setOpenAlpha((prev) => (prev === alpha ? null : alpha));
 
+  useEffect(() => {
+    const q = deferredSearch.trim();
+    if (!q || visibleRows.length === 0) return;
+    const first = visibleRows[0];
+    const c = String(first?.name_clean || "").trim().charAt(0).toUpperCase();
+    const alpha = /^[A-Z]$/.test(c) ? c : "A";
+    setOpenAlpha(alpha);
+  }, [deferredSearch, visibleRows]);
+
   const onSubmitOrder = async () => {
     if (!submitDialogRow) return;
     try {
       setSaving(true);
+      const measureNum = Number(submitMeasure);
+      if (!Number.isFinite(measureNum) || measureNum < 0) {
+        setNotice("Enter valid weight/count.");
+        return;
+      }
+      await updateOrder(submitDialogRow.id, { weight_num: measureNum });
       const payload = {};
+      payload.weight_num = measureNum;
+      if (submitTicketId) payload.ticket_id = submitTicketId;
       if (submitFile) {
         payload.ticket_image_base64 = await fileToBase64(submitFile);
         payload.ticket_file_name = submitFile.name;
       }
       await submitProcessedOrder(submitDialogRow.id, payload);
-      setNotice(`Order ${submitDialogRow.name_clean} submitted.`);
       setSubmitDialogRow(null);
+      setSubmitMeasure("");
+      setSubmitTicketId("");
       setSubmitFile(null);
       await load();
     } catch (error) {
@@ -214,6 +294,72 @@ function OrdersPage({ user }) {
     }
   };
 
+  const onRunScan = async () => {
+    if (!scanFile) return;
+    try {
+      setScanBusy(true);
+      const { createWorker } = await import("tesseract.js");
+      const worker = await createWorker("eng");
+      const out = await worker.recognize(scanFile);
+      await worker.terminate();
+      const parsed = parseTicketText(out?.data?.text || "");
+      setScanParsed(parsed);
+
+      const base = rows.filter((r) => normalizeLogistics(r) === "AT_WASHPRO" && normalizeProcessing(r) === "PENDING");
+      const pn = normalizeName(parsed.name_clean);
+      const candidates = base
+        .map((r) => {
+          let score = 0;
+          const rn = normalizeName(r.name_clean);
+          if (parsed.ticket_id && String(r.ticket_id || "").toUpperCase() === parsed.ticket_id) score += 100;
+          if (pn && rn) {
+            if (rn === pn) score += 70;
+            else if (rn.includes(pn) || pn.includes(rn)) score += 40;
+          }
+          if (parsed.service_type && String(r.service_type || "").toUpperCase() === parsed.service_type) score += 15;
+          if (parsed.rush_type && String(r.rush_type || "").toUpperCase() === parsed.rush_type) score += 10;
+          if (parsed.weight_num !== null && parsed.weight_num !== undefined) {
+            const rw = Number(r.weight_num || 0);
+            if (String(r.service_type || "").toUpperCase() === "HD") {
+              if (Math.round(rw) === Math.round(Number(parsed.weight_num))) score += 25;
+            } else {
+              const diff = Math.abs(rw - Number(parsed.weight_num));
+              if (diff <= 0.15) score += 25;
+              else if (diff <= 0.5) score += 10;
+            }
+          }
+          return { row: r, score };
+        })
+        .filter((x) => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+
+      setScanCandidates(candidates);
+    } catch (error) {
+      console.error(error);
+      setNotice("Scan failed.");
+    } finally {
+      setScanBusy(false);
+    }
+  };
+
+  const pickScanCandidate = (candidate) => {
+    const r = candidate.row;
+    const c = String(r?.name_clean || "").trim().charAt(0).toUpperCase();
+    const alpha = /^[A-Z]$/.test(c) ? c : "A";
+    setSearch(r.name_clean || "");
+    setOpenAlpha(alpha);
+    setSubmitDialogRow(r);
+    setSubmitMeasure(
+      scanParsed?.weight_num !== null && scanParsed?.weight_num !== undefined
+        ? String(scanParsed.weight_num)
+        : String(r.weight_num ?? "")
+    );
+    setSubmitTicketId(scanParsed?.ticket_id || String(r.ticket_id || ""));
+    setScanOpen(false);
+    setScanFile(null);
+  };
+
   const onAddTicket = async () => {
     if (!ticketDialogRow || !ticketFile) return;
     try {
@@ -222,7 +368,6 @@ function OrdersPage({ user }) {
         ticket_image_base64: await fileToBase64(ticketFile),
         ticket_file_name: ticketFile.name,
       });
-      setNotice(`Ticket saved for ${ticketDialogRow.name_clean}.`);
       setTicketDialogRow(null);
       setTicketFile(null);
       await load();
@@ -264,7 +409,6 @@ function OrdersPage({ user }) {
     try {
       setSaving(true);
       await deleteOrderTicket(row.id);
-      setNotice(`Ticket removed for ${row.name_clean}.`);
       await load();
     } catch (error) {
       console.error(error);
@@ -296,22 +440,19 @@ function OrdersPage({ user }) {
         <Stack direction="row" spacing={1}>
           <Button
             size="small"
-            variant={showProcessed ? "outlined" : "contained"}
-            onClick={() => setShowProcessed(false)}
-            sx={{ textTransform: "none", fontWeight: 400 }}
-          >
-            Queue
-          </Button>
-          <Button
-            size="small"
             variant={showProcessed ? "contained" : "outlined"}
-            onClick={() => setShowProcessed(true)}
+            onClick={() => setShowProcessed((prev) => !prev)}
             sx={{ textTransform: "none", fontWeight: 400 }}
           >
             Processed
           </Button>
-          <Button size="small" variant="text" startIcon={<Refresh />} onClick={load} sx={{ textTransform: "none", fontWeight: 400 }}>
-            Refresh
+          {!showProcessed && (
+            <Button size="small" variant="text" startIcon={<Image />} onClick={() => setScanOpen(true)} sx={{ textTransform: "none", fontWeight: 400 }}>
+              Scan
+            </Button>
+          )}
+          <Button size="small" variant="text" onClick={load} sx={{ minWidth: 34 }}>
+            <Refresh />
           </Button>
           {showProcessed && isAdmin && (
             <Button size="small" variant="text" startIcon={<Image />} onClick={openAdminTickets} sx={{ textTransform: "none", fontWeight: 400 }}>
@@ -319,6 +460,17 @@ function OrdersPage({ user }) {
             </Button>
           )}
         </Stack>
+      </Stack>
+
+      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.2 }}>
+        <Box sx={{ textAlign: "right" }}>
+          <Button size="small" variant="outlined" sx={{ textTransform: "none", fontWeight: 400, pointerEvents: "none" }}>
+            Folded by
+          </Button>
+          <Typography sx={{ fontSize: 13, color: "#6b7280", mt: 0.2 }}>
+            {user?.display_name || user?.username || "Unknown"}
+          </Typography>
+        </Box>
       </Stack>
 
       <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: "auto", pb: 0.2 }}>
@@ -379,6 +531,17 @@ function OrdersPage({ user }) {
             startAdornment: (
               <InputAdornment position="start">
                 <Search fontSize="small" />
+              </InputAdornment>
+            ),
+            endAdornment: (
+              <InputAdornment position="end">
+                <Button
+                  size="small"
+                  onClick={() => setSearch("")}
+                  sx={{ textTransform: "none", minWidth: 48, fontWeight: 400 }}
+                >
+                  Clear
+                </Button>
               </InputAdornment>
             ),
           }}
@@ -520,7 +683,11 @@ function OrdersPage({ user }) {
                                     <Button
                                       size="small"
                                       variant="contained"
-                                      onClick={() => setSubmitDialogRow(r)}
+                                      onClick={() => {
+                                        setSubmitDialogRow(r);
+                                        setSubmitMeasure(String(r.weight_num ?? ""));
+                                        setSubmitTicketId(String(r.ticket_id || ""));
+                                      }}
                                       sx={{ textTransform: "none", bgcolor: "#ffffff", color: "#111827", fontWeight: 400 }}
                                     >
                                       Submit
@@ -579,14 +746,18 @@ function OrdersPage({ user }) {
       )}
 
       <Dialog open={Boolean(submitDialogRow)} onClose={() => setSubmitDialogRow(null)} fullWidth maxWidth="xs">
-        <DialogTitle sx={{ fontWeight: 400 }}>Submit Processed Order</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 400 }}>Submit</DialogTitle>
         <DialogContent dividers>
           {submitDialogRow && (
             <Stack spacing={1.1}>
-              <Typography sx={{ fontSize: 20, fontWeight: 400 }}>{submitDialogRow.name_clean}</Typography>
-              <Typography sx={{ fontWeight: 400 }}>{formatDate(submitDialogRow.date_clean)} • {formatMeasure(submitDialogRow)}</Typography>
+              <TextField
+                label={String(submitDialogRow.service_type || "").toUpperCase() === "HD" ? "Count" : "Weight"}
+                type="number"
+                value={submitMeasure}
+                onChange={(e) => setSubmitMeasure(e.target.value)}
+              />
               <Button variant="outlined" component="label" sx={{ textTransform: "none", fontWeight: 400 }}>
-                {submitFile ? submitFile.name : "Take / Upload Ticket Photo"}
+                {submitFile ? submitFile.name : "Upload Ticket"}
                 <input
                   hidden
                   type="file"
@@ -595,14 +766,13 @@ function OrdersPage({ user }) {
                   onChange={(e) => setSubmitFile(e.target.files?.[0] || null)}
                 />
               </Button>
-              <Alert severity="info">Picture is optional. You can add it later.</Alert>
             </Stack>
           )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSubmitDialogRow(null)} sx={{ fontWeight: 400 }}>Cancel</Button>
           <Button variant="contained" onClick={onSubmitOrder} disabled={saving} sx={{ fontWeight: 400 }}>
-            Confirm Submit
+            Submit
           </Button>
         </DialogActions>
       </Dialog>
@@ -701,6 +871,56 @@ function OrdersPage({ user }) {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setAdminTicketsOpen(false)} sx={{ fontWeight: 400 }}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={scanOpen} onClose={() => setScanOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle sx={{ fontWeight: 400 }}>Scan Ticket</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.1}>
+            <Button variant="outlined" component="label" sx={{ textTransform: "none", fontWeight: 400 }}>
+              {scanFile ? scanFile.name : "Capture / Upload Ticket"}
+              <input
+                hidden
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => setScanFile(e.target.files?.[0] || null)}
+              />
+            </Button>
+            <Button variant="contained" onClick={onRunScan} disabled={!scanFile || scanBusy} sx={{ textTransform: "none", fontWeight: 400 }}>
+              {scanBusy ? "Scanning..." : "Scan"}
+            </Button>
+
+            {scanParsed && (
+              <Paper sx={{ p: 1, borderRadius: 1.2, border: "1px solid #e5e7eb", bgcolor: "#fafafa" }}>
+                <Typography sx={{ fontSize: 13, color: "#4b5563" }}>
+                  {scanParsed.ticket_id ? `Ticket ${scanParsed.ticket_id}` : "No ticket id"} • {scanParsed.name_clean || "No name"} •{" "}
+                  {scanParsed.weight_num ?? "-"}
+                </Typography>
+              </Paper>
+            )}
+
+            {scanCandidates.length > 0 && (
+              <Stack spacing={0.8}>
+                <Typography sx={{ fontWeight: 400 }}>Matches</Typography>
+                {scanCandidates.map((c) => (
+                  <Button
+                    key={c.row.id}
+                    variant="outlined"
+                    onClick={() => pickScanCandidate(c)}
+                    sx={{ textTransform: "none", justifyContent: "space-between", fontWeight: 400 }}
+                  >
+                    <span>{c.row.name_clean} • {formatMeasure(c.row)} • {formatDate(c.row.date_clean)}</span>
+                    <span style={{ marginLeft: 8 }}>Score {c.score}</span>
+                  </Button>
+                ))}
+              </Stack>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setScanOpen(false)} sx={{ fontWeight: 400 }}>Close</Button>
         </DialogActions>
       </Dialog>
 
