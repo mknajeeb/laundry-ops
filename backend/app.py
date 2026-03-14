@@ -660,19 +660,36 @@ def get_orders():
         include_all = as_bool(request.args.get("include_all"), default=False)
         where_clause = "1 = 1" if include_all else active_where
         has_submissions = table_exists(cursor, "order_process_submissions")
-        submission_select = """
-            , ops.user_id AS processed_by_user_id
-            , ops.username AS processed_by_username
-            , ops.updated_at AS processed_at
-            , CASE
-                WHEN (ops.ticket_blob_url IS NOT NULL AND ops.ticket_blob_url <> '')
-                  OR (ops.ticket_image_base64 IS NOT NULL AND ops.ticket_image_base64 <> '')
-                THEN 1 ELSE 0
-              END AS has_ticket_image
-            , ops.ticket_file_name AS ticket_file_name
-            , ops.id AS ticket_id
-        """ if has_submissions else ""
-        submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id" if has_submissions else ""
+        submission_select = ""
+        submission_join = ""
+        if has_submissions:
+            has_ops_user_id = table_has_column(cursor, "order_process_submissions", "user_id")
+            has_ops_username = table_has_column(cursor, "order_process_submissions", "username")
+            has_ops_updated_at = table_has_column(cursor, "order_process_submissions", "updated_at")
+            has_ops_ticket_blob_url = table_has_column(cursor, "order_process_submissions", "ticket_blob_url")
+            has_ops_ticket_b64 = table_has_column(cursor, "order_process_submissions", "ticket_image_base64")
+            has_ops_ticket_file_name = table_has_column(cursor, "order_process_submissions", "ticket_file_name")
+            has_ops_id = table_has_column(cursor, "order_process_submissions", "id")
+
+            has_ticket_expr_parts = []
+            if has_ops_ticket_blob_url:
+                has_ticket_expr_parts.append("(ops.ticket_blob_url IS NOT NULL AND ops.ticket_blob_url <> '')")
+            if has_ops_ticket_b64:
+                has_ticket_expr_parts.append("(ops.ticket_image_base64 IS NOT NULL AND ops.ticket_image_base64 <> '')")
+            has_ticket_expr = " OR ".join(has_ticket_expr_parts) if has_ticket_expr_parts else "FALSE"
+
+            submission_select = f"""
+                , {"ops.user_id" if has_ops_user_id else "NULL"} AS processed_by_user_id
+                , {"ops.username" if has_ops_username else "NULL"} AS processed_by_username
+                , {"ops.updated_at" if has_ops_updated_at else "NULL"} AS processed_at
+                , CASE
+                    WHEN ({has_ticket_expr})
+                    THEN 1 ELSE 0
+                  END AS has_ticket_image
+                , {"ops.ticket_file_name" if has_ops_ticket_file_name else "NULL"} AS ticket_file_name
+                , {"ops.id" if has_ops_id else "NULL"} AS ticket_id
+            """
+            submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id"
 
         cursor.execute(f"""
 
