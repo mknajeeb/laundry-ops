@@ -385,6 +385,25 @@ def ensure_process_submissions_table(cursor):
         cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_size_bytes INT NULL")
 
 
+def ensure_order_processing_exceptions_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS order_processing_exceptions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL UNIQUE,
+            user_id INT NULL,
+            username VARCHAR(100) NULL,
+            service_type VARCHAR(10) NULL,
+            original_measure DECIMAL(8,2) NULL,
+            submitted_measure DECIMAL(8,2) NULL,
+            difference_measure DECIMAL(8,2) NULL,
+            date_clean DATE NULL,
+            batch_date DATE NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL
+        )
+    """)
+
+
 def ticket_retention_days():
     try:
         days = int(os.getenv("ORDER_TICKET_RETENTION_DAYS", "60"))
@@ -663,6 +682,7 @@ def get_orders():
         submission_select = ""
         submission_join = ""
         if has_submissions:
+            has_ops_order_id = table_has_column(cursor, "order_process_submissions", "order_id")
             has_ops_user_id = table_has_column(cursor, "order_process_submissions", "user_id")
             has_ops_username = table_has_column(cursor, "order_process_submissions", "username")
             has_ops_updated_at = table_has_column(cursor, "order_process_submissions", "updated_at")
@@ -689,7 +709,7 @@ def get_orders():
                 , {"ops.ticket_file_name" if has_ops_ticket_file_name else "NULL"} AS ticket_file_name
                 , {"ops.id" if has_ops_id else "NULL"} AS ticket_id
             """
-            submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id"
+            submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id" if has_ops_order_id else ""
 
         cursor.execute(f"""
 
@@ -1283,6 +1303,7 @@ def submit_processed_order(order_id):
             return err_resp, err_code
 
         ensure_process_submissions_table(cursor)
+        ensure_order_processing_exceptions_table(cursor)
         ensure_ticket_id_columns(cursor)
         prune_old_ticket_images(cursor)
         cap = orders_status_capabilities(cursor)
@@ -1292,6 +1313,10 @@ def submit_processed_order(order_id):
         cursor.execute(f"""
             SELECT
                 id,
+                date_clean,
+                batch_date,
+                service_type,
+                weight_num,
                 {logistics_sql},
                 {processing_sql},
                 status
@@ -1307,6 +1332,11 @@ def submit_processed_order(order_id):
         logistics_status = (row.get("logistics_status") or "").upper()
         if logistics_status in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
             return jsonify({"error": "Order already sent/checked out"}), 409
+
+        service_type = (row.get("service_type") or "").strip().upper()
+        if parsed_weight is not None and service_type == "HD":
+            if abs(parsed_weight - round(parsed_weight)) > 1e-9:
+                return jsonify({"error": "HD count must be a whole number"}), 400
 
         set_parts = []
         if cap["has_processing"]:
@@ -1335,6 +1365,57 @@ def submit_processed_order(order_id):
             SET {", ".join(set_parts)}
             WHERE id = %s
         """, tuple(update_vals))
+
+        if parsed_weight is not None:
+            original_measure = row.get("weight_num")
+            if service_type == "HD":
+                original_val = float(int(round(float(original_measure or 0))))
+                submitted_val = float(int(round(parsed_weight)))
+            else:
+                original_val = round(float(original_measure or 0), 2)
+                submitted_val = round(float(parsed_weight), 2)
+            diff_val = round(submitted_val - original_val, 2)
+
+            if abs(diff_val) > 0:
+                cursor.execute("""
+                    INSERT INTO order_processing_exceptions
+                    (
+                        order_id,
+                        user_id,
+                        username,
+                        service_type,
+                        original_measure,
+                        submitted_measure,
+                        difference_measure,
+                        date_clean,
+                        batch_date,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ON DUPLICATE KEY UPDATE
+                        user_id = VALUES(user_id),
+                        username = VALUES(username),
+                        service_type = VALUES(service_type),
+                        original_measure = VALUES(original_measure),
+                        submitted_measure = VALUES(submitted_measure),
+                        difference_measure = VALUES(difference_measure),
+                        date_clean = VALUES(date_clean),
+                        batch_date = VALUES(batch_date),
+                        updated_at = NOW()
+                """, (
+                    order_id,
+                    me["user_id"],
+                    me.get("username"),
+                    service_type,
+                    original_val,
+                    submitted_val,
+                    diff_val,
+                    row.get("date_clean"),
+                    row.get("batch_date"),
+                ))
+            else:
+                cursor.execute("DELETE FROM order_processing_exceptions WHERE order_id = %s", (order_id,))
 
         cursor.execute("SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1", (order_id,))
         prev = cursor.fetchone() or {}

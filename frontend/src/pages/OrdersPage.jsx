@@ -9,16 +9,18 @@ import {
   DialogTitle,
   Divider,
   InputAdornment,
+  IconButton,
   MenuItem,
   Paper,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { Bolt, CheckCircle, DeleteOutline, ExpandLess, ExpandMore, Image, Refresh, Search, Visibility } from "@mui/icons-material";
+import { Bolt, CheckCircle, Close, DeleteOutline, ExpandLess, ExpandMore, Image, Refresh, Search, Visibility } from "@mui/icons-material";
 import {
   deleteOrderTicket,
   deleteOrder,
+  getCurrentUploadBatch,
   getOrderTicket,
   getOrderTickets,
   getOrders,
@@ -82,6 +84,7 @@ function OrdersPage({ user }) {
   const [submitMeasure, setSubmitMeasure] = useState("");
   const [submitTicketId, setSubmitTicketId] = useState("");
   const [submitFile, setSubmitFile] = useState(null);
+  const [submitPreview, setSubmitPreview] = useState("");
   const [ticketDialogRow, setTicketDialogRow] = useState(null);
   const [ticketFile, setTicketFile] = useState(null);
   const [ticketView, setTicketView] = useState(null);
@@ -90,6 +93,7 @@ function OrdersPage({ user }) {
   const [adminTicketsLoading, setAdminTicketsLoading] = useState(false);
   const [adminTickets, setAdminTickets] = useState([]);
   const [notice, setNotice] = useState("");
+  const [batchInfo, setBatchInfo] = useState(null);
 
   const [editRow, setEditRow] = useState(null);
 
@@ -100,11 +104,16 @@ function OrdersPage({ user }) {
   const load = async () => {
     try {
       setLoading(true);
-      const res = await getOrders({ include_all: true });
-      setRows(Array.isArray(res.data) ? res.data : []);
+      const [ordersRes, batchRes] = await Promise.all([
+        getOrders({ include_all: true }),
+        getCurrentUploadBatch().catch(() => ({ data: null })),
+      ]);
+      setRows(Array.isArray(ordersRes?.data) ? ordersRes.data : []);
+      setBatchInfo(batchRes?.data || null);
     } catch (error) {
       console.error(error);
       setRows([]);
+      setBatchInfo(null);
     } finally {
       setLoading(false);
     }
@@ -144,6 +153,22 @@ function OrdersPage({ user }) {
     if (!d) return "-";
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
+
+  const formatBatchDayDate = (value) => {
+    const d = parseAsLocalDate(value);
+    if (!d) return "-";
+    return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" });
+  };
+
+  useEffect(() => {
+    if (!submitFile) {
+      setSubmitPreview("");
+      return;
+    }
+    const url = URL.createObjectURL(submitFile);
+    setSubmitPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [submitFile]);
 
   const visibleRows = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
@@ -213,6 +238,10 @@ function OrdersPage({ user }) {
       const measureNum = Number(submitMeasure);
       if (!Number.isFinite(measureNum) || measureNum < 0) {
         setNotice("Enter valid weight/count.");
+        return;
+      }
+      if (isHD(submitDialogRow) && !Number.isInteger(measureNum)) {
+        setNotice("HD count must be a whole number.");
         return;
       }
       await updateOrder(submitDialogRow.id, { weight_num: measureNum });
@@ -310,10 +339,18 @@ function OrdersPage({ user }) {
     }
   };
 
+  const activeBatchDate = batchInfo?.batch_date || rows[0]?.batch_date || null;
+  const searchActive = deferredSearch.trim().length > 0;
+
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography sx={{ fontSize: 30, fontWeight: 400 }}>Orders</Typography>
+        <Stack spacing={0.2}>
+          <Typography sx={{ fontSize: 30, fontWeight: 400 }}>Rinse orders</Typography>
+          <Typography sx={{ fontSize: 15, color: "#6b7280", fontWeight: 400 }}>
+            {formatBatchDayDate(activeBatchDate)}
+          </Typography>
+        </Stack>
         <Stack direction="row" spacing={1}>
           <Button
             size="small"
@@ -429,7 +466,8 @@ function OrdersPage({ user }) {
         <Stack spacing={1} sx={{ mt: 1.2 }}>
           {ALPHAS.map((alpha) => {
             const list = grouped[alpha] || [];
-            const expanded = openAlpha === alpha;
+            if (searchActive && list.length === 0) return null;
+            const expanded = searchActive ? true : openAlpha === alpha;
             return (
               <Paper
                 key={alpha}
@@ -557,8 +595,9 @@ function OrdersPage({ user }) {
                                       variant="contained"
                                       onClick={() => {
                                         setSubmitDialogRow(r);
-                                        setSubmitMeasure(String(r.weight_num ?? ""));
+                                        setSubmitMeasure("");
                                         setSubmitTicketId(String(r.ticket_id || ""));
+                                        setSubmitFile(null);
                                       }}
                                       sx={{ textTransform: "none", bgcolor: "#ffffff", color: "#111827", fontWeight: 400 }}
                                     >
@@ -629,7 +668,7 @@ function OrdersPage({ user }) {
                 onChange={(e) => setSubmitMeasure(e.target.value)}
               />
               <Button variant="outlined" component="label" sx={{ textTransform: "none", fontWeight: 400 }}>
-                {submitFile ? submitFile.name : "Upload Ticket"}
+                Upload ticket
                 <input
                   hidden
                   type="file"
@@ -638,6 +677,29 @@ function OrdersPage({ user }) {
                   onChange={(e) => setSubmitFile(e.target.files?.[0] || null)}
                 />
               </Button>
+              {submitPreview && (
+                <Box sx={{ position: "relative", borderRadius: 1.5, overflow: "hidden", border: "1px solid #e5e7eb" }}>
+                  <Box
+                    component="img"
+                    src={submitPreview}
+                    alt="ticket preview"
+                    sx={{ width: "100%", display: "block", maxHeight: 260, objectFit: "contain", bgcolor: "#111827" }}
+                  />
+                  <IconButton
+                    size="small"
+                    onClick={() => setSubmitFile(null)}
+                    sx={{
+                      position: "absolute",
+                      top: 8,
+                      right: 8,
+                      bgcolor: "rgba(255,255,255,0.9)",
+                      "&:hover": { bgcolor: "#ffffff" },
+                    }}
+                  >
+                    <Close fontSize="small" />
+                  </IconButton>
+                </Box>
+              )}
             </Stack>
           )}
         </DialogContent>
