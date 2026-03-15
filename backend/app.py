@@ -733,6 +733,8 @@ def get_orders():
 
     try:
         cap = orders_status_capabilities(cursor)
+        has_batch_date = table_has_column(cursor, "orders_staging", "batch_date")
+        has_created_at = table_has_column(cursor, "orders_staging", "created_at")
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
         active_where = where_active_at_washpro_sql(cap)
@@ -779,7 +781,7 @@ def get_orders():
                 o.name_clean,
                 o.weight_num,
                 o.service_type,
-                o.batch_date,
+                {"o.batch_date" if has_batch_date else "NULL"} AS batch_date,
                 {"o.ticket_id" if cap["has_ticket_id"] else "NULL"} AS ticket_id,
 
                 CASE
@@ -789,8 +791,8 @@ def get_orders():
 
                 {logistics_sql},
                 {processing_sql},
-                o.status,
-                o.created_at
+                {"o.status" if cap["has_status"] else "NULL"} AS status,
+                {"o.created_at" if has_created_at else "NULL"} AS created_at
                 {submission_select}
 
             FROM orders_staging o
@@ -1777,6 +1779,67 @@ def list_order_tickets():
         for r in rows:
             r["ticket_image_url"] = build_ticket_read_url(r.get("ticket_blob_name"), r.get("ticket_blob_url"))
         return jsonify(rows)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/discrepancies", methods=["GET"])
+def list_processing_discrepancies():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        roles = fetch_user_roles(cursor, me["user_id"])
+        if "ADMIN" not in roles and "OPS" not in roles:
+            return jsonify({"error": "Forbidden"}), 403
+
+        ensure_order_processing_exceptions_table(cursor)
+
+        where_parts = ["1 = 1"]
+        vals = []
+
+        batch_date = request.args.get("batch_date")
+        if batch_date:
+            where_parts.append("e.batch_date = %s")
+            vals.append(batch_date)
+
+        try:
+            limit = int(request.args.get("limit", 200))
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 1000))
+
+        cursor.execute(f"""
+            SELECT
+                e.id,
+                e.order_id,
+                e.username,
+                e.service_type,
+                e.original_measure,
+                e.submitted_measure,
+                e.difference_measure,
+                e.date_clean,
+                e.batch_date,
+                e.created_at,
+                o.name_clean
+            FROM order_processing_exceptions e
+            LEFT JOIN orders_staging o ON o.id = e.order_id
+            WHERE {" AND ".join(where_parts)}
+            ORDER BY COALESCE(e.updated_at, e.created_at) DESC
+            LIMIT %s
+        """, tuple(vals + [limit]))
+
+        return jsonify(cursor.fetchall() or [])
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

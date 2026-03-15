@@ -167,6 +167,21 @@ def classify_service(cells):
     return "WF"
 
 
+def has_explicit_wf_marker(cells):
+    for c in cells:
+        if c is None:
+            continue
+        text = c.upper().strip()
+        if "?" in text:
+            return True
+        if "LBS" in text or re.search(r"\bLB\b", text):
+            return True
+        text_no_lbs = text.replace("LBS", "").strip()
+        if re.search(r"\d+\.\d+", text_no_lbs):
+            return True
+    return False
+
+
 def detect_rush_hint(cells):
 
     for c in cells:
@@ -284,6 +299,14 @@ def transform_orders(df_raw):
     ].copy()
 
     df["ServiceType"] = df["Cells"].apply(classify_service)
+
+    # Business exception:
+    # BlueBottle rows frequently provide piece-count style entries with blank measure.
+    # If there is no explicit WF marker and no extracted weight, treat as HD.
+    bluebottle_mask = df["Name_Clean"].astype(str).str.upper().str.startswith("BLUEBOTTLE")
+    no_measure_mask = df["Weight_Num"].isna()
+    no_wf_marker_mask = ~df["Cells"].apply(has_explicit_wf_marker)
+    df.loc[bluebottle_mask & no_measure_mask & no_wf_marker_mask, "ServiceType"] = "HD"
 
     # Keep direct rush marker from upload row; batch-date rush is applied in backend upload logic
     df["RushHint"] = df["Cells"].apply(detect_rush_hint)

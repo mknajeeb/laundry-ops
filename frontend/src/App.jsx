@@ -27,6 +27,7 @@ import UploadPage from "./pages/UploadPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import InventoryPage from "./pages/InventoryPage";
+import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname }) {
@@ -138,6 +139,7 @@ function AppShell() {
             <Route path="/scoreboard" element={<GuardedRoute user={user}><ScoreboardPage /></GuardedRoute>} />
             <Route path="/maintenance" element={<GuardedRoute user={user}><MaintenancePage /></GuardedRoute>} />
             <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage /></GuardedRoute>} />
+            <Route path="/discrepancies" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute>} />
           </Routes>
         </Box>
       </Box>

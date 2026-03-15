@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: "/orders", label: "Orders", roles: [] },
   { to: "/checkout", label: "Checkout", roles: [] },
   { to: "/upload", label: "Upload", roles: ["ADMIN", "OPS"] },
+  { to: "/discrepancies", label: "Discrepancies", roles: ["ADMIN", "OPS"] },
   { to: "/inventory", label: "Inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"] },
   { to: "/clock", label: "Clock", roles: [] },
   { to: "/issues", label: "Issues", roles: [] },

@@ -187,11 +187,15 @@ function OrdersPage({ user }) {
       if (rushFilter !== "ALL" && rushOf(r) !== rushFilter) return false;
 
       if (!q) return true;
+      const name = String(r?.name_clean || "").toLowerCase();
+      const id = String(r?.id || "").toLowerCase();
+      const service = String(r?.service_type || "").toLowerCase();
+      const weight = String(r?.weight_num ?? "").toLowerCase();
       return (
-        String(r?.name_clean || "").toLowerCase().includes(q) ||
-        String(r?.id || "").includes(q) ||
-        String(r?.service_type || "").toLowerCase().includes(q) ||
-        String(r?.weight_num ?? "").toLowerCase().includes(q)
+        name.startsWith(q) ||
+        id.startsWith(q) ||
+        service.startsWith(q) ||
+        weight.startsWith(q)
       );
     });
   }, [rows, deferredSearch, rushFilter, showProcessed, userId]);
@@ -244,7 +248,6 @@ function OrdersPage({ user }) {
         setNotice("HD count must be a whole number.");
         return;
       }
-      await updateOrder(submitDialogRow.id, { weight_num: measureNum });
       const payload = {};
       payload.weight_num = measureNum;
       if (submitTicketId) payload.ticket_id = submitTicketId;
@@ -373,10 +376,10 @@ function OrdersPage({ user }) {
 
       <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.2 }}>
         <Box sx={{ textAlign: "right" }}>
-          <Button size="small" variant="outlined" sx={{ textTransform: "none", fontWeight: 400, pointerEvents: "none" }}>
-            Folded
-          </Button>
-          <Typography sx={{ fontSize: 13, color: "#6b7280", mt: 0.2 }}>
+          <Typography sx={{ fontSize: 13, color: "#475569", mt: 0.1 }}>
+            Folded by
+          </Typography>
+          <Typography sx={{ fontSize: 20, color: "#111827", mt: 0.1, lineHeight: 1.1 }}>
             {user?.display_name || user?.username || "Unknown"}
           </Typography>
         </Box>

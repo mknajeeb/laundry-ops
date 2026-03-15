@@ -213,6 +213,9 @@ export const deleteOrderTicket = (order_id) =>
 export const getOrderTickets = (params = {}) =>
   axios.get(`${API_BASE}/order_tickets`, { params });
 
+export const getOrderDiscrepancies = (params = {}) =>
+  axios.get(`${API_BASE}/orders/discrepancies`, { params });
+
 /* =========================================
    FOLDER SHIFT
 ========================================= */
