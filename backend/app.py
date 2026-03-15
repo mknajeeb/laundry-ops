@@ -2500,7 +2500,28 @@ def auth_login():
         if not user or not user.get("active"):
             return jsonify({"error": "Invalid credentials"}), 401
 
-        if not check_password_hash(user["password_hash"], password):
+        stored_hash = user.get("password_hash") or ""
+        password_ok = False
+
+        # Backward compatibility: allow legacy plain-text rows and migrate to hash.
+        if stored_hash.startswith(("pbkdf2:", "scrypt:")):
+            try:
+                password_ok = check_password_hash(stored_hash, password)
+            except Exception:
+                password_ok = False
+        else:
+            password_ok = (stored_hash == password)
+            if password_ok:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET password_hash = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (generate_password_hash(password), user["id"])
+                )
+
+        if not password_ok:
             return jsonify({"error": "Invalid credentials"}), 401
 
         token = uuid.uuid4().hex
