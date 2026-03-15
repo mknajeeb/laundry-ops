@@ -260,7 +260,7 @@ function OrdersPage({ user }) {
       await load();
     } catch (error) {
       console.error(error);
-      setNotice("Failed to submit.");
+      setNotice(error?.response?.data?.error || "Failed to submit.");
     } finally {
       setSaving(false);
     }

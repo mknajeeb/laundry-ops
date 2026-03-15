@@ -375,6 +375,20 @@ def ensure_process_submissions_table(cursor):
             updated_at DATETIME NULL
         )
     """)
+    if not table_has_column(cursor, "order_process_submissions", "order_id"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN order_id INT NOT NULL")
+    if not table_has_column(cursor, "order_process_submissions", "user_id"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN user_id INT NULL")
+    if not table_has_column(cursor, "order_process_submissions", "username"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN username VARCHAR(100) NULL")
+    if not table_has_column(cursor, "order_process_submissions", "ticket_image_base64"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_image_base64 LONGTEXT NULL")
+    if not table_has_column(cursor, "order_process_submissions", "ticket_file_name"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_file_name VARCHAR(255) NULL")
+    if not table_has_column(cursor, "order_process_submissions", "created_at"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    if not table_has_column(cursor, "order_process_submissions", "updated_at"):
+        cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN updated_at DATETIME NULL")
     if not table_has_column(cursor, "order_process_submissions", "ticket_blob_url"):
         cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_blob_url VARCHAR(1024) NULL")
     if not table_has_column(cursor, "order_process_submissions", "ticket_blob_name"):
@@ -383,6 +397,16 @@ def ensure_process_submissions_table(cursor):
         cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_storage VARCHAR(20) NULL")
     if not table_has_column(cursor, "order_process_submissions", "ticket_size_bytes"):
         cursor.execute("ALTER TABLE order_process_submissions ADD COLUMN ticket_size_bytes INT NULL")
+    cursor.execute("""
+        SELECT COUNT(1) AS c
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'order_process_submissions'
+          AND INDEX_NAME = 'ux_order_process_submissions_order_id'
+    """)
+    has_idx = (cursor.fetchone() or {}).get("c", 0)
+    if not has_idx:
+        cursor.execute("CREATE UNIQUE INDEX ux_order_process_submissions_order_id ON order_process_submissions(order_id)")
 
 
 def ensure_order_processing_exceptions_table(cursor):
@@ -402,6 +426,38 @@ def ensure_order_processing_exceptions_table(cursor):
             updated_at DATETIME NULL
         )
     """)
+    if not table_has_column(cursor, "order_processing_exceptions", "order_id"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN order_id INT NOT NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "user_id"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN user_id INT NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "username"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN username VARCHAR(100) NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "service_type"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN service_type VARCHAR(10) NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "original_measure"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN original_measure DECIMAL(8,2) NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "submitted_measure"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN submitted_measure DECIMAL(8,2) NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "difference_measure"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN difference_measure DECIMAL(8,2) NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "date_clean"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN date_clean DATE NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "batch_date"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN batch_date DATE NULL")
+    if not table_has_column(cursor, "order_processing_exceptions", "created_at"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    if not table_has_column(cursor, "order_processing_exceptions", "updated_at"):
+        cursor.execute("ALTER TABLE order_processing_exceptions ADD COLUMN updated_at DATETIME NULL")
+    cursor.execute("""
+        SELECT COUNT(1) AS c
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'order_processing_exceptions'
+          AND INDEX_NAME = 'ux_order_processing_exceptions_order_id'
+    """)
+    has_idx = (cursor.fetchone() or {}).get("c", 0)
+    if not has_idx:
+        cursor.execute("CREATE UNIQUE INDEX ux_order_processing_exceptions_order_id ON order_processing_exceptions(order_id)")
 
 
 def ticket_retention_days():
@@ -475,22 +531,26 @@ def save_ticket_image(ticket_image_base64, ticket_file_name, order_id):
     size = len(data)
 
     if ticket_storage_mode() == "blob":
-        cc = _ensure_blob_container()
-        if cc is not None:
-            now = datetime.utcnow()
-            blob_name = f"orders/{now.strftime('%Y/%m/%d')}/{order_id}_{uuid.uuid4().hex}_{ticket_file_name or 'ticket.jpg'}"
-            bc = cc.get_blob_client(blob_name)
-            kwargs = {}
-            if ContentSettings is not None:
-                kwargs["content_settings"] = ContentSettings(content_type=_infer_content_type(ticket_file_name))
-            bc.upload_blob(data, overwrite=True, **kwargs)
-            return {
-                "ticket_storage": "blob",
-                "ticket_blob_url": bc.url,
-                "ticket_blob_name": blob_name,
-                "ticket_image_base64": None,
-                "ticket_size_bytes": size,
-            }
+        try:
+            cc = _ensure_blob_container()
+            if cc is not None:
+                now = datetime.utcnow()
+                blob_name = f"orders/{now.strftime('%Y/%m/%d')}/{order_id}_{uuid.uuid4().hex}_{ticket_file_name or 'ticket.jpg'}"
+                bc = cc.get_blob_client(blob_name)
+                kwargs = {}
+                if ContentSettings is not None:
+                    kwargs["content_settings"] = ContentSettings(content_type=_infer_content_type(ticket_file_name))
+                bc.upload_blob(data, overwrite=True, **kwargs)
+                return {
+                    "ticket_storage": "blob",
+                    "ticket_blob_url": bc.url,
+                    "ticket_blob_name": blob_name,
+                    "ticket_image_base64": None,
+                    "ticket_size_bytes": size,
+                }
+        except Exception:
+            # Fallback to DB storage if blob config/upload is unavailable.
+            pass
 
     return {
         "ticket_storage": "db",
