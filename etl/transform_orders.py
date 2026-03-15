@@ -63,7 +63,27 @@ def extract_weight(cells):
         if c is None:
             continue
 
-        value = parse_number(c)
+        text = str(c).strip()
+        if text == "":
+            continue
+        upper = text.upper()
+
+        value = None
+
+        # Parse only explicit weight tokens (e.g. "31.5 lbs") or pure numeric cells.
+        # This avoids false weights from address digits inside names like "#5 1 ...".
+        if "LBS" in upper or re.search(r"\bLB\b", upper):
+            m = re.search(r"(\d+(?:\.\d+)?)", upper.replace(",", ""))
+            if m:
+                try:
+                    value = float(m.group(1))
+                except Exception:
+                    value = None
+        elif re.fullmatch(r"\d+(?:\.\d+)?", text):
+            try:
+                value = float(text)
+            except Exception:
+                value = None
 
         if value is not None and 0 <= value <= 200:
             return value

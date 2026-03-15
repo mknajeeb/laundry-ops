@@ -374,7 +374,7 @@ function OrdersPage({ user }) {
       <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.2 }}>
         <Box sx={{ textAlign: "right" }}>
           <Button size="small" variant="outlined" sx={{ textTransform: "none", fontWeight: 400, pointerEvents: "none" }}>
-            Folded by
+            Folded
           </Button>
           <Typography sx={{ fontSize: 13, color: "#6b7280", mt: 0.2 }}>
             {user?.display_name || user?.username || "Unknown"}
