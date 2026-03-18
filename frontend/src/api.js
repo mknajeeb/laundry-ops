@@ -306,3 +306,18 @@ export const createBagSale = (payload) =>
 
 export const getLowStockItems = () =>
   axios.get(`${API_BASE}/inventory/low_stock`);
+
+export const saveInventoryCountsBulk = (payload) =>
+  axios.post(`${API_BASE}/inventory/counts/bulk`, payload);
+
+export const createInventoryReorder = (payload) =>
+  axios.post(`${API_BASE}/inventory/reorder`, payload);
+
+export const getInventoryBagPrice = () =>
+  axios.get(`${API_BASE}/inventory/bag_price`);
+
+export const saveInventoryBagPrice = (payload) =>
+  axios.post(`${API_BASE}/inventory/bag_price`, payload);
+
+export const getInventoryReport = () =>
+  axios.get(`${API_BASE}/inventory/report`);

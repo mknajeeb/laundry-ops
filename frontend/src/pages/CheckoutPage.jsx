@@ -329,10 +329,9 @@ function CheckoutPage() {
                     key={opt.id}
                     variant={nameConfirmSelectedId === opt.id ? "contained" : "outlined"}
                     onClick={() => setNameConfirmSelectedId(opt.id)}
-                    sx={{ textTransform: "none", justifyContent: "space-between" }}
+                    sx={{ textTransform: "none", justifyContent: "flex-start" }}
                   >
                     <span>{formatDate(opt.date_clean)} • {measureOf(opt)}</span>
-                    <span style={{ marginLeft: 8 }}>#{opt.id}</span>
                   </Button>
                 ))}
               </Stack>

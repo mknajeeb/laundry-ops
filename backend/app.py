@@ -3099,6 +3099,32 @@ def inventory_items_api():
         conn.close()
 
 
+def ensure_inventory_extensions(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inventory_purchase_orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            item_id INT NOT NULL,
+            requested_qty DECIMAL(10,2) NOT NULL DEFAULT 0,
+            ordered_qty DECIMAL(10,2) NOT NULL DEFAULT 0,
+            requested_by VARCHAR(100) NULL,
+            ordered_by VARCHAR(100) NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'ORDERED',
+            notes VARCHAR(255) NULL,
+            requested_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ordered_at DATETIME NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS inventory_settings (
+            setting_key VARCHAR(100) PRIMARY KEY,
+            setting_value VARCHAR(255) NULL,
+            updated_by VARCHAR(100) NULL,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 @app.route("/inventory/counts", methods=["POST"])
 def inventory_count_api():
     data = request.json or {}
@@ -3127,6 +3153,47 @@ def inventory_count_api():
 
         conn.commit()
         return jsonify({"status": "count_saved"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/counts/bulk", methods=["POST"])
+def inventory_counts_bulk_api():
+    data = request.json or {}
+    rows = data.get("rows") or []
+    counted_by = (data.get("counted_by") or "").strip() or "system"
+    notes = (data.get("notes") or "").strip() or None
+
+    if not isinstance(rows, list) or len(rows) == 0:
+        return jsonify({"error": "rows is required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        saved = 0
+        for row in rows:
+            item_id = row.get("item_id")
+            counted_qty = row.get("counted_qty")
+            if item_id in [None, ""] or counted_qty in [None, ""]:
+                continue
+            cursor.execute("""
+                INSERT INTO inventory_counts
+                (item_id, counted_qty, counted_by, counted_at, notes)
+                VALUES (%s, %s, %s, NOW(), %s)
+            """, (int(item_id), float(counted_qty), counted_by, notes))
+            cursor.execute("""
+                UPDATE inventory_items
+                SET on_hand_qty = %s, updated_at = NOW()
+                WHERE id = %s
+            """, (float(counted_qty), int(item_id)))
+            saved += 1
+
+        conn.commit()
+        return jsonify({"status": "saved", "rows_saved": saved})
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -3186,6 +3253,142 @@ def inventory_bag_sales_api():
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/reorder", methods=["POST"])
+def inventory_reorder_api():
+    data = request.json or {}
+    lines = data.get("lines") or []
+    ordered_by = (data.get("ordered_by") or "").strip() or "manager"
+    notes = (data.get("notes") or "").strip() or None
+
+    if not isinstance(lines, list) or len(lines) == 0:
+        return jsonify({"error": "lines is required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_inventory_extensions(cursor)
+        affected = 0
+        for line in lines:
+            item_id = line.get("item_id")
+            requested_qty = line.get("requested_qty")
+            if item_id in [None, ""] or requested_qty in [None, ""]:
+                continue
+            requested_qty = float(requested_qty)
+            if requested_qty <= 0:
+                continue
+
+            cursor.execute("SELECT id, on_hand_qty FROM inventory_items WHERE id = %s LIMIT 1", (int(item_id),))
+            item = cursor.fetchone()
+            if not item:
+                continue
+
+            new_qty = float(item.get("on_hand_qty") or 0) + requested_qty
+            cursor.execute("""
+                UPDATE inventory_items
+                SET on_hand_qty = %s, updated_at = NOW()
+                WHERE id = %s
+            """, (new_qty, int(item_id)))
+
+            cursor.execute("""
+                INSERT INTO inventory_purchase_orders
+                (item_id, requested_qty, ordered_qty, requested_by, ordered_by, status, notes, requested_at, ordered_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, 'ORDERED', %s, NOW(), NOW(), NOW())
+            """, (int(item_id), requested_qty, requested_qty, ordered_by, ordered_by, notes))
+            affected += 1
+
+        conn.commit()
+        return jsonify({"status": "ordered", "lines": affected})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/bag_price", methods=["GET", "POST"])
+def inventory_bag_price_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_inventory_extensions(cursor)
+        if request.method == "GET":
+            cursor.execute("SELECT setting_value, updated_by, updated_at FROM inventory_settings WHERE setting_key = 'bag_default_price' LIMIT 1")
+            row = cursor.fetchone() or {}
+            return jsonify({
+                "bag_default_price": float(row.get("setting_value") or 0),
+                "updated_by": row.get("updated_by"),
+                "updated_at": row.get("updated_at"),
+            })
+
+        data = request.json or {}
+        price = data.get("bag_default_price")
+        updated_by = (data.get("updated_by") or "").strip() or "manager"
+        try:
+            price = round(float(price), 2)
+        except Exception:
+            return jsonify({"error": "bag_default_price must be numeric"}), 400
+
+        cursor.execute("""
+            INSERT INTO inventory_settings (setting_key, setting_value, updated_by, updated_at)
+            VALUES ('bag_default_price', %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                setting_value = VALUES(setting_value),
+                updated_by = VALUES(updated_by),
+                updated_at = NOW()
+        """, (str(price), updated_by))
+        conn.commit()
+        return jsonify({"status": "updated", "bag_default_price": price})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/inventory/report", methods=["GET"])
+def inventory_report_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_inventory_extensions(cursor)
+
+        cursor.execute("""
+            SELECT
+                i.id,
+                i.item_name,
+                i.category,
+                i.unit_label,
+                i.on_hand_qty,
+                i.reorder_threshold,
+                COALESCE(SUM(po.ordered_qty), 0) AS total_ordered_qty
+            FROM inventory_items i
+            LEFT JOIN inventory_purchase_orders po
+              ON po.item_id = i.id
+            WHERE i.active = TRUE
+            GROUP BY i.id, i.item_name, i.category, i.unit_label, i.on_hand_qty, i.reorder_threshold
+            ORDER BY i.category, i.item_name
+        """)
+        items = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT
+                COALESCE(SUM(qty), 0) AS total_bags_sold,
+                COALESCE(SUM(CASE WHEN amount_paid REGEXP '^[0-9]+(\\.[0-9]+)?$' THEN CAST(amount_paid AS DECIMAL(10,2)) ELSE 0 END), 0) AS bags_sales_amount
+            FROM bag_sales
+        """)
+        bag_totals = cursor.fetchone() or {}
+
+        return jsonify({
+            "items": items,
+            "bag_totals": bag_totals,
+        })
     finally:
         cursor.close()
         conn.close()
