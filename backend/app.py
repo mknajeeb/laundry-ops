@@ -3435,7 +3435,7 @@ def maintenance_logs_api():
 # Inventory APIs
 # ---------------------------------------------------
 
-@app.route("/inventory/items", methods=["GET", "POST"])
+@app.route("/inventory/items", methods=["GET", "POST", "PUT", "DELETE"])
 def inventory_items_api():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -3449,6 +3449,51 @@ def inventory_items_api():
                 ORDER BY category, item_name
             """)
             return jsonify(cursor.fetchall())
+
+        if request.method == "PUT":
+            data = request.json or {}
+            item_id = data.get("id")
+            if item_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+
+            item_name = (data.get("item_name") or "").strip()
+            category = (data.get("category") or "SUPPLY").strip().upper()
+            vendor_name = (data.get("vendor_name") or "").strip() or None
+            unit_label = (data.get("unit_label") or "unit").strip()
+            reorder_threshold = float(data.get("reorder_threshold") or 0)
+            on_hand_qty = float(data.get("on_hand_qty") or 0)
+            active = bool(data.get("active", True))
+            if not item_name:
+                return jsonify({"error": "item_name is required"}), 400
+
+            cursor.execute("""
+                UPDATE inventory_items
+                SET item_name = %s,
+                    category = %s,
+                    vendor_name = %s,
+                    unit_label = %s,
+                    reorder_threshold = %s,
+                    on_hand_qty = %s,
+                    active = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (
+                item_name, category, vendor_name, unit_label,
+                reorder_threshold, on_hand_qty, active, int(item_id)
+            ))
+            conn.commit()
+            return jsonify({"status": "updated"})
+
+        if request.method == "DELETE":
+            item_id = request.args.get("id")
+            if item_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+            cursor.execute(
+                "UPDATE inventory_items SET active = FALSE, updated_at = NOW() WHERE id = %s",
+                (int(item_id),)
+            )
+            conn.commit()
+            return jsonify({"status": "removed"})
 
         data = request.json or {}
         item_name = (data.get("item_name") or "").strip()
@@ -3734,6 +3779,14 @@ def inventory_report_api():
     cursor = conn.cursor(dictionary=True)
     try:
         ensure_inventory_extensions(cursor)
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+        item_id = request.args.get("item_id")
+        limit = request.args.get("limit", 250)
+        try:
+            limit = max(50, min(int(limit), 1000))
+        except Exception:
+            limit = 250
 
         cursor.execute("""
             SELECT
@@ -3761,9 +3814,125 @@ def inventory_report_api():
         """)
         bag_totals = cursor.fetchone() or {}
 
+        where_count = []
+        params_count = []
+        if start_date:
+            where_count.append("DATE(c.counted_at) >= %s")
+            params_count.append(start_date)
+        if end_date:
+            where_count.append("DATE(c.counted_at) <= %s")
+            params_count.append(end_date)
+        if item_id:
+            where_count.append("c.item_id = %s")
+            params_count.append(int(item_id))
+
+        count_where_sql = f"WHERE {' AND '.join(where_count)}" if where_count else ""
+
+        where_po = []
+        params_po = []
+        if start_date:
+            where_po.append("DATE(po.requested_at) >= %s")
+            params_po.append(start_date)
+        if end_date:
+            where_po.append("DATE(po.requested_at) <= %s")
+            params_po.append(end_date)
+        if item_id:
+            where_po.append("po.item_id = %s")
+            params_po.append(int(item_id))
+        po_where_sql = f"WHERE {' AND '.join(where_po)}" if where_po else ""
+
+        where_sales = []
+        params_sales = []
+        if start_date:
+            where_sales.append("bs.sale_date >= %s")
+            params_sales.append(start_date)
+        if end_date:
+            where_sales.append("bs.sale_date <= %s")
+            params_sales.append(end_date)
+        sales_where_sql = f"WHERE {' AND '.join(where_sales)}" if where_sales else ""
+
+        cursor.execute(f"""
+            SELECT
+                c.id,
+                'WEEKLY_COUNT' AS activity_type,
+                c.counted_at AS activity_at,
+                DATE(c.counted_at) AS activity_date,
+                c.counted_by AS actor,
+                i.id AS item_id,
+                i.item_name,
+                c.counted_qty AS qty,
+                NULL AS extra_value,
+                c.notes
+            FROM inventory_counts c
+            JOIN inventory_items i ON i.id = c.item_id
+            {count_where_sql}
+            ORDER BY c.counted_at DESC
+            LIMIT {limit}
+        """, tuple(params_count))
+        count_activity = cursor.fetchall()
+
+        cursor.execute(f"""
+            SELECT
+                po.id,
+                'PURCHASE_ORDER' AS activity_type,
+                po.requested_at AS activity_at,
+                DATE(po.requested_at) AS activity_date,
+                po.ordered_by AS actor,
+                i.id AS item_id,
+                i.item_name,
+                po.ordered_qty AS qty,
+                po.status AS extra_value,
+                po.notes
+            FROM inventory_purchase_orders po
+            JOIN inventory_items i ON i.id = po.item_id
+            {po_where_sql}
+            ORDER BY po.requested_at DESC
+            LIMIT {limit}
+        """, tuple(params_po))
+        po_activity = cursor.fetchall()
+
+        cursor.execute(f"""
+            SELECT
+                bs.id,
+                'BAG_SALE' AS activity_type,
+                bs.created_at AS activity_at,
+                bs.sale_date AS activity_date,
+                bs.entered_by AS actor,
+                NULL AS item_id,
+                'Bag Sale' AS item_name,
+                bs.qty AS qty,
+                bs.customer_name AS extra_value,
+                CONCAT('amount_paid=', COALESCE(bs.amount_paid, '')) AS notes
+            FROM bag_sales bs
+            {sales_where_sql}
+            ORDER BY bs.created_at DESC
+            LIMIT {limit}
+        """, tuple(params_sales))
+        bag_activity = cursor.fetchall()
+
+        activity = sorted(
+            (count_activity + po_activity + bag_activity),
+            key=lambda r: r.get("activity_at") or datetime.min,
+            reverse=True
+        )[:limit]
+
+        cursor.execute("""
+            SELECT
+                MAX(c.counted_at) AS counted_at,
+                SUBSTRING_INDEX(
+                    GROUP_CONCAT(c.counted_by ORDER BY c.counted_at DESC SEPARATOR ','),
+                    ',',
+                    1
+                ) AS counted_by
+            FROM inventory_counts c
+        """)
+        latest_count = cursor.fetchone() or {}
+
         return jsonify({
             "items": items,
             "bag_totals": bag_totals,
+            "latest_count": latest_count,
+            "activity": activity,
         })
     finally:
         cursor.close()
