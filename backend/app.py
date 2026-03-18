@@ -760,18 +760,30 @@ def get_orders():
                 has_ticket_expr_parts.append("(ops.ticket_image_base64 IS NOT NULL AND ops.ticket_image_base64 <> '')")
             has_ticket_expr = " OR ".join(has_ticket_expr_parts) if has_ticket_expr_parts else "FALSE"
 
-            submission_select = f"""
-                , {"ops.user_id" if has_ops_user_id else "NULL"} AS processed_by_user_id
-                , {"ops.username" if has_ops_username else "NULL"} AS processed_by_username
-                , {"ops.updated_at" if has_ops_updated_at else "NULL"} AS processed_at
-                , CASE
-                    WHEN ({has_ticket_expr})
-                    THEN 1 ELSE 0
-                  END AS has_ticket_image
-                , {"ops.ticket_file_name" if has_ops_ticket_file_name else "NULL"} AS ticket_file_name
-                , {"ops.id" if has_ops_id else "NULL"} AS ticket_id
-            """
-            submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id" if has_ops_order_id else ""
+            if has_ops_order_id:
+                submission_select = f"""
+                    , {"ops.user_id" if has_ops_user_id else "NULL"} AS processed_by_user_id
+                    , {"ops.username" if has_ops_username else "NULL"} AS processed_by_username
+                    , {"ops.updated_at" if has_ops_updated_at else "NULL"} AS processed_at
+                    , CASE
+                        WHEN ({has_ticket_expr})
+                        THEN 1 ELSE 0
+                      END AS has_ticket_image
+                    , {"ops.ticket_file_name" if has_ops_ticket_file_name else "NULL"} AS ticket_file_name
+                    , {"ops.id" if has_ops_id else "NULL"} AS ticket_id
+                """
+                submission_join = "LEFT JOIN order_process_submissions ops ON ops.order_id = o.id"
+            else:
+                # Keep endpoint stable even if submission table exists but is missing order_id.
+                submission_select = """
+                    , NULL AS processed_by_user_id
+                    , NULL AS processed_by_username
+                    , NULL AS processed_at
+                    , 0 AS has_ticket_image
+                    , NULL AS ticket_file_name
+                    , NULL AS ticket_id
+                """
+                submission_join = ""
 
         cursor.execute(f"""
 
@@ -1400,6 +1412,11 @@ def submit_processed_order(order_id):
             if abs(parsed_weight - round(parsed_weight)) > 1e-9:
                 return jsonify({"error": "HD count must be a whole number"}), 400
 
+        if parsed_weight is None:
+            return jsonify({"error": "Weight/count is required"}), 400
+        if not ticket_image_base64:
+            return jsonify({"error": "Ticket photo is required"}), 400
+
         set_parts = []
         if cap["has_processing"]:
             set_parts.append("processing_status = 'PROCESSED'")
@@ -1410,14 +1427,12 @@ def submit_processed_order(order_id):
         if not set_parts:
             set_parts.append("status = 'PROCESSED'")
 
-        if parsed_weight is not None:
-            set_parts.append("weight_num = %s")
+        set_parts.append("weight_num = %s")
         if cap.get("has_ticket_id", False) and ticket_id:
             set_parts.append("ticket_id = %s")
 
         update_vals = []
-        if parsed_weight is not None:
-            update_vals.append(parsed_weight)
+        update_vals.append(parsed_weight)
         if cap.get("has_ticket_id", False) and ticket_id:
             update_vals.append(ticket_id)
         update_vals.append(order_id)
@@ -1428,56 +1443,55 @@ def submit_processed_order(order_id):
             WHERE id = %s
         """, tuple(update_vals))
 
-        if parsed_weight is not None:
-            original_measure = row.get("weight_num")
-            if service_type == "HD":
-                original_val = float(int(round(float(original_measure or 0))))
-                submitted_val = float(int(round(parsed_weight)))
-            else:
-                original_val = round(float(original_measure or 0), 2)
-                submitted_val = round(float(parsed_weight), 2)
-            diff_val = round(submitted_val - original_val, 2)
+        original_measure = row.get("weight_num")
+        if service_type == "HD":
+            original_val = float(int(round(float(original_measure or 0))))
+            submitted_val = float(int(round(parsed_weight)))
+        else:
+            original_val = round(float(original_measure or 0), 2)
+            submitted_val = round(float(parsed_weight), 2)
+        diff_val = round(submitted_val - original_val, 2)
 
-            if abs(diff_val) > 0:
-                cursor.execute("""
-                    INSERT INTO order_processing_exceptions
-                    (
-                        order_id,
-                        user_id,
-                        username,
-                        service_type,
-                        original_measure,
-                        submitted_measure,
-                        difference_measure,
-                        date_clean,
-                        batch_date,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-                    ON DUPLICATE KEY UPDATE
-                        user_id = VALUES(user_id),
-                        username = VALUES(username),
-                        service_type = VALUES(service_type),
-                        original_measure = VALUES(original_measure),
-                        submitted_measure = VALUES(submitted_measure),
-                        difference_measure = VALUES(difference_measure),
-                        date_clean = VALUES(date_clean),
-                        batch_date = VALUES(batch_date),
-                        updated_at = NOW()
-                """, (
+        if abs(diff_val) > 0:
+            cursor.execute("""
+                INSERT INTO order_processing_exceptions
+                (
                     order_id,
-                    me["user_id"],
-                    me.get("username"),
+                    user_id,
+                    username,
                     service_type,
-                    original_val,
-                    submitted_val,
-                    diff_val,
-                    row.get("date_clean"),
-                    row.get("batch_date"),
-                ))
-            else:
-                cursor.execute("DELETE FROM order_processing_exceptions WHERE order_id = %s", (order_id,))
+                    original_measure,
+                    submitted_measure,
+                    difference_measure,
+                    date_clean,
+                    batch_date,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                ON DUPLICATE KEY UPDATE
+                    user_id = VALUES(user_id),
+                    username = VALUES(username),
+                    service_type = VALUES(service_type),
+                    original_measure = VALUES(original_measure),
+                    submitted_measure = VALUES(submitted_measure),
+                    difference_measure = VALUES(difference_measure),
+                    date_clean = VALUES(date_clean),
+                    batch_date = VALUES(batch_date),
+                    updated_at = NOW()
+            """, (
+                order_id,
+                me["user_id"],
+                me.get("username"),
+                service_type,
+                original_val,
+                submitted_val,
+                diff_val,
+                row.get("date_clean"),
+                row.get("batch_date"),
+            ))
+        else:
+            cursor.execute("DELETE FROM order_processing_exceptions WHERE order_id = %s", (order_id,))
 
         cursor.execute("SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1", (order_id,))
         prev = cursor.fetchone() or {}
@@ -1804,6 +1818,9 @@ def list_processing_discrepancies():
             return jsonify({"error": "Forbidden"}), 403
 
         ensure_order_processing_exceptions_table(cursor)
+        cap = orders_status_capabilities(cursor)
+        logistics_sql = orders_logistics_select_sql(cap)
+        processing_sql = orders_processing_select_sql(cap)
 
         where_parts = ["1 = 1"]
         vals = []
@@ -1819,25 +1836,63 @@ def list_processing_discrepancies():
             limit = 200
         limit = max(1, min(limit, 1000))
 
+        where_sql = " AND ".join(where_parts)
+        sent_pending_where = f"""
+            ({processing_sql}) = 'PENDING'
+            AND ({logistics_sql}) IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT', 'FORCED_CHECKOUT')
+            AND EXISTS (
+                SELECT 1
+                FROM upload_batches b
+                WHERE b.batch_date = o.batch_date
+                AND UPPER(COALESCE(b.state, '')) IN ('CONFIRMED', 'CLOSED')
+            )
+        """
+        if batch_date:
+            sent_pending_where += " AND o.batch_date = %s"
+
         cursor.execute(f"""
-            SELECT
-                e.id,
-                e.order_id,
-                e.username,
-                e.service_type,
-                e.original_measure,
-                e.submitted_measure,
-                e.difference_measure,
-                e.date_clean,
-                e.batch_date,
-                e.created_at,
-                o.name_clean
-            FROM order_processing_exceptions e
-            LEFT JOIN orders_staging o ON o.id = e.order_id
-            WHERE {" AND ".join(where_parts)}
-            ORDER BY COALESCE(e.updated_at, e.created_at) DESC
+            SELECT *
+            FROM (
+                SELECT
+                    CONCAT('EX-', e.id) AS id,
+                    e.order_id,
+                    e.username,
+                    e.service_type,
+                    e.original_measure,
+                    e.submitted_measure,
+                    e.difference_measure,
+                    e.date_clean,
+                    e.batch_date,
+                    e.created_at,
+                    o.name_clean,
+                    'MEASURE_MISMATCH' AS discrepancy_type,
+                    'WEIGHT_OR_COUNT_MISMATCH' AS reason
+                FROM order_processing_exceptions e
+                LEFT JOIN orders_staging o ON o.id = e.order_id
+                WHERE {where_sql}
+
+                UNION ALL
+
+                SELECT
+                    CONCAT('SP-', o.id) AS id,
+                    o.id AS order_id,
+                    NULL AS username,
+                    o.service_type,
+                    o.weight_num AS original_measure,
+                    NULL AS submitted_measure,
+                    NULL AS difference_measure,
+                    o.date_clean,
+                    o.batch_date,
+                    NOW() AS created_at,
+                    o.name_clean,
+                    'UNPROCESSED_SENT' AS discrepancy_type,
+                    CONCAT('UNPROCESSED_', {logistics_sql}) AS reason
+                FROM orders_staging o
+                WHERE {sent_pending_where}
+            ) x
+            ORDER BY x.created_at DESC, x.order_id DESC
             LIMIT %s
-        """, tuple(vals + [limit]))
+        """, tuple(vals + ([batch_date] if batch_date else []) + [limit]))
 
         return jsonify(cursor.fetchall() or [])
 

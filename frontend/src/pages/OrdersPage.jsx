@@ -78,7 +78,7 @@ function OrdersPage({ user }) {
 
   const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON-RUSH
   const [showProcessed, setShowProcessed] = useState(false);
-  const [openAlpha, setOpenAlpha] = useState("A");
+  const [openAlpha, setOpenAlpha] = useState(null);
 
   const [submitDialogRow, setSubmitDialogRow] = useState(null);
   const [submitMeasure, setSubmitMeasure] = useState("");
@@ -244,6 +244,10 @@ function OrdersPage({ user }) {
         setNotice("Enter valid weight/count.");
         return;
       }
+      if (!submitFile) {
+        setNotice("Upload ticket photo.");
+        return;
+      }
       if (isHD(submitDialogRow) && !Number.isInteger(measureNum)) {
         setNotice("HD count must be a whole number.");
         return;
@@ -251,10 +255,8 @@ function OrdersPage({ user }) {
       const payload = {};
       payload.weight_num = measureNum;
       if (submitTicketId) payload.ticket_id = submitTicketId;
-      if (submitFile) {
-        payload.ticket_image_base64 = await fileToBase64(submitFile);
-        payload.ticket_file_name = submitFile.name;
-      }
+      payload.ticket_image_base64 = await fileToBase64(submitFile);
+      payload.ticket_file_name = submitFile.name;
       await submitProcessedOrder(submitDialogRow.id, payload);
       setSubmitDialogRow(null);
       setSubmitMeasure("");
@@ -669,6 +671,7 @@ function OrdersPage({ user }) {
                 type="number"
                 value={submitMeasure}
                 onChange={(e) => setSubmitMeasure(e.target.value)}
+                autoFocus
               />
               <Button variant="outlined" component="label" sx={{ textTransform: "none", fontWeight: 400 }}>
                 Upload ticket
@@ -708,7 +711,12 @@ function OrdersPage({ user }) {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSubmitDialogRow(null)} sx={{ fontWeight: 400 }}>Cancel</Button>
-          <Button variant="contained" onClick={onSubmitOrder} disabled={saving} sx={{ fontWeight: 400 }}>
+          <Button
+            variant="contained"
+            onClick={onSubmitOrder}
+            disabled={saving || !submitMeasure || !submitFile}
+            sx={{ fontWeight: 400 }}
+          >
             Submit
           </Button>
         </DialogActions>

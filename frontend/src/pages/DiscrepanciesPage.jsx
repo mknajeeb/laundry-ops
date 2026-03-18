@@ -21,6 +21,7 @@ function fmtDate(v) {
 }
 
 function fmtNum(n, service) {
+  if (n === null || n === undefined || n === "") return "-";
   const v = Number(n || 0);
   if ((service || "").toUpperCase() === "HD") return `${Math.round(v)} pcs`;
   return `${v.toFixed(2)} lb`;
@@ -79,13 +80,15 @@ function DiscrepanciesPage() {
                 <TableCell>Difference</TableCell>
                 <TableCell>Date</TableCell>
                 <TableCell>Batch</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell>Reason</TableCell>
                 <TableCell>By</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} sx={{ color: "#6b7280" }}>
+                  <TableCell colSpan={11} sx={{ color: "#6b7280" }}>
                     No discrepancies found.
                   </TableCell>
                 </TableRow>
@@ -100,6 +103,8 @@ function DiscrepanciesPage() {
                     <TableCell>{fmtNum(r.difference_measure, r.service_type)}</TableCell>
                     <TableCell>{fmtDate(r.date_clean)}</TableCell>
                     <TableCell>{fmtDate(r.batch_date)}</TableCell>
+                    <TableCell>{r.discrepancy_type || "MEASURE_MISMATCH"}</TableCell>
+                    <TableCell>{r.reason || "-"}</TableCell>
                     <TableCell>{r.username || "-"}</TableCell>
                   </TableRow>
                 ))

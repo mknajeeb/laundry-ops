@@ -138,7 +138,7 @@ function AppShell() {
             <Route path="/production" element={<GuardedRoute user={user}><ProductionPage /></GuardedRoute>} />
             <Route path="/scoreboard" element={<GuardedRoute user={user}><ScoreboardPage /></GuardedRoute>} />
             <Route path="/maintenance" element={<GuardedRoute user={user}><MaintenancePage /></GuardedRoute>} />
-            <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage /></GuardedRoute>} />
+            <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute>} />
             <Route path="/discrepancies" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute>} />
           </Routes>
         </Box>

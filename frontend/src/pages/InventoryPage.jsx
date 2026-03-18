@@ -25,8 +25,9 @@ import {
   saveInventoryCount,
 } from "../api";
 
-function InventoryPage() {
-  const [tab, setTab] = useState("ITEMS");
+function InventoryPage({ user }) {
+  const displayName = user?.display_name || user?.username || "Unknown";
+  const [tab, setTab] = useState("ENTRY");
   const [items, setItems] = useState([]);
   const [sales, setSales] = useState([]);
   const [low, setLow] = useState([]);
@@ -49,7 +50,7 @@ function InventoryPage() {
   const [countForm, setCountForm] = useState({
     item_id: "",
     counted_qty: "",
-    counted_by: "admin",
+    counted_by: displayName,
     notes: "",
   });
 
@@ -59,8 +60,13 @@ function InventoryPage() {
     sale_type: "DROP_OFF",
     qty: 1,
     amount_paid: "",
-    entered_by: "frontdesk",
+    entered_by: displayName,
   });
+
+  useEffect(() => {
+    setCountForm((p) => ({ ...p, counted_by: displayName }));
+    setSaleForm((p) => ({ ...p, entered_by: displayName }));
+  }, [displayName]);
 
   const load = async () => {
     try {
@@ -83,11 +89,32 @@ function InventoryPage() {
     [items]
   );
 
+  const managerRows = useMemo(
+    () =>
+      items.map((i) => {
+        const onHand = Number(i.on_hand_qty || 0);
+        const threshold = Number(i.reorder_threshold || 0);
+        const needToOrder = onHand <= threshold;
+        const suggestedOrderQty = needToOrder ? Math.max(threshold * 2 - onHand, 1) : 0;
+        return { ...i, onHand, threshold, needToOrder, suggestedOrderQty };
+      }),
+    [items]
+  );
+
   const saveItem = async () => {
     try {
       setSaving(true);
       await createInventoryItem(itemForm);
       setOpenItem(false);
+      setItemForm({
+        item_name: "",
+        category: "SUPPLY",
+        vendor_name: "",
+        unit_label: "unit",
+        reorder_threshold: 0,
+        on_hand_qty: 0,
+        active: true,
+      });
       await load();
     } catch (e) {
       console.error(e);
@@ -100,8 +127,13 @@ function InventoryPage() {
   const saveCount = async () => {
     try {
       setSaving(true);
-      await saveInventoryCount({ ...countForm, counted_qty: Number(countForm.counted_qty) });
+      await saveInventoryCount({
+        ...countForm,
+        counted_qty: Number(countForm.counted_qty),
+        counted_by: displayName,
+      });
       setOpenCount(false);
+      setCountForm({ item_id: "", counted_qty: "", counted_by: displayName, notes: "" });
       await load();
     } catch (e) {
       console.error(e);
@@ -114,8 +146,20 @@ function InventoryPage() {
   const saveSale = async () => {
     try {
       setSaving(true);
-      await createBagSale({ ...saleForm, qty: Number(saleForm.qty) });
+      await createBagSale({
+        ...saleForm,
+        qty: Number(saleForm.qty),
+        entered_by: displayName,
+      });
       setOpenSale(false);
+      setSaleForm({
+        sale_date: new Date().toISOString().slice(0, 10),
+        customer_name: "",
+        sale_type: "DROP_OFF",
+        qty: 1,
+        amount_paid: "",
+        entered_by: displayName,
+      });
       await load();
     } catch (e) {
       console.error(e);
@@ -128,62 +172,81 @@ function InventoryPage() {
   return (
     <Box sx={{ p: { xs: 1.2, md: 2 }, minHeight: "100%" }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Typography sx={{ fontSize: 28 }}>Inventory</Typography>
+        <Typography sx={{ fontSize: 28, fontWeight: 400 }}>Inventory</Typography>
         <Stack direction="row" spacing={1}>
           <Chip label={`Items ${items.length}`} />
-          <Chip label={`Low ${low.length}`} color={low.length ? "error" : "success"} />
+          <Chip label={`Low ${low.length}`} color={low.length ? "warning" : "success"} />
         </Stack>
       </Stack>
       {message.text && <Alert severity={message.type} sx={{ mt: 1 }}>{message.text}</Alert>}
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>
         <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="fullWidth">
-          <Tab value="ITEMS" label="Items" />
-          <Tab value="COUNTS" label="Counts" />
+          <Tab value="ENTRY" label="Weekly Entry" />
+          <Tab value="MANAGER" label="Manager Dashboard" />
           <Tab value="BAGS" label="Bag Sales" />
         </Tabs>
       </Paper>
 
-      {tab === "ITEMS" && (
+      {tab === "ENTRY" && (
         <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2 }}>
-          <Stack direction="row" justifyContent="space-between">
-            <Typography sx={{ fontSize: 20 }}>Item Master</Typography>
-            <Button variant="contained" onClick={() => setOpenItem(true)}>Add Item</Button>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Box>
+              <Typography sx={{ fontSize: 20, fontWeight: 400 }}>Weekly Remaining Quantity</Typography>
+              <Typography sx={{ color: "#64748b", fontSize: 14 }}>Employee: {displayName}</Typography>
+            </Box>
+            <Button variant="contained" onClick={() => setOpenCount(true)}>Log Weekly Count</Button>
+          </Stack>
+          <Alert severity="info" sx={{ mt: 1.2 }}>
+            Enter remaining quantities once per week. Manager dashboard auto-calculates reorder recommendations.
+          </Alert>
+          {low.length > 0 && (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              Low stock now: {low.map((x) => x.item_name).join(", ")}
+            </Alert>
+          )}
+        </Paper>
+      )}
+
+      {tab === "MANAGER" && (
+        <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography sx={{ fontSize: 20, fontWeight: 400 }}>Reorder Dashboard</Typography>
+            <Button variant="outlined" onClick={() => setOpenItem(true)}>Add Item</Button>
           </Stack>
           <Stack spacing={1} sx={{ mt: 1 }}>
-            {items.map((i) => (
-              <Stack key={i.id} direction="row" justifyContent="space-between" sx={{ border: "1px solid #e5e7eb", p: 1, borderRadius: 1.5 }}>
+            {managerRows.map((i) => (
+              <Stack
+                key={i.id}
+                direction="row"
+                justifyContent="space-between"
+                sx={{ border: "1px solid #e5e7eb", p: 1, borderRadius: 1.5 }}
+              >
                 <Box>
                   <Typography>{i.item_name}</Typography>
                   <Typography sx={{ color: "#64748b", fontSize: 13 }}>
-                    {i.category} • {i.vendor_name || "No vendor"} • reorder at {i.reorder_threshold}
+                    {i.category} • {i.vendor_name || "No vendor"} • Threshold {i.threshold} {i.unit_label || "unit"}
                   </Typography>
                 </Box>
-                <Chip label={`${Number(i.on_hand_qty || 0).toFixed(0)} ${i.unit_label || "unit"}`} color={Number(i.on_hand_qty || 0) <= Number(i.reorder_threshold || 0) ? "error" : "default"} />
+                <Stack alignItems="flex-end">
+                  <Chip
+                    label={`${i.onHand.toFixed(0)} ${i.unit_label || "unit"}`}
+                    color={i.needToOrder ? "warning" : "default"}
+                  />
+                  <Typography sx={{ mt: 0.4, fontSize: 12, color: i.needToOrder ? "#b45309" : "#64748b" }}>
+                    {i.needToOrder ? `Order ${i.suggestedOrderQty} next` : "Stock OK"}
+                  </Typography>
+                </Stack>
               </Stack>
             ))}
           </Stack>
         </Paper>
       )}
 
-      {tab === "COUNTS" && (
-        <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2 }}>
-          <Stack direction="row" justifyContent="space-between">
-            <Typography sx={{ fontSize: 20 }}>Weekly Counts</Typography>
-            <Button variant="contained" onClick={() => setOpenCount(true)}>Log Count</Button>
-          </Stack>
-          {low.length > 0 && (
-            <Alert severity="warning" sx={{ mt: 1 }}>
-              Low stock: {low.map((x) => x.item_name).join(", ")}
-            </Alert>
-          )}
-        </Paper>
-      )}
-
       {tab === "BAGS" && (
         <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2 }}>
-          <Stack direction="row" justifyContent="space-between">
-            <Typography sx={{ fontSize: 20 }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography sx={{ fontSize: 20, fontWeight: 400 }}>
               Washpro Bag Sales {bagItem ? `(On Hand: ${Number(bagItem.on_hand_qty || 0)})` : ""}
             </Typography>
             <Button variant="contained" onClick={() => setOpenSale(true)}>Record Sale</Button>
@@ -194,7 +257,7 @@ function InventoryPage() {
                 <Box>
                   <Typography>{s.customer_name}</Typography>
                   <Typography sx={{ color: "#64748b", fontSize: 13 }}>
-                    {String(s.sale_date).slice(0, 10)} • {s.sale_type} • Qty {s.qty}
+                    {String(s.sale_date).slice(0, 10)} • {s.sale_type} • Qty {s.qty} • By {s.entered_by || "-"}
                   </Typography>
                 </Box>
                 <Chip label={s.amount_paid || "NOT CHARGED"} />
@@ -226,14 +289,14 @@ function InventoryPage() {
       </Dialog>
 
       <Dialog open={openCount} onClose={() => setOpenCount(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Log Inventory Count</DialogTitle>
+        <DialogTitle>Log Weekly Count</DialogTitle>
         <DialogContent>
           <Stack spacing={1.2} sx={{ mt: 0.8 }}>
             <TextField select label="Item" value={countForm.item_id} onChange={(e) => setCountForm((p) => ({ ...p, item_id: e.target.value }))}>
               {items.map((i) => <MenuItem key={i.id} value={i.id}>{i.item_name}</MenuItem>)}
             </TextField>
-            <TextField type="number" label="Counted Qty" value={countForm.counted_qty} onChange={(e) => setCountForm((p) => ({ ...p, counted_qty: e.target.value }))} />
-            <TextField label="Counted By" value={countForm.counted_by} onChange={(e) => setCountForm((p) => ({ ...p, counted_by: e.target.value }))} />
+            <TextField type="number" label="Remaining Qty" value={countForm.counted_qty} onChange={(e) => setCountForm((p) => ({ ...p, counted_qty: e.target.value }))} />
+            <TextField label="Employee" value={displayName} disabled />
             <TextField label="Notes" value={countForm.notes} onChange={(e) => setCountForm((p) => ({ ...p, notes: e.target.value }))} />
           </Stack>
         </DialogContent>
@@ -255,7 +318,7 @@ function InventoryPage() {
             </TextField>
             <TextField type="number" label="# of Bags" value={saleForm.qty} onChange={(e) => setSaleForm((p) => ({ ...p, qty: e.target.value }))} />
             <TextField label="Amount Paid" value={saleForm.amount_paid} onChange={(e) => setSaleForm((p) => ({ ...p, amount_paid: e.target.value }))} />
-            <TextField label="Entered By" value={saleForm.entered_by} onChange={(e) => setSaleForm((p) => ({ ...p, entered_by: e.target.value }))} />
+            <TextField label="Employee" value={displayName} disabled />
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -268,4 +331,3 @@ function InventoryPage() {
 }
 
 export default InventoryPage;
-
