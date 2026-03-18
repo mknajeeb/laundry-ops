@@ -17,6 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import { Bolt, CheckCircle, Close, DeleteOutline, ExpandLess, ExpandMore, Image, Refresh, Search, Visibility } from "@mui/icons-material";
+import { useNavigate } from "react-router-dom";
 import {
   deleteOrderTicket,
   deleteOrder,
@@ -70,6 +71,7 @@ function normalizeCode(value) {
 }
 
 function OrdersPage({ user }) {
+  const navigate = useNavigate();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -110,10 +112,12 @@ function OrdersPage({ user }) {
       ]);
       setRows(Array.isArray(ordersRes?.data) ? ordersRes.data : []);
       setBatchInfo(batchRes?.data || null);
+      setNotice("");
     } catch (error) {
       console.error(error);
       setRows([]);
       setBatchInfo(null);
+      setNotice(error?.response?.data?.error || "Failed to load orders.");
     } finally {
       setLoading(false);
     }
@@ -265,7 +269,8 @@ function OrdersPage({ user }) {
       await load();
     } catch (error) {
       console.error(error);
-      setNotice(error?.response?.data?.error || "Failed to submit.");
+      const msg = error?.response?.data?.error || "Failed to submit.";
+      setNotice(msg === "Forbidden" ? "Forbidden. Please log out and sign in again." : msg);
     } finally {
       setSaving(false);
     }
@@ -368,6 +373,14 @@ function OrdersPage({ user }) {
           <Button size="small" variant="text" onClick={load} sx={{ minWidth: 34 }}>
             <Refresh />
           </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() => navigate("/discrepancies")}
+            sx={{ textTransform: "none", fontWeight: 400 }}
+          >
+            Discrepancies
+          </Button>
           {showProcessed && isAdmin && (
             <Button size="small" variant="text" startIcon={<Image />} onClick={openAdminTickets} sx={{ textTransform: "none", fontWeight: 400 }}>
               All Pictures
@@ -378,9 +391,13 @@ function OrdersPage({ user }) {
 
       <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.2 }}>
         <Box sx={{ textAlign: "right" }}>
-          <Typography sx={{ fontSize: 13, color: "#475569", mt: 0.1 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            sx={{ textTransform: "none", fontWeight: 400, minWidth: 90 }}
+          >
             Folded by
-          </Typography>
+          </Button>
           <Typography sx={{ fontSize: 20, color: "#111827", mt: 0.1, lineHeight: 1.1 }}>
             {user?.display_name || user?.username || "Unknown"}
           </Typography>

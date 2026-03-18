@@ -303,10 +303,10 @@ def transform_orders(df_raw):
     # Business exception:
     # BlueBottle rows frequently provide piece-count style entries with blank measure.
     # If there is no explicit WF marker and no extracted weight, treat as HD.
-    bluebottle_mask = df["Name_Clean"].astype(str).str.upper().str.startswith("BLUEBOTTLE")
-    no_measure_mask = df["Weight_Num"].isna()
-    no_wf_marker_mask = ~df["Cells"].apply(has_explicit_wf_marker)
-    df.loc[bluebottle_mask & no_measure_mask & no_wf_marker_mask, "ServiceType"] = "HD"
+    # BlueBottle is operationally treated as HD in this workflow.
+    # Use contains() (not startswith) to catch naming variations.
+    bluebottle_mask = df["Name_Clean"].astype(str).str.upper().str.contains("BLUEBOTTLE", na=False)
+    df.loc[bluebottle_mask, "ServiceType"] = "HD"
 
     # Keep direct rush marker from upload row; batch-date rush is applied in backend upload logic
     df["RushHint"] = df["Cells"].apply(detect_rush_hint)
