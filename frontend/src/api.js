@@ -258,6 +258,15 @@ export const getAttendanceEventsToday = (employee_id) =>
     params: { employee_id }
   });
 
+export const getAttendanceMyState = () =>
+  axios.get(`${API_BASE}/attendance/my_state`);
+
+export const punchAttendanceMy = (payload) =>
+  axios.post(`${API_BASE}/attendance/my_punch`, payload);
+
+export const getAttendancePayrollMonitor = (params = {}) =>
+  axios.get(`${API_BASE}/attendance/payroll_monitor`, { params });
+
 /* =========================================
    MAINTENANCE
 ========================================= */

@@ -164,6 +164,382 @@ def haversine_meters(lat1, lon1, lat2, lon2):
     return radius_m * c
 
 
+def payroll_cycle_for(dt_value):
+    if isinstance(dt_value, datetime):
+        d = dt_value.date()
+    elif isinstance(dt_value, date):
+        d = dt_value
+    else:
+        d = parse_date_value(dt_value)
+
+    week_start = d - timedelta(days=d.weekday())  # Monday
+    week_end = week_start + timedelta(days=6)     # Sunday
+    week_num = int(week_start.strftime("%W")) + 1
+    cycle_code = f"{week_start.year}-W{week_num:02d}"
+    return {
+        "cycle_code": cycle_code,
+        "week_start": week_start,
+        "week_end": week_end,
+        "week_num": week_num,
+    }
+
+
+def ensure_attendance_monitor_tables(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS attendance_discrepancies (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            employee_id INT NOT NULL,
+            discrepancy_type VARCHAR(60) NOT NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+            start_time DATETIME NOT NULL,
+            end_time DATETIME NULL,
+            duration_minutes INT NULL,
+            payroll_cycle_code VARCHAR(20) NULL,
+            payroll_week_start DATE NULL,
+            payroll_week_end DATE NULL,
+            last_exit_time DATETIME NULL,
+            resolution_action VARCHAR(60) NULL,
+            notes VARCHAR(255) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL,
+            INDEX idx_att_dis_emp (employee_id),
+            INDEX idx_att_dis_status (status),
+            INDEX idx_att_dis_cycle (payroll_cycle_code)
+        )
+    """)
+
+
+def resolve_employee_for_user(cursor, user_row):
+    if not user_row:
+        return None
+
+    # Optional explicit mapping if column exists.
+    if table_has_column(cursor, "users", "employee_id"):
+        cursor.execute(
+            """
+            SELECT u.employee_id
+            FROM users u
+            WHERE u.id = %s
+            LIMIT 1
+            """,
+            (user_row["user_id"],)
+        )
+        mapped = cursor.fetchone()
+        if mapped and mapped.get("employee_id"):
+            cursor.execute(
+                """
+                SELECT id, name
+                FROM employees
+                WHERE id = %s
+                LIMIT 1
+                """,
+                (int(mapped["employee_id"]),)
+            )
+            emp = cursor.fetchone()
+            if emp:
+                return emp
+
+    # Fallback: display_name -> employees.name exact match.
+    display_name = (user_row.get("display_name") or "").strip()
+    username = (user_row.get("username") or "").strip()
+    names_to_try = [n for n in [display_name, username] if n]
+
+    for nm in names_to_try:
+        cursor.execute(
+            """
+            SELECT id, name
+            FROM employees
+            WHERE UPPER(TRIM(name)) = UPPER(TRIM(%s))
+            AND active = TRUE
+            ORDER BY id
+            LIMIT 1
+            """,
+            (nm,)
+        )
+        emp = cursor.fetchone()
+        if emp:
+            return emp
+
+    return None
+
+
+def fetch_today_events_for_employee(cursor, employee_id):
+    cursor.execute(
+        """
+        SELECT id, event_type, event_time
+        FROM attendance_events
+        WHERE employee_id = %s
+          AND DATE(event_time) = CURDATE()
+        ORDER BY event_time ASC, id ASC
+        """,
+        (employee_id,)
+    )
+    return cursor.fetchall()
+
+
+def compute_work_state_from_events(events, now_dt=None):
+    now_dt = now_dt or datetime.now()
+    total_seconds = 0
+    clock_anchor = None
+    break_start = None
+    is_clocked_in = False
+    on_break = False
+
+    for ev in events:
+        e_type = (ev.get("event_type") or "").upper()
+        e_time = ev.get("event_time")
+        if not isinstance(e_time, datetime):
+            continue
+
+        if e_type == "CLOCK_IN":
+            is_clocked_in = True
+            on_break = False
+            break_start = None
+            clock_anchor = e_time
+        elif e_type == "BREAK_START" and is_clocked_in and not on_break:
+            if clock_anchor:
+                total_seconds += max(0, (e_time - clock_anchor).total_seconds())
+            on_break = True
+            break_start = e_time
+            clock_anchor = None
+        elif e_type == "BREAK_END" and is_clocked_in and on_break:
+            on_break = False
+            break_start = None
+            clock_anchor = e_time
+        elif e_type == "CLOCK_OUT" and is_clocked_in:
+            if not on_break and clock_anchor:
+                total_seconds += max(0, (e_time - clock_anchor).total_seconds())
+            is_clocked_in = False
+            on_break = False
+            break_start = None
+            clock_anchor = None
+
+    if is_clocked_in and not on_break and clock_anchor:
+        total_seconds += max(0, (now_dt - clock_anchor).total_seconds())
+
+    worked_minutes = int(total_seconds // 60)
+    return {
+        "is_clocked_in": is_clocked_in,
+        "on_break": on_break,
+        "worked_minutes": worked_minutes,
+    }
+
+
+def close_open_discrepancy(cursor, employee_id, end_time, resolution_action=None, notes=None):
+    cursor.execute(
+        """
+        SELECT id, start_time, notes
+        FROM attendance_discrepancies
+        WHERE employee_id = %s
+          AND status = 'OPEN'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (employee_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    start_time = row.get("start_time")
+    duration = None
+    if isinstance(start_time, datetime) and isinstance(end_time, datetime):
+        duration = int(max(0, (end_time - start_time).total_seconds() // 60))
+
+    merged_notes = row.get("notes")
+    if notes:
+        merged_notes = (f"{merged_notes} | {notes}" if merged_notes else notes)[:255]
+
+    cursor.execute(
+        """
+        UPDATE attendance_discrepancies
+        SET
+            status = 'CLOSED',
+            end_time = %s,
+            duration_minutes = %s,
+            resolution_action = %s,
+            notes = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (end_time, duration, resolution_action, merged_notes, row["id"])
+    )
+    return row["id"]
+
+
+def open_exit_discrepancy_if_needed(cursor, employee_id, exit_time, last_exit_time=None):
+    cursor.execute(
+        """
+        SELECT id
+        FROM attendance_discrepancies
+        WHERE employee_id = %s
+          AND status = 'OPEN'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (employee_id,)
+    )
+    if cursor.fetchone():
+        return None
+
+    pc = payroll_cycle_for(exit_time)
+    cursor.execute(
+        """
+        INSERT INTO attendance_discrepancies
+        (
+            employee_id,
+            discrepancy_type,
+            status,
+            start_time,
+            payroll_cycle_code,
+            payroll_week_start,
+            payroll_week_end,
+            last_exit_time,
+            notes
+        )
+        VALUES (%s, 'OUTSIDE_GEOFENCE_UNCLOSED', 'OPEN', %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            employee_id,
+            exit_time,
+            pc["cycle_code"],
+            pc["week_start"],
+            pc["week_end"],
+            last_exit_time,
+            "Exited geofence while clocked in without break/clock-out",
+        )
+    )
+    return cursor.lastrowid
+
+
+def auto_clock_out_stale_users(cursor):
+    ensure_attendance_monitor_tables(cursor)
+
+    cursor.execute("""
+        SELECT ae.employee_id, ae.event_time AS clock_in_time
+        FROM attendance_events ae
+        JOIN (
+            SELECT employee_id, MAX(id) AS max_id
+            FROM attendance_events
+            WHERE event_type IN ('CLOCK_IN', 'CLOCK_OUT')
+            GROUP BY employee_id
+        ) x ON x.max_id = ae.id
+        WHERE ae.event_type = 'CLOCK_IN'
+          AND DATE(ae.event_time) < CURDATE()
+    """)
+    stale_rows = cursor.fetchall()
+    if not stale_rows:
+        return 0
+
+    geofence = fetch_active_geofence(cursor)
+    if not geofence:
+        return 0
+
+    inserted = 0
+    for row in stale_rows:
+        employee_id = row["employee_id"]
+        clock_in_time = row["clock_in_time"]
+        clock_day = clock_in_time.date()
+        end_of_day = datetime.combine(clock_day, datetime.max.time()).replace(microsecond=0)
+
+        cursor.execute(
+            """
+            SELECT MAX(created_at) AS last_exit_time
+            FROM geofence_alerts
+            WHERE employee_id = %s
+              AND transition_type = 'EXIT'
+              AND DATE(created_at) = %s
+            """,
+            (employee_id, clock_day)
+        )
+        exit_row = cursor.fetchone() or {}
+        last_exit_time = exit_row.get("last_exit_time")
+        auto_out_time = last_exit_time if isinstance(last_exit_time, datetime) else end_of_day
+
+        cursor.execute(
+            """
+            SELECT latitude, longitude
+            FROM employee_geo_presence
+            WHERE employee_id = %s
+            LIMIT 1
+            """,
+            (employee_id,)
+        )
+        p = cursor.fetchone() or {}
+        lat = float(p.get("latitude") or geofence["latitude"])
+        lon = float(p.get("longitude") or geofence["longitude"])
+        distance_m = haversine_meters(lat, lon, float(geofence["latitude"]), float(geofence["longitude"]))
+
+        cursor.execute(
+            """
+            INSERT INTO attendance_events
+            (
+                employee_id,
+                event_type,
+                event_time,
+                device_time,
+                latitude,
+                longitude,
+                within_geofence,
+                distance_m,
+                geofence_id,
+                notes,
+                personal_bags
+            )
+            VALUES (%s, 'CLOCK_OUT', %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+            """,
+            (
+                employee_id,
+                auto_out_time,
+                auto_out_time.isoformat(),
+                lat,
+                lon,
+                False,
+                round(distance_m, 2),
+                geofence["id"],
+                "AUTO_CLOCK_OUT",
+            )
+        )
+
+        pc = payroll_cycle_for(clock_day)
+        cursor.execute(
+            """
+            INSERT INTO attendance_discrepancies
+            (
+                employee_id,
+                discrepancy_type,
+                status,
+                start_time,
+                end_time,
+                duration_minutes,
+                payroll_cycle_code,
+                payroll_week_start,
+                payroll_week_end,
+                last_exit_time,
+                resolution_action,
+                notes
+            )
+            VALUES (%s, 'FORGOT_CLOCK_OUT', 'CLOSED', %s, %s, %s, %s, %s, %s, %s, 'AUTO', %s)
+            """,
+            (
+                employee_id,
+                clock_in_time,
+                auto_out_time,
+                int(max(0, (auto_out_time - clock_in_time).total_seconds() // 60)),
+                pc["cycle_code"],
+                pc["week_start"],
+                pc["week_end"],
+                last_exit_time,
+                f"Auto clock-out at day end; last exit: {last_exit_time.isoformat() if isinstance(last_exit_time, datetime) else 'none'}",
+            )
+        )
+
+        close_open_discrepancy(cursor, employee_id, auto_out_time, "AUTO_CLOCK_OUT", "Auto closed on stale shift")
+        inserted += 1
+
+    return inserted
+
+
 def fetch_active_geofence(cursor):
     cursor.execute("""
         SELECT
@@ -3525,6 +3901,7 @@ def attendance_punch():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        ensure_attendance_monitor_tables(cursor)
         geofence = fetch_active_geofence(cursor)
 
         if not geofence:
@@ -3573,6 +3950,15 @@ def attendance_punch():
             notes,
             personal_bags
         ))
+
+        if event_type in {"BREAK_START", "CLOCK_OUT"}:
+            close_open_discrepancy(
+                cursor,
+                employee_id,
+                datetime.now(),
+                "BREAK_OR_CLOCK_OUT",
+                f"Closed by {event_type}"
+            )
 
         # Update latest known presence for near-real-time monitoring
         cursor.execute("""
@@ -3638,6 +4024,7 @@ def attendance_location_ping():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        ensure_attendance_monitor_tables(cursor)
         geofence = fetch_active_geofence(cursor)
 
         if not geofence:
@@ -3706,6 +4093,39 @@ def attendance_location_ping():
                 longitude,
                 round(distance_m, 2)
             ))
+
+            # Discrepancy tracking:
+            # If employee exits while clocked in and not on break, open discrepancy.
+            cursor.execute(
+                """
+                SELECT event_type
+                FROM attendance_events
+                WHERE employee_id = %s
+                  AND DATE(event_time) = CURDATE()
+                ORDER BY event_time DESC, id DESC
+                LIMIT 1
+                """,
+                (employee_id,)
+            )
+            ev = cursor.fetchone() or {}
+            latest_event = (ev.get("event_type") or "").upper()
+
+            if transition == "EXIT":
+                if latest_event in {"CLOCK_IN", "BREAK_END", "RINSE_SHIFT_START", "RINSE_SHIFT_END"}:
+                    open_exit_discrepancy_if_needed(
+                        cursor,
+                        employee_id,
+                        datetime.now(),
+                        datetime.now()
+                    )
+            else:
+                close_open_discrepancy(
+                    cursor,
+                    employee_id,
+                    datetime.now(),
+                    "GEOFENCE_REENTER",
+                    "Re-entered geofence"
+                )
 
         conn.commit()
 
@@ -3781,6 +4201,9 @@ def attendance_live():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        auto_inserted = auto_clock_out_stale_users(cursor)
+        if auto_inserted:
+            conn.commit()
         cursor.execute("""
             SELECT
                 t.employee_id,
@@ -3822,6 +4245,355 @@ def attendance_live():
             "all_today": rows
         })
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/attendance/my_state", methods=["GET"])
+def attendance_my_state():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        ensure_attendance_monitor_tables(cursor)
+        auto_inserted = auto_clock_out_stale_users(cursor)
+        if auto_inserted:
+            conn.commit()
+
+        emp = resolve_employee_for_user(cursor, me)
+        if not emp:
+            return jsonify({"error": "No employee record mapped for this user"}), 400
+
+        employee_id = int(emp["id"])
+        events = fetch_today_events_for_employee(cursor, employee_id)
+        work_state = compute_work_state_from_events(events)
+
+        cursor.execute(
+            """
+            SELECT id, discrepancy_type, status, start_time, end_time, duration_minutes, notes
+            FROM attendance_discrepancies
+            WHERE employee_id = %s
+              AND (
+                status = 'OPEN'
+                OR DATE(start_time) = CURDATE()
+                OR DATE(IFNULL(end_time, start_time)) = CURDATE()
+              )
+            ORDER BY id DESC
+            LIMIT 30
+            """,
+            (employee_id,)
+        )
+        discrepancies = cursor.fetchall()
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS at_work_count
+            FROM (
+                SELECT
+                    employee_id,
+                    SUBSTRING_INDEX(
+                        GROUP_CONCAT(event_type ORDER BY event_time DESC, id DESC),
+                        ',',
+                        1
+                    ) AS last_event
+                FROM attendance_events
+                WHERE DATE(event_time) = CURDATE()
+                  AND event_type IN ('CLOCK_IN', 'CLOCK_OUT')
+                GROUP BY employee_id
+            ) x
+            WHERE UPPER(last_event) = 'CLOCK_IN'
+            """
+        )
+        at_work_count = (cursor.fetchone() or {}).get("at_work_count", 0)
+
+        now_local = datetime.now()
+        pc = payroll_cycle_for(now_local)
+        worked_h = int(work_state["worked_minutes"] // 60)
+        worked_m = int(work_state["worked_minutes"] % 60)
+
+        return jsonify({
+            "employee_id": employee_id,
+            "employee_name": emp["name"],
+            "now": now_local.isoformat(),
+            "today_label": now_local.strftime("%A, %b %d, %Y"),
+            "is_clocked_in": work_state["is_clocked_in"],
+            "on_break": work_state["on_break"],
+            "worked_minutes": work_state["worked_minutes"],
+            "worked_label": f"{worked_h} hr {worked_m} min",
+            "at_work_count": at_work_count,
+            "payroll_cycle": {
+                "code": pc["cycle_code"],
+                "week_start": pc["week_start"].isoformat(),
+                "week_end": pc["week_end"].isoformat(),
+                "week_number": pc["week_num"],
+            },
+            "events_today": events,
+            "discrepancies": discrepancies,
+        })
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/attendance/my_punch", methods=["POST"])
+def attendance_my_punch():
+    data = request.json or {}
+    event_type = (data.get("event_type") or "").strip().upper()
+    latitude = data.get("latitude")
+    longitude = data.get("longitude")
+    notes = (data.get("notes") or "").strip() or None
+    personal_bags = data.get("personal_bags")
+    device_time = data.get("device_time")
+
+    allowed_events = {
+        "CLOCK_IN",
+        "CLOCK_OUT",
+        "BREAK_START",
+        "BREAK_END",
+        "RINSE_SHIFT_START",
+        "RINSE_SHIFT_END"
+    }
+    if event_type not in allowed_events:
+        return jsonify({"error": "Invalid event_type"}), 400
+
+    try:
+        latitude = float(latitude)
+        longitude = float(longitude)
+    except Exception:
+        return jsonify({"error": "latitude and longitude are required numeric values"}), 400
+
+    if personal_bags in [None, ""]:
+        personal_bags = None
+    else:
+        try:
+            personal_bags = int(personal_bags)
+        except Exception:
+            return jsonify({"error": "personal_bags must be numeric"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+
+        ensure_attendance_monitor_tables(cursor)
+        emp = resolve_employee_for_user(cursor, me)
+        if not emp:
+            return jsonify({"error": "No employee record mapped for this user"}), 400
+
+        geofence = fetch_active_geofence(cursor)
+        if not geofence:
+            return jsonify({"error": "No geofence configured"}), 400
+
+        distance_m = haversine_meters(
+            latitude,
+            longitude,
+            float(geofence["latitude"]),
+            float(geofence["longitude"])
+        )
+        within_geofence = distance_m <= float(geofence["radius_m"])
+
+        if not within_geofence:
+            return jsonify({
+                "error": "Outside geofence",
+                "distance_m": round(distance_m, 2),
+                "radius_m": geofence["radius_m"]
+            }), 403
+
+        employee_id = int(emp["id"])
+        cursor.execute(
+            """
+            INSERT INTO attendance_events
+            (
+                employee_id,
+                event_type,
+                event_time,
+                device_time,
+                latitude,
+                longitude,
+                within_geofence,
+                distance_m,
+                geofence_id,
+                notes,
+                personal_bags
+            )
+            VALUES (%s, %s, NOW(), %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                employee_id,
+                event_type,
+                device_time,
+                latitude,
+                longitude,
+                within_geofence,
+                round(distance_m, 2),
+                geofence["id"],
+                notes,
+                personal_bags,
+            )
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO employee_geo_presence
+            (
+                employee_id,
+                is_inside,
+                latitude,
+                longitude,
+                last_seen_at
+            )
+            VALUES (%s, %s, %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                is_inside = VALUES(is_inside),
+                latitude = VALUES(latitude),
+                longitude = VALUES(longitude),
+                last_seen_at = VALUES(last_seen_at)
+            """,
+            (employee_id, within_geofence, latitude, longitude)
+        )
+
+        if event_type in {"BREAK_START", "CLOCK_OUT"}:
+            close_open_discrepancy(
+                cursor,
+                employee_id,
+                datetime.now(),
+                "BREAK_OR_CLOCK_OUT",
+                f"Closed by {event_type}"
+            )
+
+        conn.commit()
+        return jsonify({
+            "status": "recorded",
+            "event_type": event_type,
+            "employee_id": employee_id,
+            "employee_name": emp["name"],
+            "distance_m": round(distance_m, 2),
+            "radius_m": geofence["radius_m"],
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/attendance/payroll_monitor", methods=["GET"])
+def attendance_payroll_monitor():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        if "ADMIN" not in me.get("roles", []) and "OPS" not in me.get("roles", []):
+            return jsonify({"error": "Forbidden"}), 403
+
+        ensure_attendance_monitor_tables(cursor)
+        auto_inserted = auto_clock_out_stale_users(cursor)
+        if auto_inserted:
+            conn.commit()
+
+        cycle_date = request.args.get("cycle_date")
+        base_date = parse_date_value(cycle_date) if cycle_date else datetime.now().date()
+        pc = payroll_cycle_for(base_date)
+
+        cursor.execute(
+            """
+            SELECT
+                COUNT(*) AS at_work_count
+            FROM (
+                SELECT
+                    employee_id,
+                    SUBSTRING_INDEX(
+                        GROUP_CONCAT(event_type ORDER BY event_time DESC, id DESC),
+                        ',',
+                        1
+                    ) AS last_event
+                FROM attendance_events
+                WHERE DATE(event_time) = CURDATE()
+                  AND event_type IN ('CLOCK_IN', 'CLOCK_OUT')
+                GROUP BY employee_id
+            ) x
+            WHERE UPPER(last_event) = 'CLOCK_IN'
+            """
+        )
+        at_work_count = (cursor.fetchone() or {}).get("at_work_count", 0)
+
+        cursor.execute(
+            """
+            SELECT DATE(event_time) AS d, COUNT(DISTINCT employee_id) AS workers
+            FROM attendance_events
+            WHERE event_type = 'CLOCK_IN'
+              AND DATE(event_time) BETWEEN %s AND %s
+            GROUP BY DATE(event_time)
+            ORDER BY d
+            """,
+            (pc["week_start"], pc["week_end"])
+        )
+        this_week = cursor.fetchall()
+
+        prev_start = pc["week_start"] - timedelta(days=7)
+        prev_end = pc["week_end"] - timedelta(days=7)
+        cursor.execute(
+            """
+            SELECT DATE(event_time) AS d, COUNT(DISTINCT employee_id) AS workers
+            FROM attendance_events
+            WHERE event_type = 'CLOCK_IN'
+              AND DATE(event_time) BETWEEN %s AND %s
+            GROUP BY DATE(event_time)
+            ORDER BY d
+            """,
+            (prev_start, prev_end)
+        )
+        prev_week = cursor.fetchall()
+
+        cursor.execute(
+            """
+            SELECT
+                d.id,
+                d.employee_id,
+                e.name AS employee_name,
+                d.discrepancy_type,
+                d.status,
+                d.start_time,
+                d.end_time,
+                d.duration_minutes,
+                d.last_exit_time,
+                d.resolution_action,
+                d.notes
+            FROM attendance_discrepancies d
+            LEFT JOIN employees e ON e.id = d.employee_id
+            WHERE d.payroll_week_start = %s
+              AND d.payroll_week_end = %s
+            ORDER BY d.status ASC, d.start_time DESC
+            LIMIT 500
+            """,
+            (pc["week_start"], pc["week_end"])
+        )
+        discrepancies = cursor.fetchall()
+
+        return jsonify({
+            "payroll_cycle": {
+                "code": pc["cycle_code"],
+                "week_start": pc["week_start"].isoformat(),
+                "week_end": pc["week_end"].isoformat(),
+                "week_number": pc["week_num"],
+            },
+            "at_work_count": at_work_count,
+            "worked_this_week": this_week,
+            "worked_previous_week": prev_week,
+            "discrepancies": discrepancies,
+        })
     finally:
         cursor.close()
         conn.close()

@@ -133,7 +133,7 @@ function AppShell() {
             <Route path="/checkout" element={<GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute>} />
             <Route path="/upload" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute>} />
             <Route path="/employees" element={<GuardedRoute user={user} roles={["ADMIN"]}><EmployeesPage user={user} /></GuardedRoute>} />
-            <Route path="/clock" element={<GuardedRoute user={user}><ClockPage /></GuardedRoute>} />
+            <Route path="/clock" element={<GuardedRoute user={user}><ClockPage user={user} /></GuardedRoute>} />
             <Route path="/issues" element={<GuardedRoute user={user}><IssuePage /></GuardedRoute>} />
             <Route path="/production" element={<GuardedRoute user={user}><ProductionPage /></GuardedRoute>} />
             <Route path="/scoreboard" element={<GuardedRoute user={user}><ScoreboardPage /></GuardedRoute>} />
