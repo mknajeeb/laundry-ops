@@ -260,7 +260,92 @@ def resolve_employee_for_user(cursor, user_row):
         if emp:
             return emp
 
+    # Fallback: first+last token prefix match for names like
+    # "Gloria Hoyos" -> "Gloria Hoyos Aguilar".
+    for nm in names_to_try:
+        parts = [p for p in nm.split() if p]
+        if len(parts) >= 2:
+            first_last = f"{parts[0]} {parts[1]}"
+            cursor.execute(
+                """
+                SELECT id, name
+                FROM employees
+                WHERE UPPER(TRIM(name)) LIKE CONCAT(UPPER(TRIM(%s)), '%%')
+                AND active = TRUE
+                ORDER BY id
+                LIMIT 1
+                """,
+                (first_last,)
+            )
+            emp = cursor.fetchone()
+            if emp:
+                return emp
+
     return None
+
+
+def ensure_employee_profiles_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS employee_profiles (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            employee_id INT NULL,
+            first_name VARCHAR(100) NOT NULL,
+            last_name VARCHAR(120) NOT NULL,
+            employment_type VARCHAR(30) NOT NULL DEFAULT 'WASHPRO_W2',
+            address_line1 VARCHAR(255) NULL,
+            address_line2 VARCHAR(255) NULL,
+            city VARCHAR(100) NULL,
+            state VARCHAR(50) NULL,
+            zip_code VARCHAR(20) NULL,
+            tax_id_type VARCHAR(10) NULL,
+            tax_id_value VARCHAR(30) NULL,
+            pay_rate DECIMAL(10,2) NULL DEFAULT 0,
+            overtime_rate DECIMAL(10,2) NULL DEFAULT 0,
+            spread_of_time_rate DECIMAL(10,2) NULL DEFAULT 0,
+            active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL,
+            UNIQUE KEY uq_employee_profiles_emp_id (employee_id),
+            INDEX idx_employee_profiles_name (last_name, first_name),
+            INDEX idx_employee_profiles_type (employment_type)
+        )
+    """)
+
+    # Backward-compatible schema upgrades if table existed with older shape.
+    if not table_has_column(cursor, "employee_profiles", "employee_id"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN employee_id INT NULL")
+    if not table_has_column(cursor, "employee_profiles", "first_name"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN first_name VARCHAR(100) NOT NULL DEFAULT ''")
+    if not table_has_column(cursor, "employee_profiles", "last_name"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN last_name VARCHAR(120) NOT NULL DEFAULT ''")
+    if not table_has_column(cursor, "employee_profiles", "employment_type"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN employment_type VARCHAR(30) NOT NULL DEFAULT 'WASHPRO_W2'")
+    if not table_has_column(cursor, "employee_profiles", "address_line1"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN address_line1 VARCHAR(255) NULL")
+    if not table_has_column(cursor, "employee_profiles", "address_line2"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN address_line2 VARCHAR(255) NULL")
+    if not table_has_column(cursor, "employee_profiles", "city"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN city VARCHAR(100) NULL")
+    if not table_has_column(cursor, "employee_profiles", "state"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN state VARCHAR(50) NULL")
+    if not table_has_column(cursor, "employee_profiles", "zip_code"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN zip_code VARCHAR(20) NULL")
+    if not table_has_column(cursor, "employee_profiles", "tax_id_type"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN tax_id_type VARCHAR(10) NULL")
+    if not table_has_column(cursor, "employee_profiles", "tax_id_value"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN tax_id_value VARCHAR(30) NULL")
+    if not table_has_column(cursor, "employee_profiles", "pay_rate"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN pay_rate DECIMAL(10,2) NULL DEFAULT 0")
+    if not table_has_column(cursor, "employee_profiles", "overtime_rate"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN overtime_rate DECIMAL(10,2) NULL DEFAULT 0")
+    if not table_has_column(cursor, "employee_profiles", "spread_of_time_rate"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN spread_of_time_rate DECIMAL(10,2) NULL DEFAULT 0")
+    if not table_has_column(cursor, "employee_profiles", "active"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE")
+    if not table_has_column(cursor, "employee_profiles", "created_at"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    if not table_has_column(cursor, "employee_profiles", "updated_at"):
+        cursor.execute("ALTER TABLE employee_profiles ADD COLUMN updated_at DATETIME NULL")
 
 
 def fetch_today_events_for_employee(cursor, employee_id):
@@ -2731,6 +2816,8 @@ def get_employees():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
 
+    ensure_employee_profiles_table(cursor)
+
     cursor.execute("""
 
         SELECT id, name, role
@@ -2746,6 +2833,199 @@ def get_employees():
     conn.close()
 
     return jsonify(rows)
+
+
+@app.route("/employees/profiles", methods=["GET"])
+def get_employee_profiles():
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        ensure_employee_profiles_table(cursor)
+        cursor.execute("""
+            SELECT
+                ep.id,
+                ep.employee_id,
+                ep.first_name,
+                ep.last_name,
+                ep.employment_type,
+                ep.address_line1,
+                ep.address_line2,
+                ep.city,
+                ep.state,
+                ep.zip_code,
+                ep.tax_id_type,
+                ep.tax_id_value,
+                ep.pay_rate,
+                ep.overtime_rate,
+                ep.spread_of_time_rate,
+                ep.active,
+                ep.created_at,
+                ep.updated_at,
+                e.name AS employee_name
+            FROM employee_profiles ep
+            LEFT JOIN employees e ON e.id = ep.employee_id
+            ORDER BY ep.last_name, ep.first_name, ep.id
+        """)
+        rows = cursor.fetchall()
+        return jsonify(rows)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/employees/profiles", methods=["POST"])
+def create_employee_profile():
+
+    data = request.json or {}
+    first_name = (data.get("first_name") or "").strip()
+    last_name = (data.get("last_name") or "").strip()
+    employment_type = (data.get("employment_type") or "WASHPRO_W2").strip().upper()
+    tax_id_type = (data.get("tax_id_type") or "").strip().upper() or None
+
+    if not first_name or not last_name:
+        return jsonify({"error": "first_name and last_name are required"}), 400
+
+    allowed_types = {"WASHPRO_W2", "WASHPRO_1099", "WASHMATE_1099"}
+    if employment_type not in allowed_types:
+        return jsonify({"error": "employment_type must be WASHPRO_W2, WASHPRO_1099, or WASHMATE_1099"}), 400
+
+    if tax_id_type and tax_id_type not in {"SSN", "ITIN"}:
+        return jsonify({"error": "tax_id_type must be SSN or ITIN"}), 400
+
+    def _money(v):
+        if v in [None, ""]:
+            return 0
+        return round(float(v), 2)
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        ensure_employee_profiles_table(cursor)
+        cursor.execute("""
+            INSERT INTO employee_profiles
+            (
+                employee_id,
+                first_name,
+                last_name,
+                employment_type,
+                address_line1,
+                address_line2,
+                city,
+                state,
+                zip_code,
+                tax_id_type,
+                tax_id_value,
+                pay_rate,
+                overtime_rate,
+                spread_of_time_rate,
+                active,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        """, (
+            data.get("employee_id"),
+            first_name,
+            last_name,
+            employment_type,
+            data.get("address_line1"),
+            data.get("address_line2"),
+            data.get("city"),
+            data.get("state"),
+            data.get("zip_code"),
+            tax_id_type,
+            data.get("tax_id_value"),
+            _money(data.get("pay_rate")),
+            _money(data.get("overtime_rate")),
+            _money(data.get("spread_of_time_rate")),
+            bool(data.get("active", True))
+        ))
+        conn.commit()
+        return jsonify({"status": "created", "id": cursor.lastrowid})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/employees/profiles/<int:profile_id>", methods=["PUT"])
+def update_employee_profile(profile_id):
+
+    data = request.json or {}
+    employment_type = (data.get("employment_type") or "WASHPRO_W2").strip().upper()
+    tax_id_type = (data.get("tax_id_type") or "").strip().upper() or None
+
+    allowed_types = {"WASHPRO_W2", "WASHPRO_1099", "WASHMATE_1099"}
+    if employment_type not in allowed_types:
+        return jsonify({"error": "employment_type must be WASHPRO_W2, WASHPRO_1099, or WASHMATE_1099"}), 400
+
+    if tax_id_type and tax_id_type not in {"SSN", "ITIN"}:
+        return jsonify({"error": "tax_id_type must be SSN or ITIN"}), 400
+
+    def _money(v):
+        if v in [None, ""]:
+            return 0
+        return round(float(v), 2)
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        ensure_employee_profiles_table(cursor)
+        cursor.execute("SELECT id FROM employee_profiles WHERE id = %s", (profile_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Profile not found"}), 404
+
+        cursor.execute("""
+            UPDATE employee_profiles
+            SET
+                employee_id = %s,
+                first_name = %s,
+                last_name = %s,
+                employment_type = %s,
+                address_line1 = %s,
+                address_line2 = %s,
+                city = %s,
+                state = %s,
+                zip_code = %s,
+                tax_id_type = %s,
+                tax_id_value = %s,
+                pay_rate = %s,
+                overtime_rate = %s,
+                spread_of_time_rate = %s,
+                active = %s,
+                updated_at = NOW()
+            WHERE id = %s
+        """, (
+            data.get("employee_id"),
+            (data.get("first_name") or "").strip(),
+            (data.get("last_name") or "").strip(),
+            employment_type,
+            data.get("address_line1"),
+            data.get("address_line2"),
+            data.get("city"),
+            data.get("state"),
+            data.get("zip_code"),
+            tax_id_type,
+            data.get("tax_id_value"),
+            _money(data.get("pay_rate")),
+            _money(data.get("overtime_rate")),
+            _money(data.get("spread_of_time_rate")),
+            bool(data.get("active", True)),
+            profile_id
+        ))
+        conn.commit()
+        return jsonify({"status": "updated"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 # ---------------------------------------------------
 # Issue Dropdown API
