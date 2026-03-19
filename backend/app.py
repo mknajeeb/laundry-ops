@@ -3494,7 +3494,7 @@ def auth_users():
 # Maintenance APIs
 # ---------------------------------------------------
 
-@app.route("/maintenance/tasks", methods=["GET", "POST"])
+@app.route("/maintenance/tasks", methods=["GET", "POST", "PUT", "DELETE"])
 def maintenance_tasks_api():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -3507,11 +3507,34 @@ def maintenance_tasks_api():
             """)
             return jsonify(cursor.fetchall())
 
+        if request.method == "DELETE":
+            task_id = request.args.get("id")
+            if task_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+            cursor.execute("DELETE FROM maintenance_tasks WHERE id = %s", (int(task_id),))
+            conn.commit()
+            return jsonify({"status": "deleted"})
+
         data = request.json or {}
         task_code = (data.get("task_code") or "").strip().upper()
         task_name = (data.get("task_name") or "").strip()
         category = (data.get("category") or "CLEANING").strip().upper()
         active = bool(data.get("active", True))
+
+        if request.method == "PUT":
+            task_id = data.get("id")
+            if task_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+            if not task_code or not task_name:
+                return jsonify({"error": "task_code and task_name are required"}), 400
+            cursor.execute("""
+                UPDATE maintenance_tasks
+                SET task_code = %s, task_name = %s, category = %s, active = %s, updated_at = NOW()
+                WHERE id = %s
+            """, (task_code, task_name, category, active, int(task_id)))
+            conn.commit()
+            return jsonify({"status": "updated"})
+
         if not task_code or not task_name:
             return jsonify({"error": "task_code and task_name are required"}), 400
 
@@ -3530,7 +3553,7 @@ def maintenance_tasks_api():
         conn.close()
 
 
-@app.route("/maintenance/assignments", methods=["GET", "POST"])
+@app.route("/maintenance/assignments", methods=["GET", "POST", "PUT", "DELETE"])
 def maintenance_assignments_api():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -3563,6 +3586,14 @@ def maintenance_assignments_api():
             """, tuple(args))
             return jsonify(cursor.fetchall())
 
+        if request.method == "DELETE":
+            assignment_id = request.args.get("id")
+            if assignment_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+            cursor.execute("DELETE FROM maintenance_assignments WHERE id = %s", (int(assignment_id),))
+            conn.commit()
+            return jsonify({"status": "deleted"})
+
         data = request.json or {}
         task_id = data.get("task_id")
         assigned_to_employee_id = data.get("assigned_to_employee_id")
@@ -3571,8 +3602,45 @@ def maintenance_assignments_api():
         frequency_type = (data.get("frequency_type") or "ONE_TIME").strip().upper()
         frequency_interval = int(data.get("frequency_interval") or 1)
         weekdays_csv = (data.get("weekdays_csv") or "").strip() or None
+        status_value = (data.get("status") or "ASSIGNED").strip().upper()
         notes = (data.get("notes") or "").strip() or None
         created_by = (data.get("created_by") or "admin").strip()
+
+        if request.method == "PUT":
+            assignment_id = data.get("id")
+            if assignment_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+            if task_id in [None, ""] or due_date is None:
+                return jsonify({"error": "task_id and due_date are required"}), 400
+
+            cursor.execute("""
+                UPDATE maintenance_assignments
+                SET
+                  task_id = %s,
+                  assigned_to_employee_id = %s,
+                  assigned_to_name = %s,
+                  due_date = %s,
+                  frequency_type = %s,
+                  frequency_interval = %s,
+                  weekdays_csv = %s,
+                  status = %s,
+                  notes = %s,
+                  updated_at = NOW()
+                WHERE id = %s
+            """, (
+                int(task_id),
+                int(assigned_to_employee_id) if assigned_to_employee_id not in [None, ""] else None,
+                assigned_to_name,
+                due_date,
+                frequency_type,
+                frequency_interval,
+                weekdays_csv,
+                status_value,
+                notes,
+                int(assignment_id)
+            ))
+            conn.commit()
+            return jsonify({"status": "updated"})
 
         if task_id in [None, ""] or due_date is None:
             return jsonify({"error": "task_id and due_date are required"}), 400
@@ -3605,7 +3673,7 @@ def maintenance_assignments_api():
         conn.close()
 
 
-@app.route("/maintenance/logs", methods=["GET", "POST"])
+@app.route("/maintenance/logs", methods=["GET", "POST", "PUT", "DELETE"])
 def maintenance_logs_api():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -3635,6 +3703,14 @@ def maintenance_logs_api():
                 LIMIT 500
             """)
             return jsonify(cursor.fetchall())
+
+        if request.method == "DELETE":
+            log_id = request.args.get("id")
+            if log_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+            cursor.execute("DELETE FROM maintenance_logs WHERE id = %s", (int(log_id),))
+            conn.commit()
+            return jsonify({"status": "deleted"})
 
         data = request.json or {}
         assignment_id = data.get("assignment_id")
@@ -3675,6 +3751,47 @@ def maintenance_logs_api():
         start_dt = parse_dt(start_time_raw)
         end_dt = parse_dt(end_time_raw)
 
+        if request.method == "PUT":
+            log_id = data.get("id")
+            if log_id in [None, ""]:
+                return jsonify({"error": "id is required"}), 400
+
+            cursor.execute("""
+                UPDATE maintenance_logs
+                SET
+                  assignment_id = %s,
+                  task_id = %s,
+                  performed_by_employee_id = %s,
+                  performed_by_name = %s,
+                  performed_date = %s,
+                  start_time = %s,
+                  end_time = %s,
+                  pit1_done = %s,
+                  pit2_done = %s,
+                  big_pit_done = %s,
+                  washer_no = %s,
+                  notes = %s,
+                  source_type = %s
+                WHERE id = %s
+            """, (
+                int(assignment_id) if assignment_id not in [None, ""] else None,
+                int(task_id),
+                int(performed_by_employee_id) if performed_by_employee_id not in [None, ""] else None,
+                performed_by_name,
+                performed_date,
+                start_dt,
+                end_dt,
+                bool(data.get("pit1_done", False)),
+                bool(data.get("pit2_done", False)),
+                bool(data.get("big_pit_done", False)),
+                washer_no,
+                notes,
+                source_type,
+                int(log_id)
+            ))
+            conn.commit()
+            return jsonify({"status": "updated"})
+
         cursor.execute("""
             INSERT INTO maintenance_logs
             (
@@ -3706,6 +3823,37 @@ def maintenance_logs_api():
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/maintenance/agenda", methods=["GET"])
+def maintenance_agenda_api():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        cursor.execute("""
+            SELECT
+                a.id AS assignment_id,
+                a.task_id,
+                t.task_name,
+                a.assigned_to_employee_id,
+                a.assigned_to_name,
+                a.due_date,
+                a.status,
+                CASE
+                    WHEN a.status = 'COMPLETED' THEN 'DONE'
+                    WHEN a.due_date < CURDATE() THEN 'OVERDUE'
+                    WHEN a.due_date = CURDATE() THEN 'DUE_TODAY'
+                    ELSE 'UPCOMING'
+                END AS agenda_state
+            FROM maintenance_assignments a
+            JOIN maintenance_tasks t ON t.id = a.task_id
+            ORDER BY a.due_date ASC, a.id ASC
+            LIMIT 500
+        """)
+        return jsonify(cursor.fetchall())
     finally:
         cursor.close()
         conn.close()
@@ -4238,8 +4386,22 @@ def inventory_low_stock():
         conn.close()
 
 
-@app.route("/geofence/config", methods=["POST"])
+@app.route("/geofence/config", methods=["POST", "DELETE"])
 def save_geofence_config():
+
+    if request.method == "DELETE":
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("UPDATE geofence_settings SET active = FALSE")
+            conn.commit()
+            return jsonify({"status": "cleared"})
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
 
     data = request.json or {}
 

@@ -239,6 +239,9 @@ export const getGeofenceConfig = () =>
 export const saveGeofenceConfig = (payload) =>
   axios.post(`${API_BASE}/geofence/config`, payload);
 
+export const clearGeofenceConfig = () =>
+  axios.delete(`${API_BASE}/geofence/config`);
+
 export const punchAttendance = (payload) =>
   axios.post(`${API_BASE}/attendance/punch`, payload);
 
@@ -277,6 +280,14 @@ export const getMaintenanceTasks = () =>
 export const createMaintenanceTask = (payload) =>
   axios.post(`${API_BASE}/maintenance/tasks`, payload);
 
+export const updateMaintenanceTask = (payload) =>
+  axios.put(`${API_BASE}/maintenance/tasks`, payload);
+
+export const deleteMaintenanceTask = (id) =>
+  axios.delete(`${API_BASE}/maintenance/tasks`, {
+    params: { id },
+  });
+
 export const getMaintenanceAssignments = (status = "") =>
   axios.get(`${API_BASE}/maintenance/assignments`, {
     params: status ? { status } : {}
@@ -285,11 +296,27 @@ export const getMaintenanceAssignments = (status = "") =>
 export const createMaintenanceAssignment = (payload) =>
   axios.post(`${API_BASE}/maintenance/assignments`, payload);
 
+export const updateMaintenanceAssignment = (payload) =>
+  axios.put(`${API_BASE}/maintenance/assignments`, payload);
+
+export const deleteMaintenanceAssignment = (id) =>
+  axios.delete(`${API_BASE}/maintenance/assignments`, {
+    params: { id },
+  });
+
 export const getMaintenanceLogs = () =>
   axios.get(`${API_BASE}/maintenance/logs`);
 
 export const createMaintenanceLog = (payload) =>
   axios.post(`${API_BASE}/maintenance/logs`, payload);
+
+export const updateMaintenanceLog = (payload) =>
+  axios.put(`${API_BASE}/maintenance/logs`, payload);
+
+export const deleteMaintenanceLog = (id) =>
+  axios.delete(`${API_BASE}/maintenance/logs`, {
+    params: { id },
+  });
 
 export const getMaintenanceAgenda = () =>
   axios.get(`${API_BASE}/maintenance/agenda`);
