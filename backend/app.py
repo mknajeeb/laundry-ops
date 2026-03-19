@@ -2,6 +2,7 @@ import os
 import math
 import uuid
 import base64
+import json
 import pandas as pd
 from datetime import datetime, date, timedelta
 
@@ -6295,6 +6296,632 @@ def override_upload_conflicts():
     finally:
         cursor.close()
         conn.close()
+
+
+# ---------------------------------------------------
+# CleanCloud Integration APIs
+# ---------------------------------------------------
+
+def ensure_cleancloud_tables(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cleancloud_webhook_events (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            event_id VARCHAR(120) NULL,
+            event_type VARCHAR(80) NULL,
+            payload_json LONGTEXT NOT NULL,
+            process_status VARCHAR(20) NOT NULL DEFAULT 'RECEIVED',
+            error_message VARCHAR(500) NULL,
+            received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            processed_at DATETIME NULL,
+            updated_at DATETIME NULL,
+            UNIQUE KEY ux_cleancloud_event_id (event_id),
+            INDEX idx_cleancloud_event_type (event_type),
+            INDEX idx_cleancloud_received_at (received_at)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cleancloud_customers (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            cleancloud_customer_id VARCHAR(120) NOT NULL,
+            first_name VARCHAR(120) NULL,
+            last_name VARCHAR(120) NULL,
+            full_name VARCHAR(255) NULL,
+            phone VARCHAR(60) NULL,
+            email VARCHAR(255) NULL,
+            status VARCHAR(60) NULL,
+            address_line1 VARCHAR(255) NULL,
+            address_line2 VARCHAR(255) NULL,
+            city VARCHAR(120) NULL,
+            state VARCHAR(120) NULL,
+            postal_code VARCHAR(40) NULL,
+            country VARCHAR(120) NULL,
+            raw_json LONGTEXT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL,
+            last_seen_at DATETIME NULL,
+            UNIQUE KEY ux_cleancloud_customer_id (cleancloud_customer_id),
+            INDEX idx_cleancloud_customer_name (full_name),
+            INDEX idx_cleancloud_customer_phone (phone),
+            INDEX idx_cleancloud_customer_email (email)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS cleancloud_orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            cleancloud_order_id VARCHAR(120) NOT NULL,
+            cleancloud_customer_id VARCHAR(120) NULL,
+            order_status VARCHAR(80) NULL,
+            payment_status VARCHAR(80) NULL,
+            service_type VARCHAR(120) NULL,
+            pickup_date DATETIME NULL,
+            delivery_date DATETIME NULL,
+            total_amount DECIMAL(10,2) NULL,
+            currency VARCHAR(10) NULL,
+            cleaned_by VARCHAR(150) NULL,
+            picked_up_by VARCHAR(150) NULL,
+            delivered_by VARCHAR(150) NULL,
+            ticket_number VARCHAR(120) NULL,
+            raw_json LONGTEXT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NULL,
+            last_seen_at DATETIME NULL,
+            UNIQUE KEY ux_cleancloud_order_id (cleancloud_order_id),
+            INDEX idx_cleancloud_order_status (order_status),
+            INDEX idx_cleancloud_order_customer (cleancloud_customer_id),
+            INDEX idx_cleancloud_order_delivery (delivery_date)
+        )
+    """)
+
+
+def _cleancloud_secret_is_valid():
+    expected = (os.getenv("CLEANCLOUD_WEBHOOK_SECRET") or "").strip()
+    if not expected:
+        return True
+
+    candidate = (
+        request.headers.get("X-CleanCloud-Secret")
+        or request.headers.get("X-Webhook-Secret")
+        or request.args.get("secret")
+        or ""
+    ).strip()
+    return candidate == expected
+
+
+def _safe_json_text(value):
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:
+        return json.dumps({"raw": str(value)}, ensure_ascii=False)
+
+
+def _get_nested(data, path, default=None):
+    cur = data
+    for key in path:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(key)
+        if cur is None:
+            return default
+    return cur
+
+
+def _parse_cleancloud_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+
+    text = str(value).strip()
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+    ]:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if fmt in {"%Y-%m-%d", "%m/%d/%Y"}:
+                return datetime.combine(parsed.date(), datetime.min.time())
+            return parsed
+        except Exception:
+            continue
+
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def _cleancloud_event_records(payload):
+    if isinstance(payload, dict):
+        if isinstance(payload.get("events"), list):
+            return [e for e in payload["events"] if isinstance(e, dict)]
+        return [payload]
+    if isinstance(payload, list):
+        return [e for e in payload if isinstance(e, dict)]
+    return []
+
+
+def _extract_customer_obj(record):
+    if not isinstance(record, dict):
+        return None
+    customer = record.get("customer")
+    if isinstance(customer, dict):
+        return customer
+    if any(k in record for k in ["customer_id", "first_name", "last_name", "email", "phone"]):
+        return record
+    return None
+
+
+def _extract_order_obj(record):
+    if not isinstance(record, dict):
+        return None
+    order = record.get("order")
+    if isinstance(order, dict):
+        return order
+    if any(k in record for k in ["order_id", "status", "payment_status", "delivery_date", "pickup_date"]):
+        return record
+    return None
+
+
+def _upsert_cleancloud_customer(cursor, customer_obj):
+    if not isinstance(customer_obj, dict):
+        return None
+
+    customer_id = (
+        customer_obj.get("id")
+        or customer_obj.get("customer_id")
+        or customer_obj.get("customerId")
+    )
+    if not customer_id:
+        return None
+
+    first_name = customer_obj.get("first_name") or customer_obj.get("firstname")
+    last_name = customer_obj.get("last_name") or customer_obj.get("lastname")
+    full_name = (
+        customer_obj.get("full_name")
+        or customer_obj.get("name")
+        or " ".join([x for x in [first_name, last_name] if x]).strip()
+        or None
+    )
+
+    cursor.execute("""
+        INSERT INTO cleancloud_customers
+        (
+            cleancloud_customer_id,
+            first_name,
+            last_name,
+            full_name,
+            phone,
+            email,
+            status,
+            address_line1,
+            address_line2,
+            city,
+            state,
+            postal_code,
+            country,
+            raw_json,
+            last_seen_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON DUPLICATE KEY UPDATE
+            first_name = VALUES(first_name),
+            last_name = VALUES(last_name),
+            full_name = VALUES(full_name),
+            phone = VALUES(phone),
+            email = VALUES(email),
+            status = VALUES(status),
+            address_line1 = VALUES(address_line1),
+            address_line2 = VALUES(address_line2),
+            city = VALUES(city),
+            state = VALUES(state),
+            postal_code = VALUES(postal_code),
+            country = VALUES(country),
+            raw_json = VALUES(raw_json),
+            last_seen_at = NOW(),
+            updated_at = NOW()
+    """, (
+        str(customer_id),
+        first_name,
+        last_name,
+        full_name,
+        customer_obj.get("phone") or customer_obj.get("mobile"),
+        customer_obj.get("email"),
+        customer_obj.get("status"),
+        customer_obj.get("address_line1") or customer_obj.get("address1"),
+        customer_obj.get("address_line2") or customer_obj.get("address2"),
+        customer_obj.get("city"),
+        customer_obj.get("state"),
+        customer_obj.get("postal_code") or customer_obj.get("postcode") or customer_obj.get("zip"),
+        customer_obj.get("country"),
+        _safe_json_text(customer_obj),
+    ))
+
+    return str(customer_id)
+
+
+def _upsert_cleancloud_order(cursor, order_obj, customer_id_hint=None):
+    if not isinstance(order_obj, dict):
+        return None
+
+    order_id = (
+        order_obj.get("id")
+        or order_obj.get("order_id")
+        or order_obj.get("orderId")
+    )
+    if not order_id:
+        return None
+
+    customer_id = (
+        order_obj.get("customer_id")
+        or order_obj.get("customerId")
+        or _get_nested(order_obj, ["customer", "id"])
+        or customer_id_hint
+    )
+
+    total_amount_raw = (
+        order_obj.get("total_amount")
+        or order_obj.get("amount")
+        or order_obj.get("total")
+    )
+    total_amount = None
+    if total_amount_raw not in [None, ""]:
+        try:
+            total_amount = round(float(total_amount_raw), 2)
+        except Exception:
+            total_amount = None
+
+    cursor.execute("""
+        INSERT INTO cleancloud_orders
+        (
+            cleancloud_order_id,
+            cleancloud_customer_id,
+            order_status,
+            payment_status,
+            service_type,
+            pickup_date,
+            delivery_date,
+            total_amount,
+            currency,
+            cleaned_by,
+            picked_up_by,
+            delivered_by,
+            ticket_number,
+            raw_json,
+            last_seen_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON DUPLICATE KEY UPDATE
+            cleancloud_customer_id = VALUES(cleancloud_customer_id),
+            order_status = VALUES(order_status),
+            payment_status = VALUES(payment_status),
+            service_type = VALUES(service_type),
+            pickup_date = VALUES(pickup_date),
+            delivery_date = VALUES(delivery_date),
+            total_amount = VALUES(total_amount),
+            currency = VALUES(currency),
+            cleaned_by = VALUES(cleaned_by),
+            picked_up_by = VALUES(picked_up_by),
+            delivered_by = VALUES(delivered_by),
+            ticket_number = VALUES(ticket_number),
+            raw_json = VALUES(raw_json),
+            last_seen_at = NOW(),
+            updated_at = NOW()
+    """, (
+        str(order_id),
+        str(customer_id) if customer_id not in [None, ""] else None,
+        order_obj.get("status") or order_obj.get("order_status"),
+        order_obj.get("payment_status") or order_obj.get("paymentStatus"),
+        order_obj.get("service_type") or order_obj.get("service"),
+        _parse_cleancloud_datetime(order_obj.get("pickup_date") or order_obj.get("pickupDate")),
+        _parse_cleancloud_datetime(order_obj.get("delivery_date") or order_obj.get("deliveryDate") or order_obj.get("due_date")),
+        total_amount,
+        order_obj.get("currency"),
+        order_obj.get("cleaned_by") or order_obj.get("cleaner_name"),
+        order_obj.get("picked_up_by") or order_obj.get("pickup_driver"),
+        order_obj.get("delivered_by") or order_obj.get("delivery_driver"),
+        order_obj.get("ticket_number") or order_obj.get("ticket_id"),
+        _safe_json_text(order_obj),
+    ))
+
+    return str(order_id)
+
+
+@app.route("/integrations/cleancloud/webhook", methods=["POST"])
+def cleancloud_webhook():
+    if not _cleancloud_secret_is_valid():
+        return jsonify({"error": "Forbidden"}), 403
+
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = request.form.to_dict(flat=True)
+
+    events = _cleancloud_event_records(payload)
+    if not events:
+        return jsonify({"error": "No event payload received"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        ensure_cleancloud_tables(cursor)
+
+        inserted = 0
+        processed = 0
+        duplicate = 0
+
+        for record in events:
+            event_type = (
+                record.get("event")
+                or record.get("event_type")
+                or record.get("type")
+                or "unknown"
+            )
+            event_id = (
+                record.get("event_id")
+                or record.get("id")
+                or request.headers.get("X-Webhook-Event-Id")
+            )
+            payload_text = _safe_json_text(record)
+
+            row_id = None
+            if event_id:
+                cursor.execute(
+                    "SELECT id FROM cleancloud_webhook_events WHERE event_id = %s LIMIT 1",
+                    (str(event_id),)
+                )
+                already = cursor.fetchone()
+                cursor.execute("""
+                    INSERT INTO cleancloud_webhook_events
+                    (
+                        event_id,
+                        event_type,
+                        payload_json,
+                        process_status,
+                        received_at
+                    )
+                    VALUES (%s, %s, %s, 'RECEIVED', NOW())
+                    ON DUPLICATE KEY UPDATE
+                        event_type = VALUES(event_type),
+                        payload_json = VALUES(payload_json),
+                        updated_at = NOW()
+                """, (
+                    str(event_id),
+                    str(event_type),
+                    payload_text
+                ))
+                cursor.execute("SELECT id FROM cleancloud_webhook_events WHERE event_id = %s LIMIT 1", (str(event_id),))
+                existing = cursor.fetchone()
+                row_id = existing["id"] if existing else None
+                if already:
+                    duplicate += 1
+                else:
+                    inserted += 1
+            else:
+                cursor.execute("""
+                    INSERT INTO cleancloud_webhook_events
+                    (
+                        event_id,
+                        event_type,
+                        payload_json,
+                        process_status,
+                        received_at
+                    )
+                    VALUES (NULL, %s, %s, 'RECEIVED', NOW())
+                """, (
+                    str(event_type),
+                    payload_text
+                ))
+                row_id = cursor.lastrowid
+                inserted += 1
+
+            try:
+                customer_obj = _extract_customer_obj(record)
+                order_obj = _extract_order_obj(record)
+                customer_id = _upsert_cleancloud_customer(cursor, customer_obj)
+                _upsert_cleancloud_order(cursor, order_obj, customer_id_hint=customer_id)
+
+                cursor.execute("""
+                    UPDATE cleancloud_webhook_events
+                    SET process_status = 'PROCESSED',
+                        processed_at = NOW(),
+                        updated_at = NOW(),
+                        error_message = NULL
+                    WHERE id = %s
+                """, (row_id,))
+                processed += 1
+            except Exception as process_ex:
+                cursor.execute("""
+                    UPDATE cleancloud_webhook_events
+                    SET process_status = 'ERROR',
+                        updated_at = NOW(),
+                        error_message = %s
+                    WHERE id = %s
+                """, (str(process_ex)[:500], row_id))
+
+        conn.commit()
+
+        return jsonify({
+            "status": "ok",
+            "received": len(events),
+            "inserted": inserted,
+            "processed": processed,
+            "duplicate_event_ids": duplicate
+        })
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/integrations/cleancloud/events", methods=["GET"])
+def cleancloud_events():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_cleancloud_tables(cursor)
+        limit = request.args.get("limit", 100)
+        try:
+            limit = max(1, min(500, int(limit)))
+        except Exception:
+            limit = 100
+
+        cursor.execute(f"""
+            SELECT
+                id,
+                event_id,
+                event_type,
+                process_status,
+                error_message,
+                received_at,
+                processed_at
+            FROM cleancloud_webhook_events
+            ORDER BY id DESC
+            LIMIT {limit}
+        """)
+        return jsonify(cursor.fetchall())
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/integrations/cleancloud/customers", methods=["GET"])
+def cleancloud_customers():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_cleancloud_tables(cursor)
+        limit = request.args.get("limit", 200)
+        try:
+            limit = max(1, min(1000, int(limit)))
+        except Exception:
+            limit = 200
+
+        search = (request.args.get("search") or "").strip()
+        where_sql = ""
+        args = []
+        if search:
+            where_sql = """
+                WHERE
+                    full_name LIKE %s
+                    OR phone LIKE %s
+                    OR email LIKE %s
+                    OR cleancloud_customer_id LIKE %s
+            """
+            like = f"%{search}%"
+            args.extend([like, like, like, like])
+
+        cursor.execute(f"""
+            SELECT
+                cleancloud_customer_id,
+                full_name,
+                first_name,
+                last_name,
+                phone,
+                email,
+                status,
+                city,
+                state,
+                postal_code,
+                last_seen_at
+            FROM cleancloud_customers
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT {limit}
+        """, tuple(args))
+        return jsonify(cursor.fetchall())
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/integrations/cleancloud/orders", methods=["GET"])
+def cleancloud_orders():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_cleancloud_tables(cursor)
+        limit = request.args.get("limit", 200)
+        try:
+            limit = max(1, min(1000, int(limit)))
+        except Exception:
+            limit = 200
+
+        status_filter = (request.args.get("status") or "").strip()
+        where_sql = ""
+        args = []
+        if status_filter:
+            where_sql = "WHERE order_status = %s"
+            args.append(status_filter)
+
+        cursor.execute(f"""
+            SELECT
+                cleancloud_order_id,
+                cleancloud_customer_id,
+                order_status,
+                payment_status,
+                service_type,
+                pickup_date,
+                delivery_date,
+                total_amount,
+                currency,
+                cleaned_by,
+                picked_up_by,
+                delivered_by,
+                ticket_number,
+                last_seen_at
+            FROM cleancloud_orders
+            {where_sql}
+            ORDER BY id DESC
+            LIMIT {limit}
+        """, tuple(args))
+        return jsonify(cursor.fetchall())
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/integrations/cleancloud/health", methods=["GET"])
+def cleancloud_health():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_cleancloud_tables(cursor)
+        cursor.execute("SELECT COUNT(*) AS c FROM cleancloud_webhook_events")
+        events = (cursor.fetchone() or {}).get("c", 0)
+        cursor.execute("SELECT COUNT(*) AS c FROM cleancloud_customers")
+        customers = (cursor.fetchone() or {}).get("c", 0)
+        cursor.execute("SELECT COUNT(*) AS c FROM cleancloud_orders")
+        orders = (cursor.fetchone() or {}).get("c", 0)
+
+        cursor.execute("""
+            SELECT id, event_type, process_status, received_at, processed_at
+            FROM cleancloud_webhook_events
+            ORDER BY id DESC
+            LIMIT 1
+        """)
+        last_event = cursor.fetchone()
+
+        return jsonify({
+            "status": "ok",
+            "tables_ready": True,
+            "webhook_events": events,
+            "customers": customers,
+            "orders": orders,
+            "last_event": last_event,
+        })
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # ---------------------------------------------------
 # Root Health Endpoint
 # ---------------------------------------------------
