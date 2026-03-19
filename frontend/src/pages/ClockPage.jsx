@@ -32,15 +32,26 @@ function ClockPage({ user }) {
     [state?.employee_name, user?.display_name, user?.username]
   );
 
+  const isManagerView = useMemo(() => {
+    const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
+    return roles.includes("ADMIN");
+  }, [user?.roles]);
+
   const load = async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const [stateRes, payrollRes] = await Promise.all([
-        getAttendanceMyState(),
-        getAttendancePayrollMonitor(),
-      ]);
-      setState(stateRes.data || null);
-      setPayroll(payrollRes.data || null);
+      if (isManagerView) {
+        const [stateRes, payrollRes] = await Promise.all([
+          getAttendanceMyState(),
+          getAttendancePayrollMonitor(),
+        ]);
+        setState(stateRes.data || null);
+        setPayroll(payrollRes.data || null);
+      } else {
+        const stateRes = await getAttendanceMyState();
+        setState(stateRes.data || null);
+        setPayroll(null);
+      }
     } catch (error) {
       console.error(error);
       const err = error?.response?.data?.error || "Failed to load clock state.";
@@ -52,7 +63,7 @@ function ClockPage({ user }) {
 
   useEffect(() => {
     load(false);
-  }, []);
+  }, [isManagerView]);
 
   useEffect(() => {
     const id = setInterval(() => load(true), 30000);
@@ -274,6 +285,7 @@ function ClockPage({ user }) {
         </Paper>
       )}
 
+      {isManagerView && (
       <Paper sx={{ mt: 1.2, p: 1.2, border: "1px solid #e5e7eb", borderRadius: 2, boxShadow: "none" }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Typography sx={{ color: "#0f172a" }}>Payroll Monitor</Typography>
@@ -304,6 +316,7 @@ function ClockPage({ user }) {
           This week: {capacitySuggestion.current} • Previous week: {capacitySuggestion.previous} • Suggested staffing: {capacitySuggestion.recommended}
         </Typography>
       </Paper>
+      )}
 
       {onBreak && (
         <Box
