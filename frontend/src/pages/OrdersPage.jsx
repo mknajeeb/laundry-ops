@@ -106,17 +106,24 @@ function OrdersPage({ user }) {
   const load = async () => {
     try {
       setLoading(true);
-      const [ordersRes, batchRes] = await Promise.all([
+      const [ordersRes, batchRes] = await Promise.allSettled([
         getOrders({ include_all: true }),
-        getCurrentUploadBatch().catch(() => ({ data: null })),
+        getCurrentUploadBatch(),
       ]);
-      setRows(Array.isArray(ordersRes?.data) ? ordersRes.data : []);
-      setBatchInfo(batchRes?.data || null);
+
+      if (ordersRes.status === "fulfilled") {
+        setRows(Array.isArray(ordersRes.value?.data) ? ordersRes.value.data : []);
+      }
+
+      if (batchRes.status === "fulfilled") {
+        setBatchInfo(batchRes.value?.data || null);
+      } else {
+        setBatchInfo(null);
+      }
+
       setNotice("");
     } catch (error) {
       console.error(error);
-      setRows([]);
-      setBatchInfo(null);
       setNotice(error?.response?.data?.error || "Failed to load orders.");
     } finally {
       setLoading(false);

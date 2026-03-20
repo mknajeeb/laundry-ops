@@ -1280,6 +1280,9 @@ def get_orders():
         orders = cursor.fetchall()
 
         return jsonify(orders)
+    except Exception as e:
+        # Keep API responses JSON so frontend can surface a useful message.
+        return jsonify({"error": str(e)}), 500
 
     finally:
 

@@ -46,21 +46,25 @@ function CheckoutPage() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const [ordersRes, checkedRes] = await Promise.all([
+      const [ordersRes, checkedRes] = await Promise.allSettled([
         getOrders({ include_all: true }),
         getCheckoutLog(),
       ]);
-      const allRows = Array.isArray(ordersRes.data) ? ordersRes.data : [];
-      const active = allRows.filter((r) => {
-        const l = normalizeCode(r?.logistics_status || r?.status);
-        return !["SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT", "FORCED_CHECKOUT"].includes(l);
-      });
-      setRows(active);
-      setCheckedRows(Array.isArray(checkedRes.data) ? checkedRes.data : []);
+
+      if (ordersRes.status === "fulfilled") {
+        const allRows = Array.isArray(ordersRes.value?.data) ? ordersRes.value.data : [];
+        const active = allRows.filter((r) => {
+          const l = normalizeCode(r?.logistics_status || r?.status);
+          return !["SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT", "FORCED_CHECKOUT"].includes(l);
+        });
+        setRows(active);
+      }
+
+      if (checkedRes.status === "fulfilled") {
+        setCheckedRows(Array.isArray(checkedRes.value?.data) ? checkedRes.value.data : []);
+      }
     } catch (error) {
       console.error(error);
-      setRows([]);
-      setCheckedRows([]);
     } finally {
       setLoading(false);
     }
