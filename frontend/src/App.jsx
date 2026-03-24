@@ -13,7 +13,6 @@ import {
 } from "@mui/material";
 import { ArrowBack, Refresh } from "@mui/icons-material";
 import Sidebar from "./components/Sidebar";
-import ProtectedRoute from "./components/ProtectedRoute";
 
 import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
@@ -29,11 +28,6 @@ import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
-import TimeClockPage from "./pages/TimeClockPage";
-import PayrollMonitorPage from "./pages/PayrollMonitorPage";
-import AttendanceSetupPage from "./pages/AttendanceSetupPage";
-import TaEmployeesPage from "./pages/TaEmployeesPage";
-import TaLoginPage from "./pages/TaLoginPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname }) {
@@ -133,14 +127,11 @@ function AppShell() {
         <Box sx={{ p: { xs: 0, md: 1 } }}>
           <Routes>
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
-            <Route
-              path="/ta-login"
-              element={
-                <GuardedRoute user={user}>
-                  <TaLoginPage />
-                </GuardedRoute>
-              }
-            />
+            <Route path="/ta-login" element={<Navigate to="/clock" replace />} />
+            <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
+            <Route path="/payroll-monitor" element={<Navigate to="/clock" replace />} />
+            <Route path="/attendance-setup" element={<Navigate to="/clock" replace />} />
+            <Route path="/ta-employees" element={<Navigate to="/clock" replace />} />
             <Route path="/" element={<GuardedRoute user={user}><HomePage /></GuardedRoute>} />
             <Route path="/dashboard" element={<GuardedRoute user={user}><Dashboard /></GuardedRoute>} />
             <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute>} />
@@ -154,46 +145,6 @@ function AppShell() {
             <Route path="/maintenance" element={<GuardedRoute user={user}><MaintenancePage /></GuardedRoute>} />
             <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute>} />
             <Route path="/discrepancies" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute>} />
-            <Route
-              path="/time-clock"
-              element={
-                <GuardedRoute user={user}>
-                  <ProtectedRoute>
-                    <TimeClockPage />
-                  </ProtectedRoute>
-                </GuardedRoute>
-              }
-            />
-            <Route
-              path="/payroll-monitor"
-              element={
-                <GuardedRoute user={user}>
-                  <ProtectedRoute>
-                    <PayrollMonitorPage />
-                  </ProtectedRoute>
-                </GuardedRoute>
-              }
-            />
-            <Route
-              path="/attendance-setup"
-              element={
-                <GuardedRoute user={user} roles={["ADMIN"]}>
-                  <ProtectedRoute>
-                    <AttendanceSetupPage />
-                  </ProtectedRoute>
-                </GuardedRoute>
-              }
-            />
-            <Route
-              path="/ta-employees"
-              element={
-                <GuardedRoute user={user} roles={["ADMIN"]}>
-                  <ProtectedRoute>
-                    <TaEmployeesPage />
-                  </ProtectedRoute>
-                </GuardedRoute>
-              }
-            />
           </Routes>
         </Box>
       </Box>
