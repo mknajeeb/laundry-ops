@@ -14,7 +14,7 @@ function ProtectedRoute({ children }) {
   }
 
   if (!token) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/ta-login" replace />;
   }
 
   return children;

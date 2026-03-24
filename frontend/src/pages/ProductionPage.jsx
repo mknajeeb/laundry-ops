@@ -1,11 +1,7 @@
-function ProductionPage(){
+import DiscrepanciesPage from "./DiscrepanciesPage";
 
-  return(
-    <div style={{padding:20}}>
-      <h1>Production</h1>
-    </div>
-  )
-
+function ProductionPage() {
+  return <DiscrepanciesPage />;
 }
 
 export default ProductionPage;

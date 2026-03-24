@@ -1,163 +1,28 @@
-/* =========================
-GLOBAL
-========================= */
+:root {
+  --bg-soft: #f6f8fc;
+  --line: #e2e8f0;
+  --text: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
 
 body {
-  margin:0;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial;
-  background:#f3f4f6;
-  color:#111827;
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  color: var(--text);
+  background: var(--bg-soft);
 }
 
-/* =========================
-LAYOUT
-========================= */
-
-.app-layout{
-  display:flex;
-  min-height:100vh;
+.MuiPaper-root {
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04) !important;
 }
 
-/* =========================
-SIDEBAR
-========================= */
-
-.sidebar{
-  width:230px;
-  background:#111827;
-  color:white;
-  padding:20px;
-}
-
-.sidebar h2{
-  margin-bottom:25px;
-  font-size:20px;
-}
-
-.sidebar-menu{
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-}
-
-.menu-item{
-  padding:10px 12px;
-  border-radius:6px;
-  text-decoration:none;
-  color:white;
-  font-size:14px;
-}
-
-.menu-item:hover{
-  background:#1f2937;
-}
-
-/* =========================
-MAIN CONTENT
-========================= */
-
-.main-content{
-  flex:1;
-  padding:30px;
-}
-
-/* =========================
-TABLE
-========================= */
-
-.table-wrapper{
-  background:white;
-  border-radius:10px;
-  overflow:hidden;
-  box-shadow:0 4px 10px rgba(0,0,0,0.05);
-}
-
-.orders-table{
-  width:100%;
-  border-collapse:collapse;
-}
-
-.orders-table th{
-  text-align:left;
-  padding:14px;
-  background:#f9fafb;
-  font-size:13px;
-}
-
-.orders-table td{
-  padding:14px;
-  border-top:1px solid #eee;
-}
-
-.orders-table tr:hover{
-  background:#fafafa;
-}
-
-/* =========================
-BUTTONS
-========================= */
-
-.edit-btn{
-  background:#2563eb;
-  color:white;
-  border:none;
-  padding:6px 10px;
-  border-radius:6px;
-  cursor:pointer;
-  margin-right:6px;
-}
-
-.delete-btn{
-  background:#ef4444;
-  color:white;
-  border:none;
-  padding:6px 10px;
-  border-radius:6px;
-  cursor:pointer;
-}
-
-/* =========================
-STATUS
-========================= */
-
-.status-pill{
-  background:#eef2ff;
-  color:#4338ca;
-  padding:4px 10px;
-  border-radius:20px;
-  font-size:12px;
-}
-
-/* =========================
-RESPONSIVE
-========================= */
-
-@media (max-width:900px){
-
-.sidebar{
-  width:70px;
-}
-
-.sidebar h2{
-  display:none;
-}
-
-.menu-item{
-  font-size:12px;
-  padding:8px;
-}
-
-.orders-table{
-  display:block;
-  overflow-x:auto;
-}
-.menu-item{
-display:flex;
-align-items:center;
-gap:10px;
-}
-
-.menu-active{
-background:#2563eb;
-}
-}

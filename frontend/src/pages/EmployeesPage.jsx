@@ -1,373 +1,130 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Box,
   Button,
-  Checkbox,
+  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
-  FormControlLabel,
-  InputLabel,
-  MenuItem,
-  OutlinedInput,
-  Select,
+  Paper,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Typography,
+  MenuItem,
 } from "@mui/material";
-import {
-  createTaUser,
-  getEmploymentCategories,
-  getGeofences,
-  getTaRoles,
-  getTaUser,
-  getTaUsers,
-  putUserEmploymentCategories,
-  putUserGeofences,
-  updateTaUser,
-} from "../api";
-import { useAuth } from "../context/AuthContext";
+import { createUser, getRoles, getUsers } from "../api";
 
-function EmployeesPage() {
-  const { hasPerm } = useAuth();
+function EmployeesPage({ user }) {
+  const isAdmin = (user?.roles || []).map((r) => String(r).toUpperCase()).includes("ADMIN");
   const [users, setUsers] = useState([]);
   const [roles, setRoles] = useState([]);
-  const [geofences, setGeofences] = useState([]);
-  const [cats, setCats] = useState([]);
   const [error, setError] = useState("");
-  const [dialog, setDialog] = useState(null);
-  const [form, setForm] = useState({});
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    username: "",
+    password: "",
+    display_name: "",
+    active: true,
+    roles: [],
+  });
 
-  const canView = hasPerm("users.view");
-  const canEdit = hasPerm("users.edit");
-  const canAdd = hasPerm("users.add");
-
-  const load = useCallback(async () => {
-    if (!canView) return;
+  const load = async () => {
     try {
-      const [u, r, g, c] = await Promise.all([
-        getTaUsers(),
-        getTaRoles(),
-        getGeofences(),
-        getEmploymentCategories(),
-      ]);
-      setUsers(u.data || []);
-      setRoles(r.data || []);
-      setGeofences(g.data || []);
-      setCats(c.data || []);
+      setError("");
+      const [uRes, rRes] = await Promise.all([getUsers(), getRoles()]);
+      setUsers(Array.isArray(uRes.data) ? uRes.data : []);
+      setRoles(Array.isArray(rRes.data) ? rRes.data : []);
     } catch (e) {
-      setError(e.response?.data?.error || "Load failed");
+      console.error(e);
+      setError(e?.response?.data?.error || "Failed to load users.");
     }
-  }, [canView]);
+  };
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      load();
-    }, 0);
-    return () => clearTimeout(t);
-  }, [load]);
+    if (isAdmin) load();
+  }, [isAdmin]);
 
-  function openCreate() {
-    setForm({
-      first_name: "",
-      last_name: "",
-      email: "",
-      password: "",
-      role_id: roles[0]?.id || "",
-      employee_id: "",
-      mobile: "",
-      active: true,
-    });
-    setDialog("create");
-  }
-
-  async function openEdit(u) {
-    setError("");
+  const create = async () => {
     try {
-      const res = await getTaUser(u.id);
-      const d = res.data;
-      const catRows =
-        d.employment_assignments?.length > 0
-          ? d.employment_assignments.map((a) => ({
-              employment_category_id: a.employment_category_id,
-              effective_from: String(a.effective_from).slice(0, 10),
-              effective_to: a.effective_to ? String(a.effective_to).slice(0, 10) : "",
-            }))
-          : [
-              {
-                employment_category_id: cats[0]?.id || "",
-                effective_from: new Date().toISOString().slice(0, 10),
-                effective_to: "",
-              },
-            ];
-      setForm({
-        ...d,
-        password: "",
-        geofence_ids: d.geofence_ids || [],
-        primary_geofence_id: d.primary_geofence_id || "",
-        cat_rows: catRows,
-      });
-      setDialog("edit");
-    } catch (e) {
-      setError(e.response?.data?.error || "Could not load user");
-    }
-  }
-
-  async function saveCreate() {
-    try {
-      await createTaUser({
-        first_name: form.first_name,
-        last_name: form.last_name,
-        email: form.email,
-        password: form.password,
-        role_id: form.role_id,
-        employee_id: form.employee_id || null,
-        mobile: form.mobile || null,
-        active: form.active,
-      });
-      setDialog(null);
+      setSaving(true);
+      setError("");
+      await createUser(form);
+      setOpen(false);
+      setForm({ username: "", password: "", display_name: "", active: true, roles: [] });
       await load();
     } catch (e) {
-      setError(e.response?.data?.error || "Create failed");
+      console.error(e);
+      setError(e?.response?.data?.error || "User create failed.");
+    } finally {
+      setSaving(false);
     }
-  }
+  };
 
-  async function saveEdit() {
-    try {
-      await updateTaUser(form.id, {
-        first_name: form.first_name,
-        last_name: form.last_name,
-        email: form.email,
-        mobile: form.mobile,
-        employee_id: form.employee_id,
-        role_id: form.role_id,
-        active: form.active,
-        hire_date: form.hire_date || null,
-        termination_date: form.termination_date || null,
-        rehired: form.rehired,
-        address: form.address,
-        itin_ssn: form.itin_ssn,
-        password: form.password || undefined,
-      });
-      if (form.geofence_ids?.length && form.primary_geofence_id) {
-        await putUserGeofences(form.id, {
-          geofence_ids: form.geofence_ids.map(Number),
-          primary_geofence_id: Number(form.primary_geofence_id),
-        });
-      }
-      if (form.cat_rows?.length) {
-        await putUserEmploymentCategories(form.id, {
-          assignments: form.cat_rows
-            .filter((r) => r.employment_category_id)
-            .map((r) => ({
-              employment_category_id: Number(r.employment_category_id),
-              effective_from: r.effective_from,
-              effective_to: r.effective_to || null,
-            })),
-        });
-      }
-      setDialog(null);
-      await load();
-    } catch (e) {
-      setError(e.response?.data?.error || "Update failed");
-    }
-  }
-
-  if (!canView) {
+  if (!isAdmin) {
     return (
-      <div className="page">
-        <Alert severity="info">You do not have permission to view users.</Alert>
-      </div>
+      <Box sx={{ p: 2 }}>
+        <Alert severity="warning">Only ADMIN can manage users.</Alert>
+      </Box>
     );
   }
 
   return (
-    <div className="page">
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
-        <Typography variant="h4" className="page-title">
-          Users
-        </Typography>
-        {canAdd ? (
-          <Button variant="contained" onClick={openCreate}>
-            Add user
-          </Button>
-        ) : null}
+    <Box sx={{ minHeight: "100%", p: { xs: 1.2, md: 2 } }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center">
+        <Typography sx={{ fontSize: 28 }}>Users & Roles</Typography>
+        <Button variant="contained" onClick={() => setOpen(true)}>Add User</Button>
       </Stack>
+      {error && <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert>}
 
-      {error ? (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
-
-      <Box className="table-wrapper">
-        <Table size="small" className="orders-table">
-          <TableHead>
-            <TableRow>
-              <TableCell>Name</TableCell>
-              <TableCell>Email</TableCell>
-              <TableCell>Role</TableCell>
-              <TableCell>Active</TableCell>
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {users.map((u) => (
-              <TableRow key={u.id}>
-                <TableCell>
-                  {u.first_name} {u.last_name}
-                </TableCell>
-                <TableCell>{u.email}</TableCell>
-                <TableCell>{u.role_name}</TableCell>
-                <TableCell>{u.active ? "yes" : "no"}</TableCell>
-                <TableCell>
-                  {canEdit ? (
-                    <Button size="small" onClick={() => openEdit(u)}>
-                      Edit
-                    </Button>
-                  ) : null}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Box>
-
-      <Dialog open={dialog === "create"} onClose={() => setDialog(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>New user</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField label="First name" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} required />
-            <TextField label="Last name" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} required />
-            <TextField label="Email" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} required />
-            <TextField label="Password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required />
-            <TextField select label="Role" value={form.role_id || ""} onChange={(e) => setForm({ ...form, role_id: e.target.value })}>
-              {roles.map((r) => (
-                <MenuItem key={r.id} value={r.id}>
-                  {r.name}
-                </MenuItem>
-              ))}
-            </TextField>
-            <TextField label="Employee ID" value={form.employee_id} onChange={(e) => setForm({ ...form, employee_id: e.target.value })} />
-            <TextField label="Mobile" value={form.mobile} onChange={(e) => setForm({ ...form, mobile: e.target.value })} />
-            <FormControlLabel
-              control={<Checkbox checked={!!form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />}
-              label="Active"
-            />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialog(null)}>Cancel</Button>
-          <Button variant="contained" onClick={saveCreate}>
-            Create
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={dialog === "edit"} onClose={() => setDialog(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Edit user</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <TextField label="First name" value={form.first_name || ""} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
-            <TextField label="Last name" value={form.last_name || ""} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
-            <TextField label="Email" value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} />
-            <TextField
-              label="New password (optional)"
-              type="password"
-              value={form.password || ""}
-              onChange={(e) => setForm({ ...form, password: e.target.value })}
-            />
-            <TextField select label="Role" value={form.role_id || ""} onChange={(e) => setForm({ ...form, role_id: e.target.value })}>
-              {roles.map((r) => (
-                <MenuItem key={r.id} value={r.id}>
-                  {r.name}
-                </MenuItem>
-              ))}
-            </TextField>
-            <FormControlLabel
-              control={<Checkbox checked={!!form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />}
-              label="Active"
-            />
-            <Typography variant="subtitle2">Geofences (assign + one primary)</Typography>
-            <FormControl fullWidth>
-              <InputLabel id="gf-label">Geofences</InputLabel>
-              <Select
-                labelId="gf-label"
-                multiple
-                value={form.geofence_ids || []}
-                onChange={(e) => setForm({ ...form, geofence_ids: e.target.value })}
-                input={<OutlinedInput label="Geofences" />}
-                renderValue={(selected) =>
-                  selected
-                    .map((id) => geofences.find((g) => g.id === id)?.name || id)
-                    .join(", ")
-                }
-              >
-                {geofences.map((g) => (
-                  <MenuItem key={g.id} value={g.id}>
-                    {g.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <TextField
-              label="Primary geofence ID"
-              value={form.primary_geofence_id || ""}
-              onChange={(e) => setForm({ ...form, primary_geofence_id: e.target.value })}
-              helperText="Must be one of the selected geofences"
-            />
-            <Typography variant="subtitle2">Employment category assignment</Typography>
-            {(form.cat_rows || []).map((row, i) => (
-              <Stack key={i} direction="row" spacing={1}>
-                <TextField
-                  select
-                  label="Category"
-                  value={row.employment_category_id}
-                  onChange={(e) => {
-                    const next = [...(form.cat_rows || [])];
-                    next[i] = { ...next[i], employment_category_id: e.target.value };
-                    setForm({ ...form, cat_rows: next });
-                  }}
-                  sx={{ minWidth: 180 }}
-                >
-                  {cats.map((c) => (
-                    <MenuItem key={c.id} value={c.id}>
-                      {c.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
-                <TextField
-                  type="date"
-                  label="From"
-                  InputLabelProps={{ shrink: true }}
-                  value={row.effective_from || ""}
-                  onChange={(e) => {
-                    const next = [...(form.cat_rows || [])];
-                    next[i] = { ...next[i], effective_from: e.target.value };
-                    setForm({ ...form, cat_rows: next });
-                  }}
-                />
+      <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2 }}>
+        <Stack spacing={1}>
+          {users.map((u) => (
+            <Stack key={u.id} direction="row" justifyContent="space-between" alignItems="center" sx={{ border: "1px solid #e5e7eb", p: 1, borderRadius: 1.5 }}>
+              <Box>
+                <Typography>{u.display_name || u.username}</Typography>
+                <Typography sx={{ color: "#64748b", fontSize: 13 }}>{u.username}</Typography>
+              </Box>
+              <Stack direction="row" spacing={0.6} sx={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
+                {(u.roles || []).map((r) => <Chip key={`${u.id}-${r}`} label={r} size="small" />)}
+                <Chip label={u.active ? "ACTIVE" : "INACTIVE"} size="small" color={u.active ? "success" : "default"} />
               </Stack>
-            ))}
+            </Stack>
+          ))}
+        </Stack>
+      </Paper>
+
+      <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Create User</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.2} sx={{ mt: 0.8 }}>
+            <TextField label="Username" value={form.username} onChange={(e) => setForm((p) => ({ ...p, username: e.target.value }))} />
+            <TextField label="Display Name" value={form.display_name} onChange={(e) => setForm((p) => ({ ...p, display_name: e.target.value }))} />
+            <TextField label="Password" type="password" value={form.password} onChange={(e) => setForm((p) => ({ ...p, password: e.target.value }))} />
+            <TextField
+              select
+              label="Primary Role"
+              value={form.roles[0] || ""}
+              onChange={(e) => setForm((p) => ({ ...p, roles: [e.target.value] }))}
+            >
+              {roles.map((r) => (
+                <MenuItem key={r.code} value={r.code}>{r.code}</MenuItem>
+              ))}
+            </TextField>
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDialog(null)}>Cancel</Button>
-          <Button variant="contained" onClick={saveEdit}>
-            Save
+          <Button onClick={() => setOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={create} disabled={saving || !form.username || !form.password || !form.roles.length}>
+            {saving ? "Saving..." : "Create"}
           </Button>
         </DialogActions>
       </Dialog>
-    </div>
+    </Box>
   );
 }
 
 export default EmployeesPage;
+

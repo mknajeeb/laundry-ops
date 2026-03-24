@@ -63,7 +63,27 @@ def extract_weight(cells):
         if c is None:
             continue
 
-        value = parse_number(c)
+        text = str(c).strip()
+        if text == "":
+            continue
+        upper = text.upper()
+
+        value = None
+
+        # Parse only explicit weight tokens (e.g. "31.5 lbs") or pure numeric cells.
+        # This avoids false weights from address digits inside names like "#5 1 ...".
+        if "LBS" in upper or re.search(r"\bLB\b", upper):
+            m = re.search(r"(\d+(?:\.\d+)?)", upper.replace(",", ""))
+            if m:
+                try:
+                    value = float(m.group(1))
+                except Exception:
+                    value = None
+        elif re.fullmatch(r"\d+(?:\.\d+)?", text):
+            try:
+                value = float(text)
+            except Exception:
+                value = None
 
         if value is not None and 0 <= value <= 200:
             return value
@@ -116,24 +136,62 @@ def extract_name(cells):
 
 
 def classify_service(cells):
+    has_hd_int = False
 
     for c in cells:
 
         if c is None:
             continue
 
-        text = c.upper().replace("LBS", "").strip()
+        text = c.upper().strip()
+        text_no_lbs = text.replace("LBS", "").strip()
 
+        # Explicit WF markers
         if "?" in text:
             return "WF"
 
-        if "." in text and any(ch.isdigit() for ch in text):
+        if "LBS" in text:
             return "WF"
 
-        if text.isdigit():
-            return "HD"
+        # Decimal numeric values are WF by definition
+        if re.search(r"\d+\.\d+", text_no_lbs):
+            return "WF"
 
-    return "HD"
+        # Pure integer values are HD candidates
+        if re.fullmatch(r"\d+", text_no_lbs):
+            has_hd_int = True
+
+    if has_hd_int:
+        return "HD"
+
+    return "WF"
+
+
+def has_explicit_wf_marker(cells):
+    for c in cells:
+        if c is None:
+            continue
+        text = c.upper().strip()
+        if "?" in text:
+            return True
+        if "LBS" in text or re.search(r"\bLB\b", text):
+            return True
+        text_no_lbs = text.replace("LBS", "").strip()
+        if re.search(r"\d+\.\d+", text_no_lbs):
+            return True
+    return False
+
+
+def detect_rush_hint(cells):
+
+    for c in cells:
+        if c is None:
+            continue
+        u = c.upper()
+        if ("TODAY" in u) or ("RUSH" in u):
+            return True
+
+    return False
 
 
 def build_ops_summary(df):
@@ -200,21 +258,26 @@ def transform_orders(df_raw):
     df = df[df["Cells"].apply(len) > 0].copy()
 
     def get_date(row):
+        # Prefer row-level date detection from all cells to avoid
+        # over-defaulting to an early date when sheet layout changes.
+        cells = row.get("Cells") or []
+        for c in cells:
+            d = extract_date_from_text(c)
+            if d is not None:
+                return d
 
+        # Fallback legacy behavior
         c1 = clean(row.get("Column1"))
         c2 = clean(row.get("Column2"))
-
         d1 = extract_date_from_text(c1)
         d2 = extract_date_from_text(c2)
-
         if d1 is not None:
             return d1
-
         return d2
 
     df["Date_Clean"] = df.apply(get_date, axis=1)
-
-    df["Date_Clean"] = df["Date_Clean"].ffill().bfill()
+    # Keep forward fill only; do not backfill from future rows.
+    df["Date_Clean"] = df["Date_Clean"].ffill()
 
     df["Weight_Num"] = df["Cells"].apply(extract_weight)
 
@@ -237,23 +300,17 @@ def transform_orders(df_raw):
 
     df["ServiceType"] = df["Cells"].apply(classify_service)
 
-    rush_rows = df[
-        df["Cells"].apply(
-            lambda cells: any(
-                ("TODAY" in c.upper()) or ("RUSH" in c.upper())
-                for c in cells if c
-            )
-        )
-    ]
+    # Business exception:
+    # BlueBottle rows frequently provide piece-count style entries with blank measure.
+    # If there is no explicit WF marker and no extracted weight, treat as HD.
+    # BlueBottle is operationally treated as HD in this workflow.
+    # Use contains() (not startswith) to catch naming variations.
+    bluebottle_mask = df["Name_Clean"].astype(str).str.upper().str.contains("BLUEBOTTLE", na=False)
+    df.loc[bluebottle_mask, "ServiceType"] = "HD"
 
-    rush_date = None
-
-    if len(rush_rows) > 0:
-        rush_date = rush_rows.iloc[0]["Date_Clean"]
-
-    df["RushType"] = df["Date_Clean"].apply(
-        lambda d: "RUSH" if rush_date and d == rush_date else "NON-RUSH"
-    )
+    # Keep direct rush marker from upload row; batch-date rush is applied in backend upload logic
+    df["RushHint"] = df["Cells"].apply(detect_rush_hint)
+    df["RushType"] = df["RushHint"].apply(lambda x: "RUSH" if x else "NON-RUSH")
 
     final = df[
         [

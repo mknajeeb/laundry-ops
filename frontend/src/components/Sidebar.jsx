@@ -1,112 +1,80 @@
-import { Link, useLocation } from "react-router-dom";
-import {
-  LayoutDashboard,
-  Package,
-  Upload,
-  Users,
-  Wrench,
-  ClipboardList,
-  BarChart3,
-  AlertTriangle,
-  Clock,
-  LineChart,
-  Settings2,
-  LogIn,
-  LogOut,
-} from "lucide-react";
-import { useAuth } from "../context/AuthContext";
+import { NavLink } from "react-router-dom";
+import { Box, Button, Chip, Stack, Typography } from "@mui/material";
 
-function Sidebar() {
-  const location = useLocation();
-  const { token, logout, hasPerm } = useAuth();
+const NAV_ITEMS = [
+  { to: "/", label: "Home", roles: [] },
+  { to: "/dashboard", label: "Dashboard", roles: [] },
+  { to: "/orders", label: "Orders", roles: [] },
+  { to: "/checkout", label: "Checkout", roles: [] },
+  { to: "/upload", label: "Upload", roles: ["ADMIN", "OPS"] },
+  { to: "/discrepancies", label: "Discrepancies", roles: ["ADMIN", "OPS"] },
+  { to: "/inventory", label: "Inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"] },
+  { to: "/clock", label: "Clock", roles: [] },
+  { to: "/issues", label: "Issues", roles: [] },
+  { to: "/production", label: "Production", roles: [] },
+  { to: "/scoreboard", label: "Scoreboard", roles: [] },
+  { to: "/maintenance", label: "Maintenance", roles: [] },
+  { to: "/employees", label: "Users", roles: ["ADMIN"] },
+  { to: "/time-clock", label: "Time clock", roles: [] },
+  { to: "/payroll-monitor", label: "Payroll monitor", roles: ["ADMIN", "OPS"] },
+  { to: "/attendance-setup", label: "Attendance setup", roles: ["ADMIN"] },
+  { to: "/ta-employees", label: "TA users", roles: ["ADMIN"] },
+  { to: "/ta-login", label: "TA sign-in", roles: [] },
+];
 
-  const menu = [
-    { label: "Dashboard", path: "/dashboard", icon: <LayoutDashboard size={18} /> },
-    { label: "Orders", path: "/orders", icon: <Package size={18} /> },
-    { label: "Checkout", path: "/checkout", icon: <ClipboardList size={18} /> },
-    { label: "Upload", path: "/upload", icon: <Upload size={18} /> },
-    { label: "Production", path: "/production", icon: <Package size={18} /> },
-    { label: "Issues", path: "/issues", icon: <AlertTriangle size={18} /> },
-    { label: "Scoreboard", path: "/scoreboard", icon: <BarChart3 size={18} /> },
-    { label: "Maintenance", path: "/maintenance", icon: <Wrench size={18} /> },
-  ];
-
-  const taMenu = [
-    { label: "Time clock", path: "/time-clock", icon: <Clock size={18} />, show: true },
-    {
-      label: "Payroll monitor",
-      path: "/payroll-monitor",
-      icon: <LineChart size={18} />,
-      show: hasPerm("ta.monitor"),
-    },
-    {
-      label: "Users",
-      path: "/employees",
-      icon: <Users size={18} />,
-      show: hasPerm("users.view"),
-    },
-    {
-      label: "Attendance setup",
-      path: "/attendance-setup",
-      icon: <Settings2 size={18} />,
-      show: hasPerm("ta.settings"),
-    },
-  ];
+function Sidebar({ activeBatch, user, onLogout }) {
+  const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
+  const allow = (item) => !item.roles.length || item.roles.some((r) => roles.includes(r));
 
   return (
-    <div className="sidebar">
-      <h2>LaundryOps</h2>
+    <Box
+      sx={{
+        width: 240,
+        minHeight: "100vh",
+        p: 1.5,
+        background: "linear-gradient(180deg, #0f172a 0%, #111827 100%)",
+        color: "#e2e8f0",
+        borderRight: "1px solid #1f2937",
+      }}
+    >
+      <Typography sx={{ fontSize: 40, lineHeight: 1, color: "#ffffff", mb: 0.5 }}>Washpro</Typography>
+      <Typography sx={{ fontSize: 13, color: "#94a3b8" }}>
+        {user?.display_name || user?.username}
+      </Typography>
+      <Stack direction="row" spacing={0.6} sx={{ mt: 0.6, mb: 1.2, flexWrap: "wrap" }}>
+        {roles.map((r) => <Chip key={r} label={r} size="small" sx={{ bgcolor: "#1e293b", color: "#cbd5e1" }} />)}
+      </Stack>
 
-      <div className="sidebar-menu">
-        {menu.map((item) => {
-          const active = location.pathname === item.path;
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`menu-item ${active ? "menu-active" : ""}`}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </Link>
-          );
-        })}
+      {activeBatch && (
+        <Chip
+          label={`Batch #${activeBatch.id} ${String(activeBatch.state || "").toUpperCase()}`}
+          size="small"
+          sx={{ mb: 1.2, bgcolor: "#0b3b77", color: "#dbeafe" }}
+        />
+      )}
 
-        <div style={{ margin: "12px 0 6px", fontSize: 11, opacity: 0.65 }}>Time &amp; pay</div>
-        {taMenu
-          .filter((item) => item.show)
-          .map((item) => {
-            const active = location.pathname === item.path;
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={`menu-item ${active ? "menu-active" : ""}`}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
-
-        {token ? (
-          <button
-            type="button"
-            className="menu-item"
-            onClick={logout}
-            style={{ border: "none", background: "transparent", cursor: "pointer", width: "100%", textAlign: "left" }}
+      <Stack spacing={0.8}>
+        {NAV_ITEMS.filter(allow).map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            style={({ isActive }) => ({
+              display: "block",
+              textDecoration: "none",
+              padding: "12px 14px",
+              borderRadius: "10px",
+              color: isActive ? "#0f172a" : "#e2e8f0",
+              background: isActive ? "#f8fafc" : "#1e293b",
+              fontSize: 16,
+            })}
           >
-            <LogOut size={18} />
-            <span>Sign out</span>
-          </button>
-        ) : (
-          <Link to="/login" className={`menu-item ${location.pathname === "/login" ? "menu-active" : ""}`}>
-            <LogIn size={18} />
-            <span>Sign in</span>
-          </Link>
-        )}
-      </div>
-    </div>
+            {item.label}
+          </NavLink>
+        ))}
+      </Stack>
+
+      <Button sx={{ mt: 1.5 }} variant="outlined" color="inherit" onClick={onLogout}>Logout</Button>
+    </Box>
   );
 }
 
