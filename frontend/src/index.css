@@ -1,344 +1,113 @@
 /* =========================
-   GLOBAL
+GLOBAL
 ========================= */
 
 body {
-  margin: 0;
-  font-family: Arial, Helvetica, sans-serif;
-  background: #f5f6fa;
+  margin:0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial;
+  background:#f3f4f6;
+  color:#111827;
 }
 
 /* =========================
-   APP LAYOUT
+LAYOUT
 ========================= */
 
-.app-layout {
-  display: flex;
-}
-
-/* =========================
-   SIDEBAR
-========================= */
-
-.sidebar {
-  width: 220px;
-  background: #1f2a38;
-  min-height: 100vh;
-  padding: 20px;
-  color: white;
-}
-
-.sidebar h2 {
-  margin-bottom: 20px;
-}
-
-.sidebar-menu {
-  margin-top: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.menu-item {
-  padding: 12px;
-  background: #2c3b4d;
-  color: white;
-  text-decoration: none;
-  border-radius: 6px;
-  font-size: 14px;
-}
-
-.menu-item:hover {
-  background: #3d4f66;
-}
-
-/* =========================
-   MAIN CONTENT
-========================= */
-
-.main-content {
-  flex: 1;
-  padding: 40px;
-}
-
-/* =========================
-   ORDERS PAGE
-========================= */
-
-.orders-header {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-
-.orders-title {
-  font-size: 28px;
-  font-weight: 600;
-}
-
-.orders-widget {
-  display: grid;
-  grid-template-columns: repeat(2,150px);
-  gap: 12px;
-}
-
-.widget-box {
-  background: white;
-  padding: 12px 16px;
-  border-radius: 8px;
-  box-shadow: 0 3px 8px rgba(0,0,0,0.06);
-}
-
-.widget-label {
-  font-size: 12px;
-  color: #6b7280;
-}
-
-.widget-value {
-  font-size: 20px;
-  font-weight: 600;
-}
-
-/* =========================
-   SEARCH
-========================= */
-
-.search-box {
-  padding: 8px 12px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  width: 260px;
-  margin-bottom: 15px;
-}
-
-/* =========================
-   ALPHABET FILTER
-========================= */
-
-.alphabet {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.alphabet button {
-  border: 1px solid #d1d5db;
-  background: white;
-  padding: 4px 9px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.alphabet button:hover {
-  background: #2563eb;
-  color: white;
-}
-
-/* =========================
-   TABLE
-========================= */
-
-.orders-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 20px;
-  background: white;
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.orders-table th {
-  background: #f4f6f9;
-  text-align: left;
-  padding: 12px;
-  font-size: 13px;
-}
-
-.orders-table td {
-  padding: 12px;
-  border-top: 1px solid #eee;
-}
-
-.orders-table tr:hover {
-  background: #fafafa;
-}
-
-/* =========================
-   ACTION BUTTONS
-========================= */
-
-.edit-btn {
-  background: #2563eb;
-  color: white;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  margin-right: 6px;
-  font-size: 13px;
-}
-
-.delete-btn {
-  background: #ef4444;
-  color: white;
-  border: none;
-  padding: 6px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-/* =========================
-   MOBILE RESPONSIVE
-========================= */
-
-@media (max-width: 900px) {
-
-  .sidebar {
-    width: 70px;
-  }
-
-  .sidebar h2 {
-    display: none;
-  }
-
-  .menu-item {
-    font-size: 12px;
-    padding: 8px;
-  }
-
-  .orders-table {
-    display:block;
-    overflow-x:auto;
-  }
-
-/* ORDERS PAGE */
-
-.orders-page {
-  width: 100%;
-}
-
-.orders-top {
+.app-layout{
   display:flex;
-  justify-content:space-between;
-  margin-bottom:20px;
+  min-height:100vh;
 }
 
-.orders-title {
-  font-size:28px;
-  font-weight:600;
-}
+/* =========================
+SIDEBAR
+========================= */
 
-/* filters */
-
-.orders-filters {
-  display:flex;
-  gap:20px;
-  margin-top:10px;
-}
-
-.filter-group button {
-  margin-left:6px;
-  padding:6px 10px;
-  border:1px solid #d1d5db;
-  background:white;
-  border-radius:6px;
-  cursor:pointer;
-}
-
-.filter-active {
-  background:#2563eb;
+.sidebar{
+  width:230px;
+  background:#111827;
   color:white;
+  padding:20px;
 }
 
-/* stats */
-
-.orders-stats {
-  display:flex;
-  gap:12px;
-}
-
-.stat-box {
-  background:white;
-  padding:12px 16px;
-  border-radius:8px;
-  box-shadow:0 3px 8px rgba(0,0,0,0.06);
-}
-
-.stat-label {
-  font-size:12px;
-  color:#6b7280;
-}
-
-.stat-value {
+.sidebar h2{
+  margin-bottom:25px;
   font-size:20px;
-  font-weight:600;
 }
 
-/* table */
+.sidebar-menu{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
 
-.table-wrapper {
-  margin-top:20px;
+.menu-item{
+  padding:10px 12px;
+  border-radius:6px;
+  text-decoration:none;
+  color:white;
+  font-size:14px;
+}
+
+.menu-item:hover{
+  background:#1f2937;
+}
+
+/* =========================
+MAIN CONTENT
+========================= */
+
+.main-content{
+  flex:1;
+  padding:30px;
+}
+
+/* =========================
+TABLE
+========================= */
+
+.table-wrapper{
   background:white;
   border-radius:10px;
-  box-shadow:0 3px 10px rgba(0,0,0,0.05);
   overflow:hidden;
+  box-shadow:0 4px 10px rgba(0,0,0,0.05);
 }
 
-.orders-table {
+.orders-table{
   width:100%;
   border-collapse:collapse;
 }
 
-.orders-table th {
-  background:#f9fafb;
+.orders-table th{
   text-align:left;
   padding:14px;
+  background:#f9fafb;
   font-size:13px;
 }
 
-.orders-table td {
+.orders-table td{
   padding:14px;
   border-top:1px solid #eee;
 }
 
-.orders-table tr:hover {
+.orders-table tr:hover{
   background:#fafafa;
 }
 
-.name-cell {
-  font-weight:500;
-}
+/* =========================
+BUTTONS
+========================= */
 
-/* status */
-
-.status-pill {
-  background:#eef2ff;
-  color:#4338ca;
-  padding:4px 10px;
-  border-radius:20px;
-  font-size:12px;
-}
-
-/* actions */
-
-.actions {
-  text-align:right;
-}
-
-.edit-btn {
+.edit-btn{
   background:#2563eb;
   color:white;
   border:none;
   padding:6px 10px;
   border-radius:6px;
-  margin-right:6px;
   cursor:pointer;
+  margin-right:6px;
 }
 
-.delete-btn {
+.delete-btn{
   background:#ef4444;
   color:white;
   border:none;
@@ -347,4 +116,48 @@ body {
   cursor:pointer;
 }
 
+/* =========================
+STATUS
+========================= */
+
+.status-pill{
+  background:#eef2ff;
+  color:#4338ca;
+  padding:4px 10px;
+  border-radius:20px;
+  font-size:12px;
+}
+
+/* =========================
+RESPONSIVE
+========================= */
+
+@media (max-width:900px){
+
+.sidebar{
+  width:70px;
+}
+
+.sidebar h2{
+  display:none;
+}
+
+.menu-item{
+  font-size:12px;
+  padding:8px;
+}
+
+.orders-table{
+  display:block;
+  overflow-x:auto;
+}
+.menu-item{
+display:flex;
+align-items:center;
+gap:10px;
+}
+
+.menu-active{
+background:#2563eb;
+}
 }

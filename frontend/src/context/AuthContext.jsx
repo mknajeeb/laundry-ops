@@ -1,0 +1,97 @@
+/* eslint-disable react-refresh/only-export-components -- context + hook pattern */
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { getMe, login as apiLogin } from "../api";
+
+const AuthContext = createContext(null);
+
+export function AuthProvider({ children }) {
+  const [token, setToken] = useState(() => localStorage.getItem("ta_token") || "");
+  const [user, setUser] = useState(null);
+  const [permissions, setPermissions] = useState([]);
+  const [loading, setLoading] = useState(!!localStorage.getItem("ta_token"));
+
+  const refreshMe = useCallback(async () => {
+    const t = localStorage.getItem("ta_token");
+    if (!t) {
+      setUser(null);
+      setPermissions([]);
+      setLoading(false);
+      return;
+    }
+    try {
+      setLoading(true);
+      const res = await getMe();
+      setUser(res.data.user);
+      setPermissions(res.data.permissions || []);
+    } catch {
+      localStorage.removeItem("ta_token");
+      setToken("");
+      setUser(null);
+      setPermissions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    setToken(localStorage.getItem("ta_token") || "");
+  }, []);
+
+  useEffect(() => {
+    if (!token) {
+      setUser(null);
+      setPermissions([]);
+      setLoading(false);
+      return;
+    }
+    refreshMe();
+  }, [token, refreshMe]);
+
+  const login = useCallback(async (email, password) => {
+    const res = await apiLogin(email, password);
+    const t = res.data.token;
+    localStorage.setItem("ta_token", t);
+    setToken(t);
+  }, []);
+
+  const logout = useCallback(() => {
+    localStorage.removeItem("ta_token");
+    setToken("");
+    setUser(null);
+    setPermissions([]);
+  }, []);
+
+  const hasPerm = useCallback(
+    (key) => permissions.includes(key),
+    [permissions]
+  );
+
+  const value = useMemo(
+    () => ({
+      token,
+      user,
+      permissions,
+      loading,
+      login,
+      logout,
+      refreshMe,
+      hasPerm,
+    }),
+    [token, user, permissions, loading, login, logout, refreshMe, hasPerm]
+  );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth outside AuthProvider");
+  return ctx;
+}
