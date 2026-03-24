@@ -39,6 +39,13 @@ self.addEventListener("fetch", (event) => {
 
   if (request.method !== "GET") return;
 
+  try {
+    const u = new URL(request.url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return;
+  } catch {
+    return;
+  }
+
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)

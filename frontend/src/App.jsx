@@ -97,6 +97,10 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
+    if (pathname === "/login" || !user) {
+      setActiveBatch(null);
+      return;
+    }
     async function loadBatch() {
       try {
         const res = await getCurrentUploadBatch();
@@ -106,7 +110,7 @@ function AppShell() {
       }
     }
     loadBatch();
-  }, [pathname]);
+  }, [pathname, user]);
 
   const shellBackground = useMemo(
     () => "linear-gradient(145deg, #f8fbff 0%, #f2f6ff 45%, #f7fafc 100%)",

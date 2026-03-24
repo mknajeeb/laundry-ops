@@ -786,7 +786,7 @@ def current_user_from_token(cursor):
     expires_at = row.get("expires_at")
     if isinstance(expires_at, datetime) and expires_at < datetime.utcnow():
         return None
-    if not row.get("active", False):
+    if not as_bool(row.get("active"), default=False):
         return None
     return row
 
@@ -3324,10 +3324,11 @@ def auth_login():
     if not username or not password:
         return jsonify({"error": "username and password are required"}), 400
 
-    conn = get_db()
-    cursor = conn.cursor(dictionary=True)
-
+    conn = None
+    cursor = None
     try:
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT id, username, password_hash, display_name, active
             FROM users
@@ -3335,7 +3336,7 @@ def auth_login():
             LIMIT 1
         """, (username,))
         user = cursor.fetchone()
-        if not user or not user.get("active"):
+        if not user or not as_bool(user.get("active"), default=False):
             return jsonify({"error": "Invalid credentials"}), 401
 
         stored_hash = user.get("password_hash") or ""
@@ -3350,14 +3351,21 @@ def auth_login():
         else:
             password_ok = (stored_hash == password)
             if password_ok:
-                cursor.execute(
-                    """
-                    UPDATE users
-                    SET password_hash = %s, updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (generate_password_hash(password), user["id"])
-                )
+                new_hash = generate_password_hash(password)
+                if table_has_column(cursor, "users", "updated_at"):
+                    cursor.execute(
+                        """
+                        UPDATE users
+                        SET password_hash = %s, updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (new_hash, user["id"]),
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE users SET password_hash = %s WHERE id = %s",
+                        (new_hash, user["id"]),
+                    )
 
         if not password_ok:
             return jsonify({"error": "Invalid credentials"}), 401
@@ -3382,18 +3390,32 @@ def auth_login():
             }
         })
     except Exception as e:
-        conn.rollback()
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return jsonify({"error": str(e)}), 500
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.route("/auth/me", methods=["GET"])
 def auth_me():
-    conn = get_db()
-    cursor = conn.cursor(dictionary=True)
+    conn = None
+    cursor = None
     try:
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
         me = current_user_from_token(cursor)
         if not me:
             return jsonify({"error": "Unauthorized"}), 401
@@ -3406,9 +3428,19 @@ def auth_me():
             "display_name": me.get("display_name") or me["username"],
             "roles": roles
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.route("/auth/logout", methods=["POST"])
@@ -6935,3 +6967,29 @@ def home():
         "service": "LaundryOps API",
         "status": "running"
     })
+
+
+@app.route("/health/db", methods=["GET"])
+def health_db():
+    """Returns 200 + {\"ok\": true} if MySQL is reachable; 503 with error text otherwise."""
+    conn = None
+    cursor = None
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 503
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
