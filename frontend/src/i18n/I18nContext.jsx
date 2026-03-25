@@ -4,25 +4,55 @@ import { TRANSLATIONS } from "./translations";
 
 const STORAGE_KEY = "washpro_locale";
 
+function readStoredLocale() {
+  try {
+    const a = localStorage.getItem(STORAGE_KEY);
+    if (a === "es" || a === "en") return a;
+  } catch {
+    /* quota / private mode */
+  }
+  try {
+    const b = sessionStorage.getItem(STORAGE_KEY);
+    if (b === "es" || b === "en") return b;
+  } catch {
+    /* ignore */
+  }
+  if (typeof navigator !== "undefined" && navigator.language) {
+    return String(navigator.language).toLowerCase().startsWith("es") ? "es" : "en";
+  }
+  return "en";
+}
+
+function persistLocale(l) {
+  try {
+    localStorage.setItem(STORAGE_KEY, l);
+  } catch {
+    /* ignore */
+  }
+  try {
+    sessionStorage.setItem(STORAGE_KEY, l);
+  } catch {
+    /* ignore */
+  }
+  if (typeof document !== "undefined") {
+    document.documentElement.lang = l === "es" ? "es" : "en";
+  }
+}
+
 const I18nContext = createContext(null);
 
 export function I18nProvider({ children }) {
   const [locale, setLocaleState] = useState(() => {
-    try {
-      const s = localStorage.getItem(STORAGE_KEY);
-      return s === "es" ? "es" : "en";
-    } catch {
-      return "en";
+    const l = readStoredLocale();
+    if (typeof document !== "undefined") {
+      document.documentElement.lang = l === "es" ? "es" : "en";
     }
+    return l;
   });
 
   const setLocale = useCallback((next) => {
     const l = next === "es" ? "es" : "en";
-    try {
-      localStorage.setItem(STORAGE_KEY, l);
-    } catch {
-      /* ignore */
-    }
+    persistLocale(l);
     setLocaleState(l);
   }, []);
 

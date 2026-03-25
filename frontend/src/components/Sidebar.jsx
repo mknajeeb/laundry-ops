@@ -31,27 +31,36 @@ function Sidebar({ activeBatch, user, onLogout }) {
       sx={{
         width: 240,
         minHeight: "100vh",
+        height: "100%",
+        maxHeight: "100vh",
         p: 1.5,
+        pb: "calc(12px + env(safe-area-inset-bottom, 0px))",
         background: "linear-gradient(180deg, #0f172a 0%, #111827 100%)",
         color: "#e2e8f0",
         borderRight: "1px solid #1f2937",
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        boxSizing: "border-box",
       }}
     >
-      <Typography sx={{ fontSize: 40, lineHeight: 1, color: "#ffffff", mb: 0.5 }}>Washpro</Typography>
-      <Typography sx={{ fontSize: 13, color: "#94a3b8" }}>
+      <Typography sx={{ fontSize: 40, lineHeight: 1, color: "#ffffff", mb: 0.5, flexShrink: 0 }}>Washpro</Typography>
+      <Typography sx={{ fontSize: 13, color: "#94a3b8", flexShrink: 0 }}>
         {user?.display_name || user?.username}
       </Typography>
-      <Stack direction="row" spacing={0.6} sx={{ mt: 0.6, mb: 1.2, flexWrap: "wrap" }}>
+      <Stack direction="row" spacing={0.6} sx={{ mt: 0.6, mb: 1.2, flexWrap: "wrap", flexShrink: 0 }}>
         {roles.map((r) => <Chip key={r} label={r} size="small" sx={{ bgcolor: "#1e293b", color: "#cbd5e1" }} />)}
       </Stack>
 
-      <Typography sx={{ fontSize: 11, color: "#94a3b8", mb: 0.5 }}>{t("lang.label")}</Typography>
+      <Typography sx={{ fontSize: 11, color: "#94a3b8", mb: 0.5, flexShrink: 0 }}>{t("lang.label")}</Typography>
       <ToggleButtonGroup
         size="small"
         exclusive
         value={locale}
-        onChange={(_, v) => v && setLocale(v)}
-        sx={{ mb: 1.2, "& .MuiToggleButton-root": { py: 0.25, px: 1, fontSize: 12, color: "#e2e8f0", borderColor: "#334155" } }}
+        onChange={(_, v) => {
+          if (v !== null) setLocale(v);
+        }}
+        sx={{ mb: 1.2, flexShrink: 0, "& .MuiToggleButton-root": { py: 0.25, px: 1, fontSize: 12, color: "#e2e8f0", borderColor: "#334155" } }}
       >
         <ToggleButton value="en">{t("lang.en")}</ToggleButton>
         <ToggleButton value="es">{t("lang.es")}</ToggleButton>
@@ -61,31 +70,33 @@ function Sidebar({ activeBatch, user, onLogout }) {
         <Chip
           label={`Batch #${activeBatch.id} ${String(activeBatch.state || "").toUpperCase()}`}
           size="small"
-          sx={{ mb: 1.2, bgcolor: "#0b3b77", color: "#dbeafe" }}
+          sx={{ mb: 1.2, bgcolor: "#0b3b77", color: "#dbeafe", flexShrink: 0, alignSelf: "flex-start" }}
         />
       )}
 
-      <Stack spacing={0.8}>
-        {NAV_ITEMS.filter(allow).map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            style={({ isActive }) => ({
-              display: "block",
-              textDecoration: "none",
-              padding: "12px 14px",
-              borderRadius: "10px",
-              color: isActive ? "#0f172a" : "#e2e8f0",
-              background: isActive ? "#f8fafc" : "#1e293b",
-              fontSize: 16,
-            })}
-          >
-            {t(item.labelKey)}
-          </NavLink>
-        ))}
-      </Stack>
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", pr: 0.5, WebkitOverflowScrolling: "touch" }}>
+        <Stack spacing={0.8}>
+          {NAV_ITEMS.filter(allow).map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              style={({ isActive }) => ({
+                display: "block",
+                textDecoration: "none",
+                padding: "12px 14px",
+                borderRadius: "10px",
+                color: isActive ? "#0f172a" : "#e2e8f0",
+                background: isActive ? "#f8fafc" : "#1e293b",
+                fontSize: 16,
+              })}
+            >
+              {t(item.labelKey)}
+            </NavLink>
+          ))}
+        </Stack>
+      </Box>
 
-      <Button sx={{ mt: 1.5 }} variant="outlined" color="inherit" onClick={onLogout}>{t("nav.logout")}</Button>
+      <Button sx={{ mt: 1.5, flexShrink: 0 }} variant="outlined" color="inherit" onClick={onLogout}>{t("nav.logout")}</Button>
     </Box>
   );
 }

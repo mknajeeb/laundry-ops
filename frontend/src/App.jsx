@@ -39,7 +39,17 @@ function MobileTopBar({ pathname }) {
   const { locale, setLocale, t } = useI18n();
   const canGoBack = pathname !== "/";
   return (
-    <AppBar position="sticky" elevation={0} sx={{ top: 0, background: "#ffffff", color: "#0f172a", borderBottom: "1px solid #e2e8f0" }}>
+    <AppBar
+      position="sticky"
+      elevation={0}
+      sx={{
+        top: 0,
+        pt: "env(safe-area-inset-top, 0px)",
+        background: "#ffffff",
+        color: "#0f172a",
+        borderBottom: "1px solid #e2e8f0",
+      }}
+    >
       <Toolbar sx={{ minHeight: "50px !important", px: 1 }}>
         {canGoBack ? (
           <IconButton size="small" onClick={() => navigate(-1)} sx={{ mr: 1 }}><ArrowBack sx={{ fontSize: 18 }} /></IconButton>
@@ -135,9 +145,9 @@ function AppShell() {
   return (
     <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
       {!isMobile && user && <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />}
-      <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {isMobile && user && <MobileTopBar pathname={pathname} />}
-        <Box sx={{ p: { xs: 0, md: 1 } }}>
+        <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
           <Routes>
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />

@@ -1,4 +1,5 @@
-const CACHE_NAME = "washpro-shell-v1";
+// Bump when fetch strategy changes so clients pick up new worker.
+const CACHE_NAME = "washpro-shell-v2";
 const APP_SHELL = [
   "/",
   "/index.html",
@@ -59,6 +60,17 @@ self.addEventListener("fetch", (event) => {
           return cached || caches.match("/index.html");
         })
     );
+    return;
+  }
+
+  const url = new URL(request.url);
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  // Never cache-first JS/CSS bundles (PWA would keep stale i18n / UI after deploy).
+  if (url.pathname.startsWith("/assets/") || /\.(?:js|css)(?:\?|$)/i.test(url.pathname)) {
+    event.respondWith(fetch(request));
     return;
   }
 
