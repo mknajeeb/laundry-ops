@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta
 from functools import wraps
 
+import mysql.connector
 from flask import Blueprint, current_app, g, jsonify, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
@@ -884,14 +885,17 @@ def users_get(user_id):
             u["rehire_parent"] = c.fetchone()
         else:
             u["rehire_parent"] = None
-        c.execute(
-            """
-            SELECT id, employee_id, first_name, last_name, email, active, hire_date
-            FROM ta_users WHERE rehire_parent_id=%s ORDER BY id
-            """,
-            (user_id,),
-        )
-        u["rehire_successors"] = c.fetchall()
+        try:
+            c.execute(
+                """
+                SELECT id, employee_id, first_name, last_name, email, active, hire_date
+                FROM ta_users WHERE rehire_parent_id=%s ORDER BY id
+                """,
+                (user_id,),
+            )
+            u["rehire_successors"] = c.fetchall()
+        except mysql.connector.Error:
+            u["rehire_successors"] = []
         c.execute(
             "SELECT geofence_id, is_primary FROM user_geofences WHERE user_id=%s",
             (user_id,),

@@ -1,8 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Local UI (e.g. http://localhost:5052) → same-origin API. Override target: VITE_DEV_API_PROXY=http://127.0.0.1:8000 npm run dev
-const backend = process.env.VITE_DEV_API_PROXY || 'http://127.0.0.1:5000'
+// Must match where Flask runs: `python run.py` uses port 8000 by default.
+// Override: VITE_DEV_API_PROXY=http://127.0.0.1:5000 npm run dev
+const backend = process.env.VITE_DEV_API_PROXY || 'http://127.0.0.1:8000'
 
 const API_PREFIXES = [
   'auth',

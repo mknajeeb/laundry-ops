@@ -17,11 +17,17 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
-: "${MYSQL_HOST:?Set MYSQL_HOST (e.g. in .env)}"
-: "${MYSQL_USER:?Set MYSQL_USER}"
-: "${MYSQL_PASSWORD:?Set MYSQL_PASSWORD}"
-: "${MYSQL_DATABASE:?Set MYSQL_DATABASE (e.g. laundryapp)}"
-MYSQL_PORT="${MYSQL_PORT:-3306}"
+# Allow either MYSQL_* (used by backend/db.py) or legacy DB_* from .env
+MYSQL_HOST="${MYSQL_HOST:-${DB_HOST:-}}"
+MYSQL_USER="${MYSQL_USER:-${DB_USER:-}}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-${DB_PASSWORD:-}}"
+MYSQL_DATABASE="${MYSQL_DATABASE:-${DB_NAME:-}}"
+MYSQL_PORT="${MYSQL_PORT:-${DB_PORT:-3306}}"
+
+: "${MYSQL_HOST:?Set MYSQL_HOST or DB_HOST in .env}"
+: "${MYSQL_USER:?Set MYSQL_USER or DB_USER in .env}"
+: "${MYSQL_PASSWORD:?Set MYSQL_PASSWORD or DB_PASSWORD in .env}"
+: "${MYSQL_DATABASE:?Set MYSQL_DATABASE or DB_NAME in .env}"
 
 echo "Applying $SQL_FILE → ${MYSQL_USER}@${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DATABASE}"
 echo "(You can also paste the same file into MySQL Workbench and run it there.)"
