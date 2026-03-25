@@ -13,6 +13,7 @@ import {
 } from "@mui/material";
 import { ArrowBack, Refresh } from "@mui/icons-material";
 import Sidebar from "./components/Sidebar";
+import { useI18n } from "./i18n/I18nContext";
 
 import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
@@ -30,10 +31,12 @@ import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollMonitorPage from "./pages/PayrollMonitorPage";
 import AttendanceSetupPage from "./pages/AttendanceSetupPage";
+import PermissionsPage from "./pages/PermissionsPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname }) {
   const navigate = useNavigate();
+  const { locale, setLocale, t } = useI18n();
   const canGoBack = pathname !== "/";
   return (
     <AppBar position="sticky" elevation={0} sx={{ top: 0, background: "#ffffff", color: "#0f172a", borderBottom: "1px solid #e2e8f0" }}>
@@ -42,7 +45,11 @@ function MobileTopBar({ pathname }) {
           <IconButton size="small" onClick={() => navigate(-1)} sx={{ mr: 1 }}><ArrowBack sx={{ fontSize: 18 }} /></IconButton>
         ) : <Box sx={{ width: 36 }} />}
         <Typography sx={{ fontSize: 18, flex: 1 }}>Washpro</Typography>
-        <IconButton size="small" onClick={() => window.location.reload()}><Refresh sx={{ fontSize: 18 }} /></IconButton>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: 0.5 }}>
+          <Button size="small" variant={locale === "en" ? "contained" : "text"} onClick={() => setLocale("en")} sx={{ minWidth: 40 }}>EN</Button>
+          <Button size="small" variant={locale === "es" ? "contained" : "text"} onClick={() => setLocale("es")} sx={{ minWidth: 40 }}>ES</Button>
+        </Box>
+        <IconButton size="small" onClick={() => window.location.reload()} aria-label={t("lang.label")}><Refresh sx={{ fontSize: 18 }} /></IconButton>
       </Toolbar>
     </AppBar>
   );
@@ -161,6 +168,14 @@ function AppShell() {
               element={
                 <GuardedRoute user={user} roles={["ADMIN"]}>
                   <AttendanceSetupPage />
+                </GuardedRoute>
+              }
+            />
+            <Route
+              path="/permissions"
+              element={
+                <GuardedRoute user={user} roles={["ADMIN"]}>
+                  <PermissionsPage />
                 </GuardedRoute>
               }
             />

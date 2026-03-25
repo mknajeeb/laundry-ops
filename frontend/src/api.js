@@ -5,8 +5,11 @@ import axios from "axios";
 ========================================= */
 
 const API_BASE =
-  import.meta.env.VITE_API_BASE ||
-  "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net";
+  import.meta.env.VITE_API_BASE != null && import.meta.env.VITE_API_BASE !== ""
+    ? import.meta.env.VITE_API_BASE
+    : import.meta.env.DEV
+      ? ""
+      : "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net";
 
 const AUTH_TOKEN_KEY = "washpro_token";
 const AUTH_USER_KEY = "washpro_user";
@@ -463,6 +466,14 @@ export const putTaSettings = (body) =>
   axios.put(`${API_BASE}/api/ta/settings`, body);
 
 export const getTaBagRates = () => axios.get(`${API_BASE}/api/ta/bag-rates`);
+
+export const getPermissionMatrix = () =>
+  axios.get(`${API_BASE}/api/ta/admin/permission-matrix`);
+
+export const putRolePermissions = (roleId, permission_keys) =>
+  axios.put(`${API_BASE}/api/ta/admin/roles/${roleId}/permissions`, {
+    permission_keys,
+  });
 
 export const getAuditLog = () => axios.get(`${API_BASE}/api/ta/audit-log`);
 

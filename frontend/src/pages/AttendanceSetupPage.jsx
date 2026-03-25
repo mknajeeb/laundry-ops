@@ -32,14 +32,24 @@ import {
   putTaSettings,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { useI18n } from "../i18n/I18nContext";
 
 function TabPanel({ children, value, index }) {
   if (value !== index) return null;
   return <Box sx={{ pt: 2 }}>{children}</Box>;
 }
 
+function labelForAxiosError(err, fallback) {
+  const d = err?.response?.data;
+  if (typeof d?.error === "string") return d.error;
+  if (typeof d?.message === "string") return d.message;
+  if (err?.message) return err.message;
+  return fallback;
+}
+
 function AttendanceSetupPage() {
-  const { hasPerm } = useAuth();
+  const { hasPerm, loading: authLoading } = useAuth();
+  const { t } = useI18n();
   const [tab, setTab] = useState(0);
   const [error, setError] = useState("");
   const [geofences, setGeofences] = useState([]);
@@ -72,32 +82,40 @@ function AttendanceSetupPage() {
   }, [canTaSettings, canUsersEdit]);
 
   const loadAll = useCallback(async () => {
-    if (!can) return;
-    try {
-      const [g, c, r, tu, br] = await Promise.all([
-        getGeofences(),
-        getEmploymentCategories(),
-        getUserRates(),
-        getTaUsers(),
-        getTaBagRates().catch(() => ({ data: [] })),
-      ]);
-      setGeofences(g.data || []);
-      setCats(c.data || []);
-      setRates(r.data || []);
-      setTaUsersList(tu.data || []);
-      setBagRates(br.data || []);
-      if (canTaSettings) {
-        const [s, a] = await Promise.all([getTaSettings(), getAuditLog()]);
-        setSettings(s.data || {});
-        setAudit(a.data || []);
-      } else {
-        setSettings({});
-        setAudit([]);
+    if (!can || authLoading) return;
+    setError("");
+    const errs = [];
+
+    async function run(name, fn, onOk) {
+      try {
+        const res = await fn();
+        onOk(res);
+      } catch (e) {
+        errs.push(`${name}: ${labelForAxiosError(e, "request failed")}`);
+        onOk(null);
       }
-    } catch (e) {
-      setError(e.response?.data?.error || "Load failed");
     }
-  }, [can, canTaSettings]);
+
+    await run("Geofences", getGeofences, (res) => setGeofences(res?.data || []));
+    await run("Categories", getEmploymentCategories, (res) => setCats(res?.data || []));
+    await run("User rates", getUserRates, (res) => setRates(res?.data || []));
+    await run("Payroll users", getTaUsers, (res) => setTaUsersList(res?.data || []));
+    await run("Bag rates", getTaBagRates, (res) => setBagRates(res?.data || []));
+
+    if (canTaSettings) {
+      await run("Settings", getTaSettings, (res) => setSettings(res?.data || {}));
+      await run("Audit log", getAuditLog, (res) => setAudit(res?.data || []));
+    } else {
+      setSettings({});
+      setAudit([]);
+    }
+
+    if (errs.length) {
+      setError(
+        `Could not load everything. ${errs.join(" · ")} — Local dev: start the Flask API (default proxy target http://127.0.0.1:5000 in vite.config.js), or set VITE_API_BASE to your API. After fixing TA permissions, sign out and back in.`
+      );
+    }
+  }, [can, canTaSettings, authLoading]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -166,9 +184,7 @@ function AttendanceSetupPage() {
   if (!can) {
     return (
       <div className="page">
-        <Alert severity="info">
-          This area requires <code>ta.settings</code> or <code>users.edit</code> on your TA role.
-        </Alert>
+        <Alert severity="info">{t("attendance.needPerm")}</Alert>
       </div>
     );
   }
@@ -176,7 +192,7 @@ function AttendanceSetupPage() {
   return (
     <div className="page">
       <Typography variant="h4" className="page-title" sx={{ mb: 2 }}>
-        Attendance setup
+        {t("attendance.title")}
       </Typography>
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
@@ -185,35 +201,35 @@ function AttendanceSetupPage() {
       ) : null}
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-        <Tab label="Geofences" disabled={!canTaSettings} />
-        <Tab label="Categories" disabled={!canTaSettings} />
-        <Tab label="Rates" />
-        <Tab label="Settings" disabled={!canTaSettings} />
-        <Tab label="Audit" disabled={!canTaSettings} />
+        <Tab label={t("attendance.tabGeofences")} disabled={!canTaSettings} />
+        <Tab label={t("attendance.tabCategories")} disabled={!canTaSettings} />
+        <Tab label={t("attendance.tabRates")} />
+        <Tab label={t("attendance.tabSettings")} disabled={!canTaSettings} />
+        <Tab label={t("attendance.tabAudit")} disabled={!canTaSettings} />
       </Tabs>
 
       <TabPanel value={tab} index={0}>
         <Typography variant="subtitle1" gutterBottom>
-          Add geofence
+          {t("attendance.addGeofence")}
         </Typography>
         <Stack component="form" onSubmit={addGeofence} spacing={2} direction={{ xs: "column", sm: "row" }} useFlexGap flexWrap="wrap">
-          <TextField label="Name" value={gfName} onChange={(e) => setGfName(e.target.value)} required />
-          <TextField label="Latitude" value={gfLat} onChange={(e) => setGfLat(e.target.value)} required />
-          <TextField label="Longitude" value={gfLng} onChange={(e) => setGfLng(e.target.value)} required />
-          <TextField label="Radius (m)" value={gfRad} onChange={(e) => setGfRad(e.target.value)} />
+          <TextField label={t("attendance.name")} value={gfName} onChange={(e) => setGfName(e.target.value)} required />
+          <TextField label={t("attendance.lat")} value={gfLat} onChange={(e) => setGfLat(e.target.value)} required />
+          <TextField label={t("attendance.lng")} value={gfLng} onChange={(e) => setGfLng(e.target.value)} required />
+          <TextField label={t("attendance.radiusM")} value={gfRad} onChange={(e) => setGfRad(e.target.value)} />
           <Button type="submit" variant="contained">
-            Save
+            {t("attendance.saveBtn")}
           </Button>
         </Stack>
         <Box className="table-wrapper" sx={{ mt: 2 }}>
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Name</TableCell>
-                <TableCell>Lat</TableCell>
-                <TableCell>Lng</TableCell>
-                <TableCell>Radius</TableCell>
-                <TableCell>Active</TableCell>
+                <TableCell>{t("attendance.name")}</TableCell>
+                <TableCell>{t("attendance.lat")}</TableCell>
+                <TableCell>{t("attendance.lng")}</TableCell>
+                <TableCell>{t("attendance.radiusM")}</TableCell>
+                <TableCell>{t("common.active")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -223,7 +239,7 @@ function AttendanceSetupPage() {
                   <TableCell>{g.latitude}</TableCell>
                   <TableCell>{g.longitude}</TableCell>
                   <TableCell>{g.radius_meters}</TableCell>
-                  <TableCell>{g.active ? "yes" : "no"}</TableCell>
+                  <TableCell>{g.active ? t("common.yes") : t("common.no")}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -233,10 +249,10 @@ function AttendanceSetupPage() {
 
       <TabPanel value={tab} index={1}>
         <Stack component="form" onSubmit={addCat} spacing={2} direction="row" useFlexGap flexWrap="wrap">
-          <TextField label="Code" value={catCode} onChange={(e) => setCatCode(e.target.value)} required />
-          <TextField label="Name" value={catName} onChange={(e) => setCatName(e.target.value)} required />
+          <TextField label={t("attendance.code")} value={catCode} onChange={(e) => setCatCode(e.target.value)} required />
+          <TextField label={t("attendance.name")} value={catName} onChange={(e) => setCatName(e.target.value)} required />
           <Button type="submit" variant="contained">
-            Add category
+            {t("attendance.addCategory")}
           </Button>
         </Stack>
         <Box sx={{ mt: 2 }}>
@@ -250,14 +266,14 @@ function AttendanceSetupPage() {
 
       <TabPanel value={tab} index={2}>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Create a rate for a payroll user + employment category + effective date.
+          {t("attendance.ratesHelp")}
         </Typography>
         <Stack component="form" onSubmit={addRate} spacing={2} direction={{ xs: "column", sm: "row" }} useFlexGap flexWrap="wrap" alignItems="flex-start">
           <FormControl sx={{ minWidth: 220 }} size="small" required>
-            <InputLabel id="rate-user-label">Payroll user</InputLabel>
+            <InputLabel id="rate-user-label">{t("attendance.payrollUser")}</InputLabel>
             <Select
               labelId="rate-user-label"
-              label="Payroll user"
+              label={t("attendance.payrollUser")}
               value={rateUser}
               onChange={(e) => setRateUser(e.target.value)}
             >
@@ -269,10 +285,10 @@ function AttendanceSetupPage() {
             </Select>
           </FormControl>
           <FormControl sx={{ minWidth: 200 }} size="small" required>
-            <InputLabel id="rate-cat-label">Category</InputLabel>
+            <InputLabel id="rate-cat-label">{t("attendance.category")}</InputLabel>
             <Select
               labelId="rate-cat-label"
-              label="Category"
+              label={t("attendance.category")}
               value={rateCat}
               onChange={(e) => setRateCat(e.target.value)}
             >
@@ -285,14 +301,14 @@ function AttendanceSetupPage() {
           </FormControl>
           <TextField
             size="small"
-            label="Hourly rate"
+            label={t("attendance.hourlyRate")}
             value={rateAmt}
             onChange={(e) => setRateAmt(e.target.value)}
             required
           />
           <TextField
             size="small"
-            label="Effective date"
+            label={t("attendance.effectiveDate")}
             type="date"
             InputLabelProps={{ shrink: true }}
             value={rateEff}
@@ -300,17 +316,17 @@ function AttendanceSetupPage() {
             required
           />
           <Button type="submit" variant="contained" sx={{ mt: 0.5 }}>
-            Add rate
+            {t("attendance.addRate")}
           </Button>
         </Stack>
         <Box className="table-wrapper" sx={{ mt: 2 }}>
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>User</TableCell>
-                <TableCell>Category</TableCell>
-                <TableCell>Rate</TableCell>
-                <TableCell>From</TableCell>
+                <TableCell>{t("attendance.colUser")}</TableCell>
+                <TableCell>{t("attendance.colCategory")}</TableCell>
+                <TableCell>{t("attendance.colRate")}</TableCell>
+                <TableCell>{t("attendance.colFrom")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -329,15 +345,19 @@ function AttendanceSetupPage() {
 
       <TabPanel value={tab} index={3}>
         <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Bag / maintenance rates (read-only list; manage via payroll tools or DB if needed)
+          {t("attendance.bagTableTitle")}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          {t("attendance.bagTableHint")}
         </Typography>
         <Box className="table-wrapper" sx={{ mb: 2 }}>
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Effective from</TableCell>
+                <TableCell>{t("attendance.bagEffectiveFrom")}</TableCell>
                 <TableCell>¢ / bag</TableCell>
-                <TableCell>Active</TableCell>
+                <TableCell>$ / bag</TableCell>
+                <TableCell>{t("common.active")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -345,7 +365,12 @@ function AttendanceSetupPage() {
                 <TableRow key={b.id}>
                   <TableCell>{String(b.effective_from)}</TableCell>
                   <TableCell>{b.rate_per_bag_cents ?? "—"}</TableCell>
-                  <TableCell>{b.active ? "yes" : "no"}</TableCell>
+                  <TableCell>
+                    {b.rate_per_bag_cents != null
+                      ? `$${(Number(b.rate_per_bag_cents) / 100).toFixed(2)}`
+                      : "—"}
+                  </TableCell>
+                  <TableCell>{b.active ? t("common.yes") : t("common.no")}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -353,17 +378,17 @@ function AttendanceSetupPage() {
         </Box>
         <Stack component="form" onSubmit={saveSettings} spacing={2} sx={{ maxWidth: 400 }}>
           <TextField
-            label="Max shift hours"
+            label={t("attendance.maxShift")}
             value={settings.max_shift_hours || ""}
             onChange={(e) => setSettings({ ...settings, max_shift_hours: e.target.value })}
           />
           <TextField
-            label="Bag deduction enabled (0/1)"
+            label={t("attendance.bagDeductionFlag")}
             value={settings.bag_deduction_enabled || ""}
             onChange={(e) => setSettings({ ...settings, bag_deduction_enabled: e.target.value })}
           />
           <Button type="submit" variant="contained">
-            Save settings
+            {t("attendance.saveSettings")}
           </Button>
         </Stack>
       </TabPanel>
@@ -373,10 +398,10 @@ function AttendanceSetupPage() {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>When</TableCell>
-                <TableCell>Actor</TableCell>
-                <TableCell>Entity</TableCell>
-                <TableCell>Action</TableCell>
+                <TableCell>{t("attendance.colWhen")}</TableCell>
+                <TableCell>{t("attendance.colActor")}</TableCell>
+                <TableCell>{t("attendance.colEntity")}</TableCell>
+                <TableCell>{t("attendance.colAction")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>

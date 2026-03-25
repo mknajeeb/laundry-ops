@@ -42,9 +42,11 @@ import {
   updateUser,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { useI18n } from "../i18n/I18nContext";
 
 function PeoplePage({ user }) {
   const { hasPerm } = useAuth();
+  const { t } = useI18n();
   const isAdmin = (user?.roles || []).map((r) => String(r).toUpperCase()).includes("ADMIN");
   const canTaView = hasPerm("users.view");
   const canTaEdit = hasPerm("users.edit");
@@ -231,9 +233,23 @@ function PeoplePage({ user }) {
       role_id: taRoles[0]?.id || "",
       employee_id: "",
       mobile: "",
+      address: "",
+      itin_ssn: "",
+      hire_date: "",
+      termination_date: "",
+      rehired: false,
       active: true,
+      rehire_parent_id: "",
+      prior_employee_id: "",
     });
     setTaDialog("create");
+  }
+
+  function suggestNewEmployeeId() {
+    const parentId = taForm.rehire_parent_id;
+    const parent = parentId ? taUsers.find((x) => x.id === Number(parentId)) : null;
+    const base = (parent?.employee_id || taForm.employee_id || "EMP").replace(/-R\d+$/, "");
+    setTaForm((f) => ({ ...f, employee_id: `${base}-R${String(Date.now()).slice(-4)}` }));
   }
 
   async function openTaEdit(u) {
@@ -261,6 +277,8 @@ function PeoplePage({ user }) {
         geofence_ids: d.geofence_ids || [],
         primary_geofence_id: d.primary_geofence_id || "",
         cat_rows: catRows,
+        rehire_parent_id: d.rehire_parent_id != null ? String(d.rehire_parent_id) : "",
+        prior_employee_id: d.prior_employee_id || "",
       });
       setTaDialog("edit");
     } catch (e) {
@@ -278,7 +296,14 @@ function PeoplePage({ user }) {
         role_id: taForm.role_id,
         employee_id: taForm.employee_id || null,
         mobile: taForm.mobile || null,
+        address: taForm.address || null,
+        itin_ssn: taForm.itin_ssn || null,
+        hire_date: taForm.hire_date || null,
+        termination_date: taForm.termination_date || null,
+        rehired: !!taForm.rehired,
         active: taForm.active,
+        rehire_parent_id: taForm.rehire_parent_id ? Number(taForm.rehire_parent_id) : null,
+        prior_employee_id: taForm.prior_employee_id || null,
       });
       setTaDialog(null);
       await loadTa();
@@ -303,6 +328,11 @@ function PeoplePage({ user }) {
         address: taForm.address,
         itin_ssn: taForm.itin_ssn,
         password: taForm.password || undefined,
+        rehire_parent_id:
+          taForm.rehire_parent_id === "" || taForm.rehire_parent_id == null
+            ? null
+            : Number(taForm.rehire_parent_id),
+        prior_employee_id: taForm.prior_employee_id || null,
       });
       if (taForm.geofence_ids?.length && taForm.primary_geofence_id) {
         await putUserGeofences(taForm.id, {
@@ -331,7 +361,7 @@ function PeoplePage({ user }) {
   if (!isAdmin) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="warning">Only ADMIN can open this screen.</Alert>
+        <Alert severity="warning">{t("people.onlyAdmin")}</Alert>
       </Box>
     );
   }
@@ -339,18 +369,17 @@ function PeoplePage({ user }) {
   return (
     <Box sx={{ minHeight: "100%", p: { xs: 1.2, md: 2 } }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-        <Typography sx={{ fontSize: 28 }}>People</Typography>
+        <Typography sx={{ fontSize: 28 }}>{t("people.title")}</Typography>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Washpro logins and payroll (TA) profiles. A profile links to a login when{" "}
-        <code>washpro_user_id</code> is set (usually after that user signs in with Washpro).
+        {t("people.intro")}
       </Typography>
 
       <TextField
         fullWidth
         size="small"
-        label="Search"
-        placeholder="Name, email, username, role…"
+        label={t("common.search")}
+        placeholder={t("people.searchPlaceholder")}
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         sx={{ mb: 2, maxWidth: 480 }}
@@ -363,11 +392,11 @@ function PeoplePage({ user }) {
       ) : null}
 
       <Typography variant="h6" sx={{ mb: 1 }}>
-        Washpro accounts
+        {t("people.washproSection")}
       </Typography>
       <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
         <Button variant="contained" onClick={openWpCreate}>
-          Add login
+          {t("people.addLogin")}
         </Button>
       </Stack>
       <Paper sx={{ p: 1.5, borderRadius: 2, mb: 3 }}>
@@ -375,12 +404,12 @@ function PeoplePage({ user }) {
           <Table size="small" className="orders-table">
             <TableHead>
               <TableRow>
-                <TableCell>Username</TableCell>
-                <TableCell>Display</TableCell>
-                <TableCell>Roles</TableCell>
-                <TableCell>Payroll link</TableCell>
-                <TableCell>Active</TableCell>
-                <TableCell align="right">Actions</TableCell>
+                <TableCell>{t("people.colUsername")}</TableCell>
+                <TableCell>{t("people.colDisplay")}</TableCell>
+                <TableCell>{t("people.colRoles")}</TableCell>
+                <TableCell>{t("people.colPayrollLink")}</TableCell>
+                <TableCell>{t("common.active")}</TableCell>
+                <TableCell align="right">{t("people.colActions")}</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -409,13 +438,13 @@ function PeoplePage({ user }) {
                         "—"
                       )}
                     </TableCell>
-                    <TableCell>{u.active ? "yes" : "no"}</TableCell>
+                    <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
                     <TableCell align="right">
                       <Button size="small" onClick={() => openWpEdit(u)}>
-                        Edit
+                        {t("common.edit")}
                       </Button>
                       <Button size="small" color="error" onClick={() => setDeleteWpId(u.id)}>
-                        Delete
+                        {t("common.delete")}
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -429,12 +458,12 @@ function PeoplePage({ user }) {
       {canTaView ? (
         <>
           <Typography variant="h6" sx={{ mb: 1 }}>
-            Payroll profiles (TA)
+            {t("people.taSection")}
           </Typography>
           <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
             {canTaAdd ? (
               <Button variant="outlined" onClick={openTaCreate}>
-                Add payroll profile
+                {t("people.addProfile")}
               </Button>
             ) : null}
           </Stack>
@@ -443,11 +472,11 @@ function PeoplePage({ user }) {
               <Table size="small" className="orders-table">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Name</TableCell>
-                    <TableCell>Email</TableCell>
-                    <TableCell>Role</TableCell>
-                    <TableCell>Washpro login</TableCell>
-                    <TableCell>Active</TableCell>
+                    <TableCell>{t("people.colName")}</TableCell>
+                    <TableCell>{t("people.colEmail")}</TableCell>
+                    <TableCell>{t("people.colRole")}</TableCell>
+                    <TableCell>{t("people.colWashproLogin")}</TableCell>
+                    <TableCell>{t("common.active")}</TableCell>
                     <TableCell />
                   </TableRow>
                 </TableHead>
@@ -473,11 +502,11 @@ function PeoplePage({ user }) {
                             "—"
                           )}
                         </TableCell>
-                        <TableCell>{u.active ? "yes" : "no"}</TableCell>
+                        <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
                         <TableCell>
                           {canTaEdit ? (
                             <Button size="small" onClick={() => openTaEdit(u)}>
-                              Edit
+                              {t("common.edit")}
                             </Button>
                           ) : null}
                         </TableCell>
@@ -491,8 +520,7 @@ function PeoplePage({ user }) {
         </>
       ) : (
         <Alert severity="info" sx={{ mt: 2 }}>
-          Payroll table hidden: your TA role needs <code>users.view</code> (see{" "}
-          <code>role_permissions</code>).
+          {t("people.needView")}
         </Alert>
       )}
 
@@ -667,6 +695,62 @@ function PeoplePage({ user }) {
               value={taForm.mobile}
               onChange={(e) => setTaForm({ ...taForm, mobile: e.target.value })}
             />
+            <TextField
+              label="Full address"
+              value={taForm.address || ""}
+              onChange={(e) => setTaForm({ ...taForm, address: e.target.value })}
+              multiline
+              minRows={2}
+            />
+            <TextField
+              label="ITIN or SSN (restricted access)"
+              value={taForm.itin_ssn || ""}
+              onChange={(e) => setTaForm({ ...taForm, itin_ssn: e.target.value })}
+            />
+            <TextField
+              label="Hire date"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              value={taForm.hire_date ? String(taForm.hire_date).slice(0, 10) : ""}
+              onChange={(e) => setTaForm({ ...taForm, hire_date: e.target.value })}
+            />
+            <TextField
+              label="Termination date"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              value={taForm.termination_date ? String(taForm.termination_date).slice(0, 10) : ""}
+              onChange={(e) => setTaForm({ ...taForm, termination_date: e.target.value })}
+            />
+            <FormControl fullWidth>
+              <InputLabel id="rhp-create">{t("people.rehireFrom")}</InputLabel>
+              <Select
+                labelId="rhp-create"
+                label={t("people.rehireFrom")}
+                value={taForm.rehire_parent_id || ""}
+                onChange={(e) => setTaForm({ ...taForm, rehire_parent_id: e.target.value })}
+              >
+                <MenuItem value="">—</MenuItem>
+                {taUsers.map((row) => (
+                  <MenuItem key={row.id} value={String(row.id)}>
+                    {row.first_name} {row.last_name} ({row.employee_id || `TA#${row.id}`})
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label={t("people.priorEmpId")}
+              value={taForm.prior_employee_id || ""}
+              onChange={(e) => setTaForm({ ...taForm, prior_employee_id: e.target.value })}
+            />
+            <Button variant="outlined" size="small" onClick={suggestNewEmployeeId} sx={{ alignSelf: "flex-start" }}>
+              {t("people.suggestId")}
+            </Button>
+            <FormControlLabel
+              control={
+                <Checkbox checked={!!taForm.rehired} onChange={(e) => setTaForm({ ...taForm, rehired: e.target.checked })} />
+              }
+              label="Rehired"
+            />
             <FormControlLabel
               control={
                 <Checkbox checked={!!taForm.active} onChange={(e) => setTaForm({ ...taForm, active: e.target.checked })} />
@@ -683,7 +767,7 @@ function PeoplePage({ user }) {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={taDialog === "edit"} onClose={() => setTaDialog(null)} maxWidth="sm" fullWidth>
+      <Dialog open={taDialog === "edit"} onClose={() => setTaDialog(null)} maxWidth="md" fullWidth>
         <DialogTitle>Edit payroll profile</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -701,6 +785,48 @@ function PeoplePage({ user }) {
               label="Email"
               value={taForm.email || ""}
               onChange={(e) => setTaForm({ ...taForm, email: e.target.value })}
+            />
+            <TextField
+              label="Employee ID"
+              value={taForm.employee_id || ""}
+              onChange={(e) => setTaForm({ ...taForm, employee_id: e.target.value })}
+            />
+            <TextField
+              label="Mobile"
+              value={taForm.mobile || ""}
+              onChange={(e) => setTaForm({ ...taForm, mobile: e.target.value })}
+            />
+            <TextField
+              label="Full address"
+              value={taForm.address || ""}
+              onChange={(e) => setTaForm({ ...taForm, address: e.target.value })}
+              multiline
+              minRows={2}
+            />
+            <TextField
+              label="ITIN or SSN (restricted access)"
+              value={taForm.itin_ssn || ""}
+              onChange={(e) => setTaForm({ ...taForm, itin_ssn: e.target.value })}
+            />
+            <TextField
+              label="Hire date"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              value={taForm.hire_date ? String(taForm.hire_date).slice(0, 10) : ""}
+              onChange={(e) => setTaForm({ ...taForm, hire_date: e.target.value })}
+            />
+            <TextField
+              label="Termination date"
+              type="date"
+              InputLabelProps={{ shrink: true }}
+              value={taForm.termination_date ? String(taForm.termination_date).slice(0, 10) : ""}
+              onChange={(e) => setTaForm({ ...taForm, termination_date: e.target.value })}
+            />
+            <FormControlLabel
+              control={
+                <Checkbox checked={!!taForm.rehired} onChange={(e) => setTaForm({ ...taForm, rehired: e.target.checked })} />
+              }
+              label="Rehired"
             />
             <TextField
               label="New password (optional)"
@@ -726,6 +852,51 @@ function PeoplePage({ user }) {
               }
               label="Active"
             />
+            {(taForm.rehire_parent || (taForm.rehire_successors || []).length > 0) && (
+              <Alert severity="info">
+                <Typography variant="subtitle2">{t("people.rehireChain")}</Typography>
+                {taForm.rehire_parent ? (
+                  <Typography variant="body2">
+                    {t("people.parent")}: #{taForm.rehire_parent.id} {taForm.rehire_parent.first_name}{" "}
+                    {taForm.rehire_parent.last_name} ({taForm.rehire_parent.employee_id || "—"})
+                  </Typography>
+                ) : null}
+                {(taForm.rehire_successors || []).length > 0 ? (
+                  <Typography variant="body2" sx={{ mt: 0.5 }}>
+                    {t("people.successors")}:{" "}
+                    {(taForm.rehire_successors || [])
+                      .map((s) => `#${s.id} ${s.first_name} ${s.last_name}`)
+                      .join("; ")}
+                  </Typography>
+                ) : null}
+              </Alert>
+            )}
+            <FormControl fullWidth>
+              <InputLabel id="rhp-edit">{t("people.rehireFrom")}</InputLabel>
+              <Select
+                labelId="rhp-edit"
+                label={t("people.rehireFrom")}
+                value={taForm.rehire_parent_id || ""}
+                onChange={(e) => setTaForm({ ...taForm, rehire_parent_id: e.target.value })}
+              >
+                <MenuItem value="">—</MenuItem>
+                {taUsers
+                  .filter((row) => row.id !== taForm.id)
+                  .map((row) => (
+                    <MenuItem key={row.id} value={String(row.id)}>
+                      {row.first_name} {row.last_name} ({row.employee_id || `TA#${row.id}`})
+                    </MenuItem>
+                  ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label={t("people.priorEmpId")}
+              value={taForm.prior_employee_id || ""}
+              onChange={(e) => setTaForm({ ...taForm, prior_employee_id: e.target.value })}
+            />
+            <Button variant="outlined" size="small" onClick={suggestNewEmployeeId} sx={{ alignSelf: "flex-start" }}>
+              {t("people.suggestId")}
+            </Button>
             <Typography variant="subtitle2">Geofences (assign + one primary)</Typography>
             <FormControl fullWidth>
               <InputLabel id="gf-label">Geofences</InputLabel>

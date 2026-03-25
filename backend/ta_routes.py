@@ -126,11 +126,14 @@ def _pick_default_ta_role_id(conn, washpro_user_id: int):
         (washpro_user_id,),
     )
     codes = {str(x["code"]).upper() for x in c.fetchall()}
-    target = "OPERATIONS"
+    # Must match real rows in `roles` (see maintenance_inventory_auth.sql: ADMIN, OPS, FRONT_DESK).
+    target = "OPS"
     if "ADMIN" in codes:
         target = "ADMIN"
-    elif codes & {"OPS", "FRONT_DESK"}:
-        target = "OPERATIONS"
+    elif "FRONT_DESK" in codes:
+        target = "FRONT_DESK"
+    elif "OPS" in codes:
+        target = "OPS"
     c.execute("SELECT id FROM roles WHERE code=%s LIMIT 1", (target,))
     r = c.fetchone()
     if r:
@@ -831,21 +834,21 @@ def break_end():
 
 @ta_bp.route("/users", methods=["GET"])
 @require_auth
-@require_perm("users.view")
+@require_any_perm("users.view", "ta.settings")
 def users_list():
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
         c.execute(
             """
-            SELECT u.id, u.washpro_user_id, u.employee_id, u.first_name, u.last_name, u.email, u.mobile,
-                   u.hire_date, u.termination_date, u.rehired, u.active, u.role_id,
-                   r.code AS role_code, r.name AS role_name
+            SELECT u.*, r.code AS role_code, r.name AS role_name
             FROM ta_users u JOIN roles r ON r.id = u.role_id
             ORDER BY u.last_name, u.first_name
             """
         )
         rows = c.fetchall()
+        for r in rows:
+            r.pop("password_hash", None)
         return jsonify([json_safe(r) for r in rows])
     finally:
         conn.close()
@@ -853,16 +856,14 @@ def users_list():
 
 @ta_bp.route("/users/<int:user_id>", methods=["GET"])
 @require_auth
-@require_perm("users.view")
+@require_any_perm("users.view", "ta.settings", "users.edit")
 def users_get(user_id):
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
         c.execute(
             """
-            SELECT u.id, u.employee_id, u.first_name, u.last_name, u.email, u.mobile,
-                   u.address, u.itin_ssn, u.hire_date, u.termination_date, u.rehired, u.active,
-                   u.role_id, r.code AS role_code, r.name AS role_name
+            SELECT u.*, r.code AS role_code, r.name AS role_name
             FROM ta_users u JOIN roles r ON r.id = u.role_id
             WHERE u.id=%s
             """,
@@ -871,6 +872,26 @@ def users_get(user_id):
         u = c.fetchone()
         if not u:
             return jsonify({"error": "Not found"}), 404
+        u.pop("password_hash", None)
+        if u.get("rehire_parent_id"):
+            c.execute(
+                """
+                SELECT id, employee_id, first_name, last_name, email, active, termination_date
+                FROM ta_users WHERE id=%s
+                """,
+                (u["rehire_parent_id"],),
+            )
+            u["rehire_parent"] = c.fetchone()
+        else:
+            u["rehire_parent"] = None
+        c.execute(
+            """
+            SELECT id, employee_id, first_name, last_name, email, active, hire_date
+            FROM ta_users WHERE rehire_parent_id=%s ORDER BY id
+            """,
+            (user_id,),
+        )
+        u["rehire_successors"] = c.fetchall()
         c.execute(
             "SELECT geofence_id, is_primary FROM user_geofences WHERE user_id=%s",
             (user_id,),
@@ -905,13 +926,24 @@ def users_create():
     conn = get_db()
     try:
         ph = hash_password(data["password"])
+        c = conn.cursor(dictionary=True)
+        rp = data.get("rehire_parent_id")
+        if rp is not None and str(rp).strip() != "":
+            rp = int(rp)
+        else:
+            rp = None
+        if rp is not None:
+            c.execute("SELECT id FROM ta_users WHERE id=%s", (rp,))
+            if not c.fetchone():
+                return jsonify({"error": "rehire_parent_id not found"}), 400
         c = conn.cursor()
         c.execute(
             """
             INSERT INTO ta_users (
               employee_id, first_name, last_name, address, email, mobile, itin_ssn,
-              hire_date, termination_date, rehired, active, role_id, password_hash
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              hire_date, termination_date, rehired, active, role_id,
+              rehire_parent_id, prior_employee_id, password_hash
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 data.get("employee_id"),
@@ -926,6 +958,8 @@ def users_create():
                 1 if data.get("rehired") else 0,
                 1 if data.get("active", True) else 0,
                 int(data["role_id"]),
+                rp,
+                data.get("prior_employee_id"),
                 ph,
             ),
         )
@@ -965,6 +999,7 @@ def users_update(user_id):
             ("rehired", "rehired"),
             ("active", "active"),
             ("role_id", "role_id"),
+            ("prior_employee_id", "prior_employee_id"),
         ]
         for json_k, col in mapping:
             if json_k in data:
@@ -973,6 +1008,20 @@ def users_update(user_id):
                     v = 1 if v else 0
                 fields.append(f"{col}=%s")
                 vals.append(v)
+        if "rehire_parent_id" in data:
+            v = data["rehire_parent_id"]
+            if v in (None, ""):
+                v = None
+            else:
+                v = int(v)
+            if v is not None and v == user_id:
+                return jsonify({"error": "rehire_parent_id cannot be the same user"}), 400
+            if v is not None:
+                c.execute("SELECT id FROM ta_users WHERE id=%s", (v,))
+                if not c.fetchone():
+                    return jsonify({"error": "rehire_parent_id not found"}), 400
+            fields.append("rehire_parent_id=%s")
+            vals.append(v)
         if data.get("password"):
             fields.append("password_hash=%s")
             vals.append(hash_password(data["password"]))
@@ -1054,7 +1103,7 @@ def user_employment_cats(user_id):
 
 @ta_bp.route("/geofences", methods=["GET"])
 @require_auth
-@require_perm("users.view")
+@require_any_perm("users.view", "ta.settings", "users.edit")
 def geofences_list():
     conn = get_db()
     try:
@@ -1174,7 +1223,7 @@ def employment_categories_create():
 
 @ta_bp.route("/user-rates", methods=["GET"])
 @require_auth
-@require_perm("users.view")
+@require_any_perm("users.view", "ta.settings", "users.edit")
 def user_rates_list():
     uid = request.args.get("user_id")
     conn = get_db()
@@ -1455,7 +1504,7 @@ def list_exceptions():
 
 @ta_bp.route("/payroll-cycles", methods=["GET"])
 @require_auth
-@require_perm("ta.monitor")
+@require_any_perm("ta.monitor", "ta.settings")
 def payroll_cycles_list():
     conn = get_db()
     try:
@@ -1626,6 +1675,79 @@ def bag_rates_list():
         c = conn.cursor(dictionary=True)
         c.execute("SELECT * FROM bag_rate_maintenance ORDER BY effective_from DESC")
         return jsonify([json_safe(r) for r in c.fetchall()])
+    finally:
+        conn.close()
+
+
+# --- Admin: role ↔ permission matrix (Washpro TA permissions catalog) ---
+
+
+@ta_bp.route("/admin/permission-matrix", methods=["GET"])
+@require_auth
+@require_perm("ta.settings")
+def admin_permission_matrix():
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT id, perm_key, description FROM permissions ORDER BY perm_key")
+        perms = c.fetchall()
+        c.execute("SELECT id, code, name FROM roles ORDER BY code")
+        roles = c.fetchall()
+        c.execute(
+            """
+            SELECT rp.role_id, p.perm_key
+            FROM role_permissions rp
+            JOIN permissions p ON p.id = rp.permission_id
+            """
+        )
+        role_map = {}
+        for row in c.fetchall():
+            role_map.setdefault(row["role_id"], []).append(row["perm_key"])
+        return jsonify(
+            {
+                "permissions": [json_safe(x) for x in perms],
+                "roles": [json_safe(x) for x in roles],
+                "role_permissions": {str(k): v for k, v in role_map.items()},
+            }
+        )
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/admin/roles/<int:role_id>/permissions", methods=["PUT"])
+@require_auth
+@require_perm("ta.settings")
+def admin_role_permissions_put(role_id):
+    data = request.json or {}
+    keys = data.get("permission_keys")
+    if not isinstance(keys, list):
+        return jsonify({"error": "permission_keys array required"}), 400
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT id FROM roles WHERE id=%s", (role_id,))
+        if not c.fetchone():
+            return jsonify({"error": "Role not found"}), 404
+        c2 = conn.cursor()
+        c2.execute("DELETE FROM role_permissions WHERE role_id=%s", (role_id,))
+        for key in keys:
+            c.execute("SELECT id FROM permissions WHERE perm_key=%s", (key,))
+            prow = c.fetchone()
+            if prow:
+                c2.execute(
+                    "INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (%s,%s)",
+                    (role_id, prow["id"]),
+                )
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "role_permissions",
+            role_id,
+            "replace",
+            new={"permission_keys": keys},
+        )
+        conn.commit()
+        return jsonify({"ok": True})
     finally:
         conn.close()
 

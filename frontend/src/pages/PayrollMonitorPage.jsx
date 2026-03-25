@@ -23,9 +23,11 @@ import {
   getPayrollCycles,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { useI18n } from "../i18n/I18nContext";
 
 function PayrollMonitorPage() {
   const { hasPerm } = useAuth();
+  const { t } = useI18n();
   const [rows, setRows] = useState([]);
   const [cycles, setCycles] = useState([]);
   const [cycleId, setCycleId] = useState("");
@@ -79,12 +81,7 @@ function PayrollMonitorPage() {
   if (!can) {
     return (
       <div className="page">
-        <Alert severity="info">
-          This screen requires the payroll permission <code>ta.monitor</code> on your account (set in MySQL
-          <code>role_permissions</code>, not only the Users page role). Run{" "}
-          <code>backend/sql/grant_ta_permissions_fix.sql</code> if you are ADMIN and still see this, then sign
-          out and back in.
-        </Alert>
+        <Alert severity="info">{t("payroll.needMonitor")}</Alert>
       </div>
     );
   }
@@ -92,7 +89,7 @@ function PayrollMonitorPage() {
   return (
     <div className="page">
       <Typography variant="h4" className="page-title" sx={{ mb: 2 }}>
-        Payroll monitor
+        {t("payroll.title")}
       </Typography>
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
@@ -102,19 +99,18 @@ function PayrollMonitorPage() {
 
       {cycles.length === 0 ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          No payroll cycles yet. Cycles are created when staff clock in (or via your payroll cycle logic). Use
-          “All” below until cycles exist.
+          {t("payroll.noCycles")}
         </Alert>
       ) : null}
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }} alignItems="center">
         <TextField
           select
-          label="Payroll cycle"
+          label={t("payroll.cycle")}
           value={cycleId}
           onChange={(e) => setCycleId(e.target.value)}
           sx={{ minWidth: 220 }}
         >
-          <MenuItem value="">All</MenuItem>
+          <MenuItem value="">{t("payroll.all")}</MenuItem>
           {cycles.map((c) => (
             <MenuItem key={c.id} value={c.id}>
               {c.cycle_ref} ({c.week_start_date})
@@ -122,13 +118,13 @@ function PayrollMonitorPage() {
           ))}
         </TextField>
         <TextField
-          label="User ID filter"
+          label={t("payroll.userFilter")}
           value={userId}
           onChange={(e) => setUserId(e.target.value)}
           sx={{ width: 140 }}
         />
         <Button variant="contained" onClick={load}>
-          Apply
+          {t("payroll.apply")}
         </Button>
       </Stack>
 
@@ -136,14 +132,14 @@ function PayrollMonitorPage() {
         <Table size="small" className="orders-table">
           <TableHead>
             <TableRow>
-              <TableCell>ID</TableCell>
-              <TableCell>User</TableCell>
-              <TableCell>Cycle</TableCell>
-              <TableCell>Clock in</TableCell>
-              <TableCell>Clock out</TableCell>
-              <TableCell>Net sec</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell>Geofence</TableCell>
+              <TableCell>{t("payroll.colId")}</TableCell>
+              <TableCell>{t("payroll.colUser")}</TableCell>
+              <TableCell>{t("payroll.colCycle")}</TableCell>
+              <TableCell>{t("payroll.colClockIn")}</TableCell>
+              <TableCell>{t("payroll.colClockOut")}</TableCell>
+              <TableCell>{t("payroll.colNetSec")}</TableCell>
+              <TableCell>{t("payroll.colStatus")}</TableCell>
+              <TableCell>{t("payroll.colGeofence")}</TableCell>
               <TableCell />
             </TableRow>
           </TableHead>
@@ -166,7 +162,7 @@ function PayrollMonitorPage() {
                 <TableCell>
                   {r.status === "active" && hasPerm("ta.override") ? (
                     <Button size="small" onClick={() => setForceOpen(r)}>
-                      Force out
+                      {t("payroll.forceOut")}
                     </Button>
                   ) : null}
                 </TableCell>
@@ -177,22 +173,22 @@ function PayrollMonitorPage() {
       </Box>
 
       <Dialog open={!!forceOpen} onClose={() => setForceOpen(null)}>
-        <DialogTitle>Force clock-out</DialogTitle>
+        <DialogTitle>{t("payroll.forceTitle")}</DialogTitle>
         <DialogContent>
           <TextField
             fullWidth
             multiline
             minRows={2}
-            label="Remarks (required)"
+            label={t("payroll.forceRemarks")}
             value={remarks}
             onChange={(e) => setRemarks(e.target.value)}
             sx={{ mt: 1 }}
           />
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setForceOpen(null)}>Cancel</Button>
+          <Button onClick={() => setForceOpen(null)}>{t("common.cancel")}</Button>
           <Button variant="contained" onClick={doForce} disabled={!remarks.trim()}>
-            Confirm
+            {t("payroll.confirm")}
           </Button>
         </DialogActions>
       </Dialog>
