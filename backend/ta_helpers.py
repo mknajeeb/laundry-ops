@@ -26,6 +26,14 @@ def cycle_ref_for_week_start(week_start: date) -> str:
     return f"PC-{week_start.year}-W{iso[1]:02d}"
 
 
+def as_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def json_safe(obj):
     if obj is None:
         return None

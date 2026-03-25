@@ -7,6 +7,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from backend.db import get_db
 from backend.ta_helpers import (
+    as_bool,
     cycle_ref_for_week_start,
     haversine_meters,
     hash_password,
@@ -52,7 +53,7 @@ def user_has_perm(conn, user_id: int, perm_key: str) -> bool:
     c = conn.cursor()
     c.execute(
         """
-        SELECT 1 FROM users u
+        SELECT 1 FROM ta_users u
         JOIN role_permissions rp ON rp.role_id = u.role_id
         JOIN permissions p ON p.id = rp.permission_id
         WHERE u.id = %s AND p.perm_key = %s
@@ -68,7 +69,7 @@ def fetch_user_row(conn, user_id: int):
     c.execute(
         """
         SELECT u.*, r.code AS role_code, r.name AS role_name
-        FROM users u
+        FROM ta_users u
         JOIN roles r ON r.id = u.role_id
         WHERE u.id = %s
         """,
@@ -77,25 +78,171 @@ def fetch_user_row(conn, user_id: int):
     return c.fetchone()
 
 
+def _ta_users_table_exists(conn) -> bool:
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = DATABASE() AND table_name = 'ta_users'
+        LIMIT 1
+        """
+    )
+    return c.fetchone() is not None
+
+
+def _washpro_session_row(conn, token: str):
+    """Validate main-app auth_sessions token (Washpro login)."""
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT s.user_id, s.revoked, s.expires_at,
+               u.username, u.display_name, u.active
+        FROM auth_sessions s
+        JOIN users u ON u.id = s.user_id
+        WHERE s.token = %s
+        LIMIT 1
+        """,
+        (token,),
+    )
+    row = c.fetchone()
+    if not row or row.get("revoked"):
+        return None
+    exp = row.get("expires_at")
+    if isinstance(exp, datetime) and exp < datetime.utcnow():
+        return None
+    if not as_bool(row.get("active"), default=False):
+        return None
+    return row
+
+
+def _pick_default_ta_role_id(conn, washpro_user_id: int):
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT r.code FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s
+        """,
+        (washpro_user_id,),
+    )
+    codes = {str(x["code"]).upper() for x in c.fetchall()}
+    target = "OPERATIONS"
+    if "ADMIN" in codes:
+        target = "ADMIN"
+    elif codes & {"OPS", "FRONT_DESK"}:
+        target = "OPERATIONS"
+    c.execute("SELECT id FROM roles WHERE code=%s LIMIT 1", (target,))
+    r = c.fetchone()
+    if r:
+        return r["id"]
+    c.execute(
+        """
+        SELECT r.id FROM roles r
+        JOIN role_permissions rp ON rp.role_id = r.id
+        JOIN permissions p ON p.id = rp.permission_id
+        WHERE p.perm_key = 'ta.clock'
+        ORDER BY r.id LIMIT 1
+        """
+    )
+    r = c.fetchone()
+    return r["id"] if r else None
+
+
+def _ensure_ta_user_for_washpro(conn, wp: dict):
+    """Link Washpro login to a ta_users row (auto-create on first TA API use)."""
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT * FROM ta_users WHERE washpro_user_id=%s LIMIT 1",
+        (wp["user_id"],),
+    )
+    existing = c.fetchone()
+    if existing:
+        return existing
+    role_id = _pick_default_ta_role_id(conn, wp["user_id"])
+    if not role_id:
+        return None
+    username = (wp.get("username") or "user").strip() or "user"
+    display = (wp.get("display_name") or username).strip()
+    parts = display.split(None, 1)
+    first = (parts[0] or username)[:128]
+    last = (parts[1] if len(parts) > 1 else "")[:128] or first
+    email = f"{username.lower()}.{wp['user_id']}@washpro.local"
+    ph = hash_password("unused-washpro-sso-" + str(wp["user_id"]))
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO ta_users (
+              washpro_user_id, employee_id, first_name, last_name, email, hire_date,
+              active, role_id, password_hash
+            ) VALUES (%s,%s,%s,%s,%s,CURDATE(),1,%s,%s)
+            """,
+            (
+                wp["user_id"],
+                f"WP{wp['user_id']}",
+                first,
+                last,
+                email,
+                role_id,
+                ph,
+            ),
+        )
+        uid = cur.lastrowid
+        conn.commit()
+        return fetch_user_row(conn, uid)
+    except Exception:
+        conn.rollback()
+        c.execute(
+            "SELECT * FROM ta_users WHERE washpro_user_id=%s LIMIT 1",
+            (wp["user_id"],),
+        )
+        return c.fetchone()
+
+
 def resolve_user_from_token():
+    """
+    Accepts (1) legacy TA signed JWT, or (2) Washpro session token (same Bearer as /auth/login).
+    """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return None
     token = auth[7:].strip()
+    if not token:
+        return None
+
+    # 1) Legacy TA token (itsdangerous)
     try:
         data = parse_token(token)
         uid = data.get("uid")
-        if not uid:
-            return None
-    except (BadSignature, SignatureExpired, KeyError, TypeError):
-        return None
+        if uid:
+            conn = get_db()
+            try:
+                if not _ta_users_table_exists(conn):
+                    return None
+                u = fetch_user_row(conn, int(uid))
+                if u and as_bool(u.get("active"), default=False):
+                    u.pop("password_hash", None)
+                    return u
+            finally:
+                conn.close()
+    except (BadSignature, SignatureExpired, KeyError, TypeError, ValueError):
+        pass
+
+    # 2) Washpro app session (hex token from auth_sessions)
     conn = get_db()
     try:
-        u = fetch_user_row(conn, uid)
-        if not u or not u.get("active"):
+        if not _ta_users_table_exists(conn):
+            return None
+        wp = _washpro_session_row(conn, token)
+        if not wp:
+            return None
+        u = _ensure_ta_user_for_washpro(conn, wp)
+        if not u or not as_bool(u.get("active"), default=False):
             return None
         u.pop("password_hash", None)
         return u
+    except Exception:
+        return None
     finally:
         conn.close()
 
@@ -269,7 +416,7 @@ def login():
         c.execute(
             """
             SELECT u.*, r.code AS role_code, r.name AS role_name
-            FROM users u JOIN roles r ON r.id = u.role_id
+            FROM ta_users u JOIN roles r ON r.id = u.role_id
             WHERE LOWER(u.email)=%s
             """,
             (email,),
@@ -297,7 +444,7 @@ def me():
         c = conn.cursor(dictionary=True)
         c.execute(
             """
-            SELECT p.perm_key FROM users u
+            SELECT p.perm_key FROM ta_users u
             JOIN role_permissions rp ON rp.role_id = u.role_id
             JOIN permissions p ON p.id = rp.permission_id
             WHERE u.id=%s
@@ -672,7 +819,7 @@ def users_list():
             SELECT u.id, u.employee_id, u.first_name, u.last_name, u.email, u.mobile,
                    u.hire_date, u.termination_date, u.rehired, u.active, u.role_id,
                    r.code AS role_code, r.name AS role_name
-            FROM users u JOIN roles r ON r.id = u.role_id
+            FROM ta_users u JOIN roles r ON r.id = u.role_id
             ORDER BY u.last_name, u.first_name
             """
         )
@@ -694,7 +841,7 @@ def users_get(user_id):
             SELECT u.id, u.employee_id, u.first_name, u.last_name, u.email, u.mobile,
                    u.address, u.itin_ssn, u.hire_date, u.termination_date, u.rehired, u.active,
                    u.role_id, r.code AS role_code, r.name AS role_name
-            FROM users u JOIN roles r ON r.id = u.role_id
+            FROM ta_users u JOIN roles r ON r.id = u.role_id
             WHERE u.id=%s
             """,
             (user_id,),
@@ -739,7 +886,7 @@ def users_create():
         c = conn.cursor()
         c.execute(
             """
-            INSERT INTO users (
+            INSERT INTO ta_users (
               employee_id, first_name, last_name, address, email, mobile, itin_ssn,
               hire_date, termination_date, rehired, active, role_id, password_hash
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -776,7 +923,7 @@ def users_update(user_id):
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
-        c.execute("SELECT * FROM users WHERE id=%s", (user_id,))
+        c.execute("SELECT * FROM ta_users WHERE id=%s", (user_id,))
         old = c.fetchone()
         if not old:
             return jsonify({"error": "Not found"}), 404
@@ -811,7 +958,7 @@ def users_update(user_id):
         if fields:
             vals.append(user_id)
             c2 = conn.cursor()
-            c2.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=%s", vals)
+            c2.execute(f"UPDATE ta_users SET {', '.join(fields)} WHERE id=%s", vals)
         write_audit(conn, g.ta_user["id"], "user", user_id, "update", old={"id": old["id"]}, new=data)
         conn.commit()
         return jsonify({"ok": True})
@@ -1028,7 +1175,7 @@ def user_rates_list():
                 SELECT ur.*, ec.name AS category_name, u.email AS user_email
                 FROM user_rates ur
                 JOIN employment_categories ec ON ec.id = ur.employment_category_id
-                JOIN users u ON u.id = ur.user_id
+                JOIN ta_users u ON u.id = ur.user_id
                 ORDER BY ur.effective_date DESC
                 LIMIT 500
                 """
@@ -1085,7 +1232,7 @@ def monitor_sessions():
             SELECT s.*, u.email, u.first_name, u.last_name, g.name AS geofence_name,
                    pc.cycle_ref, ec.name AS category_name
             FROM shift_sessions s
-            JOIN users u ON u.id = s.user_id
+            JOIN ta_users u ON u.id = s.user_id
             JOIN geofences g ON g.id = s.geofence_id
             JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
             LEFT JOIN employment_categories ec ON ec.id = s.employment_category_id
@@ -1337,7 +1484,7 @@ def audit_log_list():
             """
             SELECT a.*, u.email AS actor_email
             FROM audit_log a
-            LEFT JOIN users u ON u.id = a.actor_user_id
+            LEFT JOIN ta_users u ON u.id = a.actor_user_id
             ORDER BY a.id DESC LIMIT 200
             """
         )

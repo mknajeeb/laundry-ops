@@ -15,10 +15,12 @@ export const getAuthToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || "";
 export const setAuthSession = ({ token, user }) => {
   if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
   if (user) localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  window.dispatchEvent(new CustomEvent("washpro-session-changed"));
 };
 export const clearAuthSession = () => {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_USER_KEY);
+  window.dispatchEvent(new CustomEvent("washpro-session-changed"));
 };
 export const getSavedUser = () => {
   try {
@@ -35,7 +37,9 @@ axios.interceptors.request.use((config) => {
   config.headers = config.headers || {};
   if (isTa) {
     const ta = localStorage.getItem("ta_token");
+    const wp = getAuthToken();
     if (ta) config.headers.Authorization = `Bearer ${ta}`;
+    else if (wp) config.headers.Authorization = `Bearer ${wp}`;
   } else {
     const token = getAuthToken();
     if (token) config.headers.Authorization = `Bearer ${token}`;

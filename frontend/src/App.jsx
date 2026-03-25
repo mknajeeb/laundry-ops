@@ -28,6 +28,9 @@ import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
+import PayrollMonitorPage from "./pages/PayrollMonitorPage";
+import AttendanceSetupPage from "./pages/AttendanceSetupPage";
+import TaEmployeesPage from "./pages/TaEmployeesPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname }) {
@@ -131,11 +134,8 @@ function AppShell() {
         <Box sx={{ p: { xs: 0, md: 1 } }}>
           <Routes>
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
-            <Route path="/ta-login" element={<Navigate to="/clock" replace />} />
+            <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
-            <Route path="/payroll-monitor" element={<Navigate to="/clock" replace />} />
-            <Route path="/attendance-setup" element={<Navigate to="/clock" replace />} />
-            <Route path="/ta-employees" element={<Navigate to="/clock" replace />} />
             <Route path="/" element={<GuardedRoute user={user}><HomePage /></GuardedRoute>} />
             <Route path="/dashboard" element={<GuardedRoute user={user}><Dashboard /></GuardedRoute>} />
             <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute>} />
@@ -149,6 +149,30 @@ function AppShell() {
             <Route path="/maintenance" element={<GuardedRoute user={user}><MaintenancePage /></GuardedRoute>} />
             <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute>} />
             <Route path="/discrepancies" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute>} />
+            <Route
+              path="/payroll-monitor"
+              element={
+                <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                  <PayrollMonitorPage />
+                </GuardedRoute>
+              }
+            />
+            <Route
+              path="/attendance-setup"
+              element={
+                <GuardedRoute user={user} roles={["ADMIN"]}>
+                  <AttendanceSetupPage />
+                </GuardedRoute>
+              }
+            />
+            <Route
+              path="/ta-employees"
+              element={
+                <GuardedRoute user={user} roles={["ADMIN"]}>
+                  <TaEmployeesPage />
+                </GuardedRoute>
+              }
+            />
           </Routes>
         </Box>
       </Box>

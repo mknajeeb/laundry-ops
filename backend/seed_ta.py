@@ -28,7 +28,7 @@ def main():
     conn = get_db()
     cur = conn.cursor(dictionary=True)
     try:
-        cur.execute("SELECT id FROM users WHERE email=%s", (email,))
+        cur.execute("SELECT id FROM ta_users WHERE email=%s", (email,))
         if cur.fetchone():
             print(f"User {email} already exists — skipping.")
             return
@@ -44,7 +44,7 @@ def main():
 
         cur.execute(
             """
-            INSERT INTO users (
+            INSERT INTO ta_users (
               employee_id, first_name, last_name, email, hire_date,
               active, role_id, password_hash
             ) VALUES (%s,%s,%s,%s,CURDATE(),1,%s,%s)
@@ -52,7 +52,7 @@ def main():
             ("ADM001", "System", "Admin", email, role_id, ph),
         )
 
-        cur.execute("SELECT id FROM users WHERE email=%s", (email,))
+        cur.execute("SELECT id FROM ta_users WHERE email=%s", (email,))
         uid = cur.fetchone()["id"]
 
         cur.execute("SELECT id FROM geofences WHERE active=1 ORDER BY id LIMIT 1")

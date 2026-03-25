@@ -12,13 +12,17 @@ import { getMe, login as apiLogin } from "../api";
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem("ta_token") || "");
+  const [token, setToken] = useState(
+    () => localStorage.getItem("ta_token") || localStorage.getItem("washpro_token") || ""
+  );
   const [user, setUser] = useState(null);
   const [permissions, setPermissions] = useState([]);
-  const [loading, setLoading] = useState(!!localStorage.getItem("ta_token"));
+  const [loading, setLoading] = useState(
+    !!(localStorage.getItem("ta_token") || localStorage.getItem("washpro_token"))
+  );
 
   const refreshMe = useCallback(async () => {
-    const t = localStorage.getItem("ta_token");
+    const t = localStorage.getItem("ta_token") || localStorage.getItem("washpro_token");
     if (!t) {
       setUser(null);
       setPermissions([]);
@@ -32,7 +36,7 @@ export function AuthProvider({ children }) {
       setPermissions(res.data.permissions || []);
     } catch {
       localStorage.removeItem("ta_token");
-      setToken("");
+      setToken(localStorage.getItem("washpro_token") || "");
       setUser(null);
       setPermissions([]);
     } finally {
@@ -41,7 +45,12 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    setToken(localStorage.getItem("ta_token") || "");
+    const sync = () => {
+      setToken(localStorage.getItem("ta_token") || localStorage.getItem("washpro_token") || "");
+    };
+    sync();
+    window.addEventListener("washpro-session-changed", sync);
+    return () => window.removeEventListener("washpro-session-changed", sync);
   }, []);
 
   useEffect(() => {

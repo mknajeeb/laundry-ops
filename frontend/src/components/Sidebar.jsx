@@ -15,6 +15,9 @@ const NAV_ITEMS = [
   { to: "/scoreboard", label: "Scoreboard", roles: [] },
   { to: "/maintenance", label: "Maintenance", roles: [] },
   { to: "/employees", label: "Users", roles: ["ADMIN"] },
+  { to: "/payroll-monitor", label: "Payroll monitor", roles: ["ADMIN", "OPS"] },
+  { to: "/attendance-setup", label: "Attendance setup", roles: ["ADMIN"] },
+  { to: "/ta-employees", label: "Payroll staff", roles: ["ADMIN"] },
 ];
 
 function Sidebar({ activeBatch, user, onLogout }) {
