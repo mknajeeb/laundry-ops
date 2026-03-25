@@ -1,13 +1,25 @@
 -- Run once on `laundryapp` (after backup).
--- Creates `ta_users` (payroll / TA identities) separate from Washpro login `users`.
--- Links a TA row to a Washpro account via washpro_user_id (auto-filled on first /api/ta/* call).
---
--- You also need: `roles`, `permissions`, `role_permissions`, `geofences`, shift tables, etc.
--- If those are missing, apply `backend/schema_ta.sql` on a copy first and merge, or run a fresh TA install on a dev DB.
--- Minimum: `permissions` rows for ta.clock (see INSERT IGNORE below) and `roles` + `role_permissions` so staff have ta.clock.
+-- Creates TA support tables + `ta_users` (payroll identities), separate from Washpro `users`.
+-- Requires existing `roles` table (Washpro RBAC).
 
 SET NAMES utf8mb4;
 
+-- 1) Permission catalog + role→permission map (safe if missing)
+CREATE TABLE IF NOT EXISTS permissions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  perm_key VARCHAR(128) NOT NULL UNIQUE,
+  description VARCHAR(255) NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+  role_id INT NOT NULL,
+  permission_id INT NOT NULL,
+  PRIMARY KEY (role_id, permission_id),
+  CONSTRAINT fk_ta_rp_role FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ta_rp_perm FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 2) TA staff rows (linked to Washpro login via washpro_user_id)
 CREATE TABLE IF NOT EXISTS ta_users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   washpro_user_id INT NULL UNIQUE,
@@ -40,8 +52,20 @@ INSERT IGNORE INTO permissions (perm_key, description) VALUES
 ('ta.reports', 'Reports and exports'),
 ('finance.payments', 'Mark payroll paid');
 
--- Allow clock permission for common Washpro role codes (adjust list to match your `roles.code` values)
+-- Map Washpro roles → TA permissions (Payroll UI uses /api/ta/* which checks these, not only Washpro ADMIN)
+-- ADMIN: full TA access
 INSERT IGNORE INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
-WHERE p.perm_key = 'ta.clock'
-  AND UPPER(r.code) IN ('ADMIN', 'OPS', 'OPERATIONS', 'FRONT_DESK', 'SUPERVISOR', 'PAYROLL_ADMIN', 'FINANCE');
+WHERE UPPER(r.code) = 'ADMIN';
+
+-- OPS / FRONT_DESK: clock + payroll monitor + view staff
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+WHERE UPPER(r.code) IN ('OPS', 'FRONT_DESK')
+  AND p.perm_key IN ('ta.clock', 'ta.monitor', 'users.view');
+
+-- Legacy role codes (if present from older TA seed)
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+WHERE UPPER(r.code) IN ('OPERATIONS', 'SUPERVISOR', 'PAYROLL_ADMIN', 'FINANCE')
+  AND p.perm_key IN ('ta.clock', 'ta.monitor', 'users.view', 'ta.override', 'ta.reports', 'finance.payments');

@@ -69,6 +69,12 @@ export const getUsers = () =>
 export const createUser = (payload) =>
   axios.post(`${API_BASE}/auth/users`, payload);
 
+export const updateUser = (userId, payload) =>
+  axios.put(`${API_BASE}/auth/users/${userId}`, payload);
+
+export const deleteUser = (userId) =>
+  axios.delete(`${API_BASE}/auth/users/${userId}`);
+
 /* =========================================
    DASHBOARD
 ========================================= */
@@ -455,6 +461,8 @@ export const getTaSettings = () => axios.get(`${API_BASE}/api/ta/settings`);
 
 export const putTaSettings = (body) =>
   axios.put(`${API_BASE}/api/ta/settings`, body);
+
+export const getTaBagRates = () => axios.get(`${API_BASE}/api/ta/bag-rates`);
 
 export const getAuditLog = () => axios.get(`${API_BASE}/api/ta/audit-log`);
 

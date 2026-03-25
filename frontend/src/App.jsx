@@ -19,7 +19,7 @@ import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import IssuePage from "./pages/IssuePage";
-import EmployeesPage from "./pages/EmployeesPage";
+import PeoplePage from "./pages/PeoplePage";
 import ClockPage from "./pages/ClockPage";
 import CheckoutPage from "./pages/CheckoutPage";
 import Dashboard from "./pages/Dashboard";
@@ -30,7 +30,6 @@ import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollMonitorPage from "./pages/PayrollMonitorPage";
 import AttendanceSetupPage from "./pages/AttendanceSetupPage";
-import TaEmployeesPage from "./pages/TaEmployeesPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname }) {
@@ -141,7 +140,7 @@ function AppShell() {
             <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute>} />
             <Route path="/checkout" element={<GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute>} />
             <Route path="/upload" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute>} />
-            <Route path="/employees" element={<GuardedRoute user={user} roles={["ADMIN"]}><EmployeesPage user={user} /></GuardedRoute>} />
+            <Route path="/employees" element={<GuardedRoute user={user} roles={["ADMIN"]}><PeoplePage user={user} /></GuardedRoute>} />
             <Route path="/clock" element={<GuardedRoute user={user}><ClockPage user={user} /></GuardedRoute>} />
             <Route path="/issues" element={<GuardedRoute user={user}><IssuePage /></GuardedRoute>} />
             <Route path="/production" element={<GuardedRoute user={user}><ProductionPage /></GuardedRoute>} />
@@ -165,14 +164,7 @@ function AppShell() {
                 </GuardedRoute>
               }
             />
-            <Route
-              path="/ta-employees"
-              element={
-                <GuardedRoute user={user} roles={["ADMIN"]}>
-                  <TaEmployeesPage />
-                </GuardedRoute>
-              }
-            />
+            <Route path="/ta-employees" element={<Navigate to="/employees" replace />} />
           </Routes>
         </Box>
       </Box>

@@ -3,6 +3,10 @@ import {
   Alert,
   Box,
   Button,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   Tab,
   Tabs,
@@ -21,7 +25,9 @@ import {
   getAuditLog,
   getEmploymentCategories,
   getGeofences,
+  getTaBagRates,
   getTaSettings,
+  getTaUsers,
   getUserRates,
   putTaSettings,
 } from "../api";
@@ -53,29 +59,45 @@ function AttendanceSetupPage() {
   const [rateUser, setRateUser] = useState("");
   const [rateCat, setRateCat] = useState("");
   const [rateAmt, setRateAmt] = useState("");
-  const [rateEff, setRateEff] = useState("");
+  const [rateEff, setRateEff] = useState(() => new Date().toISOString().slice(0, 10));
+  const [taUsersList, setTaUsersList] = useState([]);
+  const [bagRates, setBagRates] = useState([]);
 
-  const can = hasPerm("ta.settings");
+  const canTaSettings = hasPerm("ta.settings");
+  const canUsersEdit = hasPerm("users.edit");
+  const can = canTaSettings || canUsersEdit;
+
+  useEffect(() => {
+    if (!canTaSettings && canUsersEdit) setTab(2);
+  }, [canTaSettings, canUsersEdit]);
 
   const loadAll = useCallback(async () => {
     if (!can) return;
     try {
-      const [g, c, r, s, a] = await Promise.all([
+      const [g, c, r, tu, br] = await Promise.all([
         getGeofences(),
         getEmploymentCategories(),
         getUserRates(),
-        getTaSettings(),
-        getAuditLog(),
+        getTaUsers(),
+        getTaBagRates().catch(() => ({ data: [] })),
       ]);
       setGeofences(g.data || []);
       setCats(c.data || []);
       setRates(r.data || []);
-      setSettings(s.data || {});
-      setAudit(a.data || []);
+      setTaUsersList(tu.data || []);
+      setBagRates(br.data || []);
+      if (canTaSettings) {
+        const [s, a] = await Promise.all([getTaSettings(), getAuditLog()]);
+        setSettings(s.data || {});
+        setAudit(a.data || []);
+      } else {
+        setSettings({});
+        setAudit([]);
+      }
     } catch (e) {
       setError(e.response?.data?.error || "Load failed");
     }
-  }, [can]);
+  }, [can, canTaSettings]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -144,7 +166,9 @@ function AttendanceSetupPage() {
   if (!can) {
     return (
       <div className="page">
-        <Alert severity="info">This area is for administrators only.</Alert>
+        <Alert severity="info">
+          This area requires <code>ta.settings</code> or <code>users.edit</code> on your TA role.
+        </Alert>
       </div>
     );
   }
@@ -161,11 +185,11 @@ function AttendanceSetupPage() {
       ) : null}
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-        <Tab label="Geofences" />
-        <Tab label="Categories" />
+        <Tab label="Geofences" disabled={!canTaSettings} />
+        <Tab label="Categories" disabled={!canTaSettings} />
         <Tab label="Rates" />
-        <Tab label="Settings" />
-        <Tab label="Audit" />
+        <Tab label="Settings" disabled={!canTaSettings} />
+        <Tab label="Audit" disabled={!canTaSettings} />
       </Tabs>
 
       <TabPanel value={tab} index={0}>
@@ -226,13 +250,48 @@ function AttendanceSetupPage() {
 
       <TabPanel value={tab} index={2}>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-          Create a rate for a user + category + effective date.
+          Create a rate for a payroll user + employment category + effective date.
         </Typography>
-        <Stack component="form" onSubmit={addRate} spacing={2} direction={{ xs: "column", sm: "row" }} useFlexGap flexWrap="wrap">
-          <TextField label="User ID" value={rateUser} onChange={(e) => setRateUser(e.target.value)} required />
-          <TextField label="Category ID" value={rateCat} onChange={(e) => setRateCat(e.target.value)} required />
-          <TextField label="Hourly rate" value={rateAmt} onChange={(e) => setRateAmt(e.target.value)} required />
+        <Stack component="form" onSubmit={addRate} spacing={2} direction={{ xs: "column", sm: "row" }} useFlexGap flexWrap="wrap" alignItems="flex-start">
+          <FormControl sx={{ minWidth: 220 }} size="small" required>
+            <InputLabel id="rate-user-label">Payroll user</InputLabel>
+            <Select
+              labelId="rate-user-label"
+              label="Payroll user"
+              value={rateUser}
+              onChange={(e) => setRateUser(e.target.value)}
+            >
+              {taUsersList.map((u) => (
+                <MenuItem key={u.id} value={String(u.id)}>
+                  {u.first_name} {u.last_name} ({u.email})
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl sx={{ minWidth: 200 }} size="small" required>
+            <InputLabel id="rate-cat-label">Category</InputLabel>
+            <Select
+              labelId="rate-cat-label"
+              label="Category"
+              value={rateCat}
+              onChange={(e) => setRateCat(e.target.value)}
+            >
+              {cats.map((c) => (
+                <MenuItem key={c.id} value={String(c.id)}>
+                  {c.code} — {c.name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <TextField
+            size="small"
+            label="Hourly rate"
+            value={rateAmt}
+            onChange={(e) => setRateAmt(e.target.value)}
+            required
+          />
+          <TextField
+            size="small"
             label="Effective date"
             type="date"
             InputLabelProps={{ shrink: true }}
@@ -240,7 +299,7 @@ function AttendanceSetupPage() {
             onChange={(e) => setRateEff(e.target.value)}
             required
           />
-          <Button type="submit" variant="contained">
+          <Button type="submit" variant="contained" sx={{ mt: 0.5 }}>
             Add rate
           </Button>
         </Stack>
@@ -269,6 +328,29 @@ function AttendanceSetupPage() {
       </TabPanel>
 
       <TabPanel value={tab} index={3}>
+        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          Bag / maintenance rates (read-only list; manage via payroll tools or DB if needed)
+        </Typography>
+        <Box className="table-wrapper" sx={{ mb: 2 }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Effective from</TableCell>
+                <TableCell>¢ / bag</TableCell>
+                <TableCell>Active</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {bagRates.slice(0, 20).map((b) => (
+                <TableRow key={b.id}>
+                  <TableCell>{String(b.effective_from)}</TableCell>
+                  <TableCell>{b.rate_per_bag_cents ?? "—"}</TableCell>
+                  <TableCell>{b.active ? "yes" : "no"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
         <Stack component="form" onSubmit={saveSettings} spacing={2} sx={{ maxWidth: 400 }}>
           <TextField
             label="Max shift hours"

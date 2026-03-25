@@ -79,7 +79,12 @@ function PayrollMonitorPage() {
   if (!can) {
     return (
       <div className="page">
-        <Alert severity="info">Payroll monitor requires the Payroll / Supervisor role.</Alert>
+        <Alert severity="info">
+          This screen requires the payroll permission <code>ta.monitor</code> on your account (set in MySQL
+          <code>role_permissions</code>, not only the Users page role). Run{" "}
+          <code>backend/sql/grant_ta_permissions_fix.sql</code> if you are ADMIN and still see this, then sign
+          out and back in.
+        </Alert>
       </div>
     );
   }
@@ -95,6 +100,12 @@ function PayrollMonitorPage() {
         </Alert>
       ) : null}
 
+      {cycles.length === 0 ? (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          No payroll cycles yet. Cycles are created when staff clock in (or via your payroll cycle logic). Use
+          “All” below until cycles exist.
+        </Alert>
+      ) : null}
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }} alignItems="center">
         <TextField
           select

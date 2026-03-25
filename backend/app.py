@@ -3526,6 +3526,92 @@ def auth_users():
         conn.close()
 
 
+@app.route("/auth/users/<int:user_id>", methods=["PUT", "DELETE"])
+def auth_user_detail(user_id):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err, status_code = require_admin(cursor)
+        if err:
+            return err, status_code
+
+        if request.method == "DELETE":
+            if me["user_id"] == user_id:
+                return jsonify({"error": "Cannot delete your own account"}), 400
+            cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+            if not cursor.fetchone():
+                return jsonify({"error": "Not found"}), 404
+            cursor.execute(
+                "UPDATE ta_users SET washpro_user_id=NULL WHERE washpro_user_id=%s",
+                (user_id,),
+            )
+            cursor.execute("DELETE FROM users WHERE id=%s", (user_id,))
+            conn.commit()
+            return jsonify({"status": "deleted"})
+
+        data = request.json or {}
+        username = (data.get("username") or "").strip()
+        display_name = (data.get("display_name") or "").strip()
+        active = bool(data.get("active", True))
+        password = data.get("password") or ""
+        role_codes = [str(r).upper() for r in (data.get("roles") or [])]
+
+        cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        if not username:
+            return jsonify({"error": "username is required"}), 400
+
+        cursor.execute(
+            "SELECT id FROM users WHERE username=%s AND id!=%s",
+            (username, user_id),
+        )
+        if cursor.fetchone():
+            return jsonify({"error": "username already taken"}), 400
+
+        set_parts = [
+            "username=%s",
+            "display_name=%s",
+            "active=%s",
+            "updated_at=NOW()",
+        ]
+        vals = [username, display_name or username, active]
+        if password:
+            set_parts.append("password_hash=%s")
+            vals.append(generate_password_hash(password))
+        vals.append(user_id)
+        cursor.execute(
+            f"UPDATE users SET {', '.join(set_parts)} WHERE id=%s",
+            vals,
+        )
+
+        cursor.execute("DELETE FROM user_roles WHERE user_id=%s", (user_id,))
+        if role_codes:
+            cursor.execute(
+                "SELECT id, code FROM roles WHERE code IN ({})".format(
+                    ",".join(["%s"] * len(role_codes))
+                ),
+                tuple(role_codes),
+            )
+            role_map = {r["code"].upper(): r["id"] for r in cursor.fetchall()}
+            for code in role_codes:
+                rid = role_map.get(code)
+                if rid:
+                    cursor.execute(
+                        "INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s)",
+                        (user_id, rid),
+                    )
+
+        conn.commit()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # ---------------------------------------------------
 # Maintenance APIs
 # ---------------------------------------------------

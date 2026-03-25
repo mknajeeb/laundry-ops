@@ -399,6 +399,28 @@ def require_perm(perm_key: str):
     return deco
 
 
+def require_any_perm(*perm_keys: str):
+    """Allow the request if the TA user has any of the listed permissions."""
+
+    def deco(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            conn = get_db()
+            try:
+                ok = any(
+                    user_has_perm(conn, g.ta_user["id"], k) for k in perm_keys
+                )
+                if not ok:
+                    return jsonify({"error": "Forbidden"}), 403
+            finally:
+                conn.close()
+            return f(*args, **kwargs)
+
+        return wrapper
+
+    return deco
+
+
 # --- Auth ---
 
 
@@ -816,7 +838,7 @@ def users_list():
         c = conn.cursor(dictionary=True)
         c.execute(
             """
-            SELECT u.id, u.employee_id, u.first_name, u.last_name, u.email, u.mobile,
+            SELECT u.id, u.washpro_user_id, u.employee_id, u.first_name, u.last_name, u.email, u.mobile,
                    u.hire_date, u.termination_date, u.rehired, u.active, u.role_id,
                    r.code AS role_code, r.name AS role_name
             FROM ta_users u JOIN roles r ON r.id = u.role_id
@@ -1187,7 +1209,7 @@ def user_rates_list():
 
 @ta_bp.route("/user-rates", methods=["POST"])
 @require_auth
-@require_perm("ta.settings")
+@require_any_perm("users.edit", "ta.settings")
 def user_rates_create():
     data = request.json or {}
     for k in ("user_id", "employment_category_id", "hourly_rate", "effective_date"):
@@ -1597,7 +1619,7 @@ def bag_count_increment():
 
 @ta_bp.route("/bag-rates", methods=["GET"])
 @require_auth
-@require_perm("ta.settings")
+@require_any_perm("users.edit", "ta.settings")
 def bag_rates_list():
     conn = get_db()
     try:
