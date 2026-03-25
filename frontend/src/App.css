@@ -19,6 +19,17 @@ PAGE
 .page{
 padding:20px;
 width:100%;
+max-width:100%;
+box-sizing:border-box;
+overflow-x:hidden;
+}
+
+/* Horizontal scroll for MUI tables; used by People, Attendance, Payroll monitor */
+.table-wrapper{
+width:100%;
+max-width:100%;
+overflow-x:auto;
+-webkit-overflow-scrolling:touch;
 }
 
 .page-title{
