@@ -1,0 +1,23 @@
+Reference inventory from user-provided Archive.zip (document-management drafts).
+Do not commit binaries; store templates in blob storage or secure CDN.
+
+NY / tax
+  - it2104_fill_in.pdf, it2104i_2025.pdf, Instrucciones IT-2104 (Spanish instructions)
+NY Dept of Labor LS forms (EN/ES)
+  - LS51_english_form.pdf, LS51_spanish_form.pdf
+  - LS54, LS55, LS56, LS57 (english + spanish pairs)
+
+VeeWash packets
+  - VeeWash_Bilingual_Workforce_Forms_Pack.pdf / .docx
+  - VeeWash_Employee_Information_Form_Bilingual v1/v2 (docx + pdf)
+  - veewash_1099_packet/: C-101 Contractor Intake (EN/ES), C-102 Independent Contractor Agreement (EN/ES),
+    C-103 Weekly Payment Statement (EN/ES), C-104 Non-Compliance, C-105 Cure/Corrective, C-106 Suspension/Cancellation (EN/ES)
+  - VeeWash_1099_Contractor_Packet.zip (nested pack)
+
+Misc
+  - Invoice-WLPC_00_3177.pdf (sample branded invoice layout)
+
+Suggested system mapping
+  - document_templates rows per organization_id + template_kind (pdf_acroform for IRS/NY fillable PDFs; docx_external for C-1xx).
+  - field_map_json maps payroll_profiles keys (first_name, address, itin_ssn, hire_date, …) to AcroForm field names per file.
+  - employee_documents stores profile_snapshot_json + exported_uri; allow overrides_json for post-print edits metadata.

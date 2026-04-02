@@ -25,7 +25,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 
-function PayrollMonitorPage() {
+function PayrollMonitorPage({ embedded = false }) {
   const { hasPerm } = useAuth();
   const { t } = useI18n();
   const [rows, setRows] = useState([]);
@@ -80,17 +80,19 @@ function PayrollMonitorPage() {
 
   if (!can) {
     return (
-      <div className="page">
+      <Box className={embedded ? undefined : "page"} sx={embedded ? { py: 1 } : undefined}>
         <Alert severity="info">{t("payroll.needMonitor")}</Alert>
-      </div>
+      </Box>
     );
   }
 
   return (
-    <div className="page">
-      <Typography variant="h4" className="page-title" sx={{ mb: 2 }}>
-        {t("payroll.title")}
-      </Typography>
+    <Box className={embedded ? undefined : "page"}>
+      {!embedded ? (
+        <Typography variant="h4" className="page-title" sx={{ mb: 2 }}>
+          {t("payroll.title")}
+        </Typography>
+      ) : null}
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
           {error}
@@ -192,7 +194,7 @@ function PayrollMonitorPage() {
           </Button>
         </DialogActions>
       </Dialog>
-    </div>
+    </Box>
   );
 }
 

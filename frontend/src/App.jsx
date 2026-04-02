@@ -29,8 +29,7 @@ import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
-import PayrollMonitorPage from "./pages/PayrollMonitorPage";
-import AttendanceSetupPage from "./pages/AttendanceSetupPage";
+import PayrollManagementPage from "./pages/PayrollManagementPage";
 import PermissionsPage from "./pages/PermissionsPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
@@ -166,21 +165,15 @@ function AppShell() {
             <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute>} />
             <Route path="/discrepancies" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute>} />
             <Route
-              path="/payroll-monitor"
+              path="/payroll"
               element={
                 <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
-                  <PayrollMonitorPage />
+                  <PayrollManagementPage />
                 </GuardedRoute>
               }
             />
-            <Route
-              path="/attendance-setup"
-              element={
-                <GuardedRoute user={user} roles={["ADMIN"]}>
-                  <AttendanceSetupPage />
-                </GuardedRoute>
-              }
-            />
+            <Route path="/payroll-monitor" element={<Navigate to="/payroll" replace />} />
+            <Route path="/attendance-setup" element={<Navigate to="/payroll" replace />} />
             <Route
               path="/permissions"
               element={

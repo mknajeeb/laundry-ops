@@ -16,8 +16,7 @@ const NAV_ITEMS = [
   { to: "/scoreboard", labelKey: "nav.scoreboard", roles: [] },
   { to: "/maintenance", labelKey: "nav.maintenance", roles: [] },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"] },
-  { to: "/payroll-monitor", labelKey: "nav.payrollMonitor", roles: ["ADMIN", "OPS"] },
-  { to: "/attendance-setup", labelKey: "nav.attendance", roles: ["ADMIN"] },
+  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"] },
   { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"] },
 ];
 

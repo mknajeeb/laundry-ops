@@ -763,21 +763,66 @@ def current_user_from_token(cursor):
     if not token:
         return None
 
-    cursor.execute("""
-        SELECT
-            s.id AS session_id,
-            s.user_id,
-            s.token,
-            s.expires_at,
-            s.revoked,
-            u.username,
-            u.display_name,
-            u.active
-        FROM auth_sessions s
-        JOIN users u ON u.id = s.user_id
-        WHERE s.token = %s
-        LIMIT 1
-    """, (token,))
+    has_u_org = table_has_column(cursor, "users", "organization_id")
+    has_orgs = table_exists(cursor, "organizations")
+    if has_u_org and has_orgs:
+        cursor.execute("""
+            SELECT
+                s.id AS session_id,
+                s.user_id,
+                s.token,
+                s.expires_at,
+                s.revoked,
+                u.username,
+                u.display_name,
+                u.active,
+                u.organization_id,
+                o.slug AS organization_slug,
+                o.display_name AS organization_name
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            LEFT JOIN organizations o ON o.id = u.organization_id
+            WHERE s.token = %s
+            LIMIT 1
+        """, (token,))
+    elif has_u_org:
+        cursor.execute("""
+            SELECT
+                s.id AS session_id,
+                s.user_id,
+                s.token,
+                s.expires_at,
+                s.revoked,
+                u.username,
+                u.display_name,
+                u.active,
+                u.organization_id,
+                NULL AS organization_slug,
+                NULL AS organization_name
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.token = %s
+            LIMIT 1
+        """, (token,))
+    else:
+        cursor.execute("""
+            SELECT
+                s.id AS session_id,
+                s.user_id,
+                s.token,
+                s.expires_at,
+                s.revoked,
+                u.username,
+                u.display_name,
+                u.active,
+                NULL AS organization_id,
+                NULL AS organization_slug,
+                NULL AS organization_name
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.token = %s
+            LIMIT 1
+        """, (token,))
     row = cursor.fetchone()
     if not row:
         return None
@@ -3329,13 +3374,62 @@ def auth_login():
     try:
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
-        cursor.execute("""
-            SELECT id, username, password_hash, display_name, active
-            FROM users
-            WHERE username = %s
-            LIMIT 1
-        """, (username,))
-        user = cursor.fetchone()
+        has_u_org = table_has_column(cursor, "users", "organization_id")
+        has_orgs = table_exists(cursor, "organizations")
+        user = None
+        if not has_u_org:
+            cursor.execute("""
+                SELECT id, username, password_hash, display_name, active
+                FROM users
+                WHERE username = %s
+                LIMIT 1
+            """, (username,))
+            user = cursor.fetchone()
+        else:
+            org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+            if org_slug and has_orgs:
+                cursor.execute("""
+                    SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
+                           o.slug AS organization_slug, o.display_name AS organization_name
+                    FROM users u
+                    JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+                    WHERE u.username = %s AND LOWER(o.slug) = %s
+                    LIMIT 1
+                """, (username, org_slug))
+                user = cursor.fetchone()
+            else:
+                cursor.execute("""
+                    SELECT id, username, password_hash, display_name, active, organization_id
+                    FROM users
+                    WHERE username = %s
+                """, (username,))
+                rows = cursor.fetchall()
+                if len(rows) > 1:
+                    if has_orgs:
+                        cursor.execute("""
+                            SELECT o.slug, o.display_name
+                            FROM users u
+                            JOIN organizations o ON o.id = u.organization_id
+                            WHERE u.username = %s AND u.active = 1
+                        """, (username,))
+                        org_opts = cursor.fetchall()
+                    else:
+                        org_opts = []
+                    return jsonify({
+                        "error": "organization_slug is required for this username",
+                        "organizations": [{"slug": r["slug"], "display_name": r["display_name"]} for r in org_opts],
+                    }), 400
+                user = rows[0] if rows else None
+                if user and has_orgs and not org_slug:
+                    cursor.execute(
+                        "SELECT slug, display_name FROM organizations WHERE id = %s LIMIT 1",
+                        (user["organization_id"],),
+                    )
+                    o = cursor.fetchone()
+                    if o:
+                        user["organization_slug"] = o.get("slug")
+                        user["organization_name"] = o.get("display_name")
+
         if not user or not as_bool(user.get("active"), default=False):
             return jsonify({"error": "Invalid credentials"}), 401
 
@@ -3380,14 +3474,21 @@ def auth_login():
 
         roles = fetch_user_roles(cursor, user["id"])
         conn.commit()
+        payload_user = {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user.get("display_name") or user["username"],
+            "roles": roles,
+        }
+        if has_u_org and user.get("organization_id") is not None:
+            payload_user["organization_id"] = int(user["organization_id"])
+            if user.get("organization_slug"):
+                payload_user["organization_slug"] = user["organization_slug"]
+            if user.get("organization_name"):
+                payload_user["organization_name"] = user["organization_name"]
         return jsonify({
             "token": token,
-            "user": {
-                "id": user["id"],
-                "username": user["username"],
-                "display_name": user.get("display_name") or user["username"],
-                "roles": roles,
-            }
+            "user": payload_user,
         })
     except Exception as e:
         if conn:
@@ -3422,12 +3523,19 @@ def auth_me():
         roles = fetch_user_roles(cursor, me["user_id"])
         cursor.execute("UPDATE auth_sessions SET last_seen_at = NOW() WHERE id = %s", (me["session_id"],))
         conn.commit()
-        return jsonify({
+        out = {
             "id": me["user_id"],
             "username": me["username"],
             "display_name": me.get("display_name") or me["username"],
-            "roles": roles
-        })
+            "roles": roles,
+        }
+        if me.get("organization_id") is not None:
+            out["organization_id"] = int(me["organization_id"])
+        if me.get("organization_slug"):
+            out["organization_slug"] = me["organization_slug"]
+        if me.get("organization_name"):
+            out["organization_name"] = me["organization_name"]
+        return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -3481,11 +3589,19 @@ def auth_users():
             return err, status_code
 
         if request.method == "GET":
-            cursor.execute("""
-                SELECT id, username, display_name, active, created_at
-                FROM users
-                ORDER BY username
-            """)
+            if table_has_column(cursor, "users", "organization_id"):
+                cursor.execute("""
+                    SELECT id, username, display_name, active, created_at, organization_id
+                    FROM users
+                    WHERE organization_id = %s
+                    ORDER BY username
+                """, (int(me.get("organization_id") or 1),))
+            else:
+                cursor.execute("""
+                    SELECT id, username, display_name, active, created_at
+                    FROM users
+                    ORDER BY username
+                """)
             users = cursor.fetchall()
             for u in users:
                 u["roles"] = fetch_user_roles(cursor, u["id"])
@@ -3501,11 +3617,19 @@ def auth_users():
             return jsonify({"error": "username and password are required"}), 400
 
         password_hash = generate_password_hash(password)
-        cursor.execute("""
-            INSERT INTO users
-            (username, password_hash, display_name, active, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, NOW(), NOW())
-        """, (username, password_hash, display_name, active))
+        if table_has_column(cursor, "users", "organization_id"):
+            oid = int(me.get("organization_id") or 1)
+            cursor.execute("""
+                INSERT INTO users
+                (organization_id, username, password_hash, display_name, active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
+            """, (oid, username, password_hash, display_name, active))
+        else:
+            cursor.execute("""
+                INSERT INTO users
+                (username, password_hash, display_name, active, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, NOW(), NOW())
+            """, (username, password_hash, display_name, active))
         user_id = cursor.lastrowid
 
         if role_codes:
@@ -3538,9 +3662,13 @@ def auth_user_detail(user_id):
         if request.method == "DELETE":
             if me["user_id"] == user_id:
                 return jsonify({"error": "Cannot delete your own account"}), 400
-            cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
-            if not cursor.fetchone():
+            cursor.execute("SELECT id, organization_id FROM users WHERE id=%s", (user_id,))
+            victim = cursor.fetchone()
+            if not victim:
                 return jsonify({"error": "Not found"}), 404
+            if table_has_column(cursor, "users", "organization_id"):
+                if int(victim.get("organization_id") or 0) != int(me.get("organization_id") or 1):
+                    return jsonify({"error": "Not found"}), 404
             cursor.execute(
                 "UPDATE ta_users SET washpro_user_id=NULL WHERE washpro_user_id=%s",
                 (user_id,),
@@ -3556,16 +3684,26 @@ def auth_user_detail(user_id):
         password = data.get("password") or ""
         role_codes = [str(r).upper() for r in (data.get("roles") or [])]
 
-        cursor.execute("SELECT id FROM users WHERE id=%s", (user_id,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT id, organization_id FROM users WHERE id=%s", (user_id,))
+        target = cursor.fetchone()
+        if not target:
             return jsonify({"error": "Not found"}), 404
+        if table_has_column(cursor, "users", "organization_id"):
+            if int(target.get("organization_id") or 0) != int(me.get("organization_id") or 1):
+                return jsonify({"error": "Not found"}), 404
         if not username:
             return jsonify({"error": "username is required"}), 400
 
-        cursor.execute(
-            "SELECT id FROM users WHERE username=%s AND id!=%s",
-            (username, user_id),
-        )
+        if table_has_column(cursor, "users", "organization_id"):
+            cursor.execute(
+                "SELECT id FROM users WHERE username=%s AND id!=%s AND organization_id=%s",
+                (username, user_id, int(me.get("organization_id") or 1)),
+            )
+        else:
+            cursor.execute(
+                "SELECT id FROM users WHERE username=%s AND id!=%s",
+                (username, user_id),
+            )
         if cursor.fetchone():
             return jsonify({"error": "username already taken"}), 400
 

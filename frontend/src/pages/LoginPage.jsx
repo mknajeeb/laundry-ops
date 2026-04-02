@@ -5,6 +5,9 @@ import { authLogin, setAuthSession } from "../api";
 function LoginPage({ onLoggedIn }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [organizationSlug, setOrganizationSlug] = useState(
+    () => localStorage.getItem("washpro_org_slug") || ""
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -12,7 +15,7 @@ function LoginPage({ onLoggedIn }) {
     try {
       setLoading(true);
       setError("");
-      const res = await authLogin(username.trim(), password);
+      const res = await authLogin(username.trim(), password, organizationSlug.trim() || null);
       const payload = res?.data || {};
       if (!payload?.token || !payload?.user) {
         throw new Error("Invalid login response.");
@@ -56,6 +59,15 @@ function LoginPage({ onLoggedIn }) {
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
             size="small"
+          />
+          <TextField
+            label="Organization slug (optional)"
+            placeholder="e.g. washpro, veewash"
+            value={organizationSlug}
+            onChange={(e) => setOrganizationSlug(e.target.value)}
+            autoComplete="organization"
+            size="small"
+            helperText="Required if the same username exists in more than one company."
           />
           <Button variant="contained" disabled={loading || !username || !password} onClick={submit}>
             {loading ? "Signing in..." : "Sign In"}

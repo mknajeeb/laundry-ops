@@ -54,7 +54,7 @@ function labelForAxiosError(err, fallback) {
   return `${prefix}${fallback}`;
 }
 
-function AttendanceSetupPage() {
+function AttendanceSetupPage({ embedded = false }) {
   const { hasPerm, loading: authLoading } = useAuth();
   const { t } = useI18n();
   const [tab, setTab] = useState(0);
@@ -190,7 +190,7 @@ function AttendanceSetupPage() {
 
   if (!can) {
     return (
-      <Box sx={{ p: { xs: 1.2, md: 2 } }}>
+      <Box sx={{ p: embedded ? 0 : { xs: 1.2, md: 2 } }}>
         <Alert severity="info">{t("attendance.needPerm")}</Alert>
       </Box>
     );
@@ -203,11 +203,13 @@ function AttendanceSetupPage() {
         width: "100%",
         maxWidth: "100%",
         minWidth: 0,
-        p: { xs: 1.2, md: 2 },
+        p: embedded ? 0 : { xs: 1.2, md: 2 },
         boxSizing: "border-box",
       }}
     >
-      <Typography sx={{ fontSize: 28, fontWeight: 700, mb: 1 }}>{t("attendance.title")}</Typography>
+      {!embedded ? (
+        <Typography sx={{ fontSize: 28, fontWeight: 700, mb: 1 }}>{t("attendance.title")}</Typography>
+      ) : null}
 
       {error ? (
         <Alert

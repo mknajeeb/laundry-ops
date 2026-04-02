@@ -54,8 +54,14 @@ axios.interceptors.request.use((config) => {
    AUTH
 ========================================= */
 
-export const authLogin = (username, password) =>
-  axios.post(`${API_BASE}/auth/login`, { username, password });
+export const authLogin = (username, password, organization_slug) =>
+  axios.post(`${API_BASE}/auth/login`, {
+    username,
+    password,
+    ...(organization_slug != null && String(organization_slug).trim() !== ""
+      ? { organization_slug: String(organization_slug).trim().toLowerCase() }
+      : {}),
+  });
 
 export const authMe = () =>
   axios.get(`${API_BASE}/auth/me`);
@@ -457,6 +463,12 @@ export const getMonitorSessions = (params) =>
 
 export const getPayrollCycles = () =>
   axios.get(`${API_BASE}/api/ta/payroll-cycles`);
+
+export const getPayrollPeriodSettings = () =>
+  axios.get(`${API_BASE}/api/ta/admin/payroll-period`);
+
+export const putPayrollPeriodSettings = (body) =>
+  axios.put(`${API_BASE}/api/ta/admin/payroll-period`, body);
 
 export const getTaRoles = () => axios.get(`${API_BASE}/api/ta/roles`);
 
