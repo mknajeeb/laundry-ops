@@ -7,7 +7,7 @@ return (
 
 <div className="header">
 
-<img src={washpro} className="logo-left"/>
+<img src={washpro} className="logo-left" alt="Laundry Ops" />
 
 <h1>Laundry Operations System</h1>
 

@@ -34,7 +34,7 @@ function HomePage() {
     <Box sx={{ minHeight: "100%", bgcolor: "#ffffff", p: { xs: 1.2, sm: 2 } }}>
       <Stack spacing={1.2} sx={{ mb: 1.5 }}>
         <Typography sx={{ fontSize: { xs: 26, sm: 32 }, fontWeight: 500, lineHeight: 1.05 }}>
-          Washpro Operations
+          Laundry Ops
         </Typography>
         <Typography sx={{ color: "#6b7280", fontWeight: 500 }}>
           Choose a module to continue.

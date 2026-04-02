@@ -381,7 +381,7 @@ function CheckoutPage() {
           {undoRow && (
             <Stack spacing={1}>
               <Typography sx={{ fontSize: 19 }}>{undoRow.name || `Order #${undoRow.order_id}`}</Typography>
-              <Typography>Move this bag back to Washpro queue.</Typography>
+              <Typography>Move this bag back to the operations queue.</Typography>
             </Stack>
           )}
         </DialogContent>

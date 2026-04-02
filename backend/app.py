@@ -724,28 +724,43 @@ def as_bool(value, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def delete_identity_rows(cursor, table_name, rows, name_col, weight_col, service_col, date_col):
+def delete_identity_rows(
+    cursor,
+    table_name,
+    rows,
+    name_col,
+    weight_col,
+    service_col,
+    date_col,
+    organization_id=None,
+):
     if not rows:
         return 0
 
+    has_org = (
+        organization_id is not None
+        and table_has_column(cursor, table_name, "organization_id")
+    )
     deleted = 0
     for row in rows:
-        cursor.execute(
-            f"""
+        sql = f"""
                 DELETE FROM {table_name}
                 WHERE UPPER(TRIM({name_col})) = UPPER(TRIM(%s))
                   AND {service_col} = %s
                   AND (({weight_col} IS NULL AND %s IS NULL) OR {weight_col} = %s)
                   AND {date_col} = %s
-            """,
-            (
-                row.get("name_clean"),
-                row.get("service_type"),
-                row.get("weight_num"),
-                row.get("weight_num"),
-                row.get("date_clean"),
-            ),
-        )
+            """
+        args = [
+            row.get("name_clean"),
+            row.get("service_type"),
+            row.get("weight_num"),
+            row.get("weight_num"),
+            row.get("date_clean"),
+        ]
+        if has_org:
+            sql += " AND organization_id = %s"
+            args.append(int(organization_id))
+        cursor.execute(sql, tuple(args))
         deleted += cursor.rowcount or 0
 
     return deleted
@@ -868,6 +883,32 @@ def require_user(cursor):
         return None, jsonify({"error": "Unauthorized"}), 401
     me["roles"] = fetch_user_roles(cursor, me["user_id"])
     return me, None, None
+
+
+def user_org_id(me):
+    """Tenant id for Washpro operational data; aligns with users.organization_id."""
+    return int(me.get("organization_id") or 1)
+
+
+def order_belongs_to_user_org(cursor, order_id, oid):
+    if not table_has_column(cursor, "orders_staging", "organization_id"):
+        return True
+    cursor.execute(
+        "SELECT id FROM orders_staging WHERE id = %s AND organization_id = %s LIMIT 1",
+        (int(order_id), int(oid)),
+    )
+    return cursor.fetchone() is not None
+
+
+def upload_batch_belongs_to_user_org(cursor, batch_id, oid):
+    if not table_has_column(cursor, "upload_batches", "organization_id"):
+        return True
+    pk = get_upload_batches_pk(cursor)
+    cursor.execute(
+        f"SELECT {pk} AS id FROM upload_batches WHERE {pk} = %s AND organization_id = %s LIMIT 1",
+        (int(batch_id), int(oid)),
+    )
+    return cursor.fetchone() is not None
 
 
 def _org_logo_select_sql(cursor):
@@ -1250,6 +1291,10 @@ def get_orders():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        oid = user_org_id(me)
         cap = orders_status_capabilities(cursor)
         has_batch_date = table_has_column(cursor, "orders_staging", "batch_date")
         has_created_at = table_has_column(cursor, "orders_staging", "created_at")
@@ -1258,6 +1303,10 @@ def get_orders():
         active_where = where_active_at_washpro_sql(cap)
         include_all = as_bool(request.args.get("include_all"), default=False)
         where_clause = "1 = 1" if include_all else active_where
+        exec_params = []
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            where_clause = f"({where_clause}) AND o.organization_id = %s"
+            exec_params.append(oid)
         has_submissions = table_exists(cursor, "order_process_submissions")
         submission_select = ""
         submission_join = ""
@@ -1331,7 +1380,7 @@ def get_orders():
 
             ORDER BY o.date_clean ASC, o.id ASC
 
-        """)
+        """, tuple(exec_params))
 
         orders = cursor.fetchall()
 
@@ -1365,10 +1414,15 @@ def checkout_order():
 
     try:
 
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        oid = user_org_id(me)
         cap = orders_status_capabilities(cursor)
         logistics_sql = orders_logistics_select_sql(cap)
 
-        cursor.execute(f"""
+        has_org = table_has_column(cursor, "orders_staging", "organization_id")
+        sel_sql = f"""
             SELECT
                 id,
                 date_clean,
@@ -1379,7 +1433,12 @@ def checkout_order():
                 status
             FROM orders_staging
             WHERE id = %s
-        """, (order_id,))
+        """
+        sel_args = [order_id]
+        if has_org:
+            sel_sql += " AND organization_id = %s"
+            sel_args.append(oid)
+        cursor.execute(sel_sql, tuple(sel_args))
 
         order = cursor.fetchone()
 
@@ -1417,11 +1476,16 @@ def checkout_order():
         if not set_parts:
             set_parts.append("status = 'CHECKED_OUT'")
 
-        cursor.execute(f"""
+        upd_sql = f"""
             UPDATE orders_staging
             SET {", ".join(set_parts)}
             WHERE id = %s
-        """, (order_id,))
+        """
+        upd_args = [order_id]
+        if has_org:
+            upd_sql += " AND organization_id = %s"
+            upd_args.append(oid)
+        cursor.execute(upd_sql, tuple(upd_args))
 
         conn.commit()
         return jsonify({"status": "checked_out", "order_id": order_id})
@@ -1459,11 +1523,15 @@ def checkout_bulk():
 
     try:
 
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         cap = orders_status_capabilities(cursor)
         logistics_sql = orders_logistics_select_sql(cap)
 
         format_strings = ",".join(["%s"] * len(order_ids))
-        cursor.execute(f"""
+        bulk_sql = f"""
             SELECT
                 id,
                 date_clean,
@@ -1474,7 +1542,13 @@ def checkout_bulk():
                 status
             FROM orders_staging
             WHERE id IN ({format_strings})
-        """, tuple(order_ids))
+        """
+        bulk_args = list(order_ids)
+        has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+        if has_staging_org:
+            bulk_sql += " AND organization_id = %s"
+            bulk_args.append(tenant_oid)
+        cursor.execute(bulk_sql, tuple(bulk_args))
 
         rows = cursor.fetchall()
         rows_by_id = {row["id"]: row for row in rows}
@@ -1483,15 +1557,15 @@ def checkout_bulk():
         already_checked_out = []
         checkout_candidates = []
 
-        for oid in order_ids:
-            row = rows_by_id.get(oid)
+        for req_id in order_ids:
+            row = rows_by_id.get(req_id)
 
             if not row:
-                not_found.append(oid)
+                not_found.append(req_id)
                 continue
 
             if (row.get("logistics_status") or "").upper() in ["SENT_TO_RINSE", "CHECKED_OUT"]:
-                already_checked_out.append(oid)
+                already_checked_out.append(req_id)
                 continue
 
             checkout_candidates.append(row)
@@ -1528,11 +1602,16 @@ def checkout_bulk():
             if not set_parts:
                 set_parts.append("status = 'CHECKED_OUT'")
 
-            cursor.execute(f"""
+            upd_bulk = f"""
                 UPDATE orders_staging
                 SET {", ".join(set_parts)}
                 WHERE id IN ({update_strings})
-            """, tuple(checkout_ids))
+            """
+            upd_bulk_args = list(checkout_ids)
+            if has_staging_org:
+                upd_bulk += " AND organization_id = %s"
+                upd_bulk_args.append(tenant_oid)
+            cursor.execute(upd_bulk, tuple(upd_bulk_args))
 
         conn.commit()
 
@@ -1569,36 +1648,79 @@ def get_checkout_log():
 
     try:
 
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+        join_sql = ""
+        if has_staging_org:
+            join_sql = "INNER JOIN orders_staging o ON o.id = c.order_id AND o.organization_id = %s"
+
         if checkout_date:
-            cursor.execute("""
-                SELECT
-                    id,
-                    order_id,
-                    name,
-                    weight,
-                    service,
-                    rush_date,
-                    checkout_time,
-                    employee
-                FROM checkout_log
-                WHERE DATE(checkout_time) = %s
-                ORDER BY checkout_time DESC, id DESC
-            """, (checkout_date,))
+            if has_staging_org:
+                cursor.execute(f"""
+                    SELECT
+                        c.id,
+                        c.order_id,
+                        c.name,
+                        c.weight,
+                        c.service,
+                        c.rush_date,
+                        c.checkout_time,
+                        c.employee
+                    FROM checkout_log c
+                    {join_sql}
+                    WHERE DATE(c.checkout_time) = %s
+                    ORDER BY c.checkout_time DESC, c.id DESC
+                """, (tenant_oid, checkout_date))
+            else:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        order_id,
+                        name,
+                        weight,
+                        service,
+                        rush_date,
+                        checkout_time,
+                        employee
+                    FROM checkout_log
+                    WHERE DATE(checkout_time) = %s
+                    ORDER BY checkout_time DESC, id DESC
+                """, (checkout_date,))
         else:
-            cursor.execute("""
-                SELECT
-                    id,
-                    order_id,
-                    name,
-                    weight,
-                    service,
-                    rush_date,
-                    checkout_time,
-                    employee
-                FROM checkout_log
-                WHERE DATE(checkout_time) = CURDATE()
-                ORDER BY checkout_time DESC, id DESC
-            """)
+            if has_staging_org:
+                cursor.execute(f"""
+                    SELECT
+                        c.id,
+                        c.order_id,
+                        c.name,
+                        c.weight,
+                        c.service,
+                        c.rush_date,
+                        c.checkout_time,
+                        c.employee
+                    FROM checkout_log c
+                    {join_sql}
+                    WHERE DATE(c.checkout_time) = CURDATE()
+                    ORDER BY c.checkout_time DESC, c.id DESC
+                """, (tenant_oid,))
+            else:
+                cursor.execute("""
+                    SELECT
+                        id,
+                        order_id,
+                        name,
+                        weight,
+                        service,
+                        rush_date,
+                        checkout_time,
+                        employee
+                    FROM checkout_log
+                    WHERE DATE(checkout_time) = CURDATE()
+                    ORDER BY checkout_time DESC, id DESC
+                """)
 
         return jsonify(cursor.fetchall())
 
@@ -1626,12 +1748,18 @@ def checkout_undo():
 
     try:
 
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
         cap = orders_status_capabilities(cursor)
-        cursor.execute("""
-            SELECT id, status
-            FROM orders_staging
-            WHERE id = %s
-        """, (order_id,))
+        sel_undo = "SELECT id, status FROM orders_staging WHERE id = %s"
+        sel_args = [order_id]
+        if has_staging_org:
+            sel_undo += " AND organization_id = %s"
+            sel_args.append(tenant_oid)
+        cursor.execute(sel_undo, tuple(sel_args))
         order_row = cursor.fetchone()
 
         if not order_row:
@@ -1660,11 +1788,16 @@ def checkout_undo():
         if not set_parts:
             set_parts.append("status = 'PROCESSED'")
 
-        cursor.execute(f"""
+        upd_undo = f"""
             UPDATE orders_staging
             SET {", ".join(set_parts)}
             WHERE id = %s
-        """, (order_id,))
+        """
+        upd_undo_args = [order_id]
+        if has_staging_org:
+            upd_undo += " AND organization_id = %s"
+            upd_undo_args.append(tenant_oid)
+        cursor.execute(upd_undo, tuple(upd_undo_args))
 
         conn.commit()
         return jsonify({"status": "checkout_undone", "order_id": order_id})
@@ -1692,8 +1825,14 @@ def get_final_orders():
 
     try:
 
-        cursor.execute("""
-
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        has_final_org = table_exists(cursor, "orders_final") and table_has_column(
+            cursor, "orders_final", "organization_id"
+        )
+        sql_final = """
             SELECT
                 id,
                 date_clean,
@@ -1706,10 +1845,13 @@ def get_final_orders():
                 created_at
 
             FROM orders_final
-
-            ORDER BY cleaned_at DESC, id DESC
-
-        """)
+        """
+        args_final = []
+        if has_final_org:
+            sql_final += " WHERE organization_id = %s"
+            args_final.append(tenant_oid)
+        sql_final += " ORDER BY cleaned_at DESC, id DESC"
+        cursor.execute(sql_final, tuple(args_final))
 
         rows = cursor.fetchall()
 
@@ -1734,13 +1876,14 @@ def update_order(order_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
-        _, err_resp, err_code = require_admin(cursor)
+        me, err_resp, err_code = require_admin(cursor)
         if err_resp:
             return err_resp, err_code
+        tenant_oid = user_org_id(me)
         ensure_ticket_id_columns(cursor)
         has_ticket_id = table_has_column(cursor, "orders_staging", "ticket_id")
 
-        cursor.execute("""
+        sel_sql = """
             SELECT
                 id,
                 date_clean,
@@ -1750,7 +1893,12 @@ def update_order(order_id):
                 {ticket_select}
             FROM orders_staging
             WHERE id = %s
-        """.format(ticket_select=", ticket_id" if has_ticket_id else ""), (order_id,))
+        """.format(ticket_select=", ticket_id" if has_ticket_id else "")
+        sel_args = [order_id]
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            sel_sql += " AND organization_id = %s"
+            sel_args.append(tenant_oid)
+        cursor.execute(sel_sql, tuple(sel_args))
 
         existing = cursor.fetchone()
 
@@ -1789,7 +1937,7 @@ def update_order(order_id):
             ticket_id = None
 
         if has_ticket_id:
-            cursor.execute("""
+            upd_sql = """
                 UPDATE orders_staging
                 SET
                     date_clean = %s,
@@ -1798,16 +1946,14 @@ def update_order(order_id):
                     service_type = %s,
                     ticket_id = %s
                 WHERE id = %s
-            """, (
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type,
-                ticket_id,
-                order_id
-            ))
+            """
+            upd_args = [date_clean, name_clean, weight_num, service_type, ticket_id, order_id]
+            if table_has_column(cursor, "orders_staging", "organization_id"):
+                upd_sql += " AND organization_id = %s"
+                upd_args.append(tenant_oid)
+            cursor.execute(upd_sql, tuple(upd_args))
         else:
-            cursor.execute("""
+            upd_sql = """
                 UPDATE orders_staging
                 SET
                     date_clean = %s,
@@ -1815,13 +1961,12 @@ def update_order(order_id):
                     weight_num = %s,
                     service_type = %s
                 WHERE id = %s
-            """, (
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type,
-                order_id
-            ))
+            """
+            upd_args = [date_clean, name_clean, weight_num, service_type, order_id]
+            if table_has_column(cursor, "orders_staging", "organization_id"):
+                upd_sql += " AND organization_id = %s"
+                upd_args.append(tenant_oid)
+            cursor.execute(upd_sql, tuple(upd_args))
 
         conn.commit()
 
@@ -1850,14 +1995,16 @@ def delete_order(order_id):
     cursor = conn.cursor()
 
     try:
-        _, err_resp, err_code = require_admin(cursor)
+        me, err_resp, err_code = require_admin(cursor)
         if err_resp:
             return err_resp, err_code
-
-        cursor.execute(
-            "DELETE FROM orders_staging WHERE id = %s",
-            (order_id,)
-        )
+        tenant_oid = user_org_id(me)
+        del_sql = "DELETE FROM orders_staging WHERE id = %s"
+        del_args = [order_id]
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            del_sql += " AND organization_id = %s"
+            del_args.append(tenant_oid)
+        cursor.execute(del_sql, tuple(del_args))
 
         conn.commit()
 
@@ -1896,7 +2043,7 @@ def submit_processed_order(order_id):
         me, err_resp, err_code = require_user(cursor)
         if err_resp:
             return err_resp, err_code
-
+        tenant_oid = user_org_id(me)
         ensure_process_submissions_table(cursor)
         ensure_order_processing_exceptions_table(cursor)
         ensure_ticket_id_columns(cursor)
@@ -1905,7 +2052,7 @@ def submit_processed_order(order_id):
 
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
-        cursor.execute(f"""
+        sub_sql = f"""
             SELECT
                 id,
                 date_clean,
@@ -1917,8 +2064,13 @@ def submit_processed_order(order_id):
                 status
             FROM orders_staging
             WHERE id = %s
-            LIMIT 1
-        """, (order_id,))
+        """
+        sub_args = [order_id]
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            sub_sql += " AND organization_id = %s"
+            sub_args.append(tenant_oid)
+        sub_sql += " LIMIT 1"
+        cursor.execute(sub_sql, tuple(sub_args))
         row = cursor.fetchone()
 
         if not row:
@@ -1958,11 +2110,15 @@ def submit_processed_order(order_id):
             update_vals.append(ticket_id)
         update_vals.append(order_id)
 
-        cursor.execute(f"""
+        upd_sql = f"""
             UPDATE orders_staging
             SET {", ".join(set_parts)}
             WHERE id = %s
-        """, tuple(update_vals))
+        """
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            upd_sql += " AND organization_id = %s"
+            update_vals.append(tenant_oid)
+        cursor.execute(upd_sql, tuple(update_vals))
 
         original_measure = row.get("weight_num")
         if service_type == "HD":
@@ -2088,11 +2244,10 @@ def add_order_ticket(order_id):
         me, err_resp, err_code = require_user(cursor)
         if err_resp:
             return err_resp, err_code
-
+        tenant_oid = user_org_id(me)
         ensure_process_submissions_table(cursor)
         prune_old_ticket_images(cursor)
-        cursor.execute("SELECT id FROM orders_staging WHERE id = %s LIMIT 1", (order_id,))
-        if not cursor.fetchone():
+        if not order_belongs_to_user_org(cursor, order_id, tenant_oid):
             return jsonify({"error": "Order not found"}), 404
 
         cursor.execute("SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1", (order_id,))
@@ -2162,9 +2317,11 @@ def get_order_ticket(order_id):
         me, err_resp, err_code = require_user(cursor)
         if err_resp:
             return err_resp, err_code
-
+        tenant_oid = user_org_id(me)
         ensure_process_submissions_table(cursor)
         prune_old_ticket_images(cursor)
+        if not order_belongs_to_user_org(cursor, order_id, tenant_oid):
+            return jsonify({"error": "Order not found"}), 404
         cursor.execute("""
             SELECT
                 id,
@@ -2215,8 +2372,10 @@ def delete_order_ticket(order_id):
         me, err_resp, err_code = require_user(cursor)
         if err_resp:
             return err_resp, err_code
-
+        tenant_oid = user_org_id(me)
         ensure_process_submissions_table(cursor)
+        if not order_belongs_to_user_org(cursor, order_id, tenant_oid):
+            return jsonify({"error": "Order not found"}), 404
         cursor.execute("""
             SELECT id, user_id, ticket_blob_name, ticket_blob_url
             FROM order_process_submissions
@@ -2282,7 +2441,14 @@ def list_order_tickets():
             limit = 200
         limit = max(1, min(limit, 1000))
 
-        cursor.execute("""
+        tenant_oid = user_org_id(me)
+        join_tickets = "LEFT JOIN orders_staging o ON o.id = s.order_id"
+        ticket_params = [limit]
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            join_tickets = join_tickets + " AND o.organization_id = %s"
+            ticket_params = [tenant_oid, limit]
+
+        cursor.execute(f"""
             SELECT
                 s.id,
                 s.order_id,
@@ -2305,10 +2471,10 @@ def list_order_tickets():
                 o.service_type,
                 o.weight_num
             FROM order_process_submissions s
-            LEFT JOIN orders_staging o ON o.id = s.order_id
+            {join_tickets}
             ORDER BY COALESCE(s.updated_at, s.created_at) DESC
             LIMIT %s
-        """, (limit,))
+        """, tuple(ticket_params))
 
         rows = cursor.fetchall() or []
         for r in rows:
@@ -2342,6 +2508,9 @@ def list_processing_discrepancies():
         cap = orders_status_capabilities(cursor)
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
+        tenant_oid = user_org_id(me)
+        has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
 
         where_parts = ["1 = 1"]
         vals = []
@@ -2358,18 +2527,42 @@ def list_processing_discrepancies():
         limit = max(1, min(limit, 1000))
 
         where_sql = " AND ".join(where_parts)
-        sent_pending_where = f"""
-            ({processing_sql}) = 'PENDING'
-            AND ({logistics_sql}) IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT', 'FORCED_CHECKOUT')
+        join_exceptions = "LEFT JOIN orders_staging o ON o.id = e.order_id"
+        if has_staging_org:
+            join_exceptions = "INNER JOIN orders_staging o ON o.id = e.order_id AND o.organization_id = %s"
+
+        exists_inner = """
             AND EXISTS (
                 SELECT 1
                 FROM upload_batches b
                 WHERE b.batch_date = o.batch_date
                 AND UPPER(COALESCE(b.state, '')) IN ('CONFIRMED', 'CLOSED')
-            )
         """
+        if has_ub_org:
+            exists_inner += "\n                AND b.organization_id = %s"
+        exists_inner += "\n            )"
+
+        sent_pending_where = f"""
+            ({processing_sql}) = 'PENDING'
+            AND ({logistics_sql}) IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT', 'FORCED_CHECKOUT')
+            {exists_inner}
+        """
+        if has_staging_org:
+            sent_pending_where = "o.organization_id = %s AND " + sent_pending_where
         if batch_date:
             sent_pending_where += " AND o.batch_date = %s"
+
+        disc_params = []
+        if has_staging_org:
+            disc_params.append(tenant_oid)
+        disc_params.extend(vals)
+        if has_staging_org:
+            disc_params.append(tenant_oid)
+        if has_ub_org:
+            disc_params.append(tenant_oid)
+        if batch_date:
+            disc_params.append(batch_date)
+        disc_params.append(limit)
 
         cursor.execute(f"""
             SELECT *
@@ -2389,7 +2582,7 @@ def list_processing_discrepancies():
                     'MEASURE_MISMATCH' AS discrepancy_type,
                     'WEIGHT_OR_COUNT_MISMATCH' AS reason
                 FROM order_processing_exceptions e
-                LEFT JOIN orders_staging o ON o.id = e.order_id
+                {join_exceptions}
                 WHERE {where_sql}
 
                 UNION ALL
@@ -2413,7 +2606,7 @@ def list_processing_discrepancies():
             ) x
             ORDER BY x.created_at DESC, x.order_id DESC
             LIMIT %s
-        """, tuple(vals + ([batch_date] if batch_date else []) + [limit]))
+        """, tuple(disc_params))
 
         return jsonify(cursor.fetchall() or [])
 
@@ -2437,8 +2630,17 @@ def dashboard():
 
     try:
 
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         cap = orders_status_capabilities(cursor)
         active_where = where_active_at_washpro_sql(cap)
+        dash_where = active_where
+        dash_params = []
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            dash_where = f"({active_where}) AND organization_id = %s"
+            dash_params.append(tenant_oid)
 
         cursor.execute(f"""
 
@@ -2458,9 +2660,9 @@ def dashboard():
                 SUM(service_type = 'HD' AND date_clean >= CURDATE()) AS hd_non_rush
 
             FROM orders_staging
-            WHERE {active_where}
+            WHERE {dash_where}
 
-        """)
+        """, tuple(dash_params))
 
         stats = cursor.fetchone()
 
@@ -2543,12 +2745,18 @@ def upload_orders():
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
 
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+
         requested_batch_date = request.form.get("batch_date")
         batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
 
         upload_batches_pk = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
 
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
         has_state = table_has_column(cursor, "upload_batches", "state")
         has_closed_at = table_has_column(cursor, "upload_batches", "closed_at")
         has_updated_at = table_has_column(cursor, "upload_batches", "updated_at")
@@ -2563,23 +2771,37 @@ def upload_orders():
             if has_updated_at:
                 close_clause += ", updated_at = NOW()"
 
+            draft_where = "WHERE state = 'DRAFT'"
+            draft_args = []
+            if has_ub_org:
+                draft_where += " AND organization_id = %s"
+                draft_args.append(tenant_oid)
             cursor.execute(f"""
                 UPDATE upload_batches
                 SET {close_clause}
-                WHERE state = 'DRAFT'
-            """)
+                {draft_where}
+            """, tuple(draft_args))
 
             # Same-day overwrite: close previous non-confirmed batch for same date.
-            cursor.execute(f"""
+            same_sql = f"""
                 UPDATE upload_batches
                 SET {close_clause}
                 WHERE batch_date = %s
                 AND state <> 'CONFIRMED'
-            """, (batch_date,))
+            """
+            same_args = [batch_date]
+            if has_ub_org:
+                same_sql += " AND organization_id = %s"
+                same_args.append(tenant_oid)
+            cursor.execute(same_sql, tuple(same_args))
 
         insert_cols = ["file_name", "batch_date", "orders_loaded"]
         insert_vals = ["%s", "%s", "%s"]
         insert_args = [file.filename, batch_date, 0]
+        if has_ub_org:
+            insert_cols = ["organization_id"] + insert_cols
+            insert_vals = ["%s"] + insert_vals
+            insert_args = [tenant_oid] + insert_args
 
         if has_state:
             insert_cols.append("state")
@@ -2607,7 +2829,7 @@ def upload_orders():
         # Build identity index from all staging rows (including checked/forced/processed).
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
-        cursor.execute(f"""
+        staging_sql = f"""
             SELECT
                 id,
                 date_clean,
@@ -2618,7 +2840,12 @@ def upload_orders():
                 {processing_sql},
                 status
             FROM orders_staging
-        """)
+        """
+        staging_args = []
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            staging_sql += " WHERE organization_id = %s"
+            staging_args.append(tenant_oid)
+        cursor.execute(staging_sql, tuple(staging_args))
         staging_rows = cursor.fetchall()
         existing_identity_reasons = {}
 
@@ -2650,7 +2877,7 @@ def upload_orders():
                 existing_identity_reasons[identity_key] = next_reason
 
         final_cutoff = datetime.utcnow() - timedelta(days=duplicate_lookback_days)
-        cursor.execute("""
+        final_sql = """
             SELECT
                 date_clean,
                 name_clean,
@@ -2658,7 +2885,12 @@ def upload_orders():
                 service_type
             FROM orders_final
             WHERE cleaned_at >= %s
-        """, (final_cutoff,))
+        """
+        final_args = [final_cutoff]
+        if table_exists(cursor, "orders_final") and table_has_column(cursor, "orders_final", "organization_id"):
+            final_sql += " AND organization_id = %s"
+            final_args.append(tenant_oid)
+        cursor.execute(final_sql, tuple(final_args))
         final_rows = cursor.fetchall()
         final_identity_keys = set(
             build_identity_key(
@@ -2752,10 +2984,14 @@ def upload_orders():
             set_parts.append("updated_at = NOW()")
 
         set_args.append(upload_batch_id)
+        upd_batch_where = f"WHERE {upload_batches_pk} = %s"
+        if has_ub_org:
+            upd_batch_where += " AND organization_id = %s"
+            set_args.append(tenant_oid)
         cursor.execute(f"""
             UPDATE upload_batches
             SET {", ".join(set_parts)}
-            WHERE {upload_batches_pk} = %s
+            {upd_batch_where}
         """, tuple(set_args))
 
         conn.commit()
@@ -2821,7 +3057,11 @@ def create_manual_order():
         batch_date = date.today()
 
         conn = get_db()
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         cap = orders_status_capabilities(cursor)
 
         cols = [
@@ -2834,6 +3074,11 @@ def create_manual_order():
         ]
         vals = ["%s", "%s", "%s", "%s", "%s", "%s"]
         args = [date_clean, name_clean, weight_num, service_type, rush_type, batch_date]
+
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            cols = ["organization_id"] + cols
+            vals = ["%s"] + vals
+            args = [tenant_oid] + args
 
         if cap["has_logistics"]:
             cols.append("logistics_status")
@@ -3230,7 +3475,13 @@ def process_order():
                 end_dt = None
 
     conn = get_db()
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
+    me, err_resp, err_code = require_user(cursor)
+    if err_resp:
+        return err_resp, err_code
+    tenant_oid = user_org_id(me)
+    if not order_belongs_to_user_org(cursor, order_id, tenant_oid):
+        return jsonify({"error": "Order not found"}), 404
     cap = orders_status_capabilities(cursor)
 
     cursor.execute("""
@@ -3266,13 +3517,16 @@ def process_order():
     if not set_parts:
         set_parts.append("status='PROCESSED'")
 
-    cursor.execute(f"""
-
+    upd_proc = f"""
         UPDATE orders_staging
         SET {", ".join(set_parts)}
         WHERE id=%s
-
-    """, (order_id,))
+    """
+    upd_args = [order_id]
+    if table_has_column(cursor, "orders_staging", "organization_id"):
+        upd_proc += " AND organization_id = %s"
+        upd_args.append(tenant_oid)
+    cursor.execute(upd_proc, tuple(upd_args))
 
     conn.commit()
 
@@ -3291,31 +3545,41 @@ def scoreboard():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
 
-    cursor.execute("""
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            cursor.execute("""
+                SELECT
+                    e.name,
+                    COUNT(*) AS bags
+                FROM order_processing p
+                INNER JOIN orders_staging o ON o.id = p.order_id AND o.organization_id = %s
+                JOIN employees e ON p.folder_employee_id = e.id
+                WHERE DATE(p.created_at) = CURDATE()
+                GROUP BY e.id
+                ORDER BY bags DESC
+            """, (tenant_oid,))
+        else:
+            cursor.execute("""
+                SELECT
+                    e.name,
+                    COUNT(*) AS bags
+                FROM order_processing p
+                JOIN employees e ON p.folder_employee_id = e.id
+                WHERE DATE(p.created_at) = CURDATE()
+                GROUP BY e.id
+                ORDER BY bags DESC
+            """)
 
-        SELECT
+        rows = cursor.fetchall()
 
-        e.name,
-        COUNT(*) as bags
-
-        FROM order_processing p
-
-        JOIN employees e
-        ON p.folder_employee_id = e.id
-
-        WHERE DATE(p.created_at)=CURDATE()
-
-        GROUP BY e.id
-        ORDER BY bags DESC
-
-    """)
-
-    rows = cursor.fetchall()
-
-    cursor.close()
-    conn.close()
-
-    return jsonify(rows)
+        return jsonify(rows)
+    finally:
+        cursor.close()
+        conn.close()
 
 # ---------------------------------------------------
 # Maintenance APIs
@@ -5737,6 +6001,10 @@ def get_current_upload_batch():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         pk_col = get_upload_batches_pk(cursor)
         selected_cols = [
             f"{pk_col} AS id",
@@ -5773,13 +6041,19 @@ def get_current_upload_batch():
         else:
             selected_cols.append("NULL AS closed_at")
 
+        cur_where = ""
+        cur_args = []
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            cur_where = "WHERE organization_id = %s"
+            cur_args.append(tenant_oid)
         cursor.execute(f"""
             SELECT
                 {", ".join(selected_cols)}
             FROM upload_batches
+            {cur_where}
             ORDER BY batch_date DESC, {pk_col} DESC
             LIMIT 1
-        """)
+        """, tuple(cur_args))
         row = cursor.fetchone()
         if not row:
             return jsonify(None)
@@ -5800,6 +6074,10 @@ def list_upload_batches():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         pk_col = get_upload_batches_pk(cursor)
         limit = request.args.get("limit", default=20, type=int) or 20
         limit = max(1, min(limit, 100))
@@ -5838,13 +6116,20 @@ def list_upload_batches():
         else:
             selected_cols.append("NULL AS closed_at")
 
+        list_where = ""
+        list_args = []
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            list_where = "WHERE organization_id = %s"
+            list_args.append(tenant_oid)
+        list_args.append(limit)
         cursor.execute(f"""
             SELECT
                 {", ".join(selected_cols)}
             FROM upload_batches
+            {list_where}
             ORDER BY batch_date DESC, {pk_col} DESC
             LIMIT %s
-        """, (limit,))
+        """, tuple(list_args))
         rows = cursor.fetchall() or []
 
         row_pk = get_upload_batch_rows_pk(cursor)
@@ -5864,8 +6149,20 @@ def reset_current_draft_batch():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         pk_col = get_upload_batches_pk(cursor)
-        where_state = "WHERE state = 'DRAFT'" if table_has_column(cursor, "upload_batches", "state") else ""
+        where_parts = []
+        if table_has_column(cursor, "upload_batches", "state"):
+            where_parts.append("state = 'DRAFT'")
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            where_parts.append("organization_id = %s")
+        where_state = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        reset_args = []
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            reset_args.append(tenant_oid)
 
         cursor.execute(f"""
             SELECT {pk_col} AS id, state
@@ -5873,7 +6170,7 @@ def reset_current_draft_batch():
             {where_state}
             ORDER BY batch_date DESC, {pk_col} DESC
             LIMIT 1
-        """)
+        """, tuple(reset_args))
         batch = cursor.fetchone()
 
         if not batch:
@@ -5920,17 +6217,54 @@ def reset_all_upload_batches():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_admin(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         row_pk = get_upload_batch_rows_pk(cursor)
         batch_pk = get_upload_batches_pk(cursor)
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
+        has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+        has_final_org = table_exists(cursor, "orders_final") and table_has_column(
+            cursor, "orders_final", "organization_id"
+        )
 
-        cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batch_rows")
-        rows_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
-
-        cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batches")
-        batches_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
-
-        cursor.execute("DELETE FROM upload_batch_rows")
-        cursor.execute("DELETE FROM upload_batches")
+        if has_ub_org:
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) AS cnt FROM upload_batch_rows
+                WHERE upload_batch_id IN (
+                    SELECT {batch_pk} FROM upload_batches WHERE organization_id = %s
+                )
+                """,
+                (tenant_oid,),
+            )
+            rows_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+            cursor.execute(
+                f"SELECT COUNT(*) AS cnt FROM upload_batches WHERE organization_id = %s",
+                (tenant_oid,),
+            )
+            batches_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+            cursor.execute(
+                f"""
+                DELETE FROM upload_batch_rows
+                WHERE upload_batch_id IN (
+                    SELECT {batch_pk} FROM upload_batches WHERE organization_id = %s
+                )
+                """,
+                (tenant_oid,),
+            )
+            cursor.execute(
+                f"DELETE FROM upload_batches WHERE organization_id = %s",
+                (tenant_oid,),
+            )
+        else:
+            cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batch_rows")
+            rows_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+            cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batches")
+            batches_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+            cursor.execute("DELETE FROM upload_batch_rows")
+            cursor.execute("DELETE FROM upload_batches")
 
         cascade_deleted = {
             "orders_staging": 0,
@@ -5939,12 +6273,57 @@ def reset_all_upload_batches():
             "order_processing": 0,
         }
         if cascade_data:
-            for table_name in ["order_processing", "checkout_log", "orders_final", "orders_staging"]:
-                if table_exists(cursor, table_name):
-                    cursor.execute(f"SELECT COUNT(*) AS cnt FROM {table_name}")
+            if has_staging_org:
+                if table_exists(cursor, "order_processing"):
+                    cursor.execute(
+                        """
+                        DELETE FROM order_processing
+                        WHERE order_id IN (
+                            SELECT id FROM orders_staging WHERE organization_id = %s
+                        )
+                        """,
+                        (tenant_oid,),
+                    )
+                    cascade_deleted["order_processing"] = cursor.rowcount or 0
+                if table_exists(cursor, "checkout_log"):
+                    cursor.execute(
+                        """
+                        DELETE FROM checkout_log
+                        WHERE order_id IN (
+                            SELECT id FROM orders_staging WHERE organization_id = %s
+                        )
+                        """,
+                        (tenant_oid,),
+                    )
+                    cascade_deleted["checkout_log"] = cursor.rowcount or 0
+                if has_final_org:
+                    cursor.execute(
+                        "SELECT COUNT(*) AS cnt FROM orders_final WHERE organization_id = %s",
+                        (tenant_oid,),
+                    )
                     before = (cursor.fetchone() or {}).get("cnt", 0) or 0
-                    cursor.execute(f"DELETE FROM {table_name}")
-                    cascade_deleted[table_name] = before
+                    cursor.execute(
+                        "DELETE FROM orders_final WHERE organization_id = %s",
+                        (tenant_oid,),
+                    )
+                    cascade_deleted["orders_final"] = before
+                cursor.execute(
+                    "SELECT COUNT(*) AS cnt FROM orders_staging WHERE organization_id = %s",
+                    (tenant_oid,),
+                )
+                before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+                cursor.execute(
+                    "DELETE FROM orders_staging WHERE organization_id = %s",
+                    (tenant_oid,),
+                )
+                cascade_deleted["orders_staging"] = before
+            else:
+                for table_name in ["order_processing", "checkout_log", "orders_final", "orders_staging"]:
+                    if table_exists(cursor, table_name):
+                        cursor.execute(f"SELECT COUNT(*) AS cnt FROM {table_name}")
+                        before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+                        cursor.execute(f"DELETE FROM {table_name}")
+                        cascade_deleted[table_name] = before
 
         # Reset auto-increment where possible for cleaner testing
         try:
@@ -5984,12 +6363,22 @@ def delete_upload_batch(batch_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         batch_pk = get_upload_batches_pk(cursor)
-        cursor.execute(f"""
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
+        bdel = f"""
             SELECT {batch_pk} AS id, state
             FROM upload_batches
             WHERE {batch_pk} = %s
-        """, (batch_id,))
+        """
+        bargs = [batch_id]
+        if has_ub_org:
+            bdel += " AND organization_id = %s"
+            bargs.append(tenant_oid)
+        cursor.execute(bdel, tuple(bargs))
         batch = cursor.fetchone()
         if not batch:
             return jsonify({"error": "Batch not found"}), 404
@@ -6023,20 +6412,25 @@ def delete_upload_batch(batch_id):
             staging_ids = []
             if table_exists(cursor, "orders_staging"):
                 for row in identity_rows:
-                    cursor.execute("""
+                    sel_st = """
                         SELECT id
                         FROM orders_staging
                         WHERE UPPER(TRIM(name_clean)) = UPPER(TRIM(%s))
                           AND service_type = %s
                           AND ((weight_num IS NULL AND %s IS NULL) OR weight_num = %s)
                           AND date_clean = %s
-                    """, (
+                    """
+                    st_args = [
                         row.get("name_clean"),
                         row.get("service_type"),
                         row.get("weight_num"),
                         row.get("weight_num"),
                         row.get("date_clean"),
-                    ))
+                    ]
+                    if table_has_column(cursor, "orders_staging", "organization_id"):
+                        sel_st += " AND organization_id = %s"
+                        st_args.append(tenant_oid)
+                    cursor.execute(sel_st, tuple(st_args))
                     staging_ids.extend([r["id"] for r in cursor.fetchall()])
 
                 cascade_deleted["orders_staging"] = delete_identity_rows(
@@ -6047,6 +6441,7 @@ def delete_upload_batch(batch_id):
                     "weight_num",
                     "service_type",
                     "date_clean",
+                    tenant_oid,
                 )
 
             if table_exists(cursor, "orders_final"):
@@ -6060,6 +6455,7 @@ def delete_upload_batch(batch_id):
                         "weight_num",
                         "service_type",
                         "date_clean",
+                        tenant_oid,
                     )
 
             if table_exists(cursor, "checkout_log"):
@@ -6121,6 +6517,12 @@ def get_upload_batch_rows(batch_id):
     row_status = (request.args.get("row_status") or "").strip().upper()
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
+            return jsonify({"error": "Batch not found"}), 404
         row_pk = get_upload_batch_rows_pk(cursor)
         if row_status:
             cursor.execute(f"""
@@ -6175,6 +6577,12 @@ def override_upload_batch_row(batch_id, row_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
+            return jsonify({"error": "Batch not found"}), 404
         pk_col = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
 
@@ -6278,6 +6686,12 @@ def delete_upload_batch_row(batch_id, row_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
+            return jsonify({"error": "Batch not found"}), 404
         pk_col = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
         cursor.execute(f"""
@@ -6316,6 +6730,12 @@ def add_upload_batch_row(batch_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
+            return jsonify({"error": "Batch not found"}), 404
         pk_col = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
 
@@ -6397,15 +6817,29 @@ def confirm_upload_batch(batch_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         batch_pk = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
         cap = orders_status_capabilities(cursor)
+        has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
+        has_final_org = table_exists(cursor, "orders_final") and table_has_column(
+            cursor, "orders_final", "organization_id"
+        )
 
-        cursor.execute(f"""
+        bq = f"""
             SELECT {batch_pk} AS id, batch_date, state
             FROM upload_batches
             WHERE {batch_pk} = %s
-        """, (batch_id,))
+        """
+        barg = [batch_id]
+        if has_ub_org:
+            bq += " AND organization_id = %s"
+            barg.append(tenant_oid)
+        cursor.execute(bq, tuple(barg))
         batch = cursor.fetchone()
         if not batch:
             return jsonify({"error": "Batch not found"}), 404
@@ -6456,7 +6890,7 @@ def confirm_upload_batch(batch_id):
         processing_sql = orders_processing_select_sql(cap)
         not_sent_where = where_not_sent_or_forced_sql(cap)
 
-        cursor.execute(f"""
+        stag_sql = f"""
             SELECT
                 id,
                 date_clean,
@@ -6474,7 +6908,12 @@ def confirm_upload_batch(batch_id):
                 batch_date IS NULL
                 OR batch_date < %s
             )
-        """, (batch["batch_date"],))
+        """
+        stag_args = [batch["batch_date"]]
+        if has_staging_org:
+            stag_sql += " AND organization_id = %s"
+            stag_args.append(tenant_oid)
+        cursor.execute(stag_sql, tuple(stag_args))
         staging_rows = cursor.fetchall()
 
         forced_pending = 0
@@ -6486,28 +6925,58 @@ def confirm_upload_batch(batch_id):
 
             row_processing = (row.get("processing_status") or row.get("status") or "").upper()
             if row_processing == "PROCESSED":
-                cursor.execute("""
-                    INSERT INTO orders_final
-                    (
-                        date_clean,
-                        name_clean,
-                        weight_num,
-                        service_type,
-                        rush_type,
-                        cleaned_by,
-                        cleaned_at,
-                        created_at
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-                """, (
-                    row["date_clean"],
-                    row["name_clean"],
-                    row["weight_num"],
-                    row["service_type"],
-                    row["rush_type"],
-                    "SYSTEM_FORCE"
-                ))
-                cursor.execute("DELETE FROM orders_staging WHERE id = %s", (row["id"],))
+                if has_final_org:
+                    cursor.execute("""
+                        INSERT INTO orders_final
+                        (
+                            organization_id,
+                            date_clean,
+                            name_clean,
+                            weight_num,
+                            service_type,
+                            rush_type,
+                            cleaned_by,
+                            cleaned_at,
+                            created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    """, (
+                        tenant_oid,
+                        row["date_clean"],
+                        row["name_clean"],
+                        row["weight_num"],
+                        row["service_type"],
+                        row["rush_type"],
+                        "SYSTEM_FORCE"
+                    ))
+                else:
+                    cursor.execute("""
+                        INSERT INTO orders_final
+                        (
+                            date_clean,
+                            name_clean,
+                            weight_num,
+                            service_type,
+                            rush_type,
+                            cleaned_by,
+                            cleaned_at,
+                            created_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    """, (
+                        row["date_clean"],
+                        row["name_clean"],
+                        row["weight_num"],
+                        row["service_type"],
+                        row["rush_type"],
+                        "SYSTEM_FORCE"
+                    ))
+                del_sql = "DELETE FROM orders_staging WHERE id = %s"
+                del_args = [row["id"]]
+                if has_staging_org:
+                    del_sql += " AND organization_id = %s"
+                    del_args.append(tenant_oid)
+                cursor.execute(del_sql, tuple(del_args))
                 moved_to_final += 1
             else:
                 set_parts = []
@@ -6518,18 +6987,28 @@ def confirm_upload_batch(batch_id):
                 if not set_parts:
                     set_parts.append("status = 'FORCED_CHECKOUT'")
 
-                cursor.execute(f"""
+                upd_sql = f"""
                     UPDATE orders_staging
                     SET {", ".join(set_parts)}
                     WHERE id = %s
-                """, (row["id"],))
+                """
+                upd_args = [row["id"]]
+                if has_staging_org:
+                    upd_sql += " AND organization_id = %s"
+                    upd_args.append(tenant_oid)
+                cursor.execute(upd_sql, tuple(upd_args))
                 forced_pending += 1
 
-        cursor.execute(f"""
+        cur_sql = f"""
             SELECT date_clean, name_clean, weight_num, service_type
             FROM orders_staging
             WHERE {not_sent_where}
-        """)
+        """
+        cur_args = []
+        if has_staging_org:
+            cur_sql += " AND organization_id = %s"
+            cur_args.append(tenant_oid)
+        cursor.execute(cur_sql, tuple(cur_args))
         current_staging_rows = cursor.fetchall()
         existing_identity_before_insert = set(
             build_identity_key(r["name_clean"], r["weight_num"], r["service_type"], r["date_clean"])
@@ -6559,6 +7038,11 @@ def confirm_upload_batch(batch_id):
                 row["rush_type"],
                 batch["batch_date"],
             ]
+
+            if has_staging_org:
+                cols = ["organization_id"] + cols
+                vals = ["%s"] + vals
+                args = [tenant_oid] + args
 
             if cap["has_logistics"]:
                 cols.append("logistics_status")
@@ -6626,43 +7110,91 @@ def get_upload_conflicts():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         pk_col = get_upload_conflicts_pk(cursor)
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
+        join_ub = ""
+        if has_ub_org:
+            join_ub = "INNER JOIN upload_batches ub ON ub.id = c.upload_batch_id AND ub.organization_id = %s"
         if batch_id not in [None, ""]:
-            cursor.execute("""
-                SELECT
-                    {pk} AS id,
-                    upload_batch_id,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    date_clean,
-                    rush_type,
-                    reason,
-                    status,
-                    created_at
-                FROM upload_conflicts
-                WHERE upload_batch_id = %s
-                AND status = %s
-                ORDER BY {pk} ASC
-            """.format(pk=pk_col), (int(batch_id), status))
+            if has_ub_org:
+                cursor.execute(f"""
+                    SELECT
+                        c.{pk_col} AS id,
+                        c.upload_batch_id,
+                        c.name_clean,
+                        c.weight_num,
+                        c.service_type,
+                        c.date_clean,
+                        c.rush_type,
+                        c.reason,
+                        c.status,
+                        c.created_at
+                    FROM upload_conflicts c
+                    {join_ub}
+                    WHERE c.upload_batch_id = %s
+                    AND c.status = %s
+                    ORDER BY c.{pk_col} ASC
+                """, (tenant_oid, int(batch_id), status))
+            else:
+                cursor.execute("""
+                    SELECT
+                        {pk} AS id,
+                        upload_batch_id,
+                        name_clean,
+                        weight_num,
+                        service_type,
+                        date_clean,
+                        rush_type,
+                        reason,
+                        status,
+                        created_at
+                    FROM upload_conflicts
+                    WHERE upload_batch_id = %s
+                    AND status = %s
+                    ORDER BY {pk} ASC
+                """.format(pk=pk_col), (int(batch_id), status))
         else:
-            cursor.execute("""
-                SELECT
-                    {pk} AS id,
-                    upload_batch_id,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    date_clean,
-                    rush_type,
-                    reason,
-                    status,
-                    created_at
-                FROM upload_conflicts
-                WHERE status = %s
-                ORDER BY {pk} ASC
-                LIMIT 500
-            """.format(pk=pk_col), (status,))
+            if has_ub_org:
+                cursor.execute(f"""
+                    SELECT
+                        c.{pk_col} AS id,
+                        c.upload_batch_id,
+                        c.name_clean,
+                        c.weight_num,
+                        c.service_type,
+                        c.date_clean,
+                        c.rush_type,
+                        c.reason,
+                        c.status,
+                        c.created_at
+                    FROM upload_conflicts c
+                    {join_ub}
+                    WHERE c.status = %s
+                    ORDER BY c.{pk_col} ASC
+                    LIMIT 500
+                """, (tenant_oid, status))
+            else:
+                cursor.execute("""
+                    SELECT
+                        {pk} AS id,
+                        upload_batch_id,
+                        name_clean,
+                        weight_num,
+                        service_type,
+                        date_clean,
+                        rush_type,
+                        reason,
+                        status,
+                        created_at
+                    FROM upload_conflicts
+                    WHERE status = %s
+                    ORDER BY {pk} ASC
+                    LIMIT 500
+                """.format(pk=pk_col), (status,))
 
         return jsonify(cursor.fetchall())
 
@@ -6685,22 +7217,43 @@ def override_upload_conflicts():
     cursor = conn.cursor(dictionary=True)
 
     try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
         pk_col = get_upload_conflicts_pk(cursor)
         cap = orders_status_capabilities(cursor)
         placeholders = ",".join(["%s"] * len(conflict_ids))
-        cursor.execute(f"""
-            SELECT
-                {pk_col} AS id,
-                name_clean,
-                weight_num,
-                service_type,
-                date_clean,
-                rush_type,
-                upload_batch_id
-            FROM upload_conflicts
-            WHERE {pk_col} IN ({placeholders})
-            AND status = 'PENDING'
-        """, tuple(conflict_ids))
+        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
+        if has_ub_org:
+            cursor.execute(f"""
+                SELECT
+                    c.{pk_col} AS id,
+                    c.name_clean,
+                    c.weight_num,
+                    c.service_type,
+                    c.date_clean,
+                    c.rush_type,
+                    c.upload_batch_id
+                FROM upload_conflicts c
+                INNER JOIN upload_batches ub ON ub.id = c.upload_batch_id AND ub.organization_id = %s
+                WHERE c.{pk_col} IN ({placeholders})
+                AND c.status = 'PENDING'
+            """, (tenant_oid,) + tuple(conflict_ids))
+        else:
+            cursor.execute(f"""
+                SELECT
+                    {pk_col} AS id,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    date_clean,
+                    rush_type,
+                    upload_batch_id
+                FROM upload_conflicts
+                WHERE {pk_col} IN ({placeholders})
+                AND status = 'PENDING'
+            """, tuple(conflict_ids))
         rows = cursor.fetchall()
 
         inserted = 0
@@ -6724,6 +7277,11 @@ def override_upload_conflicts():
                 row["rush_type"],
                 today_batch_date,
             ]
+
+            if table_has_column(cursor, "orders_staging", "organization_id"):
+                cols = ["organization_id"] + cols
+                vals = ["%s"] + vals
+                args = [tenant_oid] + args
 
             if cap["has_logistics"]:
                 cols.append("logistics_status")

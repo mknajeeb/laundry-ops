@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import axios from "axios"
+import { getOrders } from "../api"
 import { motion } from "framer-motion"
 
 const MotionDiv = motion.div
@@ -11,7 +11,7 @@ function OrdersTable({ service, rush, status }) {
 
   useEffect(()=>{
 
-    axios.get("/orders")
+    getOrders()
       .then(res=>{
 
         if(Array.isArray(res.data)){

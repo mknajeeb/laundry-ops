@@ -1,6 +1,6 @@
 {
-  "name": "WashPro Laundry Ops",
-  "short_name": "WashPro",
+  "name": "Laundry Ops",
+  "short_name": "Laundry Ops",
   "description": "Mobile operations app for laundry bag processing and checkout.",
   "start_url": "/",
   "scope": "/",

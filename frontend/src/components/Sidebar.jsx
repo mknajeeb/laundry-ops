@@ -54,7 +54,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
           />
         ) : (
           <Typography sx={{ fontSize: 28, lineHeight: 1.1, color: "#ffffff", fontWeight: 700 }}>
-            {user?.organization_name || "Washpro"}
+            {user?.organization_name || "Laundry Ops"}
           </Typography>
         )}
       </Box>

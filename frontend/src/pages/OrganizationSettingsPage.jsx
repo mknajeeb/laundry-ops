@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -28,6 +28,12 @@ function OrganizationSettingsPage() {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  const teamLoginUrl = useMemo(() => {
+    if (!row?.slug) return "";
+    return `${window.location.origin}/login/${encodeURIComponent(String(row.slug).toLowerCase())}`;
+  }, [row?.slug]);
 
   const load = useCallback(async () => {
     setError("");
@@ -93,8 +99,9 @@ function OrganizationSettingsPage() {
         Organization
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Display name and logo apply to this tenant only. Slug is fixed for API and integrations. Use an
-        HTTPS URL, or upload to Azure Blob when storage is configured.
+        Display name and logo apply to this tenant only. Slug is fixed for API and integrations. Share the
+        team login link below so staff open the correct organization without typing the slug. Use an HTTPS
+        logo URL, or upload to Azure Blob when storage is configured.
       </Typography>
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
@@ -103,9 +110,39 @@ function OrganizationSettingsPage() {
       ) : null}
       <Paper sx={{ p: 2, borderRadius: 2 }}>
         {row ? (
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-            Slug: <strong>{row.slug}</strong>
-          </Typography>
+          <>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Slug: <strong>{row.slug}</strong>
+            </Typography>
+            {teamLoginUrl ? (
+              <Box sx={{ mb: 2, p: 1.5, bgcolor: "#f1f5f9", borderRadius: 1, border: "1px solid #e2e8f0" }}>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                  Team login URL (bookmark or send to employees)
+                </Typography>
+                <Typography
+                  variant="body2"
+                  sx={{ fontFamily: "ui-monospace, monospace", wordBreak: "break-all", mb: 1 }}
+                >
+                  {teamLoginUrl}
+                </Typography>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(teamLoginUrl);
+                      setCopiedUrl(true);
+                      setTimeout(() => setCopiedUrl(false), 2000);
+                    } catch {
+                      /* ignore */
+                    }
+                  }}
+                >
+                  {copiedUrl ? "Copied" : "Copy link"}
+                </Button>
+              </Box>
+            ) : null}
+          </>
         ) : null}
         <Stack component="form" onSubmit={save} spacing={2}>
           <TextField
