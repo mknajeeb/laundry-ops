@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Box, Button, Paper, Stack, TextField, Typography } from "@mui/material";
-import { authLogin, setAuthSession } from "../api";
+import { authLogin, getPublicOrgBranding, setAuthSession } from "../api";
 
 function LoginPage({ onLoggedIn }) {
   const [username, setUsername] = useState("");
@@ -10,12 +10,34 @@ function LoginPage({ onLoggedIn }) {
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [branding, setBranding] = useState(null);
+
+  useEffect(() => {
+    const slug = organizationSlug.trim().toLowerCase();
+    if (!slug) {
+      setBranding(null);
+      return;
+    }
+    let cancelled = false;
+    getPublicOrgBranding(slug)
+      .then((res) => {
+        if (!cancelled) setBranding(res.data);
+      })
+      .catch(() => {
+        if (!cancelled) setBranding(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [organizationSlug]);
 
   const submit = async () => {
     try {
       setLoading(true);
       setError("");
-      const res = await authLogin(username.trim(), password, organizationSlug.trim() || null);
+      const slug = organizationSlug.trim();
+      if (slug) localStorage.setItem("washpro_org_slug", slug.toLowerCase());
+      const res = await authLogin(username.trim(), password, slug || null);
       const payload = res?.data || {};
       if (!payload?.token || !payload?.user) {
         throw new Error("Invalid login response.");
@@ -42,8 +64,23 @@ function LoginPage({ onLoggedIn }) {
     >
       <Paper sx={{ width: "100%", maxWidth: 420, p: 3, borderRadius: 3 }}>
         <Stack spacing={1.5}>
-          <Typography sx={{ fontSize: 30, lineHeight: 1, color: "#0f172a" }}>Washpro</Typography>
-          <Typography sx={{ color: "#64748b" }}>Sign in to continue</Typography>
+          <Box sx={{ minHeight: 40, display: "flex", alignItems: "center" }}>
+            {branding?.logo_url ? (
+              <Box
+                component="img"
+                src={branding.logo_url}
+                alt=""
+                sx={{ maxHeight: 40, maxWidth: "100%", objectFit: "contain" }}
+              />
+            ) : (
+              <Typography sx={{ fontSize: 28, lineHeight: 1.1, color: "#0f172a", fontWeight: 700 }}>
+                {branding?.display_name || "Washpro"}
+              </Typography>
+            )}
+          </Box>
+          <Typography sx={{ color: "#64748b" }}>
+            Sign in{branding?.display_name ? ` to ${branding.display_name}` : ""}
+          </Typography>
           {error && <Alert severity="error">{error}</Alert>}
           <TextField
             label="Username"

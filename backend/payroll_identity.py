@@ -12,6 +12,24 @@ from datetime import date, datetime, timedelta
 from backend.ta_helpers import cycle_ref_for_week_start, hash_password, week_bounds_for_date
 
 
+def _organizations_table_exists(conn) -> bool:
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = DATABASE() AND table_name = 'organizations'
+        LIMIT 1
+        """
+    )
+    return c.fetchone() is not None
+
+
+def _organizations_has_logo_url(conn) -> bool:
+    c = conn.cursor()
+    c.execute("SHOW COLUMNS FROM organizations LIKE 'logo_url'")
+    return c.fetchone() is not None
+
+
 def payroll_profiles_active(conn) -> bool:
     c = conn.cursor()
     c.execute(
@@ -59,17 +77,35 @@ def _primary_role_for_user(conn, washpro_user_id: int):
 def fetch_payroll_profile_row(conn, washpro_user_id: int):
     """Return one row shaped like legacy `ta_users` + role_code for API consumers."""
     c = conn.cursor(dictionary=True)
-    c.execute(
-        """
-        SELECT pp.*, u.username, u.display_name AS washpro_display_name, u.active AS washpro_active,
-               u.organization_id
-        FROM payroll_profiles pp
-        JOIN users u ON u.id = pp.user_id
-        WHERE pp.user_id = %s
-        LIMIT 1
-        """,
-        (washpro_user_id,),
-    )
+    if _organizations_table_exists(conn):
+        logo_sql = "o.logo_url AS organization_logo_url" if _organizations_has_logo_url(conn) else "NULL AS organization_logo_url"
+        c.execute(
+            f"""
+            SELECT pp.*, u.username, u.display_name AS washpro_display_name, u.active AS washpro_active,
+                   u.organization_id,
+                   o.slug AS organization_slug,
+                   o.display_name AS organization_name,
+                   {logo_sql}
+            FROM payroll_profiles pp
+            JOIN users u ON u.id = pp.user_id
+            LEFT JOIN organizations o ON o.id = u.organization_id
+            WHERE pp.user_id = %s
+            LIMIT 1
+            """,
+            (washpro_user_id,),
+        )
+    else:
+        c.execute(
+            """
+            SELECT pp.*, u.username, u.display_name AS washpro_display_name, u.active AS washpro_active,
+                   u.organization_id
+            FROM payroll_profiles pp
+            JOIN users u ON u.id = pp.user_id
+            WHERE pp.user_id = %s
+            LIMIT 1
+            """,
+            (washpro_user_id,),
+        )
     row = c.fetchone()
     if not row:
         return None
@@ -84,6 +120,12 @@ def fetch_payroll_profile_row(conn, washpro_user_id: int):
         row.get("washpro_active", True)
     )
     out["organization_id"] = int(row.get("organization_id") or 1)
+    if "organization_slug" in row:
+        out["organization_slug"] = row.get("organization_slug")
+    if "organization_name" in row:
+        out["organization_name"] = row.get("organization_name")
+    if "organization_logo_url" in row:
+        out["organization_logo_url"] = row.get("organization_logo_url")
     return out
 
 

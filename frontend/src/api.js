@@ -69,6 +69,27 @@ export const authMe = () =>
 export const authLogout = () =>
   axios.post(`${API_BASE}/auth/logout`);
 
+/** Public: branding for login when user enters organization slug */
+export const getPublicOrgBranding = (slug) =>
+  axios.get(`${API_BASE}/api/public/organization/branding`, {
+    params: { slug: String(slug || "").trim().toLowerCase() },
+  });
+
+/** ADMIN: current tenant organization row (slug, display_name, logo_url) */
+export const getOrganization = () =>
+  axios.get(`${API_BASE}/auth/organization`);
+
+export const putOrganization = (body) =>
+  axios.put(`${API_BASE}/auth/organization`, body);
+
+export const uploadOrganizationLogo = (file) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return axios.post(`${API_BASE}/auth/organization/logo`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
 export const getRoles = () =>
   axios.get(`${API_BASE}/auth/roles`);
 
@@ -444,11 +465,20 @@ export const createGeofence = (body) =>
 export const updateGeofence = (id, body) =>
   axios.put(`${API_BASE}/api/ta/geofences/${id}`, body);
 
+export const deleteGeofence = (id) =>
+  axios.delete(`${API_BASE}/api/ta/geofences/${id}`);
+
 export const getEmploymentCategories = () =>
   axios.get(`${API_BASE}/api/ta/employment-categories`);
 
 export const createEmploymentCategory = (body) =>
   axios.post(`${API_BASE}/api/ta/employment-categories`, body);
+
+export const updateEmploymentCategory = (id, body) =>
+  axios.put(`${API_BASE}/api/ta/employment-categories/${id}`, body);
+
+export const deleteEmploymentCategory = (id) =>
+  axios.delete(`${API_BASE}/api/ta/employment-categories/${id}`);
 
 export const getUserRates = (userId) =>
   axios.get(`${API_BASE}/api/ta/user-rates`, {
@@ -457,6 +487,12 @@ export const getUserRates = (userId) =>
 
 export const createUserRate = (body) =>
   axios.post(`${API_BASE}/api/ta/user-rates`, body);
+
+export const updateUserRate = (id, body) =>
+  axios.put(`${API_BASE}/api/ta/user-rates/${id}`, body);
+
+export const deleteUserRate = (id) =>
+  axios.delete(`${API_BASE}/api/ta/user-rates/${id}`);
 
 export const getMonitorSessions = (params) =>
   axios.get(`${API_BASE}/api/ta/monitor/sessions`, { params });

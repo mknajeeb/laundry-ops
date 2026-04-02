@@ -274,8 +274,11 @@ function PeoplePage({ user }) {
       setTaForm({
         ...d,
         password: "",
-        geofence_ids: d.geofence_ids || [],
-        primary_geofence_id: d.primary_geofence_id || "",
+        geofence_ids: (d.geofence_ids || []).map(Number),
+        primary_geofence_id:
+          d.primary_geofence_id != null && d.primary_geofence_id !== ""
+            ? Number(d.primary_geofence_id)
+            : "",
         cat_rows: catRows,
         rehire_parent_id: d.rehire_parent_id != null ? String(d.rehire_parent_id) : "",
         prior_employee_id: d.prior_employee_id || "",
@@ -334,12 +337,13 @@ function PeoplePage({ user }) {
             : Number(taForm.rehire_parent_id),
         prior_employee_id: taForm.prior_employee_id || null,
       });
-      if (taForm.geofence_ids?.length && taForm.primary_geofence_id) {
-        await putUserGeofences(taForm.id, {
-          geofence_ids: taForm.geofence_ids.map(Number),
-          primary_geofence_id: Number(taForm.primary_geofence_id),
-        });
-      }
+      await putUserGeofences(taForm.id, {
+        geofence_ids: (taForm.geofence_ids || []).map(Number),
+        primary_geofence_id:
+          taForm.primary_geofence_id !== "" && taForm.primary_geofence_id != null
+            ? Number(taForm.primary_geofence_id)
+            : null,
+      });
       if (taForm.cat_rows?.length) {
         await putUserEmploymentCategories(taForm.id, {
           assignments: taForm.cat_rows
@@ -904,10 +908,25 @@ function PeoplePage({ user }) {
                 labelId="gf-label"
                 multiple
                 value={taForm.geofence_ids || []}
-                onChange={(e) => setTaForm({ ...taForm, geofence_ids: e.target.value })}
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  const next = (typeof raw === "string" ? raw.split(",") : raw).map(Number);
+                  setTaForm((prev) => ({
+                    ...prev,
+                    geofence_ids: next,
+                    primary_geofence_id:
+                      prev.primary_geofence_id !== "" &&
+                      prev.primary_geofence_id != null &&
+                      next.includes(Number(prev.primary_geofence_id))
+                        ? prev.primary_geofence_id
+                        : "",
+                  }));
+                }}
                 input={<OutlinedInput label="Geofences" />}
                 renderValue={(selected) =>
-                  selected.map((id) => geofences.find((g) => g.id === id)?.name || id).join(", ")
+                  selected
+                    .map((id) => geofences.find((g) => Number(g.id) === Number(id))?.name || id)
+                    .join(", ")
                 }
               >
                 {geofences.map((g) => (
@@ -917,12 +936,36 @@ function PeoplePage({ user }) {
                 ))}
               </Select>
             </FormControl>
-            <TextField
-              label="Primary geofence ID"
-              value={taForm.primary_geofence_id || ""}
-              onChange={(e) => setTaForm({ ...taForm, primary_geofence_id: e.target.value })}
-              helperText="Must be one of the selected geofences"
-            />
+            <FormControl fullWidth>
+              <InputLabel id="primary-gf-label">Primary geofence</InputLabel>
+              <Select
+                labelId="primary-gf-label"
+                label="Primary geofence"
+                value={
+                  taForm.primary_geofence_id !== "" && taForm.primary_geofence_id != null
+                    ? String(taForm.primary_geofence_id)
+                    : ""
+                }
+                onChange={(e) =>
+                  setTaForm({
+                    ...taForm,
+                    primary_geofence_id: e.target.value === "" ? "" : Number(e.target.value),
+                  })
+                }
+              >
+                <MenuItem value="">
+                  <em>—</em>
+                </MenuItem>
+                {(taForm.geofence_ids || []).map((id) => {
+                  const g = geofences.find((x) => Number(x.id) === Number(id));
+                  return g ? (
+                    <MenuItem key={g.id} value={String(g.id)}>
+                      {g.name}
+                    </MenuItem>
+                  ) : null;
+                })}
+              </Select>
+            </FormControl>
             <Typography variant="subtitle2">Employment category assignment</Typography>
             {(taForm.cat_rows || []).map((row, i) => (
               <Stack key={i} direction="row" spacing={1}>

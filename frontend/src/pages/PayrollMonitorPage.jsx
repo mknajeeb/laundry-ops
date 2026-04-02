@@ -7,7 +7,10 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
+  InputLabel,
   MenuItem,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -105,20 +108,30 @@ function PayrollMonitorPage({ embedded = false }) {
         </Alert>
       ) : null}
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }} alignItems="center">
-        <TextField
-          select
-          label={t("payroll.cycle")}
-          value={cycleId}
-          onChange={(e) => setCycleId(e.target.value)}
-          sx={{ minWidth: 220 }}
-        >
-          <MenuItem value="">{t("payroll.all")}</MenuItem>
-          {cycles.map((c) => (
-            <MenuItem key={c.id} value={c.id}>
-              {c.cycle_ref} ({c.week_start_date})
+        <FormControl size="small" sx={{ minWidth: 220 }}>
+          <InputLabel id="payroll-cycle-lbl">{t("payroll.cycle")}</InputLabel>
+          <Select
+            labelId="payroll-cycle-lbl"
+            label={t("payroll.cycle")}
+            value={cycleId === null || cycleId === undefined ? "" : String(cycleId)}
+            onChange={(e) => setCycleId(e.target.value)}
+            displayEmpty
+            renderValue={(v) => {
+              if (v === "") return t("payroll.all");
+              const c = cycles.find((x) => String(x.id) === String(v));
+              return c ? `${c.cycle_ref} (${c.week_start_date})` : String(v);
+            }}
+          >
+            <MenuItem value="">
+              <em>{t("payroll.all")}</em>
             </MenuItem>
-          ))}
-        </TextField>
+            {cycles.map((c) => (
+              <MenuItem key={c.id} value={String(c.id)}>
+                {c.cycle_ref} ({c.week_start_date})
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
         <TextField
           label={t("payroll.userFilter")}
           value={userId}

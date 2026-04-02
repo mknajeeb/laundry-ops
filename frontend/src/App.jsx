@@ -31,9 +31,10 @@ import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollManagementPage from "./pages/PayrollManagementPage";
 import PermissionsPage from "./pages/PermissionsPage";
+import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
-function MobileTopBar({ pathname }) {
+function MobileTopBar({ pathname, user }) {
   const navigate = useNavigate();
   const { locale, setLocale, t } = useI18n();
   const canGoBack = pathname !== "/";
@@ -53,7 +54,18 @@ function MobileTopBar({ pathname }) {
         {canGoBack ? (
           <IconButton size="small" onClick={() => navigate(-1)} sx={{ mr: 1 }}><ArrowBack sx={{ fontSize: 18 }} /></IconButton>
         ) : <Box sx={{ width: 36 }} />}
-        <Typography sx={{ fontSize: 18, flex: 1 }}>Washpro</Typography>
+        <Box sx={{ flex: 1, display: "flex", alignItems: "center", minHeight: 28 }}>
+          {user?.organization_logo_url ? (
+            <Box
+              component="img"
+              src={user.organization_logo_url}
+              alt=""
+              sx={{ maxHeight: 26, maxWidth: 160, objectFit: "contain" }}
+            />
+          ) : (
+            <Typography sx={{ fontSize: 18, flex: 1 }}>{user?.organization_name || "Washpro"}</Typography>
+          )}
+        </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: 0.5 }}>
           <Button size="small" variant={locale === "en" ? "contained" : "text"} onClick={() => setLocale("en")} sx={{ minWidth: 40 }}>EN</Button>
           <Button size="small" variant={locale === "es" ? "contained" : "text"} onClick={() => setLocale("es")} sx={{ minWidth: 40 }}>ES</Button>
@@ -109,6 +121,16 @@ function AppShell() {
   }, [pathname]);
 
   useEffect(() => {
+    const onRefresh = () => {
+      authMe()
+        .then((r) => setUser(r.data || null))
+        .catch(() => {});
+    };
+    window.addEventListener("washpro-user-refresh", onRefresh);
+    return () => window.removeEventListener("washpro-user-refresh", onRefresh);
+  }, []);
+
+  useEffect(() => {
     const onUpdateReady = () => setUpdateReady(true);
     window.addEventListener("washpro:update-ready", onUpdateReady);
     return () => window.removeEventListener("washpro:update-ready", onUpdateReady);
@@ -145,7 +167,7 @@ function AppShell() {
     <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
       {!isMobile && user && <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />}
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {isMobile && user && <MobileTopBar pathname={pathname} />}
+        {isMobile && user && <MobileTopBar pathname={pathname} user={user} />}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
           <Routes>
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
@@ -174,6 +196,14 @@ function AppShell() {
             />
             <Route path="/payroll-monitor" element={<Navigate to="/payroll" replace />} />
             <Route path="/attendance-setup" element={<Navigate to="/payroll" replace />} />
+            <Route
+              path="/organization"
+              element={
+                <GuardedRoute user={user} roles={["ADMIN"]}>
+                  <OrganizationSettingsPage />
+                </GuardedRoute>
+              }
+            />
             <Route
               path="/permissions"
               element={

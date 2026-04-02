@@ -1351,10 +1351,15 @@ def user_geofences(user_id):
                 return jsonify({"error": "Invalid geofence"}), 400
         c.execute("DELETE FROM user_geofences WHERE user_id=%s", (user_id,))
         for gid in ids:
-            is_p = 1 if gid == primary_id else 0
+            gid_int = int(gid)
+            is_p = (
+                1
+                if primary_id is not None and gid_int == int(primary_id)
+                else 0
+            )
             c.execute(
                 "INSERT INTO user_geofences (user_id, geofence_id, is_primary) VALUES (%s,%s,%s)",
-                (user_id, int(gid), is_p),
+                (user_id, gid_int, is_p),
             )
         write_audit(
             conn,
@@ -1500,6 +1505,33 @@ def geofences_update(gid):
         conn.close()
 
 
+@ta_bp.route("/geofences/<int:gid>", methods=["DELETE"])
+@require_auth
+@require_perm("ta.settings")
+def geofences_delete(gid):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE geofences SET active=0 WHERE id=%s AND organization_id=%s",
+            (gid, _tenant_id()),
+        )
+        if c.rowcount == 0:
+            return jsonify({"error": "Not found"}), 404
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "geofence",
+            gid,
+            "deactivate",
+            new={"active": False},
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
 # --- Employment categories & rates ---
 
 
@@ -1543,6 +1575,77 @@ def employment_categories_create():
         cid = c.lastrowid
         conn.commit()
         return jsonify({"id": cid}), 201
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/employment-categories/<int:cid>", methods=["PUT"])
+@require_auth
+@require_perm("ta.settings")
+def employment_categories_update(cid):
+    data = request.json or {}
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "SELECT 1 FROM employment_categories WHERE id=%s AND organization_id=%s",
+            (cid, _tenant_id()),
+        )
+        if not c.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        fields = []
+        vals = []
+        for col in ("code", "name", "active"):
+            if col in data:
+                v = data[col]
+                if col == "active":
+                    v = 1 if v else 0
+                fields.append(f"{col}=%s")
+                vals.append(v)
+        if not fields:
+            return jsonify({"error": "No fields"}), 400
+        vals.extend([cid, _tenant_id()])
+        c.execute(
+            f"UPDATE employment_categories SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
+            vals,
+        )
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "employment_category",
+            cid,
+            "update",
+            new=data,
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/employment-categories/<int:cid>", methods=["DELETE"])
+@require_auth
+@require_perm("ta.settings")
+def employment_categories_delete(cid):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute(
+            "UPDATE employment_categories SET active=0 WHERE id=%s AND organization_id=%s",
+            (cid, _tenant_id()),
+        )
+        if c.rowcount == 0:
+            return jsonify({"error": "Not found"}), 404
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "employment_category",
+            cid,
+            "deactivate",
+            new={"active": False},
+        )
+        conn.commit()
+        return jsonify({"ok": True})
     finally:
         conn.close()
 
@@ -1638,6 +1741,79 @@ def user_rates_create():
         write_audit(conn, g.ta_user["id"], "user_rate", rid, "create", new=data)
         conn.commit()
         return jsonify({"id": rid}), 201
+    finally:
+        conn.close()
+
+
+def _user_rate_belongs_to_tenant(conn, rid: int) -> bool:
+    c = conn.cursor()
+    if payroll_profiles_active(conn):
+        c.execute(
+            """
+            SELECT 1 FROM user_rates ur
+            JOIN users u ON u.id = ur.user_id
+            WHERE ur.id=%s AND u.organization_id=%s
+            """,
+            (rid, _tenant_id()),
+        )
+    else:
+        c.execute(
+            """
+            SELECT 1 FROM user_rates ur
+            JOIN ta_users u ON u.id = ur.user_id
+            WHERE ur.id=%s
+            """,
+            (rid,),
+        )
+    return bool(c.fetchone())
+
+
+@ta_bp.route("/user-rates/<int:rid>", methods=["PUT"])
+@require_auth
+@require_any_perm("users.edit", "ta.settings")
+def user_rates_update(rid):
+    data = request.json or {}
+    conn = get_db()
+    try:
+        if not _user_rate_belongs_to_tenant(conn, rid):
+            return jsonify({"error": "Not found"}), 404
+        fields = []
+        vals = []
+        for col in ("hourly_rate", "effective_date", "end_date", "role_job_function"):
+            if col in data:
+                v = data[col]
+                if col == "end_date" and v in ("", None):
+                    v = None
+                fields.append(f"{col}=%s")
+                vals.append(v)
+        if not fields:
+            return jsonify({"error": "No fields"}), 400
+        vals.append(rid)
+        c = conn.cursor()
+        c.execute(
+            f"UPDATE user_rates SET {', '.join(fields)} WHERE id=%s",
+            vals,
+        )
+        write_audit(conn, g.ta_user["id"], "user_rate", rid, "update", new=data)
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/user-rates/<int:rid>", methods=["DELETE"])
+@require_auth
+@require_any_perm("users.edit", "ta.settings")
+def user_rates_delete(rid):
+    conn = get_db()
+    try:
+        if not _user_rate_belongs_to_tenant(conn, rid):
+            return jsonify({"error": "Not found"}), 404
+        c = conn.cursor()
+        c.execute("DELETE FROM user_rates WHERE id=%s", (rid,))
+        write_audit(conn, g.ta_user["id"], "user_rate", rid, "delete", new={"id": rid})
+        conn.commit()
+        return jsonify({"ok": True})
     finally:
         conn.close()
 

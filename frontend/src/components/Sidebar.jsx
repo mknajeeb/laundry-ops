@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { to: "/maintenance", labelKey: "nav.maintenance", roles: [] },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"] },
   { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"] },
+  { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"] },
   { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"] },
 ];
 
@@ -43,7 +44,20 @@ function Sidebar({ activeBatch, user, onLogout }) {
         boxSizing: "border-box",
       }}
     >
-      <Typography sx={{ fontSize: 40, lineHeight: 1, color: "#ffffff", mb: 0.5, flexShrink: 0 }}>Washpro</Typography>
+      <Box sx={{ mb: 1, minHeight: 44, flexShrink: 0, display: "flex", alignItems: "center" }}>
+        {user?.organization_logo_url ? (
+          <Box
+            component="img"
+            src={user.organization_logo_url}
+            alt=""
+            sx={{ maxHeight: 44, maxWidth: "100%", objectFit: "contain" }}
+          />
+        ) : (
+          <Typography sx={{ fontSize: 28, lineHeight: 1.1, color: "#ffffff", fontWeight: 700 }}>
+            {user?.organization_name || "Washpro"}
+          </Typography>
+        )}
+      </Box>
       <Typography sx={{ fontSize: 13, color: "#94a3b8", flexShrink: 0 }}>
         {user?.display_name || user?.username}
       </Typography>

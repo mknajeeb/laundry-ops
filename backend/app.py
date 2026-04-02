@@ -766,7 +766,9 @@ def current_user_from_token(cursor):
     has_u_org = table_has_column(cursor, "users", "organization_id")
     has_orgs = table_exists(cursor, "organizations")
     if has_u_org and has_orgs:
-        cursor.execute("""
+        logo_sql = _org_logo_select_sql(cursor)
+        cursor.execute(
+            f"""
             SELECT
                 s.id AS session_id,
                 s.user_id,
@@ -778,13 +780,16 @@ def current_user_from_token(cursor):
                 u.active,
                 u.organization_id,
                 o.slug AS organization_slug,
-                o.display_name AS organization_name
+                o.display_name AS organization_name,
+                {logo_sql}
             FROM auth_sessions s
             JOIN users u ON u.id = s.user_id
             LEFT JOIN organizations o ON o.id = u.organization_id
             WHERE s.token = %s
             LIMIT 1
-        """, (token,))
+            """,
+            (token,),
+        )
     elif has_u_org:
         cursor.execute("""
             SELECT
@@ -863,6 +868,12 @@ def require_user(cursor):
         return None, jsonify({"error": "Unauthorized"}), 401
     me["roles"] = fetch_user_roles(cursor, me["user_id"])
     return me, None, None
+
+
+def _org_logo_select_sql(cursor):
+    if table_exists(cursor, "organizations") and table_has_column(cursor, "organizations", "logo_url"):
+        return "o.logo_url AS organization_logo_url"
+    return "NULL AS organization_logo_url"
 
 
 def ensure_process_submissions_table(cursor):
@@ -3388,14 +3399,19 @@ def auth_login():
         else:
             org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
             if org_slug and has_orgs:
-                cursor.execute("""
+                logo_sql = _org_logo_select_sql(cursor)
+                cursor.execute(
+                    f"""
                     SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
-                           o.slug AS organization_slug, o.display_name AS organization_name
+                           o.slug AS organization_slug, o.display_name AS organization_name,
+                           {logo_sql}
                     FROM users u
                     JOIN organizations o ON o.id = u.organization_id AND o.active = 1
                     WHERE u.username = %s AND LOWER(o.slug) = %s
                     LIMIT 1
-                """, (username, org_slug))
+                    """,
+                    (username, org_slug),
+                )
                 user = cursor.fetchone()
             else:
                 cursor.execute("""
@@ -3421,14 +3437,22 @@ def auth_login():
                     }), 400
                 user = rows[0] if rows else None
                 if user and has_orgs and not org_slug:
-                    cursor.execute(
-                        "SELECT slug, display_name FROM organizations WHERE id = %s LIMIT 1",
-                        (user["organization_id"],),
-                    )
+                    if table_has_column(cursor, "organizations", "logo_url"):
+                        cursor.execute(
+                            "SELECT slug, display_name, logo_url FROM organizations WHERE id = %s LIMIT 1",
+                            (user["organization_id"],),
+                        )
+                    else:
+                        cursor.execute(
+                            "SELECT slug, display_name FROM organizations WHERE id = %s LIMIT 1",
+                            (user["organization_id"],),
+                        )
                     o = cursor.fetchone()
                     if o:
                         user["organization_slug"] = o.get("slug")
                         user["organization_name"] = o.get("display_name")
+                        if o.get("logo_url"):
+                            user["organization_logo_url"] = o.get("logo_url")
 
         if not user or not as_bool(user.get("active"), default=False):
             return jsonify({"error": "Invalid credentials"}), 401
@@ -3486,6 +3510,8 @@ def auth_login():
                 payload_user["organization_slug"] = user["organization_slug"]
             if user.get("organization_name"):
                 payload_user["organization_name"] = user["organization_name"]
+            if user.get("organization_logo_url"):
+                payload_user["organization_logo_url"] = user["organization_logo_url"]
         return jsonify({
             "token": token,
             "user": payload_user,
@@ -3535,6 +3561,8 @@ def auth_me():
             out["organization_slug"] = me["organization_slug"]
         if me.get("organization_name"):
             out["organization_name"] = me["organization_name"]
+        if me.get("organization_logo_url"):
+            out["organization_logo_url"] = me["organization_logo_url"]
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -3549,6 +3577,194 @@ def auth_me():
                 conn.close()
             except Exception:
                 pass
+
+
+def _is_safe_logo_url(url: str) -> bool:
+    if not url or len(url) > 768:
+        return False
+    u = url.strip().lower()
+    if u.startswith("https://"):
+        return True
+    if u.startswith("http://localhost") or u.startswith("http://127.0.0.1"):
+        return True
+    return False
+
+
+@app.route("/api/public/organization/branding", methods=["GET"])
+def public_organization_branding():
+    """Public tenant branding for the login screen (slug is not secret)."""
+    slug = (request.args.get("slug") or "").strip().lower()
+    if not slug:
+        return jsonify({"error": "slug is required"}), 400
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"error": "Organizations not configured"}), 503
+        if table_has_column(cursor, "organizations", "logo_url"):
+            cursor.execute(
+                """
+                SELECT slug, display_name, logo_url
+                FROM organizations
+                WHERE LOWER(slug) = %s AND active = 1
+                LIMIT 1
+                """,
+                (slug,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT slug, display_name
+                FROM organizations
+                WHERE LOWER(slug) = %s AND active = 1
+                LIMIT 1
+                """,
+                (slug,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Unknown organization"}), 404
+        out = {"slug": row["slug"], "display_name": row["display_name"]}
+        if "logo_url" in row:
+            out["logo_url"] = row.get("logo_url")
+        return jsonify(out)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/organization", methods=["GET"])
+def auth_organization_get():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err, code = require_admin(cursor)
+        if err:
+            return err, code
+        oid = me.get("organization_id")
+        if not oid or not table_exists(cursor, "organizations"):
+            return jsonify({"error": "No organization"}), 400
+        if table_has_column(cursor, "organizations", "logo_url"):
+            cursor.execute(
+                "SELECT id, slug, display_name, active, logo_url FROM organizations WHERE id = %s LIMIT 1",
+                (int(oid),),
+            )
+        else:
+            cursor.execute(
+                "SELECT id, slug, display_name, active FROM organizations WHERE id = %s LIMIT 1",
+                (int(oid),),
+            )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(row)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/organization", methods=["PUT"])
+def auth_organization_put():
+    data = request.json or {}
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err, code = require_admin(cursor)
+        if err:
+            return err, code
+        oid = me.get("organization_id")
+        if not oid:
+            return jsonify({"error": "No organization"}), 400
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"error": "Organizations not configured"}), 503
+        display_name = (data.get("display_name") or "").strip()
+        logo_url = data.get("logo_url")
+        fields = []
+        vals = []
+        if display_name:
+            fields.append("display_name=%s")
+            vals.append(display_name[:200])
+        if logo_url is not None:
+            if not table_has_column(cursor, "organizations", "logo_url"):
+                return jsonify({"error": "Run backend/sql/organizations_branding_v1.sql"}), 400
+            logo_url = str(logo_url).strip()
+            if logo_url:
+                if not _is_safe_logo_url(logo_url):
+                    return jsonify(
+                        {"error": "logo_url must be https:// or http://localhost (dev)"}
+                    ), 400
+            fields.append("logo_url=%s")
+            vals.append(logo_url if logo_url else None)
+        if not fields:
+            return jsonify({"error": "No fields to update"}), 400
+        vals.append(int(oid))
+        cursor.execute(
+            f"UPDATE organizations SET {', '.join(fields)} WHERE id=%s AND active=1",
+            vals,
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/organization/logo", methods=["POST"])
+def auth_organization_logo_upload():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err, code = require_admin(cursor)
+        if err:
+            return err, code
+        oid = me.get("organization_id")
+        if not oid:
+            return jsonify({"error": "No organization"}), 400
+        if not table_exists(cursor, "organizations") or not table_has_column(
+            cursor, "organizations", "logo_url"
+        ):
+            return jsonify({"error": "Run backend/sql/organizations_branding_v1.sql"}), 400
+        if "file" not in request.files:
+            return jsonify({"error": "file field required"}), 400
+        f = request.files["file"]
+        if not f or not f.filename:
+            return jsonify({"error": "Empty file"}), 400
+        raw = f.read()
+        if len(raw) > 2 * 1024 * 1024:
+            return jsonify({"error": "File too large (max 2 MB)"}), 400
+        ext = (f.filename.rsplit(".", 1)[-1] if "." in f.filename else "").lower()
+        if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
+            return jsonify({"error": "Allowed types: png, jpg, jpeg, webp, gif"}), 400
+        ct = _infer_content_type(f.filename)
+        url = None
+        if ticket_storage_mode() == "blob":
+            try:
+                cc = _ensure_blob_container()
+                if cc is not None:
+                    blob_name = f"org-logos/{int(oid)}/{uuid.uuid4().hex}.{ext}"
+                    bc = cc.get_blob_client(blob_name)
+                    kwargs = {}
+                    if ContentSettings is not None:
+                        kwargs["content_settings"] = ContentSettings(content_type=ct)
+                    bc.upload_blob(raw, overwrite=True, **kwargs)
+                    url = bc.url
+            except Exception:
+                url = None
+        if not url:
+            return jsonify(
+                {
+                    "error": "Blob storage unavailable. Set AZURE_STORAGE_CONNECTION_STRING or paste an HTTPS logo URL under Organization settings.",
+                }
+            ), 503
+        cursor.execute(
+            "UPDATE organizations SET logo_url=%s WHERE id=%s AND active=1",
+            (url, int(oid)),
+        )
+        conn.commit()
+        return jsonify({"ok": True, "logo_url": url})
+    finally:
+        cursor.close()
+        conn.close()
 
 
 @app.route("/auth/logout", methods=["POST"])
