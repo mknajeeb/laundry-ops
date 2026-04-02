@@ -1,5 +1,5 @@
 // Bump when fetch strategy changes so clients pick up new worker.
-const CACHE_NAME = "washpro-shell-v2";
+const CACHE_NAME = "laundry-ops-shell-v3";
 const APP_SHELL = [
   "/",
   "/index.html",

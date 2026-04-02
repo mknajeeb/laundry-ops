@@ -38,14 +38,14 @@ axios.interceptors.request.use((config) => {
   const url = String(config.url || "");
   const isTa = url.includes("/api/ta/");
   config.headers = config.headers || {};
+  const ta = localStorage.getItem("ta_token");
+  const wp = getAuthToken();
   if (isTa) {
-    const ta = localStorage.getItem("ta_token");
-    const wp = getAuthToken();
     if (ta) config.headers.Authorization = `Bearer ${ta}`;
     else if (wp) config.headers.Authorization = `Bearer ${wp}`;
   } else {
-    const token = getAuthToken();
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    if (wp) config.headers.Authorization = `Bearer ${wp}`;
+    else if (ta) config.headers.Authorization = `Bearer ${ta}`;
   }
   return config;
 });
@@ -522,6 +522,12 @@ export const putRolePermissions = (roleId, permission_keys) =>
   axios.put(`${API_BASE}/api/ta/admin/roles/${roleId}/permissions`, {
     permission_keys,
   });
+
+export const createTaAdminRole = (payload) =>
+  axios.post(`${API_BASE}/api/ta/admin/roles`, payload);
+
+export const deleteTaAdminRole = (roleId) =>
+  axios.delete(`${API_BASE}/api/ta/admin/roles/${roleId}`);
 
 export const getAuditLog = () => axios.get(`${API_BASE}/api/ta/audit-log`);
 

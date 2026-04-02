@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -21,6 +22,8 @@ from backend.ta_helpers import (
     haversine_meters,
     hash_password,
     json_safe,
+    table_exists,
+    table_has_column,
     verify_password,
 )
 
@@ -62,6 +65,102 @@ def set_setting(conn, organization_id: int, key: str, value: str):
 
 def _tenant_id():
     return int(g.ta_user.get("organization_id") or 1)
+
+
+def _sanitize_role_code(raw: str) -> str:
+    s = re.sub(r"[^A-Z0-9_]", "_", (raw or "").strip().upper())
+    s = s.strip("_")
+    return (s[:48] if s else "CUSTOM_ROLE")
+
+
+def _role_visible_sql(cursor, alias="r"):
+    """Platform roles (organization_id=0) plus current tenant's custom roles."""
+    if table_has_column(cursor, "roles", "organization_id"):
+        return (
+            f"({alias}.organization_id = 0 OR {alias}.organization_id = %s)",
+            (_tenant_id(),),
+        )
+    return "1=1", ()
+
+
+def _role_mutable_by_tenant(cursor, role_id: int):
+    """Tenant may delete custom role (not platform/system templates)."""
+    c = cursor
+    if not table_has_column(c, "roles", "organization_id"):
+        return False
+    c.execute(
+        "SELECT organization_id, is_system FROM roles WHERE id=%s LIMIT 1",
+        (int(role_id),),
+    )
+    row = c.fetchone()
+    if not row:
+        return False
+    if as_bool(row.get("is_system"), default=False):
+        return False
+    return int(row.get("organization_id") or 0) == _tenant_id()
+
+
+def _build_permission_hierarchy(flat_perms):
+    """Route → section → resource → actions[]."""
+    routes = {}
+    for p in flat_perms:
+        rk = (p.get("route_key") or "general").strip() or "general"
+        rl = (p.get("route_label") or "").strip() or rk.replace("_", " ").title()
+        sk = (p.get("section_key") or "").strip()
+        sl = (p.get("section_label") or "").strip() or (
+            sk.replace("_", " ").title() if sk else "General"
+        )
+        resk = (p.get("resource_key") or "").strip()
+        resl = (p.get("resource_label") or "").strip()
+
+        routes.setdefault(rk, {"route_key": rk, "route_label": rl, "_sections": {}})
+        sec_bucket = routes[rk]["_sections"]
+        sec_bucket.setdefault(sk, {"section_key": sk, "section_label": sl, "_resources": {}})
+        r_bucket = sec_bucket[sk]["_resources"]
+        r_bucket.setdefault(
+            resk,
+            {"resource_key": resk, "resource_label": resl, "actions": []},
+        )
+        r_bucket[resk]["actions"].append(
+            {
+                "id": p.get("id"),
+                "perm_key": p.get("perm_key"),
+                "action_key": (p.get("action_key") or "view"),
+                "description": p.get("description"),
+                "sort_order": int(p.get("sort_order") or 0),
+            }
+        )
+
+    out_routes = []
+    for rk in sorted(routes.keys()):
+        r = routes[rk]
+        sections = []
+        for sk in sorted(r["_sections"].keys(), key=lambda x: (x == "", x)):
+            s = r["_sections"][sk]
+            resources = []
+            for resk in sorted(s["_resources"].keys(), key=lambda x: (x == "", x)):
+                res = s["_resources"][resk]
+                res["actions"].sort(
+                    key=lambda a: (a.get("sort_order") or 0, a.get("perm_key") or "")
+                )
+                resources.append(
+                    {
+                        "resource_key": res["resource_key"],
+                        "resource_label": res["resource_label"],
+                        "actions": res["actions"],
+                    }
+                )
+            sections.append(
+                {
+                    "section_key": s["section_key"],
+                    "section_label": s["section_label"],
+                    "resources": resources,
+                }
+            )
+        out_routes.append(
+            {"route_key": r["route_key"], "route_label": r["route_label"], "sections": sections}
+        )
+    return out_routes
 
 
 def _user_belongs_to_tenant(conn, user_id: int) -> bool:
@@ -2132,7 +2231,19 @@ def roles_list():
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
-        c.execute("SELECT id, code, name FROM roles ORDER BY name")
+        vis_sql, vis_params = _role_visible_sql(c, "r")
+        if table_has_column(c, "roles", "organization_id"):
+            c.execute(
+                f"""
+                SELECT id, code, name, organization_id, is_system
+                FROM roles r
+                WHERE {vis_sql}
+                ORDER BY r.organization_id, r.name
+                """,
+                vis_params,
+            )
+        else:
+            c.execute("SELECT id, code, name FROM roles ORDER BY name")
         return jsonify([json_safe(r) for r in c.fetchall()])
     finally:
         conn.close()
@@ -2295,9 +2406,48 @@ def admin_permission_matrix():
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
-        c.execute("SELECT id, perm_key, description FROM permissions ORDER BY perm_key")
-        perms = c.fetchall()
-        c.execute("SELECT id, code, name FROM roles ORDER BY code")
+        if table_has_column(c, "permissions", "route_key"):
+            c.execute(
+                """
+                SELECT id, perm_key, description, route_key, route_label,
+                       section_key, section_label, resource_key, resource_label,
+                       action_key, sort_order
+                FROM permissions
+                ORDER BY route_key, section_key, resource_key, sort_order, perm_key
+                """
+            )
+        else:
+            c.execute("SELECT id, perm_key, description FROM permissions ORDER BY perm_key")
+        perms = [json_safe(x) for x in c.fetchall()]
+        for p in perms:
+            if not p.get("route_key"):
+                pk = p.get("perm_key") or ""
+                bits = pk.split(".")
+                p["route_key"] = bits[0] if bits else "general"
+                p["route_label"] = p["route_key"].replace("_", " ").title()
+                p["section_key"] = bits[1] if len(bits) > 1 else ""
+                p["section_label"] = (
+                    p["section_key"].replace("_", " ").title() if p["section_key"] else "General"
+                )
+                p["resource_key"] = ""
+                p["resource_label"] = ""
+                p["action_key"] = bits[-1] if len(bits) > 1 else "view"
+                p["sort_order"] = 0
+        hierarchy = _build_permission_hierarchy(perms)
+
+        vis_sql, vis_params = _role_visible_sql(c, "r")
+        if table_has_column(c, "roles", "organization_id"):
+            c.execute(
+                f"""
+                SELECT id, code, name, organization_id, is_system
+                FROM roles r
+                WHERE {vis_sql}
+                ORDER BY r.organization_id, r.code
+                """,
+                vis_params,
+            )
+        else:
+            c.execute("SELECT id, code, name FROM roles ORDER BY code")
         roles = c.fetchall()
         c.execute(
             """
@@ -2311,11 +2461,95 @@ def admin_permission_matrix():
             role_map.setdefault(row["role_id"], []).append(row["perm_key"])
         return jsonify(
             {
-                "permissions": [json_safe(x) for x in perms],
+                "permissions": perms,
+                "hierarchy": hierarchy,
                 "roles": [json_safe(x) for x in roles],
                 "role_permissions": {str(k): v for k, v in role_map.items()},
             }
         )
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/admin/roles", methods=["POST"])
+@require_auth
+@require_perm("ta.settings")
+def admin_roles_create():
+    data = request.json or {}
+    code = _sanitize_role_code(data.get("code") or "")
+    name = (data.get("name") or "").strip() or code.replace("_", " ").title()
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        tid = _tenant_id()
+        if table_has_column(c, "roles", "organization_id"):
+            c.execute(
+                "SELECT id FROM roles WHERE organization_id=%s AND code=%s LIMIT 1",
+                (tid, code),
+            )
+            if c.fetchone():
+                return jsonify({"error": "Role code already exists for this organization"}), 409
+            c.execute(
+                """
+                INSERT INTO roles (organization_id, code, name, is_system)
+                VALUES (%s, %s, %s, 0)
+                """,
+                (tid, code, name),
+            )
+        else:
+            c.execute("SELECT id FROM roles WHERE code=%s LIMIT 1", (code,))
+            if c.fetchone():
+                return jsonify({"error": "Role code already exists"}), 409
+            c.execute("INSERT INTO roles (code, name) VALUES (%s, %s)", (code, name))
+        rid = c.lastrowid
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "roles",
+            rid,
+            "create",
+            new={"code": code, "name": name, "organization_id": tid},
+        )
+        conn.commit()
+        return jsonify({"ok": True, "id": rid, "code": code, "name": name})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/admin/roles/<int:role_id>", methods=["DELETE"])
+@require_auth
+@require_perm("ta.settings")
+def admin_roles_delete(role_id):
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        if not _role_mutable_by_tenant(c, role_id):
+            return jsonify({"error": "Cannot delete system or foreign roles"}), 403
+        c.execute("SELECT id, code FROM roles WHERE id=%s", (role_id,))
+        meta = c.fetchone()
+        if not meta:
+            return jsonify({"error": "Role not found"}), 404
+        if table_has_column(c, "ta_users", "role_id"):
+            c.execute("SELECT COUNT(*) AS n FROM ta_users WHERE role_id=%s", (role_id,))
+            n = (c.fetchone() or {}).get("n", 0) or 0
+            if n:
+                return jsonify({"error": f"Role is assigned to {n} TA user(s); reassign first"}), 409
+        if table_exists(c, "user_roles"):
+            c.execute("SELECT COUNT(*) AS n FROM user_roles WHERE role_id=%s", (role_id,))
+            n = (c.fetchone() or {}).get("n", 0) or 0
+            if n:
+                return jsonify({"error": f"Role is assigned to {n} login(s); reassign first"}), 409
+        c.execute("DELETE FROM roles WHERE id=%s", (role_id,))
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "roles",
+            role_id,
+            "delete",
+            old={"code": meta.get("code")},
+        )
+        conn.commit()
+        return jsonify({"ok": True})
     finally:
         conn.close()
 
@@ -2334,6 +2568,15 @@ def admin_role_permissions_put(role_id):
         c.execute("SELECT id FROM roles WHERE id=%s", (role_id,))
         if not c.fetchone():
             return jsonify({"error": "Role not found"}), 404
+        if table_has_column(c, "roles", "organization_id"):
+            c.execute(
+                "SELECT organization_id FROM roles WHERE id=%s",
+                (role_id,),
+            )
+            rrow = c.fetchone()
+            oid = int(rrow.get("organization_id") or 0)
+            if oid != 0 and oid != _tenant_id():
+                return jsonify({"error": "Role not in your organization"}), 403
         c2 = conn.cursor()
         c2.execute("DELETE FROM role_permissions WHERE role_id=%s", (role_id,))
         for key in keys:

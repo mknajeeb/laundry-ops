@@ -56,3 +56,27 @@ def hash_password(plain: str) -> str:
 
 def verify_password(hash_str: str, plain: str) -> bool:
     return check_password_hash(hash_str, plain)
+
+
+def table_has_column(cursor, table_name: str, col_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
+        LIMIT 1
+        """,
+        (table_name, col_name),
+    )
+    return cursor.fetchone() is not None
+
+
+def table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+        LIMIT 1
+        """,
+        (table_name,),
+    )
+    return cursor.fetchone() is not None

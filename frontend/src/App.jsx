@@ -63,7 +63,7 @@ function MobileTopBar({ pathname, user }) {
               sx={{ maxHeight: 26, maxWidth: 160, objectFit: "contain" }}
             />
           ) : (
-            <Typography sx={{ fontSize: 18, flex: 1 }}>{user?.organization_name || "Washpro"}</Typography>
+            <Typography sx={{ fontSize: 18, flex: 1 }}>{user?.organization_name || "Laundry Ops"}</Typography>
           )}
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: 0.5 }}>
@@ -74,6 +74,12 @@ function MobileTopBar({ pathname, user }) {
       </Toolbar>
     </AppBar>
   );
+}
+
+/** Public login: /login or /login/:orgSlug (tenant-specific bookmark URL). */
+function isLoginRoute(path) {
+  const p = path || "";
+  return p === "/login" || p.startsWith("/login/");
 }
 
 function GuardedRoute({ user, roles, children }) {
@@ -102,7 +108,7 @@ function AppShell() {
 
   useEffect(() => {
     async function bootstrap() {
-      if (pathname === "/login") {
+      if (isLoginRoute(pathname)) {
         setAuthLoading(false);
         return;
       }
@@ -137,7 +143,7 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
-    if (pathname === "/login" || !user) {
+    if (isLoginRoute(pathname) || !user) {
       setActiveBatch(null);
       return;
     }
@@ -157,11 +163,11 @@ function AppShell() {
     []
   );
 
-  if (authLoading && pathname !== "/login") {
+  if (authLoading && !isLoginRoute(pathname)) {
     return <Box sx={{ minHeight: "100vh", display: "grid", placeItems: "center" }}><Typography>Loading...</Typography></Box>;
   }
 
-  if (!user && pathname !== "/login") return <Navigate to="/login" replace />;
+  if (!user && !isLoginRoute(pathname)) return <Navigate to="/login" replace />;
 
   return (
     <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
@@ -170,6 +176,10 @@ function AppShell() {
         {isMobile && user && <MobileTopBar pathname={pathname} user={user} />}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
           <Routes>
+            <Route
+              path="/login/:orgSlug"
+              element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />}
+            />
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
