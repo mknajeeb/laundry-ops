@@ -3737,7 +3737,8 @@ def auth_organization_logo_upload():
             return jsonify({"error": "Allowed types: png, jpg, jpeg, webp, gif"}), 400
         ct = _infer_content_type(f.filename)
         url = None
-        if ticket_storage_mode() == "blob":
+        # Do not gate on ORDER_TICKET_STORAGE_MODE: tickets may use "db" while org logos still use Blob.
+        if os.getenv("AZURE_STORAGE_CONNECTION_STRING") and BlobServiceClient is not None:
             try:
                 cc = _ensure_blob_container()
                 if cc is not None:
