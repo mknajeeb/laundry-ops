@@ -18,6 +18,7 @@ from backend.payroll_identity import (
     user_has_perm_washpro,
     washpro_bearer_is_platform_operator,
 )
+from backend.onesignal_client import notify_geofence_outside_cooldown
 from backend.ta_helpers import (
     as_bool,
     haversine_meters,
@@ -66,6 +67,26 @@ def set_setting(conn, organization_id: int, key: str, value: str):
 
 def _tenant_id():
     return int(g.ta_user.get("organization_id") or 1)
+
+
+def _user_wants_push_notification(conn, u: dict) -> bool:
+    """Honor user_notification_preferences.push_out (Washpro user id) when payroll mode is on."""
+    if not payroll_profiles_active(conn):
+        return True
+    uid = int(u.get("id") or 0)
+    if not uid:
+        return True
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "user_notification_preferences"):
+        return True
+    c.execute(
+        "SELECT push_out FROM user_notification_preferences WHERE user_id=%s LIMIT 1",
+        (uid,),
+    )
+    row = c.fetchone()
+    if not row:
+        return True
+    return bool(row.get("push_out"))
 
 
 def _sanitize_role_code(raw: str) -> str:
@@ -741,6 +762,10 @@ def sessions_current():
                                 f"Location ping outside geofence (~{int(dist)}m).",
                             ),
                         )
+                        if _user_wants_push_notification(conn, g.ta_user):
+                            notify_geofence_outside_cooldown(
+                                g.ta_user["id"], _tenant_id(), int(dist)
+                            )
                 sess["geofence_inside"] = inside
                 sess["primary_geofence"] = json_safe(gfn) if gfn else None
 

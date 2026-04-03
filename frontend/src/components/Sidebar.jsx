@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"], moduleKey: "payroll" },
   { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
+  { to: "/notifications", labelKey: "nav.notifications", roles: [], moduleKey: "notifications" },
   { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"], moduleKey: "permissions" },
   {
     to: "/platform",

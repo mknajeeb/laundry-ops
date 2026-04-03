@@ -15,6 +15,7 @@ export const TENANT_MODULES = [
   { key: "people", labelKey: "nav.people", path: "/employees" },
   { key: "payroll", labelKey: "nav.payrollMgmt", path: "/payroll" },
   { key: "organization", labelKey: "nav.organization", path: "/organization" },
+  { key: "notifications", labelKey: "nav.notifications", path: "/notifications" },
   { key: "permissions", labelKey: "nav.permissions", path: "/permissions" },
 ];
 

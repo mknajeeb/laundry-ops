@@ -33,6 +33,7 @@ import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollManagementPage from "./pages/PayrollManagementPage";
 import PermissionsPage from "./pages/PermissionsPage";
+import NotificationsPage from "./pages/NotificationsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
@@ -282,6 +283,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN"]}>
                     <OrganizationSettingsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/notifications"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user}>
+                    <NotificationsPage user={user} />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

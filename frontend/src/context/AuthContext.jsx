@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { getMe, login as apiLogin } from "../api";
+import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
 
 const AuthContext = createContext(null);
 
@@ -63,6 +64,14 @@ export function AuthProvider({ children }) {
     refreshMe();
   }, [token, refreshMe]);
 
+  useEffect(() => {
+    if (!user?.id) {
+      clearOneSignalUser();
+      return;
+    }
+    syncOneSignalUser(user);
+  }, [user]);
+
   const login = useCallback(async (email, password) => {
     const res = await apiLogin(email, password);
     const t = res.data.token;
@@ -71,6 +80,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(() => {
+    clearOneSignalUser();
     localStorage.removeItem("ta_token");
     setToken("");
     setUser(null);

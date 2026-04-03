@@ -7,9 +7,14 @@ import { AuthProvider } from "./context/AuthContext.jsx";
 import { I18nProvider } from "./i18n/I18nContext.jsx";
 
 const ONESIGNAL_APP_ID = import.meta.env.VITE_ONESIGNAL_APP_ID;
+const ONESIGNAL_DISABLED =
+  import.meta.env.VITE_ONESIGNAL_DISABLED === "true" ||
+  import.meta.env.VITE_ONESIGNAL_DISABLED === "1";
+/** When false, app registers /service-worker.js in production (see block below). */
+const onesignalActive = Boolean(ONESIGNAL_APP_ID) && !ONESIGNAL_DISABLED;
 
 /** OneSignal Web Push: requires VITE_ONESIGNAL_APP_ID and index.html OneSignalSDK.page.js script. */
-if (typeof window !== "undefined" && ONESIGNAL_APP_ID && !window.__laundryOpsOneSignalInitQueued) {
+if (typeof window !== "undefined" && onesignalActive && !window.__laundryOpsOneSignalInitQueued) {
   window.__laundryOpsOneSignalInitQueued = true;
   window.OneSignalDeferred = window.OneSignalDeferred || [];
   window.OneSignalDeferred.push(async function initOneSignal(OneSignal) {

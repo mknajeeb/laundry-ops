@@ -40,6 +40,7 @@ from backend.payroll_identity import (
     payroll_profiles_active,
 )
 from backend.ta_helpers import hash_password, json_safe
+from backend.notification_routes import register_notification_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
     _sanitize_role_code,
@@ -62,6 +63,7 @@ CORS(
 )
 
 register_ta_routes(app)
+register_notification_routes(app)
 
 # Local org logo uploads when Azure Blob is not configured (dev / small deployments).
 _ORG_LOGO_FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.(png|jpg|jpeg|webp|gif)$", re.I)
@@ -932,6 +934,7 @@ TENANT_MODULE_KEYS = frozenset(
         "payroll",
         "organization",
         "permissions",
+        "notifications",
     )
 )
 
@@ -4420,6 +4423,8 @@ def auth_me_notification_preferences():
               email_in TINYINT(1) NOT NULL DEFAULT 0,
               push_out TINYINT(1) NOT NULL DEFAULT 1,
               push_in TINYINT(1) NOT NULL DEFAULT 0,
+              sms_out TINYINT(1) NOT NULL DEFAULT 1,
+              sms_in TINYINT(1) NOT NULL DEFAULT 0,
               whatsapp_out TINYINT(1) NOT NULL DEFAULT 0,
               whatsapp_in TINYINT(1) NOT NULL DEFAULT 0,
               updated_at DATETIME NULL
@@ -4442,6 +4447,18 @@ def auth_me_notification_preferences():
                         UPDATE user_notification_preferences
                         SET whatsapp_out = COALESCE(sms_out, 0), whatsapp_in = COALESCE(sms_in, 0)
                         """
+                    )
+                except Exception:
+                    pass
+            if table_has_column(cursor, "user_notification_preferences", "whatsapp_out") and not table_has_column(
+                cursor, "user_notification_preferences", "sms_out"
+            ):
+                try:
+                    cursor.execute(
+                        "ALTER TABLE user_notification_preferences ADD COLUMN sms_out TINYINT(1) NOT NULL DEFAULT 1 AFTER push_in"
+                    )
+                    cursor.execute(
+                        "ALTER TABLE user_notification_preferences ADD COLUMN sms_in TINYINT(1) NOT NULL DEFAULT 0 AFTER sms_out"
                     )
                 except Exception:
                     pass
@@ -4470,59 +4487,95 @@ def auth_me_notification_preferences():
                 out["whatsapp_out"] = False
                 out["whatsapp_in"] = False
                 return jsonify(out)
+            has_sms = table_has_column(cursor, "user_notification_preferences", "sms_out")
+            sel = (
+                "email_out, email_in, push_out, push_in, sms_out, sms_in, whatsapp_out, whatsapp_in"
+                if has_sms
+                else "email_out, email_in, push_out, push_in, whatsapp_out, whatsapp_in"
+            )
             cursor.execute(
-                """
-                SELECT email_out, email_in, push_out, push_in, whatsapp_out, whatsapp_in
-                FROM user_notification_preferences WHERE user_id = %s
-                """,
+                f"SELECT {sel} FROM user_notification_preferences WHERE user_id = %s",
                 (uid,),
             )
             row = cursor.fetchone()
             if not row:
-                return jsonify(
-                    {
-                        "email_out": True,
-                        "email_in": False,
-                        "push_out": True,
-                        "push_in": False,
-                        "whatsapp_out": False,
-                        "whatsapp_in": False,
-                    }
-                )
+                base = {
+                    "email_out": True,
+                    "email_in": False,
+                    "push_out": True,
+                    "push_in": False,
+                    "whatsapp_out": False,
+                    "whatsapp_in": False,
+                }
+                if has_sms:
+                    base["sms_out"] = True
+                    base["sms_in"] = False
+                return jsonify(base)
             return jsonify(json_safe(row))
         body = request.json or {}
         if not table_has_column(cursor, "user_notification_preferences", "whatsapp_out"):
             return jsonify({"error": "notification preferences schema is upgrading; retry shortly"}), 503
+        has_sms = table_has_column(cursor, "user_notification_preferences", "sms_out")
         wa_out = body.get("whatsapp_out")
-        if wa_out is None and "sms_out" in body:
+        if wa_out is None and not has_sms and "sms_out" in body:
             wa_out = body.get("sms_out")
         wa_in = body.get("whatsapp_in")
-        if wa_in is None and "sms_in" in body:
+        if wa_in is None and not has_sms and "sms_in" in body:
             wa_in = body.get("sms_in")
-        cursor.execute(
-            """
-            INSERT INTO user_notification_preferences
-              (user_id, email_out, email_in, push_out, push_in, whatsapp_out, whatsapp_in, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s, NOW())
-            ON DUPLICATE KEY UPDATE
-              email_out = VALUES(email_out),
-              email_in = VALUES(email_in),
-              push_out = VALUES(push_out),
-              push_in = VALUES(push_in),
-              whatsapp_out = VALUES(whatsapp_out),
-              whatsapp_in = VALUES(whatsapp_in),
-              updated_at = NOW()
-            """,
-            (
-                uid,
-                1 if body.get("email_out", True) else 0,
-                1 if body.get("email_in") else 0,
-                1 if body.get("push_out", True) else 0,
-                1 if body.get("push_in") else 0,
-                1 if wa_out else 0,
-                1 if wa_in else 0,
-            ),
-        )
+        if has_sms:
+            cursor.execute(
+                """
+                INSERT INTO user_notification_preferences
+                  (user_id, email_out, email_in, push_out, push_in, sms_out, sms_in, whatsapp_out, whatsapp_in, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s, NOW())
+                ON DUPLICATE KEY UPDATE
+                  email_out = VALUES(email_out),
+                  email_in = VALUES(email_in),
+                  push_out = VALUES(push_out),
+                  push_in = VALUES(push_in),
+                  sms_out = VALUES(sms_out),
+                  sms_in = VALUES(sms_in),
+                  whatsapp_out = VALUES(whatsapp_out),
+                  whatsapp_in = VALUES(whatsapp_in),
+                  updated_at = NOW()
+                """,
+                (
+                    uid,
+                    1 if body.get("email_out", True) else 0,
+                    1 if body.get("email_in") else 0,
+                    1 if body.get("push_out", True) else 0,
+                    1 if body.get("push_in") else 0,
+                    1 if body.get("sms_out", True) else 0,
+                    1 if body.get("sms_in") else 0,
+                    1 if wa_out else 0,
+                    1 if wa_in else 0,
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO user_notification_preferences
+                  (user_id, email_out, email_in, push_out, push_in, whatsapp_out, whatsapp_in, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s, NOW())
+                ON DUPLICATE KEY UPDATE
+                  email_out = VALUES(email_out),
+                  email_in = VALUES(email_in),
+                  push_out = VALUES(push_out),
+                  push_in = VALUES(push_in),
+                  whatsapp_out = VALUES(whatsapp_out),
+                  whatsapp_in = VALUES(whatsapp_in),
+                  updated_at = NOW()
+                """,
+                (
+                    uid,
+                    1 if body.get("email_out", True) else 0,
+                    1 if body.get("email_in") else 0,
+                    1 if body.get("push_out", True) else 0,
+                    1 if body.get("push_in") else 0,
+                    1 if wa_out else 0,
+                    1 if wa_in else 0,
+                ),
+            )
         conn.commit()
         return jsonify({"ok": True})
     except Exception as e:

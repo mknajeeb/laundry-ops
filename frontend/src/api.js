@@ -79,6 +79,35 @@ export const getNotificationPreferences = () =>
 export const putNotificationPreferences = (body) =>
   axios.put(`${API_BASE}/auth/me/notification-preferences`, body);
 
+/** ADMIN: notification groups, event routing, manual dispatch */
+export const getNotificationGroups = () =>
+  axios.get(`${API_BASE}/auth/notifications/groups`);
+export const postNotificationGroup = (body) =>
+  axios.post(`${API_BASE}/auth/notifications/groups`, body);
+export const putNotificationGroup = (groupId, body) =>
+  axios.put(`${API_BASE}/auth/notifications/groups/${groupId}`, body);
+export const deleteNotificationGroup = (groupId) =>
+  axios.delete(`${API_BASE}/auth/notifications/groups/${groupId}`);
+export const getNotificationGroupMembers = (groupId) =>
+  axios.get(`${API_BASE}/auth/notifications/groups/${groupId}/members`);
+export const putNotificationGroupMembers = (groupId, userIds) =>
+  axios.put(`${API_BASE}/auth/notifications/groups/${groupId}/members`, { user_ids: userIds });
+
+export const getNotificationEvents = () =>
+  axios.get(`${API_BASE}/auth/notifications/events`);
+export const postNotificationEvent = (body) =>
+  axios.post(`${API_BASE}/auth/notifications/events`, body);
+export const putNotificationEvent = (eventId, body) =>
+  axios.put(`${API_BASE}/auth/notifications/events/${eventId}`, body);
+export const deleteNotificationEvent = (eventId) =>
+  axios.delete(`${API_BASE}/auth/notifications/events/${eventId}`);
+export const getNotificationEventAudiences = (eventId) =>
+  axios.get(`${API_BASE}/auth/notifications/events/${eventId}/audiences`);
+export const putNotificationEventAudiences = (eventId, body) =>
+  axios.put(`${API_BASE}/auth/notifications/events/${eventId}/audiences`, body);
+export const postNotificationDispatch = (body) =>
+  axios.post(`${API_BASE}/auth/notifications/dispatch`, body);
+
 export const authMe = () =>
   axios.get(`${API_BASE}/auth/me`);
 
