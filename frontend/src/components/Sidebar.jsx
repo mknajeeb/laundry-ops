@@ -1,30 +1,44 @@
 import { NavLink } from "react-router-dom";
 import { Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import { useI18n } from "../i18n/I18nContext";
+import { hasPlatformAdminRole, hasTenantPortalAccess, isTenantModuleEnabled } from "../utils/platformAccess";
 
 const NAV_ITEMS = [
-  { to: "/", labelKey: "nav.home", roles: [] },
-  { to: "/dashboard", labelKey: "nav.dashboard", roles: [] },
-  { to: "/orders", labelKey: "nav.orders", roles: [] },
-  { to: "/checkout", labelKey: "nav.checkout", roles: [] },
-  { to: "/upload", labelKey: "nav.upload", roles: ["ADMIN", "OPS"] },
-  { to: "/discrepancies", labelKey: "nav.discrepancies", roles: ["ADMIN", "OPS"] },
-  { to: "/inventory", labelKey: "nav.inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"] },
-  { to: "/clock", labelKey: "nav.clock", roles: [] },
-  { to: "/issues", labelKey: "nav.issues", roles: [] },
-  { to: "/production", labelKey: "nav.production", roles: [] },
-  { to: "/scoreboard", labelKey: "nav.scoreboard", roles: [] },
-  { to: "/maintenance", labelKey: "nav.maintenance", roles: [] },
-  { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"] },
-  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"] },
-  { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"] },
-  { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"] },
+  { to: "/", labelKey: "nav.home", roles: [], moduleKey: "home" },
+  { to: "/dashboard", labelKey: "nav.dashboard", roles: [], moduleKey: "dashboard" },
+  { to: "/orders", labelKey: "nav.orders", roles: [], moduleKey: "orders" },
+  { to: "/checkout", labelKey: "nav.checkout", roles: [], moduleKey: "checkout" },
+  { to: "/upload", labelKey: "nav.upload", roles: ["ADMIN", "OPS"], moduleKey: "upload" },
+  { to: "/discrepancies", labelKey: "nav.discrepancies", roles: ["ADMIN", "OPS"], moduleKey: "discrepancies" },
+  { to: "/inventory", labelKey: "nav.inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"], moduleKey: "inventory" },
+  { to: "/clock", labelKey: "nav.clock", roles: [], moduleKey: "clock" },
+  { to: "/issues", labelKey: "nav.issues", roles: [], moduleKey: "issues" },
+  { to: "/production", labelKey: "nav.production", roles: [], moduleKey: "production" },
+  { to: "/scoreboard", labelKey: "nav.scoreboard", roles: [], moduleKey: "scoreboard" },
+  { to: "/maintenance", labelKey: "nav.maintenance", roles: [], moduleKey: "maintenance" },
+  { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
+  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"], moduleKey: "payroll" },
+  { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
+  { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"], moduleKey: "permissions" },
+  {
+    to: "/platform",
+    labelKey: "nav.platformTenants",
+    roles: [],
+    skipModuleCheck: true,
+  },
 ];
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
-  const allow = (item) => !item.roles.length || item.roles.some((r) => roles.includes(r));
+  const allow = (item) => {
+    const roleOk = !item.roles.length || item.roles.some((r) => roles.includes(r));
+    if (!roleOk) return false;
+    if (item.skipModuleCheck) {
+      return hasPlatformAdminRole(user) && hasTenantPortalAccess(user);
+    }
+    return isTenantModuleEnabled(user, item.moduleKey || "home");
+  };
 
   return (
     <Box

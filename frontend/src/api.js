@@ -63,8 +63,27 @@ export const authLogin = (username, password, organization_slug) =>
       : {}),
   });
 
+/** Not logged in: change password with current password. */
+export const postPublicChangePassword = (body) =>
+  axios.post(`${API_BASE}/auth/public/change-password`, body);
+
+export const postPasswordResetRequest = (body) =>
+  axios.post(`${API_BASE}/auth/password-reset/request`, body);
+
+export const postPasswordResetComplete = (body) =>
+  axios.post(`${API_BASE}/auth/password-reset/complete`, body);
+
+export const getNotificationPreferences = () =>
+  axios.get(`${API_BASE}/auth/me/notification-preferences`);
+
+export const putNotificationPreferences = (body) =>
+  axios.put(`${API_BASE}/auth/me/notification-preferences`, body);
+
 export const authMe = () =>
   axios.get(`${API_BASE}/auth/me`);
+
+export const putAuthPassword = (body) =>
+  axios.put(`${API_BASE}/auth/me/password`, body);
 
 export const authLogout = () =>
   axios.post(`${API_BASE}/auth/logout`);
@@ -90,6 +109,47 @@ export const uploadOrganizationLogo = (file) => {
   });
 };
 
+/** SUPER_ADMIN / PLATFORM_ADMIN: all tenants */
+export const getPlatformOrganizations = () =>
+  axios.get(`${API_BASE}/auth/platform/organizations`);
+
+export const createPlatformOrganization = (body) =>
+  axios.post(`${API_BASE}/auth/platform/organizations`, body);
+
+export const putPlatformOrganization = (orgId, body) =>
+  axios.put(`${API_BASE}/auth/platform/organizations/${orgId}`, body);
+
+export const deletePlatformOrganization = (orgId) =>
+  axios.delete(`${API_BASE}/auth/platform/organizations/${orgId}`);
+
+export const uploadPlatformOrganizationLogo = (orgId, file) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return axios.post(`${API_BASE}/auth/platform/organizations/${orgId}/logo`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
+export const getPlatformEntitlements = (orgId) =>
+  axios.get(`${API_BASE}/auth/platform/organizations/${orgId}/entitlements`);
+
+export const putPlatformEntitlements = (orgId, modules) =>
+  axios.put(`${API_BASE}/auth/platform/organizations/${orgId}/entitlements`, { modules });
+
+export const getPlatformPermissionMatrix = () =>
+  axios.get(`${API_BASE}/auth/platform/permission-matrix`);
+
+export const createPlatformRole = (payload) =>
+  axios.post(`${API_BASE}/auth/platform/roles`, payload);
+
+export const deletePlatformRole = (roleId) =>
+  axios.delete(`${API_BASE}/auth/platform/roles/${roleId}`);
+
+export const putPlatformRolePermissions = (roleId, permission_keys) =>
+  axios.put(`${API_BASE}/auth/platform/roles/${roleId}/permissions`, {
+    permission_keys,
+  });
+
 export const getRoles = () =>
   axios.get(`${API_BASE}/auth/roles`);
 
@@ -102,8 +162,22 @@ export const createUser = (payload) =>
 export const updateUser = (userId, payload) =>
   axios.put(`${API_BASE}/auth/users/${userId}`, payload);
 
+/** ADMIN: single Laundry Ops user in your organization (includes geofence / entity tag hints). */
+export const getAuthUser = (userId) =>
+  axios.get(`${API_BASE}/auth/users/${userId}`);
+
 export const deleteUser = (userId) =>
   axios.delete(`${API_BASE}/auth/users/${userId}`);
+
+/** SUPER_ADMIN / PLATFORM_ADMIN: search logins across tenants */
+export const searchPlatformUsers = (q) =>
+  axios.get(`${API_BASE}/auth/platform/users`, { params: { q: q || "" } });
+
+export const getPlatformUserProfile = (userId) =>
+  axios.get(`${API_BASE}/auth/platform/users/${userId}`);
+
+export const putPlatformUserProfile = (userId, body) =>
+  axios.put(`${API_BASE}/auth/platform/users/${userId}`, body);
 
 /* =========================================
    DASHBOARD
@@ -451,11 +525,20 @@ export const createTaUser = (body) =>
 export const updateTaUser = (id, body) =>
   axios.put(`${API_BASE}/api/ta/users/${id}`, body);
 
+/** Removes payroll/TA profile only; Washpro login row stays (unified payroll). Legacy: deletes ta_users row. */
+export const deleteTaUser = (id) => axios.delete(`${API_BASE}/api/ta/users/${id}`);
+
 export const putUserGeofences = (userId, body) =>
   axios.put(`${API_BASE}/api/ta/users/${userId}/geofences`, body);
 
 export const putUserEmploymentCategories = (userId, body) =>
   axios.put(`${API_BASE}/api/ta/users/${userId}/employment-categories`, body);
+
+export const getUserEntityTags = (userId) =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/entity-tags`);
+
+export const putUserEntityTags = (userId, body) =>
+  axios.put(`${API_BASE}/api/ta/users/${userId}/entity-tags`, body);
 
 export const getGeofences = () => axios.get(`${API_BASE}/api/ta/geofences`);
 

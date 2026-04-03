@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -45,6 +46,7 @@ import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 
 function PeoplePage({ user }) {
+  const navigate = useNavigate();
   const { hasPerm } = useAuth();
   const { t } = useI18n();
   const isAdmin = (user?.roles || []).map((r) => String(r).toUpperCase()).includes("ADMIN");
@@ -68,6 +70,7 @@ function PeoplePage({ user }) {
 
   const [taDialog, setTaDialog] = useState(null);
   const [taForm, setTaForm] = useState({});
+  const [manageWp, setManageWp] = useState(null);
 
   const loadWashpro = useCallback(async () => {
     if (!isAdmin) return;
@@ -140,6 +143,15 @@ function PeoplePage({ user }) {
       return blob.includes(q);
     });
   }, [taUsers, q]);
+
+  /** Unified payroll: profiles use Washpro users.id as PK (payroll_profiles.user_id). */
+  const payrollUnified = useMemo(() => {
+    if (!canTaView) return false;
+    if (!taUsers.length) return true;
+    return taUsers.every(
+      (t) => t.user_id != null && String(t.user_id) === String(t.id)
+    );
+  }, [canTaView, taUsers]);
 
   const taByWashproId = useMemo(() => {
     const m = new Map();
@@ -224,11 +236,16 @@ function PeoplePage({ user }) {
     }
   }
 
-  function openTaCreate() {
+  function openTaCreate(linkedWp = null) {
+    const wp = linkedWp || null;
+    const parts = (wp?.display_name || wp?.username || "").trim().split(/\s+/);
+    const fn = parts[0] || "";
+    const ln = parts.slice(1).join(" ") || "";
     setTaForm({
-      first_name: "",
-      last_name: "",
-      email: "",
+      washpro_user_id: wp ? wp.id : "",
+      first_name: fn,
+      last_name: ln,
+      email: wp ? `${String(wp.username).toLowerCase()}.${wp.id}@washpro.local` : "",
       password: "",
       role_id: taRoles[0]?.id || "",
       employee_id: "",
@@ -291,23 +308,50 @@ function PeoplePage({ user }) {
 
   async function saveTaCreate() {
     try {
-      await createTaUser({
-        first_name: taForm.first_name,
-        last_name: taForm.last_name,
-        email: taForm.email,
-        password: taForm.password,
-        role_id: taForm.role_id,
-        employee_id: taForm.employee_id || null,
-        mobile: taForm.mobile || null,
-        address: taForm.address || null,
-        itin_ssn: taForm.itin_ssn || null,
-        hire_date: taForm.hire_date || null,
-        termination_date: taForm.termination_date || null,
-        rehired: !!taForm.rehired,
-        active: taForm.active,
-        rehire_parent_id: taForm.rehire_parent_id ? Number(taForm.rehire_parent_id) : null,
-        prior_employee_id: taForm.prior_employee_id || null,
-      });
+      if (payrollUnified) {
+        if (!taForm.washpro_user_id) {
+          setError(t("people.payrollRequiresLogin"));
+          return;
+        }
+        await createTaUser({
+          washpro_user_id: Number(taForm.washpro_user_id),
+          first_name: taForm.first_name,
+          last_name: taForm.last_name,
+          email: taForm.email,
+          password: taForm.password,
+          role_id: taForm.role_id ? Number(taForm.role_id) : undefined,
+          employee_id: taForm.employee_id || null,
+          mobile: taForm.mobile || null,
+          address: taForm.address || null,
+          itin_ssn: taForm.itin_ssn || null,
+          hire_date: taForm.hire_date || null,
+          termination_date: taForm.termination_date || null,
+          rehired: !!taForm.rehired,
+          active: taForm.active,
+          rehire_parent_user_id: taForm.rehire_parent_id
+            ? Number(taForm.rehire_parent_id)
+            : null,
+          prior_employee_id: taForm.prior_employee_id || null,
+        });
+      } else {
+        await createTaUser({
+          first_name: taForm.first_name,
+          last_name: taForm.last_name,
+          email: taForm.email,
+          password: taForm.password,
+          role_id: taForm.role_id,
+          employee_id: taForm.employee_id || null,
+          mobile: taForm.mobile || null,
+          address: taForm.address || null,
+          itin_ssn: taForm.itin_ssn || null,
+          hire_date: taForm.hire_date || null,
+          termination_date: taForm.termination_date || null,
+          rehired: !!taForm.rehired,
+          active: taForm.active,
+          rehire_parent_id: taForm.rehire_parent_id ? Number(taForm.rehire_parent_id) : null,
+          prior_employee_id: taForm.prior_employee_id || null,
+        });
+      }
       setTaDialog(null);
       await loadTa();
     } catch (e) {
@@ -376,8 +420,29 @@ function PeoplePage({ user }) {
         <Typography sx={{ fontSize: 28 }}>{t("people.title")}</Typography>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        {t("people.intro")}
+        {payrollUnified && canTaView ? t("people.unifiedHelp") : t("people.intro")}
       </Typography>
+
+      {user?.organization_name || user?.organization_slug || user?.organization_id != null ? (
+        <Paper variant="outlined" sx={{ p: 1.5, mb: 2, borderRadius: 2 }}>
+          <Typography variant="caption" color="text.secondary" display="block">
+            {t("people.tenantContext")}
+          </Typography>
+          <Typography variant="body1" sx={{ fontWeight: 600 }}>
+            {user.organization_name || "—"}
+            {user.organization_slug ? (
+              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                /login/{user.organization_slug}
+              </Typography>
+            ) : null}
+          </Typography>
+          {user.organization_id != null ? (
+            <Typography variant="caption" color="text.secondary" display="block">
+              organization_id {user.organization_id}
+            </Typography>
+          ) : null}
+        </Paper>
+      ) : null}
 
       <TextField
         fullWidth
@@ -395,78 +460,185 @@ function PeoplePage({ user }) {
         </Alert>
       ) : null}
 
-      <Typography variant="h6" sx={{ mb: 1 }}>
-        {t("people.washproSection")}
-      </Typography>
-      <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
-        <Button variant="contained" onClick={openWpCreate}>
-          {t("people.addLogin")}
-        </Button>
-      </Stack>
-      <Paper sx={{ p: 1.5, borderRadius: 2, mb: 3 }}>
-        <Box className="table-wrapper">
-          <Table size="small" className="orders-table">
-            <TableHead>
-              <TableRow>
-                <TableCell>{t("people.colUsername")}</TableCell>
-                <TableCell>{t("people.colDisplay")}</TableCell>
-                <TableCell>{t("people.colRoles")}</TableCell>
-                <TableCell>{t("people.colPayrollLink")}</TableCell>
-                <TableCell>{t("common.active")}</TableCell>
-                <TableCell align="right">{t("people.colActions")}</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {wpFiltered.map((u) => {
-                const ta = taByWashproId.get(u.id);
-                return (
-                  <TableRow key={u.id}>
-                    <TableCell>{u.username}</TableCell>
-                    <TableCell>{u.display_name || "—"}</TableCell>
-                    <TableCell>
-                      <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                        {(u.roles || []).map((r) => (
-                          <Chip key={r} label={r} size="small" />
-                        ))}
-                      </Stack>
-                    </TableCell>
-                    <TableCell>
-                      {ta ? (
-                        <>
-                          {ta.first_name} {ta.last_name}
-                          <Typography variant="caption" display="block" color="text.secondary">
-                            TA #{ta.id}
-                          </Typography>
-                        </>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
-                    <TableCell align="right">
-                      <Button size="small" onClick={() => openWpEdit(u)}>
-                        {t("common.edit")}
-                      </Button>
-                      <Button size="small" color="error" onClick={() => setDeleteWpId(u.id)}>
-                        {t("common.delete")}
-                      </Button>
-                    </TableCell>
+      {canTaView && payrollUnified ? (
+        <>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            sx={{ mb: 1 }}
+            flexWrap="wrap"
+            useFlexGap
+          >
+            <Typography variant="h6">{t("people.unifiedSection")}</Typography>
+            <Stack direction="row" spacing={1}>
+              <Button variant="contained" onClick={openWpCreate}>
+                {t("people.addLogin")}
+              </Button>
+              {canTaAdd ? (
+                <Button variant="outlined" onClick={() => openTaCreate()}>
+                  {t("people.addProfile")}
+                </Button>
+              ) : null}
+            </Stack>
+          </Stack>
+          <Paper sx={{ p: 1.5, borderRadius: 2, mb: 3 }}>
+            <Box className="table-wrapper">
+              <Table size="small" className="orders-table">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>{t("people.colUsername")}</TableCell>
+                    <TableCell>{t("people.colDisplay")}</TableCell>
+                    <TableCell>{t("people.colRoles")}</TableCell>
+                    <TableCell>{t("people.colName")}</TableCell>
+                    <TableCell>{t("people.colEmail")}</TableCell>
+                    <TableCell>{t("people.colRole")}</TableCell>
+                    <TableCell>{t("common.active")}</TableCell>
+                    <TableCell align="right">{t("people.colActions")}</TableCell>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </Box>
-      </Paper>
+                </TableHead>
+                <TableBody>
+                  {wpFiltered.map((u) => {
+                    const ta = taByWashproId.get(u.id);
+                    return (
+                      <TableRow key={u.id}>
+                        <TableCell>{u.username}</TableCell>
+                        <TableCell>{u.display_name || "—"}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                            {(u.roles || []).map((r) => (
+                              <Chip key={r} label={r} size="small" />
+                            ))}
+                          </Stack>
+                        </TableCell>
+                        <TableCell>
+                          {ta ? (
+                            <>
+                              {ta.first_name} {ta.last_name}
+                              {ta.employee_id ? (
+                                <Typography variant="caption" display="block" color="text.secondary">
+                                  {ta.employee_id}
+                                </Typography>
+                              ) : null}
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                        <TableCell>{ta?.email || "—"}</TableCell>
+                        <TableCell>{ta?.role_name || "—"}</TableCell>
+                        <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
+                        <TableCell align="right">
+                          <Button size="small" variant="outlined" onClick={() => setManageWp(u)} sx={{ mr: 0.5 }}>
+                            {t("people.loginAndPayroll")}
+                          </Button>
+                          <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${u.id}`)} sx={{ mr: 0.5 }}>
+                            {t("people.fullProfile")}
+                          </Button>
+                          <Button size="small" onClick={() => openWpEdit(u)}>
+                            {t("common.edit")}
+                          </Button>
+                          <Button size="small" color="error" onClick={() => setDeleteWpId(u.id)}>
+                            {t("common.delete")}
+                          </Button>
+                          {canTaEdit && ta ? (
+                            <Button size="small" onClick={() => openTaEdit(ta)}>
+                              {t("people.editPayroll")}
+                            </Button>
+                          ) : null}
+                          {canTaAdd && !ta ? (
+                            <Button size="small" onClick={() => openTaCreate(u)}>
+                              {t("people.addPayroll")}
+                            </Button>
+                          ) : null}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
+          </Paper>
+        </>
+      ) : (
+        <>
+          <Typography variant="h6" sx={{ mb: 1 }}>
+            {t("people.washproSection")}
+          </Typography>
+          <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
+            <Button variant="contained" onClick={openWpCreate}>
+              {t("people.addLogin")}
+            </Button>
+          </Stack>
+          <Paper sx={{ p: 1.5, borderRadius: 2, mb: 3 }}>
+            <Box className="table-wrapper">
+              <Table size="small" className="orders-table">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>{t("people.colUsername")}</TableCell>
+                    <TableCell>{t("people.colDisplay")}</TableCell>
+                    <TableCell>{t("people.colRoles")}</TableCell>
+                    <TableCell>{t("people.colPayrollLink")}</TableCell>
+                    <TableCell>{t("common.active")}</TableCell>
+                    <TableCell align="right">{t("people.colActions")}</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {wpFiltered.map((u) => {
+                    const ta = taByWashproId.get(u.id);
+                    return (
+                      <TableRow key={u.id}>
+                        <TableCell>{u.username}</TableCell>
+                        <TableCell>{u.display_name || "—"}</TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                            {(u.roles || []).map((r) => (
+                              <Chip key={r} label={r} size="small" />
+                            ))}
+                          </Stack>
+                        </TableCell>
+                        <TableCell>
+                          {ta ? (
+                            <>
+                              {ta.first_name} {ta.last_name}
+                              <Typography variant="caption" display="block" color="text.secondary">
+                                #{ta.id}
+                              </Typography>
+                            </>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                        <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
+                        <TableCell align="right">
+                          <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${u.id}`)} sx={{ mr: 0.5 }}>
+                            {t("people.fullProfile")}
+                          </Button>
+                          <Button size="small" onClick={() => openWpEdit(u)}>
+                            {t("common.edit")}
+                          </Button>
+                          <Button size="small" color="error" onClick={() => setDeleteWpId(u.id)}>
+                            {t("common.delete")}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
+          </Paper>
+        </>
+      )}
 
-      {canTaView ? (
+      {canTaView && !payrollUnified ? (
         <>
           <Typography variant="h6" sx={{ mb: 1 }}>
             {t("people.taSection")}
           </Typography>
           <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
             {canTaAdd ? (
-              <Button variant="outlined" onClick={openTaCreate}>
+              <Button variant="outlined" onClick={() => openTaCreate()}>
                 {t("people.addProfile")}
               </Button>
             ) : null}
@@ -486,7 +658,8 @@ function PeoplePage({ user }) {
                 </TableHead>
                 <TableBody>
                   {taFiltered.map((u) => {
-                    const wp = u.washpro_user_id ? washproById.get(u.washpro_user_id) : null;
+                    const wpLoginId = u.washpro_user_id || u.user_id || u.id;
+                    const wp = washproById.get(wpLoginId);
                     return (
                       <TableRow key={u.id}>
                         <TableCell>
@@ -522,11 +695,13 @@ function PeoplePage({ user }) {
             </Box>
           </Paper>
         </>
-      ) : (
+      ) : null}
+
+      {!canTaView ? (
         <Alert severity="info" sx={{ mt: 2 }}>
           {t("people.needView")}
         </Alert>
-      )}
+      ) : null}
 
       <Dialog open={wpDialog === "create"} onClose={() => setWpDialog(null)} fullWidth maxWidth="sm">
         <DialogTitle>New Washpro login</DialogTitle>
@@ -647,10 +822,110 @@ function PeoplePage({ user }) {
         </DialogActions>
       </Dialog>
 
+      <Dialog open={!!manageWp} onClose={() => setManageWp(null)} maxWidth="xs" fullWidth>
+        <DialogTitle>{t("people.manageUserTitle")}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            {t("people.manageUserBlurb")}
+          </Typography>
+          <Stack spacing={1}>
+            <Button
+              variant="contained"
+              onClick={() => {
+                const u = manageWp;
+                setManageWp(null);
+                if (u) openWpEdit(u);
+              }}
+            >
+              {t("people.openWashproLogin")}
+            </Button>
+            {(() => {
+              const u = manageWp;
+              if (!u) return null;
+              const ta = taByWashproId.get(u.id);
+              if (ta && canTaEdit) {
+                return (
+                  <Button
+                    variant="outlined"
+                    onClick={() => {
+                      setManageWp(null);
+                      openTaEdit(ta);
+                    }}
+                  >
+                    {t("people.openPayrollProfile")}
+                  </Button>
+                );
+              }
+              if (ta && !canTaEdit) {
+                return (
+                  <Typography variant="caption" color="text.secondary">
+                    {t("people.payrollEditNeedsPerm")}
+                  </Typography>
+                );
+              }
+              if (!ta && canTaAdd) {
+                return (
+                  <Button
+                    variant="outlined"
+                    onClick={() => {
+                      setManageWp(null);
+                      openTaCreate(u);
+                    }}
+                  >
+                    {t("people.addPayroll")}
+                  </Button>
+                );
+              }
+              return null;
+            })()}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setManageWp(null)}>{t("common.cancel")}</Button>
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={taDialog === "create"} onClose={() => setTaDialog(null)} maxWidth="sm" fullWidth>
         <DialogTitle>New payroll profile</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
+            {payrollUnified ? (
+              <FormControl fullWidth required>
+                <InputLabel id="wp-link">{t("people.linkWashproLogin")}</InputLabel>
+                <Select
+                  labelId="wp-link"
+                  label={t("people.linkWashproLogin")}
+                  value={
+                    taForm.washpro_user_id === "" || taForm.washpro_user_id == null
+                      ? ""
+                      : String(taForm.washpro_user_id)
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const wp = wpUsers.find((w) => String(w.id) === String(v));
+                    const prts = (wp?.display_name || wp?.username || "").trim().split(/\s+/);
+                    setTaForm((f) => ({
+                      ...f,
+                      washpro_user_id: v === "" ? "" : Number(v),
+                      first_name: prts[0] || f.first_name,
+                      last_name: prts.slice(1).join(" ") || f.last_name,
+                      email: wp
+                        ? `${String(wp.username).toLowerCase()}.${wp.id}@washpro.local`
+                        : f.email,
+                    }));
+                  }}
+                >
+                  <MenuItem value="">—</MenuItem>
+                  {wpUsers
+                    .filter((w) => !taByWashproId.get(w.id))
+                    .map((w) => (
+                      <MenuItem key={w.id} value={String(w.id)}>
+                        {w.username} — {w.display_name || w.username}
+                      </MenuItem>
+                    ))}
+                </Select>
+              </FormControl>
+            ) : null}
             <TextField
               label="First name"
               value={taForm.first_name}
@@ -765,7 +1040,18 @@ function PeoplePage({ user }) {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setTaDialog(null)}>Cancel</Button>
-          <Button variant="contained" onClick={saveTaCreate}>
+          <Button
+            variant="contained"
+            onClick={saveTaCreate}
+            disabled={
+              !taForm.first_name ||
+              !taForm.last_name ||
+              !taForm.email ||
+              !taForm.password ||
+              !taForm.role_id ||
+              (payrollUnified && !taForm.washpro_user_id)
+            }
+          >
             Create
           </Button>
         </DialogActions>

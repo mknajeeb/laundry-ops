@@ -37,5 +37,9 @@ export default defineConfig({
   server: {
     port: Number(process.env.VITE_DEV_PORT || 5052),
     proxy,
+    // Avoid stale UI during local dev (browser caching the old JS graph).
+    headers: {
+      'Cache-Control': 'no-store',
+    },
   },
 })

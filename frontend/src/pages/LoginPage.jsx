@@ -1,7 +1,28 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Alert, Box, Button, Paper, Stack, TextField, Typography } from "@mui/material";
-import { authLogin, getPublicOrgBranding, setAuthSession } from "../api";
+import {
+  Alert,
+  Box,
+  Button,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Link as MuiLink,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import {
+  authLogin,
+  getPublicOrgBranding,
+  postPasswordResetComplete,
+  postPasswordResetRequest,
+  postPublicChangePassword,
+  setAuthSession,
+} from "../api";
+import { useI18n } from "../i18n/I18nContext";
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -15,22 +36,37 @@ function sanitizeSlug(raw) {
   }
 }
 
-/**
- * Supports:
- * - /login — optional org slug field
- * - /login/:orgSlug — tenant bookmark (organization slug, e.g. /login/washpro if that tenant’s slug is washpro)
- */
 function LoginPage({ onLoggedIn }) {
+  const { t } = useI18n();
   const { orgSlug: orgSlugParam } = useParams();
   const slugFromRoute = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [organizationSlug, setOrganizationSlug] = useState(
-    () => localStorage.getItem("washpro_org_slug") || ""
+    () => localStorage.getItem("washpro_org_slug") || "",
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
+
+  const [changeOpen, setChangeOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [cpUser, setCpUser] = useState("");
+  const [cpSlug, setCpSlug] = useState("");
+  const [cpCurrent, setCpCurrent] = useState("");
+  const [cpNew, setCpNew] = useState("");
+  const [cpConfirm, setCpConfirm] = useState("");
+  const [cpBusy, setCpBusy] = useState(false);
+  const [cpErr, setCpErr] = useState("");
+
+  const [rsUser, setRsUser] = useState("");
+  const [rsSlug, setRsSlug] = useState("");
+  const [rsToken, setRsToken] = useState("");
+  const [rsNew, setRsNew] = useState("");
+  const [rsBusy, setRsBusy] = useState(false);
+  const [rsErr, setRsErr] = useState("");
+  const [rsMsg, setRsMsg] = useState("");
+  const [rsDevToken, setRsDevToken] = useState("");
 
   useEffect(() => {
     if (slugFromRoute) {
@@ -45,6 +81,10 @@ function LoginPage({ onLoggedIn }) {
       setBranding(null);
       return;
     }
+    if (slug === "platform") {
+      setBranding({ display_name: "Platform", logo_url: null, slug: "platform" });
+      return;
+    }
     let cancelled = false;
     getPublicOrgBranding(slug)
       .then((res) => {
@@ -57,6 +97,26 @@ function LoginPage({ onLoggedIn }) {
       cancelled = true;
     };
   }, [organizationSlug]);
+
+  useEffect(() => {
+    if (changeOpen) {
+      setCpUser(username.trim());
+      setCpSlug((slugFromRoute || organizationSlug || "").trim().toLowerCase());
+      setCpErr("");
+    }
+  }, [changeOpen, username, slugFromRoute, organizationSlug]);
+
+  useEffect(() => {
+    if (resetOpen) {
+      setRsUser(username.trim());
+      setRsSlug((slugFromRoute || organizationSlug || "").trim().toLowerCase());
+      setRsErr("");
+      setRsMsg("");
+      setRsToken("");
+      setRsNew("");
+      setRsDevToken("");
+    }
+  }, [resetOpen, username, slugFromRoute, organizationSlug]);
 
   const submit = async () => {
     try {
@@ -73,11 +133,103 @@ function LoginPage({ onLoggedIn }) {
       onLoggedIn?.(payload.user);
     } catch (e) {
       console.error(e);
-      setError(e?.response?.data?.error || "Login failed.");
+      const data = e?.response?.data;
+      let msg =
+        (data && typeof data === "object" && (data.error || data.message)) ||
+        (typeof data === "string" ? data : null);
+      if (!msg && e?.response?.status === 401) {
+        msg = "Invalid credentials.";
+      }
+      if (!msg && e?.message === "Invalid login response.") {
+        msg = "Invalid login response.";
+      }
+      if (!msg && !e?.response) {
+        const net =
+          e?.code === "ERR_NETWORK" ||
+          String(e?.message || "")
+            .toLowerCase()
+            .includes("network");
+        msg = net
+          ? "Cannot reach the server. Start the backend and match the Vite proxy port (vite.config.js defaults to http://127.0.0.1:8000)."
+          : e?.message || "Login failed.";
+      }
+      setError(msg || "Login failed.");
     } finally {
       setLoading(false);
     }
   };
+
+  async function submitChangePassword() {
+    setCpErr("");
+    if (cpNew !== cpConfirm) {
+      setCpErr(t("account.passwordMismatch"));
+      return;
+    }
+    if (cpNew.length < 8) {
+      setCpErr(t("account.passwordMin"));
+      return;
+    }
+    setCpBusy(true);
+    try {
+      await postPublicChangePassword({
+        username: cpUser.trim(),
+        organization_slug: cpSlug.trim() || undefined,
+        current_password: cpCurrent,
+        new_password: cpNew,
+      });
+      setChangeOpen(false);
+      setCpCurrent("");
+      setCpNew("");
+      setCpConfirm("");
+    } catch (e) {
+      setCpErr(e?.response?.data?.error || e?.message || "Failed");
+    } finally {
+      setCpBusy(false);
+    }
+  }
+
+  async function submitResetRequest() {
+    setRsErr("");
+    setRsMsg("");
+    setRsDevToken("");
+    setRsBusy(true);
+    try {
+      const res = await postPasswordResetRequest({
+        username: rsUser.trim(),
+        organization_slug: rsSlug.trim() || undefined,
+      });
+      setRsMsg(res.data?.message || "");
+      if (res.data?.dev_reset_token) {
+        setRsDevToken(res.data.dev_reset_token);
+        setRsToken(res.data.dev_reset_token);
+      }
+    } catch (e) {
+      setRsErr(e?.response?.data?.error || e?.message || "Failed");
+    } finally {
+      setRsBusy(false);
+    }
+  }
+
+  async function submitResetComplete() {
+    setRsErr("");
+    if (rsNew.length < 8) {
+      setRsErr(t("account.passwordMin"));
+      return;
+    }
+    setRsBusy(true);
+    try {
+      await postPasswordResetComplete({ token: rsToken.trim(), new_password: rsNew });
+      setResetOpen(false);
+      setRsToken("");
+      setRsNew("");
+    } catch (e) {
+      setRsErr(e?.response?.data?.error || e?.message || "Failed");
+    } finally {
+      setRsBusy(false);
+    }
+  }
+
+  const showOrgField = !slugFromRoute;
 
   return (
     <Box
@@ -85,78 +237,212 @@ function LoginPage({ onLoggedIn }) {
         minHeight: "100vh",
         display: "grid",
         placeItems: "center",
-        background: "linear-gradient(150deg, #f8fbff 0%, #eef4ff 45%, #f6fffe 100%)",
+        background: "linear-gradient(160deg, #f1f5f9 0%, #e8eef7 50%, #f0fdfa 100%)",
         p: 2,
       }}
     >
-      <Paper sx={{ width: "100%", maxWidth: 420, p: 3, borderRadius: 3 }}>
-        <Stack spacing={1.5}>
-          <Box sx={{ minHeight: 40, display: "flex", alignItems: "center" }}>
+      <Paper
+        elevation={0}
+        sx={{
+          width: "100%",
+          maxWidth: 400,
+          p: 3,
+          borderRadius: 2,
+          border: "1px solid",
+          borderColor: "divider",
+        }}
+      >
+        <Stack spacing={2}>
+          <Box sx={{ minHeight: 36, display: "flex", alignItems: "center" }}>
             {branding?.logo_url ? (
               <Box
                 component="img"
                 src={branding.logo_url}
                 alt=""
-                sx={{ maxHeight: 40, maxWidth: "100%", objectFit: "contain" }}
+                sx={{ maxHeight: 36, maxWidth: "100%", objectFit: "contain" }}
               />
             ) : (
-              <Typography sx={{ fontSize: 28, lineHeight: 1.1, color: "#0f172a", fontWeight: 700 }}>
-                {branding?.display_name || "Sign in"}
+              <Typography sx={{ fontSize: 22, fontWeight: 700, color: "text.primary" }}>
+                {branding?.display_name || "Laundry Ops"}
               </Typography>
             )}
           </Box>
-          <Typography sx={{ color: "#64748b" }}>
-            {branding?.display_name ? `Sign in to ${branding.display_name}` : "Sign in to continue"}
-          </Typography>
-          {slugFromRoute ? (
-            <Typography variant="caption" color="text.secondary">
-              Organization: <strong>{slugFromRoute}</strong>
-              {" · "}
-              <Link to="/login" style={{ color: "inherit" }}>
-                Use a different organization
-              </Link>
-            </Typography>
-          ) : null}
-          {error && <Alert severity="error">{error}</Alert>}
+
+          {error ? <Alert severity="warning">{error}</Alert> : null}
+
           <TextField
-            label="Username"
+            label={t("people.colUsername")}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
             size="small"
+            fullWidth
           />
           <TextField
-            label="Password"
+            label={t("login.password")}
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
             size="small"
+            fullWidth
           />
-          {slugFromRoute ? (
+
+          {showOrgField ? (
             <TextField
-              label="Organization"
-              value={slugFromRoute}
-              size="small"
-              disabled
-              helperText="This URL is for a single organization. Bookmark it for your team."
-            />
-          ) : (
-            <TextField
-              label="Organization slug (optional)"
-              placeholder="e.g. washpro, veewash"
+              label={t("profile.organization")}
+              placeholder="washpro"
               value={organizationSlug}
               onChange={(e) => setOrganizationSlug(e.target.value)}
               autoComplete="organization"
               size="small"
-              helperText="Required if the same username exists in more than one company. Or open your company login link: /login/your-slug"
+              fullWidth
             />
-          )}
-          <Button variant="contained" disabled={loading || !username || !password} onClick={submit}>
-            {loading ? "Signing in..." : "Sign In"}
+          ) : null}
+
+          <Button
+            variant="contained"
+            disabled={loading || !username || !password}
+            onClick={submit}
+            fullWidth
+            sx={{ py: 1 }}
+          >
+            {loading ? t("login.signingIn") : t("login.signIn")}
           </Button>
+
+          <Stack direction="row" spacing={2} justifyContent="center" flexWrap="wrap" useFlexGap>
+            <MuiLink
+              component="button"
+              type="button"
+              variant="body2"
+              onClick={() => setChangeOpen(true)}
+              sx={{ cursor: "pointer", color: "primary.main" }}
+            >
+              {t("login.changePasswordLink")}
+            </MuiLink>
+            <MuiLink
+              component="button"
+              type="button"
+              variant="body2"
+              onClick={() => setResetOpen(true)}
+              sx={{ cursor: "pointer", color: "primary.main" }}
+            >
+              {t("login.resetPasswordLink")}
+            </MuiLink>
+          </Stack>
+
+          {slugFromRoute ? (
+            <Typography variant="caption" color="text.secondary" textAlign="center">
+              <Link to="/login" style={{ color: "inherit" }}>
+                {t("common.cancel")}
+              </Link>
+            </Typography>
+          ) : null}
         </Stack>
       </Paper>
+
+      <Dialog open={changeOpen} onClose={() => !cpBusy && setChangeOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>{t("login.changePasswordTitle")}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ mt: 1 }}>
+            {cpErr ? <Alert severity="warning">{cpErr}</Alert> : null}
+            <TextField label={t("people.colUsername")} value={cpUser} onChange={(e) => setCpUser(e.target.value)} size="small" fullWidth />
+            <TextField
+              label={t("profile.organization")}
+              value={cpSlug}
+              onChange={(e) => setCpSlug(e.target.value)}
+              size="small"
+              fullWidth
+              placeholder="slug"
+            />
+            <TextField
+              label={t("account.currentPassword")}
+              type="password"
+              value={cpCurrent}
+              onChange={(e) => setCpCurrent(e.target.value)}
+              size="small"
+              fullWidth
+            />
+            <TextField
+              label={t("account.newPassword")}
+              type="password"
+              value={cpNew}
+              onChange={(e) => setCpNew(e.target.value)}
+              size="small"
+              fullWidth
+              helperText={t("account.passwordMin")}
+            />
+            <TextField
+              label={t("account.confirmPassword")}
+              type="password"
+              value={cpConfirm}
+              onChange={(e) => setCpConfirm(e.target.value)}
+              size="small"
+              fullWidth
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setChangeOpen(false)} disabled={cpBusy}>
+            {t("common.cancel")}
+          </Button>
+          <Button variant="contained" onClick={submitChangePassword} disabled={cpBusy}>
+            {t("common.save")}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={resetOpen} onClose={() => !rsBusy && setResetOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>{t("login.resetPasswordTitle")}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ mt: 1 }}>
+            {rsErr ? <Alert severity="warning">{rsErr}</Alert> : null}
+            {rsMsg ? <Alert severity="info">{rsMsg}</Alert> : null}
+            <Typography variant="body2" color="text.secondary">
+              {t("login.resetRequestExplain")}
+            </Typography>
+            <TextField label={t("people.colUsername")} value={rsUser} onChange={(e) => setRsUser(e.target.value)} size="small" fullWidth />
+            <TextField
+              label={t("profile.organization")}
+              value={rsSlug}
+              onChange={(e) => setRsSlug(e.target.value)}
+              size="small"
+              fullWidth
+            />
+            <Button variant="outlined" onClick={submitResetRequest} disabled={rsBusy || !rsUser.trim()}>
+              {t("login.submitResetRequest")}
+            </Button>
+            {rsDevToken ? (
+              <Alert severity="info" variant="outlined">
+                Dev token (paste below if not auto-filled)
+              </Alert>
+            ) : null}
+            <TextField
+              label={t("login.resetTokenLabel")}
+              value={rsToken}
+              onChange={(e) => setRsToken(e.target.value)}
+              size="small"
+              fullWidth
+            />
+            <TextField
+              label={t("login.newPasswordReset")}
+              type="password"
+              value={rsNew}
+              onChange={(e) => setRsNew(e.target.value)}
+              size="small"
+              fullWidth
+            />
+            <Button variant="contained" onClick={submitResetComplete} disabled={rsBusy || !rsToken.trim() || rsNew.length < 8}>
+              {t("login.completePasswordReset")}
+            </Button>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setResetOpen(false)} disabled={rsBusy}>
+            {t("common.cancel")}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
