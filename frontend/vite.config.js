@@ -1,5 +1,9 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // Must match where Flask runs: `python run.py` uses port 8000 by default.
 // Override: VITE_DEV_API_PROXY=http://127.0.0.1:5000 npm run dev
@@ -33,6 +37,8 @@ const proxy = Object.fromEntries(
 )
 
 export default defineConfig({
+  // Use repo-root `.env` (next to Flask DB vars). Only `VITE_*` keys are exposed to the client bundle.
+  envDir: path.resolve(__dirname, '..'),
   plugins: [react()],
   server: {
     port: Number(process.env.VITE_DEV_PORT || 5052),
