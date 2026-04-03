@@ -16,6 +16,7 @@ from backend.payroll_identity import (
     payroll_profiles_active,
     set_payroll_period_settings,
     user_has_perm_washpro,
+    washpro_bearer_is_platform_operator,
 )
 from backend.ta_helpers import (
     as_bool,
@@ -383,12 +384,25 @@ def resolve_user_from_token():
         conn.close()
 
 
-def write_audit(conn, actor_id, entity_type, entity_id, action, old=None, new=None, remarks=None):
-    org_id = 1
-    try:
-        org_id = int(g.ta_user.get("organization_id") or 1)
-    except Exception:
-        pass
+def write_audit(
+    conn,
+    actor_id,
+    entity_type,
+    entity_id,
+    action,
+    old=None,
+    new=None,
+    remarks=None,
+    organization_id=None,
+):
+    if organization_id is not None:
+        org_id = int(organization_id or 1)
+    else:
+        org_id = 1
+        try:
+            org_id = int(g.ta_user.get("organization_id") or 1)
+        except Exception:
+            pass
     c = conn.cursor()
     c.execute(
         """
@@ -1161,6 +1175,19 @@ def users_get(user_id):
             (user_id,),
         )
         u["employment_assignments"] = c.fetchall()
+        if table_exists(c, "user_entity_tags"):
+            c.execute(
+                """
+                SELECT entity_type, entity_key, label
+                FROM user_entity_tags
+                WHERE user_id=%s
+                ORDER BY entity_type, entity_key
+                """,
+                (user_id,),
+            )
+            u["entity_tags"] = c.fetchall()
+        else:
+            u["entity_tags"] = []
         return jsonify(json_safe(u))
     finally:
         conn.close()
@@ -1428,6 +1455,46 @@ def users_update(user_id):
         conn.close()
 
 
+@ta_bp.route("/users/<int:user_id>", methods=["DELETE"])
+@require_auth
+@require_perm("users.edit")
+def users_delete_payroll_profile(user_id):
+    """Unified payroll: delete payroll_profiles row for this Washpro user id (login remains). Legacy: delete ta_users row."""
+    conn = get_db()
+    try:
+        if payroll_profiles_active(conn):
+            if not _user_belongs_to_tenant(conn, user_id):
+                return jsonify({"error": "Not found"}), 404
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT user_id FROM payroll_profiles WHERE user_id=%s", (user_id,))
+            if not c.fetchone():
+                return jsonify({"error": "No payroll profile for this user"}), 404
+            c2 = conn.cursor()
+            c2.execute("DELETE FROM payroll_profiles WHERE user_id=%s", (user_id,))
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "user",
+                user_id,
+                "payroll_profile_delete",
+                old={"user_id": user_id},
+            )
+            conn.commit()
+            return jsonify({"ok": True})
+
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT id FROM ta_users WHERE id=%s", (user_id,))
+        if not c.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        c2 = conn.cursor()
+        c2.execute("DELETE FROM ta_users WHERE id=%s", (user_id,))
+        write_audit(conn, g.ta_user["id"], "user", user_id, "delete", old={"id": user_id})
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/users/<int:user_id>/geofences", methods=["PUT"])
 @require_auth
 @require_perm("users.edit")
@@ -1507,6 +1574,71 @@ def user_employment_cats(user_id):
                     r.get("effective_to"),
                 ),
             )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/entity-tags", methods=["GET", "PUT"])
+@require_auth
+def user_entity_tags_api(user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        if not table_exists(c, "user_entity_tags"):
+            if request.method == "GET":
+                return jsonify({"tags": []})
+            return jsonify({"ok": True})
+        if not table_has_column(c, "users", "organization_id") or not _user_belongs_to_tenant(
+            conn, user_id
+        ):
+            return jsonify({"error": "Not found"}), 404
+        if request.method == "GET":
+            if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+                return jsonify({"error": "Forbidden"}), 403
+            c.execute(
+                """
+                SELECT entity_type, entity_key, label
+                FROM user_entity_tags
+                WHERE user_id=%s
+                ORDER BY entity_type, entity_key
+                """,
+                (user_id,),
+            )
+            return jsonify({"tags": c.fetchall() or []})
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        data = request.json or {}
+        tags = data.get("tags")
+        if not isinstance(tags, list):
+            return jsonify({"error": "tags array required"}), 400
+        c2 = conn.cursor(dictionary=True)
+        c2.execute(
+            "SELECT organization_id FROM users WHERE id=%s LIMIT 1",
+            (int(user_id),),
+        )
+        urow = c2.fetchone()
+        if not urow:
+            return jsonify({"error": "Not found"}), 404
+        oid = int(urow.get("organization_id") or 1)
+        c.execute("DELETE FROM user_entity_tags WHERE user_id=%s", (user_id,))
+        for t in tags:
+            if not isinstance(t, dict):
+                continue
+            et = str(t.get("entity_type") or "").strip()[:64]
+            ek = str(t.get("entity_key") or "").strip()[:128]
+            if not et or not ek:
+                return jsonify({"error": "Each tag needs entity_type and entity_key"}), 400
+            lab = str(t.get("label") or "").strip()[:255] or None
+            c.execute(
+                """
+                INSERT INTO user_entity_tags (organization_id, user_id, entity_type, entity_key, label)
+                VALUES (%s,%s,%s,%s,%s)
+                """,
+                (oid, int(user_id), et, ek, lab),
+            )
+        write_audit(conn, g.ta_user["id"], "user_entity_tags", user_id, "replace", new={"tags": tags})
         conn.commit()
         return jsonify({"ok": True})
     finally:
@@ -2523,12 +2655,29 @@ def admin_roles_delete(role_id):
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
-        if not _role_mutable_by_tenant(c, role_id):
-            return jsonify({"error": "Cannot delete system or foreign roles"}), 403
-        c.execute("SELECT id, code FROM roles WHERE id=%s", (role_id,))
+        if table_has_column(c, "roles", "organization_id"):
+            c.execute(
+                "SELECT id, code, organization_id, is_system FROM roles WHERE id=%s",
+                (int(role_id),),
+            )
+        else:
+            c.execute("SELECT id, code FROM roles WHERE id=%s", (int(role_id),))
         meta = c.fetchone()
         if not meta:
             return jsonify({"error": "Role not found"}), 404
+        if table_has_column(c, "roles", "organization_id"):
+            oid = int(meta.get("organization_id") or 0)
+            if oid == 0:
+                auth = request.headers.get("Authorization", "")
+                tok = auth[7:].strip() if auth.startswith("Bearer ") else ""
+                if not washpro_bearer_is_platform_operator(conn, tok):
+                    return jsonify({"error": "Platform roles are managed in the platform console"}), 403
+                if as_bool(meta.get("is_system"), default=False):
+                    return jsonify({"error": "Cannot delete system roles"}), 403
+            elif not _role_mutable_by_tenant(c, role_id):
+                return jsonify({"error": "Cannot delete system or foreign roles"}), 403
+        elif not _role_mutable_by_tenant(c, role_id):
+            return jsonify({"error": "Cannot delete system or foreign roles"}), 403
         if table_has_column(c, "ta_users", "role_id"):
             c.execute("SELECT COUNT(*) AS n FROM ta_users WHERE role_id=%s", (role_id,))
             n = (c.fetchone() or {}).get("n", 0) or 0
@@ -2575,7 +2724,16 @@ def admin_role_permissions_put(role_id):
             )
             rrow = c.fetchone()
             oid = int(rrow.get("organization_id") or 0)
-            if oid != 0 and oid != _tenant_id():
+            if oid == 0:
+                auth = request.headers.get("Authorization", "")
+                tok = auth[7:].strip() if auth.startswith("Bearer ") else ""
+                if not washpro_bearer_is_platform_operator(conn, tok):
+                    return jsonify(
+                        {
+                            "error": "Platform role packages are edited under /platform (Role packages)."
+                        }
+                    ), 403
+            elif oid != _tenant_id():
                 return jsonify({"error": "Role not in your organization"}), 403
         c2 = conn.cursor()
         c2.execute("DELETE FROM role_permissions WHERE role_id=%s", (role_id,))

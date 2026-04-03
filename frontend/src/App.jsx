@@ -13,7 +13,9 @@ import {
 } from "@mui/material";
 import { ArrowBack, Refresh } from "@mui/icons-material";
 import Sidebar from "./components/Sidebar";
+import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
+import { hasPlatformAdminRole, isPlatformOnlyUser } from "./utils/platformAccess";
 
 import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
@@ -32,6 +34,9 @@ import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollManagementPage from "./pages/PayrollManagementPage";
 import PermissionsPage from "./pages/PermissionsPage";
 import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
+import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
+import PlatformAdminPage from "./pages/PlatformAdminPage";
+import UserProfilePage from "./pages/UserProfilePage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname, user }) {
@@ -90,8 +95,15 @@ function GuardedRoute({ user, roles, children }) {
   return ok ? children : <Navigate to="/" replace />;
 }
 
+function TenantOnlyRoute({ user, children }) {
+  if (!user) return <Navigate to="/login" replace />;
+  if (isPlatformOnlyUser(user)) return <Navigate to="/platform" replace />;
+  return children;
+}
+
 function AppShell() {
   const location = useLocation();
+  const navigate = useNavigate();
   const isMobile = useMediaQuery("(max-width: 900px)");
   const [updateReady, setUpdateReady] = useState(false);
   const [activeBatch, setActiveBatch] = useState(null);
@@ -158,6 +170,13 @@ function AppShell() {
     loadBatch();
   }, [pathname, user]);
 
+  useEffect(() => {
+    if (authLoading || isLoginRoute(pathname) || !user) return;
+    if (isPlatformOnlyUser(user) && pathname !== "/platform" && !pathname.startsWith("/platform/")) {
+      navigate("/platform", { replace: true });
+    }
+  }, [authLoading, pathname, user, navigate]);
+
   const shellBackground = useMemo(
     () => "linear-gradient(145deg, #f8fbff 0%, #f2f6ff 45%, #f7fafc 100%)",
     []
@@ -169,9 +188,58 @@ function AppShell() {
 
   if (!user && !isLoginRoute(pathname)) return <Navigate to="/login" replace />;
 
+  if (user && isPlatformOnlyUser(user) && !isLoginRoute(pathname)) {
+    return (
+      <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
+        {!isMobile && <PlatformSidebar user={user} onLogout={doLogout} />}
+        <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          {isMobile && (
+            <AppBar position="sticky" elevation={0} sx={{ borderBottom: "1px solid #e2e8f0", bgcolor: "#fff", color: "#1e1b4b" }}>
+              <Toolbar sx={{ minHeight: 48 }}>
+                <Typography sx={{ flex: 1, fontWeight: 700 }}>Platform</Typography>
+                <Button size="small" onClick={doLogout}>Logout</Button>
+              </Toolbar>
+            </AppBar>
+          )}
+          <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0 }}>
+            <Routes>
+              <Route
+                path="/platform"
+                element={
+                  <GuardedRoute user={user} roles={["SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <PlatformAdminPage />
+                  </GuardedRoute>
+                }
+              />
+              <Route path="/platform/organizations" element={<OrganizationsPlatformPage />} />
+              <Route
+                path="/platform/users/:userId"
+                element={
+                  <GuardedRoute user={user} roles={["SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <UserProfilePage user={user} />
+                  </GuardedRoute>
+                }
+              />
+              <Route path="*" element={<Navigate to="/platform" replace />} />
+            </Routes>
+          </Box>
+        </Box>
+        <Snackbar open={updateReady} anchorOrigin={{ vertical: "top", horizontal: "center" }} onClose={() => setUpdateReady(false)}>
+          <Alert severity="info" variant="filled" action={<Button color="inherit" size="small" onClick={() => window.location.reload()}>Refresh</Button>}>
+            New app update is ready.
+          </Alert>
+        </Snackbar>
+      </Box>
+    );
+  }
+
   return (
     <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
-      {!isMobile && user && <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />}
+      {!isMobile && user && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
+        <PlatformSidebar user={user} onLogout={doLogout} showTenantEntry />
+      ) : (
+        <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />
+      ))}
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {isMobile && user && <MobileTopBar pathname={pathname} user={user} />}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
@@ -183,25 +251,27 @@ function AppShell() {
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
-            <Route path="/" element={<GuardedRoute user={user}><HomePage /></GuardedRoute>} />
-            <Route path="/dashboard" element={<GuardedRoute user={user}><Dashboard /></GuardedRoute>} />
-            <Route path="/orders" element={<GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute>} />
-            <Route path="/checkout" element={<GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute>} />
-            <Route path="/upload" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute>} />
-            <Route path="/employees" element={<GuardedRoute user={user} roles={["ADMIN"]}><PeoplePage user={user} /></GuardedRoute>} />
-            <Route path="/clock" element={<GuardedRoute user={user}><ClockPage user={user} /></GuardedRoute>} />
-            <Route path="/issues" element={<GuardedRoute user={user}><IssuePage /></GuardedRoute>} />
-            <Route path="/production" element={<GuardedRoute user={user}><ProductionPage /></GuardedRoute>} />
-            <Route path="/scoreboard" element={<GuardedRoute user={user}><ScoreboardPage /></GuardedRoute>} />
-            <Route path="/maintenance" element={<GuardedRoute user={user}><MaintenancePage /></GuardedRoute>} />
-            <Route path="/inventory" element={<GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute>} />
-            <Route path="/discrepancies" element={<GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute>} />
+            <Route path="/" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><HomePage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/orders" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/upload" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/employees" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN"]}><PeoplePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/clock" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ClockPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/issues" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><IssuePage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/production" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ProductionPage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/scoreboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ScoreboardPage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/maintenance" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><MaintenancePage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/inventory" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/discrepancies" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route
               path="/payroll"
               element={
-                <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
-                  <PayrollManagementPage />
-                </GuardedRoute>
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <PayrollManagementPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
               }
             />
             <Route path="/payroll-monitor" element={<Navigate to="/payroll" replace />} />
@@ -209,17 +279,49 @@ function AppShell() {
             <Route
               path="/organization"
               element={
-                <GuardedRoute user={user} roles={["ADMIN"]}>
-                  <OrganizationSettingsPage />
-                </GuardedRoute>
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <OrganizationSettingsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/platform/organizations"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <OrganizationsPlatformPage />
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/platform"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <PlatformAdminPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/platform/users/:userId"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <UserProfilePage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
               }
             />
             <Route
               path="/permissions"
               element={
-                <GuardedRoute user={user} roles={["ADMIN"]}>
-                  <PermissionsPage />
-                </GuardedRoute>
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <PermissionsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
               }
             />
             <Route path="/ta-employees" element={<Navigate to="/employees" replace />} />

@@ -16,14 +16,18 @@ import {
   setAuthSession,
   uploadOrganizationLogo,
 } from "../api";
+import { useI18n } from "../i18n/I18nContext";
 
 /**
- * Tenant branding (enterprise pattern: HTTPS logo URL, optional display name).
- * Admin-only; data is scoped to the signed-in user's organization.
+ * Tenant administrator only: display name, contact, logo. Slug is read-only.
  */
 function OrganizationSettingsPage() {
+  const { t } = useI18n();
   const [row, setRow] = useState(null);
   const [displayName, setDisplayName] = useState("");
+  const [address, setAddress] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -42,6 +46,9 @@ function OrganizationSettingsPage() {
       const r = res.data || {};
       setRow(r);
       setDisplayName(r.display_name || "");
+      setAddress(r.address || "");
+      setPhone(r.phone || "");
+      setEmail(r.email || "");
       setLogoUrl(r.logo_url || "");
     } catch (e) {
       setError(e?.response?.data?.error || "Could not load organization.");
@@ -60,6 +67,9 @@ function OrganizationSettingsPage() {
       await putOrganization({
         display_name: displayName.trim(),
         logo_url: logoUrl.trim(),
+        address: address.trim(),
+        phone: phone.trim(),
+        email: email.trim(),
       });
       const me = await authMe();
       setAuthSession({ token: getAuthToken(), user: me.data });
@@ -96,12 +106,10 @@ function OrganizationSettingsPage() {
   return (
     <Box className="page" sx={{ p: { xs: 1.2, md: 2 }, maxWidth: 560 }}>
       <Typography variant="h4" className="page-title" sx={{ mb: 1 }}>
-        Organization
+        {t("organization.pageTitle")}
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Display name and logo apply to this tenant only. Slug is fixed for API and integrations. Share the
-        team login link below so staff open the correct organization without typing the slug. Use an HTTPS
-        logo URL, or upload to Azure Blob when storage is configured.
+        {t("organization.tenantOnlyBlurb")}
       </Typography>
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
@@ -112,12 +120,12 @@ function OrganizationSettingsPage() {
         {row ? (
           <>
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Slug: <strong>{row.slug}</strong>
+              {t("organization.slugLabel")}: <strong>{row.slug}</strong>
             </Typography>
             {teamLoginUrl ? (
               <Box sx={{ mb: 2, p: 1.5, bgcolor: "#f1f5f9", borderRadius: 1, border: "1px solid #e2e8f0" }}>
                 <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-                  Team login URL (bookmark or send to employees)
+                  {t("organization.teamLoginBox")}
                 </Typography>
                 <Typography
                   variant="body2"
@@ -138,7 +146,7 @@ function OrganizationSettingsPage() {
                     }
                   }}
                 >
-                  {copiedUrl ? "Copied" : "Copy link"}
+                  {copiedUrl ? t("organization.copied") : t("organization.copyLink")}
                 </Button>
               </Box>
             ) : null}
@@ -146,7 +154,7 @@ function OrganizationSettingsPage() {
         ) : null}
         <Stack component="form" onSubmit={save} spacing={2}>
           <TextField
-            label="Display name"
+            label={t("platformOrgs.displayName")}
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
             required
@@ -154,13 +162,38 @@ function OrganizationSettingsPage() {
             size="small"
           />
           <TextField
-            label="Logo URL (https://…)"
+            label={t("organization.address")}
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            fullWidth
+            size="small"
+            multiline
+            minRows={2}
+          />
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <TextField
+              label={t("organization.phone")}
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              fullWidth
+              size="small"
+            />
+            <TextField
+              label={t("organization.email")}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              fullWidth
+              size="small"
+            />
+          </Stack>
+          <TextField
+            label={t("organization.logoUrlLabel")}
             value={logoUrl}
             onChange={(e) => setLogoUrl(e.target.value)}
             fullWidth
             size="small"
             placeholder="https://cdn.example.com/logo.png"
-            helperText="Or upload a file below (PNG, JPG, WebP, GIF — max 2 MB)."
+            helperText={t("organization.logoUrlHelp")}
           />
           {logoUrl ? (
             <Box
@@ -185,12 +218,15 @@ function OrganizationSettingsPage() {
           ) : null}
           <Box>
             <Button variant="outlined" component="label" disabled={uploading || saving} size="small">
-              {uploading ? "Uploading…" : "Upload logo file"}
+              {uploading ? t("organization.uploading") : t("organization.uploadLogo")}
               <input type="file" hidden accept="image/png,image/jpeg,image/webp,image/gif" onChange={onPickFile} />
             </Button>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+              {t("organization.logoUploadLocalHint")}
+            </Typography>
           </Box>
           <Button type="submit" variant="contained" disabled={saving || uploading}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("common.saving") : t("common.save")}
           </Button>
         </Stack>
       </Paper>

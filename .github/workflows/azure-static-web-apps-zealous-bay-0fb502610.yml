@@ -32,8 +32,12 @@ jobs:
                const coredemo = require('@actions/core')
                return await coredemo.getIDToken()
            result-encoding: string
+      # Vite embeds VITE_* at build time — set in GitHub → Settings → Secrets and variables → Actions → Variables
+      # Name: VITE_ONESIGNAL_APP_ID  Value: (OneSignal → Settings → Keys & IDs → OneSignal App ID)
       - name: Build And Deploy
         id: builddeploy
+        env:
+          VITE_ONESIGNAL_APP_ID: ${{ vars.VITE_ONESIGNAL_APP_ID }}
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ZEALOUS_BAY_0FB502610 }}
@@ -55,6 +59,7 @@ jobs:
         id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
         with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ZEALOUS_BAY_0FB502610 }}
           action: "close"
 
 

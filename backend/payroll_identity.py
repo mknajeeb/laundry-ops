@@ -58,6 +58,40 @@ def user_has_perm_washpro(conn, washpro_user_id: int, perm_key: str) -> bool:
     return c.fetchone() is not None
 
 
+def washpro_bearer_is_platform_operator(conn, bearer_token: str | None) -> bool:
+    """True if Bearer token is a valid Washpro session with SUPER_ADMIN or PLATFORM_ADMIN."""
+    if not bearer_token:
+        return False
+    c = conn.cursor(dictionary=True)
+    try:
+        c.execute(
+            """
+            SELECT s.expires_at, s.revoked, r.code
+            FROM auth_sessions s
+            JOIN users u ON u.id = s.user_id
+            JOIN user_roles ur ON ur.user_id = u.id
+            JOIN roles r ON r.id = ur.role_id
+            WHERE s.token = %s
+            """,
+            (bearer_token,),
+        )
+        rows = c.fetchall() or []
+        if not rows:
+            return False
+        if rows[0].get("revoked"):
+            return False
+        exp = rows[0].get("expires_at")
+        if isinstance(exp, datetime) and exp < datetime.utcnow():
+            return False
+        codes = {str(r.get("code") or "").upper() for r in rows}
+        return "SUPER_ADMIN" in codes or "PLATFORM_ADMIN" in codes
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 def _primary_role_for_user(conn, washpro_user_id: int):
     c = conn.cursor(dictionary=True)
     c.execute(

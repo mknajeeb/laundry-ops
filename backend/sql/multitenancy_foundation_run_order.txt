@@ -1,0 +1,29 @@
+Multi-tenant foundation — suggested apply order (BACKUP FIRST; use laundryapp or your DB name):
+
+1) organizations_multitenancy_v1.sql
+   Idempotent: safe to re-run after a partial run (no more 1060 duplicate column on users.organization_id).
+   Requires MySQL 8.0.19+ for INSERT ... AS new (seed rows); otherwise replace that INSERT with
+   ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), active = VALUES(active).
+   In Workbench: pick default schema or uncomment USE laundryapp;
+
+2) organizations_branding_v1.sql
+   Idempotent logo_url on organizations.
+
+3) orders_upload_batches_organization_id_v1.sql
+   Scopes orders_staging, upload_batches, orders_final by organization_id.
+
+4) permissions_hierarchy_custom_roles_v1.sql
+   Idempotent (duplicate route_key column avoided). If DROP INDEX code fails, run SHOW INDEX FROM roles;
+   and edit the migration to use your actual unique key name on `code`.
+
+5) platform_admin_role_v1.sql
+   Adds PLATFORM_ADMIN role (legacy; prefer SUPER_ADMIN for new installs).
+
+5b) super_admin_entitlements_v1.sql
+   SUPER_ADMIN role, organizations.address/phone/email, tenant_entitlements for per-tenant nav toggles.
+
+6) Grant PLATFORM_ADMIN in production
+   Log out and back in so /auth/me includes role "PLATFORM_ADMIN", then use
+   Platform → Organizations in the app to create additional tenants.
+
+Optional: document_management_v0.sql and other feature migrations as needed.

@@ -1,38 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   Box,
   Button,
-  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
-  FormControlLabel,
   InputLabel,
   MenuItem,
   Paper,
   Select,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   createTaAdminRole,
   deleteTaAdminRole,
   getPermissionMatrix,
   putRolePermissions,
 } from "../api";
+import PermissionMatrixHierarchy from "../components/PermissionMatrixHierarchy";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 
@@ -109,8 +99,11 @@ export default function PermissionsPage() {
     Number(selectedRole.organization_id) > 0 &&
     !selectedRole.is_system;
 
+  const isPlatformTemplate =
+    selectedRole && Number(selectedRole.organization_id) === 0;
+
   async function save() {
-    if (!roleId) return;
+    if (!roleId || isPlatformTemplate) return;
     setSaving(true);
     setError("");
     try {
@@ -189,6 +182,12 @@ export default function PermissionsPage() {
         </Alert>
       ) : null}
 
+      {isPlatformTemplate ? (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {t("permissions.readOnlyPlatformTemplate")}
+        </Alert>
+      ) : null}
+
       <Paper sx={{ p: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }} alignItems="flex-start">
           <FormControl sx={{ minWidth: 280 }}>
@@ -212,7 +211,11 @@ export default function PermissionsPage() {
             </Select>
           </FormControl>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Button variant="contained" onClick={save} disabled={saving || !roleId}>
+            <Button
+              variant="contained"
+              onClick={save}
+              disabled={saving || !roleId || isPlatformTemplate}
+            >
               {saving ? t("common.saving") : t("permissions.save")}
             </Button>
             <Button variant="outlined" onClick={() => setCreateOpen(true)}>
@@ -220,121 +223,26 @@ export default function PermissionsPage() {
             </Button>
             <Button
               variant="outlined"
-              color="error"
+              color="inherit"
               disabled={!canDeleteRole || saving}
               onClick={handleDeleteRole}
+              sx={{ borderColor: "divider" }}
             >
               {t("permissions.deleteRole")}
             </Button>
           </Stack>
         </Stack>
 
-        {hierarchy && hierarchy.length ? (
-          <Stack spacing={1}>
-            {hierarchy.map((route) => (
-              <Accordion key={route.route_key} defaultExpanded disableGutters>
-                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                  <Typography fontWeight={600}>{route.route_label}</Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                    {route.route_key}
-                  </Typography>
-                </AccordionSummary>
-                <AccordionDetails sx={{ pt: 0 }}>
-                  {(route.sections || []).map((sec) => (
-                    <Box key={`${route.route_key}-${sec.section_key}`} sx={{ mb: 2 }}>
-                      <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                        {sec.section_label}
-                      </Typography>
-                      {(sec.resources || []).map((res) => (
-                        <Table size="small" key={`${res.resource_key}-${sec.section_key}`} sx={{ mb: 2 }}>
-                          <TableHead>
-                            <TableRow>
-                              <TableCell width={100}>{t("permissions.colAction")}</TableCell>
-                              <TableCell>{t("permissions.colPermission")}</TableCell>
-                              <TableCell>{t("permissions.colDescription")}</TableCell>
-                              <TableCell align="right" width={90}>
-                                {t("permissions.colAllow")}
-                              </TableCell>
-                            </TableRow>
-                          </TableHead>
-                          <TableBody>
-                            {(res.actions || []).map((a) => (
-                              <TableRow key={a.perm_key}>
-                                <TableCell sx={{ textTransform: "capitalize" }}>{a.action_key}</TableCell>
-                                <TableCell>
-                                  <Typography variant="body2" component="code" sx={{ fontSize: 13 }}>
-                                    {a.perm_key}
-                                  </Typography>
-                                </TableCell>
-                                <TableCell>
-                                  <Typography variant="body2" color="text.secondary">
-                                    {a.description || "—"}
-                                  </Typography>
-                                </TableCell>
-                                <TableCell align="right">
-                                  <Checkbox
-                                    size="small"
-                                    checked={!!selected[a.perm_key]}
-                                    onChange={(e) =>
-                                      setSelected((prev) => ({
-                                        ...prev,
-                                        [a.perm_key]: e.target.checked,
-                                      }))
-                                    }
-                                  />
-                                </TableCell>
-                              </TableRow>
-                            ))}
-                          </TableBody>
-                        </Table>
-                      ))}
-                    </Box>
-                  ))}
-                </AccordionDetails>
-              </Accordion>
-            ))}
-          </Stack>
-        ) : (
-          Object.keys(groupedFlat)
-            .sort()
-            .map((grp) => (
-              <Box key={grp} sx={{ mb: 2 }}>
-                <Typography variant="subtitle2" sx={{ mb: 0.5, textTransform: "capitalize" }}>
-                  {grp}
-                </Typography>
-                <Stack spacing={0.5}>
-                  {groupedFlat[grp].map((p) => (
-                    <FormControlLabel
-                      key={p.perm_key}
-                      control={
-                        <Checkbox
-                          checked={!!selected[p.perm_key]}
-                          onChange={(e) =>
-                            setSelected((prev) => ({ ...prev, [p.perm_key]: e.target.checked }))
-                          }
-                        />
-                      }
-                      label={
-                        <span>
-                          <strong>{p.perm_key}</strong>
-                          {p.description ? (
-                            <Typography
-                              component="span"
-                              variant="caption"
-                              color="text.secondary"
-                              sx={{ ml: 1 }}
-                            >
-                              {p.description}
-                            </Typography>
-                          ) : null}
-                        </span>
-                      }
-                    />
-                  ))}
-                </Stack>
-              </Box>
-            ))
-        )}
+        <PermissionMatrixHierarchy
+          t={t}
+          hierarchy={hierarchy}
+          groupedFlat={groupedFlat}
+          flatPermissions={data?.permissions}
+          selected={selected}
+          setSelected={setSelected}
+          readOnly={isPlatformTemplate}
+          layoutVariant="flatFunctionality"
+        />
       </Paper>
 
       <Dialog open={createOpen} onClose={() => !creating && setCreateOpen(false)} maxWidth="xs" fullWidth>

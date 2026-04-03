@@ -1,13 +1,16 @@
 import os
+import re
 import math
 import uuid
 import base64
 import json
+import hashlib
+import secrets
 import pandas as pd
 from datetime import datetime, date, timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import mysql.connector
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -31,7 +34,18 @@ except Exception:
 from etl.transform_orders import transform_orders
 
 from backend.db import get_db
-from backend.ta_routes import register_ta_routes
+from backend.payroll_identity import (
+    ensure_payroll_profile_for_washpro,
+    fetch_payroll_profile_row,
+    payroll_profiles_active,
+)
+from backend.ta_helpers import hash_password, json_safe
+from backend.ta_routes import (
+    _build_permission_hierarchy,
+    _sanitize_role_code,
+    register_ta_routes,
+    write_audit,
+)
 
 
 # ---------------------------------------------------
@@ -48,6 +62,29 @@ CORS(
 )
 
 register_ta_routes(app)
+
+# Local org logo uploads when Azure Blob is not configured (dev / small deployments).
+_ORG_LOGO_FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.(png|jpg|jpeg|webp|gif)$", re.I)
+
+
+def _local_org_logo_root():
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "instance", "org_logos"))
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _public_api_base_for_uploads():
+    """Base URL for saved logo links (browser must reach the Flask host)."""
+    b = (os.getenv("PUBLIC_API_BASE") or "").strip().rstrip("/")
+    if b:
+        return b
+    try:
+        ru = (request.url_root or "").strip().rstrip("/")
+        if ru:
+            return ru
+    except Exception:
+        pass
+    return "http://127.0.0.1:8000"
 
 
 # ---------------------------------------------------
@@ -875,6 +912,260 @@ def require_admin(cursor):
         return None, jsonify({"error": "Forbidden"}), 403
     me["roles"] = roles
     return me, None, None
+
+
+TENANT_MODULE_KEYS = frozenset(
+    (
+        "home",
+        "dashboard",
+        "orders",
+        "checkout",
+        "upload",
+        "discrepancies",
+        "inventory",
+        "clock",
+        "issues",
+        "production",
+        "scoreboard",
+        "maintenance",
+        "people",
+        "payroll",
+        "organization",
+        "permissions",
+    )
+)
+
+TENANT_PORTAL_ROLES = frozenset(
+    ("ADMIN", "OPS", "FRONT_DESK", "OPERATIONS", "SUPERVISOR", "PAYROLL_ADMIN", "FINANCE")
+)
+
+
+def _role_is_platform_template(meta):
+    """Platform role packages use organization_id = 0; legacy rows may have NULL."""
+    if not meta:
+        return False
+    oid = meta.get("organization_id")
+    if oid is None:
+        return True
+    try:
+        return int(oid) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def require_super_admin(cursor):
+    """Super / platform operator: manage tenants and entitlements (SUPER_ADMIN or legacy PLATFORM_ADMIN)."""
+    me = current_user_from_token(cursor)
+    if not me:
+        return None, jsonify({"error": "Unauthorized"}), 401
+    roles = fetch_user_roles(cursor, me["user_id"])
+    rs = {str(r).upper() for r in roles}
+    if "SUPER_ADMIN" not in rs and "PLATFORM_ADMIN" not in rs:
+        return None, jsonify({"error": "Forbidden"}), 403
+    me["roles"] = roles
+    return me, None, None
+
+
+def _platform_resolve_role_ids(cursor, org_id, role_codes):
+    """Resolve Washpro role codes to role ids (platform templates org_id=0 + tenant roles)."""
+    codes = []
+    seen = set()
+    for r in role_codes or []:
+        c = str(r).upper().strip()
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        codes.append(c)
+    if not codes:
+        return []
+    ph = ",".join(["%s"] * len(codes))
+    if table_has_column(cursor, "roles", "organization_id"):
+        cursor.execute(
+            f"""
+            SELECT id, code, organization_id FROM roles
+            WHERE UPPER(TRIM(code)) IN ({ph})
+              AND (organization_id = 0 OR organization_id = %s)
+            ORDER BY organization_id DESC
+            """,
+            tuple(codes) + (int(org_id),),
+        )
+        rows = cursor.fetchall() or []
+    else:
+        cursor.execute(
+            f"SELECT id, code FROM roles WHERE UPPER(TRIM(code)) IN ({ph})",
+            tuple(codes),
+        )
+        rows = cursor.fetchall() or []
+    pick = {}
+    for r in rows:
+        k = str(r["code"]).upper().strip()
+        if k not in pick:
+            pick[k] = int(r["id"])
+    missing = [c for c in codes if c not in pick]
+    if missing:
+        return None
+    return [pick[c] for c in codes]
+
+
+def auth_platform_user_bundle(cursor, conn, user_id):
+    """Super-admin read model aligned with the unified profile UI."""
+    cursor.execute(
+        """
+        SELECT id, username, display_name, active, organization_id, created_at, updated_at
+        FROM users WHERE id=%s LIMIT 1
+        """,
+        (int(user_id),),
+    )
+    w = cursor.fetchone()
+    if not w:
+        return None
+    w = dict(w)
+    w["roles"] = fetch_user_roles(cursor, user_id)
+    out = {
+        "washpro": json_safe(w),
+        "payroll": None,
+        "geofence_ids": [],
+        "primary_geofence_id": None,
+        "employment_assignments": [],
+        "entity_tags": [],
+    }
+    if payroll_profiles_active(conn):
+        pr = fetch_payroll_profile_row(conn, int(user_id))
+        if pr:
+            pr = dict(pr)
+            pr.pop("password_hash", None)
+            out["payroll"] = json_safe(pr)
+    cursor.execute(
+        "SELECT geofence_id, is_primary FROM user_geofences WHERE user_id=%s",
+        (int(user_id),),
+    )
+    gfs = cursor.fetchall() or []
+    out["geofence_ids"] = [g["geofence_id"] for g in gfs]
+    out["primary_geofence_id"] = next(
+        (g["geofence_id"] for g in gfs if g.get("is_primary")), None
+    )
+    cursor.execute(
+        """
+        SELECT employment_category_id, effective_from, effective_to
+        FROM user_employment_categories WHERE user_id=%s
+        """,
+        (int(user_id),),
+    )
+    out["employment_assignments"] = cursor.fetchall() or []
+    if table_exists(cursor, "user_entity_tags"):
+        cursor.execute(
+            """
+            SELECT entity_type, entity_key, label
+            FROM user_entity_tags
+            WHERE user_id=%s
+            ORDER BY entity_type, entity_key
+            """,
+            (int(user_id),),
+        )
+        out["entity_tags"] = cursor.fetchall() or []
+    geo_org = int(w.get("organization_id") or 1)
+    if table_exists(cursor, "geofences"):
+        cursor.execute(
+            """
+            SELECT id, name, active FROM geofences
+            WHERE organization_id=%s
+            ORDER BY name
+            """,
+            (geo_org,),
+        )
+        out["geofences_catalog"] = cursor.fetchall() or []
+    else:
+        out["geofences_catalog"] = []
+    if table_exists(cursor, "employment_categories"):
+        cursor.execute(
+            """
+            SELECT id, name FROM employment_categories
+            WHERE organization_id=%s
+            ORDER BY name
+            """,
+            (geo_org,),
+        )
+        out["employment_categories_catalog"] = cursor.fetchall() or []
+    else:
+        out["employment_categories_catalog"] = []
+    if table_has_column(cursor, "roles", "organization_id"):
+        cursor.execute(
+            """
+            SELECT id, code, name FROM roles
+            WHERE organization_id IN (0, %s)
+            ORDER BY organization_id, name
+            """,
+            (geo_org,),
+        )
+        out["roles_catalog"] = cursor.fetchall() or []
+    else:
+        cursor.execute("SELECT id, code, name FROM roles ORDER BY name")
+        out["roles_catalog"] = cursor.fetchall() or []
+    return out
+
+
+def normalize_organization_slug(raw):
+    """Match frontend LoginPage slug rules: lowercase [a-z0-9-], max 64."""
+    if raw is None:
+        return ""
+    s = str(raw).strip().lower()
+    try:
+        from urllib.parse import unquote
+
+        s = unquote(s)
+    except Exception:
+        pass
+    s = re.sub(r"[^a-z0-9-]", "", s)[:64]
+    return s
+
+
+def bootstrap_organization_supporting_rows(cursor, conn, org_id: int, slug: str):
+    """Minimum rows so payroll period settings exist per tenant when that table is org-scoped."""
+    if table_exists(cursor, "payroll_period_settings") and table_has_column(
+        cursor, "payroll_period_settings", "organization_id"
+    ):
+        prefix = "".join(c for c in (slug or "").upper() if c.isalnum())[:8] or "ORG"
+        cursor.execute(
+            """
+            INSERT IGNORE INTO payroll_period_settings (organization_id, week_starts_on, ref_prefix)
+            VALUES (%s, 0, %s)
+            """,
+            (int(org_id), prefix[:16]),
+        )
+        conn.commit()
+
+
+def _default_tenant_modules():
+    return {k: True for k in TENANT_MODULE_KEYS}
+
+
+def load_tenant_modules_map(cursor, org_id):
+    """Nav/feature toggles per tenant; empty table means all modules on."""
+    if not table_exists(cursor, "tenant_entitlements"):
+        return _default_tenant_modules()
+    cursor.execute(
+        "SELECT module_key, enabled FROM tenant_entitlements WHERE organization_id = %s",
+        (int(org_id),),
+    )
+    rows = cursor.fetchall() or []
+    if not rows:
+        return _default_tenant_modules()
+    out = _default_tenant_modules()
+    for row in rows:
+        k = str(row.get("module_key") or "").strip()
+        if k in TENANT_MODULE_KEYS:
+            out[k] = bool(row.get("enabled"))
+    return out
+
+
+def _organizations_public_columns_sql(cursor):
+    parts = ["id", "slug", "display_name", "active"]
+    if table_has_column(cursor, "organizations", "logo_url"):
+        parts.append("logo_url")
+    for col in ("address", "phone", "email"):
+        if table_has_column(cursor, "organizations", col):
+            parts.append(col)
+    return ", ".join(parts)
 
 
 def require_user(cursor):
@@ -3652,6 +3943,7 @@ def auth_login():
         has_u_org = table_has_column(cursor, "users", "organization_id")
         has_orgs = table_exists(cursor, "organizations")
         user = None
+        org_slug = ""
         if not has_u_org:
             cursor.execute("""
                 SELECT id, username, password_hash, display_name, active
@@ -3662,7 +3954,51 @@ def auth_login():
             user = cursor.fetchone()
         else:
             org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
-            if org_slug and has_orgs:
+            # Slug "platform" is overloaded: (1) a real tenant may use slug `platform`; (2) bookmark
+            # /login/platform historically meant "log in as any SUPER_ADMIN/PLATFORM_ADMIN by username".
+            # Prefer tenant match first so org-scoped users (e.g. superadmin in tenant "platform") work.
+            if org_slug == "platform" and has_orgs:
+                logo_sql = _org_logo_select_sql(cursor)
+                cursor.execute(
+                    f"""
+                    SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
+                           o.slug AS organization_slug, o.display_name AS organization_name,
+                           {logo_sql}
+                    FROM users u
+                    JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+                    WHERE u.username = %s AND LOWER(o.slug) = %s
+                    LIMIT 1
+                    """,
+                    (username, org_slug),
+                )
+                user = cursor.fetchone()
+                if not user and table_exists(cursor, "user_roles"):
+                    cursor.execute(
+                        f"""
+                        SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
+                               o.slug AS organization_slug, o.display_name AS organization_name,
+                               {logo_sql}
+                        FROM users u
+                        LEFT JOIN organizations o ON o.id = u.organization_id
+                        WHERE u.username = %s AND u.active = 1
+                          AND EXISTS (
+                              SELECT 1 FROM user_roles ur
+                              INNER JOIN roles r ON r.id = ur.role_id
+                              WHERE ur.user_id = u.id
+                                AND UPPER(r.code) IN ('SUPER_ADMIN', 'PLATFORM_ADMIN')
+                          )
+                        """,
+                        (username,),
+                    )
+                    plat_rows = cursor.fetchall() or []
+                    if len(plat_rows) > 1:
+                        return jsonify(
+                            {
+                                "error": "Several platform logins share this username. Use your team login URL instead (e.g. /login/your-tenant).",
+                            }
+                        ), 400
+                    user = plat_rows[0] if plat_rows else None
+            elif org_slug and has_orgs:
                 logo_sql = _org_logo_select_sql(cursor)
                 cursor.execute(
                     f"""
@@ -3719,6 +4055,23 @@ def auth_login():
                             user["organization_logo_url"] = o.get("logo_url")
 
         if not user or not as_bool(user.get("active"), default=False):
+            if not user and org_slug and has_orgs and has_u_org:
+                cursor.execute(
+                    """
+                    SELECT 1 AS ok
+                    FROM users u
+                    INNER JOIN organizations o ON o.id = u.organization_id
+                    WHERE u.username = %s AND LOWER(o.slug) = %s AND o.active = 0
+                    LIMIT 1
+                    """,
+                    (username, org_slug),
+                )
+                if cursor.fetchone():
+                    return jsonify(
+                        {
+                            "error": "This organization has been deactivated. Ask a platform administrator to restore it.",
+                        }
+                    ), 403
             return jsonify({"error": "Invalid credentials"}), 401
 
         stored_hash = user.get("password_hash") or ""
@@ -3800,6 +4153,402 @@ def auth_login():
                 pass
 
 
+def _auth_lookup_user_row_for_slug(cursor, username, org_slug):
+    """Resolve an active Washpro user by username and tenant slug (same rules as login, before password check)."""
+    has_u_org = table_has_column(cursor, "users", "organization_id")
+    has_orgs = table_exists(cursor, "organizations")
+    user = None
+    if not has_u_org:
+        cursor.execute(
+            """
+            SELECT id, username, password_hash, display_name, active
+            FROM users WHERE username = %s LIMIT 1
+            """,
+            (username,),
+        )
+        user = cursor.fetchone()
+    else:
+        org_slug = (org_slug or "").strip().lower()
+        if org_slug == "platform" and has_orgs:
+            logo_sql = _org_logo_select_sql(cursor)
+            cursor.execute(
+                f"""
+                SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
+                       o.slug AS organization_slug, o.display_name AS organization_name,
+                       {logo_sql}
+                FROM users u
+                JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+                WHERE u.username = %s AND LOWER(o.slug) = %s
+                LIMIT 1
+                """,
+                (username, org_slug),
+            )
+            user = cursor.fetchone()
+            if not user and table_exists(cursor, "user_roles"):
+                cursor.execute(
+                    f"""
+                    SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
+                           o.slug AS organization_slug, o.display_name AS organization_name,
+                           {logo_sql}
+                    FROM users u
+                    LEFT JOIN organizations o ON o.id = u.organization_id
+                    WHERE u.username = %s AND u.active = 1
+                      AND EXISTS (
+                          SELECT 1 FROM user_roles ur
+                          INNER JOIN roles r ON r.id = ur.role_id
+                          WHERE ur.user_id = u.id
+                            AND UPPER(r.code) IN ('SUPER_ADMIN', 'PLATFORM_ADMIN')
+                      )
+                    """,
+                    (username,),
+                )
+                plat_rows = cursor.fetchall() or []
+                if len(plat_rows) != 1:
+                    user = None
+                else:
+                    user = plat_rows[0]
+        elif org_slug and has_orgs:
+            logo_sql = _org_logo_select_sql(cursor)
+            cursor.execute(
+                f"""
+                SELECT u.id, u.username, u.password_hash, u.display_name, u.active, u.organization_id,
+                       o.slug AS organization_slug, o.display_name AS organization_name,
+                       {logo_sql}
+                FROM users u
+                JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+                WHERE u.username = %s AND LOWER(o.slug) = %s
+                LIMIT 1
+                """,
+                (username, org_slug),
+            )
+            user = cursor.fetchone()
+        else:
+            cursor.execute(
+                """
+                SELECT id, username, password_hash, display_name, active, organization_id
+                FROM users WHERE username = %s
+                """,
+                (username,),
+            )
+            rows = cursor.fetchall()
+            if len(rows) != 1:
+                user = None
+            else:
+                user = rows[0]
+    if not user or not as_bool(user.get("active"), default=False):
+        return None
+    return user
+
+
+def ensure_password_reset_tokens_table(cursor):
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          token_hash CHAR(64) NOT NULL,
+          expires_at DATETIME NOT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          consumed_at DATETIME NULL,
+          INDEX idx_lookup (token_hash, expires_at),
+          INDEX idx_user (user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+
+
+@app.route("/auth/public/change-password", methods=["POST"])
+def auth_public_change_password():
+    """Change password when not logged in (requires current password)."""
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    cur_pw = data.get("current_password") or data.get("current") or ""
+    new_pw = data.get("new_password") or data.get("password") or ""
+    if not username or not cur_pw or not new_pw:
+        return jsonify({"error": "username, current_password, and new_password are required"}), 400
+    if len(str(new_pw)) < 8:
+        return jsonify({"error": "new_password must be at least 8 characters"}), 400
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        has_u_org = table_has_column(cursor, "users", "organization_id")
+        has_orgs = table_exists(cursor, "organizations")
+        if has_u_org and has_orgs and not org_slug:
+            return jsonify({"error": "organization_slug is required"}), 400
+        user = _auth_lookup_user_row_for_slug(cursor, username, org_slug)
+        if not user:
+            return jsonify({"error": "Invalid credentials"}), 401
+        stored_hash = user.get("password_hash") or ""
+        ok = False
+        if stored_hash.startswith(("pbkdf2:", "scrypt:")):
+            try:
+                ok = check_password_hash(stored_hash, cur_pw)
+            except Exception:
+                ok = False
+        else:
+            ok = stored_hash == cur_pw
+        if not ok:
+            return jsonify({"error": "Invalid credentials"}), 401
+        new_hash = generate_password_hash(new_pw)
+        if table_has_column(cursor, "users", "updated_at"):
+            cursor.execute(
+                "UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
+                (new_hash, int(user["id"])),
+            )
+        else:
+            cursor.execute(
+                "UPDATE users SET password_hash=%s WHERE id=%s",
+                (new_hash, int(user["id"])),
+            )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/password-reset/request", methods=["POST"])
+def auth_password_reset_request():
+    data = request.json or {}
+    username = (data.get("username") or "").strip()
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    if not username:
+        return jsonify({"error": "username is required"}), 400
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        has_u_org = table_has_column(cursor, "users", "organization_id")
+        has_orgs = table_exists(cursor, "organizations")
+        if has_u_org and has_orgs and not org_slug:
+            return jsonify({"error": "organization_slug is required"}), 400
+        user = _auth_lookup_user_row_for_slug(cursor, username, org_slug)
+        msg = {
+            "ok": True,
+            "message": "If an account matched, you will receive reset instructions when email delivery is configured.",
+        }
+        if not user:
+            return jsonify(msg)
+        ensure_password_reset_tokens_table(cursor)
+        raw = secrets.token_urlsafe(32)
+        th = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        exp = datetime.utcnow() + timedelta(hours=1)
+        cursor.execute(
+            """
+            INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+            VALUES (%s, %s, %s)
+            """,
+            (int(user["id"]), th, exp),
+        )
+        conn.commit()
+        if os.getenv("FLASK_DEBUG", "").lower() in ("1", "true", "yes"):
+            msg["dev_reset_token"] = raw
+        return jsonify(msg)
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/password-reset/complete", methods=["POST"])
+def auth_password_reset_complete():
+    data = request.json or {}
+    raw = (data.get("token") or "").strip()
+    new_pw = data.get("new_password") or data.get("password") or ""
+    if not raw or not new_pw:
+        return jsonify({"error": "token and new_password are required"}), 400
+    if len(str(new_pw)) < 8:
+        return jsonify({"error": "new_password must be at least 8 characters"}), 400
+    th = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        ensure_password_reset_tokens_table(cursor)
+        cursor.execute(
+            """
+            SELECT id, user_id FROM password_reset_tokens
+            WHERE token_hash = %s AND consumed_at IS NULL AND expires_at > NOW()
+            LIMIT 1
+            """,
+            (th,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Invalid or expired token"}), 400
+        new_hash = generate_password_hash(new_pw)
+        uid = int(row["user_id"])
+        if table_has_column(cursor, "users", "updated_at"):
+            cursor.execute(
+                "UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
+                (new_hash, uid),
+            )
+        else:
+            cursor.execute("UPDATE users SET password_hash=%s WHERE id=%s", (new_hash, uid))
+        cursor.execute(
+            "UPDATE password_reset_tokens SET consumed_at = NOW() WHERE id = %s",
+            (int(row["id"]),),
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/me/notification-preferences", methods=["GET", "PUT"])
+def auth_me_notification_preferences():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me = current_user_from_token(cursor)
+        if not me:
+            return jsonify({"error": "Unauthorized"}), 401
+        uid = int(me["user_id"])
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_notification_preferences (
+              user_id INT NOT NULL PRIMARY KEY,
+              email_out TINYINT(1) NOT NULL DEFAULT 1,
+              email_in TINYINT(1) NOT NULL DEFAULT 0,
+              push_out TINYINT(1) NOT NULL DEFAULT 1,
+              push_in TINYINT(1) NOT NULL DEFAULT 0,
+              whatsapp_out TINYINT(1) NOT NULL DEFAULT 0,
+              whatsapp_in TINYINT(1) NOT NULL DEFAULT 0,
+              updated_at DATETIME NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        if table_exists(cursor, "user_notification_preferences"):
+            if table_has_column(cursor, "user_notification_preferences", "sms_out") and not table_has_column(
+                cursor, "user_notification_preferences", "whatsapp_out"
+            ):
+                try:
+                    cursor.execute(
+                        "ALTER TABLE user_notification_preferences ADD COLUMN whatsapp_out TINYINT(1) NOT NULL DEFAULT 0"
+                    )
+                    cursor.execute(
+                        "ALTER TABLE user_notification_preferences ADD COLUMN whatsapp_in TINYINT(1) NOT NULL DEFAULT 0"
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE user_notification_preferences
+                        SET whatsapp_out = COALESCE(sms_out, 0), whatsapp_in = COALESCE(sms_in, 0)
+                        """
+                    )
+                except Exception:
+                    pass
+        if request.method == "GET":
+            if not table_has_column(cursor, "user_notification_preferences", "whatsapp_out"):
+                cursor.execute(
+                    """
+                    SELECT email_out, email_in, push_out, push_in
+                    FROM user_notification_preferences WHERE user_id = %s
+                    """,
+                    (uid,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return jsonify(
+                        {
+                            "email_out": True,
+                            "email_in": False,
+                            "push_out": True,
+                            "push_in": False,
+                            "whatsapp_out": False,
+                            "whatsapp_in": False,
+                        }
+                    )
+                out = json_safe(row)
+                out["whatsapp_out"] = False
+                out["whatsapp_in"] = False
+                return jsonify(out)
+            cursor.execute(
+                """
+                SELECT email_out, email_in, push_out, push_in, whatsapp_out, whatsapp_in
+                FROM user_notification_preferences WHERE user_id = %s
+                """,
+                (uid,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return jsonify(
+                    {
+                        "email_out": True,
+                        "email_in": False,
+                        "push_out": True,
+                        "push_in": False,
+                        "whatsapp_out": False,
+                        "whatsapp_in": False,
+                    }
+                )
+            return jsonify(json_safe(row))
+        body = request.json or {}
+        if not table_has_column(cursor, "user_notification_preferences", "whatsapp_out"):
+            return jsonify({"error": "notification preferences schema is upgrading; retry shortly"}), 503
+        wa_out = body.get("whatsapp_out")
+        if wa_out is None and "sms_out" in body:
+            wa_out = body.get("sms_out")
+        wa_in = body.get("whatsapp_in")
+        if wa_in is None and "sms_in" in body:
+            wa_in = body.get("sms_in")
+        cursor.execute(
+            """
+            INSERT INTO user_notification_preferences
+              (user_id, email_out, email_in, push_out, push_in, whatsapp_out, whatsapp_in, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s, NOW())
+            ON DUPLICATE KEY UPDATE
+              email_out = VALUES(email_out),
+              email_in = VALUES(email_in),
+              push_out = VALUES(push_out),
+              push_in = VALUES(push_in),
+              whatsapp_out = VALUES(whatsapp_out),
+              whatsapp_in = VALUES(whatsapp_in),
+              updated_at = NOW()
+            """,
+            (
+                uid,
+                1 if body.get("email_out", True) else 0,
+                1 if body.get("email_in") else 0,
+                1 if body.get("push_out", True) else 0,
+                1 if body.get("push_in") else 0,
+                1 if wa_out else 0,
+                1 if wa_in else 0,
+            ),
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/api/notify/webhook/sms", methods=["POST"])
+def notify_webhook_sms_inbound_stub():
+    """Legacy inbound SMS hook (unused if you standardize on WhatsApp + push)."""
+    payload = request.get_json(silent=True) or {}
+    app.logger.info("notify.sms.inbound stub: keys=%s", list(payload.keys())[:12])
+    return jsonify({"ok": True, "received": True})
+
+
+@app.route("/api/notify/webhook/whatsapp", methods=["POST"])
+def notify_webhook_whatsapp_inbound_stub():
+    """Inbound WhatsApp (Meta Cloud API or Twilio WhatsApp): verify signature in production; stub logs only."""
+    payload = request.get_json(silent=True) or {}
+    app.logger.info("notify.whatsapp.inbound stub: keys=%s", list(payload.keys())[:12])
+    return jsonify({"ok": True, "received": True})
+
+
 @app.route("/auth/me", methods=["GET"])
 def auth_me():
     conn = None
@@ -3819,8 +4568,13 @@ def auth_me():
             "display_name": me.get("display_name") or me["username"],
             "roles": roles,
         }
+        rs = {str(r).upper() for r in roles}
+        tenant_portal = bool(rs & TENANT_PORTAL_ROLES)
         if me.get("organization_id") is not None:
-            out["organization_id"] = int(me["organization_id"])
+            oid = int(me["organization_id"])
+            out["organization_id"] = oid
+            if tenant_portal:
+                out["tenant_modules"] = load_tenant_modules_map(cursor, oid)
         if me.get("organization_slug"):
             out["organization_slug"] = me["organization_slug"]
         if me.get("organization_name"):
@@ -3841,6 +4595,62 @@ def auth_me():
                 conn.close()
             except Exception:
                 pass
+
+
+@app.route("/auth/me/password", methods=["PUT"])
+def auth_me_password_put():
+    data = request.json or {}
+    current_pw = data.get("current_password") or data.get("current") or ""
+    new_pw = data.get("new_password") or data.get("password") or ""
+    if not current_pw or not new_pw:
+        return jsonify({"error": "current_password and new_password are required"}), 400
+    if len(str(new_pw)) < 8:
+        return jsonify({"error": "new_password must be at least 8 characters"}), 400
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me = current_user_from_token(cursor)
+        if not me:
+            return jsonify({"error": "Unauthorized"}), 401
+        cursor.execute(
+            "SELECT id, password_hash FROM users WHERE id=%s LIMIT 1",
+            (int(me["user_id"]),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        stored_hash = row.get("password_hash") or ""
+        ok = False
+        if stored_hash.startswith(("pbkdf2:", "scrypt:")):
+            try:
+                ok = check_password_hash(stored_hash, current_pw)
+            except Exception:
+                ok = False
+        else:
+            ok = stored_hash == current_pw
+        if stored_hash and not ok:
+            return jsonify({"error": "Current password is incorrect"}), 400
+        if not stored_hash and current_pw:
+            return jsonify({"error": "Current password is incorrect"}), 400
+        new_hash = generate_password_hash(new_pw)
+        if table_has_column(cursor, "users", "updated_at"):
+            cursor.execute(
+                "UPDATE users SET password_hash=%s, updated_at=NOW() WHERE id=%s",
+                (new_hash, int(me["user_id"])),
+            )
+        else:
+            cursor.execute(
+                "UPDATE users SET password_hash=%s WHERE id=%s",
+                (new_hash, int(me["user_id"])),
+            )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 
 def _is_safe_logo_url(url: str) -> bool:
@@ -3899,6 +4709,7 @@ def public_organization_branding():
 
 @app.route("/auth/organization", methods=["GET"])
 def auth_organization_get():
+    """Tenant administrator: profile for own organization only (not super-admin shell)."""
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -3908,16 +4719,8 @@ def auth_organization_get():
         oid = me.get("organization_id")
         if not oid or not table_exists(cursor, "organizations"):
             return jsonify({"error": "No organization"}), 400
-        if table_has_column(cursor, "organizations", "logo_url"):
-            cursor.execute(
-                "SELECT id, slug, display_name, active, logo_url FROM organizations WHERE id = %s LIMIT 1",
-                (int(oid),),
-            )
-        else:
-            cursor.execute(
-                "SELECT id, slug, display_name, active FROM organizations WHERE id = %s LIMIT 1",
-                (int(oid),),
-            )
+        sel = _organizations_public_columns_sql(cursor)
+        cursor.execute(f"SELECT {sel} FROM organizations WHERE id = %s LIMIT 1", (int(oid),))
         row = cursor.fetchone()
         if not row:
             return jsonify({"error": "Not found"}), 404
@@ -3959,6 +4762,19 @@ def auth_organization_put():
                     ), 400
             fields.append("logo_url=%s")
             vals.append(logo_url if logo_url else None)
+        address = data.get("address")
+        if address is not None and table_has_column(cursor, "organizations", "address"):
+            fields.append("address=%s")
+            vals.append(str(address).strip()[:4000] or None)
+        phone = data.get("phone")
+        if phone is not None and table_has_column(cursor, "organizations", "phone"):
+            fields.append("phone=%s")
+            vals.append(str(phone).strip()[:64] or None)
+        email = data.get("email")
+        if email is not None and table_has_column(cursor, "organizations", "email"):
+            em = str(email).strip()[:255]
+            fields.append("email=%s")
+            vals.append(em or None)
         if not fields:
             return jsonify({"error": "No fields to update"}), 400
         vals.append(int(oid))
@@ -4001,6 +4817,7 @@ def auth_organization_logo_upload():
             return jsonify({"error": "Allowed types: png, jpg, jpeg, webp, gif"}), 400
         ct = _infer_content_type(f.filename)
         url = None
+        blob_err = None
         # Do not gate on ORDER_TICKET_STORAGE_MODE: tickets may use "db" while org logos still use Blob.
         if os.getenv("AZURE_STORAGE_CONNECTION_STRING") and BlobServiceClient is not None:
             try:
@@ -4013,14 +4830,31 @@ def auth_organization_logo_upload():
                         kwargs["content_settings"] = ContentSettings(content_type=ct)
                     bc.upload_blob(raw, overwrite=True, **kwargs)
                     url = bc.url
-            except Exception:
-                url = None
+            except Exception as ex:
+                blob_err = str(ex)[:500]
+        loc_err = None
         if not url:
-            return jsonify(
-                {
-                    "error": "Blob storage unavailable. Set AZURE_STORAGE_CONNECTION_STRING or paste an HTTPS logo URL under Organization settings.",
-                }
-            ), 503
+            try:
+                org_dir = os.path.join(_local_org_logo_root(), str(int(oid)))
+                os.makedirs(org_dir, exist_ok=True)
+                fn = f"{uuid.uuid4().hex}.{ext}"
+                fp = os.path.join(org_dir, fn)
+                with open(fp, "wb") as out:
+                    out.write(raw)
+                base = _public_api_base_for_uploads()
+                url = f"{base}/media/org-logos/{int(oid)}/{fn}"
+            except Exception as loc_ex:
+                loc_err = str(loc_ex)[:300]
+        if not url:
+            msg = (
+                "Could not store logo. For Azure: check AZURE_STORAGE_CONNECTION_STRING and container access. "
+                "For local dev: set PUBLIC_API_BASE to your API URL, or set logo_url manually via Organization."
+            )
+            if blob_err:
+                msg = f"{msg} Azure error: {blob_err}"
+            elif loc_err:
+                msg = f"{msg} Local error: {loc_err}"
+            return jsonify({"error": msg}), 503
         cursor.execute(
             "UPDATE organizations SET logo_url=%s WHERE id=%s AND active=1",
             (url, int(oid)),
@@ -4028,6 +4862,496 @@ def auth_organization_logo_upload():
         conn.commit()
         return jsonify({"ok": True, "logo_url": url})
     finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/media/org-logos/<int:org_id>/<path:filename>", methods=["GET"])
+def serve_local_org_logo(org_id, filename):
+    """Public read for logos saved under instance/org_logos (no Azure)."""
+    safe = os.path.basename(filename)
+    if not _ORG_LOGO_FILENAME_RE.match(safe):
+        return jsonify({"error": "Not found"}), 404
+    root = os.path.join(_local_org_logo_root(), str(int(org_id)))
+    fp = os.path.join(root, safe)
+    if not os.path.isfile(fp):
+        return jsonify({"error": "Not found"}), 404
+    return send_from_directory(root, safe, max_age=86400)
+
+
+@app.route("/auth/platform/organizations", methods=["GET"])
+def auth_platform_organizations_list():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"organizations": []})
+        sel = _organizations_public_columns_sql(cursor)
+        cursor.execute(f"SELECT {sel} FROM organizations ORDER BY id ASC")
+        rows = cursor.fetchall() or []
+        return jsonify({"organizations": rows})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/organizations", methods=["POST"])
+def auth_platform_organizations_create():
+    data = request.json or {}
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"error": "Organizations not configured"}), 503
+        slug = normalize_organization_slug(data.get("slug"))
+        display_name = (data.get("display_name") or "").strip()
+        if not slug:
+            return jsonify({"error": "slug is required (letters, digits, hyphen)"}), 400
+        if not display_name:
+            return jsonify({"error": "display_name is required"}), 400
+        display_name = display_name[:200]
+        cursor.execute(
+            "SELECT id FROM organizations WHERE slug = %s LIMIT 1",
+            (slug,),
+        )
+        if cursor.fetchone():
+            return jsonify({"error": "An organization with this slug already exists"}), 409
+        cursor.execute(
+            """
+            INSERT INTO organizations (slug, display_name, active)
+            VALUES (%s, %s, 1)
+            """,
+            (slug, display_name),
+        )
+        conn.commit()
+        new_id = cursor.lastrowid
+        bootstrap_organization_supporting_rows(cursor, conn, int(new_id), slug)
+        sel = _organizations_public_columns_sql(cursor)
+        cursor.execute(f"SELECT {sel} FROM organizations WHERE id = %s LIMIT 1", (int(new_id),))
+        row = cursor.fetchone()
+        return jsonify({"organization": row}), 201
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/organizations/<int:org_id>", methods=["PUT"])
+def auth_platform_organizations_update(org_id):
+    """Super admin: tenant record (not slug). Includes contact fields for onboarding."""
+    data = request.json or {}
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"error": "Organizations not configured"}), 503
+        cursor.execute("SELECT id FROM organizations WHERE id = %s LIMIT 1", (int(org_id),))
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        display_name = data.get("display_name")
+        active = data.get("active")
+        fields = []
+        vals = []
+        if display_name is not None:
+            dn = str(display_name).strip()[:200]
+            if not dn:
+                return jsonify({"error": "display_name cannot be empty"}), 400
+            fields.append("display_name=%s")
+            vals.append(dn)
+        if active is not None:
+            fields.append("active=%s")
+            vals.append(1 if bool(active) else 0)
+        if data.get("address") is not None and table_has_column(cursor, "organizations", "address"):
+            fields.append("address=%s")
+            vals.append(str(data.get("address") or "").strip()[:4000] or None)
+        if data.get("phone") is not None and table_has_column(cursor, "organizations", "phone"):
+            fields.append("phone=%s")
+            vals.append(str(data.get("phone") or "").strip()[:64] or None)
+        if data.get("email") is not None and table_has_column(cursor, "organizations", "email"):
+            fields.append("email=%s")
+            vals.append(str(data.get("email") or "").strip()[:255] or None)
+        if data.get("logo_url") is not None and table_has_column(cursor, "organizations", "logo_url"):
+            logo_url = str(data.get("logo_url") or "").strip()
+            if logo_url and not _is_safe_logo_url(logo_url):
+                return jsonify(
+                    {"error": "logo_url must be https:// or http://localhost (dev)"}
+                ), 400
+            fields.append("logo_url=%s")
+            vals.append(logo_url if logo_url else None)
+        if not fields:
+            return jsonify({"error": "No fields to update"}), 400
+        vals.append(int(org_id))
+        cursor.execute(
+            f"UPDATE organizations SET {', '.join(fields)} WHERE id = %s",
+            vals,
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/organizations/<int:org_id>", methods=["DELETE"])
+def auth_platform_organizations_deactivate(org_id):
+    """Soft-off a tenant (active=0). Logins for that org stop; data is retained."""
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"error": "Organizations not configured"}), 503
+        cursor.execute("SELECT id, slug FROM organizations WHERE id = %s LIMIT 1", (int(org_id),))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        cursor.execute(
+            "UPDATE organizations SET active = 0 WHERE id = %s",
+            (int(org_id),),
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/organizations/<int:org_id>/logo", methods=["POST"])
+def auth_platform_organization_logo_upload(org_id):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_exists(cursor, "organizations") or not table_has_column(
+            cursor, "organizations", "logo_url"
+        ):
+            return jsonify({"error": "Run backend/sql/organizations_branding_v1.sql"}), 400
+        cursor.execute("SELECT id FROM organizations WHERE id=%s LIMIT 1", (int(org_id),))
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        if "file" not in request.files:
+            return jsonify({"error": "file field required"}), 400
+        f = request.files["file"]
+        if not f or not f.filename:
+            return jsonify({"error": "Empty file"}), 400
+        raw = f.read()
+        if len(raw) > 2 * 1024 * 1024:
+            return jsonify({"error": "File too large (max 2 MB)"}), 400
+        ext = (f.filename.rsplit(".", 1)[-1] if "." in f.filename else "").lower()
+        if ext not in {"png", "jpg", "jpeg", "webp", "gif"}:
+            return jsonify({"error": "Allowed types: png, jpg, jpeg, webp, gif"}), 400
+        ct = _infer_content_type(f.filename)
+        url = None
+        blob_err = None
+        if os.getenv("AZURE_STORAGE_CONNECTION_STRING") and BlobServiceClient is not None:
+            try:
+                cc = _ensure_blob_container()
+                if cc is not None:
+                    blob_name = f"org-logos/{int(org_id)}/{uuid.uuid4().hex}.{ext}"
+                    bc = cc.get_blob_client(blob_name)
+                    kwargs = {}
+                    if ContentSettings is not None:
+                        kwargs["content_settings"] = ContentSettings(content_type=ct)
+                    bc.upload_blob(raw, overwrite=True, **kwargs)
+                    url = bc.url
+            except Exception as ex:
+                blob_err = str(ex)[:500]
+        if not url:
+            try:
+                org_dir = os.path.join(_local_org_logo_root(), str(int(org_id)))
+                os.makedirs(org_dir, exist_ok=True)
+                fn = f"{uuid.uuid4().hex}.{ext}"
+                fp = os.path.join(org_dir, fn)
+                with open(fp, "wb") as out:
+                    out.write(raw)
+                base = _public_api_base_for_uploads()
+                url = f"{base}/media/org-logos/{int(org_id)}/{fn}"
+            except Exception as loc_ex:
+                msg = (
+                    "Could not store logo. For Azure: verify AZURE_STORAGE_CONNECTION_STRING and container name; "
+                    "for local files set PUBLIC_API_BASE to your API origin (e.g. http://127.0.0.1:8000)."
+                )
+                if blob_err:
+                    msg = f"{msg} Azure error: {blob_err}"
+                else:
+                    msg = f"{msg} Local error: {str(loc_ex)[:300]}"
+                return jsonify({"error": msg}), 503
+        cursor.execute(
+            "UPDATE organizations SET logo_url=%s WHERE id=%s",
+            (url, int(org_id)),
+        )
+        conn.commit()
+        return jsonify({"ok": True, "logo_url": url})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/organizations/<int:org_id>/entitlements", methods=["GET"])
+def auth_platform_entitlements_get(org_id):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        cursor.execute("SELECT id FROM organizations WHERE id = %s LIMIT 1", (int(org_id),))
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        return jsonify({"modules": load_tenant_modules_map(cursor, org_id)})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/organizations/<int:org_id>/entitlements", methods=["PUT"])
+def auth_platform_entitlements_put(org_id):
+    body = request.json or {}
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_exists(cursor, "tenant_entitlements"):
+            return jsonify({"error": "Run backend/sql/super_admin_entitlements_v1.sql"}), 503
+        cursor.execute("SELECT id FROM organizations WHERE id = %s LIMIT 1", (int(org_id),))
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        modules = body.get("modules")
+        if not isinstance(modules, dict):
+            return jsonify({"error": "modules object required"}), 400
+        for key, val in modules.items():
+            k = str(key or "").strip()
+            if k not in TENANT_MODULE_KEYS:
+                return jsonify({"error": f"Unknown module_key: {k}"}), 400
+            en = 1 if bool(val) else 0
+            cursor.execute(
+                """
+                INSERT INTO tenant_entitlements (organization_id, module_key, enabled)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE enabled = VALUES(enabled)
+                """,
+                (int(org_id), k, en),
+            )
+        conn.commit()
+        return jsonify({"ok": True, "modules": load_tenant_modules_map(cursor, org_id)})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/permission-matrix", methods=["GET"])
+def auth_platform_permission_matrix():
+    """SUPER_ADMIN: permission catalog + roles with organization_id = 0 (platform templates)."""
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if table_has_column(cursor, "permissions", "route_key"):
+            cursor.execute(
+                """
+                SELECT id, perm_key, description, route_key, route_label,
+                       section_key, section_label, resource_key, resource_label,
+                       action_key, sort_order
+                FROM permissions
+                ORDER BY route_key, section_key, resource_key, sort_order, perm_key
+                """
+            )
+        else:
+            cursor.execute("SELECT id, perm_key, description FROM permissions ORDER BY perm_key")
+        perms = [json_safe(x) for x in cursor.fetchall()]
+        for p in perms:
+            if not p.get("route_key"):
+                pk = p.get("perm_key") or ""
+                bits = pk.split(".")
+                p["route_key"] = bits[0] if bits else "general"
+                p["route_label"] = p["route_key"].replace("_", " ").title()
+                p["section_key"] = bits[1] if len(bits) > 1 else ""
+                p["section_label"] = (
+                    p["section_key"].replace("_", " ").title() if p["section_key"] else "General"
+                )
+                p["resource_key"] = ""
+                p["resource_label"] = ""
+                p["action_key"] = bits[-1] if len(bits) > 1 else "view"
+                p["sort_order"] = 0
+        hierarchy = _build_permission_hierarchy(perms)
+        if not table_has_column(cursor, "roles", "organization_id"):
+            return jsonify({"error": "Multitenancy roles not configured"}), 503
+        cursor.execute(
+            """
+            SELECT id, code, name, organization_id, is_system
+            FROM roles
+            WHERE organization_id = 0 OR organization_id IS NULL
+            ORDER BY is_system DESC, code
+            """
+        )
+        roles = cursor.fetchall()
+        role_ids = [int(r["id"]) for r in roles]
+        role_map = {}
+        if role_ids:
+            ph = ",".join(["%s"] * len(role_ids))
+            cursor.execute(
+                f"""
+                SELECT rp.role_id, p.perm_key
+                FROM role_permissions rp
+                JOIN permissions p ON p.id = rp.permission_id
+                WHERE rp.role_id IN ({ph})
+                """,
+                role_ids,
+            )
+            for row in cursor.fetchall():
+                role_map.setdefault(row["role_id"], []).append(row["perm_key"])
+        return jsonify(
+            {
+                "permissions": perms,
+                "hierarchy": hierarchy,
+                "roles": [json_safe(x) for x in roles],
+                "role_permissions": {str(k): v for k, v in role_map.items()},
+            }
+        )
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/roles", methods=["POST"])
+def auth_platform_roles_create():
+    data = request.json or {}
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_has_column(cursor, "roles", "organization_id"):
+            return jsonify({"error": "Multitenancy roles not configured"}), 503
+        rcode = _sanitize_role_code(data.get("code") or "")
+        name = (data.get("name") or "").strip() or rcode.replace("_", " ").title()
+        cursor.execute(
+            """
+            SELECT id FROM roles
+            WHERE (organization_id = 0 OR organization_id IS NULL) AND code = %s
+            LIMIT 1
+            """,
+            (rcode,),
+        )
+        if cursor.fetchone():
+            return jsonify({"error": "Role code already exists for platform templates"}), 409
+        cursor.execute(
+            """
+            INSERT INTO roles (organization_id, code, name, is_system)
+            VALUES (0, %s, %s, 0)
+            """,
+            (rcode, name),
+        )
+        conn.commit()
+        rid = cursor.lastrowid
+        return jsonify({"ok": True, "id": rid, "code": rcode, "name": name})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/roles/<int:role_id>", methods=["DELETE"])
+def auth_platform_roles_delete(role_id):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_has_column(cursor, "roles", "organization_id"):
+            return jsonify({"error": "Multitenancy roles not configured"}), 503
+        cursor.execute(
+            "SELECT id, code, organization_id, is_system FROM roles WHERE id = %s",
+            (int(role_id),),
+        )
+        meta = cursor.fetchone()
+        if not meta:
+            return jsonify({"error": "Role not found"}), 404
+        if not _role_is_platform_template(meta):
+            return jsonify(
+                {"error": "Not a platform template role (tenant-scoped roles are edited per tenant)"}
+            ), 403
+        if as_bool(meta.get("is_system"), default=False):
+            return jsonify({"error": "Cannot delete system roles"}), 403
+        if table_exists(cursor, "ta_users") and table_has_column(cursor, "ta_users", "role_id"):
+            cursor.execute("SELECT COUNT(*) AS n FROM ta_users WHERE role_id=%s", (role_id,))
+            n = (cursor.fetchone() or {}).get("n", 0) or 0
+            if n:
+                return jsonify({"error": f"Role is assigned to {n} TA user(s); reassign first"}), 409
+        if table_exists(cursor, "user_roles"):
+            cursor.execute("SELECT COUNT(*) AS n FROM user_roles WHERE role_id=%s", (role_id,))
+            n = (cursor.fetchone() or {}).get("n", 0) or 0
+            if n:
+                return jsonify({"error": f"Role is assigned to {n} login(s); reassign first"}), 409
+        cursor.execute("DELETE FROM roles WHERE id=%s", (role_id,))
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/roles/<int:role_id>/permissions", methods=["PUT"])
+def auth_platform_role_permissions_put(role_id):
+    data = request.json or {}
+    keys = data.get("permission_keys")
+    if not isinstance(keys, list):
+        return jsonify({"error": "permission_keys array required"}), 400
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    c2 = None
+    try:
+        _, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        if not table_has_column(cursor, "roles", "organization_id"):
+            return jsonify({"error": "Multitenancy roles not configured"}), 503
+        cursor.execute(
+            "SELECT id, organization_id FROM roles WHERE id=%s",
+            (int(role_id),),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({"error": "Role not found"}), 404
+        if not _role_is_platform_template(row):
+            return jsonify(
+                {"error": "Not a platform template role (tenant-scoped roles are edited per tenant)"}
+            ), 403
+        c2 = conn.cursor()
+        c2.execute("DELETE FROM role_permissions WHERE role_id=%s", (role_id,))
+        for key in keys:
+            cursor.execute("SELECT id FROM permissions WHERE perm_key=%s", (key,))
+            prow = cursor.fetchone()
+            if prow:
+                c2.execute(
+                    "INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (%s,%s)",
+                    (role_id, prow["id"]),
+                )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        if c2 is not None:
+            try:
+                c2.close()
+            except Exception:
+                pass
         cursor.close()
         conn.close()
 
@@ -4131,7 +5455,7 @@ def auth_users():
         conn.close()
 
 
-@app.route("/auth/users/<int:user_id>", methods=["PUT", "DELETE"])
+@app.route("/auth/users/<int:user_id>", methods=["GET", "PUT", "DELETE"])
 def auth_user_detail(user_id):
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -4139,6 +5463,53 @@ def auth_user_detail(user_id):
         me, err, status_code = require_admin(cursor)
         if err:
             return err, status_code
+
+        if request.method == "GET":
+            cursor.execute(
+                """
+                SELECT id, username, display_name, active, created_at, organization_id, updated_at
+                FROM users WHERE id=%s
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({"error": "Not found"}), 404
+            if table_has_column(cursor, "users", "organization_id"):
+                if int(row.get("organization_id") or 0) != int(me.get("organization_id") or 1):
+                    return jsonify({"error": "Not found"}), 404
+            row["roles"] = fetch_user_roles(cursor, user_id)
+            cursor.execute(
+                "SELECT geofence_id, is_primary FROM user_geofences WHERE user_id=%s",
+                (user_id,),
+            )
+            gfs = cursor.fetchall() or []
+            row["geofence_ids"] = [g["geofence_id"] for g in gfs]
+            row["primary_geofence_id"] = next(
+                (g["geofence_id"] for g in gfs if g.get("is_primary")), None
+            )
+            cursor.execute(
+                """
+                SELECT employment_category_id, effective_from, effective_to
+                FROM user_employment_categories WHERE user_id=%s
+                """,
+                (user_id,),
+            )
+            row["employment_assignments"] = cursor.fetchall() or []
+            if table_exists(cursor, "user_entity_tags"):
+                cursor.execute(
+                    """
+                    SELECT entity_type, entity_key, label
+                    FROM user_entity_tags
+                    WHERE user_id=%s
+                    ORDER BY entity_type, entity_key
+                    """,
+                    (user_id,),
+                )
+                row["entity_tags"] = cursor.fetchall() or []
+            else:
+                row["entity_tags"] = []
+            return jsonify(json_safe(row))
 
         if request.method == "DELETE":
             if me["user_id"] == user_id:
@@ -4150,10 +5521,12 @@ def auth_user_detail(user_id):
             if table_has_column(cursor, "users", "organization_id"):
                 if int(victim.get("organization_id") or 0) != int(me.get("organization_id") or 1):
                     return jsonify({"error": "Not found"}), 404
-            cursor.execute(
-                "UPDATE ta_users SET washpro_user_id=NULL WHERE washpro_user_id=%s",
-                (user_id,),
-            )
+            # Legacy DBs only: unified payroll uses payroll_profiles.user_id → ON DELETE CASCADE.
+            if table_exists(cursor, "ta_users"):
+                cursor.execute(
+                    "UPDATE ta_users SET washpro_user_id=NULL WHERE washpro_user_id=%s",
+                    (user_id,),
+                )
             cursor.execute("DELETE FROM users WHERE id=%s", (user_id,))
             conn.commit()
             return jsonify({"status": "deleted"})
@@ -4227,6 +5600,353 @@ def auth_user_detail(user_id):
         conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/users", methods=["GET"])
+def auth_platform_users_search():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        q = (request.args.get("q") or "").strip()
+        if not q:
+            cursor.execute(
+                """
+                SELECT id, username, display_name, active, organization_id
+                FROM users
+                ORDER BY id DESC
+                LIMIT 50
+                """
+            )
+        else:
+            like = f"%{q}%"
+            cursor.execute(
+                """
+                SELECT id, username, display_name, active, organization_id
+                FROM users
+                WHERE username LIKE %s OR display_name LIKE %s OR CAST(id AS CHAR) LIKE %s
+                ORDER BY id DESC
+                LIMIT 50
+                """,
+                (like, like, like),
+            )
+        return jsonify(json_safe(cursor.fetchall() or []))
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/auth/platform/users/<int:user_id>", methods=["GET", "PUT"])
+def auth_platform_user_detail(user_id):
+    if request.method == "GET":
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, code = require_super_admin(cursor)
+            if err:
+                return err, code
+            bundle = auth_platform_user_bundle(cursor, conn, user_id)
+            if not bundle:
+                return jsonify({"error": "Not found"}), 404
+            return jsonify(json_safe(bundle))
+        finally:
+            cursor.close()
+            conn.close()
+
+    return _auth_platform_users_put_transaction(user_id)
+
+
+def _auth_platform_users_put_transaction(user_id):
+    data = request.json or {}
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    c_plain = conn.cursor()
+    try:
+        me, err, code = require_super_admin(cursor)
+        if err:
+            return err, code
+        actor_id = int(me["user_id"])
+
+        conn.autocommit = False
+        cursor.execute(
+            "SELECT id, username, display_name, active, organization_id FROM users WHERE id=%s FOR UPDATE",
+            (user_id,),
+        )
+        urow = cursor.fetchone()
+        if not urow:
+            conn.rollback()
+            conn.autocommit = True
+            return jsonify({"error": "Not found"}), 404
+
+        eff_org = int(urow.get("organization_id") or 1)
+
+        if "organization_id" in data and data["organization_id"] is not None:
+            new_oid = int(data["organization_id"])
+            cursor.execute("SELECT id FROM organizations WHERE id=%s LIMIT 1", (new_oid,))
+            if not cursor.fetchone():
+                conn.rollback()
+                conn.autocommit = True
+                return jsonify({"error": "organization not found"}), 400
+            c_plain.execute(
+                "UPDATE users SET organization_id=%s, updated_at=NOW() WHERE id=%s",
+                (new_oid, user_id),
+            )
+            eff_org = new_oid
+            if table_exists(cursor, "user_entity_tags"):
+                c_plain.execute(
+                    "UPDATE user_entity_tags SET organization_id=%s WHERE user_id=%s",
+                    (new_oid, user_id),
+                )
+
+        if "washpro" in data and isinstance(data["washpro"], dict):
+            w = data["washpro"]
+            username = (w.get("username") or "").strip()
+            display_name = (w.get("display_name") or "").strip()
+            active = bool(w.get("active", True)) if "active" in w else bool(urow.get("active", True))
+            password = (w.get("password") or "").strip()
+            if username:
+                if table_has_column(cursor, "users", "organization_id"):
+                    cursor.execute(
+                        """
+                        SELECT id FROM users
+                        WHERE username=%s AND id!=%s AND organization_id=%s
+                        """,
+                        (username, user_id, eff_org),
+                    )
+                else:
+                    cursor.execute(
+                        "SELECT id FROM users WHERE username=%s AND id!=%s",
+                        (username, user_id),
+                    )
+                if cursor.fetchone():
+                    conn.rollback()
+                    conn.autocommit = True
+                    return jsonify({"error": "username already taken"}), 400
+            set_parts = []
+            vals = []
+            if username:
+                set_parts.extend(["username=%s", "display_name=%s", "active=%s", "updated_at=NOW()"])
+                vals.extend([username, display_name or username, 1 if active else 0])
+            elif "display_name" in w or "active" in w:
+                if "display_name" in w:
+                    set_parts.append("display_name=%s")
+                    vals.append(display_name or urow.get("username"))
+                if "active" in w:
+                    set_parts.append("active=%s")
+                    vals.append(1 if active else 0)
+                set_parts.append("updated_at=NOW()")
+            if password:
+                if not set_parts:
+                    set_parts.append("updated_at=NOW()")
+                set_parts.append("password_hash=%s")
+                vals.append(generate_password_hash(password))
+            if set_parts:
+                vals.append(user_id)
+                c_plain.execute(
+                    f"UPDATE users SET {', '.join(set_parts)} WHERE id=%s",
+                    vals,
+                )
+            if "roles" in w:
+                role_codes = [str(r).upper() for r in (w.get("roles") or [])]
+                rids = _platform_resolve_role_ids(cursor, eff_org, role_codes)
+                if rids is None:
+                    conn.rollback()
+                    conn.autocommit = True
+                    return jsonify({"error": "Unknown role code in roles list"}), 400
+                c_plain.execute("DELETE FROM user_roles WHERE user_id=%s", (user_id,))
+                for rid in rids:
+                    c_plain.execute(
+                        "INSERT INTO user_roles (user_id, role_id) VALUES (%s,%s)",
+                        (user_id, int(rid)),
+                    )
+
+        if payroll_profiles_active(conn) and "payroll" in data and isinstance(data["payroll"], dict):
+            p = data["payroll"]
+            cursor.execute("SELECT * FROM payroll_profiles WHERE user_id=%s", (user_id,))
+            old = cursor.fetchone()
+            if not old:
+                cursor.execute(
+                    "SELECT username, display_name FROM users WHERE id=%s",
+                    (user_id,),
+                )
+                uw = cursor.fetchone()
+                ensure_payroll_profile_for_washpro(
+                    conn,
+                    {
+                        "user_id": user_id,
+                        "username": (uw or {}).get("username") or "",
+                        "display_name": (uw or {}).get("display_name") or "",
+                    },
+                )
+                cursor.execute("SELECT * FROM payroll_profiles WHERE user_id=%s", (user_id,))
+                old = cursor.fetchone()
+            fields = []
+            vals = []
+            mapping = [
+                ("employee_id", "employee_id"),
+                ("first_name", "first_name"),
+                ("last_name", "last_name"),
+                ("address", "address"),
+                ("email", "email"),
+                ("mobile", "mobile"),
+                ("itin_ssn", "itin_ssn"),
+                ("hire_date", "hire_date"),
+                ("termination_date", "termination_date"),
+                ("rehired", "rehired"),
+                ("active", "active"),
+                ("prior_employee_id", "prior_employee_id"),
+            ]
+            for json_k, col in mapping:
+                if json_k in p:
+                    v = p[json_k]
+                    if col in ("rehired", "active"):
+                        v = 1 if v else 0
+                    fields.append(f"{col}=%s")
+                    vals.append(v)
+            if "rehire_parent_id" in p:
+                v = p["rehire_parent_id"]
+                if v in (None, ""):
+                    v = None
+                else:
+                    v = int(v)
+                    if v == user_id:
+                        conn.rollback()
+                        conn.autocommit = True
+                        return jsonify({"error": "rehire parent cannot be the same user"}), 400
+                    if v is not None:
+                        cursor.execute(
+                            """
+                            SELECT pp.user_id FROM payroll_profiles pp
+                            JOIN users u ON u.id = pp.user_id
+                            WHERE pp.user_id=%s AND u.organization_id=%s
+                            """,
+                            (v, eff_org),
+                        )
+                        if not cursor.fetchone():
+                            conn.rollback()
+                            conn.autocommit = True
+                            return jsonify({"error": "rehire_parent not found"}), 400
+                fields.append("rehire_parent_user_id=%s")
+                vals.append(v)
+            if p.get("password"):
+                fields.append("password_hash=%s")
+                vals.append(hash_password(p["password"]))
+            wp_roles_in_payload = isinstance(data.get("washpro"), dict) and "roles" in data["washpro"]
+            if "role_id" in p and p["role_id"] is not None and not wp_roles_in_payload:
+                c_plain.execute("DELETE FROM user_roles WHERE user_id=%s", (user_id,))
+                c_plain.execute(
+                    "INSERT INTO user_roles (user_id, role_id) VALUES (%s,%s)",
+                    (user_id, int(p["role_id"])),
+                )
+            if fields:
+                vals.append(user_id)
+                c_plain.execute(
+                    f"UPDATE payroll_profiles SET {', '.join(fields)} WHERE user_id=%s",
+                    vals,
+                )
+
+        if "geofence_ids" in data:
+            ids = data.get("geofence_ids") or []
+            primary_id = data.get("primary_geofence_id")
+            for gid in ids:
+                cursor.execute(
+                    "SELECT 1 FROM geofences WHERE id=%s AND organization_id=%s",
+                    (int(gid), eff_org),
+                )
+                if not cursor.fetchone():
+                    conn.rollback()
+                    conn.autocommit = True
+                    return jsonify({"error": "Invalid geofence"}), 400
+            c_plain.execute("DELETE FROM user_geofences WHERE user_id=%s", (user_id,))
+            for gid in ids:
+                gid_int = int(gid)
+                is_p = (
+                    1
+                    if primary_id is not None and gid_int == int(primary_id)
+                    else 0
+                )
+                c_plain.execute(
+                    "INSERT INTO user_geofences (user_id, geofence_id, is_primary) VALUES (%s,%s,%s)",
+                    (user_id, gid_int, is_p),
+                )
+
+        if "employment_assignments" in data:
+            rows = data.get("employment_assignments") or []
+            for r in rows:
+                cid = int(r["employment_category_id"])
+                cursor.execute(
+                    "SELECT 1 FROM employment_categories WHERE id=%s AND organization_id=%s",
+                    (cid, eff_org),
+                )
+                if not cursor.fetchone():
+                    conn.rollback()
+                    conn.autocommit = True
+                    return jsonify({"error": "Invalid employment category"}), 400
+            c_plain.execute("DELETE FROM user_employment_categories WHERE user_id=%s", (user_id,))
+            for r in rows:
+                c_plain.execute(
+                    """
+                    INSERT INTO user_employment_categories (user_id, employment_category_id, effective_from, effective_to)
+                    VALUES (%s,%s,%s,%s)
+                    """,
+                    (
+                        user_id,
+                        int(r["employment_category_id"]),
+                        r["effective_from"],
+                        r.get("effective_to"),
+                    ),
+                )
+
+        if "entity_tags" in data and table_exists(cursor, "user_entity_tags"):
+            tags = data.get("entity_tags")
+            if not isinstance(tags, list):
+                conn.rollback()
+                conn.autocommit = True
+                return jsonify({"error": "entity_tags must be an array"}), 400
+            c_plain.execute("DELETE FROM user_entity_tags WHERE user_id=%s", (user_id,))
+            for t in tags:
+                if not isinstance(t, dict):
+                    continue
+                et = str(t.get("entity_type") or "").strip()[:64]
+                ek = str(t.get("entity_key") or "").strip()[:128]
+                if not et or not ek:
+                    conn.rollback()
+                    conn.autocommit = True
+                    return jsonify({"error": "Each entity tag needs entity_type and entity_key"}), 400
+                lab = str(t.get("label") or "").strip()[:255] or None
+                c_plain.execute(
+                    """
+                    INSERT INTO user_entity_tags (organization_id, user_id, entity_type, entity_key, label)
+                    VALUES (%s,%s,%s,%s,%s)
+                    """,
+                    (eff_org, int(user_id), et, ek, lab),
+                )
+
+        write_audit(
+            conn,
+            actor_id,
+            "platform_user",
+            user_id,
+            "update",
+            new=data,
+            organization_id=eff_org,
+        )
+        conn.commit()
+        conn.autocommit = True
+        return jsonify({"ok": True})
+    except Exception as e:
+        conn.rollback()
+        conn.autocommit = True
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            c_plain.close()
+        except Exception:
+            pass
         cursor.close()
         conn.close()
 
