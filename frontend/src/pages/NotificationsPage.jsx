@@ -40,6 +40,14 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 
+const NOTIF_OUTLINE_ACCORDION_SX = {
+  border: 1,
+  borderColor: "divider",
+  borderRadius: 1,
+  "&:before": { display: "none" },
+  boxShadow: "none",
+};
+
 function PrefsSection() {
   const { t } = useI18n();
   const [loading, setLoading] = useState(true);
@@ -245,71 +253,117 @@ function GroupsSection() {
   return (
     <Stack spacing={2}>
       {err && <Alert severity="error">{err}</Alert>}
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-        <TextField
-          size="small"
-          label={t("notifications.groupName")}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          sx={{ flex: 1 }}
-        />
-        <Button variant="contained" onClick={createGroup}>
-          {t("notifications.createGroup")}
-        </Button>
-      </Stack>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>{t("notifications.groupName")}</TableCell>
-            <TableCell align="right">{t("common.actions")}</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {groups.map((g) => (
-            <TableRow
-              key={g.id}
-              hover
-              selected={sel?.id === g.id}
-              sx={{ cursor: "pointer" }}
-              onClick={() => setSel(g)}
-            >
-              <TableCell>{g.name}</TableCell>
-              <TableCell align="right">
-                <Button size="small" color="error" onClick={(e) => { e.stopPropagation(); removeGroup(g); }}>
-                  {t("common.delete")}
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      {sel && (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Typography fontWeight={600} gutterBottom>
-            {t("notifications.membersFor")} {sel.name}
-          </Typography>
-          <Stack spacing={0.5} sx={{ maxHeight: 280, overflow: "auto" }}>
-            {users.map((u) => (
-              <FormControlLabel
-                key={u.id}
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={!!memberIds[u.id]}
-                    onChange={(_, v) =>
-                      setMemberIds((prev) => ({ ...prev, [u.id]: v }))
-                    }
-                  />
-                }
-                label={`${u.display_name || u.username} (#${u.id})`}
-              />
-            ))}
+      <Accordion
+        defaultExpanded
+        disableGutters
+        elevation={0}
+        sx={NOTIF_OUTLINE_ACCORDION_SX}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Stack direction="row" alignItems="baseline" spacing={1} flexWrap="wrap">
+            <Typography fontWeight={600}>
+              {t("notifications.panelGroupsListTitle")}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              ({groups.length})
+            </Typography>
           </Stack>
-          <Button sx={{ mt: 1 }} variant="outlined" onClick={saveMembers}>
-            {t("notifications.saveMembers")}
-          </Button>
-        </Paper>
-      )}
+        </AccordionSummary>
+        <AccordionDetails>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <TextField
+              size="small"
+              label={t("notifications.groupName")}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              sx={{ flex: 1 }}
+            />
+            <Button variant="contained" onClick={createGroup}>
+              {t("notifications.createGroup")}
+            </Button>
+          </Stack>
+          <Table size="small" sx={{ mt: 1 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>{t("notifications.groupName")}</TableCell>
+                <TableCell align="right">{t("common.actions")}</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {groups.map((g) => (
+                <TableRow
+                  key={g.id}
+                  hover
+                  selected={sel?.id === g.id}
+                  sx={{ cursor: "pointer" }}
+                  onClick={() => setSel(g)}
+                >
+                  <TableCell>{g.name}</TableCell>
+                  <TableCell align="right">
+                    <Button
+                      size="small"
+                      color="error"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeGroup(g);
+                      }}
+                    >
+                      {t("common.delete")}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </AccordionDetails>
+      </Accordion>
+      <Accordion
+        key={sel ? `g-members-${sel.id}` : "g-members-none"}
+        defaultExpanded={Boolean(sel)}
+        disableGutters
+        elevation={0}
+        sx={NOTIF_OUTLINE_ACCORDION_SX}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography fontWeight={600} color={sel ? "text.primary" : "text.secondary"}>
+            {t("notifications.panelGroupMembersTitle")}
+            {sel ? ` — ${sel.name}` : ""}
+          </Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          {sel ? (
+            <>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                {t("notifications.membersFor")} {sel.name}
+              </Typography>
+              <Stack spacing={0.5} sx={{ maxHeight: 280, overflow: "auto" }}>
+                {users.map((u) => (
+                  <FormControlLabel
+                    key={u.id}
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={!!memberIds[u.id]}
+                        onChange={(_, v) =>
+                          setMemberIds((prev) => ({ ...prev, [u.id]: v }))
+                        }
+                      />
+                    }
+                    label={`${u.display_name || u.username} (#${u.id})`}
+                  />
+                ))}
+              </Stack>
+              <Button sx={{ mt: 1 }} variant="outlined" onClick={saveMembers}>
+                {t("notifications.saveMembers")}
+              </Button>
+            </>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              {t("notifications.selectGroupForMembers")}
+            </Typography>
+          )}
+        </AccordionDetails>
+      </Accordion>
     </Stack>
   );
 }
@@ -551,62 +605,101 @@ function EventsSection() {
   return (
     <Stack spacing={2}>
       {err && <Alert severity="error">{err}</Alert>}
-      <Typography variant="subtitle2">{t("notifications.createEvent")}</Typography>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-        <TextField
-          size="small"
-          label={t("notifications.eventKey")}
-          value={ek}
-          onChange={(e) => setEk(e.target.value)}
-          placeholder="task.reminder"
-        />
-        <TextField
-          size="small"
-          label={t("notifications.eventDisplayName")}
-          value={dn}
-          onChange={(e) => setDn(e.target.value)}
-          sx={{ flex: 1 }}
-        />
-        <Button variant="contained" onClick={createEvent}>
-          {t("common.add")}
-        </Button>
-      </Stack>
-      <Table size="small">
-        <TableHead>
-          <TableRow>
-            <TableCell>{t("notifications.eventKey")}</TableCell>
-            <TableCell>{t("notifications.eventDisplayName")}</TableCell>
-            <TableCell align="right">{t("common.actions")}</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {events.map((ev) => (
-            <TableRow
-              key={ev.id}
-              hover
-              selected={sel?.id === ev.id}
-              sx={{ cursor: "pointer" }}
-              onClick={() => setSel(ev)}
-            >
-              <TableCell>{ev.event_key}</TableCell>
-              <TableCell>{ev.display_name}</TableCell>
-              <TableCell align="right">
-                <Button
-                  size="small"
-                  color="error"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removeEvent(ev);
-                  }}
+      <Accordion
+        defaultExpanded
+        disableGutters
+        elevation={0}
+        sx={NOTIF_OUTLINE_ACCORDION_SX}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Stack direction="row" alignItems="baseline" spacing={1} flexWrap="wrap">
+            <Typography fontWeight={600}>
+              {t("notifications.panelEventsTitle")}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              ({events.length})
+            </Typography>
+          </Stack>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            {t("notifications.createEvent")}
+          </Typography>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <TextField
+              size="small"
+              label={t("notifications.eventKey")}
+              value={ek}
+              onChange={(e) => setEk(e.target.value)}
+              placeholder="task.reminder"
+            />
+            <TextField
+              size="small"
+              label={t("notifications.eventDisplayName")}
+              value={dn}
+              onChange={(e) => setDn(e.target.value)}
+              sx={{ flex: 1 }}
+            />
+            <Button variant="contained" onClick={createEvent}>
+              {t("common.add")}
+            </Button>
+          </Stack>
+          <Table size="small" sx={{ mt: 1 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>{t("notifications.eventKey")}</TableCell>
+                <TableCell>{t("notifications.eventDisplayName")}</TableCell>
+                <TableCell align="right">{t("common.actions")}</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {events.map((ev) => (
+                <TableRow
+                  key={ev.id}
+                  hover
+                  selected={sel?.id === ev.id}
+                  sx={{ cursor: "pointer" }}
+                  onClick={() => setSel(ev)}
                 >
-                  {t("common.delete")}
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      {sel && (
+                  <TableCell>{ev.event_key}</TableCell>
+                  <TableCell>{ev.display_name}</TableCell>
+                  <TableCell align="right">
+                    <Button
+                      size="small"
+                      color="error"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeEvent(ev);
+                      }}
+                    >
+                      {t("common.delete")}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </AccordionDetails>
+      </Accordion>
+      <Accordion
+        key={sel ? `evt-route-${sel.id}` : "evt-route-none"}
+        defaultExpanded={Boolean(sel)}
+        disableGutters
+        elevation={0}
+        sx={NOTIF_OUTLINE_ACCORDION_SX}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography fontWeight={600} color={sel ? "text.primary" : "text.secondary"}>
+            {t("notifications.panelRoutingTitle")}
+            {sel ? ` — ${sel.event_key}` : ""}
+          </Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+          {!sel ? (
+            <Typography variant="body2" color="text.secondary">
+              {t("notifications.selectEventForRouting")}
+            </Typography>
+          ) : (
         <Paper variant="outlined" sx={{ p: 2 }}>
           <Typography fontWeight={600} gutterBottom>
             {t("notifications.routingFor")} {sel.event_key}
@@ -800,11 +893,22 @@ function EventsSection() {
             </>
           )}
         </Paper>
-      )}
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography fontWeight={600} gutterBottom>
-          {t("notifications.manualDispatch")}
-        </Typography>
+          )}
+        </AccordionDetails>
+      </Accordion>
+      <Accordion
+        defaultExpanded={false}
+        disableGutters
+        elevation={0}
+        sx={NOTIF_OUTLINE_ACCORDION_SX}
+      >
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Typography fontWeight={600}>
+            {t("notifications.panelTestTitle")}
+          </Typography>
+        </AccordionSummary>
+        <AccordionDetails>
+      <Paper variant="outlined" sx={{ p: 2, width: "100%" }}>
         <Typography
           variant="caption"
           color="text.secondary"
@@ -817,9 +921,17 @@ function EventsSection() {
           variant="caption"
           color="primary.main"
           display="block"
-          sx={{ mb: 1 }}
+          sx={{ mb: 0.5 }}
         >
           {t("notifications.dispatchSyncedHint")}
+        </Typography>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          display="block"
+          sx={{ mb: 1 }}
+        >
+          {t("notifications.emailNotConfiguredHint")}
         </Typography>
         <Stack spacing={1} sx={{ maxWidth: 480 }}>
           <TextField
@@ -850,20 +962,33 @@ function EventsSection() {
             {dispatching ? "…" : t("notifications.sendTest")}
           </Button>
           {dispatchResult && (
-            <Alert
-              severity={dispatchResult.ok ? "success" : "warning"}
-              sx={{ mt: 1 }}
-            >
-              <Typography variant="subtitle2" gutterBottom>
-                {t("notifications.dispatchResult")}
-              </Typography>
-              <Box component="pre" sx={{ m: 0, fontSize: 12, whiteSpace: "pre-wrap" }}>
-                {JSON.stringify(dispatchResult, null, 2)}
-              </Box>
-            </Alert>
+            <>
+              <Alert
+                severity={dispatchResult.ok ? "success" : "warning"}
+                sx={{ mt: 1 }}
+              >
+                <Typography variant="subtitle2" gutterBottom>
+                  {t("notifications.dispatchResult")}
+                </Typography>
+                <Box
+                  component="pre"
+                  sx={{ m: 0, fontSize: 12, whiteSpace: "pre-wrap" }}
+                >
+                  {JSON.stringify(dispatchResult, null, 2)}
+                </Box>
+              </Alert>
+              {dispatchResult.ok &&
+                Number(dispatchResult.recipients) === 0 && (
+                  <Alert severity="warning" sx={{ mt: 1 }}>
+                    {t("notifications.dispatchZeroRecipients")}
+                  </Alert>
+                )}
+            </>
           )}
         </Stack>
       </Paper>
+        </AccordionDetails>
+      </Accordion>
     </Stack>
   );
 }

@@ -366,10 +366,23 @@ export const TRANSLATIONS = {
     "notifications.dispatchSyncedHint":
       "Event key is filled from the event row you selected above. It must match a defined event (same code your app sends).",
     "notifications.dispatchResult": "Last send result",
+    "notifications.panelEventsTitle": "Event definitions",
+    "notifications.panelRoutingTitle": "Routing & recipients",
+    "notifications.panelTestTitle": "Test / manual dispatch",
+    "notifications.selectEventForRouting":
+      "Select an event in the table above to edit who receives it, then click Save routing.",
+    "notifications.dispatchZeroRecipients":
+      "No recipients matched. Save routing after changing rules, and ensure this organization has users (or groups with members).",
+    "notifications.emailNotConfiguredHint":
+      "Email (and SMS/WhatsApp) are not fully wired yet: the API records a placeholder log only until you connect a provider (e.g. Resend, SendGrid, SMTP). Push uses OneSignal when configured.",
     "notifications.excludeUsersHelp":
       "Subtracts these users after includes are applied (e.g. when “all users” is included).",
     "notifications.noGroupsForRouting":
       "No notification groups yet. Create them on the Groups tab, then pick them here.",
+    "notifications.panelGroupsListTitle": "Notification groups",
+    "notifications.panelGroupMembersTitle": "Members — selected group",
+    "notifications.selectGroupForMembers":
+      "Select a group in the table above to assign members.",
   },
   es: {
     "nav.home": "Inicio",
@@ -740,9 +753,22 @@ export const TRANSLATIONS = {
     "notifications.dispatchSyncedHint":
       "La clave se toma del evento seleccionado arriba. Debe coincidir con un evento definido (el mismo código que envía la app).",
     "notifications.dispatchResult": "Último resultado de envío",
+    "notifications.panelEventsTitle": "Definición de eventos",
+    "notifications.panelRoutingTitle": "Reglas y destinatarios",
+    "notifications.panelTestTitle": "Prueba / envío manual",
+    "notifications.selectEventForRouting":
+      "Seleccione un evento en la tabla y guarde las reglas para definir destinatarios.",
+    "notifications.dispatchZeroRecipients":
+      "Ningún destinatario. Guarde las reglas tras editarlas y compruebe que hay usuarios (o grupos con miembros).",
+    "notifications.emailNotConfiguredHint":
+      "Correo (y SMS/WhatsApp) aún no están integrados: la API solo registra un marcador hasta conectar un proveedor (Resend, SendGrid, SMTP). Push usa OneSignal si está configurado.",
     "notifications.excludeUsersHelp":
       "Quita estos usuarios después de las inclusiones (p. ej. si incluyó todos).",
     "notifications.noGroupsForRouting":
       "Aún no hay grupos. Créelos en la pestaña Grupos y luego elija aquí.",
+    "notifications.panelGroupsListTitle": "Grupos de notificación",
+    "notifications.panelGroupMembersTitle": "Miembros — grupo seleccionado",
+    "notifications.selectGroupForMembers":
+      "Seleccione un grupo en la tabla para asignar miembros.",
   },
 };
