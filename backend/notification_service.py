@@ -74,6 +74,22 @@ def _user_in_org(cursor, organization_id: int, user_id: int) -> bool:
     return cursor.fetchone() is not None
 
 
+def _all_user_ids_in_org(cursor, organization_id: int) -> set[int]:
+    """Active Washpro users for this tenant (for 'all users' include rule)."""
+    cursor.execute(
+        """
+        SELECT id FROM users
+        WHERE organization_id = %s AND COALESCE(active, 1) = 1
+        """,
+        (int(organization_id),),
+    )
+    return {int(r["id"]) for r in (cursor.fetchall() or []) if r.get("id") is not None}
+
+
+# Sentinel: include/exclude with target_type=user and target_id=-1 means entire tenant user set.
+_ALL_USERS_SENTINEL = -1
+
+
 def resolve_recipient_user_ids(cursor, organization_id: int, event_definition_id: int) -> set[int]:
     """
     Apply include/exclude rules for an event. Returns Washpro user ids in the tenant.
@@ -96,7 +112,9 @@ def resolve_recipient_user_ids(cursor, organization_id: int, event_definition_id
         rk = (r.get("rule_kind") or "").strip()
         bucket = include if rk == "include" else exclude
         if tt == "user":
-            if _user_in_org(cursor, organization_id, tid):
+            if tid == _ALL_USERS_SENTINEL:
+                bucket |= _all_user_ids_in_org(cursor, organization_id)
+            elif _user_in_org(cursor, organization_id, tid):
                 bucket.add(tid)
         elif tt == "group":
             mids = _group_member_ids(cursor, organization_id, tid)

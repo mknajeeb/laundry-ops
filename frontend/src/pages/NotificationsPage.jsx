@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
   Checkbox,
+  CircularProgress,
   FormControlLabel,
-  MenuItem,
   Paper,
   Stack,
   Tab,
@@ -162,11 +166,16 @@ function GroupsSection() {
   const loadUsers = useCallback(async () => {
     try {
       const res = await getUsers();
-      setUsers(res.data || []);
-    } catch {
+      setUsers(Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
       setUsers([]);
+      setErr(
+        e?.response?.data?.error ||
+          e?.message ||
+          t("notifications.usersLoadError")
+      );
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     loadGroups();
@@ -305,6 +314,8 @@ function GroupsSection() {
   );
 }
 
+const ALL_USERS_SENTINEL = -1;
+
 function EventsSection() {
   const { t } = useI18n();
   const [events, setEvents] = useState([]);
@@ -313,13 +324,24 @@ function EventsSection() {
   const [dn, setDn] = useState("");
   const [sel, setSel] = useState(null);
   const [aud, setAud] = useState([]);
-  const [incType, setIncType] = useState("user");
-  const [incId, setIncId] = useState("");
-  const [excType, setExcType] = useState("user");
-  const [excId, setExcId] = useState("");
+  const [audLoading, setAudLoading] = useState(false);
+  const [tenantUsers, setTenantUsers] = useState([]);
+  const [tenantGroups, setTenantGroups] = useState([]);
+  const [listsLoading, setListsLoading] = useState(true);
+  const [userFilter, setUserFilter] = useState("");
+  const [routingSaving, setRoutingSaving] = useState(false);
+  const [draft, setDraft] = useState({
+    incAllUsers: false,
+    incUsers: /** @type {Set<number>} */ (new Set()),
+    incGroups: /** @type {Set<number>} */ (new Set()),
+    excUsers: /** @type {Set<number>} */ (new Set()),
+    excGroups: /** @type {Set<number>} */ (new Set()),
+  });
   const [dispatchKey, setDispatchKey] = useState("");
   const [dispatchTitle, setDispatchTitle] = useState("Test");
   const [dispatchBody, setDispatchBody] = useState("Hello from Laundry Ops");
+  const [dispatching, setDispatching] = useState(false);
+  const [dispatchResult, setDispatchResult] = useState(null);
 
   const load = useCallback(async () => {
     setErr("");
@@ -331,81 +353,155 @@ function EventsSection() {
     }
   }, []);
 
+  const loadLists = useCallback(async () => {
+    setListsLoading(true);
+    setErr("");
+    try {
+      const [u, g] = await Promise.all([getUsers(), getNotificationGroups()]);
+      setTenantUsers(Array.isArray(u.data) ? u.data : []);
+      setTenantGroups(g.data?.groups || []);
+    } catch (e) {
+      setErr(
+        e?.response?.data?.error ||
+          e?.message ||
+          t("notifications.usersLoadError")
+      );
+      setTenantUsers([]);
+      setTenantGroups([]);
+    } finally {
+      setListsLoading(false);
+    }
+  }, [t]);
+
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    loadLists();
+  }, [loadLists]);
+
+  useEffect(() => {
+    if (sel?.event_key) setDispatchKey(sel.event_key);
+  }, [sel]);
 
   useEffect(() => {
     if (!sel) {
       setAud([]);
       return;
     }
+    let cancelled = false;
+    setAud([]);
     (async () => {
+      setAudLoading(true);
       try {
         const res = await getNotificationEventAudiences(sel.id);
-        setAud(res.data?.audiences || []);
+        if (!cancelled) setAud(res.data?.audiences || []);
       } catch (e) {
-        setErr(e?.response?.data?.error || e?.message || "Load failed");
+        if (!cancelled) {
+          setErr(e?.response?.data?.error || e?.message || "Load failed");
+        }
+      } finally {
+        if (!cancelled) setAudLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [sel]);
 
-  const includes = useMemo(
-    () => aud.filter((a) => a.rule_kind === "include"),
-    [aud]
-  );
-  const excludes = useMemo(
-    () => aud.filter((a) => a.rule_kind === "exclude"),
-    [aud]
-  );
+  useEffect(() => {
+    if (!sel) return;
+    const inc = aud.filter((a) => a.rule_kind === "include");
+    const exc = aud.filter((a) => a.rule_kind === "exclude");
+    setDraft({
+      incAllUsers: inc.some(
+        (a) =>
+          a.target_type === "user" &&
+          Number(a.target_id) === ALL_USERS_SENTINEL
+      ),
+      incUsers: new Set(
+        inc
+          .filter(
+            (a) =>
+              a.target_type === "user" &&
+              Number(a.target_id) !== ALL_USERS_SENTINEL
+          )
+          .map((a) => Number(a.target_id))
+      ),
+      incGroups: new Set(
+        inc
+          .filter((a) => a.target_type === "group")
+          .map((a) => Number(a.target_id))
+      ),
+      excUsers: new Set(
+        exc
+          .filter((a) => a.target_type === "user")
+          .map((a) => Number(a.target_id))
+      ),
+      excGroups: new Set(
+        exc
+          .filter((a) => a.target_type === "group")
+          .map((a) => Number(a.target_id))
+      ),
+    });
+  }, [sel, aud]);
 
-  const pushAudience = async (kind, type, id) => {
-    if (!sel || !id) return;
-    const n = Number(id);
-    if (!Number.isFinite(n)) return;
-    const inc = includes.map((a) => ({ type: a.target_type, id: a.target_id }));
-    const exc = excludes.map((a) => ({ type: a.target_type, id: a.target_id }));
-    const row = { type, id: n };
-    const key = `${type}:${n}`;
-    if (kind === "include") {
-      if (inc.some((x) => `${x.type}:${x.id}` === key)) return;
-      inc.push(row);
-    } else {
-      if (exc.some((x) => `${x.type}:${x.id}` === key)) return;
-      exc.push(row);
+  const filteredUsers = useMemo(() => {
+    const q = userFilter.trim().toLowerCase();
+    if (!q) return tenantUsers;
+    return tenantUsers.filter((u) => {
+      const a = `${u.display_name || ""} ${u.username || ""}`.toLowerCase();
+      return a.includes(q) || String(u.id).includes(q);
+    });
+  }, [tenantUsers, userFilter]);
+
+  const buildPayload = () => {
+    const includes = [];
+    if (draft.incAllUsers) {
+      includes.push({ type: "user", id: ALL_USERS_SENTINEL });
     }
+    draft.incUsers.forEach((id) => includes.push({ type: "user", id }));
+    draft.incGroups.forEach((id) => includes.push({ type: "group", id }));
+    const excludes = [];
+    draft.excUsers.forEach((id) => excludes.push({ type: "user", id }));
+    draft.excGroups.forEach((id) => excludes.push({ type: "group", id }));
+    return { includes, excludes };
+  };
+
+  const saveRouting = async () => {
+    if (!sel) return;
+    setRoutingSaving(true);
     setErr("");
     try {
-      await putNotificationEventAudiences(sel.id, { includes: inc, excludes: exc });
+      const { includes, excludes } = buildPayload();
+      await putNotificationEventAudiences(sel.id, { includes, excludes });
       const res = await getNotificationEventAudiences(sel.id);
       setAud(res.data?.audiences || []);
     } catch (e) {
       setErr(e?.response?.data?.error || e?.message || "Update failed");
+    } finally {
+      setRoutingSaving(false);
     }
   };
 
-  const removeAudienceRow = async (row, fromInclude) => {
-    if (!sel) return;
-    let inc = includes.map((a) => ({ type: a.target_type, id: a.target_id }));
-    let exc = excludes.map((a) => ({ type: a.target_type, id: a.target_id }));
-    const match = (x) => x.type === row.target_type && x.id === row.target_id;
-    if (fromInclude) inc = inc.filter((x) => !match(x));
-    else exc = exc.filter((x) => !match(x));
-    setErr("");
-    try {
-      await putNotificationEventAudiences(sel.id, { includes: inc, excludes: exc });
-      const res = await getNotificationEventAudiences(sel.id);
-      setAud(res.data?.audiences || []);
-    } catch (e) {
-      setErr(e?.response?.data?.error || e?.message || "Update failed");
-    }
+  const toggleSet = (key, id, on) => {
+    setDraft((d) => {
+      const next = new Set(d[key]);
+      if (on) next.add(id);
+      else next.delete(id);
+      return { ...d, [key]: next };
+    });
   };
 
   const createEvent = async () => {
     if (!ek.trim() || !dn.trim()) return;
     setErr("");
     try {
-      await postNotificationEvent({ event_key: ek.trim(), display_name: dn.trim() });
+      await postNotificationEvent({
+        event_key: ek.trim(),
+        display_name: dn.trim(),
+      });
       setEk("");
       setDn("");
       await load();
@@ -428,15 +524,27 @@ function EventsSection() {
 
   const runDispatch = async () => {
     setErr("");
+    setDispatchResult(null);
+    setDispatching(true);
     try {
       const res = await postNotificationDispatch({
         event_key: dispatchKey.trim(),
         title: dispatchTitle,
         body: dispatchBody,
       });
-      alert(JSON.stringify(res.data, null, 2));
+      setDispatchResult(res.data);
     } catch (e) {
-      setErr(e?.response?.data?.error || e?.message || "Dispatch failed");
+      const data = e?.response?.data;
+      setDispatchResult(
+        data && typeof data === "object"
+          ? data
+          : { ok: false, error: e?.message || "Dispatch failed" }
+      );
+      if (data?.error && typeof data.error === "string") {
+        setErr(data.error);
+      }
+    } finally {
+      setDispatching(false);
     }
   };
 
@@ -483,7 +591,14 @@ function EventsSection() {
               <TableCell>{ev.event_key}</TableCell>
               <TableCell>{ev.display_name}</TableCell>
               <TableCell align="right">
-                <Button size="small" color="error" onClick={(e) => { e.stopPropagation(); removeEvent(ev); }}>
+                <Button
+                  size="small"
+                  color="error"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeEvent(ev);
+                  }}
+                >
                   {t("common.delete")}
                 </Button>
               </TableCell>
@@ -496,73 +611,215 @@ function EventsSection() {
           <Typography fontWeight={600} gutterBottom>
             {t("notifications.routingFor")} {sel.event_key}
           </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            display="block"
+            gutterBottom
+          >
             {t("notifications.routingHelp")}
           </Typography>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1 }}>
-            <TextField select size="small" label={t("notifications.include")} value={incType} onChange={(e) => setIncType(e.target.value)} sx={{ minWidth: 120 }}>
-              <MenuItem value="user">user</MenuItem>
-              <MenuItem value="group">group</MenuItem>
-            </TextField>
-            <TextField
-              size="small"
-              label="ID"
-              value={incId}
-              onChange={(e) => setIncId(e.target.value)}
-            />
-            <Button variant="outlined" onClick={() => { pushAudience("include", incType, incId); setIncId(""); }}>
-              {t("notifications.addInclude")}
-            </Button>
-          </Stack>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
-            <TextField select size="small" label={t("notifications.exclude")} value={excType} onChange={(e) => setExcType(e.target.value)} sx={{ minWidth: 120 }}>
-              <MenuItem value="user">user</MenuItem>
-              <MenuItem value="group">group</MenuItem>
-            </TextField>
-            <TextField
-              size="small"
-              label="ID"
-              value={excId}
-              onChange={(e) => setExcId(e.target.value)}
-            />
-            <Button variant="outlined" color="warning" onClick={() => { pushAudience("exclude", excType, excId); setExcId(""); }}>
-              {t("notifications.addExclude")}
-            </Button>
-          </Stack>
-          <Typography variant="subtitle2">{t("notifications.includeList")}</Typography>
-          <Stack spacing={0.5} sx={{ mb: 1 }}>
-            {includes.map((a) => (
-              <Stack direction="row" key={`${a.target_type}-${a.target_id}-inc`} spacing={1} alignItems="center">
-                <Typography variant="body2">
-                  {a.target_type} #{a.target_id}
-                </Typography>
-                <Button size="small" onClick={() => removeAudienceRow(a, true)}>
-                  {t("common.delete")}
-                </Button>
-              </Stack>
-            ))}
-          </Stack>
-          <Typography variant="subtitle2">{t("notifications.excludeList")}</Typography>
-          <Stack spacing={0.5}>
-            {excludes.map((a) => (
-              <Stack direction="row" key={`${a.target_type}-${a.target_id}-exc`} spacing={1} alignItems="center">
-                <Typography variant="body2">
-                  {a.target_type} #{a.target_id}
-                </Typography>
-                <Button size="small" onClick={() => removeAudienceRow(a, false)}>
-                  {t("common.delete")}
-                </Button>
-              </Stack>
-            ))}
-          </Stack>
+          {audLoading || listsLoading ? (
+            <Stack alignItems="center" py={2}>
+              <CircularProgress size={28} />
+            </Stack>
+          ) : (
+            <>
+              <FormControlLabel
+                sx={{ mb: 1, display: "block" }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={draft.incAllUsers}
+                    onChange={(_, v) =>
+                      setDraft((d) => ({
+                        ...d,
+                        incAllUsers: v,
+                        incUsers: v ? new Set() : d.incUsers,
+                      }))
+                    }
+                  />
+                }
+                label={t("notifications.includeAllUsers")}
+              />
+              <Accordion defaultExpanded>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography fontWeight={600}>
+                    {t("notifications.routingIncludeUsers")}
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    sx={{ mb: 1 }}
+                    label={t("notifications.filterUsers")}
+                    value={userFilter}
+                    onChange={(e) => setUserFilter(e.target.value)}
+                    disabled={draft.incAllUsers}
+                  />
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mb: 0.5 }}
+                  >
+                    {t("notifications.tenantUsers")}
+                  </Typography>
+                  {!tenantUsers.length ? (
+                    <Typography variant="body2" color="text.secondary">
+                      {t("notifications.noUsersInTenant")}
+                    </Typography>
+                  ) : (
+                    <Stack
+                      spacing={0.25}
+                      sx={{ maxHeight: 240, overflow: "auto" }}
+                    >
+                      {filteredUsers.map((u) => (
+                        <FormControlLabel
+                          key={u.id}
+                          control={
+                            <Checkbox
+                              size="small"
+                              checked={draft.incUsers.has(u.id)}
+                              disabled={draft.incAllUsers}
+                              onChange={(_, v) =>
+                                toggleSet("incUsers", u.id, v)
+                              }
+                            />
+                          }
+                          label={`${u.display_name || u.username} (#${u.id})`}
+                        />
+                      ))}
+                    </Stack>
+                  )}
+                </AccordionDetails>
+              </Accordion>
+              <Accordion defaultExpanded>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography fontWeight={600}>
+                    {t("notifications.routingIncludeGroups")}
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  {!tenantGroups.length ? (
+                    <Typography variant="body2" color="text.secondary">
+                      {t("notifications.noGroupsForRouting")}
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.25}>
+                      {tenantGroups.map((g) => (
+                        <FormControlLabel
+                          key={g.id}
+                          control={
+                            <Checkbox
+                              size="small"
+                              checked={draft.incGroups.has(g.id)}
+                              onChange={(_, v) =>
+                                toggleSet("incGroups", g.id, v)
+                              }
+                            />
+                          }
+                          label={`${g.name} (#${g.id})`}
+                        />
+                      ))}
+                    </Stack>
+                  )}
+                </AccordionDetails>
+              </Accordion>
+              <Accordion>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography fontWeight={600}>
+                    {t("notifications.routingExcludeUsers")}
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    display="block"
+                    sx={{ mb: 1 }}
+                  >
+                    {t("notifications.excludeUsersHelp")}
+                  </Typography>
+                  <Stack
+                    spacing={0.25}
+                    sx={{ maxHeight: 200, overflow: "auto" }}
+                  >
+                    {tenantUsers.map((u) => (
+                      <FormControlLabel
+                        key={`exc-${u.id}`}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={draft.excUsers.has(u.id)}
+                            onChange={(_, v) =>
+                              toggleSet("excUsers", u.id, v)
+                            }
+                          />
+                        }
+                        label={`${u.display_name || u.username} (#${u.id})`}
+                      />
+                    ))}
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+              <Accordion>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography fontWeight={600}>
+                    {t("notifications.routingExcludeGroups")}
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Stack spacing={0.25}>
+                    {tenantGroups.map((g) => (
+                      <FormControlLabel
+                        key={`excg-${g.id}`}
+                        control={
+                          <Checkbox
+                            size="small"
+                            checked={draft.excGroups.has(g.id)}
+                            onChange={(_, v) =>
+                              toggleSet("excGroups", g.id, v)
+                            }
+                          />
+                        }
+                        label={`${g.name} (#${g.id})`}
+                      />
+                    ))}
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+              <Button
+                variant="contained"
+                onClick={saveRouting}
+                disabled={routingSaving}
+              >
+                {routingSaving ? t("common.saving") : t("notifications.saveRouting")}
+              </Button>
+            </>
+          )}
         </Paper>
       )}
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Typography fontWeight={600} gutterBottom>
           {t("notifications.manualDispatch")}
         </Typography>
-        <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          display="block"
+          gutterBottom
+        >
           {t("notifications.dispatchHelp")}
+        </Typography>
+        <Typography
+          variant="caption"
+          color="primary.main"
+          display="block"
+          sx={{ mb: 1 }}
+        >
+          {t("notifications.dispatchSyncedHint")}
         </Typography>
         <Stack spacing={1} sx={{ maxWidth: 480 }}>
           <TextField
@@ -571,11 +828,40 @@ function EventsSection() {
             value={dispatchKey}
             onChange={(e) => setDispatchKey(e.target.value)}
           />
-          <TextField size="small" label={t("notifications.dispatchTitle")} value={dispatchTitle} onChange={(e) => setDispatchTitle(e.target.value)} />
-          <TextField size="small" label={t("notifications.dispatchBody")} value={dispatchBody} onChange={(e) => setDispatchBody(e.target.value)} multiline minRows={2} />
-          <Button variant="contained" onClick={runDispatch}>
-            {t("notifications.sendTest")}
+          <TextField
+            size="small"
+            label={t("notifications.dispatchTitle")}
+            value={dispatchTitle}
+            onChange={(e) => setDispatchTitle(e.target.value)}
+          />
+          <TextField
+            size="small"
+            label={t("notifications.dispatchBody")}
+            value={dispatchBody}
+            onChange={(e) => setDispatchBody(e.target.value)}
+            multiline
+            minRows={2}
+          />
+          <Button
+            variant="contained"
+            onClick={runDispatch}
+            disabled={dispatching || !dispatchKey.trim()}
+          >
+            {dispatching ? "…" : t("notifications.sendTest")}
           </Button>
+          {dispatchResult && (
+            <Alert
+              severity={dispatchResult.ok ? "success" : "warning"}
+              sx={{ mt: 1 }}
+            >
+              <Typography variant="subtitle2" gutterBottom>
+                {t("notifications.dispatchResult")}
+              </Typography>
+              <Box component="pre" sx={{ m: 0, fontSize: 12, whiteSpace: "pre-wrap" }}>
+                {JSON.stringify(dispatchResult, null, 2)}
+              </Box>
+            </Alert>
+          )}
         </Stack>
       </Paper>
     </Stack>

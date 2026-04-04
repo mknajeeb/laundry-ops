@@ -338,7 +338,7 @@ export const TRANSLATIONS = {
     "notifications.eventDisplayName": "Display name",
     "notifications.routingFor": "Routing —",
     "notifications.routingHelp":
-      "Recipients = all included users and expanded groups, minus excluded users and expanded groups. Use your Washpro user id and notification group id.",
+      "Recipients = union of included users and group members, minus excluded users and group members. Pick users and groups below, or include “all active users” then exclude specific people or groups.",
     "notifications.include": "Include",
     "notifications.exclude": "Exclude",
     "notifications.addInclude": "Add include",
@@ -352,6 +352,24 @@ export const TRANSLATIONS = {
     "notifications.dispatchBody": "Message",
     "notifications.sendTest": "Send",
     "notifications.confirmDeleteEvent": "Delete this event definition?",
+    "notifications.tenantUsers": "Users in this organization",
+    "notifications.usersLoadError": "Could not load users for this tenant.",
+    "notifications.groupsLoadError": "Could not load notification groups.",
+    "notifications.noUsersInTenant": "No users found for this organization.",
+    "notifications.filterUsers": "Filter by name",
+    "notifications.includeAllUsers": "All active users in this organization",
+    "notifications.routingIncludeUsers": "Include — users",
+    "notifications.routingIncludeGroups": "Include — groups",
+    "notifications.routingExcludeUsers": "Exclude — users",
+    "notifications.routingExcludeGroups": "Exclude — groups",
+    "notifications.saveRouting": "Save routing",
+    "notifications.dispatchSyncedHint":
+      "Event key is filled from the event row you selected above. It must match a defined event (same code your app sends).",
+    "notifications.dispatchResult": "Last send result",
+    "notifications.excludeUsersHelp":
+      "Subtracts these users after includes are applied (e.g. when “all users” is included).",
+    "notifications.noGroupsForRouting":
+      "No notification groups yet. Create them on the Groups tab, then pick them here.",
   },
   es: {
     "nav.home": "Inicio",
@@ -694,7 +712,7 @@ export const TRANSLATIONS = {
     "notifications.eventDisplayName": "Nombre visible",
     "notifications.routingFor": "Reglas —",
     "notifications.routingHelp":
-      "Destinatarios = incluidos y grupos expandidos, menos excluidos. Use el id de usuario Washpro y el id de grupo.",
+      "Destinatarios = unión de usuarios y miembros de grupos, menos exclusiones. Elija abajo, o incluya todos los usuarios activos y excluya personas o grupos.",
     "notifications.include": "Incluir",
     "notifications.exclude": "Excluir",
     "notifications.addInclude": "Añadir inclusión",
@@ -708,5 +726,23 @@ export const TRANSLATIONS = {
     "notifications.dispatchBody": "Mensaje",
     "notifications.sendTest": "Enviar",
     "notifications.confirmDeleteEvent": "¿Eliminar este evento?",
+    "notifications.tenantUsers": "Usuarios de la organización",
+    "notifications.usersLoadError": "No se pudieron cargar los usuarios.",
+    "notifications.groupsLoadError": "No se pudieron cargar los grupos.",
+    "notifications.noUsersInTenant": "No hay usuarios en esta organización.",
+    "notifications.filterUsers": "Filtrar por nombre",
+    "notifications.includeAllUsers": "Todos los usuarios activos de la organización",
+    "notifications.routingIncludeUsers": "Incluir — usuarios",
+    "notifications.routingIncludeGroups": "Incluir — grupos",
+    "notifications.routingExcludeUsers": "Excluir — usuarios",
+    "notifications.routingExcludeGroups": "Excluir — grupos",
+    "notifications.saveRouting": "Guardar reglas",
+    "notifications.dispatchSyncedHint":
+      "La clave se toma del evento seleccionado arriba. Debe coincidir con un evento definido (el mismo código que envía la app).",
+    "notifications.dispatchResult": "Último resultado de envío",
+    "notifications.excludeUsersHelp":
+      "Quita estos usuarios después de las inclusiones (p. ej. si incluyó todos).",
+    "notifications.noGroupsForRouting":
+      "Aún no hay grupos. Créelos en la pestaña Grupos y luego elija aquí.",
   },
 };

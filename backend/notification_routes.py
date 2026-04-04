@@ -5,6 +5,30 @@ from __future__ import annotations
 from flask import jsonify, request
 
 
+def _notification_org_id(me):
+    """
+    Require a real tenant organization_id. Prevents rows being written with organization_id=0
+    when the session has no org (breaks lists and member joins).
+    """
+    raw = me.get("organization_id")
+    if raw is None:
+        return None, jsonify(
+            {
+                "error": (
+                    "No organization on this session. Use a tenant user (assigned to an organization) "
+                    "and open Notifications from the tenant app, not platform-only mode."
+                ),
+            },
+        ), 400
+    try:
+        oid = int(raw)
+    except (TypeError, ValueError):
+        return None, jsonify({"error": "Invalid organization"}), 400
+    if oid < 1:
+        return None, jsonify({"error": "Invalid organization"}), 400
+    return oid, None, None
+
+
 def register_notification_routes(app):
     """Register on app; lazy-imports app helpers to avoid circular imports."""
 
@@ -21,7 +45,9 @@ def register_notification_routes(app):
                 return err, st
             if not table_exists(cursor, "notification_groups"):
                 return jsonify({"error": "Run backend/sql/notification_module_v1.sql"}), 503
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 """
                 SELECT id, organization_id, name, description, created_at, updated_at
@@ -52,7 +78,9 @@ def register_notification_routes(app):
             if not name:
                 return jsonify({"error": "name is required"}), 400
             desc = (body.get("description") or "").strip() or None
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 """
                 INSERT INTO notification_groups (organization_id, name, description)
@@ -84,7 +112,9 @@ def register_notification_routes(app):
                 return err, st
             if not table_exists(cursor, "notification_groups"):
                 return jsonify({"error": "Run backend/sql/notification_module_v1.sql"}), 503
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 "SELECT id FROM notification_groups WHERE id=%s AND organization_id=%s",
                 (group_id, oid),
@@ -130,7 +160,9 @@ def register_notification_routes(app):
                 return err, st
             if not table_exists(cursor, "notification_group_members"):
                 return jsonify({"error": "Run backend/sql/notification_module_v1.sql"}), 503
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 "SELECT id FROM notification_groups WHERE id=%s AND organization_id=%s",
                 (group_id, oid),
@@ -192,7 +224,9 @@ def register_notification_routes(app):
                 return err, st
             if not table_exists(cursor, "notification_event_definitions"):
                 return jsonify({"error": "Run backend/sql/notification_module_v1.sql"}), 503
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 """
                 SELECT id, organization_id, event_key, display_name, description, is_active, created_at, updated_at
@@ -224,7 +258,9 @@ def register_notification_routes(app):
             if not ek or not dn:
                 return jsonify({"error": "event_key and display_name are required"}), 400
             desc = (body.get("description") or "").strip() or None
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 """
                 INSERT INTO notification_event_definitions
@@ -257,7 +293,9 @@ def register_notification_routes(app):
                 return err, st
             if not table_exists(cursor, "notification_event_definitions"):
                 return jsonify({"error": "Run backend/sql/notification_module_v1.sql"}), 503
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 "SELECT id FROM notification_event_definitions WHERE id=%s AND organization_id=%s",
                 (event_id, oid),
@@ -312,7 +350,9 @@ def register_notification_routes(app):
                 return err, st
             if not table_exists(cursor, "notification_event_audiences"):
                 return jsonify({"error": "Run backend/sql/notification_module_v1.sql"}), 503
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             cursor.execute(
                 "SELECT id, event_key FROM notification_event_definitions WHERE id=%s AND organization_id=%s",
                 (event_id, oid),
@@ -350,12 +390,13 @@ def register_notification_routes(app):
                     except (TypeError, ValueError):
                         continue
                     if tt == "user":
-                        cursor.execute(
-                            "SELECT 1 FROM users WHERE id=%s AND organization_id=%s LIMIT 1",
-                            (tid, oid),
-                        )
-                        if not cursor.fetchone():
-                            continue
+                        if tid != -1:
+                            cursor.execute(
+                                "SELECT 1 FROM users WHERE id=%s AND organization_id=%s LIMIT 1",
+                                (tid, oid),
+                            )
+                            if not cursor.fetchone():
+                                continue
                     else:
                         cursor.execute(
                             "SELECT 1 FROM notification_groups WHERE id=%s AND organization_id=%s LIMIT 1",
@@ -404,7 +445,9 @@ def register_notification_routes(app):
             msg = (body.get("body") or body.get("message") or "").strip() or ""
             if not ek:
                 return jsonify({"error": "event_key is required"}), 400
-            oid = int(me.get("organization_id") or 0)
+            oid, oerr, ost = _notification_org_id(me)
+            if oerr is not None:
+                return oerr, ost
             data = body.get("data") if isinstance(body.get("data"), dict) else None
             ch = body.get("channels")
             if ch is not None and not isinstance(ch, list):
