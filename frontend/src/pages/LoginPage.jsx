@@ -143,6 +143,17 @@ function LoginPage({ onLoggedIn }) {
       if (!msg && e?.message === "Invalid login response.") {
         msg = "Invalid login response.";
       }
+      if (!msg && e?.response) {
+        const st = e.response.status;
+        const d = data && typeof data === "object" ? data : null;
+        if (d?.detail != null) {
+          msg = String(d.detail);
+        } else if (st >= 500) {
+          msg = `Server error (${st}). Check the backend terminal and MySQL; see Network tab for the response body.`;
+        } else {
+          msg = `Login failed (HTTP ${st}).`;
+        }
+      }
       if (!msg && !e?.response) {
         const net =
           e?.code === "ERR_NETWORK" ||

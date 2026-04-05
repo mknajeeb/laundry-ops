@@ -20,23 +20,21 @@ export default function ClockInGate({ user, children }) {
   const path = location.pathname || "/";
 
   const [ui, setUi] = useState(null);
-  const [uiLoaded, setUiLoaded] = useState(false);
   const [sessionOk, setSessionOk] = useState(false);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const prevPathRef = useRef(path);
+  const initialSessionPollRef = useRef(false);
 
   useEffect(() => {
     getClockPayrollUiSettings()
       .then((res) => setUi(res.data || null))
-      .catch(() => setUi(null))
-      .finally(() => setUiLoaded(true));
+      .catch(() => setUi(null));
   }, []);
 
   const gateEnabled = useMemo(() => {
-    if (!uiLoaded) return true;
     const c = ui?.clock || {};
     return asBool(c.clock_in_gate_enabled, true);
-  }, [ui, uiLoaded]);
+  }, [ui]);
 
   const exempt = useMemo(() => {
     if (!user) return true;
@@ -95,7 +93,7 @@ export default function ClockInGate({ user, children }) {
 
   if (!user || isLoginPath(path)) return children;
 
-  if (authLoading || !uiLoaded) {
+  if (authLoading) {
     return (
       <Box sx={{ display: "grid", placeItems: "center", minHeight: "40vh" }}>
         <CircularProgress size={28} />

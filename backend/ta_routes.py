@@ -3,6 +3,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from functools import wraps
+from typing import Optional
 
 import mysql.connector
 from flask import Blueprint, current_app, g, jsonify, request
@@ -760,7 +761,7 @@ def maybe_clock_in_geofence_reminder(
     conn,
     ta_user: dict,
     organization_id: int,
-    inside: bool | None,
+    inside: Optional[bool],
 ) -> None:
     """
     If user has no active session but stays inside geofence longer than configured hours,

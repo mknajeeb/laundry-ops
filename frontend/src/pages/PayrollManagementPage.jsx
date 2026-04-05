@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  CircularProgress,
   FormControl,
   InputLabel,
   MenuItem,
@@ -129,11 +130,26 @@ function PayrollPeriodPanel() {
 }
 
 function PayrollManagementPage() {
-  const { hasPerm, loading: authLoading } = useAuth();
+  const { hasPerm, loading: authLoading, user } = useAuth();
   const { t } = useI18n();
-  const canMonitor = hasPerm("ta.monitor");
-  const canMaint = hasPerm("ta.settings") || hasPerm("users.edit");
-  const canPeriod = hasPerm("ta.settings");
+  const rolesUpper = useMemo(() => {
+    const roles = user?.roles;
+    if (Array.isArray(roles) && roles.length) {
+      return roles.map((r) => String(r).toUpperCase());
+    }
+    /** Payroll `/api/ta/auth/me` often sends `role_code` but not `roles` until backend adds it. */
+    if (user?.role_code) {
+      return [String(user.role_code).toUpperCase()];
+    }
+    return [];
+  }, [user?.roles, user?.role_code]);
+  const isAdminRole = useMemo(() => rolesUpper.includes("ADMIN"), [rolesUpper]);
+  const isOpsRole = useMemo(() => rolesUpper.includes("OPS"), [rolesUpper]);
+  const canMonitor = hasPerm("ta.monitor") || isAdminRole || isOpsRole;
+  const canMaint =
+    hasPerm("ta.settings") || hasPerm("users.edit") || isAdminRole;
+  const canPeriod = hasPerm("ta.settings") || isAdminRole;
+  const canClockUi = hasPerm("ta.settings") || isAdminRole;
   const [payrollUi, setPayrollUi] = useState(null);
 
   useEffect(() => {
@@ -167,7 +183,11 @@ function PayrollManagementPage() {
   }, [sections.length, tab]);
 
   if (authLoading) {
-    return null;
+    return (
+      <Box sx={{ display: "grid", placeItems: "center", minHeight: "40vh" }}>
+        <CircularProgress size={28} />
+      </Box>
+    );
   }
 
   if (!sections.length) {

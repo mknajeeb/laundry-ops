@@ -40,6 +40,19 @@ export default defineConfig({
   // Use repo-root `.env` (next to Flask DB vars). Only `VITE_*` keys are exposed to the client bundle.
   envDir: path.resolve(__dirname, '..'),
   plugins: [react()],
+  build: {
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        /** Split MUI into its own chunk (large); rest stays in shared vendor to avoid circular deps. */
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('@mui')) return 'mui'
+          return 'vendor'
+        },
+      },
+    },
+  },
   server: {
     port: Number(process.env.VITE_DEV_PORT || 5052),
     proxy,

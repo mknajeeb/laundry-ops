@@ -108,6 +108,22 @@ def _primary_role_for_user(conn, washpro_user_id: int):
     return c.fetchone()
 
 
+def _role_codes_for_user(conn, washpro_user_id: int):
+    """All role codes for Washpro user (matches `roles` on /auth/login payload)."""
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT UPPER(r.code) AS code
+        FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s
+        ORDER BY r.code
+        """,
+        (washpro_user_id,),
+    )
+    return [str(x["code"]) for x in c.fetchall() if x.get("code")]
+
+
 def fetch_payroll_profile_row(conn, washpro_user_id: int):
     """Return one row shaped like legacy `ta_users` + role_code for API consumers."""
     c = conn.cursor(dictionary=True)
@@ -160,6 +176,9 @@ def fetch_payroll_profile_row(conn, washpro_user_id: int):
         out["organization_name"] = row.get("organization_name")
     if "organization_logo_url" in row:
         out["organization_logo_url"] = row.get("organization_logo_url")
+    role_codes = _role_codes_for_user(conn, washpro_user_id)
+    if role_codes:
+        out["roles"] = role_codes
     return out
 
 
