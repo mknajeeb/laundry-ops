@@ -15,14 +15,24 @@ const AUTH_TOKEN_KEY = "washpro_token";
 const AUTH_USER_KEY = "washpro_user";
 
 export const getAuthToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || "";
+/** Dedupe + TTL: many components call clock-payroll-ui on first paint (Sidebar, gate, clock page). */
+let _clockPayrollUiCache = { res: null, at: 0, inflight: null };
+const CLOCK_PAYROLL_UI_TTL_MS = 90000;
+
+function invalidateClockPayrollUiSettingsCache() {
+  _clockPayrollUiCache = { res: null, at: 0, inflight: null };
+}
+
 export const setAuthSession = ({ token, user }) => {
   if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
   if (user) localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+  invalidateClockPayrollUiSettingsCache();
   window.dispatchEvent(new CustomEvent("washpro-session-changed"));
 };
 export const clearAuthSession = () => {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_USER_KEY);
+  invalidateClockPayrollUiSettingsCache();
   window.dispatchEvent(new CustomEvent("washpro-session-changed"));
 };
 export const getSavedUser = () => {
@@ -108,8 +118,15 @@ export const putNotificationEventAudiences = (eventId, body) =>
 export const postNotificationDispatch = (body) =>
   axios.post(`${API_BASE}/auth/notifications/dispatch`, body);
 
-export const authMe = () =>
-  axios.get(`${API_BASE}/auth/me`);
+/** Single in-flight GET /auth/me (App bootstrap + refresh events can overlap). */
+let _authMeInflight = null;
+export const authMe = () => {
+  if (_authMeInflight) return _authMeInflight;
+  _authMeInflight = axios.get(`${API_BASE}/auth/me`).finally(() => {
+    _authMeInflight = null;
+  });
+  return _authMeInflight;
+};
 
 export const putAuthPassword = (body) =>
   axios.put(`${API_BASE}/auth/me/password`, body);
@@ -525,19 +542,46 @@ export const taLogin = (email, password) =>
 /** Alias for AuthContext */
 export const login = taLogin;
 
-export const getMe = () => axios.get(`${API_BASE}/api/ta/auth/me`);
+/** Single in-flight GET /api/ta/auth/me (AuthContext + any duplicate callers). */
+let _taAuthMeInflight = null;
+export const getMe = () => {
+  if (_taAuthMeInflight) return _taAuthMeInflight;
+  _taAuthMeInflight = axios.get(`${API_BASE}/api/ta/auth/me`).finally(() => {
+    _taAuthMeInflight = null;
+  });
+  return _taAuthMeInflight;
+};
 
 export const getMyGeofence = () => axios.get(`${API_BASE}/api/ta/me/geofence`);
 
-export const getTaSessionCurrent = (params) =>
-  axios.get(`${API_BASE}/api/ta/sessions/current`, { params });
+export const getTaSessionCurrent = (params, extraConfig = {}) =>
+  axios.get(`${API_BASE}/api/ta/sessions/current`, { params, ...extraConfig });
 
-/** Tenant clock banner / geofence labels + payroll screen field visibility */
-export const getClockPayrollUiSettings = () =>
-  axios.get(`${API_BASE}/api/ta/clock-payroll-ui`);
+/** Tenant clock banner / geofence labels + payroll screen field visibility (cached; see invalidate). */
+export const getClockPayrollUiSettings = () => {
+  const now = Date.now();
+  if (_clockPayrollUiCache.res && now - _clockPayrollUiCache.at < CLOCK_PAYROLL_UI_TTL_MS) {
+    return Promise.resolve(_clockPayrollUiCache.res);
+  }
+  if (_clockPayrollUiCache.inflight) return _clockPayrollUiCache.inflight;
+  _clockPayrollUiCache.inflight = axios
+    .get(`${API_BASE}/api/ta/clock-payroll-ui`)
+    .then((res) => {
+      _clockPayrollUiCache = { res, at: Date.now(), inflight: null };
+      return res;
+    })
+    .catch((e) => {
+      _clockPayrollUiCache.inflight = null;
+      throw e;
+    });
+  return _clockPayrollUiCache.inflight;
+};
 
 export const putClockPayrollUiSettings = (body) =>
-  axios.put(`${API_BASE}/api/ta/admin/clock-payroll-ui`, body);
+  axios.put(`${API_BASE}/api/ta/admin/clock-payroll-ui`, body).then((res) => {
+    invalidateClockPayrollUiSettingsCache();
+    return res;
+  });
 
 export const taClockIn = (body) =>
   axios.post(`${API_BASE}/api/ta/sessions/clock-in`, body);

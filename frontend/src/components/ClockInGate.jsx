@@ -27,7 +27,15 @@ export default function ClockInGate({ user, children }) {
 
   useEffect(() => {
     getClockPayrollUiSettings()
-      .then((res) => setUi(res.data || null))
+      .then((res) => {
+        const data = res.data || null;
+        setUi(data);
+        const c = data?.clock || {};
+        if (!asBool(c.clock_in_gate_enabled, true)) {
+          setSessionOk(true);
+          setSessionLoaded(true);
+        }
+      })
       .catch(() => setUi(null));
   }, []);
 
@@ -36,10 +44,28 @@ export default function ClockInGate({ user, children }) {
     return asBool(c.clock_in_gate_enabled, true);
   }, [ui]);
 
+  /** Users who might be blocked by the gate — parallel-fetch UI + session for latency; gate-off wins over session. */
+  const needsUiForGate = useMemo(() => {
+    if (!user) return false;
+    const roles = Array.isArray(user.roles)
+      ? user.roles.map((r) => String(r).toUpperCase())
+      : user.role_code
+        ? [String(user.role_code).toUpperCase()]
+        : [];
+    if (roles.includes("ADMIN")) return false;
+    if (!hasPerm("ta.clock")) return false;
+    if (hasPerm("ta.monitor") || hasPerm("ta.settings")) return false;
+    return true;
+  }, [user, hasPerm]);
+
   const exempt = useMemo(() => {
     if (!user) return true;
     if (!gateEnabled) return true;
-    const roles = (user.roles || []).map((r) => String(r).toUpperCase());
+    const roles = Array.isArray(user.roles)
+      ? user.roles.map((r) => String(r).toUpperCase())
+      : user.role_code
+        ? [String(user.role_code).toUpperCase()]
+        : [];
     if (roles.includes("ADMIN")) return true;
     if (!hasPerm("ta.clock")) return true;
     if (hasPerm("ta.monitor") || hasPerm("ta.settings")) return true;
@@ -52,6 +78,24 @@ export default function ClockInGate({ user, children }) {
       setSessionLoaded(true);
       return;
     }
+    if (needsUiForGate) {
+      Promise.all([
+        getClockPayrollUiSettings().catch(() => ({ data: null })),
+        getTaSessionCurrent({}).catch(() => ({ data: null })),
+      ]).then(([uiRes, sessRes]) => {
+        const data = uiRes?.data ?? null;
+        if (data) setUi(data);
+        const c = data?.clock || {};
+        if (!asBool(c.clock_in_gate_enabled, true)) {
+          setSessionOk(true);
+          setSessionLoaded(true);
+          return;
+        }
+        setSessionOk(!!sessRes?.data?.session);
+        setSessionLoaded(true);
+      });
+      return;
+    }
     getTaSessionCurrent({})
       .then((res) => {
         setSessionOk(!!res.data?.session);
@@ -61,26 +105,34 @@ export default function ClockInGate({ user, children }) {
         setSessionOk(false);
         setSessionLoaded(true);
       });
-  }, [exempt, hasPerm]);
+  }, [exempt, hasPerm, needsUiForGate]);
+
+  useEffect(() => {
+    initialSessionPollRef.current = false;
+  }, [user?.id]);
 
   /**
-   * Re-fetch session on navigation. When leaving /clock, clear sessionLoaded first so we do not
-   * redirect home → /clock with a stale "no session" from before clock-in.
+   * Poll session on first load, when leaving /clock, or when path/user changes meaningfully —
+   * not on every arbitrary route change.
    */
   useEffect(() => {
-    if (authLoading || !uiLoaded) return;
+    if (authLoading) return;
     if (isLoginPath(path)) return;
     const fromClock = prevPathRef.current === "/clock" && path !== "/clock";
     prevPathRef.current = path;
     if (fromClock) setSessionLoaded(false);
-    pollSession();
-  }, [authLoading, uiLoaded, path, pollSession, user?.id]);
+    const needPoll = fromClock || !initialSessionPollRef.current;
+    if (needPoll) {
+      initialSessionPollRef.current = true;
+      pollSession();
+    }
+  }, [authLoading, path, pollSession, user?.id]);
 
   useEffect(() => {
-    if (exempt || !uiLoaded) return;
-    const id = setInterval(pollSession, 60000);
+    if (exempt) return;
+    const id = setInterval(pollSession, 120000);
     return () => clearInterval(id);
-  }, [exempt, uiLoaded, pollSession]);
+  }, [exempt, pollSession]);
 
   useEffect(() => {
     if (exempt) return;

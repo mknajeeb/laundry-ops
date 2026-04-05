@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Optional
@@ -889,6 +890,8 @@ def sessions_current():
         )
         sess = c.fetchone()
         inside = None
+        ob = None
+        gfn = None
         if sess:
             closed = maybe_auto_close_shift(conn, sess, g.ta_user["id"], _tenant_id())
             if closed:
@@ -985,20 +988,47 @@ def sessions_current():
                 inside = dist <= float(gfn["radius_meters"])
             maybe_clock_in_geofence_reminder(conn, g.ta_user, _tenant_id(), inside)
 
-        op = get_operational_state(conn, g.ta_user["id"], sess, geofence_inside=inside)
+        op = get_operational_state(
+            conn,
+            g.ta_user["id"],
+            sess,
+            geofence_inside=inside,
+            open_break_cached=ob,
+            primary_geofence_cached=gfn,
+        )
         conn.commit()
         return jsonify({"session": json_safe(sess), "operational": op})
     finally:
         conn.close()
 
 
-def get_operational_state(conn, user_id: int, sess, geofence_inside=None):
+_MISSING_OP_STATE = object()
+
+
+def get_operational_state(
+    conn,
+    user_id: int,
+    sess,
+    geofence_inside=None,
+    *,
+    open_break_cached=_MISSING_OP_STATE,
+    primary_geofence_cached=_MISSING_OP_STATE,
+):
+    """When caller already loaded open break / primary geofence, pass them to skip duplicate queries."""
     if not sess:
         return {"allowed": False, "reasons": ["not_clocked_in"]}
-    ob = get_open_break(conn, sess["id"])
+    ob = (
+        get_open_break(conn, sess["id"])
+        if open_break_cached is _MISSING_OP_STATE
+        else open_break_cached
+    )
     if ob:
         return {"allowed": False, "reasons": ["on_break"]}
-    gfn = get_primary_geofence(conn, user_id)
+    gfn = (
+        get_primary_geofence(conn, user_id)
+        if primary_geofence_cached is _MISSING_OP_STATE
+        else primary_geofence_cached
+    )
     if not gfn:
         return {"allowed": False, "reasons": ["no_geofence"]}
     if geofence_inside is False:
@@ -1260,8 +1290,10 @@ def break_start():
             """,
             (sess["id"], now),
         )
+        bid = c2.lastrowid
+        c.execute("SELECT * FROM shift_breaks WHERE id=%s", (bid,))
+        b = c.fetchone()
         conn.commit()
-        b = get_open_break(conn, sess["id"])
         return jsonify(json_safe(b)), 201
     finally:
         conn.close()

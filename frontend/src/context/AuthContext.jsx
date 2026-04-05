@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { getMe, login as apiLogin } from "../api";
@@ -21,6 +22,8 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(
     !!(localStorage.getItem("ta_token") || localStorage.getItem("washpro_token"))
   );
+  const userRef = useRef(null);
+  userRef.current = user;
 
   const refreshMe = useCallback(async () => {
     const t = localStorage.getItem("ta_token") || localStorage.getItem("washpro_token");
@@ -31,7 +34,7 @@ export function AuthProvider({ children }) {
       return;
     }
     try {
-      setLoading(true);
+      if (!userRef.current?.id) setLoading(true);
       const res = await getMe();
       setUser(res.data.user);
       setPermissions(res.data.permissions || []);

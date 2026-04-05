@@ -1,5 +1,6 @@
 import json
 import math
+import threading
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -65,7 +66,17 @@ def verify_password(hash_str: str, plain: str) -> bool:
     return check_password_hash(hash_str, plain)
 
 
+_schema_lock = threading.Lock()
+# Schema rarely changes at runtime; INFORMATION_SCHEMA hits are slow on remote MySQL (e.g. Azure).
+_column_cache: dict[tuple[str, str], bool] = {}
+_table_cache: dict[str, bool] = {}
+
+
 def table_has_column(cursor, table_name: str, col_name: str) -> bool:
+    key = (table_name, col_name)
+    with _schema_lock:
+        if key in _column_cache:
+            return _column_cache[key]
     cursor.execute(
         """
         SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
@@ -74,10 +85,16 @@ def table_has_column(cursor, table_name: str, col_name: str) -> bool:
         """,
         (table_name, col_name),
     )
-    return cursor.fetchone() is not None
+    ok = cursor.fetchone() is not None
+    with _schema_lock:
+        _column_cache[key] = ok
+    return ok
 
 
 def table_exists(cursor, table_name: str) -> bool:
+    with _schema_lock:
+        if table_name in _table_cache:
+            return _table_cache[table_name]
     cursor.execute(
         """
         SELECT 1 FROM INFORMATION_SCHEMA.TABLES
@@ -86,4 +103,7 @@ def table_exists(cursor, table_name: str) -> bool:
         """,
         (table_name,),
     )
-    return cursor.fetchone() is not None
+    ok = cursor.fetchone() is not None
+    with _schema_lock:
+        _table_cache[table_name] = ok
+    return ok

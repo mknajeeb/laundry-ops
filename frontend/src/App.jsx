@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   AppBar,
@@ -128,14 +128,21 @@ function AppShell() {
   const [activeBatch, setActiveBatch] = useState(null);
   const [user, setUser] = useState(getSavedUser());
   const [authLoading, setAuthLoading] = useState(true);
+  /** Avoid calling GET /auth/me on every client-side navigation (was a major local slowness). */
+  const washproSessionSyncedRef = useRef(false);
 
   const pathname = location.pathname || "/";
 
   const doLogout = async () => {
     try { await authLogout(); } catch { /* ignore */ }
     clearAuthSession();
+    washproSessionSyncedRef.current = false;
     setUser(null);
   };
+
+  useEffect(() => {
+    if (!user) washproSessionSyncedRef.current = false;
+  }, [user]);
 
   useEffect(() => {
     async function bootstrap() {
@@ -143,13 +150,20 @@ function AppShell() {
         setAuthLoading(false);
         return;
       }
+      if (washproSessionSyncedRef.current) {
+        setAuthLoading(false);
+        return;
+      }
       try {
+        setAuthLoading(true);
         const res = await authMe();
         setUser(res.data || null);
+        washproSessionSyncedRef.current = true;
       } catch (e) {
         console.error(e);
         clearAuthSession();
         setUser(null);
+        washproSessionSyncedRef.current = false;
       } finally {
         setAuthLoading(false);
       }
@@ -160,7 +174,10 @@ function AppShell() {
   useEffect(() => {
     const onRefresh = () => {
       authMe()
-        .then((r) => setUser(r.data || null))
+        .then((r) => {
+          setUser(r.data || null);
+          washproSessionSyncedRef.current = true;
+        })
         .catch(() => {});
     };
     window.addEventListener("washpro-user-refresh", onRefresh);
@@ -174,20 +191,35 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
-    if (isLoginRoute(pathname) || !user) {
+    if (isLoginRoute(pathname) || !user?.id) {
       setActiveBatch(null);
-      return;
     }
+  }, [pathname, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    let cancelled = false;
+    let intervalId;
     async function loadBatch() {
       try {
         const res = await getCurrentUploadBatch();
-        setActiveBatch(res?.data || null);
+        if (!cancelled) setActiveBatch(res?.data || null);
       } catch {
-        setActiveBatch(null);
+        if (!cancelled) setActiveBatch(null);
       }
     }
-    loadBatch();
-  }, [pathname, user]);
+    /** Stagger after auth / TA identity calls so the first paint does fewer parallel DB round-trips. */
+    const t = window.setTimeout(() => {
+      if (cancelled) return;
+      loadBatch();
+      intervalId = window.setInterval(loadBatch, 120000);
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+      if (intervalId) window.clearInterval(intervalId);
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (authLoading || isLoginRoute(pathname) || !user) return;

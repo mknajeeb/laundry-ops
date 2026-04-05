@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./api";
 import App from "./App.jsx";
+import ErrorBoundary from "./ErrorBoundary.jsx";
 import "./index.css";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import { I18nProvider } from "./i18n/I18nContext.jsx";
@@ -43,14 +44,19 @@ if (typeof window !== "undefined" && onesignalActive && !window.__laundryOpsOneS
   });
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
+const appTree = (
+  <ErrorBoundary>
     <I18nProvider>
       <AuthProvider>
         <App />
       </AuthProvider>
     </I18nProvider>
-  </React.StrictMode>
+  </ErrorBoundary>
+);
+
+/** StrictMode double-mounts effects in dev and makes local feel much slower; production still uses it. */
+ReactDOM.createRoot(document.getElementById("root")).render(
+  import.meta.env.PROD ? <React.StrictMode>{appTree}</React.StrictMode> : appTree
 );
 
 // PWA shell updates: register SW when not using OneSignal (OneSignal.init registers /service-worker.js).

@@ -7,39 +7,67 @@ When table `payroll_profiles` exists, this module is active. Until migration SQL
 """
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime, timedelta
+from typing import Optional
 
 from backend.ta_helpers import cycle_ref_for_week_start, hash_password, week_bounds_for_date
 
+_schema_lock = threading.Lock()
+_organizations_table_cache: Optional[bool] = None
+_organizations_logo_col_cache: Optional[bool] = None
+_payroll_profiles_active_cache: Optional[bool] = None
+
 
 def _organizations_table_exists(conn) -> bool:
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = DATABASE() AND table_name = 'organizations'
-        LIMIT 1
-        """
-    )
-    return c.fetchone() is not None
+    global _organizations_table_cache
+    if _organizations_table_cache is not None:
+        return _organizations_table_cache
+    with _schema_lock:
+        if _organizations_table_cache is not None:
+            return _organizations_table_cache
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = DATABASE() AND table_name = 'organizations'
+            LIMIT 1
+            """
+        )
+        _organizations_table_cache = c.fetchone() is not None
+        return _organizations_table_cache
 
 
 def _organizations_has_logo_url(conn) -> bool:
-    c = conn.cursor()
-    c.execute("SHOW COLUMNS FROM organizations LIKE 'logo_url'")
-    return c.fetchone() is not None
+    global _organizations_logo_col_cache
+    if _organizations_logo_col_cache is not None:
+        return _organizations_logo_col_cache
+    with _schema_lock:
+        if _organizations_logo_col_cache is not None:
+            return _organizations_logo_col_cache
+        c = conn.cursor()
+        c.execute("SHOW COLUMNS FROM organizations LIKE 'logo_url'")
+        _organizations_logo_col_cache = c.fetchone() is not None
+        return _organizations_logo_col_cache
 
 
 def payroll_profiles_active(conn) -> bool:
-    c = conn.cursor()
-    c.execute(
-        """
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = DATABASE() AND table_name = 'payroll_profiles'
-        LIMIT 1
-        """
-    )
-    return c.fetchone() is not None
+    global _payroll_profiles_active_cache
+    if _payroll_profiles_active_cache is not None:
+        return _payroll_profiles_active_cache
+    with _schema_lock:
+        if _payroll_profiles_active_cache is not None:
+            return _payroll_profiles_active_cache
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = DATABASE() AND table_name = 'payroll_profiles'
+            LIMIT 1
+            """
+        )
+        _payroll_profiles_active_cache = c.fetchone() is not None
+        return _payroll_profiles_active_cache
 
 
 def user_has_perm_washpro(conn, washpro_user_id: int, perm_key: str) -> bool:

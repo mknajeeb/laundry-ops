@@ -65,6 +65,14 @@ CORS(
 register_ta_routes(app)
 register_notification_routes(app)
 
+
+@app.teardown_appcontext
+def _teardown_request_mysql(exception):
+    from backend.db import close_request_db_if_any
+
+    close_request_db_if_any()
+
+
 # Local org logo uploads when Azure Blob is not configured (dev / small deployments).
 _ORG_LOGO_FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.(png|jpg|jpeg|webp|gif)$", re.I)
 

@@ -24,7 +24,6 @@ import {
   deleteMaintenanceAssignment,
   deleteMaintenanceLog,
   deleteMaintenanceTask,
-  getClockPayrollUiSettings,
   getEmployees,
   getGeofenceConfig,
   getMaintenanceAgenda,

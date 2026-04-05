@@ -72,6 +72,7 @@ function ClockPage({ user: washproUser }) {
   const [doneSummary, setDoneSummary] = useState(null);
 
   const lastPosRef = useRef({ lat: null, lng: null });
+  const sessionLoadAbortRef = useRef(null);
 
   const foldedByName = useMemo(() => {
     if (taUser?.first_name || taUser?.last_name) {
@@ -131,16 +132,37 @@ function ClockPage({ user: washproUser }) {
             await loadSession(silent, null, null);
             resolve();
           },
-          { enableHighAccuracy: true, timeout: 12000, maximumAge: silent ? 180000 : 0 }
+          {
+            enableHighAccuracy: !silent,
+            timeout: silent ? 8000 : 12000,
+            maximumAge: silent ? 300000 : 0,
+          }
         );
       });
     },
     [loadSession]
   );
 
+  /** After clock/break actions we already have coords in lastPosRef — skip another GPS round-trip. */
+  const refreshAfterAction = useCallback(async () => {
+    const { lat, lng } = lastPosRef.current;
+    if (lat != null && lng != null) {
+      await loadSession(true, lat, lng);
+    } else {
+      await refreshAll(true);
+    }
+  }, [loadSession, refreshAll]);
+
   useEffect(() => {
     loadClockUi();
   }, [loadClockUi]);
+
+  useEffect(
+    () => () => {
+      sessionLoadAbortRef.current?.abort();
+    },
+    []
+  );
 
   useEffect(() => {
     refreshAll(false);
@@ -150,7 +172,7 @@ function ClockPage({ user: washproUser }) {
     const id = setInterval(() => {
       const { lat, lng } = lastPosRef.current;
       loadSession(true, lat, lng);
-    }, 90000);
+    }, 120000);
     return () => clearInterval(id);
   }, [loadSession]);
 
@@ -187,7 +209,7 @@ function ClockPage({ user: washproUser }) {
         await taClockIn({ latitude: lat, longitude: lng });
         setDoneSummary(null);
         setMessage({ type: "success", text: "Clock in recorded." });
-        await refreshAll(true);
+        await refreshAfterAction();
       });
       return;
     }
@@ -196,7 +218,7 @@ function ClockPage({ user: washproUser }) {
       try {
         await taBreakStart();
         setMessage({ type: "success", text: "Break started." });
-        await refreshAll(true);
+        await refreshAfterAction();
       } catch (error) {
         const err = error?.response?.data?.error || "Action failed.";
         setMessage({ type: "error", text: err });
@@ -210,7 +232,7 @@ function ClockPage({ user: washproUser }) {
       try {
         await taBreakEnd();
         setMessage({ type: "success", text: "Break ended." });
-        await refreshAll(true);
+        await refreshAfterAction();
       } catch (error) {
         const err = error?.response?.data?.error || "Action failed.";
         setMessage({ type: "error", text: err });
@@ -244,7 +266,7 @@ function ClockPage({ user: washproUser }) {
       setCheckoutOpen(false);
       setMessage({ type: "success", text: "Clock out recorded." });
       setDoneSummary(res.data?.summary || null);
-      await refreshAll(true);
+      await refreshAfterAction();
     });
   };
 
