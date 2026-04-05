@@ -14,7 +14,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { getPayrollPeriodSettings, putPayrollPeriodSettings } from "../api";
+import { getClockPayrollUiSettings, getPayrollPeriodSettings, putPayrollPeriodSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import AttendanceSetupPage from "./AttendanceSetupPage";
@@ -133,20 +133,28 @@ function PayrollManagementPage() {
   const canMonitor = hasPerm("ta.monitor");
   const canMaint = hasPerm("ta.settings") || hasPerm("users.edit");
   const canPeriod = hasPerm("ta.settings");
+  const [payrollUi, setPayrollUi] = useState(null);
+
+  useEffect(() => {
+    getClockPayrollUiSettings()
+      .then((res) => setPayrollUi(res.data?.payroll || null))
+      .catch(() => setPayrollUi(null));
+  }, []);
 
   const sections = useMemo(() => {
+    const p = payrollUi || {};
     const out = [];
-    if (canMonitor) {
+    if (canMonitor && p.tab_live !== false) {
       out.push({ key: "live", label: t("payroll.tabLive") });
     }
-    if (canMaint) {
+    if (canMaint && p.tab_maintenance !== false) {
       out.push({ key: "maint", label: t("payroll.tabMaintenance") });
     }
-    if (canPeriod) {
+    if (canPeriod && p.tab_period !== false) {
       out.push({ key: "period", label: t("payroll.tabPeriod") });
     }
     return out;
-  }, [canMonitor, canMaint, canPeriod, t]);
+  }, [canMonitor, canMaint, canPeriod, payrollUi, t]);
 
   const [tab, setTab] = useState(0);
 
@@ -205,7 +213,9 @@ function PayrollManagementPage() {
       </Tabs>
 
       <Box sx={{ pt: 2, width: "100%", minWidth: 0 }} role="tabpanel">
-        {active?.key === "live" ? <PayrollMonitorPage embedded /> : null}
+        {active?.key === "live" ? (
+          <PayrollMonitorPage embedded columnVisibility={payrollUi || {}} />
+        ) : null}
         {active?.key === "maint" ? <AttendanceSetupPage embedded /> : null}
         {active?.key === "period" ? <PayrollPeriodPanel /> : null}
       </Box>

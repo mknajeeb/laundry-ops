@@ -532,6 +532,13 @@ export const getMyGeofence = () => axios.get(`${API_BASE}/api/ta/me/geofence`);
 export const getTaSessionCurrent = (params) =>
   axios.get(`${API_BASE}/api/ta/sessions/current`, { params });
 
+/** Tenant clock banner / geofence labels + payroll screen field visibility */
+export const getClockPayrollUiSettings = () =>
+  axios.get(`${API_BASE}/api/ta/clock-payroll-ui`);
+
+export const putClockPayrollUiSettings = (body) =>
+  axios.put(`${API_BASE}/api/ta/admin/clock-payroll-ui`, body);
+
 export const taClockIn = (body) =>
   axios.post(`${API_BASE}/api/ta/sessions/clock-in`, body);
 

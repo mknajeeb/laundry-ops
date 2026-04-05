@@ -60,13 +60,30 @@ function MobileTopBar({ pathname, user }) {
         {canGoBack ? (
           <IconButton size="small" onClick={() => navigate(-1)} sx={{ mr: 1 }}><ArrowBack sx={{ fontSize: 18 }} /></IconButton>
         ) : <Box sx={{ width: 36 }} />}
-        <Box sx={{ flex: 1, display: "flex", alignItems: "center", minHeight: 28 }}>
+        <Box
+          sx={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "flex-start",
+            minHeight: 28,
+            overflow: "hidden",
+          }}
+        >
           {user?.organization_logo_url ? (
             <Box
               component="img"
               src={user.organization_logo_url}
               alt=""
-              sx={{ maxHeight: 26, maxWidth: 160, objectFit: "contain" }}
+              sx={{
+                height: 24,
+                maxHeight: 24,
+                width: "auto",
+                maxWidth: 150,
+                objectFit: "contain",
+                objectPosition: "left center",
+                display: "block",
+              }}
             />
           ) : (
             <Typography sx={{ fontSize: 18, flex: 1 }}>{user?.organization_name || "Laundry Ops"}</Typography>

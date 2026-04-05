@@ -1,6 +1,6 @@
 import json
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -39,7 +39,14 @@ def json_safe(obj):
         return None
     if isinstance(obj, Decimal):
         return float(obj)
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, datetime):
+        # MySQL DATETIME is naive; API hosts (e.g. Azure) use UTC. Without tz, browsers
+        # parse ISO strings as *local* wall time and times appear ~offset from Eastern US.
+        dt = obj
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, bytes):
         return obj.decode("utf-8", errors="replace")

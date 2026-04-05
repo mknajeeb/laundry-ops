@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
+import { getClockPayrollUiSettings } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import { hasPlatformAdminRole, hasTenantPortalAccess, isTenantModuleEnabled } from "../utils/platformAccess";
 
@@ -31,7 +33,18 @@ const NAV_ITEMS = [
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
+  const [payrollNavVisible, setPayrollNavVisible] = useState(true);
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
+
+  useEffect(() => {
+    getClockPayrollUiSettings()
+      .then((res) => {
+        const v = res.data?.payroll?.nav_payroll_visible;
+        setPayrollNavVisible(v !== false);
+      })
+      .catch(() => setPayrollNavVisible(true));
+  }, []);
+
   const allow = (item) => {
     const roleOk = !item.roles.length || item.roles.some((r) => roles.includes(r));
     if (!roleOk) return false;
@@ -39,6 +52,11 @@ function Sidebar({ activeBatch, user, onLogout }) {
       return hasPlatformAdminRole(user) && hasTenantPortalAccess(user);
     }
     return isTenantModuleEnabled(user, item.moduleKey || "home");
+  };
+
+  const navFilter = (item) => {
+    if (item.to === "/payroll" && !payrollNavVisible) return false;
+    return true;
   };
 
   return (
@@ -104,7 +122,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
 
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", pr: 0.5, WebkitOverflowScrolling: "touch" }}>
         <Stack spacing={0.8}>
-          {NAV_ITEMS.filter(allow).map((item) => (
+          {NAV_ITEMS.filter(allow).filter(navFilter).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

@@ -65,6 +65,58 @@ def set_setting(conn, organization_id: int, key: str, value: str):
     )
 
 
+_CLOCK_PAYROLL_UI_KEY = "clock_payroll_ui_json"
+
+
+def _default_clock_ui_dict() -> dict:
+    return {
+        "outside_geofence_label_enabled": True,
+        "outside_geofence_label_text": "You are outside the designated work area.",
+        "clock_banner_enabled": False,
+        "clock_banner_text": "",
+        "show_outside_geofence_on_clock": True,
+        "show_outside_geofence_on_summary": True,
+        "ask_personal_laundry_bags": False,
+    }
+
+
+def _default_payroll_screen_dict() -> dict:
+    return {
+        "nav_payroll_visible": True,
+        "tab_live": True,
+        "tab_maintenance": True,
+        "tab_period": True,
+        "monitor_show_cycle_filter": True,
+        "monitor_show_user_filter": True,
+        "monitor_show_apply": True,
+        "monitor_col_id": True,
+        "monitor_col_user": True,
+        "monitor_col_cycle": True,
+        "monitor_col_clock_in": True,
+        "monitor_col_clock_out": True,
+        "monitor_col_net": True,
+        "monitor_col_status": True,
+        "monitor_col_geofence": True,
+        "monitor_col_actions": True,
+    }
+
+
+def load_clock_payroll_ui(conn, organization_id: int) -> dict:
+    raw = get_setting(conn, organization_id, _CLOCK_PAYROLL_UI_KEY, None)
+    out = {"clock": _default_clock_ui_dict(), "payroll": _default_payroll_screen_dict()}
+    if not raw:
+        return out
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed.get("clock"), dict):
+            out["clock"] = {**_default_clock_ui_dict(), **parsed["clock"]}
+        if isinstance(parsed.get("payroll"), dict):
+            out["payroll"] = {**_default_payroll_screen_dict(), **parsed["payroll"]}
+    except Exception:
+        pass
+    return out
+
+
 def _tenant_id():
     return int(g.ta_user.get("organization_id") or 1)
 
@@ -743,6 +795,7 @@ def sessions_current():
                     if bs:
                         break_live += int((now_ts - bs).total_seconds())
                 elapsed = int((now_ts - clock_in).total_seconds()) if clock_in else 0
+                sess["elapsed_break_seconds"] = int(break_live)
                 sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
                 gfn = get_primary_geofence(conn, g.ta_user["id"])
                 if lat and lng and gfn:
@@ -768,6 +821,39 @@ def sessions_current():
                             )
                 sess["geofence_inside"] = inside
                 sess["primary_geofence"] = json_safe(gfn) if gfn else None
+
+                if (
+                    sess
+                    and lat
+                    and lng
+                    and gfn
+                    and inside is not None
+                    and table_has_column(c, "shift_sessions", "outside_geofence_seconds")
+                ):
+                    poll_now = datetime.now()
+                    poll_ts = sess.get("last_geofence_poll_at")
+                    if isinstance(poll_ts, str):
+                        poll_ts = datetime.fromisoformat(str(poll_ts).replace("Z", "+00:00"))
+                    if poll_ts and getattr(poll_ts, "tzinfo", None):
+                        poll_ts = poll_ts.replace(tzinfo=None)
+                    outside_col = int(sess.get("outside_geofence_seconds") or 0)
+                    if poll_ts:
+                        dt = (poll_now - poll_ts).total_seconds()
+                        dt = min(max(dt, 0.0), 180.0)
+                        if inside is False:
+                            outside_col += int(dt)
+                    uc = conn.cursor()
+                    uc.execute(
+                        """
+                        UPDATE shift_sessions
+                        SET outside_geofence_seconds=%s, last_geofence_poll_at=%s, last_geofence_inside=%s
+                        WHERE id=%s
+                        """,
+                        (outside_col, poll_now, 1 if inside else 0, sess["id"]),
+                    )
+                    sess["outside_geofence_seconds"] = outside_col
+                    sess["last_geofence_poll_at"] = poll_now
+                    sess["last_geofence_inside"] = 1 if inside else 0
 
         op = get_operational_state(conn, g.ta_user["id"], sess, geofence_inside=inside)
         conn.commit()
@@ -913,6 +999,7 @@ def clock_out():
     data = request.json or {}
     lat = data.get("latitude")
     lng = data.get("longitude")
+    plb_raw = data.get("personal_laundry_bags")
 
     conn = get_db()
     try:
@@ -941,23 +1028,50 @@ def clock_out():
         elapsed = (now - clock_in).total_seconds()
         net = int(elapsed) - br
 
+        plb = None
+        if plb_raw is not None and table_has_column(c, "shift_sessions", "personal_laundry_bags"):
+            try:
+                plb = int(plb_raw)
+            except (TypeError, ValueError):
+                plb = None
+
         c2 = conn.cursor()
-        c2.execute(
-            """
-            UPDATE shift_sessions
-            SET clock_out_at=%s, clock_out_lat=%s, clock_out_lng=%s,
-                status='completed', total_break_seconds=%s, net_work_seconds=%s
-            WHERE id=%s
-            """,
-            (
-                now,
-                float(lat) if lat is not None else None,
-                float(lng) if lng is not None else None,
-                br,
-                net,
-                sess["id"],
-            ),
-        )
+        if plb is not None and table_has_column(c, "shift_sessions", "personal_laundry_bags"):
+            c2.execute(
+                """
+                UPDATE shift_sessions
+                SET clock_out_at=%s, clock_out_lat=%s, clock_out_lng=%s,
+                    status='completed', total_break_seconds=%s, net_work_seconds=%s,
+                    personal_laundry_bags=%s
+                WHERE id=%s
+                """,
+                (
+                    now,
+                    float(lat) if lat is not None else None,
+                    float(lng) if lng is not None else None,
+                    br,
+                    net,
+                    plb,
+                    sess["id"],
+                ),
+            )
+        else:
+            c2.execute(
+                """
+                UPDATE shift_sessions
+                SET clock_out_at=%s, clock_out_lat=%s, clock_out_lng=%s,
+                    status='completed', total_break_seconds=%s, net_work_seconds=%s
+                WHERE id=%s
+                """,
+                (
+                    now,
+                    float(lat) if lat is not None else None,
+                    float(lng) if lng is not None else None,
+                    br,
+                    net,
+                    sess["id"],
+                ),
+            )
         write_audit(
             conn,
             g.ta_user["id"],
@@ -969,6 +1083,7 @@ def clock_out():
         )
         conn.commit()
         out = fetch_session(conn, sess["id"])
+        outside_sec = int(out.get("outside_geofence_seconds") or 0) if out else 0
         return jsonify(
             {
                 "session": json_safe(out),
@@ -977,6 +1092,8 @@ def clock_out():
                     "clock_out_at": json_safe(out["clock_out_at"]),
                     "total_break_seconds": br,
                     "net_work_seconds": net,
+                    "outside_geofence_seconds": outside_sec,
+                    "personal_laundry_bags": out.get("personal_laundry_bags"),
                 },
             }
         )
@@ -2504,6 +2621,54 @@ def bag_rates_list():
         c = conn.cursor(dictionary=True)
         c.execute("SELECT * FROM bag_rate_maintenance ORDER BY effective_from DESC")
         return jsonify([json_safe(r) for r in c.fetchall()])
+    finally:
+        conn.close()
+
+
+# --- Clock / payroll UI (tenant) ---
+
+
+@ta_bp.route("/clock-payroll-ui", methods=["GET"])
+@require_auth
+def clock_payroll_ui_get():
+    """Clock + payroll screen visibility for this tenant (any authenticated TA / Washpro user)."""
+    conn = get_db()
+    try:
+        return jsonify(load_clock_payroll_ui(conn, _tenant_id()))
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/admin/clock-payroll-ui", methods=["PUT"])
+@require_auth
+@require_perm("ta.settings")
+def clock_payroll_ui_put():
+    data = request.json or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid body"}), 400
+    clock = data.get("clock")
+    payroll = data.get("payroll")
+    if clock is not None and not isinstance(clock, dict):
+        return jsonify({"error": "clock must be an object"}), 400
+    if payroll is not None and not isinstance(payroll, dict):
+        return jsonify({"error": "payroll must be an object"}), 400
+    conn = get_db()
+    try:
+        cur = load_clock_payroll_ui(conn, _tenant_id())
+        if isinstance(clock, dict):
+            cur["clock"] = {**_default_clock_ui_dict(), **clock}
+        if isinstance(payroll, dict):
+            cur["payroll"] = {**_default_payroll_screen_dict(), **payroll}
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO system_settings (organization_id, skey, svalue) VALUES (%s,%s,%s)
+            ON DUPLICATE KEY UPDATE svalue=VALUES(svalue)
+            """,
+            (int(_tenant_id()), _CLOCK_PAYROLL_UI_KEY, json.dumps(cur)),
+        )
+        conn.commit()
+        return jsonify({"ok": True, **cur})
     finally:
         conn.close()
 
