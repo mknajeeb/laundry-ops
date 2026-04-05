@@ -23,6 +23,7 @@ import {
   taClockOut,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
+import { asBool } from "../utils/bool";
 
 function formatDuration(totalSeconds) {
   const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
@@ -40,6 +41,23 @@ const DEFAULT_CLOCK_UI = {
   show_outside_geofence_on_summary: true,
   ask_personal_laundry_bags: false,
 };
+
+const BANNER_FALLBACK_TEXT = "Company notice — check with your supervisor for updates.";
+
+function normalizeClockUi(raw) {
+  const d = { ...DEFAULT_CLOCK_UI, ...(raw && typeof raw === "object" ? raw : {}) };
+  return {
+    ...d,
+    outside_geofence_label_enabled: asBool(
+      d.outside_geofence_label_enabled,
+      DEFAULT_CLOCK_UI.outside_geofence_label_enabled
+    ),
+    clock_banner_enabled: asBool(d.clock_banner_enabled, false),
+    show_outside_geofence_on_clock: asBool(d.show_outside_geofence_on_clock, true),
+    show_outside_geofence_on_summary: asBool(d.show_outside_geofence_on_summary, true),
+    ask_personal_laundry_bags: asBool(d.ask_personal_laundry_bags, false),
+  };
+}
 
 function ClockPage({ user: washproUser }) {
   const { user: taUser } = useAuth();
@@ -73,7 +91,7 @@ function ClockPage({ user: washproUser }) {
       const res = await getClockPayrollUiSettings();
       const c = res.data?.clock || res.data;
       if (c && typeof c === "object") {
-        setClockUi({ ...DEFAULT_CLOCK_UI, ...c });
+        setClockUi(normalizeClockUi(c));
       }
     } catch {
       setClockUi(DEFAULT_CLOCK_UI);
@@ -113,7 +131,7 @@ function ClockPage({ user: washproUser }) {
             await loadSession(silent, null, null);
             resolve();
           },
-          { enableHighAccuracy: true, timeout: 12000, maximumAge: silent ? 60000 : 0 }
+          { enableHighAccuracy: true, timeout: 12000, maximumAge: silent ? 180000 : 0 }
         );
       });
     },
@@ -132,7 +150,7 @@ function ClockPage({ user: washproUser }) {
     const id = setInterval(() => {
       const { lat, lng } = lastPosRef.current;
       loadSession(true, lat, lng);
-    }, 30000);
+    }, 90000);
     return () => clearInterval(id);
   }, [loadSession]);
 
@@ -202,9 +220,11 @@ function ClockPage({ user: washproUser }) {
     }
   };
 
+  const askPersonalBags = asBool(clockUi.ask_personal_laundry_bags);
+
   const beginCheckout = () => {
     setDoneSummary(null);
-    if (clockUi.ask_personal_laundry_bags) {
+    if (askPersonalBags) {
       setCheckoutStep("bags");
       setLaundryBags("");
     } else {
@@ -216,9 +236,9 @@ function ClockPage({ user: washproUser }) {
   const submitClockOut = () => {
     runWithPosition(async (lat, lng) => {
       const body = { latitude: lat, longitude: lng };
-      if (clockUi.ask_personal_laundry_bags && laundryBags.trim() !== "") {
-        const n = Number(laundryBags);
-        if (Number.isFinite(n) && n >= 0) body.personal_laundry_bags = Math.floor(n);
+      if (askPersonalBags) {
+        const n = Number.parseInt(String(laundryBags).trim(), 10);
+        body.personal_laundry_bags = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
       }
       const res = await taClockOut(body);
       setCheckoutOpen(false);
@@ -242,9 +262,9 @@ function ClockPage({ user: washproUser }) {
   const outsideLabel = formatDuration(outsideSec);
 
   const showOutsideOnClock =
-    clockUi.show_outside_geofence_on_clock && isClockedIn && !onBreak;
+    asBool(clockUi.show_outside_geofence_on_clock) && isClockedIn && !onBreak;
   const outsideWarning =
-    clockUi.outside_geofence_label_enabled &&
+    asBool(clockUi.outside_geofence_label_enabled) &&
     isClockedIn &&
     !onBreak &&
     session?.geofence_inside === false;
@@ -277,9 +297,9 @@ function ClockPage({ user: washproUser }) {
         </Alert>
       )}
 
-      {clockUi.clock_banner_enabled && (clockUi.clock_banner_text || "").trim() ? (
+      {asBool(clockUi.clock_banner_enabled) ? (
         <Alert severity="info" sx={{ mb: 1.2 }}>
-          {clockUi.clock_banner_text.trim()}
+          {(clockUi.clock_banner_text || "").trim() || BANNER_FALLBACK_TEXT}
         </Alert>
       ) : null}
 
@@ -461,12 +481,12 @@ function ClockPage({ user: washproUser }) {
           <Typography variant="body2" color="text.secondary">
             Breaks: {formatDuration(doneSummary.total_break_seconds || 0)}
           </Typography>
-          {clockUi.show_outside_geofence_on_summary ? (
+          {asBool(clockUi.show_outside_geofence_on_summary) ? (
             <Typography variant="body2" color="text.secondary">
               Outside geofence: {formatDuration(doneSummary.outside_geofence_seconds || 0)}
             </Typography>
           ) : null}
-          {clockUi.ask_personal_laundry_bags &&
+          {askPersonalBags &&
           doneSummary.personal_laundry_bags != null &&
           doneSummary.personal_laundry_bags !== undefined ? (
             <Typography variant="body2" color="text.secondary">
@@ -511,7 +531,7 @@ function ClockPage({ user: washproUser }) {
                 <Typography variant="body2">
                   <strong>Total break:</strong> {breakLabel}
                 </Typography>
-                {clockUi.show_outside_geofence_on_summary ? (
+                {asBool(clockUi.show_outside_geofence_on_summary) ? (
                   <Typography variant="body2">
                     <strong>Time outside geofence:</strong> {outsideLabel}
                   </Typography>

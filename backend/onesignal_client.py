@@ -44,6 +44,7 @@ def send_push_to_external_user_ids(
     body: str,
     *,
     data: dict | None = None,
+    url: str | None = None,
 ) -> tuple[bool, str | None]:
     """
     Send a web push to specific External User IDs (all devices where that user logged in).
@@ -64,6 +65,8 @@ def send_push_to_external_user_ids(
     }
     if data:
         payload["data"] = data
+    if url:
+        payload["url"] = url
 
     return _post_notification(payload)
 

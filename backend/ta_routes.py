@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from datetime import datetime, timedelta
 from functools import wraps
@@ -77,6 +78,10 @@ def _default_clock_ui_dict() -> dict:
         "show_outside_geofence_on_clock": True,
         "show_outside_geofence_on_summary": True,
         "ask_personal_laundry_bags": False,
+        "clock_in_gate_enabled": True,
+        "geofence_reminder_enabled": True,
+        "geofence_reminder_hours": 1.5,
+        "geofence_reminder_cooldown_hours": 6.0,
     }
 
 
@@ -86,6 +91,7 @@ def _default_payroll_screen_dict() -> dict:
         "tab_live": True,
         "tab_maintenance": True,
         "tab_period": True,
+        "tab_clock_ui": True,
         "monitor_show_cycle_filter": True,
         "monitor_show_user_filter": True,
         "monitor_show_apply": True,
@@ -750,6 +756,119 @@ def my_geofence():
 # --- Clock ---
 
 
+def maybe_clock_in_geofence_reminder(
+    conn,
+    ta_user: dict,
+    organization_id: int,
+    inside: bool | None,
+) -> None:
+    """
+    If user has no active session but stays inside geofence longer than configured hours,
+    send a throttled push to open the clock screen.
+    """
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "user_clock_geofence_presence"):
+        return
+    uid = int(ta_user.get("id") or 0)
+    if not uid:
+        return
+
+    clock_cfg = load_clock_payroll_ui(conn, organization_id).get("clock") or {}
+    if not as_bool(clock_cfg.get("geofence_reminder_enabled")):
+        return
+    try:
+        hours_need = float(clock_cfg.get("geofence_reminder_hours") or 1.5)
+    except (TypeError, ValueError):
+        hours_need = 1.5
+    try:
+        cooldown_h = float(clock_cfg.get("geofence_reminder_cooldown_hours") or 6.0)
+    except (TypeError, ValueError):
+        cooldown_h = 6.0
+
+    now = datetime.now()
+    uc = conn.cursor()
+
+    if inside is None:
+        return
+    if inside is False:
+        uc.execute(
+            "UPDATE user_clock_geofence_presence SET inside_since=NULL WHERE user_id=%s",
+            (uid,),
+        )
+        return
+
+    uc.execute(
+        "SELECT inside_since, last_reminder_at FROM user_clock_geofence_presence WHERE user_id=%s LIMIT 1",
+        (uid,),
+    )
+    row = uc.fetchone()
+    if not row:
+        uc.execute(
+            """
+            INSERT INTO user_clock_geofence_presence (user_id, organization_id, inside_since, last_reminder_at)
+            VALUES (%s,%s,%s,NULL)
+            """,
+            (uid, int(organization_id), now),
+        )
+        return
+
+    inside_since = row.get("inside_since")
+    last_rem = row.get("last_reminder_at")
+
+    if inside_since is None:
+        uc.execute(
+            """
+            UPDATE user_clock_geofence_presence
+            SET inside_since=%s, organization_id=%s
+            WHERE user_id=%s
+            """,
+            (now, int(organization_id), uid),
+        )
+        return
+
+    if isinstance(inside_since, str):
+        inside_since = datetime.fromisoformat(str(inside_since).replace("Z", "+00:00"))
+    if inside_since and getattr(inside_since, "tzinfo", None):
+        inside_since = inside_since.replace(tzinfo=None)
+
+    elapsed_sec = (now - inside_since).total_seconds()
+    if elapsed_sec < hours_need * 3600:
+        return
+
+    if last_rem:
+        if isinstance(last_rem, str):
+            last_rem = datetime.fromisoformat(str(last_rem).replace("Z", "+00:00"))
+        if last_rem and getattr(last_rem, "tzinfo", None):
+            last_rem = last_rem.replace(tzinfo=None)
+        if last_rem and (now - last_rem).total_seconds() < cooldown_h * 3600:
+            return
+
+    if not _user_wants_push_notification(conn, ta_user):
+        return
+
+    base = (
+        (os.getenv("PUBLIC_APP_URL") or os.getenv("FRONTEND_URL") or "").strip().rstrip("/")
+    )
+    click_url = f"{base}/clock" if base else None
+
+    eid = external_user_id(int(organization_id), uid)
+    ok, err = send_push_to_external_user_ids(
+        [eid],
+        "Laundry Ops",
+        "You're at work — tap to clock in.",
+        data={"type": "clock_in_reminder", "open_path": "/clock"},
+        url=click_url,
+    )
+    if not ok:
+        current_app.logger.debug("clock_in reminder push: %s", err)
+        return
+
+    uc.execute(
+        "UPDATE user_clock_geofence_presence SET last_reminder_at=%s WHERE user_id=%s",
+        (now, uid),
+    )
+
+
 @ta_bp.route("/sessions/current", methods=["GET"])
 @require_auth
 @require_perm("ta.clock")
@@ -854,6 +973,16 @@ def sessions_current():
                     sess["outside_geofence_seconds"] = outside_col
                     sess["last_geofence_poll_at"] = poll_now
                     sess["last_geofence_inside"] = 1 if inside else 0
+
+        elif lat and lng:
+            gfn = get_primary_geofence(conn, g.ta_user["id"])
+            inside = None
+            if gfn:
+                dist = haversine_meters(
+                    float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
+                )
+                inside = dist <= float(gfn["radius_meters"])
+            maybe_clock_in_geofence_reminder(conn, g.ta_user, _tenant_id(), inside)
 
         op = get_operational_state(conn, g.ta_user["id"], sess, geofence_inside=inside)
         conn.commit()

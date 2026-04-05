@@ -17,6 +17,7 @@ import {
 import { getClockPayrollUiSettings, getPayrollPeriodSettings, putPayrollPeriodSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import ClockPayrollUiSettingsPanel from "../components/ClockPayrollUiSettingsPanel";
 import AttendanceSetupPage from "./AttendanceSetupPage";
 import PayrollMonitorPage from "./PayrollMonitorPage";
 
@@ -153,8 +154,11 @@ function PayrollManagementPage() {
     if (canPeriod && p.tab_period !== false) {
       out.push({ key: "period", label: t("payroll.tabPeriod") });
     }
+    if (canClockUi && p.tab_clock_ui !== false) {
+      out.push({ key: "clockui", label: t("payroll.tabClockUi") });
+    }
     return out;
-  }, [canMonitor, canMaint, canPeriod, payrollUi, t]);
+  }, [canMonitor, canMaint, canPeriod, canClockUi, payrollUi, t]);
 
   const [tab, setTab] = useState(0);
 
@@ -218,6 +222,7 @@ function PayrollManagementPage() {
         ) : null}
         {active?.key === "maint" ? <AttendanceSetupPage embedded /> : null}
         {active?.key === "period" ? <PayrollPeriodPanel /> : null}
+        {active?.key === "clockui" ? <ClockPayrollUiSettingsPanel /> : null}
       </Box>
     </Box>
   );

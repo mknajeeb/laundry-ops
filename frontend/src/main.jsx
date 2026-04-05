@@ -23,6 +23,23 @@ if (typeof window !== "undefined" && onesignalActive && !window.__laundryOpsOneS
       allowLocalhostAsSecureOrigin: Boolean(import.meta.env.DEV),
       // Default: /OneSignalSDKWorker.js in public/ (from OneSignal SDK zip)
     });
+    try {
+      const notes = OneSignal.Notifications;
+      if (notes && typeof notes.addEventListener === "function") {
+        notes.addEventListener("click", (event) => {
+          const n = event?.notification;
+          const data = n?.additionalData || n?.data || {};
+          const path =
+            data.open_path ||
+            (typeof data.url === "string" && data.url.startsWith("/") ? data.url : null);
+          if (typeof path === "string" && path.startsWith("/")) {
+            window.location.assign(`${window.location.origin}${path}`);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("OneSignal notification click handler", e);
+    }
   });
 }
 

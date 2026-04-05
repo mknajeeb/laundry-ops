@@ -299,6 +299,7 @@ export const TRANSLATIONS = {
     "payroll.tabLive": "Live sessions",
     "payroll.tabMaintenance": "Maintenance",
     "payroll.tabPeriod": "Payroll period",
+    "payroll.tabClockUi": "Clock & UI",
     "payroll.needMgmtAccess":
       "You need at least ta.monitor, or ta.settings / users.edit, to open this screen.",
     "payroll.periodTitle": "Payroll period settings",
@@ -686,6 +687,7 @@ export const TRANSLATIONS = {
     "payroll.tabLive": "Sesiones en vivo",
     "payroll.tabMaintenance": "Mantenimiento",
     "payroll.tabPeriod": "Período de nómina",
+    "payroll.tabClockUi": "Reloj e interfaz",
     "payroll.needMgmtAccess":
       "Se requiere al menos ta.monitor, o ta.settings / users.edit, para abrir esta pantalla.",
     "payroll.periodTitle": "Ajustes del período de nómina",

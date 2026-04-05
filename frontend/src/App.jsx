@@ -12,6 +12,7 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import { ArrowBack, Refresh } from "@mui/icons-material";
+import ClockInGate from "./components/ClockInGate";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
@@ -261,6 +262,7 @@ function AppShell() {
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {isMobile && user && <MobileTopBar pathname={pathname} user={user} />}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
+          <ClockInGate user={user}>
           <Routes>
             <Route
               path="/login/:orgSlug"
@@ -354,6 +356,7 @@ function AppShell() {
             />
             <Route path="/ta-employees" element={<Navigate to="/employees" replace />} />
           </Routes>
+          </ClockInGate>
         </Box>
       </Box>
 
