@@ -15,6 +15,10 @@ const AUTH_TOKEN_KEY = "washpro_token";
 const AUTH_USER_KEY = "washpro_user";
 
 export const getAuthToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || "";
+
+/** True when any API token exists (Washpro or legacy TA). */
+export const hasAuthToken = () =>
+  !!(localStorage.getItem(AUTH_TOKEN_KEY) || localStorage.getItem("ta_token"));
 /** Dedupe + TTL: many components call clock-payroll-ui on first paint (Sidebar, gate, clock page). */
 let _clockPayrollUiCache = { res: null, at: 0, inflight: null };
 const CLOCK_PAYROLL_UI_TTL_MS = 90000;
@@ -542,7 +546,7 @@ export const taLogin = (email, password) =>
 /** Alias for AuthContext */
 export const login = taLogin;
 
-/** Single in-flight GET /api/ta/auth/me (AuthContext + any duplicate callers). */
+/** Single in-flight GET /api/ta/auth/me (legacy; prefer getTaBootstrap). */
 let _taAuthMeInflight = null;
 export const getMe = () => {
   if (_taAuthMeInflight) return _taAuthMeInflight;
@@ -552,6 +556,33 @@ export const getMe = () => {
   return _taAuthMeInflight;
 };
 
+function _primeClockPayrollCacheFromBootstrap(res) {
+  const ui = res?.data?.clock_payroll_ui;
+  if (ui && typeof ui === "object") {
+    _clockPayrollUiCache = { res: { data: ui }, at: Date.now(), inflight: null };
+  }
+}
+
+/** One round-trip: user + permissions + clock/payroll UI + optional session (replaces /me + /clock-payroll-ui + often /sessions/current). */
+let _taBootstrapInflight = null;
+export const getTaBootstrap = (params = {}) => {
+  const hasCoords =
+    params &&
+    (params.latitude != null || params.longitude != null || params.lat != null || params.lng != null);
+  if (!hasCoords && _taBootstrapInflight) return _taBootstrapInflight;
+  const req = axios
+    .get(`${API_BASE}/api/ta/bootstrap`, { params })
+    .then((res) => {
+      _primeClockPayrollCacheFromBootstrap(res);
+      return res;
+    })
+    .finally(() => {
+      if (!hasCoords) _taBootstrapInflight = null;
+    });
+  if (!hasCoords) _taBootstrapInflight = req;
+  return req;
+};
+
 export const getMyGeofence = () => axios.get(`${API_BASE}/api/ta/me/geofence`);
 
 export const getTaSessionCurrent = (params, extraConfig = {}) =>
@@ -559,6 +590,9 @@ export const getTaSessionCurrent = (params, extraConfig = {}) =>
 
 /** Tenant clock banner / geofence labels + payroll screen field visibility (cached; see invalidate). */
 export const getClockPayrollUiSettings = () => {
+  if (!hasAuthToken()) {
+    return Promise.resolve({ data: { clock: {}, payroll: {} } });
+  }
   const now = Date.now();
   if (_clockPayrollUiCache.res && now - _clockPayrollUiCache.at < CLOCK_PAYROLL_UI_TTL_MS) {
     return Promise.resolve(_clockPayrollUiCache.res);
@@ -620,6 +654,23 @@ export const getUserEntityTags = (userId) =>
 export const putUserEntityTags = (userId, body) =>
   axios.put(`${API_BASE}/api/ta/users/${userId}/entity-tags`, body);
 
+export const getTaHrEmployerSettings = () =>
+  axios.get(`${API_BASE}/api/ta/org/hr-employer-settings`);
+
+export const putTaHrEmployerSettings = (body) =>
+  axios.put(`${API_BASE}/api/ta/org/hr-employer-settings`, body);
+
+export const getTaUserHrProfile = (userId) =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-profile`);
+
+export const putTaUserHrProfile = (userId, body) =>
+  axios.put(`${API_BASE}/api/ta/users/${userId}/hr-profile`, body);
+
+export const postTaUserHrFormI9 = (userId) =>
+  axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/i9`, null, {
+    responseType: "blob",
+  });
+
 export const getGeofences = () => axios.get(`${API_BASE}/api/ta/geofences`);
 
 export const createGeofence = (body) =>
@@ -662,6 +713,15 @@ export const getMonitorSessions = (params) =>
 
 export const getPayrollCycles = () =>
   axios.get(`${API_BASE}/api/ta/payroll-cycles`);
+
+export const submitPayrollCycleForApproval = (cycleId) =>
+  axios.post(`${API_BASE}/api/ta/payroll-cycles/${cycleId}/submit-for-approval`);
+
+export const approvePayrollCycle = (cycleId) =>
+  axios.post(`${API_BASE}/api/ta/payroll-cycles/${cycleId}/approve`);
+
+export const patchSessionPayrollLine = (sessionId, body) =>
+  axios.patch(`${API_BASE}/api/ta/sessions/${sessionId}/payroll-line`, body);
 
 export const getPayrollPeriodSettings = () =>
   axios.get(`${API_BASE}/api/ta/admin/payroll-period`);

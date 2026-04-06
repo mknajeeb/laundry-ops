@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -21,6 +22,7 @@ import {
   taBreakStart,
   taClockIn,
   taClockOut,
+  clearAuthSession,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { asBool } from "../utils/bool";
@@ -40,6 +42,8 @@ const DEFAULT_CLOCK_UI = {
   show_outside_geofence_on_clock: true,
   show_outside_geofence_on_summary: true,
   ask_personal_laundry_bags: false,
+  dim_app_until_clocked_in: false,
+  sign_out_after_clock_out: false,
 };
 
 const BANNER_FALLBACK_TEXT = "Company notice — check with your supervisor for updates.";
@@ -56,11 +60,15 @@ function normalizeClockUi(raw) {
     show_outside_geofence_on_clock: asBool(d.show_outside_geofence_on_clock, true),
     show_outside_geofence_on_summary: asBool(d.show_outside_geofence_on_summary, true),
     ask_personal_laundry_bags: asBool(d.ask_personal_laundry_bags, false),
+    dim_app_until_clocked_in: asBool(d.dim_app_until_clocked_in, false),
+    sign_out_after_clock_out: asBool(d.sign_out_after_clock_out, false),
   };
 }
 
 function ClockPage({ user: washproUser }) {
-  const { user: taUser } = useAuth();
+  const navigate = useNavigate();
+  const { user: taUser, loading: authLoading } = useAuth();
+  const [tick, setTick] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [sessionRes, setSessionRes] = useState(null);
@@ -154,8 +162,9 @@ function ClockPage({ user: washproUser }) {
   }, [loadSession, refreshAll]);
 
   useEffect(() => {
+    if (authLoading) return;
     loadClockUi();
-  }, [loadClockUi]);
+  }, [authLoading, loadClockUi]);
 
   useEffect(
     () => () => {
@@ -165,16 +174,22 @@ function ClockPage({ user: washproUser }) {
   );
 
   useEffect(() => {
+    if (authLoading) return;
     refreshAll(false);
-  }, [refreshAll]);
+  }, [authLoading, refreshAll]);
 
   useEffect(() => {
     const id = setInterval(() => {
       const { lat, lng } = lastPosRef.current;
       loadSession(true, lat, lng);
-    }, 120000);
+    }, 20000);
     return () => clearInterval(id);
   }, [loadSession]);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const session = sessionRes?.session;
   const operational = sessionRes?.operational;
@@ -267,11 +282,23 @@ function ClockPage({ user: washproUser }) {
       setMessage({ type: "success", text: "Clock out recorded." });
       setDoneSummary(res.data?.summary || null);
       await refreshAfterAction();
+      if (asBool(clockUi.sign_out_after_clock_out)) {
+        clearAuthSession();
+        navigate("/login", { replace: true });
+      }
     });
   };
 
   const isClockedIn = !!session;
   const onBreak = !!session?.open_break;
+  const liveShiftSec = useMemo(() => {
+    if (!session?.clock_in_at) return 0;
+    const t0 = Date.parse(session.clock_in_at);
+    if (Number.isNaN(t0)) return 0;
+    return Math.max(0, Math.floor((Date.now() - t0) / 1000));
+  }, [session?.clock_in_at, tick]);
+
+  const shiftLabel = formatDuration(liveShiftSec);
   const workLabel =
     session?.elapsed_work_seconds != null
       ? formatDuration(session.elapsed_work_seconds)
@@ -307,6 +334,9 @@ function ClockPage({ user: washproUser }) {
         minHeight: "100%",
         position: "relative",
         pb: { xs: 10, md: 3 },
+        ...(asBool(clockUi.dim_app_until_clocked_in) && !isClockedIn
+          ? { filter: "brightness(0.92)", bgcolor: "rgba(15,23,42,0.03)" }
+          : {}),
       }}
     >
       {message.text && (
@@ -383,9 +413,15 @@ function ClockPage({ user: washproUser }) {
                 }}
               >
                 <Typography sx={{ color: "#64748b", fontSize: 12, fontWeight: 600, mb: 0.5 }}>
-                  Working hours
+                  Shift time (total)
                 </Typography>
                 <Typography sx={{ fontSize: 28, fontWeight: 700, color: "#0f172a", lineHeight: 1.2 }}>
+                  {shiftLabel}
+                </Typography>
+                <Typography sx={{ color: "#64748b", fontSize: 11, fontWeight: 600, mt: 1.2, mb: 0.5 }}>
+                  Net work (excl. breaks)
+                </Typography>
+                <Typography sx={{ fontSize: 20, fontWeight: 700, color: "#334155", lineHeight: 1.2 }}>
                   {workLabel}
                 </Typography>
               </Paper>

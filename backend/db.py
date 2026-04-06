@@ -16,7 +16,7 @@ _pool: Optional[pooling.MySQLConnectionPool] = None
 _pool_lock = threading.Lock()
 
 # Env can accidentally set 1 — two parallel tabs will exhaust the pool immediately.
-_MIN_POOL = 5
+_MIN_POOL = 8
 
 
 def _connection_kwargs() -> dict[str, Any]:

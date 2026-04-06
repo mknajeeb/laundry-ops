@@ -7,11 +7,12 @@ from functools import wraps
 from typing import Optional
 
 import mysql.connector
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, Response, current_app, g, jsonify, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from backend.db import get_db
 from backend.payroll_identity import (
+    eastern_now_naive,
     ensure_payroll_profile_for_washpro,
     fetch_payroll_profile_row,
     get_or_create_payroll_cycle_unified,
@@ -22,6 +23,15 @@ from backend.payroll_identity import (
     washpro_bearer_is_platform_operator,
 )
 from backend.onesignal_client import notify_geofence_outside_cooldown
+from backend.hr_compliance import (
+    build_i9_field_values,
+    ensure_hr_extended_profiles_table,
+    fetch_hr_org_settings,
+    fill_i9_pdf_bytes,
+    get_merged_hr_profile,
+    resolve_i9_template_path,
+    upsert_hr_extended_profile,
+)
 from backend.ta_helpers import (
     as_bool,
     haversine_meters,
@@ -81,6 +91,9 @@ def _default_clock_ui_dict() -> dict:
         "show_outside_geofence_on_summary": True,
         "ask_personal_laundry_bags": False,
         "clock_in_gate_enabled": True,
+        "clock_in_gate_strict": False,
+        "dim_app_until_clocked_in": False,
+        "sign_out_after_clock_out": False,
         "geofence_reminder_enabled": True,
         "geofence_reminder_hours": 1.5,
         "geofence_reminder_cooldown_hours": 6.0,
@@ -105,6 +118,11 @@ def _default_payroll_screen_dict() -> dict:
         "monitor_col_net": True,
         "monitor_col_status": True,
         "monitor_col_geofence": True,
+        "monitor_col_gross": True,
+        "monitor_col_breaks": True,
+        "monitor_col_geofence_out": True,
+        "monitor_col_bags": True,
+        "monitor_col_period_adj": True,
         "monitor_col_actions": True,
     }
 
@@ -554,14 +572,184 @@ def get_open_break(conn, shift_id: int):
     return c.fetchone()
 
 
+def _parse_mysql_dt(val):
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.replace(tzinfo=None) if getattr(val, "tzinfo", None) else val
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return t.replace(tzinfo=None) if t.tzinfo else t
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s[:26], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _session_gross_seconds(row: dict) -> Optional[int]:
+    """Total span clock-in → clock-out (or now if active). Same as shift length before pay adjustments."""
+    ci = _parse_mysql_dt(row.get("clock_in_at"))
+    co = _parse_mysql_dt(row.get("clock_out_at"))
+    if not ci:
+        return None
+    end = co or eastern_now_naive()
+    return int((end - ci).total_seconds())
+
+
+def _break_duration_seconds(br: dict) -> Optional[int]:
+    start = _parse_mysql_dt(br.get("break_start_at"))
+    end = _parse_mysql_dt(br.get("break_end_at"))
+    if not start or not end:
+        return None
+    return int((end - start).total_seconds())
+
+
+def _fetch_breaks_for_sessions(conn, session_ids: list) -> dict:
+    if not session_ids:
+        return {}
+    c = conn.cursor(dictionary=True)
+    ph = ",".join(["%s"] * len(session_ids))
+    c.execute(
+        f"SELECT * FROM shift_breaks WHERE shift_session_id IN ({ph}) ORDER BY break_start_at ASC, id ASC",
+        session_ids,
+    )
+    out = {}
+    for r in c.fetchall():
+        sid = r["shift_session_id"]
+        out.setdefault(sid, []).append(r)
+    return out
+
+
+def _geofence_exception_bounds(conn, sid: int) -> dict:
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT MIN(created_at) AS first_at, MAX(created_at) AS last_at
+        FROM shift_exceptions
+        WHERE shift_session_id=%s AND exception_type='outside_geofence'
+        """,
+        (sid,),
+    )
+    row = c.fetchone() or {}
+    return {"first_exception_at": row.get("first_at"), "last_exception_at": row.get("last_at")}
+
+
+def _effective_bag_rate_cents(conn, on_dt) -> int:
+    from datetime import date as date_type
+
+    if on_dt is None:
+        d = date_type.today()
+    elif isinstance(on_dt, datetime):
+        d = on_dt.date()
+    elif hasattr(on_dt, "date"):
+        d = on_dt.date()
+    else:
+        d = date_type.today()
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT rate_per_bag_cents FROM bag_rate_maintenance
+        WHERE effective_from <= %s AND (effective_to IS NULL OR effective_to >= %s) AND active = 1
+        ORDER BY effective_from DESC LIMIT 1
+        """,
+        (d, d),
+    )
+    row = c.fetchone()
+    if row:
+        return int(row.get("rate_per_bag_cents") or 0)
+    c.execute(
+        "SELECT rate_per_bag_cents FROM bag_rate_maintenance WHERE active = 1 ORDER BY effective_from DESC LIMIT 1"
+    )
+    row2 = c.fetchone()
+    return int(row2.get("rate_per_bag_cents") or 0) if row2 else 0
+
+
+def _enrich_monitor_rows(conn, rows: list, tenant_id: int) -> list:
+    if not rows:
+        return []
+    chk = conn.cursor()
+    has_out_excl = table_has_column(chk, "shift_sessions", "geofence_outside_deduction_excluded")
+    has_bag_excl = table_has_column(chk, "shift_sessions", "laundry_bag_deduction_excluded")
+    has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
+    has_payable = table_has_column(chk, "shift_sessions", "geofence_outside_payable")
+
+    sids = [r["id"] for r in rows]
+    breaks_by_sid = _fetch_breaks_for_sessions(conn, sids)
+    out = []
+    for row in rows:
+        sid = row["id"]
+        gross = _session_gross_seconds(row)
+        row["gross_seconds"] = gross
+        brs = breaks_by_sid.get(sid, [])
+        enriched_breaks = []
+        tb = 0
+        for b in brs:
+            bd = dict(b)
+            dur = _break_duration_seconds(bd)
+            bd["duration_seconds"] = dur
+            if dur is not None:
+                tb += dur
+            enriched_breaks.append(json_safe(bd))
+        row["breaks"] = enriched_breaks
+        row["total_break_seconds_computed"] = tb
+
+        outside_sec = int(row.get("outside_geofence_seconds") or 0)
+        if has_out_excl:
+            out_excl = bool(int(row.get("geofence_outside_deduction_excluded") or 0))
+        elif has_payable:
+            out_excl = bool(int(row.get("geofence_outside_payable") or 0))
+        else:
+            out_excl = False
+        outside_deducted_sec = 0 if out_excl else outside_sec
+
+        gross_val = int(gross) if gross is not None else 0
+        row["paid_net_seconds"] = int(gross_val - tb - outside_deducted_sec)
+        row["outside_seconds_deducted_from_pay"] = outside_deducted_sec
+
+        bags = row.get("personal_laundry_bags")
+        try:
+            bags = int(bags) if bags is not None else 0
+        except (TypeError, ValueError):
+            bags = 0
+        ci = _parse_mysql_dt(row.get("clock_in_at"))
+        rate = _effective_bag_rate_cents(conn, ci or eastern_now_naive())
+        row["bag_rate_cents"] = rate
+        bag_excl = bool(int(row.get("laundry_bag_deduction_excluded") or 0)) if has_bag_excl else False
+        row["laundry_bag_deduction_cents"] = 0 if bag_excl else max(0, bags) * rate
+
+        bounds = _geofence_exception_bounds(conn, sid)
+        row["geofence_outside"] = json_safe(
+            {
+                "total_seconds": outside_sec,
+                "deduction_excluded": out_excl,
+                "deducted_seconds": outside_deducted_sec,
+                "first_exception_at": bounds.get("first_exception_at"),
+                "last_exception_at": bounds.get("last_exception_at"),
+            }
+        )
+        row["period_bonus_cents"] = int(row.get("period_bonus_cents") or 0)
+        row["period_deduction_cents"] = int(row.get("period_deduction_cents") or 0)
+        if has_remarks:
+            row["period_adjustment_remarks"] = row.get("period_adjustment_remarks") or ""
+        out.append(json_safe(row))
+    return out
+
+
 def maybe_auto_close_shift(conn, sess: dict, user_id: int, organization_id: int):
     max_h = float(get_setting(conn, organization_id, "max_shift_hours", "14"))
-    clock_in = sess["clock_in_at"]
-    if isinstance(clock_in, str):
-        clock_in = datetime.fromisoformat(str(clock_in).replace("Z", "+00:00"))
-    if clock_in.tzinfo:
-        clock_in = clock_in.replace(tzinfo=None)
-    now = datetime.now()
+    clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
+    if not clock_in:
+        return None
+    now = eastern_now_naive()
     elapsed = (now - clock_in).total_seconds()
     if elapsed <= max_h * 3600:
         return None
@@ -739,6 +927,64 @@ def me():
         conn.close()
 
 
+@ta_bp.route("/bootstrap", methods=["GET"])
+@require_auth
+def ta_bootstrap():
+    """
+    One round-trip for app shell: identity + permissions + clock/payroll UI + optional session state.
+    Cuts 3–4 sequential HTTP calls (each paying Azure RTT) down to 1 for clock/home.
+    """
+    lat = request.args.get("latitude")
+    lng = request.args.get("longitude")
+    conn = get_db()
+    try:
+        uid = int(g.ta_user["id"])
+        tid = _tenant_id()
+        c = conn.cursor(dictionary=True)
+        if payroll_profiles_active(conn):
+            c.execute(
+                """
+                SELECT DISTINCT p.perm_key
+                FROM user_roles ur
+                JOIN role_permissions rp ON rp.role_id = ur.role_id
+                JOIN permissions p ON p.id = rp.permission_id
+                WHERE ur.user_id = %s
+                ORDER BY p.perm_key
+                """,
+                (uid,),
+            )
+            perms = [r["perm_key"] for r in c.fetchall()]
+        else:
+            c.execute(
+                """
+                SELECT p.perm_key FROM ta_users u
+                JOIN role_permissions rp ON rp.role_id = u.role_id
+                JOIN permissions p ON p.id = rp.permission_id
+                WHERE u.id=%s
+                """,
+                (uid,),
+            )
+            perms = [r["perm_key"] for r in c.fetchall()]
+        u = fetch_user_row(conn, uid)
+        u.pop("password_hash", None)
+        ui = load_clock_payroll_ui(conn, tid)
+        session_state = None
+        if user_has_perm(conn, uid, "ta.clock"):
+            session_state = _build_sessions_current_payload(conn, g.ta_user, tid, lat, lng)
+        else:
+            conn.commit()
+        return jsonify(
+            {
+                "user": json_safe(u),
+                "permissions": perms,
+                "clock_payroll_ui": ui,
+                "session_state": session_state,
+            }
+        )
+    finally:
+        conn.close()
+
+
 # --- Geofence / me ---
 
 
@@ -871,6 +1117,122 @@ def maybe_clock_in_geofence_reminder(
     )
 
 
+def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, lng):
+    """Shared logic for GET /sessions/current and GET /bootstrap. Commits conn."""
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT * FROM shift_sessions
+        WHERE user_id=%s AND status='active'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (ta_user["id"],),
+    )
+    sess = c.fetchone()
+    inside = None
+    ob = None
+    gfn = None
+    if sess:
+        closed = maybe_auto_close_shift(conn, sess, ta_user["id"], tenant_id)
+        if closed:
+            conn.commit()
+            sess = None
+        else:
+            sess = fetch_session(conn, sess["id"])
+            ob = get_open_break(conn, sess["id"])
+            sess["open_break"] = json_safe(ob) if ob else None
+            clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
+            now_ts = eastern_now_naive()
+            br_done = sum_break_seconds(conn, sess["id"])
+            break_live = br_done
+            if ob:
+                bs = _parse_mysql_dt(ob.get("break_start_at"))
+                if bs:
+                    break_live += int((now_ts - bs).total_seconds())
+            elapsed = int((now_ts - clock_in).total_seconds()) if clock_in else 0
+            sess["elapsed_shift_seconds"] = elapsed
+            sess["elapsed_break_seconds"] = int(break_live)
+            sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
+            gfn = get_primary_geofence(conn, ta_user["id"])
+            if lat and lng and gfn:
+                dist = haversine_meters(
+                    float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
+                )
+                inside = dist <= float(gfn["radius_meters"])
+                if inside is False:
+                    c.execute(
+                        """
+                        INSERT INTO shift_exceptions (shift_session_id, user_id, exception_type, message)
+                        VALUES (%s,%s,'outside_geofence',%s)
+                        """,
+                        (
+                            sess["id"],
+                            ta_user["id"],
+                            f"Location ping outside geofence (~{int(dist)}m).",
+                        ),
+                    )
+                    if _user_wants_push_notification(conn, ta_user):
+                        notify_geofence_outside_cooldown(
+                            ta_user["id"], tenant_id, int(dist)
+                        )
+            sess["geofence_inside"] = inside
+            sess["primary_geofence"] = json_safe(gfn) if gfn else None
+
+            if (
+                sess
+                and lat
+                and lng
+                and gfn
+                and inside is not None
+                and table_has_column(c, "shift_sessions", "outside_geofence_seconds")
+            ):
+                poll_now = eastern_now_naive()
+                poll_ts = sess.get("last_geofence_poll_at")
+                if isinstance(poll_ts, str):
+                    poll_ts = datetime.fromisoformat(str(poll_ts).replace("Z", "+00:00"))
+                if poll_ts and getattr(poll_ts, "tzinfo", None):
+                    poll_ts = poll_ts.replace(tzinfo=None)
+                outside_col = int(sess.get("outside_geofence_seconds") or 0)
+                if poll_ts:
+                    dt = (poll_now - poll_ts).total_seconds()
+                    dt = min(max(dt, 0.0), 180.0)
+                    if inside is False:
+                        outside_col += int(dt)
+                uc = conn.cursor()
+                uc.execute(
+                    """
+                    UPDATE shift_sessions
+                    SET outside_geofence_seconds=%s, last_geofence_poll_at=%s, last_geofence_inside=%s
+                    WHERE id=%s
+                    """,
+                    (outside_col, poll_now, 1 if inside else 0, sess["id"]),
+                )
+                sess["outside_geofence_seconds"] = outside_col
+                sess["last_geofence_poll_at"] = poll_now
+                sess["last_geofence_inside"] = 1 if inside else 0
+
+    elif lat and lng:
+        gfn = get_primary_geofence(conn, ta_user["id"])
+        inside = None
+        if gfn:
+            dist = haversine_meters(
+                float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
+            )
+            inside = dist <= float(gfn["radius_meters"])
+        maybe_clock_in_geofence_reminder(conn, ta_user, tenant_id, inside)
+
+    op = get_operational_state(
+        conn,
+        ta_user["id"],
+        sess,
+        geofence_inside=inside,
+        open_break_cached=ob,
+        primary_geofence_cached=gfn,
+    )
+    conn.commit()
+    return {"session": json_safe(sess), "operational": op}
+
+
 @ta_bp.route("/sessions/current", methods=["GET"])
 @require_auth
 @require_perm("ta.clock")
@@ -879,125 +1241,8 @@ def sessions_current():
     lng = request.args.get("longitude")
     conn = get_db()
     try:
-        c = conn.cursor(dictionary=True)
-        c.execute(
-            """
-            SELECT * FROM shift_sessions
-            WHERE user_id=%s AND status='active'
-            ORDER BY id DESC LIMIT 1
-            """,
-            (g.ta_user["id"],),
-        )
-        sess = c.fetchone()
-        inside = None
-        ob = None
-        gfn = None
-        if sess:
-            closed = maybe_auto_close_shift(conn, sess, g.ta_user["id"], _tenant_id())
-            if closed:
-                conn.commit()
-                sess = None
-            else:
-                sess = fetch_session(conn, sess["id"])
-                ob = get_open_break(conn, sess["id"])
-                sess["open_break"] = json_safe(ob) if ob else None
-                clock_in = sess["clock_in_at"]
-                if isinstance(clock_in, str):
-                    clock_in = datetime.fromisoformat(str(clock_in).replace("Z", "+00:00"))
-                if clock_in and getattr(clock_in, "tzinfo", None):
-                    clock_in = clock_in.replace(tzinfo=None)
-                now_ts = datetime.now()
-                br_done = sum_break_seconds(conn, sess["id"])
-                break_live = br_done
-                if ob:
-                    bs = ob["break_start_at"]
-                    if isinstance(bs, str):
-                        bs = datetime.fromisoformat(str(bs).replace("Z", "+00:00"))
-                    if bs and getattr(bs, "tzinfo", None):
-                        bs = bs.replace(tzinfo=None)
-                    if bs:
-                        break_live += int((now_ts - bs).total_seconds())
-                elapsed = int((now_ts - clock_in).total_seconds()) if clock_in else 0
-                sess["elapsed_break_seconds"] = int(break_live)
-                sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
-                gfn = get_primary_geofence(conn, g.ta_user["id"])
-                if lat and lng and gfn:
-                    dist = haversine_meters(
-                        float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
-                    )
-                    inside = dist <= float(gfn["radius_meters"])
-                    if inside is False:
-                        c.execute(
-                            """
-                            INSERT INTO shift_exceptions (shift_session_id, user_id, exception_type, message)
-                            VALUES (%s,%s,'outside_geofence',%s)
-                            """,
-                            (
-                                sess["id"],
-                                g.ta_user["id"],
-                                f"Location ping outside geofence (~{int(dist)}m).",
-                            ),
-                        )
-                        if _user_wants_push_notification(conn, g.ta_user):
-                            notify_geofence_outside_cooldown(
-                                g.ta_user["id"], _tenant_id(), int(dist)
-                            )
-                sess["geofence_inside"] = inside
-                sess["primary_geofence"] = json_safe(gfn) if gfn else None
-
-                if (
-                    sess
-                    and lat
-                    and lng
-                    and gfn
-                    and inside is not None
-                    and table_has_column(c, "shift_sessions", "outside_geofence_seconds")
-                ):
-                    poll_now = datetime.now()
-                    poll_ts = sess.get("last_geofence_poll_at")
-                    if isinstance(poll_ts, str):
-                        poll_ts = datetime.fromisoformat(str(poll_ts).replace("Z", "+00:00"))
-                    if poll_ts and getattr(poll_ts, "tzinfo", None):
-                        poll_ts = poll_ts.replace(tzinfo=None)
-                    outside_col = int(sess.get("outside_geofence_seconds") or 0)
-                    if poll_ts:
-                        dt = (poll_now - poll_ts).total_seconds()
-                        dt = min(max(dt, 0.0), 180.0)
-                        if inside is False:
-                            outside_col += int(dt)
-                    uc = conn.cursor()
-                    uc.execute(
-                        """
-                        UPDATE shift_sessions
-                        SET outside_geofence_seconds=%s, last_geofence_poll_at=%s, last_geofence_inside=%s
-                        WHERE id=%s
-                        """,
-                        (outside_col, poll_now, 1 if inside else 0, sess["id"]),
-                    )
-                    sess["outside_geofence_seconds"] = outside_col
-                    sess["last_geofence_poll_at"] = poll_now
-                    sess["last_geofence_inside"] = 1 if inside else 0
-
-        elif lat and lng:
-            gfn = get_primary_geofence(conn, g.ta_user["id"])
-            inside = None
-            if gfn:
-                dist = haversine_meters(
-                    float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
-                )
-                inside = dist <= float(gfn["radius_meters"])
-            maybe_clock_in_geofence_reminder(conn, g.ta_user, _tenant_id(), inside)
-
-        op = get_operational_state(
-            conn,
-            g.ta_user["id"],
-            sess,
-            geofence_inside=inside,
-            open_break_cached=ob,
-            primary_geofence_cached=gfn,
-        )
-        conn.commit()
-        return jsonify({"session": json_safe(sess), "operational": op})
+        payload = _build_sessions_current_payload(conn, g.ta_user, _tenant_id(), lat, lng)
+        return jsonify(payload)
     finally:
         conn.close()
 
@@ -1114,7 +1359,7 @@ def clock_in():
             row = c.fetchone()
             employment_category_id = row["employment_category_id"] if row else None
 
-        now = datetime.now()
+        now = eastern_now_naive()
         pc_id = get_or_create_payroll_cycle(conn, now, _tenant_id())
 
         c2 = conn.cursor()
@@ -1179,12 +1424,10 @@ def clock_out():
             return jsonify({"error": "End break before clocking out"}), 400
 
         br = sum_break_seconds(conn, sess["id"])
-        now = datetime.now()
-        clock_in = sess["clock_in_at"]
-        if isinstance(clock_in, str):
-            clock_in = datetime.fromisoformat(str(clock_in).replace("Z", "+00:00"))
-        if clock_in.tzinfo:
-            clock_in = clock_in.replace(tzinfo=None)
+        now = eastern_now_naive()
+        clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
+        if not clock_in:
+            return jsonify({"error": "Invalid session clock_in"}), 400
         elapsed = (now - clock_in).total_seconds()
         net = int(elapsed) - br
 
@@ -1281,7 +1524,7 @@ def break_start():
         if get_open_break(conn, sess["id"]):
             return jsonify({"error": "Break already in progress"}), 400
 
-        now = datetime.now()
+        now = eastern_now_naive()
         c2 = conn.cursor()
         c2.execute(
             """
@@ -1320,7 +1563,7 @@ def break_end():
         if not ob:
             return jsonify({"error": "No active break"}), 400
 
-        now = datetime.now()
+        now = eastern_now_naive()
         c2 = conn.cursor()
         c2.execute(
             """
@@ -1949,6 +2192,131 @@ def user_entity_tags_api(user_id):
         conn.close()
 
 
+# --- HR compliance (extended profile + I-9 prefill) ---
+
+
+@ta_bp.route("/org/hr-employer-settings", methods=["GET", "PUT"])
+@require_auth
+def org_hr_employer_settings():
+    conn = get_db()
+    try:
+        oid = _tenant_id()
+        if request.method == "GET":
+            if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+                return jsonify({"error": "Forbidden"}), 403
+            return jsonify(fetch_hr_org_settings(conn, oid))
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        data = request.json or {}
+        for src, sk in (
+            ("employer_name", "hr_employer_legal_name"),
+            ("employer_address", "hr_employer_address"),
+            ("employer_ein", "hr_employer_ein"),
+        ):
+            if src in data:
+                set_setting(conn, oid, sk, (data.get(src) or "").strip())
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "system_settings",
+            oid,
+            "hr_employer",
+            new={k: data.get(k) for k in ("employer_name", "employer_address", "employer_ein") if k in data},
+        )
+        conn.commit()
+        return jsonify(fetch_hr_org_settings(conn, oid))
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-profile", methods=["GET", "PUT"])
+@require_auth
+def user_hr_profile(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify(
+                {"error": "HR profile requires unified payroll (payroll_profiles). Run payroll_unify_to_users_v1.sql"}
+            ), 503
+        if not _user_belongs_to_tenant(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "Not found"}), 404
+        cur = conn.cursor()
+        ensure_hr_extended_profiles_table(cur)
+        if request.method == "GET":
+            if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+                return jsonify({"error": "Forbidden"}), 403
+            return jsonify(get_merged_hr_profile(conn, user_id, u))
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.json or {}
+        oid = int(u.get("organization_id") or _tenant_id())
+        hr_out = upsert_hr_extended_profile(conn, user_id, oid, body)
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "hr_extended_profiles",
+            user_id,
+            "update",
+            new=body,
+        )
+        conn.commit()
+        u2 = fetch_payroll_profile_row(conn, user_id)
+        merged = get_merged_hr_profile(conn, user_id, u2 or u)
+        merged["hr"] = hr_out
+        return jsonify(merged)
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-forms/i9", methods=["POST"])
+@require_auth
+def user_hr_form_i9(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR forms require unified payroll"}), 503
+        if not _user_belongs_to_tenant(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "Not found"}), 404
+        cur = conn.cursor()
+        ensure_hr_extended_profiles_table(cur)
+        c = conn.cursor(dictionary=True)
+        c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (user_id,))
+        hr = c.fetchone()
+        oid = int(u.get("organization_id") or _tenant_id())
+        org = fetch_hr_org_settings(conn, oid)
+        path = resolve_i9_template_path()
+        if not path:
+            return jsonify(
+                {
+                    "error": "I-9 template PDF not found. Copy i-9.pdf to backend/hr_form_assets/ or set HR_I9_TEMPLATE_PATH.",
+                }
+            ), 503
+        vals = build_i9_field_values(
+            u,
+            hr,
+            org.get("employer_name") or "",
+            org.get("employer_address") or "",
+        )
+        pdf = fill_i9_pdf_bytes(path, vals)
+        ln = (u.get("last_name") or "user").replace("/", "-")[:40]
+        fn = f"i9-prefill-{ln}-{user_id}.pdf"
+        return Response(
+            pdf,
+            mimetype="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+        )
+    finally:
+        conn.close()
+
+
 # --- Geofences CRUD ---
 
 
@@ -2363,27 +2731,39 @@ def monitor_sessions():
     conn = get_db()
     try:
         c = conn.cursor(dictionary=True)
+        has_pc_review = table_has_column(c, "payroll_cycles", "review_state")
+        can_see_pending = user_has_perm(conn, g.ta_user["id"], "ta.settings")
+        review_select = ", pc.review_state AS payroll_cycle_review_state" if has_pc_review else ""
+        review_filter = ""
+        if has_pc_review and not can_see_pending:
+            review_filter = (
+                " AND (pc.review_state IS NULL OR pc.review_state NOT IN ('pending_approval'))"
+            )
         if payroll_profiles_active(conn):
-            q = """
+            q = f"""
             SELECT s.*, pp.email, pp.first_name, pp.last_name, g.name AS geofence_name,
                    pc.cycle_ref, ec.name AS category_name
+                   {review_select}
             FROM shift_sessions s
             JOIN payroll_profiles pp ON pp.user_id = s.user_id
             JOIN geofences g ON g.id = s.geofence_id
             JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
             LEFT JOIN employment_categories ec ON ec.id = s.employment_category_id
             WHERE s.organization_id=%s
+            {review_filter}
             """
         else:
-            q = """
+            q = f"""
             SELECT s.*, u.email, u.first_name, u.last_name, g.name AS geofence_name,
                    pc.cycle_ref, ec.name AS category_name
+                   {review_select}
             FROM shift_sessions s
             JOIN ta_users u ON u.id = s.user_id
             JOIN geofences g ON g.id = s.geofence_id
             JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
             LEFT JOIN employment_categories ec ON ec.id = s.employment_category_id
             WHERE s.organization_id=%s
+            {review_filter}
             """
         params = [_tenant_id()]
         if request.args.get("payroll_cycle_id"):
@@ -2401,9 +2781,11 @@ def monitor_sessions():
         if request.args.get("geofence_id"):
             q += " AND s.geofence_id=%s"
             params.append(int(request.args["geofence_id"]))
-        q += " ORDER BY s.clock_in_at DESC LIMIT 500"
+        q += " ORDER BY s.clock_in_at DESC, s.id DESC LIMIT 500"
         c.execute(q, params)
-        return jsonify([json_safe(r) for r in c.fetchall()])
+        rows = c.fetchall()
+        enriched = _enrich_monitor_rows(conn, rows, _tenant_id())
+        return jsonify(enriched)
     finally:
         conn.close()
 
@@ -2429,12 +2811,10 @@ def force_clock_out(sid):
             return jsonify({"error": "User is on break; end break first"}), 400
 
         br = sum_break_seconds(conn, sid)
-        now = datetime.now()
-        clock_in = sess["clock_in_at"]
-        if isinstance(clock_in, str):
-            clock_in = datetime.fromisoformat(str(clock_in).replace("Z", "+00:00"))
-        if clock_in.tzinfo:
-            clock_in = clock_in.replace(tzinfo=None)
+        now = eastern_now_naive()
+        clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
+        if not clock_in:
+            return jsonify({"error": "Invalid session"}), 400
         elapsed = (now - clock_in).total_seconds()
         net = int(elapsed) - br
 
@@ -2590,6 +2970,162 @@ def payroll_cycles_list():
             (_tenant_id(),),
         )
         return jsonify([json_safe(r) for r in c.fetchall()])
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll-cycles/<int:pc_id>/submit-for-approval", methods=["POST"])
+@require_auth
+@require_perm("ta.settings")
+def payroll_cycle_submit_for_approval(pc_id):
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        if not table_has_column(c, "payroll_cycles", "review_state"):
+            return jsonify({"error": "Database migration required: payroll_workflow_and_session_payroll_v1.sql"}), 400
+        c.execute(
+            "SELECT * FROM payroll_cycles WHERE id=%s AND organization_id=%s",
+            (pc_id, _tenant_id()),
+        )
+        pc = c.fetchone()
+        if not pc:
+            return jsonify({"error": "Not found"}), 404
+        st = str(pc.get("review_state") or "open").strip()
+        if st != "open":
+            return jsonify({"error": "Only cycles in open review state can be submitted"}), 400
+        c2 = conn.cursor()
+        c2.execute(
+            """
+            UPDATE payroll_cycles
+            SET review_state='pending_approval', submitted_at=NOW()
+            WHERE id=%s AND organization_id=%s
+            """,
+            (pc_id, _tenant_id()),
+        )
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "payroll_cycle",
+            pc_id,
+            "submit_for_approval",
+            new={"review_state": "pending_approval"},
+        )
+        conn.commit()
+        c.execute("SELECT * FROM payroll_cycles WHERE id=%s", (pc_id,))
+        return jsonify(json_safe(c.fetchone()))
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll-cycles/<int:pc_id>/approve", methods=["POST"])
+@require_auth
+@require_perm("ta.settings")
+def payroll_cycle_approve(pc_id):
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        if not table_has_column(c, "payroll_cycles", "review_state"):
+            return jsonify({"error": "Database migration required: payroll_workflow_and_session_payroll_v1.sql"}), 400
+        c.execute(
+            "SELECT * FROM payroll_cycles WHERE id=%s AND organization_id=%s",
+            (pc_id, _tenant_id()),
+        )
+        pc = c.fetchone()
+        if not pc:
+            return jsonify({"error": "Not found"}), 404
+        st = str(pc.get("review_state") or "").strip()
+        if st != "pending_approval":
+            return jsonify({"error": "Only cycles pending approval can be approved"}), 400
+        c2 = conn.cursor()
+        c2.execute(
+            """
+            UPDATE payroll_cycles
+            SET review_state='approved', approved_at=NOW()
+            WHERE id=%s AND organization_id=%s
+            """,
+            (pc_id, _tenant_id()),
+        )
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "payroll_cycle",
+            pc_id,
+            "approve",
+            new={"review_state": "approved"},
+        )
+        conn.commit()
+        c.execute("SELECT * FROM payroll_cycles WHERE id=%s", (pc_id,))
+        return jsonify(json_safe(c.fetchone()))
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/sessions/<int:sid>/payroll-line", methods=["PATCH"])
+@require_auth
+@require_perm("ta.settings")
+def session_payroll_line_patch(sid):
+    data = request.json or {}
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        has_rev = table_has_column(c, "payroll_cycles", "review_state")
+        rev_sel = ", pc.review_state AS payroll_cycle_review_state" if has_rev else ""
+        c.execute(
+            f"""
+            SELECT s.*{rev_sel}
+            FROM shift_sessions s
+            JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
+            WHERE s.id=%s AND s.organization_id=%s
+            """,
+            (sid, _tenant_id()),
+        )
+        sess = c.fetchone()
+        if not sess:
+            return jsonify({"error": "Not found"}), 404
+        rev = str(sess.get("payroll_cycle_review_state") or "open").strip()
+        if has_rev and rev not in ("open", "pending_approval"):
+            return jsonify({"error": "Payroll line is locked for this cycle"}), 403
+        fields = []
+        vals = []
+        if "geofence_outside_payable" in data and table_has_column(
+            c, "shift_sessions", "geofence_outside_payable"
+        ):
+            fields.append("geofence_outside_payable=%s")
+            vals.append(1 if as_bool(data.get("geofence_outside_payable")) else 0)
+        if "geofence_outside_deduction_excluded" in data and table_has_column(
+            c, "shift_sessions", "geofence_outside_deduction_excluded"
+        ):
+            fields.append("geofence_outside_deduction_excluded=%s")
+            vals.append(1 if as_bool(data.get("geofence_outside_deduction_excluded")) else 0)
+        if "laundry_bag_deduction_excluded" in data and table_has_column(
+            c, "shift_sessions", "laundry_bag_deduction_excluded"
+        ):
+            fields.append("laundry_bag_deduction_excluded=%s")
+            vals.append(1 if as_bool(data.get("laundry_bag_deduction_excluded")) else 0)
+        if "period_adjustment_remarks" in data and table_has_column(
+            c, "shift_sessions", "period_adjustment_remarks"
+        ):
+            fields.append("period_adjustment_remarks=%s")
+            vals.append((data.get("period_adjustment_remarks") or "")[:2000])
+        if "period_bonus_cents" in data and table_has_column(c, "shift_sessions", "period_bonus_cents"):
+            fields.append("period_bonus_cents=%s")
+            vals.append(int(data.get("period_bonus_cents") or 0))
+        if "period_deduction_cents" in data and table_has_column(
+            c, "shift_sessions", "period_deduction_cents"
+        ):
+            fields.append("period_deduction_cents=%s")
+            vals.append(int(data.get("period_deduction_cents") or 0))
+        if not fields:
+            return jsonify({"error": "No updatable fields"}), 400
+        vals.append(sid)
+        c2 = conn.cursor()
+        c2.execute(
+            f"UPDATE shift_sessions SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
+            vals + [_tenant_id()],
+        )
+        write_audit(conn, g.ta_user["id"], "shift_session", sid, "payroll_line_patch", new=data)
+        conn.commit()
+        return jsonify(json_safe(fetch_session(conn, sid)))
     finally:
         conn.close()
 

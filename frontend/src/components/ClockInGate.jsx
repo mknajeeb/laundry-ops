@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CircularProgress, Box } from "@mui/material";
 import { Navigate, useLocation } from "react-router-dom";
-import { getClockPayrollUiSettings, getTaSessionCurrent } from "../api";
+import { getTaBootstrap, getTaSessionCurrent } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { asBool } from "../utils/bool";
 
@@ -25,24 +25,12 @@ export default function ClockInGate({ user, children }) {
   const prevPathRef = useRef(path);
   const initialSessionPollRef = useRef(false);
 
-  useEffect(() => {
-    getClockPayrollUiSettings()
-      .then((res) => {
-        const data = res.data || null;
-        setUi(data);
-        const c = data?.clock || {};
-        if (!asBool(c.clock_in_gate_enabled, true)) {
-          setSessionOk(true);
-          setSessionLoaded(true);
-        }
-      })
-      .catch(() => setUi(null));
-  }, []);
-
   const gateEnabled = useMemo(() => {
     const c = ui?.clock || {};
     return asBool(c.clock_in_gate_enabled, true);
   }, [ui]);
+
+  const strictGate = useMemo(() => asBool(ui?.clock?.clock_in_gate_strict, false), [ui]);
 
   /** Users who might be blocked by the gate — parallel-fetch UI + session for latency; gate-off wins over session. */
   const needsUiForGate = useMemo(() => {
@@ -61,16 +49,17 @@ export default function ClockInGate({ user, children }) {
   const exempt = useMemo(() => {
     if (!user) return true;
     if (!gateEnabled) return true;
+    if (!hasPerm("ta.clock")) return true;
+    if (strictGate) return false;
     const roles = Array.isArray(user.roles)
       ? user.roles.map((r) => String(r).toUpperCase())
       : user.role_code
         ? [String(user.role_code).toUpperCase()]
         : [];
     if (roles.includes("ADMIN")) return true;
-    if (!hasPerm("ta.clock")) return true;
     if (hasPerm("ta.monitor") || hasPerm("ta.settings")) return true;
     return false;
-  }, [user, gateEnabled, hasPerm]);
+  }, [user, gateEnabled, hasPerm, strictGate]);
 
   const pollSession = useCallback(() => {
     if (exempt || !hasPerm("ta.clock")) {
@@ -79,21 +68,25 @@ export default function ClockInGate({ user, children }) {
       return;
     }
     if (needsUiForGate) {
-      Promise.all([
-        getClockPayrollUiSettings().catch(() => ({ data: null })),
-        getTaSessionCurrent({}).catch(() => ({ data: null })),
-      ]).then(([uiRes, sessRes]) => {
-        const data = uiRes?.data ?? null;
-        if (data) setUi(data);
-        const c = data?.clock || {};
-        if (!asBool(c.clock_in_gate_enabled, true)) {
-          setSessionOk(true);
+      getTaBootstrap({})
+        .catch(() => null)
+        .then((res) => {
+          if (!res?.data) {
+            setSessionLoaded(true);
+            setSessionOk(false);
+            return;
+          }
+          const uiPayload = res.data.clock_payroll_ui;
+          if (uiPayload) setUi(uiPayload);
+          const c = uiPayload?.clock || {};
+          if (!asBool(c.clock_in_gate_enabled, true)) {
+            setSessionOk(true);
+            setSessionLoaded(true);
+            return;
+          }
+          setSessionOk(!!res.data.session_state?.session);
           setSessionLoaded(true);
-          return;
-        }
-        setSessionOk(!!sessRes?.data?.session);
-        setSessionLoaded(true);
-      });
+        });
       return;
     }
     getTaSessionCurrent({})
@@ -110,6 +103,23 @@ export default function ClockInGate({ user, children }) {
   useEffect(() => {
     initialSessionPollRef.current = false;
   }, [user?.id]);
+
+  /** Load clock UI (strict gate, toggles) for anyone with ta.clock so exemptions stay accurate. */
+  useEffect(() => {
+    if (authLoading || !user || isLoginPath(path)) return;
+    if (!hasPerm("ta.clock")) return;
+    getTaBootstrap({})
+      .then((res) => {
+        const uiPayload = res?.data?.clock_payroll_ui;
+        if (uiPayload) {
+          setUi((prev) => ({
+            clock: { ...(prev?.clock || {}), ...(uiPayload.clock || {}) },
+            payroll: { ...(prev?.payroll || {}), ...(uiPayload.payroll || {}) },
+          }));
+        }
+      })
+      .catch(() => {});
+  }, [authLoading, user?.id, hasPerm, path]);
 
   /**
    * Poll session on first load, when leaving /clock, or when path/user changes meaningfully —

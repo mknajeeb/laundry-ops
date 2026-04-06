@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import { getClockPayrollUiSettings } from "../api";
+import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { hasPlatformAdminRole, hasTenantPortalAccess, isTenantModuleEnabled } from "../utils/platformAccess";
 
@@ -33,17 +34,19 @@ const NAV_ITEMS = [
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
+  const { loading: authLoading } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
 
   useEffect(() => {
+    if (authLoading || !user?.id) return;
     getClockPayrollUiSettings()
       .then((res) => {
         const v = res.data?.payroll?.nav_payroll_visible;
         setPayrollNavVisible(v !== false);
       })
       .catch(() => setPayrollNavVisible(true));
-  }, []);
+  }, [authLoading, user?.id]);
 
   const allow = (item) => {
     const roleOk = !item.roles.length || item.roles.some((r) => roles.includes(r));

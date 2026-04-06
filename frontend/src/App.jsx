@@ -39,6 +39,7 @@ import OrganizationSettingsPage from "./pages/OrganizationSettingsPage";
 import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
+import HrCompliancePage from "./pages/HrCompliancePage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
 function MobileTopBar({ pathname, user }) {
@@ -309,6 +310,26 @@ function AppShell() {
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/upload" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/employees" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN"]}><PeoplePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/employees/:userId/hr"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <HrCompliancePage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/employees/:userId"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <UserProfilePage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route path="/clock" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ClockPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/issues" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><IssuePage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/production" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ProductionPage /></GuardedRoute></TenantOnlyRoute>} />

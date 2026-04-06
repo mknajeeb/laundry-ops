@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   FormControl,
   InputLabel,
@@ -12,10 +13,22 @@ import {
   Stack,
   Tab,
   Tabs,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
   TextField,
   Typography,
 } from "@mui/material";
-import { getClockPayrollUiSettings, getPayrollPeriodSettings, putPayrollPeriodSettings } from "../api";
+import {
+  approvePayrollCycle,
+  getClockPayrollUiSettings,
+  getPayrollCycles,
+  getPayrollPeriodSettings,
+  putPayrollPeriodSettings,
+  submitPayrollCycleForApproval,
+} from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import ClockPayrollUiSettingsPanel from "../components/ClockPayrollUiSettingsPanel";
@@ -84,48 +97,154 @@ function PayrollPeriodPanel() {
     );
   }
 
+  async function doSubmitBatch(id) {
+    setBatchBusy(id);
+    setError("");
+    try {
+      await submitPayrollCycleForApproval(id);
+      await loadCycles();
+    } catch (e) {
+      setError(e.response?.data?.error || "Submit failed");
+    } finally {
+      setBatchBusy(null);
+    }
+  }
+
+  async function doApproveBatch(id) {
+    setBatchBusy(id);
+    setError("");
+    try {
+      await approvePayrollCycle(id);
+      await loadCycles();
+    } catch (e) {
+      setError(e.response?.data?.error || "Approve failed");
+    } finally {
+      setBatchBusy(null);
+    }
+  }
+
+  function reviewLabel(st) {
+    const s = String(st || "approved");
+    if (s === "open") return t("payroll.reviewCollecting");
+    if (s === "pending_approval") return t("payroll.reviewSentApproval");
+    return t("payroll.reviewComplete");
+  }
+
+  function reviewColor(st) {
+    const s = String(st || "");
+    if (s === "open") return "info";
+    if (s === "pending_approval") return "warning";
+    return "success";
+  }
+
   return (
-    <Paper sx={{ p: 2, borderRadius: 2, maxWidth: 560 }}>
-      <Typography variant="subtitle1" sx={{ mb: 1 }}>
-        {t("payroll.periodTitle")}
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb:2 }}>
-        {t("payroll.periodBlurb")}
-      </Typography>
-      {error ? (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
-          {error}
-        </Alert>
-      ) : null}
-      <Stack component="form" onSubmit={save} spacing={2}>
-        <FormControl size="small" fullWidth>
-          <InputLabel id="ws-label">{t("payroll.weekStartsOn")}</InputLabel>
-          <Select
-            labelId="ws-label"
-            label={t("payroll.weekStartsOn")}
-            value={weekStartsOn}
-            onChange={(e) => setWeekStartsOn(Number(e.target.value))}
-          >
-            {WEEKDAY_LABEL_KEYS.map((key, i) => (
-              <MenuItem key={key} value={i}>
-                {t(key)}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <TextField
-          size="small"
-          fullWidth
-          label={t("payroll.refPrefix")}
-          value={refPrefix}
-          onChange={(e) => setRefPrefix(e.target.value)}
-          helperText={t("payroll.refPrefixHelp")}
-        />
-        <Button type="submit" variant="contained" disabled={saving}>
-          {saving ? t("common.saving") : t("common.save")}
-        </Button>
-      </Stack>
-    </Paper>
+    <Stack spacing={3} sx={{ maxWidth: 960 }}>
+      <Paper sx={{ p: 2, borderRadius: 2, maxWidth: 560 }}>
+        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+          {t("payroll.periodTitle")}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {t("payroll.periodBlurb")}
+        </Typography>
+        {error ? (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+            {error}
+          </Alert>
+        ) : null}
+        <Stack component="form" onSubmit={save} spacing={2}>
+          <FormControl size="small" fullWidth>
+            <InputLabel id="ws-label">{t("payroll.weekStartsOn")}</InputLabel>
+            <Select
+              labelId="ws-label"
+              label={t("payroll.weekStartsOn")}
+              value={weekStartsOn}
+              onChange={(e) => setWeekStartsOn(Number(e.target.value))}
+            >
+              {WEEKDAY_LABEL_KEYS.map((key, i) => (
+                <MenuItem key={key} value={i}>
+                  {t(key)}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <TextField
+            size="small"
+            fullWidth
+            label={t("payroll.refPrefix")}
+            value={refPrefix}
+            onChange={(e) => setRefPrefix(e.target.value)}
+            helperText={t("payroll.refPrefixHelp")}
+          />
+          <Button type="submit" variant="contained" disabled={saving}>
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        </Stack>
+      </Paper>
+
+      <Paper sx={{ p: 2, borderRadius: 2, width: "100%", overflow: "auto" }}>
+        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+          {t("payroll.periodBatchesTitle")}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {t("payroll.batchWorkflowHint")}
+        </Typography>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>{t("payroll.colCycle")}</TableCell>
+              <TableCell>{t("payroll.weekRange")}</TableCell>
+              <TableCell>{t("payroll.reviewState")}</TableCell>
+              <TableCell align="right">{t("payroll.batchActions")}</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {cycles.map((c) => {
+              const st = c.review_state;
+              return (
+                <TableRow key={c.id}>
+                  <TableCell>{c.cycle_ref}</TableCell>
+                  <TableCell>
+                    {c.week_start_date} – {c.week_end_date}
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={reviewLabel(st)}
+                      color={reviewColor(st)}
+                      variant={st === "pending_approval" ? "filled" : "outlined"}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                      {st === "open" ? (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={batchBusy === c.id}
+                          onClick={() => doSubmitBatch(c.id)}
+                        >
+                          {t("payroll.submitBatch")}
+                        </Button>
+                      ) : null}
+                      {st === "pending_approval" ? (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          disabled={batchBusy === c.id}
+                          onClick={() => doApproveBatch(c.id)}
+                        >
+                          {t("payroll.approveBatch")}
+                        </Button>
+                      ) : null}
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </Paper>
+    </Stack>
   );
 }
 

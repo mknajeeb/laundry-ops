@@ -8,7 +8,11 @@ __pycache__/
 # virtual env
 venv/
 .venv/
+.venv_formscan/
 backend/.venv/
+
+# local form packet extractions (large; not source)
+docs/form_packets_staging/
 backend/instance/
 .env
 

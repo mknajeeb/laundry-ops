@@ -22,6 +22,9 @@ export const DEFAULT_CLOCK_PAYROLL_UI = {
     show_outside_geofence_on_summary: true,
     ask_personal_laundry_bags: false,
     clock_in_gate_enabled: true,
+    clock_in_gate_strict: false,
+    dim_app_until_clocked_in: false,
+    sign_out_after_clock_out: false,
     geofence_reminder_enabled: true,
     geofence_reminder_hours: 1.5,
     geofence_reminder_cooldown_hours: 6,
@@ -43,6 +46,11 @@ export const DEFAULT_CLOCK_PAYROLL_UI = {
     monitor_col_net: true,
     monitor_col_status: true,
     monitor_col_geofence: true,
+    monitor_col_gross: true,
+    monitor_col_breaks: true,
+    monitor_col_geofence_out: true,
+    monitor_col_bags: true,
+    monitor_col_period_adj: true,
     monitor_col_actions: true,
   },
 };
@@ -207,6 +215,48 @@ export default function ClockPayrollUiSettingsPanel() {
             />
           }
           label="Require clock-in before using other app screens (non-admin, non-payroll-managers)"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={!!clockPayrollUi.clock.clock_in_gate_strict}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, clock_in_gate_strict: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="Strict clock gate: no role bypass — anyone with time-clock permission must be clocked in to leave /clock"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={!!clockPayrollUi.clock.dim_app_until_clocked_in}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, dim_app_until_clocked_in: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="Dim the clock screen slightly until the user clocks in (visual emphasis on clock-in)"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={!!clockPayrollUi.clock.sign_out_after_clock_out}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, sign_out_after_clock_out: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="After clock out, sign the user out of the app (return to login)"
         />
         <FormControlLabel
           control={
@@ -386,9 +436,14 @@ export default function ClockPayrollUiSettingsPanel() {
           ["monitor_col_cycle", "Cycle"],
           ["monitor_col_clock_in", "Clock in"],
           ["monitor_col_clock_out", "Clock out"],
+          ["monitor_col_gross", "Gross time"],
+          ["monitor_col_breaks", "Breaks (total + detail)"],
           ["monitor_col_net", "Net seconds"],
           ["monitor_col_status", "Status"],
           ["monitor_col_geofence", "Geofence"],
+          ["monitor_col_geofence_out", "Outside geofence"],
+          ["monitor_col_bags", "Laundry bags / deduction"],
+          ["monitor_col_period_adj", "Period bonus / deduction"],
           ["monitor_col_actions", "Actions"],
         ].map(([colKey, label]) => (
           <FormControlLabel

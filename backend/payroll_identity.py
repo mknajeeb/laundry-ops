@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 from datetime import date, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from backend.ta_helpers import cycle_ref_for_week_start, hash_password, week_bounds_for_date
 
@@ -274,8 +275,30 @@ def payroll_cycle_ref(conn, week_start: date, organization_id: int = 1) -> str:
     return f"{prefix}-{week_start.year}-W{iso[1]:02d}"
 
 
+PAYROLL_BUSINESS_TZ = "America/New_York"
+
+
+def payroll_calendar_date_for_cycle(at: datetime, _organization_id: int = 1) -> date:
+    """
+    Calendar date used to pick ISO week / payroll cycle. Uses US Eastern so late shifts stay on the
+    correct local business day (avoids UTC rollover putting 04/05 work into the next week's cycle).
+    Naive `at` values are treated as Eastern wall time (matches eastern_now_naive() storage).
+    """
+    tz = ZoneInfo(PAYROLL_BUSINESS_TZ)
+    if at.tzinfo is None:
+        dloc = datetime.combine(at.date(), at.time(), tzinfo=tz)
+    else:
+        dloc = at.astimezone(tz)
+    return dloc.date()
+
+
+def eastern_now_naive() -> datetime:
+    """Store clock times as naive Eastern local wall time for consistent payroll week boundaries."""
+    return datetime.now(ZoneInfo(PAYROLL_BUSINESS_TZ)).replace(tzinfo=None)
+
+
 def get_or_create_payroll_cycle_unified(conn, at: datetime, organization_id: int = 1) -> int:
-    d = at.date()
+    d = payroll_calendar_date_for_cycle(at, organization_id)
     oid = int(organization_id)
     if payroll_profiles_active(conn):
         week_start, week_end = payroll_week_bounds(conn, d, oid)

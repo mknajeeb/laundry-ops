@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { getMe, login as apiLogin } from "../api";
+import { getTaBootstrap, login as apiLogin } from "../api";
 import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
 
 const AuthContext = createContext(null);
@@ -35,7 +35,7 @@ export function AuthProvider({ children }) {
     }
     try {
       if (!userRef.current?.id) setLoading(true);
-      const res = await getMe();
+      const res = await getTaBootstrap();
       setUser(res.data.user);
       setPermissions(res.data.permissions || []);
     } catch {
@@ -72,7 +72,14 @@ export function AuthProvider({ children }) {
       clearOneSignalUser();
       return;
     }
-    syncOneSignalUser(user);
+    const t = window.setTimeout(() => {
+      try {
+        syncOneSignalUser(user);
+      } catch (e) {
+        console.warn("OneSignal sync skipped", e);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
   }, [user]);
 
   const login = useCallback(async (email, password) => {

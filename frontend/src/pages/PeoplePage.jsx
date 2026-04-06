@@ -535,6 +535,11 @@ function PeoplePage({ user }) {
                           <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${u.id}`)} sx={{ mr: 0.5 }}>
                             {t("people.fullProfile")}
                           </Button>
+                          {ta && canTaView ? (
+                            <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${ta.id}/hr`)} sx={{ mr: 0.5 }}>
+                              {t("hr.openHr")}
+                            </Button>
+                          ) : null}
                           <Button size="small" onClick={() => openWpEdit(u)}>
                             {t("common.edit")}
                           </Button>
@@ -614,6 +619,11 @@ function PeoplePage({ user }) {
                           <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${u.id}`)} sx={{ mr: 0.5 }}>
                             {t("people.fullProfile")}
                           </Button>
+                          {ta && canTaView ? (
+                            <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${ta.id}/hr`)} sx={{ mr: 0.5 }}>
+                              {t("hr.openHr")}
+                            </Button>
+                          ) : null}
                           <Button size="small" onClick={() => openWpEdit(u)}>
                             {t("common.edit")}
                           </Button>
