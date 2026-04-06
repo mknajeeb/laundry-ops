@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "description": "Official + internal HR/payroll forms. Place files under HR_FORM_ASSETS_DIR (default: backend/hr_form_assets/forms) using the names in files.{locale}. Env HR_FORM_ASSETS_DIR overrides the directory only.",
+  "lanes": {
+    "employee_w2": "W-2 / statutory employee packet (I-9, W-4, NY IT-2104, NY LS-51/54-57, etc.)",
+    "contractor_1099": "1099 contractor packet (W-9, internal C-forms, VeeWash docx)"
+  },
+  "forms": [
+    {
+      "id": "uscis_i9",
+      "title": "USCIS Form I-9 (Employment Eligibility Verification)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "uscis_i9_en.pdf", "es": "uscis_i9_es.pdf" },
+      "notes": "Repo ships backend/hr_form_assets/i-9.pdf as EN fallback via resolve_i9_template_path(); copy Spanish edition as uscis_i9_es.pdf."
+    },
+    {
+      "id": "uscis_i9_instructions",
+      "title": "USCIS Form I-9 Instructions",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "print_only",
+      "locales": ["en", "es"],
+      "files": { "en": "uscis_i9_instructions_en.pdf", "es": "uscis_i9_instructions_es.pdf" }
+    },
+    {
+      "id": "irs_w4",
+      "title": "IRS Form W-4 (Employee withholding)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "irs_w4_en.pdf", "es": "irs_w4_es.pdf" },
+      "notes": "Use combined form+instr PDFs from IRS if that is your single file; same field map applies to the form pages."
+    },
+    {
+      "id": "ny_it2104",
+      "title": "NY Form IT-2104 (Employee withholding allowance)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en"],
+      "files": { "en": "ny_it2104_en.pdf" },
+      "notes": "Add ny_it2104_es.pdf when you have a Spanish fill-in; fill_strategy may stay acroform if fields exist."
+    },
+    {
+      "id": "ny_it2104_instructions",
+      "title": "NY IT-2104 Instructions",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "print_only",
+      "locales": ["en", "es"],
+      "files": { "en": "ny_it2104_instructions_en.pdf", "es": "ny_it2104_instructions_es.pdf" }
+    },
+    {
+      "id": "ny_ls51",
+      "title": "NY LS-51 (Temporary help firms)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "ny_ls51_en.pdf", "es": "ny_ls51_es.pdf" }
+    },
+    {
+      "id": "ny_ls54",
+      "title": "NY LS-54 (Hourly rate)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "ny_ls54_en.pdf", "es": "ny_ls54_es.pdf" }
+    },
+    {
+      "id": "ny_ls55",
+      "title": "NY LS-55 (Multiple hourly rates)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "ny_ls55_en.pdf", "es": "ny_ls55_es.pdf" }
+    },
+    {
+      "id": "ny_ls56",
+      "title": "NY LS-56 (Weekly / fixed hours)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "ny_ls56_en.pdf", "es": "ny_ls56_es.pdf" }
+    },
+    {
+      "id": "ny_ls57",
+      "title": "NY LS-57 (Day / piece / varying hours)",
+      "lane": "employee_w2",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "ny_ls57_en.pdf", "es": "ny_ls57_es.pdf" }
+    },
+    {
+      "id": "irs_w9",
+      "title": "IRS Form W-9 (Request for Taxpayer ID)",
+      "lane": "contractor_1099",
+      "kind": "official_pdf",
+      "fill_strategy": "acroform",
+      "locales": ["en", "es"],
+      "files": { "en": "irs_w9_en.pdf", "es": "irs_w9_es.pdf" }
+    },
+    {
+      "id": "internal_veewash_employee_info",
+      "title": "VeeWash Employee Information Form (bilingual)",
+      "lane": "employee_w2",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["bilingual"],
+      "files": { "bilingual": "internal_veewash_employee_information_bilingual.docx" }
+    },
+    {
+      "id": "internal_c101",
+      "title": "C-101 Contractor Intake",
+      "lane": "contractor_1099",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["en", "es"],
+      "files": { "en": "internal_c101_intake_en.docx", "es": "internal_c101_intake_es.docx" }
+    },
+    {
+      "id": "internal_c102",
+      "title": "C-102 Independent Contractor Service Agreement",
+      "lane": "contractor_1099",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["en", "es"],
+      "files": { "en": "internal_c102_agreement_en.docx", "es": "internal_c102_agreement_es.docx" }
+    },
+    {
+      "id": "internal_c103",
+      "title": "C-103 Weekly Contractor Payment Statement",
+      "lane": "contractor_1099",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["en", "es"],
+      "files": { "en": "internal_c103_payment_statement_en.docx", "es": "internal_c103_payment_statement_es.docx" }
+    },
+    {
+      "id": "internal_c104",
+      "title": "C-104 Non-Compliance Notice",
+      "lane": "contractor_1099",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["en", "es"],
+      "files": { "en": "internal_c104_noncompliance_en.docx", "es": "internal_c104_noncompliance_es.docx" }
+    },
+    {
+      "id": "internal_c105",
+      "title": "C-105 Cure / Corrective Action Notice",
+      "lane": "contractor_1099",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["en", "es"],
+      "files": { "en": "internal_c105_cure_en.docx", "es": "internal_c105_cure_es.docx" }
+    },
+    {
+      "id": "internal_c106",
+      "title": "C-106 Contract Suspension / Cancellation Notice",
+      "lane": "contractor_1099",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["en", "es"],
+      "files": { "en": "internal_c106_suspension_en.docx", "es": "internal_c106_suspension_es.docx" }
+    },
+    {
+      "id": "internal_veewash_workforce_pack",
+      "title": "VeeWash Bilingual Workforce Forms Pack",
+      "lane": "employee_w2",
+      "kind": "internal_docx",
+      "fill_strategy": "docx_template",
+      "locales": ["bilingual"],
+      "files": { "bilingual": "internal_veewash_workforce_forms_pack.docx" }
+    }
+  ]
+}

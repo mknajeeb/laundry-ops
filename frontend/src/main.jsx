@@ -11,8 +11,14 @@ const ONESIGNAL_APP_ID = import.meta.env.VITE_ONESIGNAL_APP_ID;
 const ONESIGNAL_DISABLED =
   import.meta.env.VITE_ONESIGNAL_DISABLED === "true" ||
   import.meta.env.VITE_ONESIGNAL_DISABLED === "1";
+/** OneSignal dashboard often allowlists only production (e.g. *.azurestaticapps.net); skip on localhost to avoid init errors. */
+const onesignalSkipLocalDev =
+  import.meta.env.DEV &&
+  typeof window !== "undefined" &&
+  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
 /** When false, app registers /service-worker.js in production (see block below). */
-const onesignalActive = Boolean(ONESIGNAL_APP_ID) && !ONESIGNAL_DISABLED;
+const onesignalActive =
+  Boolean(ONESIGNAL_APP_ID) && !ONESIGNAL_DISABLED && !onesignalSkipLocalDev;
 
 /** OneSignal Web Push: requires VITE_ONESIGNAL_APP_ID and index.html OneSignalSDK.page.js script. */
 if (typeof window !== "undefined" && onesignalActive && !window.__laundryOpsOneSignalInitQueued) {

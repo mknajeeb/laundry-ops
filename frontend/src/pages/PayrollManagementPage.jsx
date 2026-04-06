@@ -23,9 +23,12 @@ import {
 } from "@mui/material";
 import {
   approvePayrollCycle,
+  getDocumentCompliancePolicy,
+  getExpiringDocuments,
   getClockPayrollUiSettings,
   getPayrollCycles,
   getPayrollPeriodSettings,
+  putDocumentCompliancePolicy,
   putPayrollPeriodSettings,
   submitPayrollCycleForApproval,
 } from "../api";
@@ -248,6 +251,158 @@ function PayrollPeriodPanel() {
   );
 }
 
+function DocumentCompliancePanel() {
+  const { t } = useI18n();
+  const [policy, setPolicy] = useState({
+    reminder_days_before: 14,
+    push_enabled: true,
+    prompt_enabled: true,
+    disable_profile_on_expiry: false,
+    enforce_on_clock_in: false,
+  });
+  const [days, setDays] = useState(30);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [p, e] = await Promise.all([
+        getDocumentCompliancePolicy(),
+        getExpiringDocuments({ days }),
+      ]);
+      const pd = p.data || {};
+      setPolicy({
+        reminder_days_before: Number(pd.reminder_days_before) || 14,
+        push_enabled: !!pd.push_enabled,
+        prompt_enabled: !!pd.prompt_enabled,
+        disable_profile_on_expiry: !!pd.disable_profile_on_expiry,
+        enforce_on_clock_in: !!pd.enforce_on_clock_in,
+      });
+      setRows(Array.isArray(e.data?.items) ? e.data.items : []);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to load document policy");
+    } finally {
+      setLoading(false);
+    }
+  }, [days]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const save = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await putDocumentCompliancePolicy(policy);
+      await load();
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to save document policy");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Stack spacing={2} sx={{ maxWidth: 1100 }}>
+      <Paper sx={{ p: 2 }}>
+        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+          {t("payroll.docPolicyTitle")}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {t("payroll.docPolicyBlurb")}
+        </Typography>
+        {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+        <Stack component="form" onSubmit={save} spacing={1.5}>
+          <TextField
+            label={t("payroll.docReminderDays")}
+            type="number"
+            size="small"
+            value={policy.reminder_days_before}
+            onChange={(e) =>
+              setPolicy((p) => ({ ...p, reminder_days_before: Math.max(0, Math.min(365, Number(e.target.value) || 0)) }))
+            }
+            sx={{ maxWidth: 280 }}
+          />
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip
+              label={policy.push_enabled ? t("payroll.docPushOn") : t("payroll.docPushOff")}
+              color={policy.push_enabled ? "success" : "default"}
+              onClick={() => setPolicy((p) => ({ ...p, push_enabled: !p.push_enabled }))}
+            />
+            <Chip
+              label={policy.prompt_enabled ? t("payroll.docPromptOn") : t("payroll.docPromptOff")}
+              color={policy.prompt_enabled ? "success" : "default"}
+              onClick={() => setPolicy((p) => ({ ...p, prompt_enabled: !p.prompt_enabled }))}
+            />
+            <Chip
+              label={policy.disable_profile_on_expiry ? t("payroll.docDisableOn") : t("payroll.docDisableOff")}
+              color={policy.disable_profile_on_expiry ? "warning" : "default"}
+              onClick={() => setPolicy((p) => ({ ...p, disable_profile_on_expiry: !p.disable_profile_on_expiry }))}
+            />
+            <Chip
+              label={policy.enforce_on_clock_in ? t("payroll.docClockBlockOn") : t("payroll.docClockBlockOff")}
+              color={policy.enforce_on_clock_in ? "warning" : "default"}
+              onClick={() => setPolicy((p) => ({ ...p, enforce_on_clock_in: !p.enforce_on_clock_in }))}
+            />
+          </Stack>
+          <Button variant="contained" type="submit" disabled={saving}>
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        </Stack>
+      </Paper>
+      <Paper sx={{ p: 2 }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+          <Typography variant="subtitle1">{t("payroll.docExpiringTitle")}</Typography>
+          <TextField
+            size="small"
+            label={t("payroll.docWithinDays")}
+            type="number"
+            value={days}
+            onChange={(e) => setDays(Math.max(1, Math.min(3650, Number(e.target.value) || 30)))}
+            sx={{ width: 160 }}
+          />
+          <Button variant="outlined" onClick={load} disabled={loading}>{t("common.search")}</Button>
+        </Stack>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>{t("people.colName")}</TableCell>
+              <TableCell>{t("payroll.docType")}</TableCell>
+              <TableCell>{t("payroll.docStatus")}</TableCell>
+              <TableCell>{t("payroll.docExpiresOn")}</TableCell>
+              <TableCell>{t("payroll.docFile")}</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell>{[r.first_name, r.last_name].filter(Boolean).join(" ") || `User #${r.user_id}`}</TableCell>
+                <TableCell>{r.document_name || r.document_code}</TableCell>
+                <TableCell>{r.status}</TableCell>
+                <TableCell>{r.expires_on || "—"}</TableCell>
+                <TableCell>{r.file_uri ? <a href={r.file_uri} target="_blank" rel="noreferrer">open</a> : "—"}</TableCell>
+              </TableRow>
+            ))}
+            {!rows.length ? (
+              <TableRow>
+                <TableCell colSpan={5}>
+                  <Typography color="text.secondary">{t("payroll.docNoExpiring")}</Typography>
+                </TableCell>
+              </TableRow>
+            ) : null}
+          </TableBody>
+        </Table>
+      </Paper>
+    </Stack>
+  );
+}
+
 function PayrollManagementPage() {
   const { hasPerm, loading: authLoading, user } = useAuth();
   const { t } = useI18n();
@@ -269,6 +424,7 @@ function PayrollManagementPage() {
     hasPerm("ta.settings") || hasPerm("users.edit") || isAdminRole;
   const canPeriod = hasPerm("ta.settings") || isAdminRole;
   const canClockUi = hasPerm("ta.settings") || isAdminRole;
+  const canDocs = hasPerm("ta.settings") || hasPerm("users.view") || isAdminRole;
   const [payrollUi, setPayrollUi] = useState(null);
 
   useEffect(() => {
@@ -292,8 +448,11 @@ function PayrollManagementPage() {
     if (canClockUi && p.tab_clock_ui !== false) {
       out.push({ key: "clockui", label: t("payroll.tabClockUi") });
     }
+    if (canDocs) {
+      out.push({ key: "docs", label: t("payroll.tabDocCompliance") });
+    }
     return out;
-  }, [canMonitor, canMaint, canPeriod, canClockUi, payrollUi, t]);
+  }, [canMonitor, canMaint, canPeriod, canClockUi, canDocs, payrollUi, t]);
 
   const [tab, setTab] = useState(0);
 
@@ -362,6 +521,7 @@ function PayrollManagementPage() {
         {active?.key === "maint" ? <AttendanceSetupPage embedded /> : null}
         {active?.key === "period" ? <PayrollPeriodPanel /> : null}
         {active?.key === "clockui" ? <ClockPayrollUiSettingsPanel /> : null}
+        {active?.key === "docs" ? <DocumentCompliancePanel /> : null}
       </Box>
     </Box>
   );

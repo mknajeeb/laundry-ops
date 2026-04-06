@@ -8,6 +8,13 @@ const ONESIGNAL_DISABLED =
   import.meta.env.VITE_ONESIGNAL_DISABLED === "true" ||
   import.meta.env.VITE_ONESIGNAL_DISABLED === "1";
 
+/** Match main.jsx: dashboard allowlist often blocks localhost; avoid queued SDK calls after login. */
+function skipLocalOneSignal() {
+  if (!import.meta.env.DEV || typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1";
+}
+
 export function buildOneSignalExternalUserId(user) {
   if (!user || user.id == null || user.id === undefined) return null;
   const org = Number(user.organization_id ?? 1);
@@ -42,7 +49,7 @@ export function syncOneSignalUser(user) {
  * On logout — unlink so the next account on this device does not receive the previous user's pushes.
  */
 export function clearOneSignalUser() {
-  if (!ONESIGNAL_APP_ID || ONESIGNAL_DISABLED) return;
+  if (!ONESIGNAL_APP_ID || ONESIGNAL_DISABLED || skipLocalOneSignal()) return;
 
   deferredPush(async function unlinkUser(OneSignal) {
     try {

@@ -7,7 +7,7 @@ from functools import wraps
 from typing import Optional
 
 import mysql.connector
-from flask import Blueprint, Response, current_app, g, jsonify, request
+from flask import Blueprint, Response, current_app, g, jsonify, request, send_file
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 from backend.db import get_db
@@ -23,13 +23,24 @@ from backend.payroll_identity import (
     washpro_bearer_is_platform_operator,
 )
 from backend.onesignal_client import notify_geofence_outside_cooldown
+from backend.hr_forms.delivery import build_hr_forms_inventory, infer_user_form_lanes
+from backend.hr_forms.registry import get_form_def, resolve_form_asset_path
 from backend.hr_compliance import (
     build_i9_field_values,
+    clock_in_blocked_by_expired_documents,
+    create_employee_document_record,
+    delete_employee_document_record,
+    ensure_document_compliance_tables,
     ensure_hr_extended_profiles_table,
     fetch_hr_org_settings,
     fill_i9_pdf_bytes,
+    get_document_compliance_policy,
     get_merged_hr_profile,
+    list_employee_document_records,
+    list_expiring_document_records,
     resolve_i9_template_path,
+    update_employee_document_record,
+    upsert_document_compliance_policy,
     upsert_hr_extended_profile,
 )
 from backend.ta_helpers import (
@@ -270,6 +281,23 @@ def _user_belongs_to_tenant(conn, user_id: int) -> bool:
     if not row:
         return False
     return int(row.get("organization_id") or 1) == _tenant_id()
+
+
+def _ta_user_can_access_payroll_subject(conn, subject_user_id: int) -> bool:
+    """
+    Same-tenant users can access payroll/HR data for their org.
+    Platform operators (SUPER_ADMIN / PLATFORM_ADMIN) may access any Washpro user that exists,
+    so HR and I-9 work when the session tenant differs from the employee's organization_id.
+    """
+    if _user_belongs_to_tenant(conn, subject_user_id):
+        return True
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    tok = auth[7:].strip()
+    if not tok:
+        return False
+    return washpro_bearer_is_platform_operator(conn, tok)
 
 
 def user_has_perm(conn, user_id: int, perm_key: str) -> bool:
@@ -1325,6 +1353,14 @@ def clock_in():
                 }
             ), 400
 
+        if clock_in_blocked_by_expired_documents(conn, g.ta_user["id"], _tenant_id()):
+            return jsonify(
+                {
+                    "error": "Document compliance required",
+                    "detail": "An HR document is past due. Update it before clock-in (see HR / compliance).",
+                }
+            ), 403
+
         if employment_category_id:
             c.execute(
                 """
@@ -2238,10 +2274,14 @@ def user_hr_profile(user_id):
             return jsonify(
                 {"error": "HR profile requires unified payroll (payroll_profiles). Run payroll_unify_to_users_v1.sql"}
             ), 503
-        if not _user_belongs_to_tenant(conn, user_id):
-            return jsonify({"error": "Not found"}), 404
         u = fetch_payroll_profile_row(conn, user_id)
         if not u:
+            return jsonify(
+                {
+                    "error": "No payroll profile for this user. Add or migrate the employee in People first.",
+                }
+            ), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
             return jsonify({"error": "Not found"}), 404
         cur = conn.cursor()
         ensure_hr_extended_profiles_table(cur)
@@ -2271,20 +2311,135 @@ def user_hr_profile(user_id):
         conn.close()
 
 
-@ta_bp.route("/users/<int:user_id>/hr-forms/i9", methods=["POST"])
+def _hr_form_safe_id(raw: str) -> Optional[str]:
+    s = (raw or "").strip().lower()
+    if re.match(r"^[a-z][a-z0-9_]{0,63}$", s):
+        return s
+    return None
+
+
+@ta_bp.route("/users/<int:user_id>/hr-forms/inventory", methods=["GET"])
 @require_auth
-def user_hr_form_i9(user_id):
+def user_hr_forms_inventory(user_id):
     conn = get_db()
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "HR forms require unified payroll"}), 503
-        if not _user_belongs_to_tenant(conn, user_id):
+        if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+            return jsonify({"error": "Forbidden"}), 403
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
             return jsonify({"error": "Not found"}), 404
+        return jsonify(build_hr_forms_inventory(conn, user_id))
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-forms/<form_id>", methods=["POST"])
+@require_auth
+def user_hr_form_deliver(user_id, form_id):
+    """Download one form: PDF prefill where supported (I-9 English), else official/internal file as-is."""
+    fid = _hr_form_safe_id(form_id)
+    if not fid:
+        return jsonify({"error": "Invalid form"}), 400
+    body = request.get_json(silent=True) or {}
+    locale = str(body.get("locale") or request.args.get("locale") or "en").lower()
+    if locale not in ("en", "es", "bilingual"):
+        return jsonify({"error": "Invalid locale"}), 400
+
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR forms require unified payroll"}), 503
         if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
             return jsonify({"error": "Forbidden"}), 403
         u = fetch_payroll_profile_row(conn, user_id)
         if not u:
+            return jsonify(
+                {"error": "No payroll profile for this user. Add or migrate the employee in People first."}
+            ), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
             return jsonify({"error": "Not found"}), 404
+
+        fdef = get_form_def(fid)
+        if not fdef:
+            return jsonify({"error": "Unknown form"}), 404
+        allowed_lanes = infer_user_form_lanes(conn, user_id)
+        lane = fdef.get("lane")
+        if lane and lane not in allowed_lanes:
+            return jsonify({"error": "This form is not part of this worker's assigned packet."}), 404
+
+        path = resolve_form_asset_path(fid, locale)
+        if not path:
+            return jsonify({"error": f"Template not found for {fid} ({locale}). See backend/hr_forms/catalog.json."}), 503
+
+        ext = os.path.splitext(path)[1].lower() or ".pdf"
+        dl = f"{fid}_{locale}{ext}"
+
+        if fid == "uscis_i9" and locale == "en":
+            cur = conn.cursor()
+            ensure_hr_extended_profiles_table(cur)
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (user_id,))
+            hr = c.fetchone()
+            oid = int(u.get("organization_id") or _tenant_id())
+            org = fetch_hr_org_settings(conn, oid)
+            vals = build_i9_field_values(
+                u,
+                hr,
+                org.get("employer_name") or "",
+                org.get("employer_address") or "",
+            )
+            try:
+                pdf = fill_i9_pdf_bytes(path, vals)
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 503
+            ln = (u.get("last_name") or "user").replace("/", "-")[:40]
+            fn = f"i9-prefill-{ln}-{user_id}.pdf"
+            return Response(
+                pdf,
+                mimetype="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+            )
+
+        mime = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if ext == ".docx"
+            else "application/pdf"
+        )
+        return send_file(path, mimetype=mime, as_attachment=True, download_name=dl)
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-forms/i9", methods=["POST"])
+@require_auth
+def user_hr_form_i9(user_id):
+    """Backward-compatible I-9 download: English = AcroForm prefill; Spanish = official PDF as-is."""
+    body = request.get_json(silent=True) or {}
+    locale = str(body.get("locale") or request.args.get("locale") or "en").lower()
+    if locale not in ("en", "es"):
+        locale = "en"
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR forms require unified payroll"}), 503
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify(
+                {
+                    "error": "No payroll profile for this user. Add or migrate the employee in People first.",
+                }
+            ), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        allowed_lanes = infer_user_form_lanes(conn, user_id)
+        if "employee_w2" not in allowed_lanes:
+            return jsonify({"error": "I-9 applies to this worker's W-2 packet only."}), 404
         cur = conn.cursor()
         ensure_hr_extended_profiles_table(cur)
         c = conn.cursor(dictionary=True)
@@ -2292,27 +2447,145 @@ def user_hr_form_i9(user_id):
         hr = c.fetchone()
         oid = int(u.get("organization_id") or _tenant_id())
         org = fetch_hr_org_settings(conn, oid)
-        path = resolve_i9_template_path()
+        path = resolve_form_asset_path("uscis_i9", locale) or (
+            resolve_i9_template_path() if locale == "en" else None
+        )
         if not path:
             return jsonify(
                 {
-                    "error": "I-9 template PDF not found. Copy i-9.pdf to backend/hr_form_assets/ or set HR_I9_TEMPLATE_PATH.",
+                    "error": "I-9 template PDF not found. Add uscis_i9_en.pdf under hr_form_assets/forms/ or set HR_I9_TEMPLATE_PATH.",
                 }
             ), 503
-        vals = build_i9_field_values(
-            u,
-            hr,
-            org.get("employer_name") or "",
-            org.get("employer_address") or "",
-        )
-        pdf = fill_i9_pdf_bytes(path, vals)
-        ln = (u.get("last_name") or "user").replace("/", "-")[:40]
-        fn = f"i9-prefill-{ln}-{user_id}.pdf"
-        return Response(
-            pdf,
+        if locale == "en":
+            vals = build_i9_field_values(
+                u,
+                hr,
+                org.get("employer_name") or "",
+                org.get("employer_address") or "",
+            )
+            try:
+                pdf = fill_i9_pdf_bytes(path, vals)
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 503
+            ln = (u.get("last_name") or "user").replace("/", "-")[:40]
+            fn = f"i9-prefill-{ln}-{user_id}.pdf"
+            return Response(
+                pdf,
+                mimetype="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+            )
+        return send_file(
+            path,
             mimetype="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+            as_attachment=True,
+            download_name=f"uscis_i9_{locale}_{user_id}.pdf",
         )
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/documents", methods=["GET", "POST"])
+@require_auth
+def user_document_records(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Documents require unified payroll"}), 503
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        oid = int(u.get("organization_id") or _tenant_id())
+        cur = conn.cursor()
+        ensure_document_compliance_tables(cur)
+        if request.method == "GET":
+            if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+                return jsonify({"error": "Forbidden"}), 403
+            return jsonify({"items": list_employee_document_records(conn, oid, user_id)})
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.json or {}
+        try:
+            row = create_employee_document_record(conn, oid, user_id, int(g.ta_user["id"]), body)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        write_audit(conn, g.ta_user["id"], "employee_document_records", row.get("id"), "create", new=body)
+        conn.commit()
+        return jsonify(row), 201
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/documents/<int:record_id>", methods=["PUT", "DELETE"])
+@require_auth
+def user_document_record_item(user_id, record_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Documents require unified payroll"}), 503
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = int(u.get("organization_id") or _tenant_id())
+        cur = conn.cursor()
+        ensure_document_compliance_tables(cur)
+        if request.method == "DELETE":
+            ok = delete_employee_document_record(conn, oid, user_id, record_id)
+            if not ok:
+                return jsonify({"error": "Not found"}), 404
+            write_audit(conn, g.ta_user["id"], "employee_document_records", record_id, "delete")
+            conn.commit()
+            return jsonify({"ok": True})
+        body = request.json or {}
+        row = update_employee_document_record(conn, oid, user_id, record_id, body)
+        if not row:
+            return jsonify({"error": "Not found"}), 404
+        write_audit(conn, g.ta_user["id"], "employee_document_records", record_id, "update", new=body)
+        conn.commit()
+        return jsonify(row)
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/admin/document-compliance-policy", methods=["GET", "PUT"])
+@require_auth
+def admin_document_compliance_policy():
+    conn = get_db()
+    try:
+        if not user_has_perm(conn, g.ta_user["id"], "ta.settings"):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        cur = conn.cursor()
+        ensure_document_compliance_tables(cur)
+        if request.method == "GET":
+            return jsonify(get_document_compliance_policy(conn, oid))
+        body = request.json or {}
+        out = upsert_document_compliance_policy(conn, oid, int(g.ta_user["id"]), body)
+        write_audit(conn, g.ta_user["id"], "org_document_compliance_policy", oid, "update", new=body)
+        conn.commit()
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/admin/document-compliance/expiring", methods=["GET"])
+@require_auth
+def admin_document_compliance_expiring():
+    conn = get_db()
+    try:
+        if not (user_has_perm(conn, g.ta_user["id"], "users.view") or user_has_perm(conn, g.ta_user["id"], "ta.monitor")):
+            return jsonify({"error": "Forbidden"}), 403
+        cur = conn.cursor()
+        ensure_document_compliance_tables(cur)
+        days = int(request.args.get("days") or 14)
+        code = (request.args.get("document_code") or "").strip() or None
+        items = list_expiring_document_records(conn, _tenant_id(), days=days, code=code)
+        return jsonify({"items": items, "days": days, "document_code": code})
     finally:
         conn.close()
 

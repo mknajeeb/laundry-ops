@@ -66,6 +66,29 @@ register_ta_routes(app)
 register_notification_routes(app)
 
 
+@app.route("/internal/jobs/change-jobs", methods=["POST"])
+def internal_run_change_jobs():
+    """
+    Run batch jobs (document compliance reminders, status updates, optional profile deactivation).
+    Secure with env CHANGE_JOBS_SECRET and header X-Change-Jobs-Secret on POST.
+    Query dry_run=1 to simulate without writes or push.
+    """
+    from backend.hr_compliance import run_document_compliance_tick
+
+    secret = (os.getenv("CHANGE_JOBS_SECRET") or "").strip()
+    if not secret:
+        return jsonify({"error": "CHANGE_JOBS_SECRET is not configured"}), 503
+    if (request.headers.get("X-Change-Jobs-Secret") or "").strip() != secret:
+        return jsonify({"error": "forbidden"}), 403
+    dry = (request.args.get("dry_run") or "").strip().lower() in ("1", "true", "yes")
+    conn = get_db()
+    try:
+        out = run_document_compliance_tick(conn, dry_run=dry)
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
 # Local org logo uploads when Azure Blob is not configured (dev / small deployments).
 _ORG_LOGO_FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.(png|jpg|jpeg|webp|gif)$", re.I)
 

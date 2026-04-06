@@ -666,10 +666,46 @@ export const getTaUserHrProfile = (userId) =>
 export const putTaUserHrProfile = (userId, body) =>
   axios.put(`${API_BASE}/api/ta/users/${userId}/hr-profile`, body);
 
-export const postTaUserHrFormI9 = (userId) =>
-  axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/i9`, null, {
+export const getTaUserHrFormsInventory = (userId) =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/inventory`);
+
+/** locale: en | es | bilingual — prefill only where API supports it (I-9 English). */
+export const postTaUserHrForm = (userId, formId, body = {}) =>
+  axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, body, {
     responseType: "blob",
+    headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
   });
+
+export const postTaUserHrFormI9 = (userId, locale = "en") =>
+  axios.post(
+    `${API_BASE}/api/ta/users/${userId}/hr-forms/i9`,
+    { locale },
+    {
+      responseType: "blob",
+      headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+    },
+  );
+
+export const getTaUserDocuments = (userId) =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/documents`);
+
+export const postTaUserDocument = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/users/${userId}/documents`, body);
+
+export const putTaUserDocument = (userId, recordId, body) =>
+  axios.put(`${API_BASE}/api/ta/users/${userId}/documents/${recordId}`, body);
+
+export const deleteTaUserDocument = (userId, recordId) =>
+  axios.delete(`${API_BASE}/api/ta/users/${userId}/documents/${recordId}`);
+
+export const getDocumentCompliancePolicy = () =>
+  axios.get(`${API_BASE}/api/ta/admin/document-compliance-policy`);
+
+export const putDocumentCompliancePolicy = (body) =>
+  axios.put(`${API_BASE}/api/ta/admin/document-compliance-policy`, body);
+
+export const getExpiringDocuments = (params = {}) =>
+  axios.get(`${API_BASE}/api/ta/admin/document-compliance/expiring`, { params });
 
 export const getGeofences = () => axios.get(`${API_BASE}/api/ta/geofences`);
 

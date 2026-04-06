@@ -499,6 +499,16 @@ export default function UserProfilePage({ user: sessionUser }) {
           <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
             {t("profile.sectionPayroll")}
           </Typography>
+          {hasPayroll && canTaView ? (
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} sx={{ mb: 2 }}>
+              <Button variant="contained" color="primary" onClick={() => navigate(`/employees/${uid}/hr`)}>
+                {t("profile.openHrForms")}
+              </Button>
+              <Typography variant="body2" color="text.secondary">
+                {t("profile.openHrFormsHint")}
+              </Typography>
+            </Stack>
+          ) : null}
           {!hasPayroll && !platformMode ? (
             <Alert severity="info" sx={{ mb: 1 }}>
               {t("profile.noPayrollYet")}
@@ -678,11 +688,37 @@ export default function UserProfilePage({ user: sessionUser }) {
 
         {canTaView && !platformMode ? (
           <Paper variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1 }}>
-              {t("profile.sectionEmployment")}
-            </Typography>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                {t("profile.sectionEmployment")}
+              </Typography>
+              {canTaEdit ? (
+                <Button
+                  size="small"
+                  startIcon={<Add />}
+                  onClick={() =>
+                    setCatRows([
+                      ...catRows,
+                      {
+                        employment_category_id: "",
+                        effective_from: new Date().toISOString().slice(0, 10),
+                        effective_to: "",
+                      },
+                    ])
+                  }
+                >
+                  {t("profile.addEmploymentRow")}
+                </Button>
+              ) : null}
+            </Stack>
             {(catRows || []).map((row, i) => (
-              <Stack key={i} direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 1 }}>
+              <Stack
+                key={i}
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1}
+                alignItems={{ sm: "center" }}
+                sx={{ mb: 1 }}
+              >
                 <TextField
                   select
                   label="Category"
@@ -694,6 +730,7 @@ export default function UserProfilePage({ user: sessionUser }) {
                   }}
                   size="small"
                   sx={{ minWidth: 200 }}
+                  disabled={!canTaEdit}
                 >
                   <MenuItem value="">—</MenuItem>
                   {cats.map((c) => (
@@ -713,6 +750,7 @@ export default function UserProfilePage({ user: sessionUser }) {
                     setCatRows(next);
                   }}
                   size="small"
+                  disabled={!canTaEdit}
                 />
                 <TextField
                   type="date"
@@ -725,7 +763,16 @@ export default function UserProfilePage({ user: sessionUser }) {
                     setCatRows(next);
                   }}
                   size="small"
+                  disabled={!canTaEdit}
                 />
+                {canTaEdit ? (
+                  <IconButton
+                    aria-label={t("profile.removeEmploymentRow")}
+                    onClick={() => setCatRows(catRows.filter((_, j) => j !== i))}
+                  >
+                    <DeleteOutline />
+                  </IconButton>
+                ) : null}
               </Stack>
             ))}
           </Paper>

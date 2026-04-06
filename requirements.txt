@@ -8,4 +8,3 @@ openpyxl
 azure-storage-blob
 pypdf>=4.0
 cryptography>=3.1
-pypdf
