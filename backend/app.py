@@ -1192,6 +1192,17 @@ def _organizations_public_columns_sql(cursor):
     for col in ("address", "phone", "email"):
         if table_has_column(cursor, "organizations", col):
             parts.append(col)
+    for col in (
+        "employer_legal_name",
+        "employer_street",
+        "employer_apt",
+        "employer_city",
+        "employer_state",
+        "employer_zip",
+        "employer_ein",
+    ):
+        if table_has_column(cursor, "organizations", col):
+            parts.append(col)
     return ", ".join(parts)
 
 
@@ -4825,7 +4836,7 @@ def auth_organization_put():
         logo_url = data.get("logo_url")
         fields = []
         vals = []
-        if display_name:
+        if "display_name" in data and display_name:
             fields.append("display_name=%s")
             vals.append(display_name[:200])
         if logo_url is not None:
@@ -4852,6 +4863,23 @@ def auth_organization_put():
             em = str(email).strip()[:255]
             fields.append("email=%s")
             vals.append(em or None)
+        for json_key, col, maxlen in (
+            ("employer_legal_name", "employer_legal_name", 255),
+            ("employer_street", "employer_street", 255),
+            ("employer_apt", "employer_apt", 64),
+            ("employer_city", "employer_city", 128),
+            ("employer_state", "employer_state", 32),
+            ("employer_zip", "employer_zip", 20),
+            ("employer_ein", "employer_ein", 32),
+        ):
+            if json_key in data and table_has_column(cursor, "organizations", col):
+                raw = data.get(json_key)
+                if raw is None:
+                    fields.append(f"{col}=%s")
+                    vals.append(None)
+                else:
+                    fields.append(f"{col}=%s")
+                    vals.append(str(raw).strip()[:maxlen] or None)
         if not fields:
             return jsonify({"error": "No fields to update"}), 400
         vals.append(int(oid))

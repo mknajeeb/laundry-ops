@@ -32,17 +32,22 @@ def infer_user_form_lanes(conn, user_id: int) -> list[str]:
         return ["employee_w2", "contractor_1099"]
     has_1099 = False
     has_w2 = False
+    has_temp = False
     for r in rows:
         blob = f"{r.get('name') or ''} {r.get('code') or ''}".lower()
         if re.search(r"1099|contractor|independent|\bic\b", blob):
             has_1099 = True
-        if re.search(r"w[\s-]*2|employee|hourly|salary|temp|washmate|ops", blob):
+        if re.search(r"\btemp\b|temporary|seasonal", blob):
+            has_temp = True
+        if re.search(r"w[\s-]*2|employee|hourly|salary|washmate|ops", blob):
             has_w2 = True
     out: list[str] = []
     if has_w2:
         out.append("employee_w2")
     if has_1099:
         out.append("contractor_1099")
+    if has_temp:
+        out.append("temp_worker")
     if not out:
         return ["employee_w2", "contractor_1099"]
     return out
@@ -52,7 +57,7 @@ def prefill_supported(form_id: str, locale: str, form_def: dict[str, Any]) -> bo
     """True when server can merge profile data into this template."""
     if form_def.get("fill_strategy") != "acroform":
         return False
-    if form_id == "uscis_i9" and locale == "en":
+    if form_id == "uscis_i9" and locale in ("en", "es"):
         return True
     return False
 

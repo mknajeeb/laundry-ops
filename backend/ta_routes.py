@@ -27,6 +27,7 @@ from backend.hr_forms.delivery import build_hr_forms_inventory, infer_user_form_
 from backend.hr_forms.registry import get_form_def, resolve_form_asset_path
 from backend.hr_compliance import (
     build_i9_field_values,
+    build_i9_field_values_es,
     clock_in_blocked_by_expired_documents,
     create_employee_document_record,
     delete_employee_document_record,
@@ -2378,7 +2379,7 @@ def user_hr_form_deliver(user_id, form_id):
         ext = os.path.splitext(path)[1].lower() or ".pdf"
         dl = f"{fid}_{locale}{ext}"
 
-        if fid == "uscis_i9" and locale == "en":
+        if fid == "uscis_i9" and locale in ("en", "es"):
             cur = conn.cursor()
             ensure_hr_extended_profiles_table(cur)
             c = conn.cursor(dictionary=True)
@@ -2386,18 +2387,26 @@ def user_hr_form_deliver(user_id, form_id):
             hr = c.fetchone()
             oid = int(u.get("organization_id") or _tenant_id())
             org = fetch_hr_org_settings(conn, oid)
-            vals = build_i9_field_values(
-                u,
-                hr,
-                org.get("employer_name") or "",
-                org.get("employer_address") or "",
-            )
+            if locale == "en":
+                vals = build_i9_field_values(
+                    u,
+                    hr,
+                    org.get("employer_name") or "",
+                    org.get("employer_address") or "",
+                )
+            else:
+                vals = build_i9_field_values_es(
+                    u,
+                    hr,
+                    org.get("employer_name") or "",
+                    org.get("employer_address") or "",
+                )
             try:
                 pdf = fill_i9_pdf_bytes(path, vals)
             except RuntimeError as e:
                 return jsonify({"error": str(e)}), 503
             ln = (u.get("last_name") or "user").replace("/", "-")[:40]
-            fn = f"i9-prefill-{ln}-{user_id}.pdf"
+            fn = f"i9-prefill-{locale}-{ln}-{user_id}.pdf"
             return Response(
                 pdf,
                 mimetype="application/pdf",
@@ -2417,7 +2426,7 @@ def user_hr_form_deliver(user_id, form_id):
 @ta_bp.route("/users/<int:user_id>/hr-forms/i9", methods=["POST"])
 @require_auth
 def user_hr_form_i9(user_id):
-    """Backward-compatible I-9 download: English = AcroForm prefill; Spanish = official PDF as-is."""
+    """Backward-compatible I-9 download: English and Spanish AcroForm prefill (see build_i9_field_values / _es)."""
     body = request.get_json(silent=True) or {}
     locale = str(body.get("locale") or request.args.get("locale") or "en").lower()
     if locale not in ("en", "es"):
@@ -2463,22 +2472,23 @@ def user_hr_form_i9(user_id):
                 org.get("employer_name") or "",
                 org.get("employer_address") or "",
             )
-            try:
-                pdf = fill_i9_pdf_bytes(path, vals)
-            except RuntimeError as e:
-                return jsonify({"error": str(e)}), 503
-            ln = (u.get("last_name") or "user").replace("/", "-")[:40]
-            fn = f"i9-prefill-{ln}-{user_id}.pdf"
-            return Response(
-                pdf,
-                mimetype="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+        else:
+            vals = build_i9_field_values_es(
+                u,
+                hr,
+                org.get("employer_name") or "",
+                org.get("employer_address") or "",
             )
-        return send_file(
-            path,
+        try:
+            pdf = fill_i9_pdf_bytes(path, vals)
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        ln = (u.get("last_name") or "user").replace("/", "-")[:40]
+        fn = f"i9-prefill-{locale}-{ln}-{user_id}.pdf"
+        return Response(
+            pdf,
             mimetype="application/pdf",
-            as_attachment=True,
-            download_name=f"uscis_i9_{locale}_{user_id}.pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fn}"'},
         )
     finally:
         conn.close()

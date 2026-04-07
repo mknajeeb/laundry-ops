@@ -19,13 +19,11 @@ import {
 import { ArrowBack, ExpandMore } from "@mui/icons-material";
 import {
   deleteTaUserDocument,
-  getTaHrEmployerSettings,
   getTaUserDocuments,
   getTaUserHrFormsInventory,
   getTaUserHrProfile,
   postTaUserHrForm,
   postTaUserDocument,
-  putTaHrEmployerSettings,
   putTaUserDocument,
   putTaUserHrProfile,
 } from "../api";
@@ -38,6 +36,13 @@ function localeLabel(code, t) {
   if (code === "es") return t("hub.localeEs");
   if (code === "bilingual") return t("hub.localeBilingual");
   return code;
+}
+
+function laneTabLabel(lane, t) {
+  if (lane === "employee_w2") return t("hub.tabW2");
+  if (lane === "contractor_1099") return t("hub.tab1099");
+  if (lane === "temp_worker") return t("hub.tabTemp");
+  return lane;
 }
 
 async function saveBlobResponse(res, fallbackName) {
@@ -88,9 +93,6 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
   const [notes, setNotes] = useState("");
   const [work, setWork] = useState(() => emptyWork());
   const [emergency, setEmergency] = useState(() => emptyEmergency());
-  const [employerName, setEmployerName] = useState("");
-  const [employerAddress, setEmployerAddress] = useState("");
-  const [employerEin, setEmployerEin] = useState("");
   const [i9, setI9] = useState(() => emptyI9());
   const [docRows, setDocRows] = useState([]);
   const [docLoading, setDocLoading] = useState(false);
@@ -128,9 +130,8 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
     setError("");
     setInventoryLoadError("");
     try {
-      const [hrRes, orgRes, invRes] = await Promise.all([
+      const [hrRes, invRes] = await Promise.all([
         getTaUserHrProfile(uid),
-        getTaHrEmployerSettings().catch(() => ({ data: {} })),
         getTaUserHrFormsInventory(uid).catch((e) => {
           const d = e?.response?.data;
           const msg =
@@ -165,10 +166,6 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
       const pad = [...em];
       while (pad.length < 2) pad.push({ name: "", relationship: "", phone: "", alt_phone: "" });
       setEmergency(pad.slice(0, 2));
-      const o = orgRes.data || {};
-      setEmployerName(o.employer_name || "");
-      setEmployerAddress(o.employer_address || "");
-      setEmployerEin(o.employer_ein || "");
       const inv = invRes.data || {};
       setInventory({
         lanes_detected: Array.isArray(inv.lanes_detected) ? inv.lanes_detected : [],
@@ -233,23 +230,6 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
       await load();
     } catch (e) {
       setError(e?.response?.data?.error || "Save failed");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveEmployer = async () => {
-    if (!canEdit) return;
-    setSaving(true);
-    setError("");
-    try {
-      await putTaHrEmployerSettings({
-        employer_name: employerName,
-        employer_address: employerAddress,
-        employer_ein: employerEin,
-      });
-    } catch (e) {
-      setError(e?.response?.data?.error || "Employer settings failed");
     } finally {
       setSaving(false);
     }
@@ -350,6 +330,7 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
 
   const showW2 = (inventory.lanes_detected || []).includes("employee_w2");
   const show1099 = (inventory.lanes_detected || []).includes("contractor_1099");
+  const showTemp = (inventory.lanes_detected || []).includes("temp_worker");
 
   return (
     <Box sx={{ p: { xs: 1, md: 2 }, maxWidth: 960, mx: "auto", pb: 10 }}>
@@ -366,7 +347,7 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
           </Typography>
           <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
             {(inventory.lanes_detected || []).map((ln) => (
-              <Chip key={ln} size="small" label={ln === "employee_w2" ? t("hub.tabW2") : t("hub.tab1099")} color="primary" variant="outlined" />
+              <Chip key={ln} size="small" label={laneTabLabel(ln, t)} color="primary" variant="outlined" />
             ))}
           </Stack>
         </Box>
@@ -382,7 +363,7 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
           {t("hub.inventoryLoadFailed")}: {inventoryLoadError}
         </Alert>
       ) : null}
-      {!loading && !showW2 && !show1099 ? (
+      {!loading && !showW2 && !show1099 && !showTemp ? (
         <Alert severity="info" sx={{ mb: 2 }}>
           {t("hub.noPacket")}
         </Alert>
@@ -410,40 +391,14 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
               {t("hub.coreHint")}
             </Typography>
             <Stack spacing={2}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                {t("hr.employerBlock")}
-              </Typography>
-              <Stack spacing={1.5}>
-                <TextField
-                  label={t("hr.employerName")}
-                  value={employerName}
-                  onChange={(e) => setEmployerName(e.target.value)}
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                />
-                <TextField
-                  label={t("hr.employerAddress")}
-                  value={employerAddress}
-                  onChange={(e) => setEmployerAddress(e.target.value)}
-                  fullWidth
-                  size="small"
-                  multiline
-                  minRows={2}
-                  disabled={!canEdit}
-                />
-                <TextField
-                  label={t("hr.employerEin")}
-                  value={employerEin}
-                  onChange={(e) => setEmployerEin(e.target.value)}
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                />
-                <Button variant="outlined" disabled={!canEdit || saving} onClick={saveEmployer} sx={{ alignSelf: "flex-start" }}>
-                  {t("hr.saveEmployer")}
+              <Alert severity="info" sx={{ borderRadius: 2 }}>
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  {t("hub.employerFromOrg")}
+                </Typography>
+                <Button size="small" variant="outlined" onClick={() => navigate("/organization")}>
+                  {t("hub.openOrganization")}
                 </Button>
-              </Stack>
+              </Alert>
               <Divider />
               <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
                 {t("hr.workerBlock")}
@@ -517,7 +472,7 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
             </Stack>
           </Paper>
 
-          {showW2 || show1099 ? (
+          {showW2 || show1099 || showTemp ? (
             <Paper variant="outlined" sx={{ borderRadius: 3, overflow: "hidden" }}>
               <Tabs
                 value={tabLane}
@@ -527,9 +482,12 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
               >
                 {showW2 ? <Tab value="employee_w2" label={t("hub.tabW2")} /> : null}
                 {show1099 ? <Tab value="contractor_1099" label={t("hub.tab1099")} /> : null}
+                {showTemp ? <Tab value="temp_worker" label={t("hub.tabTemp")} /> : null}
               </Tabs>
               <Box sx={{ p: 2 }}>
-                {tabForms.length === 0 ? (
+                {tabLane === "temp_worker" ? (
+                  <Typography color="text.secondary">{t("hub.tempNoForms")}</Typography>
+                ) : tabForms.length === 0 ? (
                   <Typography color="text.secondary">{t("hub.noFormsInTab")}</Typography>
                 ) : (
                   tabForms.map((form) => (

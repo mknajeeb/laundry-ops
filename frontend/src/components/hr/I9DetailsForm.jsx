@@ -18,6 +18,7 @@ import {
 import { Add, DeleteOutline } from "@mui/icons-material";
 import { I9_LIST_A, I9_LIST_B, I9_LIST_C } from "../../constants/i9AcceptableDocuments";
 import { useI18n } from "../../i18n/I18nContext";
+import { maskTaxIdLast4, normalizeTaxIdDigits } from "../../utils/validation";
 
 export function emptyWork() {
   return {
@@ -148,12 +149,16 @@ export default function I9DetailsForm({ i9, setI9, canEdit, emptyPreparer: empty
       <TextField
         label={t("hr.i9Ssn")}
         value={i9.ssn}
-        onChange={(e) => setI9((s) => ({ ...s, ssn: e.target.value.replace(/\D/g, "").slice(0, 9) }))}
+        onChange={(e) => setI9((s) => ({ ...s, ssn: normalizeTaxIdDigits(e.target.value) }))}
         fullWidth
         size="small"
         disabled={!canEdit}
         placeholder="123456789"
-        helperText={t("hr.i9SsnHelp")}
+        helperText={
+          normalizeTaxIdDigits(i9.ssn).length >= 4
+            ? `${t("hr.i9SsnHelp")} ${maskTaxIdLast4(i9.ssn)}`
+            : t("hr.i9SsnHelp")
+        }
       />
       <FormControl disabled={!canEdit}>
         <FormLabel>{t("hr.i9Citizenship")}</FormLabel>

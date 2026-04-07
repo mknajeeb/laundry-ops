@@ -3,7 +3,8 @@
   "description": "Official + internal HR/payroll forms. Place files under HR_FORM_ASSETS_DIR (default: backend/hr_form_assets/forms) using the names in files.{locale}. Env HR_FORM_ASSETS_DIR overrides the directory only.",
   "lanes": {
     "employee_w2": "W-2 / statutory employee packet (I-9, W-4, NY IT-2104, NY LS-51/54-57, etc.)",
-    "contractor_1099": "1099 contractor packet (W-9, internal C-forms, VeeWash docx)"
+    "contractor_1099": "1099 contractor packet (W-9, internal C-forms, VeeWash docx)",
+    "temp_worker": "Temporary worker — reserved (no forms in catalog yet)"
   },
   "forms": [
     {

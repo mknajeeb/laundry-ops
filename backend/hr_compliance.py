@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from backend.ta_helpers import json_safe, table_exists
+from backend.ta_helpers import json_safe, table_exists, table_has_column
 
 def ensure_hr_extended_profiles_table(cursor) -> None:
     """Create hr_extended_profiles if missing (runtime safety if SQL not applied yet)."""
@@ -497,6 +497,126 @@ def build_i9_field_values(
     return _i9_finalize_field_values(vals)
 
 
+def build_i9_field_values_es(
+    payroll_row: dict,
+    hr_row: Optional[dict],
+    employer_name: str,
+    employer_address: str,
+) -> dict[str, str]:
+    """Spanish I-9 (uscis_i9_es.pdf) uses different AcroForm /T names than English."""
+    w, i9 = _load_work_and_i9(hr_row)
+
+    given, ln = _resolve_i9_employee_names(payroll_row, hr_row, w, i9)
+    middle = _s(w.get("middle_initial") or w.get("middle_name"))
+    if len(middle) > 1:
+        middle = middle[:1]
+
+    addr1 = _s(w.get("mailing_address_line1") or w.get("address_line1"))
+    city = _s(w.get("city"))
+    st = _s(w.get("state"))
+    z = _s(w.get("zip") or w.get("zip_code"))
+
+    if not addr1 and payroll_row.get("address"):
+        parsed = _parse_loose_address(_s(payroll_row.get("address")))
+        addr1 = parsed.get("address_line1", "") or addr1
+        city = city or parsed.get("city", "")
+        st = st or parsed.get("state", "")
+        z = z or parsed.get("zip", "")
+
+    st, z = _split_state_zip_if_combined(st, z)
+
+    dob = _parse_dob(hr_row.get("date_of_birth")) if hr_row else None
+    hire = _parse_dob(payroll_row.get("hire_date"))
+
+    email = _s(i9.get("employee_email")) or _s(payroll_row.get("email"))
+    ssn = _ssn_digits_only(i9.get("ssn") or payroll_row.get("itin_ssn"))
+    tel = _s(
+        i9.get("telephone")
+        or w.get("telephone")
+        or payroll_row.get("mobile")
+        or (hr_row.get("alternate_phone") if hr_row else "")
+    )
+
+    apt = _s(i9.get("apt_number") or w.get("apt_number"))
+    other_last = _s(i9.get("other_last_names") or w.get("other_last_names"))
+
+    today = _today_eastern_date()
+    attestation_date = _parse_dob(i9.get("employee_attestation_date")) or today
+    today_mm = _fmt_mmddyyyy(today)
+    att_mm = _fmt_mmddyyyy(attestation_date)
+
+    vals: dict[str, Any] = {
+        "Last Name Family Name": ln,
+        "First Name Given Name": given,
+        "Middle Initial if any": (middle[:1] if middle else ""),
+        "Other Last Names Used if any": other_last,
+        "Address Street Number and Name": addr1,
+        "Apt Number if any": apt,
+        "City or Town": city,
+        "State": st,
+        "ZIP Code": z,
+        "Date of Birth mmddyyyy": _fmt_mmddyyyy(dob),
+        "US Social Security Number": ssn,
+        "Employees Email Address": email,
+        "EmployeeTelephoneNumber": tel,
+        "Todays Date mmddyyyy": att_mm,
+        "Employers Business or Organization Name": _s(employer_name),
+        "Employers Business or Organization Address": _s(employer_address),
+        "Last Name Family Name from Section 1": ln,
+        "First Name Given Name from Section 1": given,
+        "Middle initial if any from Section 1": (middle[:1] if middle else ""),
+        "Last Name Family Name from Section 2": ln,
+        "First Name Given Name from Section 2": given,
+        "Middle initial if any from Section 2": (middle[:1] if middle else ""),
+        "First Day Employed mmddyyyy": _fmt_mmddyyyy(hire),
+        "Todays Date mmddyyyy_1": today_mm,
+    }
+
+    vals.update(_i9_citizenship_checkboxes(i9.get("citizenship")))
+
+    lpr = _s(i9.get("uscis_a_number") or i9.get("lawful_permanent_resident_uscis"))
+    if lpr:
+        vals["A lawful permanent resident Enter USCIS or ANumber"] = lpr
+    i94 = _s(i9.get("form_i94_admission") or i9.get("form_i94"))
+    if i94:
+        vals["Formulario I-94 Número de Admisión"] = i94
+    fp = _s(i9.get("foreign_passport") or i9.get("foreign_passport_country"))
+    if fp:
+        vals["Foreign Passport Number and Country of Issuance"] = fp
+    wexp = _parse_dob(i9.get("work_authorization_expiration"))
+    if wexp:
+        vals["Exp Date mmddyyyy"] = _fmt_mmddyyyy(wexp)
+
+    er = _s(i9.get("employer_authorized_representative") or i9.get("employer_rep_name_title"))
+    if er:
+        vals["Last Name First Name and Title of Employer or Authorized Representative"] = er
+        vals["Name of Employer or Authorized Representative_1"] = er
+
+    dr = _s(i9.get("document_route"))
+    if dr == "list_a" and _s(i9.get("list_a_title")):
+        vals["Document Title 1"] = _s(i9["list_a_title"])
+    elif dr == "list_bc":
+        if _s(i9.get("list_b_title")):
+            vals["List B Document Title 1"] = _s(i9["list_b_title"])
+        if _s(i9.get("list_c_title")):
+            vals["List C Document Title 1"] = _s(i9["list_c_title"])
+
+    ov = i9.get("pdf_fields") or i9.get("field_overrides")
+    if isinstance(ov, dict):
+        for pk, pv in ov.items():
+            if pk is None:
+                continue
+            pk = str(pk).strip()
+            if not pk or pk.startswith("Signature of"):
+                continue
+            if pv in ("/On", "/Off", "/Yes", "/No"):
+                vals[pk] = "/On" if pv in ("/On", "/Yes", True, "true", "1", 1) else "/Off"
+            elif pv is not None:
+                vals[pk] = pv
+
+    return _i9_finalize_field_values(vals)
+
+
 # Bit 13 (4096): multiline text — helps long List A/B/C titles wrap in viewers.
 _I9_MULTILINE_FLAG = 1 << 12
 
@@ -519,6 +639,12 @@ _I9_MULTILINE_FIELD_NAMES: frozenset[str] = frozenset(
         "Additional Information",
         "Last Name First Name and Title of Employer or Authorized Representative",
         "Document Number 0 (if any)",
+        # Spanish edition
+        "Document Title 1",
+        "Document Title 2 if any",
+        "Document Title 3 if any",
+        "List B Document Title 1",
+        "List C Document Title 1",
     }
 )
 
@@ -580,6 +706,17 @@ def fill_i9_pdf_bytes(template_path: str, field_values: dict[str, str]) -> bytes
         else:
             writer.append(reader)
         _i9_pdf_set_multiline_on_fields(writer)
+        try:
+            from pypdf.generic import BooleanObject, NameObject
+
+            root = getattr(writer, "root_object", None)
+            if root is not None:
+                acro = root.get("/AcroForm")
+                if acro is not None:
+                    acro_obj = acro.get_object() if hasattr(acro, "get_object") else acro
+                    acro_obj[NameObject("/NeedAppearances")] = BooleanObject(True)
+        except Exception:
+            pass
         for page in writer.pages:
             writer.update_page_form_field_values(page, field_values)
         buf = BytesIO()
@@ -589,7 +726,30 @@ def fill_i9_pdf_bytes(template_path: str, field_values: dict[str, str]) -> bytes
         raise RuntimeError(f"I-9 PDF fill failed ({template_path}): {e}") from e
 
 
+def format_employer_address_from_org_row(org: dict) -> str:
+    """Single block for PDF employer address: structured columns or legacy free-text `address`."""
+    st = _s(org.get("employer_street"))
+    apt = _s(org.get("employer_apt"))
+    line1 = st
+    if apt:
+        line1 = f"{line1}, {apt}" if line1 else apt
+    city = _s(org.get("employer_city"))
+    state = _s(org.get("employer_state"))
+    z = _s(org.get("employer_zip"))
+    line2_parts = []
+    if city:
+        line2_parts.append(city)
+    stz = f"{state} {z}".strip() if state or z else ""
+    if stz:
+        line2_parts.append(stz)
+    line2 = ", ".join(line2_parts) if line2_parts else ""
+    if line1 or line2:
+        return "\n".join([x for x in (line1, line2) if x]).strip()
+    return _s(org.get("address"))
+
+
 def fetch_hr_org_settings(conn, organization_id: int) -> dict:
+    """Employer line for forms: prefer `organizations` structured fields (see organizations_employer_form_fields_v1.sql)."""
     c = conn.cursor(dictionary=True)
     out = {"employer_name": "", "employer_address": "", "employer_ein": ""}
     for key, tgt in (
@@ -604,13 +764,40 @@ def fetch_hr_org_settings(conn, organization_id: int) -> dict:
         row = c.fetchone()
         if row and row.get("svalue"):
             out[tgt] = (row["svalue"] or "").strip()
+
+    if not table_exists(c, "organizations"):
+        return out
+
+    cols = ["display_name"]
+    for col in (
+        "employer_legal_name",
+        "employer_street",
+        "employer_apt",
+        "employer_city",
+        "employer_state",
+        "employer_zip",
+        "employer_ein",
+        "address",
+    ):
+        if table_has_column(c, "organizations", col) and col not in cols:
+            cols.append(col)
+
     c.execute(
-        "SELECT display_name FROM organizations WHERE id=%s LIMIT 1",
+        f"SELECT {', '.join(cols)} FROM organizations WHERE id=%s LIMIT 1",
         (int(organization_id),),
     )
-    org = c.fetchone()
-    if org and not out["employer_name"]:
-        out["employer_name"] = (org.get("display_name") or "").strip()
+    org = c.fetchone() or {}
+    eln = _s(org.get("employer_legal_name"))
+    if eln:
+        out["employer_name"] = eln
+    elif not out["employer_name"]:
+        out["employer_name"] = _s(org.get("display_name"))
+    structured = format_employer_address_from_org_row(org)
+    if structured:
+        out["employer_address"] = structured
+    eein = _s(org.get("employer_ein"))
+    if eein:
+        out["employer_ein"] = eein
     return out
 
 
