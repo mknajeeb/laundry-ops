@@ -120,7 +120,15 @@ function Sidebar({ activeBatch, user, onLogout }) {
         </Stack>
       </Box>
 
-      <Button sx={{ mt: 1.5, flexShrink: 0 }} variant="outlined" color="inherit" onClick={onLogout}>{t("nav.logout")}</Button>
+      <Button
+        fullWidth
+        sx={{ mt: 1.5, flexShrink: 0 }}
+        variant="outlined"
+        color="inherit"
+        onClick={onLogout}
+      >
+        {t("nav.logout")}
+      </Button>
     </Box>
   );
 }

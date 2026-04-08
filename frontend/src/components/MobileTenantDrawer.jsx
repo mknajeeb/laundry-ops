@@ -1,4 +1,4 @@
-import { Box, Chip, Divider, Drawer, List, ListItemButton, ListItemText, Typography } from "@mui/material";
+import { Box, Button, Chip, Divider, Drawer, List, ListItemButton, ListItemText, Typography } from "@mui/material";
 import { useNavigate, useLocation } from "react-router-dom";
 import { TENANT_NAV_ITEMS } from "../constants/tenantNav";
 import { useI18n } from "../i18n/I18nContext";
@@ -10,6 +10,7 @@ export default function MobileTenantDrawer({
   user,
   payrollNavVisible = true,
   activeBatch,
+  onLogout,
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -34,9 +35,29 @@ export default function MobileTenantDrawer({
     onClose();
   };
 
+  const handleLogout = () => {
+    onClose();
+    onLogout?.();
+  };
+
   return (
-    <Drawer anchor="left" open={open} onClose={onClose}>
-      <Box sx={{ width: 280, pt: "env(safe-area-inset-top, 12px)", px: 1.5, pb: 2 }}>
+    <Drawer
+      anchor="left"
+      open={open}
+      onClose={onClose}
+      PaperProps={{ sx: { display: "flex", flexDirection: "column", maxHeight: "100%" } }}
+    >
+      <Box
+        sx={{
+          width: 280,
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          pt: "env(safe-area-inset-top, 12px)",
+          px: 1.5,
+        }}
+      >
         <Typography sx={{ fontWeight: 700, fontSize: 18, px: 1, py: 1 }}>
           {user?.organization_name || "Menu"}
         </Typography>
@@ -51,7 +72,7 @@ export default function MobileTenantDrawer({
           />
         )}
         <Divider sx={{ my: 1 }} />
-        <List dense disablePadding>
+        <List dense disablePadding sx={{ flex: 1, overflow: "auto" }}>
           {TENANT_NAV_ITEMS.filter(allow).filter(navFilter).map((item) => (
             <ListItemButton
               key={item.to}
@@ -62,6 +83,12 @@ export default function MobileTenantDrawer({
             </ListItemButton>
           ))}
         </List>
+        <Divider sx={{ mt: 1 }} />
+        <Box sx={{ py: 2, pb: "calc(16px + env(safe-area-inset-bottom, 0px))" }}>
+          <Button fullWidth variant="outlined" color="inherit" onClick={handleLogout}>
+            {t("nav.logout")}
+          </Button>
+        </Box>
       </Box>
     </Drawer>
   );

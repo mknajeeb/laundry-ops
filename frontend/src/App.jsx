@@ -11,8 +11,9 @@ import {
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { ArrowBack, Menu, Refresh } from "@mui/icons-material";
+import { ArrowBack, Logout, Menu, Refresh } from "@mui/icons-material";
 import ClockInGate from "./components/ClockInGate";
+import MobileTenantDrawer from "./components/MobileTenantDrawer";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
@@ -41,9 +42,9 @@ import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
 import PayrollFormsHubPage from "./pages/PayrollFormsHubPage";
 import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
-import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
+import { authLogout, authMe, clearAuthSession, getClockPayrollUiSettings, getCurrentUploadBatch, getSavedUser } from "./api";
 
-function MobileTopBar({ pathname, user, onOpenNav }) {
+function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const navigate = useNavigate();
   const { locale, setLocale, t } = useI18n();
   const canGoBack = pathname !== "/";
@@ -99,7 +100,10 @@ function MobileTopBar({ pathname, user, onOpenNav }) {
           <Button size="small" variant={locale === "en" ? "contained" : "text"} onClick={() => setLocale("en")} sx={{ minWidth: 40 }}>EN</Button>
           <Button size="small" variant={locale === "es" ? "contained" : "text"} onClick={() => setLocale("es")} sx={{ minWidth: 40 }}>ES</Button>
         </Box>
-        <IconButton size="small" onClick={() => window.location.reload()} aria-label={t("lang.label")}><Refresh sx={{ fontSize: 18 }} /></IconButton>
+        <IconButton size="small" onClick={onLogout} aria-label={t("nav.logout")} sx={{ mr: 0.25 }}>
+          <Logout sx={{ fontSize: 18 }} />
+        </IconButton>
+        <IconButton size="small" onClick={() => window.location.reload()} aria-label={t("common.refresh")}><Refresh sx={{ fontSize: 18 }} /></IconButton>
       </Toolbar>
     </AppBar>
   );
@@ -315,8 +319,9 @@ function AppShell() {
               user={user}
               payrollNavVisible={payrollNavVisible}
               activeBatch={activeBatch}
+              onLogout={doLogout}
             />
-            <MobileTopBar pathname={pathname} user={user} onOpenNav={() => setMobileNavOpen(true)} />
+            <MobileTopBar pathname={pathname} user={user} onOpenNav={() => setMobileNavOpen(true)} onLogout={doLogout} />
           </>
         )}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
