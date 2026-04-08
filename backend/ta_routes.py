@@ -1470,7 +1470,7 @@ def clock_in():
         if not gfs:
             return jsonify({"error": "Assign at least one geofence before clock-in"}), 400
 
-        inside, dist, _hit = user_inside_assigned_geofences(
+        inside, dist, matched_gf = user_inside_assigned_geofences(
             conn, g.ta_user["id"], float(lat), float(lng)
         )
         if not inside:
@@ -1482,6 +1482,8 @@ def clock_in():
                     "radius_meters": float(ref["radius_meters"]),
                 }
             ), 400
+
+        geofence_id_for_session = int(matched_gf["id"]) if matched_gf else int(gfs[0]["id"])
 
         if clock_in_blocked_by_expired_documents(conn, g.ta_user["id"], _tenant_id()):
             return jsonify(
@@ -1540,7 +1542,7 @@ def clock_in():
                 g.ta_user["id"],
                 _tenant_id(),
                 pc_id,
-                gfn["id"],
+                geofence_id_for_session,
                 employment_category_id,
                 now,
                 float(lat),
@@ -1554,7 +1556,7 @@ def clock_in():
             "shift_session",
             sid,
             "clock_in",
-            new={"clock_in_at": now.isoformat()},
+            new={"clock_in_at": now.isoformat(), "geofence_id": geofence_id_for_session},
         )
         conn.commit()
         sess = fetch_session(conn, sid)
