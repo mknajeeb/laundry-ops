@@ -377,11 +377,16 @@ function ClockPage({ user: washproUser }) {
   const displayGeofenceInside = useMemo(() => {
     const srv = session?.geofence_inside;
     if (srv === true || srv === false) return srv;
-    const g = session?.primary_geofence;
     const { lat, lng } = lastPosRef.current;
-    if (!g || lat == null || lng == null) return null;
-    const dist = haversineMeters(lat, lng, Number(g.latitude), Number(g.longitude));
-    return dist <= Number(g.radius_meters);
+    if (lat == null || lng == null) return null;
+    const list = session?.assigned_geofences;
+    const geos = Array.isArray(list) && list.length > 0 ? list : session?.primary_geofence ? [session.primary_geofence] : [];
+    if (geos.length === 0) return null;
+    for (const gf of geos) {
+      const dist = haversineMeters(lat, lng, Number(gf.latitude), Number(gf.longitude));
+      if (dist <= Number(gf.radius_meters)) return true;
+    }
+    return false;
   }, [session, geoTick]);
 
   const showOutsideOnClock =

@@ -516,6 +516,8 @@ export const TRANSLATIONS = {
     "profile.formsLiveInSection5":
       "I-9 and withholding: Compliance data tab. PDF downloads: Documents tab or the employee forms workspace (opens in full screen).",
     "profile.sectionGeofences": "Geofences",
+    "profile.geofencesClockHint":
+      "Time clock: you can clock in or out inside any of the locations you select here (no separate “primary” required).",
     "profile.sectionEmployment": "Employment categories",
     "profile.addEmploymentRow": "Add category row",
     "profile.removeEmploymentRow": "Remove this category row",
@@ -1404,6 +1406,8 @@ export const TRANSLATIONS = {
     "profile.formsLiveInSection5":
       "I-9 y retenciones: pestaña Datos de cumplimiento. Descargas PDF: pestaña Documentos o el centro de formularios del empleado.",
     "profile.sectionGeofences": "Geocercas",
+    "profile.geofencesClockHint":
+      "Fichaje: puede fichar entrada o salida dentro de cualquiera de las ubicaciones seleccionadas (no hace falta marcar una “principal”).",
     "profile.sectionEmployment": "Categorías de empleo",
     "profile.addEmploymentRow": "Añadir fila de categoría",
     "profile.removeEmploymentRow": "Quitar esta fila de categoría",

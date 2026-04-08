@@ -632,7 +632,11 @@ def get_or_create_payroll_cycle(conn, at: datetime, organization_id: int) -> int
     return get_or_create_payroll_cycle_unified(conn, at, organization_id)
 
 
-def get_primary_geofence(conn, user_id: int):
+def list_user_clock_geofences(conn, user_id: int):
+    """
+    Active geofences assigned to this user (tenant-scoped).
+    Rows with is_primary=1 sort first; otherwise any assignment counts for clock-in/out.
+    """
     c = conn.cursor(dictionary=True)
     c.execute(
         """
@@ -640,13 +644,36 @@ def get_primary_geofence(conn, user_id: int):
         FROM user_geofences ug
         JOIN geofences g ON g.id = ug.geofence_id
         JOIN users u ON u.id = ug.user_id
-        WHERE ug.user_id=%s AND ug.is_primary=1 AND g.active=1
-          AND g.organization_id = u.organization_id
-        LIMIT 1
+        WHERE ug.user_id=%s AND g.active=1 AND g.organization_id = u.organization_id
+        ORDER BY ug.is_primary DESC, ug.geofence_id ASC
         """,
         (user_id,),
     )
-    return c.fetchone()
+    return c.fetchall() or []
+
+
+def user_inside_assigned_geofences(
+    conn, user_id: int, lat: float, lng: float
+) -> tuple[bool, Optional[float], Optional[dict]]:
+    """
+    True if (lat,lng) lies inside at least one assigned geofence.
+    Returns (inside, distance_to_nearest_center, nearest_geofence_row).
+    """
+    gfs = list_user_clock_geofences(conn, user_id)
+    if not gfs:
+        return False, None, None
+    nearest_d = None
+    nearest_row = None
+    for gf in gfs:
+        dist = haversine_meters(
+            float(lat), float(lng), float(gf["latitude"]), float(gf["longitude"])
+        )
+        if nearest_d is None or dist < nearest_d:
+            nearest_d = dist
+            nearest_row = gf
+        if dist <= float(gf["radius_meters"]):
+            return True, dist, gf
+    return False, nearest_d, nearest_row
 
 
 def sum_break_seconds(conn, shift_id: int) -> int:
@@ -1119,10 +1146,10 @@ def ta_bootstrap():
 def my_geofence():
     conn = get_db()
     try:
-        gfn = get_primary_geofence(conn, g.ta_user["id"])
-        if not gfn:
-            return jsonify({"error": "No primary geofence assigned"}), 400
-        return jsonify(json_safe(gfn))
+        gfs = list_user_clock_geofences(conn, g.ta_user["id"])
+        if not gfs:
+            return jsonify({"error": "No geofence assigned"}), 400
+        return jsonify(json_safe(gfs[0]))
     finally:
         conn.close()
 
@@ -1258,7 +1285,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
     sess = c.fetchone()
     inside = None
     ob = None
-    gfn = None
+    gfs = []
     if sess:
         closed = maybe_auto_close_shift(conn, sess, ta_user["id"], tenant_id)
         if closed:
@@ -1280,13 +1307,13 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             sess["elapsed_shift_seconds"] = elapsed
             sess["elapsed_break_seconds"] = int(break_live)
             sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
-            gfn = get_primary_geofence(conn, ta_user["id"])
-            if lat is not None and lng is not None and gfn:
-                dist = haversine_meters(
-                    float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
+            gfs = list_user_clock_geofences(conn, ta_user["id"])
+            gfn = gfs[0] if gfs else None
+            if lat is not None and lng is not None and gfs:
+                inside, dist, _hit = user_inside_assigned_geofences(
+                    conn, ta_user["id"], float(lat), float(lng)
                 )
-                inside = dist <= float(gfn["radius_meters"])
-                if inside is False:
+                if inside is False and dist is not None:
                     c.execute(
                         """
                         INSERT INTO shift_exceptions (shift_session_id, user_id, exception_type, message)
@@ -1295,7 +1322,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
                         (
                             sess["id"],
                             ta_user["id"],
-                            f"Location ping outside geofence (~{int(dist)}m).",
+                            f"Location ping outside all assigned geofences (~{int(dist)}m to nearest center).",
                         ),
                     )
                     if _user_wants_push_notification(conn, ta_user):
@@ -1304,12 +1331,13 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
                         )
             sess["geofence_inside"] = inside
             sess["primary_geofence"] = json_safe(gfn) if gfn else None
+            sess["assigned_geofences"] = [json_safe(x) for x in gfs]
 
             if (
                 sess
-                and lat
-                and lng
-                and gfn
+                and lat is not None
+                and lng is not None
+                and gfs
                 and inside is not None
                 and table_has_column(c, "shift_sessions", "outside_geofence_seconds")
             ):
@@ -1342,13 +1370,12 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
                 sess["last_geofence_inside"] = 1 if inside else 0
 
     elif lat is not None and lng is not None:
-        gfn = get_primary_geofence(conn, ta_user["id"])
+        _gfs_rem = list_user_clock_geofences(conn, ta_user["id"])
         inside = None
-        if gfn:
-            dist = haversine_meters(
-                float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
+        if _gfs_rem:
+            inside, _, _ = user_inside_assigned_geofences(
+                conn, ta_user["id"], float(lat), float(lng)
             )
-            inside = dist <= float(gfn["radius_meters"])
         maybe_clock_in_geofence_reminder(conn, ta_user, tenant_id, inside)
 
     op = get_operational_state(
@@ -1357,7 +1384,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
         sess,
         geofence_inside=inside,
         open_break_cached=ob,
-        primary_geofence_cached=gfn,
+        assigned_geofences_cached=gfs if sess else _MISSING_OP_STATE,
     )
     conn.commit()
     return {"session": json_safe(sess), "operational": op}
@@ -1387,9 +1414,9 @@ def get_operational_state(
     geofence_inside=None,
     *,
     open_break_cached=_MISSING_OP_STATE,
-    primary_geofence_cached=_MISSING_OP_STATE,
+    assigned_geofences_cached=_MISSING_OP_STATE,
 ):
-    """When caller already loaded open break / primary geofence, pass them to skip duplicate queries."""
+    """When caller already loaded open break / geofence list, pass them to skip duplicate queries."""
     if not sess:
         return {"allowed": False, "reasons": ["not_clocked_in"]}
     ob = (
@@ -1399,12 +1426,12 @@ def get_operational_state(
     )
     if ob:
         return {"allowed": False, "reasons": ["on_break"]}
-    gfn = (
-        get_primary_geofence(conn, user_id)
-        if primary_geofence_cached is _MISSING_OP_STATE
-        else primary_geofence_cached
+    gfs = (
+        list_user_clock_geofences(conn, user_id)
+        if assigned_geofences_cached is _MISSING_OP_STATE
+        else assigned_geofences_cached
     )
-    if not gfn:
+    if not gfs:
         return {"allowed": False, "reasons": ["no_geofence"]}
     if geofence_inside is False:
         return {"allowed": False, "reasons": ["outside_geofence"]}
@@ -1439,19 +1466,20 @@ def clock_in():
         if c.fetchone():
             return jsonify({"error": "Already clocked in"}), 400
 
-        gfn = get_primary_geofence(conn, g.ta_user["id"])
-        if not gfn:
-            return jsonify({"error": "Assign a primary geofence before clock-in"}), 400
+        gfs = list_user_clock_geofences(conn, g.ta_user["id"])
+        if not gfs:
+            return jsonify({"error": "Assign at least one geofence before clock-in"}), 400
 
-        dist = haversine_meters(
-            float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
+        inside, dist, _hit = user_inside_assigned_geofences(
+            conn, g.ta_user["id"], float(lat), float(lng)
         )
-        if dist > float(gfn["radius_meters"]):
+        if not inside:
+            ref = gfs[0]
             return jsonify(
                 {
-                    "error": "Outside active geofence",
-                    "distance_meters": round(dist, 1),
-                    "radius_meters": float(gfn["radius_meters"]),
+                    "error": "Outside assigned work geofences",
+                    "distance_meters": round(float(dist), 1) if dist is not None else None,
+                    "radius_meters": float(ref["radius_meters"]),
                 }
             ), 400
 
@@ -1574,27 +1602,27 @@ def clock_out():
                         "detail": "Location is required to clock out so we can verify you are at work.",
                     }
                 ), 400
-            gfn_co = get_primary_geofence(conn, g.ta_user["id"])
-            if not gfn_co:
-                return jsonify({"error": "No primary geofence assigned"}), 400
+            gfs_co = list_user_clock_geofences(conn, g.ta_user["id"])
+            if not gfs_co:
+                return jsonify({"error": "No geofence assigned"}), 400
             try:
                 lat_f = float(lat)
                 lng_f = float(lng)
             except (TypeError, ValueError):
                 return jsonify({"error": "Invalid coordinates"}), 400
-            dist_co = haversine_meters(
-                lat_f,
-                lng_f,
-                float(gfn_co["latitude"]),
-                float(gfn_co["longitude"]),
+            inside_co, dist_co, _h = user_inside_assigned_geofences(
+                conn, g.ta_user["id"], lat_f, lng_f
             )
-            if dist_co > float(gfn_co["radius_meters"]):
+            if not inside_co:
+                ref = gfs_co[0]
                 return jsonify(
                     {
-                        "error": "Outside active geofence",
-                        "distance_meters": round(dist_co, 1),
-                        "radius_meters": float(gfn_co["radius_meters"]),
-                        "detail": "Move inside the work area to clock out, or ask an admin to adjust your geofence.",
+                        "error": "Outside assigned work geofences",
+                        "distance_meters": round(float(dist_co), 1)
+                        if dist_co is not None
+                        else None,
+                        "radius_meters": float(ref["radius_meters"]),
+                        "detail": "Move inside an assigned work area to clock out, or ask an admin to adjust your geofences.",
                     }
                 ), 400
 

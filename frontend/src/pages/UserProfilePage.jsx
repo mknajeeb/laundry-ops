@@ -2060,6 +2060,11 @@ export default function UserProfilePage({ user: sessionUser }) {
                 ))}
               </Select>
             </FormControl>
+            {geofenceIds.length > 0 ? (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                {t("profile.geofencesClockHint")}
+              </Typography>
+            ) : null}
             {hasPayroll && canEditPayrollRecords ? (
               <Button
                 variant="outlined"
