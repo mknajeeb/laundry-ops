@@ -11,12 +11,12 @@ import {
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { ArrowBack, Refresh } from "@mui/icons-material";
+import { ArrowBack, Menu, Refresh } from "@mui/icons-material";
 import ClockInGate from "./components/ClockInGate";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
-import { hasPlatformAdminRole, isPlatformOnlyUser } from "./utils/platformAccess";
+import { hasPlatformAdminRole, isPlatformOnlyUser, userSatisfiesRoleGate } from "./utils/platformAccess";
 
 import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
@@ -40,9 +40,10 @@ import OrganizationsPlatformPage from "./pages/OrganizationsPlatformPage";
 import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
 import PayrollFormsHubPage from "./pages/PayrollFormsHubPage";
+import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
 import { authLogout, authMe, clearAuthSession, getCurrentUploadBatch, getSavedUser } from "./api";
 
-function MobileTopBar({ pathname, user }) {
+function MobileTopBar({ pathname, user, onOpenNav }) {
   const navigate = useNavigate();
   const { locale, setLocale, t } = useI18n();
   const canGoBack = pathname !== "/";
@@ -59,9 +60,12 @@ function MobileTopBar({ pathname, user }) {
       }}
     >
       <Toolbar sx={{ minHeight: "50px !important", px: 1 }}>
+        <IconButton size="small" onClick={onOpenNav} aria-label="Menu" sx={{ mr: 0.5 }}>
+          <Menu sx={{ fontSize: 22 }} />
+        </IconButton>
         {canGoBack ? (
           <IconButton size="small" onClick={() => navigate(-1)} sx={{ mr: 1 }}><ArrowBack sx={{ fontSize: 18 }} /></IconButton>
-        ) : <Box sx={{ width: 36 }} />}
+        ) : <Box sx={{ width: 8 }} />}
         <Box
           sx={{
             flex: 1,
@@ -110,9 +114,7 @@ function isLoginRoute(path) {
 function GuardedRoute({ user, roles, children }) {
   if (!user) return <Navigate to="/login" replace />;
   if (!roles?.length) return children;
-  const userRoles = (user.roles || []).map((r) => String(r).toUpperCase());
-  const ok = roles.some((r) => userRoles.includes(String(r).toUpperCase()));
-  return ok ? children : <Navigate to="/" replace />;
+  return userSatisfiesRoleGate(user, roles) ? children : <Navigate to="/" replace />;
 }
 
 function TenantOnlyRoute({ user, children }) {
@@ -127,6 +129,8 @@ function AppShell() {
   const isMobile = useMediaQuery("(max-width: 900px)");
   const [updateReady, setUpdateReady] = useState(false);
   const [activeBatch, setActiveBatch] = useState(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [payrollNavVisible, setPayrollNavVisible] = useState(true);
   const [user, setUser] = useState(getSavedUser());
   const [authLoading, setAuthLoading] = useState(true);
   /** Avoid calling GET /auth/me on every client-side navigation (was a major local slowness). */
@@ -196,6 +200,16 @@ function AppShell() {
       setActiveBatch(null);
     }
   }, [pathname, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || isPlatformOnlyUser(user)) return;
+    getClockPayrollUiSettings()
+      .then((res) => {
+        const v = res.data?.payroll?.nav_payroll_visible;
+        setPayrollNavVisible(v !== false);
+      })
+      .catch(() => setPayrollNavVisible(true));
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -293,7 +307,18 @@ function AppShell() {
         <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />
       ))}
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {isMobile && user && <MobileTopBar pathname={pathname} user={user} />}
+        {isMobile && user && (
+          <>
+            <MobileTenantDrawer
+              open={mobileNavOpen}
+              onClose={() => setMobileNavOpen(false)}
+              user={user}
+              payrollNavVisible={payrollNavVisible}
+              activeBatch={activeBatch}
+            />
+            <MobileTopBar pathname={pathname} user={user} onOpenNav={() => setMobileNavOpen(true)} />
+          </>
+        )}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
           <ClockInGate user={user}>
           <Routes>
@@ -310,6 +335,16 @@ function AppShell() {
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/upload" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/employees" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN"]}><PeoplePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/documents"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <DocumentsEvidencePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route
               path="/employees/:userId/hr"
               element={

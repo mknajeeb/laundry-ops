@@ -142,6 +142,7 @@ export const authLogout = () =>
 export const getPublicOrgBranding = (slug) =>
   axios.get(`${API_BASE}/api/public/organization/branding`, {
     params: { slug: String(slug || "").trim().toLowerCase() },
+    validateStatus: (status) => status === 200 || status === 404 || status === 400,
   });
 
 /** ADMIN: current tenant organization row (slug, display_name, logo_url) */
@@ -660,16 +661,29 @@ export const getTaHrEmployerSettings = () =>
 export const putTaHrEmployerSettings = (body) =>
   axios.put(`${API_BASE}/api/ta/org/hr-employer-settings`, body);
 
+/** W-4 Step 3 credit rates per tax year (GET any user with HR access; PUT requires ta.settings). */
+export const getTaTaxFormYearSettings = (taxYear) =>
+  axios.get(`${API_BASE}/api/ta/org/tax-form-year-settings`, {
+    params: { tax_year: taxYear },
+  });
+
+export const putTaTaxFormYearSettings = (body) =>
+  axios.put(`${API_BASE}/api/ta/org/tax-form-year-settings`, body, {
+    headers: { "Content-Type": "application/json" },
+  });
+
 export const getTaUserHrProfile = (userId) =>
   axios.get(`${API_BASE}/api/ta/users/${userId}/hr-profile`);
 
 export const putTaUserHrProfile = (userId, body) =>
-  axios.put(`${API_BASE}/api/ta/users/${userId}/hr-profile`, body);
+  axios.put(`${API_BASE}/api/ta/users/${userId}/hr-profile`, body, {
+    headers: { "Content-Type": "application/json" },
+  });
 
 export const getTaUserHrFormsInventory = (userId) =>
   axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/inventory`);
 
-/** locale: en | es | bilingual — prefill only where API supports it (I-9 English). */
+/** locale: en | es | bilingual — AcroForm prefill where supported (I-9, W-4, W-9, etc.). */
 export const postTaUserHrForm = (userId, formId, body = {}) =>
   axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, body, {
     responseType: "blob",
@@ -717,6 +731,31 @@ export const updateGeofence = (id, body) =>
 
 export const deleteGeofence = (id) =>
   axios.delete(`${API_BASE}/api/ta/geofences/${id}`);
+
+export const getOrgHrLookups = (params = {}) =>
+  axios.get(`${API_BASE}/api/ta/org-hr-lookups`, { params });
+
+export const createOrgHrLookup = (body) =>
+  axios.post(`${API_BASE}/api/ta/org-hr-lookups`, body);
+
+export const updateOrgHrLookup = (id, body) =>
+  axios.put(`${API_BASE}/api/ta/org-hr-lookups/${id}`, body);
+
+export const getHrFormsOrgSummary = () => axios.get(`${API_BASE}/api/ta/hr-forms/org-summary`);
+
+/** Documents & Evidence center: all org document records + reminder_days_before */
+export const getOrgDocumentRecords = () => axios.get(`${API_BASE}/api/ta/documents/org-records`);
+
+/** Bulk download: ZIP of http(s) file_uri / evidence_uri for selected record ids (cap 120). */
+export const exportOrgDocumentRecordsZip = (recordIds) =>
+  axios.post(
+    `${API_BASE}/api/ta/documents/org-records/export-zip`,
+    { record_ids: recordIds },
+    {
+      responseType: "blob",
+      headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+    },
+  );
 
 export const getEmploymentCategories = () =>
   axios.get(`${API_BASE}/api/ta/employment-categories`);

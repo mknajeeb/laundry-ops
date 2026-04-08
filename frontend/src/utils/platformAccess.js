@@ -26,9 +26,28 @@ export function hasTenantPortalAccess(user) {
   return TENANT_PORTAL_ROLES.some((x) => r.includes(x));
 }
 
-/** Super admin with no operational tenant role: platform-only shell. */
+/**
+ * Sidebar + `<GuardedRoute />`: platform operators may use the full tenant app in org context
+ * without a duplicate ADMIN/OPS assignment in user_roles.
+ */
+export function userSatisfiesRoleGate(user, requiredRoles) {
+  if (!requiredRoles?.length) return true;
+  const r = normalizedRoles(user);
+  if (PLATFORM_ADMIN_ROLES.some((x) => r.includes(x))) return true;
+  return requiredRoles.some((req) => r.includes(String(req).toUpperCase()));
+}
+
+/**
+ * True when this session should use the platform-only shell (no tenant ops UI).
+ * Platform operators who also belong to a real tenant (e.g. logged in via /login/washpro)
+ * must not be forced to /platform just because SUPER_ADMIN/PLATFORM_ADMIN is not listed
+ * alongside ADMIN in user_roles.
+ */
 export function isPlatformOnlyUser(user) {
-  return hasPlatformAdminRole(user) && !hasTenantPortalAccess(user);
+  if (!hasPlatformAdminRole(user) || hasTenantPortalAccess(user)) return false;
+  const slug = String(user?.organization_slug || "").toLowerCase();
+  if (slug && slug !== "platform") return false;
+  return true;
 }
 
 export function isTenantModuleEnabled(user, moduleKey) {

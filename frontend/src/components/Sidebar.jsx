@@ -4,33 +4,8 @@ import { Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Typography }
 import { getClockPayrollUiSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
-import { hasPlatformAdminRole, hasTenantPortalAccess, isTenantModuleEnabled } from "../utils/platformAccess";
-
-const NAV_ITEMS = [
-  { to: "/", labelKey: "nav.home", roles: [], moduleKey: "home" },
-  { to: "/dashboard", labelKey: "nav.dashboard", roles: [], moduleKey: "dashboard" },
-  { to: "/orders", labelKey: "nav.orders", roles: [], moduleKey: "orders" },
-  { to: "/checkout", labelKey: "nav.checkout", roles: [], moduleKey: "checkout" },
-  { to: "/upload", labelKey: "nav.upload", roles: ["ADMIN", "OPS"], moduleKey: "upload" },
-  { to: "/discrepancies", labelKey: "nav.discrepancies", roles: ["ADMIN", "OPS"], moduleKey: "discrepancies" },
-  { to: "/inventory", labelKey: "nav.inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"], moduleKey: "inventory" },
-  { to: "/clock", labelKey: "nav.clock", roles: [], moduleKey: "clock" },
-  { to: "/issues", labelKey: "nav.issues", roles: [], moduleKey: "issues" },
-  { to: "/production", labelKey: "nav.production", roles: [], moduleKey: "production" },
-  { to: "/scoreboard", labelKey: "nav.scoreboard", roles: [], moduleKey: "scoreboard" },
-  { to: "/maintenance", labelKey: "nav.maintenance", roles: [], moduleKey: "maintenance" },
-  { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
-  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"], moduleKey: "payroll" },
-  { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
-  { to: "/notifications", labelKey: "nav.notifications", roles: [], moduleKey: "notifications" },
-  { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"], moduleKey: "permissions" },
-  {
-    to: "/platform",
-    labelKey: "nav.platformTenants",
-    roles: [],
-    skipModuleCheck: true,
-  },
-];
+import { hasPlatformAdminRole, isTenantModuleEnabled, userSatisfiesRoleGate } from "../utils/platformAccess";
+import { TENANT_NAV_ITEMS } from "../constants/tenantNav";
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
@@ -49,10 +24,10 @@ function Sidebar({ activeBatch, user, onLogout }) {
   }, [authLoading, user?.id]);
 
   const allow = (item) => {
-    const roleOk = !item.roles.length || item.roles.some((r) => roles.includes(r));
+    const roleOk = !item.roles.length || userSatisfiesRoleGate(user, item.roles);
     if (!roleOk) return false;
     if (item.skipModuleCheck) {
-      return hasPlatformAdminRole(user) && hasTenantPortalAccess(user);
+      return hasPlatformAdminRole(user);
     }
     return isTenantModuleEnabled(user, item.moduleKey || "home");
   };
@@ -125,7 +100,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
 
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", pr: 0.5, WebkitOverflowScrolling: "touch" }}>
         <Stack spacing={0.8}>
-          {NAV_ITEMS.filter(allow).filter(navFilter).map((item) => (
+          {TENANT_NAV_ITEMS.filter(allow).filter(navFilter).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

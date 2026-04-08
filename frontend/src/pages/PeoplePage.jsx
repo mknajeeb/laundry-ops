@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { MoreVert } from "@mui/icons-material";
 import {
   Alert,
   Box,
   Button,
   Checkbox,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputLabel,
+  Menu,
   MenuItem,
   OutlinedInput,
   Paper,
@@ -45,6 +47,19 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 
+function formatEmploymentStatusCell(ta, wpActive, t) {
+  if (ta && ta.termination_date && String(ta.termination_date).trim() !== "") {
+    return t("people.status.TERMINATED");
+  }
+  const code = (ta && ta.employment_status_code && String(ta.employment_status_code).trim()) || "";
+  if (code) {
+    const key = `people.status.${code.toUpperCase()}`;
+    const lbl = t(key);
+    return lbl === key ? code : lbl;
+  }
+  return wpActive ? t("people.status.ACTIVE") : t("people.status.INACTIVE");
+}
+
 function PeoplePage({ user }) {
   const navigate = useNavigate();
   const { hasPerm } = useAuth();
@@ -70,7 +85,13 @@ function PeoplePage({ user }) {
 
   const [taDialog, setTaDialog] = useState(null);
   const [taForm, setTaForm] = useState({});
-  const [manageWp, setManageWp] = useState(null);
+  const [rowMenuAnchor, setRowMenuAnchor] = useState(null);
+  const [rowMenuCtx, setRowMenuCtx] = useState(null);
+
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [filterCategoryId, setFilterCategoryId] = useState("");
+  const [filterRole, setFilterRole] = useState("");
+  const [filterDept, setFilterDept] = useState("");
 
   const loadWashpro = useCallback(async () => {
     if (!isAdmin) return;
@@ -156,16 +177,53 @@ function PeoplePage({ user }) {
   const taByWashproId = useMemo(() => {
     const m = new Map();
     for (const t of taUsers) {
-      if (t.washpro_user_id) m.set(t.washpro_user_id, t);
+      const wp = t.washpro_user_id ?? t.user_id ?? t.id;
+      if (wp == null || wp === "") continue;
+      m.set(Number(wp), t);
     }
     return m;
   }, [taUsers]);
+
+  const formatTaCategory = (ta) => {
+    const rows = ta?.employment_assignments;
+    if (!Array.isArray(rows) || !rows.length) return "—";
+    const top = rows[0];
+    return top.category_name || top.category_code || "—";
+  };
 
   const washproById = useMemo(() => {
     const m = new Map();
     for (const u of wpUsers) m.set(u.id, u);
     return m;
   }, [wpUsers]);
+
+  const deptCodes = useMemo(() => {
+    const s = new Set();
+    for (const t of taUsers) {
+      if (t.dept_code) s.add(String(t.dept_code));
+    }
+    return Array.from(s).sort();
+  }, [taUsers]);
+
+  const unifiedFiltered = useMemo(() => {
+    return wpFiltered.filter((u) => {
+      const ta = taByWashproId.get(u.id);
+      if (filterStatus === "active" && !u.active) return false;
+      if (filterStatus === "inactive" && u.active) return false;
+      if (filterCategoryId) {
+        const rows = ta?.employment_assignments;
+        const top =
+          Array.isArray(rows) && rows[0] ? String(rows[0].employment_category_id || "") : "";
+        if (top !== filterCategoryId) return false;
+      }
+      if (filterRole.trim()) {
+        const blob = [ta?.role_name, ...(u.roles || [])].join(" ").toLowerCase();
+        if (!blob.includes(filterRole.trim().toLowerCase())) return false;
+      }
+      if (filterDept && String(ta?.dept_code || "") !== filterDept) return false;
+      return true;
+    });
+  }, [wpFiltered, taByWashproId, filterStatus, filterCategoryId, filterRole, filterDept]);
 
   function openWpCreate() {
     setWpForm({
@@ -417,14 +475,16 @@ function PeoplePage({ user }) {
   return (
     <Box sx={{ minHeight: "100%", p: { xs: 1.2, md: 2 } }}>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-        <Typography sx={{ fontSize: 28 }}>{t("people.title")}</Typography>
+        <Typography variant="h5" component="h1">
+          {t("people.title")}
+        </Typography>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         {payrollUnified && canTaView ? t("people.unifiedHelp") : t("people.intro")}
       </Typography>
 
       {user?.organization_name || user?.organization_slug || user?.organization_id != null ? (
-        <Paper variant="outlined" sx={{ p: 1.5, mb: 2, borderRadius: 2 }}>
+        <Paper variant="outlined" sx={{ p: 1, mb: 1.5 }}>
           <Typography variant="caption" color="text.secondary" display="block">
             {t("people.tenantContext")}
           </Typography>
@@ -444,15 +504,69 @@ function PeoplePage({ user }) {
         </Paper>
       ) : null}
 
-      <TextField
-        fullWidth
-        size="small"
-        label={t("common.search")}
-        placeholder={t("people.searchPlaceholder")}
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        sx={{ mb: 2, maxWidth: 480 }}
-      />
+      <Stack direction={{ xs: "column", lg: "row" }} spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
+        <TextField
+          size="small"
+          label={t("common.search")}
+          placeholder={t("people.searchPlaceholder")}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          sx={{ minWidth: 220, flex: "1 1 200px" }}
+        />
+        {canTaView && payrollUnified ? (
+          <>
+            <FormControl size="small" sx={{ minWidth: 120 }}>
+              <InputLabel>{t("people.filterStatus")}</InputLabel>
+              <Select
+                label={t("people.filterStatus")}
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+              >
+                <MenuItem value="all">{t("people.all")}</MenuItem>
+                <MenuItem value="active">{t("common.yes")}</MenuItem>
+                <MenuItem value="inactive">{t("common.no")}</MenuItem>
+              </Select>
+            </FormControl>
+            <FormControl size="small" sx={{ minWidth: 160 }}>
+              <InputLabel>{t("people.filterCategory")}</InputLabel>
+              <Select
+                label={t("people.filterCategory")}
+                value={filterCategoryId}
+                onChange={(e) => setFilterCategoryId(e.target.value)}
+              >
+                <MenuItem value="">{t("people.all")}</MenuItem>
+                {cats.map((c) => (
+                  <MenuItem key={c.id} value={String(c.id)}>
+                    {c.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              size="small"
+              label={t("people.filterRole")}
+              value={filterRole}
+              onChange={(e) => setFilterRole(e.target.value)}
+              sx={{ minWidth: 120 }}
+            />
+            <FormControl size="small" sx={{ minWidth: 140 }}>
+              <InputLabel>{t("people.filterDepartment")}</InputLabel>
+              <Select
+                label={t("people.filterDepartment")}
+                value={filterDept}
+                onChange={(e) => setFilterDept(e.target.value)}
+              >
+                <MenuItem value="">{t("people.all")}</MenuItem>
+                {deptCodes.map((d) => (
+                  <MenuItem key={d} value={d}>
+                    {d}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </>
+        ) : null}
+      </Stack>
 
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
@@ -470,92 +584,55 @@ function PeoplePage({ user }) {
             flexWrap="wrap"
             useFlexGap
           >
-            <Typography variant="h6">{t("people.unifiedSection")}</Typography>
-            <Stack direction="row" spacing={1}>
-              <Button variant="contained" onClick={openWpCreate}>
-                {t("people.addLogin")}
-              </Button>
-              {canTaAdd ? (
-                <Button variant="outlined" onClick={() => openTaCreate()}>
-                  {t("people.addProfile")}
-                </Button>
-              ) : null}
-            </Stack>
+            <Typography variant="subtitle1">{t("people.unifiedSection")}</Typography>
+            <Button variant="contained" onClick={openWpCreate}>
+              {t("people.addPerson")}
+            </Button>
           </Stack>
-          <Paper sx={{ p: 1.5, borderRadius: 2, mb: 3 }}>
+          <Paper variant="outlined" sx={{ p: 1, mb: 2 }}>
             <Box className="table-wrapper">
               <Table size="small" className="orders-table">
                 <TableHead>
                   <TableRow>
+                    <TableCell>{t("people.colEmployeeId")}</TableCell>
                     <TableCell>{t("people.colUsername")}</TableCell>
-                    <TableCell>{t("people.colDisplay")}</TableCell>
-                    <TableCell>{t("people.colRoles")}</TableCell>
-                    <TableCell>{t("people.colName")}</TableCell>
+                    <TableCell>{t("profile.firstName")}</TableCell>
+                    <TableCell>{t("profile.lastName")}</TableCell>
                     <TableCell>{t("people.colEmail")}</TableCell>
                     <TableCell>{t("people.colRole")}</TableCell>
-                    <TableCell>{t("common.active")}</TableCell>
-                    <TableCell align="right">{t("people.colActions")}</TableCell>
+                    <TableCell>{t("people.colStatus")}</TableCell>
+                    <TableCell align="right" sx={{ width: 48 }}>
+                      {t("people.colActions")}
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {wpFiltered.map((u) => {
+                  {unifiedFiltered.map((u) => {
                     const ta = taByWashproId.get(u.id);
                     return (
                       <TableRow key={u.id}>
-                        <TableCell>{u.username}</TableCell>
-                        <TableCell>{u.display_name || "—"}</TableCell>
-                        <TableCell>
-                          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                            {(u.roles || []).map((r) => (
-                              <Chip key={r} label={r} size="small" />
-                            ))}
-                          </Stack>
-                        </TableCell>
-                        <TableCell>
-                          {ta ? (
-                            <>
-                              {ta.first_name} {ta.last_name}
-                              {ta.employee_id ? (
-                                <Typography variant="caption" display="block" color="text.secondary">
-                                  {ta.employee_id}
-                                </Typography>
-                              ) : null}
-                            </>
-                          ) : (
-                            "—"
-                          )}
-                        </TableCell>
+                        <TableCell>{ta?.employee_id || "—"}</TableCell>
+                        <TableCell>{u.username || "—"}</TableCell>
+                        <TableCell>{ta?.first_name || "—"}</TableCell>
+                        <TableCell>{ta?.last_name || "—"}</TableCell>
                         <TableCell>{ta?.email || "—"}</TableCell>
-                        <TableCell>{ta?.role_name || "—"}</TableCell>
-                        <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
+                        <TableCell>
+                          <Typography variant="body2" color="text.secondary">
+                            {ta?.role_name || (u.roles || []).join(", ") || "—"}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>{formatEmploymentStatusCell(ta, u.active, t)}</TableCell>
                         <TableCell align="right">
-                          <Button size="small" variant="outlined" onClick={() => setManageWp(u)} sx={{ mr: 0.5 }}>
-                            {t("people.loginAndPayroll")}
-                          </Button>
-                          <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${u.id}`)} sx={{ mr: 0.5 }}>
-                            {t("people.fullProfile")}
-                          </Button>
-                          {ta && canTaView ? (
-                            <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${ta.id}/hr`)} sx={{ mr: 0.5 }}>
-                              {t("hr.openHr")}
-                            </Button>
-                          ) : null}
-                          <Button size="small" onClick={() => openWpEdit(u)}>
-                            {t("common.edit")}
-                          </Button>
-                          <Button size="small" color="error" onClick={() => setDeleteWpId(u.id)}>
-                            {t("common.delete")}
-                          </Button>
-                          {canTaEdit && ta ? (
-                            <Button size="small" onClick={() => openTaEdit(ta)}>
-                              {t("people.editPayroll")}
-                            </Button>
-                          ) : null}
-                          {canTaAdd && !ta ? (
-                            <Button size="small" onClick={() => openTaCreate(u)}>
-                              {t("people.addPayroll")}
-                            </Button>
-                          ) : null}
+                          <IconButton
+                            size="small"
+                            aria-label={t("people.colActions")}
+                            onClick={(e) => {
+                              setRowMenuAnchor(e.currentTarget);
+                              setRowMenuCtx({ wpUser: u, ta, unified: true });
+                            }}
+                          >
+                            <MoreVert fontSize="small" />
+                          </IconButton>
                         </TableCell>
                       </TableRow>
                     );
@@ -572,10 +649,10 @@ function PeoplePage({ user }) {
           </Typography>
           <Stack direction="row" justifyContent="flex-end" sx={{ mb: 1 }}>
             <Button variant="contained" onClick={openWpCreate}>
-              {t("people.addLogin")}
+              {t("people.addPerson")}
             </Button>
           </Stack>
-          <Paper sx={{ p: 1.5, borderRadius: 2, mb: 3 }}>
+          <Paper variant="outlined" sx={{ p: 1, mb: 2 }}>
             <Box className="table-wrapper">
               <Table size="small" className="orders-table">
                 <TableHead>
@@ -584,8 +661,10 @@ function PeoplePage({ user }) {
                     <TableCell>{t("people.colDisplay")}</TableCell>
                     <TableCell>{t("people.colRoles")}</TableCell>
                     <TableCell>{t("people.colPayrollLink")}</TableCell>
-                    <TableCell>{t("common.active")}</TableCell>
-                    <TableCell align="right">{t("people.colActions")}</TableCell>
+                    <TableCell>{t("people.colStatus")}</TableCell>
+                    <TableCell align="right" sx={{ width: 48 }}>
+                      {t("people.colActions")}
+                    </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -593,14 +672,12 @@ function PeoplePage({ user }) {
                     const ta = taByWashproId.get(u.id);
                     return (
                       <TableRow key={u.id}>
-                        <TableCell>{u.username}</TableCell>
+                        <TableCell>{u.username || "—"}</TableCell>
                         <TableCell>{u.display_name || "—"}</TableCell>
                         <TableCell>
-                          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                            {(u.roles || []).map((r) => (
-                              <Chip key={r} label={r} size="small" />
-                            ))}
-                          </Stack>
+                          <Typography variant="body2" color="text.secondary">
+                            {(u.roles || []).join(", ") || "—"}
+                          </Typography>
                         </TableCell>
                         <TableCell>
                           {ta ? (
@@ -614,22 +691,18 @@ function PeoplePage({ user }) {
                             "—"
                           )}
                         </TableCell>
-                        <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
+                        <TableCell>{formatEmploymentStatusCell(ta, u.active, t)}</TableCell>
                         <TableCell align="right">
-                          <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${u.id}`)} sx={{ mr: 0.5 }}>
-                            {t("people.fullProfile")}
-                          </Button>
-                          {ta && canTaView ? (
-                            <Button size="small" variant="outlined" onClick={() => navigate(`/employees/${ta.id}/hr`)} sx={{ mr: 0.5 }}>
-                              {t("hr.openHr")}
-                            </Button>
-                          ) : null}
-                          <Button size="small" onClick={() => openWpEdit(u)}>
-                            {t("common.edit")}
-                          </Button>
-                          <Button size="small" color="error" onClick={() => setDeleteWpId(u.id)}>
-                            {t("common.delete")}
-                          </Button>
+                          <IconButton
+                            size="small"
+                            aria-label={t("people.colActions")}
+                            onClick={(e) => {
+                              setRowMenuAnchor(e.currentTarget);
+                              setRowMenuCtx({ wpUser: u, ta, unified: false });
+                            }}
+                          >
+                            <MoreVert fontSize="small" />
+                          </IconButton>
                         </TableCell>
                       </TableRow>
                     );
@@ -662,7 +735,7 @@ function PeoplePage({ user }) {
                     <TableCell>{t("people.colEmail")}</TableCell>
                     <TableCell>{t("people.colRole")}</TableCell>
                     <TableCell>{t("people.colWashproLogin")}</TableCell>
-                    <TableCell>{t("common.active")}</TableCell>
+                    <TableCell>{t("people.colStatus")}</TableCell>
                     <TableCell />
                   </TableRow>
                 </TableHead>
@@ -681,6 +754,11 @@ function PeoplePage({ user }) {
                           {wp ? (
                             <>
                               {wp.username}
+                              {wp.display_name && String(wp.display_name).trim() !== String(wp.username || "").trim() ? (
+                                <Typography variant="caption" display="block" color="text.secondary">
+                                  {wp.display_name}
+                                </Typography>
+                              ) : null}
                               <Typography variant="caption" display="block" color="text.secondary">
                                 WP #{wp.id}
                               </Typography>
@@ -689,7 +767,7 @@ function PeoplePage({ user }) {
                             "—"
                           )}
                         </TableCell>
-                        <TableCell>{u.active ? t("common.yes") : t("common.no")}</TableCell>
+                        <TableCell>{formatEmploymentStatusCell(u, wp?.active ?? true, t)}</TableCell>
                         <TableCell>
                           {canTaEdit ? (
                             <Button size="small" onClick={() => openTaEdit(u)}>
@@ -712,6 +790,49 @@ function PeoplePage({ user }) {
           {t("people.needView")}
         </Alert>
       ) : null}
+
+      <Menu
+        anchorEl={rowMenuAnchor}
+        open={Boolean(rowMenuAnchor && rowMenuCtx)}
+        onClose={() => {
+          setRowMenuAnchor(null);
+          setRowMenuCtx(null);
+        }}
+        anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+        transformOrigin={{ vertical: "top", horizontal: "right" }}
+      >
+        <MenuItem
+          onClick={() => {
+            const wu = rowMenuCtx?.wpUser;
+            setRowMenuAnchor(null);
+            setRowMenuCtx(null);
+            if (wu?.id != null) navigate(`/employees/${wu.id}`);
+          }}
+        >
+          {t("people.actionView")}
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            const wu = rowMenuCtx?.wpUser;
+            setRowMenuAnchor(null);
+            setRowMenuCtx(null);
+            if (wu?.id != null) navigate(`/employees/${wu.id}`);
+          }}
+        >
+          {t("people.actionEdit")}
+        </MenuItem>
+        <MenuItem
+          sx={{ color: "error.main" }}
+          onClick={() => {
+            const wu = rowMenuCtx?.wpUser;
+            setRowMenuAnchor(null);
+            setRowMenuCtx(null);
+            if (wu?.id != null) setDeleteWpId(wu.id);
+          }}
+        >
+          {t("common.delete")}
+        </MenuItem>
+      </Menu>
 
       <Dialog open={wpDialog === "create"} onClose={() => setWpDialog(null)} fullWidth maxWidth="sm">
         <DialogTitle>New Washpro login</DialogTitle>
@@ -829,69 +950,6 @@ function PeoplePage({ user }) {
           <Button color="error" variant="contained" onClick={confirmDeleteWp}>
             Delete
           </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={!!manageWp} onClose={() => setManageWp(null)} maxWidth="xs" fullWidth>
-        <DialogTitle>{t("people.manageUserTitle")}</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            {t("people.manageUserBlurb")}
-          </Typography>
-          <Stack spacing={1}>
-            <Button
-              variant="contained"
-              onClick={() => {
-                const u = manageWp;
-                setManageWp(null);
-                if (u) openWpEdit(u);
-              }}
-            >
-              {t("people.openWashproLogin")}
-            </Button>
-            {(() => {
-              const u = manageWp;
-              if (!u) return null;
-              const ta = taByWashproId.get(u.id);
-              if (ta && canTaEdit) {
-                return (
-                  <Button
-                    variant="outlined"
-                    onClick={() => {
-                      setManageWp(null);
-                      openTaEdit(ta);
-                    }}
-                  >
-                    {t("people.openPayrollProfile")}
-                  </Button>
-                );
-              }
-              if (ta && !canTaEdit) {
-                return (
-                  <Typography variant="caption" color="text.secondary">
-                    {t("people.payrollEditNeedsPerm")}
-                  </Typography>
-                );
-              }
-              if (!ta && canTaAdd) {
-                return (
-                  <Button
-                    variant="outlined"
-                    onClick={() => {
-                      setManageWp(null);
-                      openTaCreate(u);
-                    }}
-                  >
-                    {t("people.addPayroll")}
-                  </Button>
-                );
-              }
-              return null;
-            })()}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setManageWp(null)}>{t("common.cancel")}</Button>
         </DialogActions>
       </Dialog>
 

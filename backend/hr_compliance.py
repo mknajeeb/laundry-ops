@@ -10,13 +10,16 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import date, datetime
+import zipfile
+from datetime import date, datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from backend.ta_helpers import json_safe, table_exists, table_has_column
+from backend.hr_forms.registry import get_form_def
+from backend.hr_pdf_acroform import apply_acroform_compact_text_font
+from backend.ta_helpers import json_safe, mask_tax_id_for_api_response, table_exists, table_has_column
 
 def ensure_hr_extended_profiles_table(cursor) -> None:
     """Create hr_extended_profiles if missing (runtime safety if SQL not applied yet)."""
@@ -55,6 +58,167 @@ def _deep_merge_json(base: Optional[dict], patch: Optional[dict]) -> dict:
         else:
             out[k] = v
     return out
+
+
+# Only these keys treat an empty patch value as "do not overwrite" (profile saves often
+# POST filing_status: "" when the user did not open the W-4 Select). Dollar lines use ""
+# to mean clear — they must not use this set.
+_W4_COMPLIANCE_EMPTY_PATCH_KEEPS_BASE = frozenset({"filing_status"})
+
+
+def _deep_merge_w4_compliance(base: Optional[dict], patch: Optional[dict]) -> dict:
+    """
+    Merge W-4 compliance. Empty ``filing_status`` in the patch does not wipe a saved value.
+
+    Other fields (amounts, booleans) apply as sent so clears and checkbox changes stick.
+    """
+    out = dict(base or {})
+    if not patch:
+        return out
+    for k, v in patch.items():
+        prev = out.get(k)
+        is_empty = v is None or v == "" or (isinstance(v, str) and not str(v).strip())
+        if is_empty and k in _W4_COMPLIANCE_EMPTY_PATCH_KEEPS_BASE:
+            if isinstance(prev, str) and prev.strip():
+                continue
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge_json(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _deep_merge_w4_block(base: dict, patch: dict) -> dict:
+    out = dict(base)
+    for k, v in patch.items():
+        if k == "compliance":
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                bc = out.get("compliance")
+                bc = bc if isinstance(bc, dict) else {}
+                out["compliance"] = _deep_merge_w4_compliance(bc, v)
+            else:
+                out[k] = v
+        elif k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge_json(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _deep_merge_work_json(base: Optional[dict], patch: Optional[dict]) -> dict:
+    """Deep-merge work_json; w4.compliance uses empty-string-safe merge."""
+    out = dict(base or {})
+    if not patch:
+        return out
+    for k, v in patch.items():
+        if k == "w4":
+            if v is None:
+                continue
+            if isinstance(v, dict):
+                existing = out.get("w4")
+                existing = existing if isinstance(existing, dict) else {}
+                out["w4"] = _deep_merge_w4_block(existing, v)
+            else:
+                out[k] = v
+            continue
+        elif k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge_json(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+_WORK_JSON_SPILLOVER_HINT_KEYS = frozenset(
+    {
+        "middle_initial",
+        "job_title",
+        "language_preference",
+        "supervisor_name",
+        "rehire_start_date",
+        "mailing_address_line1",
+        "address_line1",
+        "address_line2",
+        "city",
+        "state",
+        "zip",
+    }
+)
+
+
+def _emergency_dict_looks_like_work_json(d: dict) -> bool:
+    """True when payroll/compliance blobs were saved under emergency_contacts_json by mistake."""
+    if not isinstance(d, dict):
+        return False
+    if isinstance(d.get("i9"), dict) or isinstance(d.get("w4"), dict):
+        return True
+    ny = d.get("ny_it2104")
+    if isinstance(ny, dict) and ny:
+        return True
+    hints = sum(1 for k in _WORK_JSON_SPILLOVER_HINT_KEYS if d.get(k) not in (None, ""))
+    return hints >= 3
+
+
+def _decode_hr_row_json_columns(out: dict) -> None:
+    """In-place: decode bytes / JSON strings for hr_extended_profiles JSON columns."""
+    for k in (
+        "emergency_contacts_json",
+        "work_json",
+        "compliance_ack_json",
+        "contractor_json",
+        "tax_snapshots_json",
+        "i9_receipt_json",
+    ):
+        v = out.get(k)
+        if v is None:
+            continue
+        if isinstance(v, (bytes, bytearray)):
+            try:
+                v = v.decode("utf-8", errors="replace")
+                out[k] = v
+            except Exception:
+                continue
+        if out.get(k) and isinstance(out[k], str):
+            try:
+                out[k] = json.loads(out[k])
+            except Exception:
+                pass
+
+
+def _repair_emergency_contacts_work_json_spill(out: dict) -> bool:
+    """
+    Merge mistaken work_json payload stored in emergency_contacts_json into work_json
+    and reset emergency list (real contacts may live in notes — see frontend migration).
+    """
+    ec = out.get("emergency_contacts_json")
+    if not isinstance(ec, dict):
+        return False
+    if not _emergency_dict_looks_like_work_json(ec):
+        return False
+    base = out.get("work_json")
+    base = base if isinstance(base, dict) else {}
+    out["work_json"] = _deep_merge_work_json(base, ec)
+    out["emergency_contacts_json"] = []
+    return True
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.decode("utf-8", errors="replace")
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    return obj
+
+
+def _json_dumps_db(obj: Any) -> Optional[str]:
+    if obj is None:
+        return None
+    return json.dumps(_sanitize_for_json(obj), ensure_ascii=False, default=str)
 
 
 def _parse_loose_address(text: str) -> dict:
@@ -399,8 +563,8 @@ def build_i9_field_values(
         or (hr_row.get("alternate_phone") if hr_row else "")
     )
 
-    apt = _s(i9.get("apt_number") or w.get("apt_number"))
-    other_last = _s(i9.get("other_last_names") or w.get("other_last_names"))
+    apt = _s(i9.get("apt_number") or w.get("apt_number") or w.get("address_line2"))
+    other_last = _s(i9.get("other_last_names") or w.get("other_last_names") or w.get("other_last_name"))
 
     today = _today_eastern_date()
     attestation_date = _parse_dob(i9.get("employee_attestation_date")) or today
@@ -537,8 +701,8 @@ def build_i9_field_values_es(
         or (hr_row.get("alternate_phone") if hr_row else "")
     )
 
-    apt = _s(i9.get("apt_number") or w.get("apt_number"))
-    other_last = _s(i9.get("other_last_names") or w.get("other_last_names"))
+    apt = _s(i9.get("apt_number") or w.get("apt_number") or w.get("address_line2"))
+    other_last = _s(i9.get("other_last_names") or w.get("other_last_names") or w.get("other_last_name"))
 
     today = _today_eastern_date()
     attestation_date = _parse_dob(i9.get("employee_attestation_date")) or today
@@ -592,14 +756,31 @@ def build_i9_field_values_es(
         vals["Last Name First Name and Title of Employer or Authorized Representative"] = er
         vals["Name of Employer or Authorized Representative_1"] = er
 
+    # Section 2 + supplements: Spanish editions of USCIS I-9 often reuse the same /T names as English.
+    s2_src = i9.get("section2")
+    s2: dict = dict(s2_src) if isinstance(s2_src, dict) else {}
     dr = _s(i9.get("document_route"))
     if dr == "list_a" and _s(i9.get("list_a_title")):
-        vals["Document Title 1"] = _s(i9["list_a_title"])
+        s2.setdefault("list_a", _s(i9["list_a_title"]))
     elif dr == "list_bc":
         if _s(i9.get("list_b_title")):
-            vals["List B Document Title 1"] = _s(i9["list_b_title"])
+            s2.setdefault("list_b_title", _s(i9["list_b_title"]))
         if _s(i9.get("list_c_title")):
-            vals["List C Document Title 1"] = _s(i9["list_c_title"])
+            s2.setdefault("list_c_title", _s(i9["list_c_title"]))
+    vals.update(_i9_map_internal(s2, I9_SECTION2_INTERNAL_TO_PDF))
+
+    vals.update(_apply_i9_preparers(i9, today_mm))
+
+    sb = i9.get("supplement_b")
+    if isinstance(sb, dict):
+        vals.update(_i9_map_internal(sb, I9_SUPPLEMENT_B_ROW0_TO_PDF))
+        if any(_s(sb.get(k)) for k in I9_SUPPLEMENT_B_ROW0_TO_PDF.keys()):
+            vals["Todays Date 0"] = today_mm
+
+    if i9.get("section2_alternative_procedure"):
+        vals["CB_Alt"] = "/Yes"
+    if i9.get("supplement_b_alternative_procedure"):
+        vals["CB_Alt_0"] = "/Yes"
 
     ov = i9.get("pdf_fields") or i9.get("field_overrides")
     if isinstance(ov, dict):
@@ -704,7 +885,7 @@ def fill_i9_pdf_bytes(template_path: str, field_values: dict[str, str]) -> bytes
         if max_pages > 0 and n > max_pages:
             writer.append(reader, pages=list(range(min(max_pages, n))))
         else:
-            writer.append(reader)
+            writer.clone_document_from_reader(reader)
         _i9_pdf_set_multiline_on_fields(writer)
         try:
             from pypdf.generic import BooleanObject, NameObject
@@ -717,8 +898,10 @@ def fill_i9_pdf_bytes(template_path: str, field_values: dict[str, str]) -> bytes
                     acro_obj[NameObject("/NeedAppearances")] = BooleanObject(True)
         except Exception:
             pass
+        apply_acroform_compact_text_font(writer)
+        flatten = (os.environ.get("HR_PDF_FLATTEN") or "").strip().lower() in ("1", "true", "yes")
         for page in writer.pages:
-            writer.update_page_form_field_values(page, field_values)
+            writer.update_page_form_field_values(page, field_values, auto_regenerate=True, flatten=flatten)
         buf = BytesIO()
         writer.write(buf)
         return buf.getvalue()
@@ -752,18 +935,22 @@ def fetch_hr_org_settings(conn, organization_id: int) -> dict:
     """Employer line for forms: prefer `organizations` structured fields (see organizations_employer_form_fields_v1.sql)."""
     c = conn.cursor(dictionary=True)
     out = {"employer_name": "", "employer_address": "", "employer_ein": ""}
-    for key, tgt in (
-        ("hr_employer_legal_name", "employer_name"),
-        ("hr_employer_address", "employer_address"),
-        ("hr_employer_ein", "employer_ein"),
-    ):
-        c.execute(
-            "SELECT svalue FROM system_settings WHERE organization_id=%s AND skey=%s LIMIT 1",
-            (int(organization_id), key),
-        )
-        row = c.fetchone()
-        if row and row.get("svalue"):
-            out[tgt] = (row["svalue"] or "").strip()
+    if table_exists(c, "system_settings") and table_has_column(c, "system_settings", "organization_id"):
+        try:
+            for key, tgt in (
+                ("hr_employer_legal_name", "employer_name"),
+                ("hr_employer_address", "employer_address"),
+                ("hr_employer_ein", "employer_ein"),
+            ):
+                c.execute(
+                    "SELECT svalue FROM system_settings WHERE organization_id=%s AND skey=%s LIMIT 1",
+                    (int(organization_id), key),
+                )
+                row = c.fetchone()
+                if row and row.get("svalue"):
+                    out[tgt] = (row["svalue"] or "").strip()
+        except Exception:
+            pass
 
     if not table_exists(c, "organizations"):
         return out
@@ -923,6 +1110,267 @@ def list_employee_document_records(conn, organization_id: int, user_id: int) -> 
     )
     rows = c.fetchall() or []
     return [json_safe(r) for r in rows]
+
+
+def list_organization_document_records(conn, organization_id: int) -> list[dict]:
+    """All document records for a tenant with employee join (for Documents & Evidence center)."""
+    c = conn.cursor(dictionary=True)
+    ensure_document_compliance_tables(c)
+    c.execute(
+        """
+        SELECT d.*,
+               pp.first_name AS emp_first_name,
+               pp.last_name AS emp_last_name,
+               pp.employee_id AS emp_employee_id,
+               pp.email AS emp_email,
+               u.username AS washpro_username
+        FROM employee_document_records d
+        INNER JOIN payroll_profiles pp ON pp.user_id = d.user_id
+        INNER JOIN users u ON u.id = d.user_id
+        WHERE d.organization_id = %s
+        ORDER BY d.updated_at DESC
+        LIMIT 4000
+        """,
+        (int(organization_id),),
+    )
+    out: list[dict] = []
+    for r in c.fetchall() or []:
+        row = dict(r)
+        meta = row.get("metadata_json")
+        if isinstance(meta, str):
+            try:
+                row["metadata_json"] = json.loads(meta)
+            except Exception:
+                row["metadata_json"] = {}
+        elif meta is None:
+            row["metadata_json"] = {}
+        nm = f"{(row.get('emp_first_name') or '')} {(row.get('emp_last_name') or '')}".strip()
+        row["employee_display_name"] = nm or None
+        fd = get_form_def(str(row.get("document_code") or "").strip())
+        row["evidence_required"] = bool((fd or {}).get("evidence_required"))
+        out.append(json_safe(row))
+    return out
+
+
+def fetch_organization_document_records_by_ids(
+    conn, organization_id: int, record_ids: list[int]
+) -> list[dict]:
+    """Subset of org document rows by primary key (for bulk export)."""
+    ids = []
+    for x in record_ids or []:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            ids.append(n)
+    if not ids:
+        return []
+    ids = ids[:120]
+    ph = ",".join(["%s"] * len(ids))
+    c = conn.cursor(dictionary=True)
+    ensure_document_compliance_tables(c)
+    c.execute(
+        f"""
+        SELECT d.*,
+               pp.first_name AS emp_first_name,
+               pp.last_name AS emp_last_name,
+               pp.employee_id AS emp_employee_id,
+               pp.email AS emp_email,
+               u.username AS washpro_username
+        FROM employee_document_records d
+        INNER JOIN payroll_profiles pp ON pp.user_id = d.user_id
+        INNER JOIN users u ON u.id = d.user_id
+        WHERE d.organization_id = %s AND d.id IN ({ph})
+        ORDER BY d.id ASC
+        """,
+        (int(organization_id),) + tuple(ids),
+    )
+    out: list[dict] = []
+    for r in c.fetchall() or []:
+        row = dict(r)
+        meta = row.get("metadata_json")
+        if isinstance(meta, str):
+            try:
+                row["metadata_json"] = json.loads(meta)
+            except Exception:
+                row["metadata_json"] = {}
+        elif meta is None:
+            row["metadata_json"] = {}
+        nm = f"{(row.get('emp_first_name') or '')} {(row.get('emp_last_name') or '')}".strip()
+        row["employee_display_name"] = nm or None
+        fd = get_form_def(str(row.get("document_code") or "").strip())
+        row["evidence_required"] = bool((fd or {}).get("evidence_required"))
+        out.append(json_safe(row))
+    return out
+
+
+def _export_http_url_allowed(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    p = urlparse((url or "").strip())
+    if p.scheme not in ("http", "https"):
+        return False
+    h = (p.hostname or "").lower()
+    if not h or h in ("localhost",) or h.endswith((".local", ".localhost")):
+        return False
+    if re.match(r"^127\.", h) or h == "[::1]":
+        return False
+    if re.match(r"^10\.", h) or re.match(r"^192\.168\.", h):
+        return False
+    if re.match(r"^172\.(1[6-9]|2[0-9]|3[0-1])\.", h):
+        return False
+    if h.startswith("169.254.") or h == "0.0.0.0":
+        return False
+    return True
+
+
+def _safe_zip_segment(s: str, max_len: int = 64) -> str:
+    x = re.sub(r"[^a-zA-Z0-9._-]+", "_", (s or "").strip())
+    return (x or "x")[:max_len]
+
+
+def _http_get_bytes(url: str, max_bytes: int) -> tuple[bytes, str]:
+    import urllib.request
+
+    req = urllib.request.Request(url, headers={"User-Agent": "WashproDocumentsExport/1.0"})
+    out = bytearray()
+    with urllib.request.urlopen(req, timeout=45) as resp:  # noqa: S310
+        ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
+        while True:
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            out.extend(chunk)
+            if len(out) > max_bytes:
+                raise ValueError("response too large")
+    return bytes(out), ctype
+
+
+def build_document_records_export_zip(
+    records: list[dict],
+    *,
+    max_files: int = 100,
+    max_total_zip: int = 95 * 1024 * 1024,
+    max_per_file: int = 25 * 1024 * 1024,
+) -> bytes:
+    """
+    Build a ZIP of remote files referenced by document rows (file_uri + metadata evidence_uri).
+    URLs must be http(s), not loopback/private literal hostnames.
+    """
+    manifest_lines: list[str] = []
+    buf = BytesIO()
+    total_zip = 0
+    n_added = 0
+    used_names: set[str] = set()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for rec in records:
+            rid = rec.get("id")
+            uid = rec.get("user_id")
+            code = _safe_zip_segment(str(rec.get("document_code") or "doc"))
+            base = f"u{uid}_r{rid}_{code}"
+            urls: list[tuple[str, str]] = []
+            fu = _s(rec.get("file_uri") or "").strip()
+            if fu:
+                urls.append((fu, "file"))
+            meta = _load_metadata_dict(rec.get("metadata_json"))
+            eu = _s(meta.get("evidence_uri") or "").strip()
+            if eu and eu != fu:
+                urls.append((eu, "evidence"))
+            for url, kind in urls:
+                if n_added >= max_files:
+                    manifest_lines.append(f"skip record {rid}: max_files ({max_files})")
+                    break
+                if not _export_http_url_allowed(url):
+                    manifest_lines.append(f"skip record {rid} ({kind}): URL not allowed")
+                    continue
+                try:
+                    data, ctype = _http_get_bytes(url, max_per_file)
+                except Exception as e:
+                    manifest_lines.append(f"skip record {rid} ({kind}): fetch failed ({e})")
+                    continue
+                if total_zip + len(data) > max_total_zip:
+                    manifest_lines.append("skip: total zip size cap reached")
+                    break
+                ext = ".bin"
+                cl = ctype.lower()
+                if "pdf" in cl:
+                    ext = ".pdf"
+                elif "jpeg" in cl or "jpg" in cl:
+                    ext = ".jpg"
+                elif "png" in cl:
+                    ext = ".png"
+                elif "webp" in cl:
+                    ext = ".webp"
+                inner = f"{base}_{kind}{ext}"
+                c = 0
+                while inner in used_names:
+                    c += 1
+                    inner = f"{base}_{kind}_{c}{ext}"
+                used_names.add(inner)
+                zf.writestr(inner, data)
+                total_zip += len(data)
+                n_added += 1
+            if total_zip >= max_total_zip or n_added >= max_files:
+                break
+        manifest_lines.insert(0, f"files_in_archive: {n_added}")
+        zf.writestr("EXPORT_MANIFEST.txt", "\n".join(manifest_lines).encode("utf-8"))
+    return buf.getvalue()
+
+
+def upsert_generated_hr_form_record(
+    conn,
+    organization_id: int,
+    user_id: int,
+    actor_user_id: int,
+    *,
+    document_code: str,
+    document_name: str,
+    form_locale: Optional[str],
+    download_filename: str,
+) -> None:
+    """Ensure a generated document row exists / is refreshed after hub PDF download."""
+    ensure_document_compliance_tables(conn.cursor())
+    code = _s(document_code).upper()[:80]
+    if not code:
+        return
+    name = _s(document_name)[:255] or code
+    loc_raw = _s(form_locale)[:16] if form_locale else ""
+    loc = loc_raw or None
+    fn = _s(download_filename)[:255] or "download.pdf"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    base_meta = {"hub_generated": True, "last_hub_download_at": now_iso, "download_filename": fn}
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT id, metadata_json FROM employee_document_records
+        WHERE organization_id=%s AND user_id=%s AND document_code=%s
+          AND (form_locale <=> %s) AND source_kind='generated'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (int(organization_id), int(user_id), code, loc),
+    )
+    ex = c.fetchone()
+    if ex:
+        rid = int(ex["id"])
+        prev = _load_metadata_dict(ex.get("metadata_json"))
+        prev.update(base_meta)
+        update_employee_document_record(conn, organization_id, user_id, rid, {
+            "document_name": name,
+            "status": "received",
+            "issued_on": date.today().isoformat(),
+            "metadata_json": prev,
+        })
+    else:
+        create_employee_document_record(conn, organization_id, user_id, int(actor_user_id), {
+            "document_code": code,
+            "document_name": name,
+            "form_locale": loc,
+            "source_kind": "generated",
+            "status": "received",
+            "issued_on": date.today().isoformat(),
+            "metadata_json": base_meta,
+        })
 
 
 def create_employee_document_record(
@@ -1383,6 +1831,24 @@ def upsert_hr_extended_profile(conn, user_id: int, organization_id: int, body: d
     c = conn.cursor(dictionary=True)
     c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (int(user_id),))
     existing = c.fetchone()
+    if existing:
+        er = dict(existing)
+        _decode_hr_row_json_columns(er)
+        if _repair_emergency_contacts_work_json_spill(er):
+            cur.execute(
+                """
+                UPDATE hr_extended_profiles
+                SET work_json=%s, emergency_contacts_json=%s, updated_at=NOW()
+                WHERE user_id=%s
+                """,
+                (
+                    _json_dumps_db(er.get("work_json")),
+                    _json_dumps_db(er.get("emergency_contacts_json")),
+                    int(user_id),
+                ),
+            )
+            c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (int(user_id),))
+            existing = c.fetchone()
     json_cols = (
         "emergency_contacts_json",
         "work_json",
@@ -1419,7 +1885,10 @@ def upsert_hr_extended_profile(conn, user_id: int, organization_id: int, body: d
             base = _json_load_maybe(row.get(jc))
             if not isinstance(base, dict):
                 base = {}
-            merged_json[jc] = _deep_merge_json(base, patch)
+            if jc == "work_json":
+                merged_json[jc] = _deep_merge_work_json(base, patch)
+            else:
+                merged_json[jc] = _deep_merge_json(base, patch)
         else:
             merged_json[jc] = patch
 
@@ -1436,7 +1905,7 @@ def upsert_hr_extended_profile(conn, user_id: int, organization_id: int, body: d
             if jc in merged_json:
                 parts.insert(-1, f"{jc} = %s")
                 v = merged_json[jc]
-                params.insert(-1, json.dumps(v) if v is not None else None)
+                params.insert(-1, _json_dumps_db(v))
         params.append(int(user_id))
         cur.execute(
             f"UPDATE hr_extended_profiles SET {', '.join(parts)} WHERE user_id = %s",
@@ -1454,14 +1923,13 @@ def upsert_hr_extended_profile(conn, user_id: int, organization_id: int, body: d
         for jc in json_cols:
             if jc in merged_json:
                 v = merged_json[jc]
-                ins[jc] = json.dumps(v) if v is not None else None
+                ins[jc] = _json_dumps_db(v)
         cols = list(ins.keys())
         placeholders = ", ".join(["%s"] * len(cols))
         cur.execute(
             f"INSERT INTO hr_extended_profiles ({', '.join(cols)}) VALUES ({placeholders})",
             tuple(ins[k] for k in cols),
         )
-    conn.commit()
     c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (int(user_id),))
     out = c.fetchone()
     return json_safe(_normalize_hr_row(out))
@@ -1471,19 +1939,8 @@ def _normalize_hr_row(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
     out = dict(row)
-    for k in (
-        "emergency_contacts_json",
-        "work_json",
-        "compliance_ack_json",
-        "contractor_json",
-        "tax_snapshots_json",
-        "i9_receipt_json",
-    ):
-        if out.get(k) and isinstance(out[k], str):
-            try:
-                out[k] = json.loads(out[k])
-            except Exception:
-                pass
+    _decode_hr_row_json_columns(out)
+    _repair_emergency_contacts_work_json_spill(out)
     return out
 
 
@@ -1493,28 +1950,28 @@ def get_merged_hr_profile(conn, user_id: int, payroll_row: dict) -> dict:
     c = conn.cursor(dictionary=True)
     c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (int(user_id),))
     hr = c.fetchone()
+    pay_pub = {
+        k: payroll_row.get(k)
+        for k in (
+            "user_id",
+            "first_name",
+            "last_name",
+            "email",
+            "mobile",
+            "address",
+            "itin_ssn",
+            "hire_date",
+            "termination_date",
+            "employee_id",
+            "organization_id",
+            "washpro_display_name",
+            "username",
+        )
+        if k in payroll_row or k == "user_id"
+    }
+    mask_tax_id_for_api_response(pay_pub)
     return {
-        "payroll": json_safe(
-            {
-                k: payroll_row.get(k)
-                for k in (
-                    "user_id",
-                    "first_name",
-                    "last_name",
-                    "email",
-                    "mobile",
-                    "address",
-                    "itin_ssn",
-                    "hire_date",
-                    "termination_date",
-                    "employee_id",
-                    "organization_id",
-                    "washpro_display_name",
-                    "username",
-                )
-                if k in payroll_row or k == "user_id"
-            }
-        ),
+        "payroll": json_safe(pay_pub),
         "hr": json_safe(_normalize_hr_row(hr)),
         "org_settings": json_safe(fetch_hr_org_settings(conn, int(payroll_row.get("organization_id") or 1))),
     }

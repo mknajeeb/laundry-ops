@@ -1,9 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Box, Button, Divider, Paper, Stack, TextField, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  Divider,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
+} from "@mui/material";
 import {
   authMe,
+  createOrgHrLookup,
   getAuthToken,
   getOrganization,
+  getOrgHrLookups,
   putOrganization,
   setAuthSession,
   uploadOrganizationLogo,
@@ -41,6 +59,13 @@ function OrganizationSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
+
+  const [hrLookups, setHrLookups] = useState([]);
+  const [lookupCat, setLookupCat] = useState("department");
+  const [newLCode, setNewLCode] = useState("");
+  const [newLLabel, setNewLLabel] = useState("");
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupMsg, setLookupMsg] = useState("");
 
   const { inputRef: employerStreetRef, hasMapsKey } = useStreetAutocomplete((place) => {
     if (place.street) setEmployerStreet(place.street);
@@ -80,6 +105,45 @@ function OrganizationSettingsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const loadHrLookups = useCallback(async () => {
+    setLookupLoading(true);
+    setLookupMsg("");
+    try {
+      const res = await getOrgHrLookups();
+      setHrLookups(Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
+      setLookupMsg(e?.response?.data?.error || e?.message || "Could not load HR lookups.");
+      setHrLookups([]);
+    } finally {
+      setLookupLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHrLookups();
+  }, [loadHrLookups]);
+
+  const lookupsFiltered = useMemo(
+    () => hrLookups.filter((r) => String(r.category || "") === lookupCat),
+    [hrLookups, lookupCat],
+  );
+
+  async function addLookupRow(e) {
+    e?.preventDefault?.();
+    const code = newLCode.trim().toUpperCase().replace(/\s+/g, "_");
+    const label = newLLabel.trim();
+    if (!code || !label) return;
+    setLookupMsg("");
+    try {
+      await createOrgHrLookup({ category: lookupCat, code, label, sort_order: 100 });
+      setNewLCode("");
+      setNewLLabel("");
+      await loadHrLookups();
+    } catch (err) {
+      setLookupMsg(err?.response?.data?.error || err?.message || "Save failed");
+    }
+  }
 
   async function save(e) {
     e.preventDefault();
@@ -362,6 +426,77 @@ function OrganizationSettingsPage() {
             {saving ? t("common.saving") : t("common.save")}
           </Button>
         </Stack>
+      </Paper>
+
+      <Paper variant="outlined" sx={{ p: 2, mt: 2 }}>
+        <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 0.5 }}>
+          {t("organization.hrLookupsTitle")}
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          {t("organization.hrLookupsHint")}
+        </Typography>
+        {lookupMsg ? (
+          <Alert severity="warning" sx={{ mb: 1 }} onClose={() => setLookupMsg("")}>
+            {lookupMsg}
+          </Alert>
+        ) : null}
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1 }} alignItems={{ md: "center" }}>
+          <Typography variant="body2">{t("organization.lookupCategory")}</Typography>
+          <Select
+            size="small"
+            value={lookupCat}
+            onChange={(e) => setLookupCat(e.target.value)}
+            sx={{ minWidth: 200 }}
+          >
+            {["department", "job_title", "employment_status", "language_pref"].map((c) => (
+              <MenuItem key={c} value={c}>
+                {c}
+              </MenuItem>
+            ))}
+          </Select>
+          <Button size="small" variant="outlined" onClick={loadHrLookups} disabled={lookupLoading}>
+            {t("common.refresh")}
+          </Button>
+        </Stack>
+        <Box component="form" onSubmit={addLookupRow} sx={{ mb: 2 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+            <TextField
+              size="small"
+              label={t("organization.lookupCode")}
+              value={newLCode}
+              onChange={(e) => setNewLCode(e.target.value)}
+              sx={{ minWidth: 140 }}
+            />
+            <TextField
+              size="small"
+              label={t("organization.lookupLabel")}
+              value={newLLabel}
+              onChange={(e) => setNewLLabel(e.target.value)}
+              sx={{ flex: 1, minWidth: 200 }}
+            />
+            <Button type="submit" variant="outlined" size="small">
+              {t("organization.lookupAdd")}
+            </Button>
+          </Stack>
+        </Box>
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>{t("organization.lookupCode")}</TableCell>
+              <TableCell>{t("organization.lookupLabel")}</TableCell>
+              <TableCell>{t("organization.lookupSort")}</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {lookupsFiltered.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell>{r.code}</TableCell>
+                <TableCell>{r.label}</TableCell>
+                <TableCell>{r.sort_order}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </Paper>
     </Box>
   );

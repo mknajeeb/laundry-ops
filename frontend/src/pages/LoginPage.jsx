@@ -86,15 +86,21 @@ function LoginPage({ onLoggedIn }) {
       return;
     }
     let cancelled = false;
-    getPublicOrgBranding(slug)
-      .then((res) => {
-        if (!cancelled) setBranding(res.data);
-      })
-      .catch(() => {
-        if (!cancelled) setBranding(null);
-      });
+    const debounceMs = 380;
+    const t = window.setTimeout(() => {
+      getPublicOrgBranding(slug)
+        .then((res) => {
+          if (cancelled) return;
+          if (res.status === 200 && res.data && !res.data.error) setBranding(res.data);
+          else setBranding(null);
+        })
+        .catch(() => {
+          if (!cancelled) setBranding(null);
+        });
+    }, debounceMs);
     return () => {
       cancelled = true;
+      window.clearTimeout(t);
     };
   }, [organizationSlug]);
 

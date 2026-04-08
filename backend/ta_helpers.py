@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import threading
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -49,6 +50,8 @@ def json_safe(obj):
         return dt.isoformat()
     if isinstance(obj, date):
         return obj.isoformat()
+    if isinstance(obj, bytearray):
+        return bytes(obj).decode("utf-8", errors="replace")
     if isinstance(obj, bytes):
         return obj.decode("utf-8", errors="replace")
     if isinstance(obj, dict):
@@ -56,6 +59,17 @@ def json_safe(obj):
     if isinstance(obj, (list, tuple)):
         return [json_safe(x) for x in obj]
     return obj
+
+
+def mask_tax_id_for_api_response(d: dict) -> None:
+    """In-place: never expose full SSN/ITIN in JSON; keep last 4 as itin_ssn_last4."""
+    raw = d.get("itin_ssn")
+    if raw:
+        digits = re.sub(r"\D", "", str(raw))
+        d["itin_ssn_last4"] = digits[-4:] if len(digits) >= 4 else None
+    else:
+        d["itin_ssn_last4"] = None
+    d["itin_ssn"] = None
 
 
 def hash_password(plain: str) -> str:
@@ -107,3 +121,14 @@ def table_exists(cursor, table_name: str) -> bool:
     with _schema_lock:
         _table_cache[table_name] = ok
     return ok
+
+
+def invalidate_schema_cache() -> None:
+    """
+    Call after runtime DDL (CREATE / ALTER). Negative answers for table_has_column /
+    table_exists are cached; without invalidation the next request can repeat migrations
+    and raise "duplicate column" / "table already exists", surfacing as HTTP 500.
+    """
+    with _schema_lock:
+        _column_cache.clear()
+        _table_cache.clear()

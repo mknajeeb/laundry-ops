@@ -1,0 +1,27 @@
+/** Tenant app sidebar / mobile drawer — single source of truth. */
+export const TENANT_NAV_ITEMS = [
+  { to: "/", labelKey: "nav.home", roles: [], moduleKey: "home" },
+  { to: "/dashboard", labelKey: "nav.dashboard", roles: [], moduleKey: "dashboard" },
+  { to: "/orders", labelKey: "nav.orders", roles: [], moduleKey: "orders" },
+  { to: "/checkout", labelKey: "nav.checkout", roles: [], moduleKey: "checkout" },
+  { to: "/upload", labelKey: "nav.upload", roles: ["ADMIN", "OPS"], moduleKey: "upload" },
+  { to: "/discrepancies", labelKey: "nav.discrepancies", roles: ["ADMIN", "OPS"], moduleKey: "discrepancies" },
+  { to: "/inventory", labelKey: "nav.inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"], moduleKey: "inventory" },
+  { to: "/clock", labelKey: "nav.clock", roles: [], moduleKey: "clock" },
+  { to: "/issues", labelKey: "nav.issues", roles: [], moduleKey: "issues" },
+  { to: "/production", labelKey: "nav.production", roles: [], moduleKey: "production" },
+  { to: "/scoreboard", labelKey: "nav.scoreboard", roles: [], moduleKey: "scoreboard" },
+  { to: "/maintenance", labelKey: "nav.maintenance", roles: [], moduleKey: "maintenance" },
+  { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
+  { to: "/documents", labelKey: "nav.documents", roles: ["ADMIN"], moduleKey: "people" },
+  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"], moduleKey: "payroll" },
+  { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
+  { to: "/notifications", labelKey: "nav.notifications", roles: [], moduleKey: "notifications" },
+  { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"], moduleKey: "permissions" },
+  {
+    to: "/platform",
+    labelKey: "nav.platformTenants",
+    roles: [],
+    skipModuleCheck: true,
+  },
+];

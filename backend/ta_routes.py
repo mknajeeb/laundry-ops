@@ -2,7 +2,8 @@ import json
 import os
 import re
 import threading
-from datetime import datetime, timedelta
+from io import BytesIO
+from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Optional
 
@@ -14,6 +15,8 @@ from backend.db import get_db
 from backend.payroll_identity import (
     eastern_now_naive,
     ensure_payroll_profile_for_washpro,
+    extend_permissions_for_platform_operator,
+    extend_permissions_for_tenant_admin,
     fetch_payroll_profile_row,
     get_or_create_payroll_cycle_unified,
     get_payroll_period_settings,
@@ -25,7 +28,15 @@ from backend.payroll_identity import (
 from backend.onesignal_client import notify_geofence_outside_cooldown
 from backend.hr_forms.delivery import build_hr_forms_inventory, infer_user_form_lanes
 from backend.hr_forms.registry import get_form_def, resolve_form_asset_path
+from backend.hr_pdf_acroform import (
+    build_ny_it2104_field_values,
+    build_irs_w4_field_values,
+    build_irs_w9_field_values,
+    fill_acroform_pdf_bytes,
+    work_json_from_hr_row,
+)
 from backend.hr_compliance import (
+    build_document_records_export_zip,
     build_i9_field_values,
     build_i9_field_values_es,
     clock_in_blocked_by_expired_documents,
@@ -34,21 +45,26 @@ from backend.hr_compliance import (
     ensure_document_compliance_tables,
     ensure_hr_extended_profiles_table,
     fetch_hr_org_settings,
+    fetch_organization_document_records_by_ids,
     fill_i9_pdf_bytes,
     get_document_compliance_policy,
     get_merged_hr_profile,
     list_employee_document_records,
     list_expiring_document_records,
+    list_organization_document_records,
     resolve_i9_template_path,
     update_employee_document_record,
     upsert_document_compliance_policy,
+    upsert_generated_hr_form_record,
     upsert_hr_extended_profile,
 )
 from backend.ta_helpers import (
     as_bool,
     haversine_meters,
     hash_password,
+    invalidate_schema_cache,
     json_safe,
+    mask_tax_id_for_api_response,
     table_exists,
     table_has_column,
     verify_password,
@@ -157,6 +173,38 @@ def load_clock_payroll_ui(conn, organization_id: int) -> dict:
 
 def _tenant_id():
     return int(g.ta_user.get("organization_id") or 1)
+
+
+# Bump when WORKSPACE_PAYROLL_EXTRA / seed lists change so each org re-runs ensure once per process.
+_PEOPLE_WORKSPACE_ENSURE_VERSION = 1
+_people_workspace_ensured_version_by_org: dict[int, int] = {}
+
+
+def _ensure_people_workspace(conn) -> None:
+    """Idempotent DDL + seed for People/payroll workspace. Runs once per org per worker (cached)."""
+    oid = _tenant_id()
+    if _people_workspace_ensured_version_by_org.get(oid) == _PEOPLE_WORKSPACE_ENSURE_VERSION:
+        return
+
+    from backend.hr_workspace_schema import (
+        ensure_people_workspace_schema,
+        seed_org_hr_lookups_if_empty,
+        seed_worker_categories_if_missing,
+    )
+
+    cur = conn.cursor()
+    ensure_people_workspace_schema(cur)
+    try:
+        seed_org_hr_lookups_if_empty(cur, oid)
+    except Exception:
+        pass
+    try:
+        seed_worker_categories_if_missing(cur, oid)
+    except Exception:
+        pass
+    conn.commit()
+    invalidate_schema_cache()
+    _people_workspace_ensured_version_by_org[oid] = _PEOPLE_WORKSPACE_ENSURE_VERSION
 
 
 def _user_wants_push_notification(conn, u: dict) -> bool:
@@ -543,11 +591,24 @@ def write_audit(
             entity_type,
             str(entity_id) if entity_id is not None else None,
             action,
-            json.dumps(old) if old is not None else None,
-            json.dumps(new) if new is not None else None,
+            _audit_json_for_db(old),
+            _audit_json_for_db(new),
             remarks,
         ),
     )
+
+
+def _audit_json_for_db(obj):
+    """Serialize audit payload; never raise (NaN / odd types break MySQL JSON insert)."""
+    if obj is None:
+        return None
+    try:
+        return json.dumps(obj, default=str, ensure_ascii=False, allow_nan=False)
+    except Exception:
+        try:
+            return json.dumps({"_audit_unserializable": str(type(obj).__name__)}, ensure_ascii=False)
+        except Exception:
+            return '"<audit omitted>"'
 
 
 def get_or_create_payroll_cycle(conn, at: datetime, organization_id: int) -> int:
@@ -938,6 +999,8 @@ def me():
                 (g.ta_user["id"],),
             )
             perms = [r["perm_key"] for r in c.fetchall()]
+            extend_permissions_for_platform_operator(conn, int(g.ta_user["id"]), perms)
+            extend_permissions_for_tenant_admin(conn, int(g.ta_user["id"]), perms)
         else:
             c.execute(
                 """
@@ -983,6 +1046,8 @@ def ta_bootstrap():
                 (uid,),
             )
             perms = [r["perm_key"] for r in c.fetchall()]
+            extend_permissions_for_platform_operator(conn, uid, perms)
+            extend_permissions_for_tenant_admin(conn, uid, perms)
         else:
             c.execute(
                 """
@@ -1624,6 +1689,8 @@ def break_end():
 def users_list():
     conn = get_db()
     try:
+        if payroll_profiles_active(conn):
+            _ensure_people_workspace(conn)
         c = conn.cursor(dictionary=True)
         if payroll_profiles_active(conn):
             c.execute(
@@ -1637,7 +1704,8 @@ def users_list():
             )
             out = []
             for row in c.fetchall():
-                r = fetch_payroll_profile_row(conn, int(row["user_id"]))
+                uid = int(row["user_id"])
+                r = fetch_payroll_profile_row(conn, uid)
                 if not r:
                     continue
                 c2 = conn.cursor(dictionary=True)
@@ -1647,11 +1715,31 @@ def users_list():
                     FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                     WHERE ur.user_id = %s
                     """,
-                    (row["user_id"],),
+                    (uid,),
                 )
                 rc = c2.fetchone() or {}
                 r["role_codes"] = rc.get("role_codes")
+                try:
+                    c2.execute(
+                        """
+                        SELECT uec.employment_category_id, uec.effective_from, uec.effective_to,
+                               ec.code AS category_code, ec.name AS category_name
+                        FROM user_employment_categories uec
+                        JOIN employment_categories ec ON ec.id = uec.employment_category_id
+                        WHERE uec.user_id = %s
+                        ORDER BY uec.effective_from DESC, uec.employment_category_id DESC
+                        """,
+                        (uid,),
+                    )
+                    r["employment_assignments"] = c2.fetchall() or []
+                except mysql.connector.Error:
+                    r["employment_assignments"] = []
+                try:
+                    r["hr_form_lanes"] = infer_user_form_lanes(conn, uid)
+                except Exception:
+                    r["hr_form_lanes"] = ["employee_w2"]
                 r.pop("password_hash", None)
+                mask_tax_id_for_api_response(r)
                 out.append(r)
             return jsonify([json_safe(r) for r in out])
         c.execute(
@@ -1675,6 +1763,8 @@ def users_list():
 def users_get(user_id):
     conn = get_db()
     try:
+        if payroll_profiles_active(conn):
+            _ensure_people_workspace(conn)
         c = conn.cursor(dictionary=True)
         if payroll_profiles_active(conn):
             u = fetch_payroll_profile_row(conn, user_id)
@@ -1683,6 +1773,7 @@ def users_get(user_id):
             if int(u.get("organization_id") or 1) != _tenant_id():
                 return jsonify({"error": "Not found"}), 404
             u.pop("password_hash", None)
+            mask_tax_id_for_api_response(u)
             pid = u.get("rehire_parent_user_id")
             if pid:
                 c.execute(
@@ -1772,6 +1863,10 @@ def users_get(user_id):
             u["entity_tags"] = c.fetchall()
         else:
             u["entity_tags"] = []
+        try:
+            u["hr_form_lanes"] = infer_user_form_lanes(conn, user_id)
+        except Exception:
+            u["hr_form_lanes"] = ["employee_w2"]
         return jsonify(json_safe(u))
     finally:
         conn.close()
@@ -1842,6 +1937,28 @@ def users_create():
                     ph,
                 ),
             )
+            from backend.hr_workspace_schema import WORKSPACE_PAYROLL_EXTRA_KEYS
+
+            chk = conn.cursor()
+            extra_fields = []
+            extra_vals = []
+            for key in WORKSPACE_PAYROLL_EXTRA_KEYS:
+                if key not in data:
+                    continue
+                if not table_has_column(chk, "payroll_profiles", key):
+                    continue
+                v = data[key]
+                if key == "laundry_experience":
+                    if v is None:
+                        continue
+                    v = 1 if v else 0
+                extra_fields.append(f"{key}=%s")
+                extra_vals.append(v)
+            if extra_fields:
+                c2.execute(
+                    f"UPDATE payroll_profiles SET {', '.join(extra_fields)} WHERE user_id=%s",
+                    (*extra_vals, wid),
+                )
             if data.get("role_id"):
                 c2.execute("DELETE FROM user_roles WHERE user_id=%s", (wid,))
                 c2.execute(
@@ -1935,9 +2052,32 @@ def users_update(user_id):
                 ("active", "active"),
                 ("prior_employee_id", "prior_employee_id"),
             ]
+            chk = conn.cursor()
+            from backend.hr_workspace_schema import WORKSPACE_PAYROLL_EXTRA_KEYS
+
+            for key in WORKSPACE_PAYROLL_EXTRA_KEYS:
+                if key not in data:
+                    continue
+                if not table_has_column(chk, "payroll_profiles", key):
+                    continue
+                v = data[key]
+                if key == "laundry_experience":
+                    if v is None:
+                        continue
+                    v = 1 if v else 0
+                fields.append(f"{key}=%s")
+                vals.append(v)
             for json_k, col in mapping:
                 if json_k in data:
-                    v = data[json_k]
+                    if col == "itin_ssn":
+                        v = data.get(json_k)
+                        if v in (None, ""):
+                            continue
+                        v = re.sub(r"\D", "", str(v))[:9]
+                        if len(v) != 9:
+                            return jsonify({"error": "SSN/ITIN must be 9 digits"}), 400
+                    else:
+                        v = data[json_k]
                     if col in ("rehired", "active"):
                         v = 1 if v else 0
                     fields.append(f"{col}=%s")
@@ -2266,6 +2406,61 @@ def org_hr_employer_settings():
         conn.close()
 
 
+@ta_bp.route("/org/tax-form-year-settings", methods=["GET", "PUT"])
+@require_auth
+def org_tax_form_year_settings():
+    """W-4 Step 3 credit amounts by tax year (maintainable per tenant)."""
+    from decimal import Decimal
+
+    from backend.tax_form_year_settings import (
+        ensure_tax_form_year_settings_table,
+        fetch_w4_year_settings,
+        upsert_w4_year_settings,
+    )
+
+    conn = get_db()
+    try:
+        oid = _tenant_id()
+        cur = conn.cursor()
+        ensure_tax_form_year_settings_table(cur)
+        if request.method == "GET":
+            if not (
+                user_has_perm(conn, g.ta_user["id"], "users.view")
+                or user_has_perm(conn, g.ta_user["id"], "users.edit")
+            ):
+                return jsonify({"error": "Forbidden"}), 403
+            try:
+                tax_year = int(request.args.get("tax_year") or date.today().year)
+            except (TypeError, ValueError):
+                tax_year = date.today().year
+            row = fetch_w4_year_settings(conn, oid, tax_year)
+            safe = {}
+            for k, v in row.items():
+                if isinstance(v, Decimal):
+                    safe[k] = float(v)
+                elif hasattr(v, "isoformat"):
+                    safe[k] = v.isoformat()
+                else:
+                    safe[k] = v
+            return jsonify({"settings": safe, "tax_year": tax_year})
+        if not user_has_perm(conn, g.ta_user["id"], "ta.settings"):
+            return jsonify({"error": "Forbidden"}), 403
+        data = request.get_json(silent=True) or {}
+        row = upsert_w4_year_settings(conn, oid, data)
+        conn.commit()
+        safe = {}
+        for k, v in row.items():
+            if isinstance(v, Decimal):
+                safe[k] = float(v)
+            elif hasattr(v, "isoformat"):
+                safe[k] = v.isoformat()
+            else:
+                safe[k] = v
+        return jsonify({"settings": safe})
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/users/<int:user_id>/hr-profile", methods=["GET", "PUT"])
 @require_auth
 def user_hr_profile(user_id):
@@ -2287,22 +2482,47 @@ def user_hr_profile(user_id):
         cur = conn.cursor()
         ensure_hr_extended_profiles_table(cur)
         if request.method == "GET":
-            if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+            # Editors need HR JSON (work_json.w4, i9, etc.) even when they lack users.view.
+            if not (
+                user_has_perm(conn, g.ta_user["id"], "users.view")
+                or user_has_perm(conn, g.ta_user["id"], "users.edit")
+            ):
                 return jsonify({"error": "Forbidden"}), 403
             return jsonify(get_merged_hr_profile(conn, user_id, u))
         if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
             return jsonify({"error": "Forbidden"}), 403
-        body = request.json or {}
+        try:
+            body = request.get_json(force=True)
+            if body is None:
+                body = {}
+        except Exception:
+            return jsonify({"error": "Invalid JSON body"}), 400
+        if not isinstance(body, dict):
+            return jsonify({"error": "JSON body must be an object"}), 400
+        if "date_of_birth" in body and body.get("date_of_birth") not in (None, ""):
+            dob_s = str(body.get("date_of_birth")).strip()[:10]
+            if len(dob_s) == 10 and dob_s >= date.today().isoformat():
+                return jsonify({"error": "date_of_birth must be before today"}), 400
         oid = int(u.get("organization_id") or _tenant_id())
+        from backend.w4_step3_compute import patch_work_json_w4_compliance
+
+        if isinstance(body.get("work_json"), dict):
+            body = dict(body)
+            body["work_json"] = patch_work_json_w4_compliance(
+                conn, oid, body["work_json"], int(g.ta_user["id"])
+            )
         hr_out = upsert_hr_extended_profile(conn, user_id, oid, body)
-        write_audit(
-            conn,
-            g.ta_user["id"],
-            "hr_extended_profiles",
-            user_id,
-            "update",
-            new=body,
-        )
+        try:
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "hr_extended_profiles",
+                user_id,
+                "update",
+                new=body,
+            )
+        except Exception:
+            current_app.logger.exception("audit log failed for hr_extended_profiles update")
         conn.commit()
         u2 = fetch_payroll_profile_row(conn, user_id)
         merged = get_merged_hr_profile(conn, user_id, u2 or u)
@@ -2326,7 +2546,10 @@ def user_hr_forms_inventory(user_id):
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "HR forms require unified payroll"}), 503
-        if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "users.view")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
             return jsonify({"error": "Forbidden"}), 403
         u = fetch_payroll_profile_row(conn, user_id)
         if not u:
@@ -2338,10 +2561,119 @@ def user_hr_forms_inventory(user_id):
         conn.close()
 
 
+@ta_bp.route("/hr-forms/org-summary", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "ta.settings", "users.edit")
+def hr_forms_org_summary():
+    """One row per payroll profile: lanes + form count (Documents & Evidence center)."""
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify([])
+        _ensure_people_workspace(conn)
+        c = conn.cursor()
+        c.execute(
+            """
+            SELECT pp.user_id FROM payroll_profiles pp
+            JOIN users u ON u.id = pp.user_id
+            WHERE u.organization_id=%s
+            ORDER BY pp.last_name, pp.first_name
+            """,
+            (_tenant_id(),),
+        )
+        out = []
+        for row in c.fetchall():
+            uid = int(row[0])
+            if not _ta_user_can_access_payroll_subject(conn, uid):
+                continue
+            inv = build_hr_forms_inventory(conn, uid)
+            prow = fetch_payroll_profile_row(conn, uid)
+            nm = f"{(prow or {}).get('first_name') or ''} {(prow or {}).get('last_name') or ''}".strip()
+            out.append(
+                {
+                    "user_id": uid,
+                    "employee_id": (prow or {}).get("employee_id"),
+                    "name": nm,
+                    "email": (prow or {}).get("email"),
+                    "lanes_detected": inv.get("lanes_detected") or [],
+                    "forms_count": len(inv.get("forms") or []),
+                }
+            )
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/documents/org-records", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "ta.settings", "users.edit")
+def documents_org_records():
+    """
+    Flat list of employee_document_records for the tenant (Documents & Evidence center).
+    """
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"items": [], "reminder_days_before": 14})
+        ensure_document_compliance_tables(conn.cursor())
+        oid = _tenant_id()
+        pol = get_document_compliance_policy(conn, oid)
+        raw = list_organization_document_records(conn, oid)
+        out = []
+        for r in raw:
+            uid = int(r.get("user_id") or 0)
+            if uid and not _ta_user_can_access_payroll_subject(conn, uid):
+                continue
+            out.append(r)
+        return jsonify(
+            {
+                "items": json_safe(out),
+                "reminder_days_before": int(pol.get("reminder_days_before") or 14),
+            }
+        )
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/documents/org-records/export-zip", methods=["POST"])
+@require_auth
+@require_any_perm("users.view", "ta.settings", "users.edit")
+def documents_org_records_export_zip():
+    """Download a ZIP of http(s) files linked from selected document records (file_uri + evidence_uri)."""
+    body = request.get_json(silent=True) or {}
+    ids = body.get("record_ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "record_ids (non-empty list) is required"}), 400
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR documents require unified payroll"}), 503
+        ensure_document_compliance_tables(conn.cursor())
+        oid = _tenant_id()
+        rows = fetch_organization_document_records_by_ids(conn, oid, ids)
+        allowed: list[dict] = []
+        for r in rows:
+            uid = int(r.get("user_id") or 0)
+            if uid and _ta_user_can_access_payroll_subject(conn, uid):
+                allowed.append(r)
+        if not allowed:
+            return jsonify({"error": "No matching records for export"}), 404
+        blob = build_document_records_export_zip(allowed)
+        stamp = datetime.utcnow().strftime("%Y%m%d-%H%M")
+        return send_file(
+            BytesIO(blob),
+            mimetype="application/zip",
+            as_attachment=True,
+            download_name=f"document-evidence-{oid}-{stamp}.zip",
+        )
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/users/<int:user_id>/hr-forms/<form_id>", methods=["POST"])
 @require_auth
 def user_hr_form_deliver(user_id, form_id):
-    """Download one form: PDF prefill where supported (I-9 English), else official/internal file as-is."""
+    """Download one form: AcroForm prefill for I-9, W-4, W-9 (en/es); else serve official/internal file as-is."""
     fid = _hr_form_safe_id(form_id)
     if not fid:
         return jsonify({"error": "Invalid form"}), 400
@@ -2371,6 +2703,43 @@ def user_hr_form_deliver(user_id, form_id):
         lane = fdef.get("lane")
         if lane and lane not in allowed_lanes:
             return jsonify({"error": "This form is not part of this worker's assigned packet."}), 404
+
+        oid_hub = int(u.get("organization_id") or _tenant_id())
+
+        def _record_hub_download(download_name: str) -> None:
+            try:
+                upsert_generated_hr_form_record(
+                    conn,
+                    oid_hub,
+                    int(user_id),
+                    int(g.ta_user["id"]),
+                    document_code=fid,
+                    document_name=str(fdef.get("title") or fid),
+                    form_locale=locale,
+                    download_filename=download_name,
+                )
+            except Exception:
+                current_app.logger.exception("upsert generated document record failed")
+
+        if fdef.get("fill_strategy") in ("docx_template", "reference_pdf"):
+            from backend.hr_internal_reference_pdf import internal_form_reference_pdf_bytes
+
+            org_hub = fetch_hr_org_settings(conn, oid_hub)
+            pdf = internal_form_reference_pdf_bytes(
+                str(fdef.get("title") or fid),
+                form_id=fid,
+                locale=locale,
+                worker=u,
+                org_name=str(org_hub.get("employer_name") or ""),
+                org_address=str(org_hub.get("employer_address") or ""),
+            )
+            fn = f"{fid}_{locale}_reference.pdf"
+            _record_hub_download(fn)
+            return Response(
+                pdf,
+                mimetype="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+            )
 
         path = resolve_form_asset_path(fid, locale)
         if not path:
@@ -2407,6 +2776,36 @@ def user_hr_form_deliver(user_id, form_id):
                 return jsonify({"error": str(e)}), 503
             ln = (u.get("last_name") or "user").replace("/", "-")[:40]
             fn = f"i9-prefill-{locale}-{ln}-{user_id}.pdf"
+            _record_hub_download(fn)
+            return Response(
+                pdf,
+                mimetype="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
+            )
+
+        if fid in ("irs_w4", "irs_w9", "ny_it2104") and locale in ("en", "es"):
+            cur = conn.cursor()
+            ensure_hr_extended_profiles_table(cur)
+            c = conn.cursor(dictionary=True)
+            c.execute("SELECT * FROM hr_extended_profiles WHERE user_id=%s LIMIT 1", (user_id,))
+            hr = c.fetchone()
+            work = work_json_from_hr_row(hr)
+            try:
+                if fid == "irs_w4":
+                    oid_w4 = int(u.get("organization_id") or _tenant_id())
+                    org_w4 = fetch_hr_org_settings(conn, oid_w4)
+                    vals = build_irs_w4_field_values(
+                        u, hr, work, locale, template_path=path, org=org_w4
+                    )
+                elif fid == "irs_w9":
+                    vals = build_irs_w9_field_values(u, work, locale, hr_row=hr)
+                else:
+                    vals = build_ny_it2104_field_values(u, work, hr_row=hr)
+                pdf = fill_acroform_pdf_bytes(path, vals)
+            except Exception as e:
+                return jsonify({"error": f"PDF fill failed: {e}"}), 503
+            fn = f"{fid}-prefill-{locale}-{user_id}.pdf"
+            _record_hub_download(fn)
             return Response(
                 pdf,
                 mimetype="application/pdf",
@@ -2418,6 +2817,7 @@ def user_hr_form_deliver(user_id, form_id):
             if ext == ".docx"
             else "application/pdf"
         )
+        _record_hub_download(dl)
         return send_file(path, mimetype=mime, as_attachment=True, download_name=dl)
     finally:
         conn.close()
@@ -2485,6 +2885,20 @@ def user_hr_form_i9(user_id):
             return jsonify({"error": str(e)}), 503
         ln = (u.get("last_name") or "user").replace("/", "-")[:40]
         fn = f"i9-prefill-{locale}-{ln}-{user_id}.pdf"
+        try:
+            i9def = get_form_def("uscis_i9") or {}
+            upsert_generated_hr_form_record(
+                conn,
+                int(u.get("organization_id") or _tenant_id()),
+                int(user_id),
+                int(g.ta_user["id"]),
+                document_code="uscis_i9",
+                document_name=str(i9def.get("title") or "uscis_i9"),
+                form_locale=locale,
+                download_filename=fn,
+            )
+        except Exception:
+            current_app.logger.exception("upsert generated document record failed")
         return Response(
             pdf,
             mimetype="application/pdf",
@@ -2721,11 +3135,114 @@ def geofences_delete(gid):
 # --- Employment categories & rates ---
 
 
+@ta_bp.route("/org-hr-lookups", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "ta.settings", "users.edit")
+def org_hr_lookups_list():
+    conn = get_db()
+    try:
+        _ensure_people_workspace(conn)
+        cat = (request.args.get("category") or "").strip()
+        c = conn.cursor(dictionary=True)
+        if cat:
+            c.execute(
+                """
+                SELECT * FROM org_hr_lookup
+                WHERE organization_id=%s AND category=%s AND active=1
+                ORDER BY sort_order, label
+                """,
+                (_tenant_id(), cat),
+            )
+        else:
+            c.execute(
+                """
+                SELECT * FROM org_hr_lookup
+                WHERE organization_id=%s AND active=1
+                ORDER BY category, sort_order, label
+                """,
+                (_tenant_id(),),
+            )
+        return jsonify([json_safe(r) for r in c.fetchall()])
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/org-hr-lookups", methods=["POST"])
+@require_auth
+@require_perm("users.edit")
+def org_hr_lookups_create():
+    data = request.json or {}
+    cat = (data.get("category") or "").strip()
+    code = (data.get("code") or "").strip()
+    label = (data.get("label") or "").strip()
+    if not cat or not code or not label:
+        return jsonify({"error": "category, code, and label required"}), 400
+    sort_order = int(data.get("sort_order") or 0)
+    conn = get_db()
+    try:
+        _ensure_people_workspace(conn)
+        c = conn.cursor()
+        c.execute(
+            """
+            INSERT INTO org_hr_lookup (organization_id, category, code, label, sort_order, active)
+            VALUES (%s,%s,%s,%s,%s,1)
+            """,
+            (_tenant_id(), cat, code, label, sort_order),
+        )
+        lid = c.lastrowid
+        conn.commit()
+        return jsonify({"id": lid}), 201
+    except mysql.connector.Error as e:
+        if getattr(e, "errno", None) == 1062:
+            return jsonify({"error": "Duplicate code for this category"}), 400
+        raise
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/org-hr-lookups/<int:lid>", methods=["PUT"])
+@require_auth
+@require_perm("users.edit")
+def org_hr_lookups_update(lid):
+    data = request.json or {}
+    conn = get_db()
+    try:
+        c = conn.cursor(dictionary=True)
+        c.execute(
+            "SELECT id FROM org_hr_lookup WHERE id=%s AND organization_id=%s",
+            (lid, _tenant_id()),
+        )
+        if not c.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        fields = []
+        vals = []
+        for col in ("label", "sort_order", "active"):
+            if col in data:
+                v = data[col]
+                if col == "active":
+                    v = 1 if v else 0
+                fields.append(f"{col}=%s")
+                vals.append(v)
+        if not fields:
+            return jsonify({"error": "No fields"}), 400
+        vals.extend([lid, _tenant_id()])
+        c2 = conn.cursor()
+        c2.execute(
+            f"UPDATE org_hr_lookup SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
+            vals,
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/employment-categories", methods=["GET"])
 @require_auth
 def employment_categories_list():
     conn = get_db()
     try:
+        _ensure_people_workspace(conn)
         c = conn.cursor(dictionary=True)
         c.execute(
             "SELECT * FROM employment_categories WHERE organization_id=%s ORDER BY name",

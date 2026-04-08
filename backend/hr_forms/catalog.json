@@ -3,13 +3,14 @@
   "description": "Official + internal HR/payroll forms. Place files under HR_FORM_ASSETS_DIR (default: backend/hr_form_assets/forms) using the names in files.{locale}. Env HR_FORM_ASSETS_DIR overrides the directory only.",
   "lanes": {
     "employee_w2": "W-2 / statutory employee packet (I-9, W-4, NY IT-2104, NY LS-51/54-57, etc.)",
-    "contractor_1099": "1099 contractor packet (W-9, internal C-forms, VeeWash docx)",
+    "contractor_1099": "1099 contractor packet (W-9, internal C-forms, VeeWash reference PDFs)",
     "temp_worker": "Temporary worker — reserved (no forms in catalog yet)"
   },
   "forms": [
     {
       "id": "uscis_i9",
       "title": "USCIS Form I-9 (Employment Eligibility Verification)",
+      "evidence_required": true,
       "lane": "employee_w2",
       "kind": "official_pdf",
       "fill_strategy": "acroform",
@@ -29,6 +30,7 @@
     {
       "id": "irs_w4",
       "title": "IRS Form W-4 (Employee withholding)",
+      "tax_year": "2026",
       "lane": "employee_w2",
       "kind": "official_pdf",
       "fill_strategy": "acroform",
@@ -103,6 +105,7 @@
     {
       "id": "irs_w9",
       "title": "IRS Form W-9 (Request for Taxpayer ID)",
+      "tax_year": "2026",
       "lane": "contractor_1099",
       "kind": "official_pdf",
       "fill_strategy": "acroform",
@@ -113,73 +116,65 @@
       "id": "internal_veewash_employee_info",
       "title": "VeeWash Employee Information Form (bilingual)",
       "lane": "employee_w2",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["bilingual"],
-      "files": { "bilingual": "internal_veewash_employee_information_bilingual.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["bilingual"]
     },
     {
       "id": "internal_c101",
       "title": "C-101 Contractor Intake",
       "lane": "contractor_1099",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["en", "es"],
-      "files": { "en": "internal_c101_intake_en.docx", "es": "internal_c101_intake_es.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["en", "es"]
     },
     {
       "id": "internal_c102",
       "title": "C-102 Independent Contractor Service Agreement",
       "lane": "contractor_1099",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["en", "es"],
-      "files": { "en": "internal_c102_agreement_en.docx", "es": "internal_c102_agreement_es.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["en", "es"]
     },
     {
       "id": "internal_c103",
       "title": "C-103 Weekly Contractor Payment Statement",
       "lane": "contractor_1099",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["en", "es"],
-      "files": { "en": "internal_c103_payment_statement_en.docx", "es": "internal_c103_payment_statement_es.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["en", "es"]
     },
     {
       "id": "internal_c104",
       "title": "C-104 Non-Compliance Notice",
       "lane": "contractor_1099",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["en", "es"],
-      "files": { "en": "internal_c104_noncompliance_en.docx", "es": "internal_c104_noncompliance_es.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["en", "es"]
     },
     {
       "id": "internal_c105",
       "title": "C-105 Cure / Corrective Action Notice",
       "lane": "contractor_1099",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["en", "es"],
-      "files": { "en": "internal_c105_cure_en.docx", "es": "internal_c105_cure_es.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["en", "es"]
     },
     {
       "id": "internal_c106",
       "title": "C-106 Contract Suspension / Cancellation Notice",
       "lane": "contractor_1099",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["en", "es"],
-      "files": { "en": "internal_c106_suspension_en.docx", "es": "internal_c106_suspension_es.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["en", "es"]
     },
     {
       "id": "internal_veewash_workforce_pack",
       "title": "VeeWash Bilingual Workforce Forms Pack",
       "lane": "employee_w2",
-      "kind": "internal_docx",
-      "fill_strategy": "docx_template",
-      "locales": ["bilingual"],
-      "files": { "bilingual": "internal_veewash_workforce_forms_pack.docx" }
+      "kind": "internal_reference_pdf",
+      "fill_strategy": "reference_pdf",
+      "locales": ["bilingual"]
     }
   ]
 }

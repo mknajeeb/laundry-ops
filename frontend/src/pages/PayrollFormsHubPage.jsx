@@ -7,9 +7,14 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
-  Divider,
+  CircularProgress,
+  IconButton,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Tab,
   Tabs,
@@ -29,7 +34,22 @@ import {
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import { getFormChecklistLines } from "../constants/hrFormChecklists";
 import I9DetailsForm, { emptyI9, emptyPreparer, emptyWork, emptyEmergency } from "../components/hr/I9DetailsForm";
+import { hrModule } from "../components/hr/hrModuleStyles";
+import { mergePayrollMailingIntoWork, parseHrWorkJson } from "../utils/mailingMerge";
+
+function isInternalReferenceForm(form) {
+  if (!form) return false;
+  const k = String(form.kind || "");
+  const fs = String(form.fill_strategy || "");
+  return (
+    k === "internal_reference_pdf" ||
+    k === "internal_docx" ||
+    fs === "reference_pdf" ||
+    fs === "docx_template"
+  );
+}
 
 function localeLabel(code, t) {
   if (code === "en") return t("hub.localeEn");
@@ -43,6 +63,53 @@ function laneTabLabel(lane, t) {
   if (lane === "contractor_1099") return t("hub.tab1099");
   if (lane === "temp_worker") return t("hub.tabTemp");
   return lane;
+}
+
+function formPrefillMissing(formId, payroll, work, i9, t) {
+  const miss = [];
+  const fn = String((payroll && payroll.first_name) || "").trim();
+  const ln = String((payroll && payroll.last_name) || "").trim();
+  const addr1 = String((work && (work.address_line1 || work.mailing_address_line1)) || "").trim();
+  const city = String((work && work.city) || "").trim();
+  const st = String((work && work.state) || "").trim();
+  const zip = String((work && (work.zip || work.zip_code)) || "").trim();
+  const hasTin = String((payroll && payroll.itin_ssn_last4) || "").trim() || String((i9 && i9.ssn) || "").trim();
+  if (!fn) miss.push(t("profile.firstName"));
+  if (!ln) miss.push(t("profile.lastName"));
+  if (formId === "uscis_i9") {
+    const legalFirst = String((i9 && i9.legal_first_name) || "").trim() || fn;
+    const legalLast = String((i9 && i9.legal_last_name) || "").trim() || ln;
+    if (!legalFirst) miss.push(t("hr.i9LegalFirst"));
+    if (!legalLast) miss.push(t("hr.i9LegalLast"));
+    if (!String((i9 && i9.citizenship) || "").trim()) miss.push(t("hr.i9Citizenship"));
+    if (!addr1) miss.push(t("hr.addressLine1"));
+    if (!city) miss.push(t("hr.city"));
+    if (!st) miss.push(t("hr.state"));
+    if (!zip) miss.push(t("hr.zip"));
+    return miss;
+  }
+  if (formId === "irs_w4" || formId === "irs_w9" || formId === "ny_it2104") {
+    if (!addr1) miss.push(t("hr.addressLine1"));
+    if (!city) miss.push(t("hr.city"));
+    if (!st) miss.push(t("hr.state"));
+    if (!zip) miss.push(t("hr.zip"));
+    if (!hasTin) miss.push(t("hub.prefillTin"));
+  }
+  return miss;
+}
+
+function documentMetadataObject(row) {
+  const m = row?.metadata_json;
+  if (m && typeof m === "object" && !Array.isArray(m)) return { ...m };
+  if (typeof m === "string") {
+    try {
+      const o = JSON.parse(m);
+      if (o && typeof o === "object" && !Array.isArray(o)) return { ...o };
+    } catch {
+      /* ignore */
+    }
+  }
+  return {};
 }
 
 async function saveBlobResponse(res, fallbackName) {
@@ -72,19 +139,28 @@ async function saveBlobResponse(res, fallbackName) {
   return { ok: true };
 }
 
-export default function PayrollFormsHubPage({ user: sessionUser }) {
-  const { userId } = useParams();
+/** variant: `page` (full HR route) or `embedded` (User profile section 5). */
+export function PayrollFormsHubCore({
+  userId: uidProp,
+  user: sessionUser,
+  variant = "page",
+  /** Embedded in employee workspace: I-9 data is edited on Compliance Data tab — omit i9 from hub saves to avoid wiping it. */
+  suppressI9Capture = false,
+  /** Increment after profile workspace Save so embedded hub reloads HR JSON. */
+  profileSaveTick = 0,
+}) {
+  const params = useParams();
+  const uid = Number(uidProp ?? params.userId);
   const navigate = useNavigate();
   const { t } = useI18n();
   const { hasPerm } = useAuth();
-  const uid = Number(userId);
   const canEdit = hasPerm("users.edit");
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [inventoryLoadError, setInventoryLoadError] = useState("");
-  const [inventory, setInventory] = useState({ lanes_detected: [], forms: [] });
+  const [inventory, setInventory] = useState({ lanes_detected: [], forms: [], tax_year_filter: null });
   const [tabLane, setTabLane] = useState("employee_w2");
   const [payroll, setPayroll] = useState(null);
   const [preferredName, setPreferredName] = useState("");
@@ -97,6 +173,9 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
   const [docRows, setDocRows] = useState([]);
   const [docLoading, setDocLoading] = useState(false);
   const [dlBusy, setDlBusy] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [formBulkPick, setFormBulkPick] = useState({});
+  const [docPrintPick, setDocPrintPick] = useState({});
   const [docDraft, setDocDraft] = useState({
     document_code: "I9",
     document_name: "Form I-9",
@@ -113,24 +192,76 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
     return n || `User #${uid}`;
   }, [payroll, uid]);
 
-  const buildHrPayload = () => ({
-    preferred_name: preferredName || null,
-    date_of_birth: dob || null,
-    alternate_phone: altPhone || null,
-    notes: notes || null,
-    work_json: { ...work, i9 },
-    emergency_contacts_json: emergency.filter(
-      (r) => r.name || r.phone || r.relationship || r.alt_phone,
-    ),
-  });
+  const workEffective = useMemo(() => mergePayrollMailingIntoWork(work, payroll), [work, payroll]);
+
+  /** Lines merged into W-4 / W-9 (server reads full SSN from DB when present). */
+  const pdfPrefillSummary = useMemo(() => {
+    const p = payroll || {};
+    const w = workEffective || {};
+    const rows = [];
+    const nm = [p.first_name, p.last_name].filter(Boolean).join(" ").trim();
+    if (nm) rows.push({ k: "name", label: t("hub.prefillLegalName"), value: nm });
+    const pem = String(p.email || "").trim();
+    if (pem) rows.push({ k: "email", label: t("people.colEmail"), value: pem });
+    const pmob = String(p.mobile || "").trim();
+    if (pmob) rows.push({ k: "mobile", label: t("hub.prefillMobile"), value: pmob });
+    const mi = (w.middle_initial || "").trim();
+    if (mi) rows.push({ k: "mi", label: t("hr.middleInitial"), value: mi });
+    const a1 = (w.address_line1 || w.mailing_address_line1 || "").trim();
+    const addrFallback = !a1 ? String(p.address || "").trim() : "";
+    if (a1) rows.push({ k: "a1", label: t("hr.addressLine1"), value: a1 });
+    else if (addrFallback) rows.push({ k: "a1", label: t("hub.prefillPayrollAddress"), value: addrFallback });
+    const z = String(w.zip || w.zip_code || "").trim();
+    const tail = [w.city, [w.state, z].filter(Boolean).join(" ")].filter(Boolean).join(", ").trim();
+    if (tail) rows.push({ k: "csz", label: t("hub.prefillCityStateZip"), value: tail });
+    const last4 = (p.itin_ssn_last4 || "").trim();
+    if (last4)
+      rows.push({
+        k: "tin",
+        label: t("hub.prefillTin"),
+        value: `***-**-${last4}`,
+        hint: t("hub.prefillTinServerHint"),
+      });
+    else
+      rows.push({
+        k: "tin",
+        label: t("hub.prefillTin"),
+        value: t("hub.prefillTinEmpty"),
+        hint: t("hub.prefillTinEmptyHint"),
+      });
+    if (tabLane !== "contractor_1099") {
+      return rows.filter((r) => r.k !== "tin");
+    }
+    return rows;
+  }, [payroll, workEffective, t, tabLane]);
+
+  const buildHrPayload = () => {
+    const wj = { ...work };
+    // Profile-only tax elections: do not POST from the hub (hub does not edit them).
+    // Sending them back can overwrite stored W-4/NY data when local state is stale or empty.
+    delete wj.w4;
+    delete wj.ny_it2104;
+    if (!suppressI9Capture) wj.i9 = i9;
+    return {
+      preferred_name: preferredName || null,
+      date_of_birth: dob || null,
+      alternate_phone: altPhone || null,
+      notes: notes || null,
+      work_json: wj,
+      emergency_contacts_json: emergency.filter(
+        (r) => r.name || r.phone || r.relationship || r.alt_phone,
+      ),
+    };
+  };
 
   const load = useCallback(async () => {
     if (!uid) return;
     setLoading(true);
     setError("");
     setInventoryLoadError("");
+    setDocLoading(true);
     try {
-      const [hrRes, invRes] = await Promise.all([
+      const [hrRes, invRes, docRes] = await Promise.all([
         getTaUserHrProfile(uid),
         getTaUserHrFormsInventory(uid).catch((e) => {
           const d = e?.response?.data;
@@ -143,11 +274,13 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
           setInventoryLoadError(msg.trim());
           return { data: { lanes_detected: [], forms: [] } };
         }),
+        getTaUserDocuments(uid).catch(() => ({ data: { items: [] } })),
       ]);
       const data = hrRes.data || {};
       if (data.error) {
         setError(data.error);
         setPayroll(null);
+        setDocRows([]);
         return;
       }
       setPayroll(data.payroll || {});
@@ -158,10 +291,22 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
       else setDob("");
       setAltPhone(h.alternate_phone || "");
       setNotes(h.notes || "");
-      const rawW = h.work_json && typeof h.work_json === "object" ? h.work_json : {};
+      const rawW = parseHrWorkJson(h.work_json);
       const { i9: loadedI9, ...workRest } = rawW;
-      setWork({ ...emptyWork(), ...workRest });
-      setI9({ ...emptyI9(), ...(loadedI9 && typeof loadedI9 === "object" ? loadedI9 : {}) });
+      let workMerged = { ...emptyWork(), ...workRest };
+      const pay = data.payroll || {};
+      const payAddr = String(pay.address || "").trim();
+      if (
+        !(String(workMerged.address_line1 || workMerged.mailing_address_line1 || "").trim()) &&
+        payAddr
+      ) {
+        const firstLine = payAddr.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0] || payAddr;
+        workMerged = { ...workMerged, address_line1: firstLine, mailing_address_line1: firstLine };
+      }
+      setWork(workMerged);
+      const baseI9 = { ...emptyI9(), ...(loadedI9 && typeof loadedI9 === "object" ? loadedI9 : {}) };
+      const payEmail = String(pay.email || "").trim();
+      setI9({ ...baseI9, employee_email: baseI9.employee_email || payEmail });
       const em = Array.isArray(h.emergency_contacts_json) ? h.emergency_contacts_json : emptyEmergency();
       const pad = [...em];
       while (pad.length < 2) pad.push({ name: "", relationship: "", phone: "", alt_phone: "" });
@@ -170,27 +315,31 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
       setInventory({
         lanes_detected: Array.isArray(inv.lanes_detected) ? inv.lanes_detected : [],
         forms: Array.isArray(inv.forms) ? inv.forms : [],
+        tax_year_filter: inv.tax_year_filter || null,
       });
-      setDocLoading(true);
-      try {
-        const dr = await getTaUserDocuments(uid);
-        setDocRows(Array.isArray(dr?.data?.items) ? dr.data.items : []);
-      } catch {
-        setDocRows([]);
-      } finally {
-        setDocLoading(false);
+      const picks = {};
+      for (const f of Array.isArray(inv.forms) ? inv.forms : []) {
+        picks[f.id] = true;
       }
+      setFormBulkPick(picks);
+      setDocRows(Array.isArray(docRes?.data?.items) ? docRes.data.items : []);
     } catch (e) {
       const msg = e?.response?.data?.error || e?.message || "Failed to load";
       setError(typeof msg === "string" ? msg : "Failed to load");
     } finally {
       setLoading(false);
+      setDocLoading(false);
     }
   }, [uid]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (profileSaveTick > 0) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when profile workspace saved
+  }, [profileSaveTick]);
 
   useEffect(() => {
     if (!payroll?.user_id) return;
@@ -221,6 +370,12 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
     [inventory.forms, tabLane],
   );
 
+  const formMissingMap = useMemo(() => {
+    const out = {};
+    for (const f of inventory.forms || []) out[f.id] = formPrefillMissing(f.id, payroll, workEffective, i9, t);
+    return out;
+  }, [inventory.forms, payroll, workEffective, i9, t]);
+
   const saveProfile = async () => {
     if (!canEdit) return;
     setSaving(true);
@@ -242,22 +397,14 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
     setDlBusy(key);
     setError("");
     try {
-      try {
-        await putTaUserHrProfile(uid, buildHrPayload());
-      } catch (saveErr) {
-        const msg =
-          saveErr?.response?.data?.error ||
-          saveErr?.message ||
-          t("hub.saveBeforeDownloadFailed");
-        setError(typeof msg === "string" ? msg : t("hub.saveBeforeDownloadFailed"));
-        return;
-      }
       const res = await postTaUserHrForm(uid, formId, { locale });
       const ct = (res.headers?.["content-type"] || "").toLowerCase();
       const ext =
-        form.kind === "internal_docx" || ct.includes("wordprocessingml") || ct.includes("msword")
-          ? ".docx"
-          : ".pdf";
+        isInternalReferenceForm(form) || ct.includes("pdf")
+          ? ".pdf"
+          : ct.includes("wordprocessingml") || ct.includes("msword")
+            ? ".docx"
+            : ".pdf";
       const name = `${formId}_${locale}${ext}`;
       const out = await saveBlobResponse(res, name);
       if (!out.ok) setError(out.error || "Download failed");
@@ -277,6 +424,66 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
       setError(typeof msg === "string" ? msg : "Download failed");
     } finally {
       setDlBusy("");
+    }
+  };
+
+  const downloadAllPrefillsForTab = async () => {
+    if (!canEdit) return;
+    const targets = [];
+    for (const form of tabForms) {
+      if (!formBulkPick[form.id]) continue;
+      const missing = formMissingMap[form.id] || [];
+      if (missing.length) continue;
+      for (const L of form.locales || []) {
+        if (L.available && L.prefill_supported) targets.push({ form, locale: L.locale });
+      }
+    }
+    if (!targets.length) {
+      setError(t("hub.bulkPrefillNone"));
+      return;
+    }
+    setBulkBusy(true);
+    setError("");
+    try {
+      for (const { form, locale } of targets) {
+        const key = `${form.id}-${locale}`;
+        setDlBusy(key);
+        try {
+          const res = await postTaUserHrForm(uid, form.id, { locale });
+          const ct = (res.headers?.["content-type"] || "").toLowerCase();
+          const ext =
+            isInternalReferenceForm(form) || ct.includes("pdf")
+              ? ".pdf"
+              : ct.includes("wordprocessingml") || ct.includes("msword")
+                ? ".docx"
+                : ".pdf";
+          const name = `${form.id}_${locale}${ext}`;
+          const out = await saveBlobResponse(res, name);
+          if (!out.ok) {
+            setError(out.error || "Download failed");
+            return;
+          }
+        } catch (e) {
+          let msg = "Download failed";
+          if (e?.response?.data instanceof Blob) {
+            try {
+              const text = await e.response.data.text();
+              const j = JSON.parse(text);
+              msg = typeof j.error === "string" ? j.error : msg;
+            } catch {
+              msg = e?.response?.statusText || msg;
+            }
+          } else {
+            msg = e?.response?.data?.error || e?.message || msg;
+          }
+          setError(typeof msg === "string" ? msg : "Download failed");
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    } finally {
+      setDlBusy("");
+      setBulkBusy(false);
     }
   };
 
@@ -328,30 +535,113 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
     );
   }
 
+  const openUrlsForPrint = () => {
+    const urls = [];
+    for (const r of docRows) {
+      if (!docPrintPick[r.id]) continue;
+      const meta = documentMetadataObject(r);
+      if (r.file_uri) urls.push(r.file_uri);
+      if (meta.evidence_uri) urls.push(meta.evidence_uri);
+    }
+    if (!urls.length) {
+      setError(t("hub.printPickNone"));
+      return;
+    }
+    for (const u of urls) {
+      try {
+        window.open(u, "_blank", "noopener,noreferrer");
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+
+  const togglePickAllDocs = (on) => {
+    const next = {};
+    for (const r of docRows) next[r.id] = on;
+    setDocPrintPick(next);
+  };
+
   const showW2 = (inventory.lanes_detected || []).includes("employee_w2");
   const show1099 = (inventory.lanes_detected || []).includes("contractor_1099");
   const showTemp = (inventory.lanes_detected || []).includes("temp_worker");
 
+  const embedded = variant === "embedded";
+  const taxY = inventory.tax_year_filter;
+
   return (
-    <Box sx={{ p: { xs: 1, md: 2 }, maxWidth: 960, mx: "auto", pb: 10 }}>
-      <Stack direction="row" alignItems="flex-start" spacing={1} sx={{ mb: 2 }}>
-        <Button startIcon={<ArrowBack />} size="small" onClick={() => navigate("/employees")}>
-          {t("common.back")}
-        </Button>
-        <Box sx={{ flex: 1 }}>
-          <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: "-0.02em" }}>
-            {t("hub.title")}
+    <Box
+      sx={{
+        ...(embedded
+          ? {}
+          : {
+              ...hrModule.pageCanvas,
+            }),
+        p: { xs: 1, md: embedded ? 0 : 0 },
+        maxWidth: embedded ? "none" : 1180,
+        mx: "auto",
+        pb: embedded ? 2 : 6,
+        pt: embedded ? 0 : { xs: 2, md: 3 },
+        px: embedded ? { xs: 1, md: 0 } : { xs: 1.5, sm: 2, md: 3 },
+      }}
+    >
+      {!embedded ? (
+        <Paper elevation={0} sx={{ ...hrModule.hero, mb: 2.75 }}>
+          <Stack direction="row" alignItems="flex-start" spacing={2}>
+            <IconButton
+              aria-label={t("common.back")}
+              onClick={() => navigate("/employees")}
+              size="small"
+              sx={{
+                color: "inherit",
+                bgcolor: "rgba(255,255,255,0.18)",
+                "&:hover": { bgcolor: "rgba(255,255,255,0.28)" },
+              }}
+            >
+              <ArrowBack fontSize="small" />
+            </IconButton>
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography sx={hrModule.heroOverline}>{t("hub.pageKicker")}</Typography>
+              <Typography variant="h4" component="h1" sx={hrModule.heroTitle}>
+                {title}
+              </Typography>
+              <Typography variant="body2" sx={hrModule.heroSubtitle}>
+                {t("hub.subtitle")}
+              </Typography>
+              <Stack direction="row" flexWrap="wrap" gap={0.75} sx={{ mt: 1.5 }} alignItems="center">
+                {(inventory.lanes_detected || []).map((ln) => (
+                  <Chip key={ln} size="small" label={laneTabLabel(ln, t)} sx={hrModule.statChip} />
+                ))}
+                {taxY ? (
+                  <Chip
+                    size="small"
+                    label={t("hub.taxYearFilter").replace("{year}", taxY)}
+                    sx={{ ...hrModule.statChip, opacity: 0.95 }}
+                  />
+                ) : null}
+              </Stack>
+            </Box>
+          </Stack>
+        </Paper>
+      ) : (
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="overline" sx={{ ...hrModule.heroOverline, color: "primary.main" }}>
+            {t("hub.pageKicker")}
+          </Typography>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, letterSpacing: "-0.02em" }}>
+            {title}
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {title} — {t("hub.subtitle")}
+            {t("hub.title")}
           </Typography>
-          <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
+          <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }} alignItems="center">
             {(inventory.lanes_detected || []).map((ln) => (
               <Chip key={ln} size="small" label={laneTabLabel(ln, t)} color="primary" variant="outlined" />
             ))}
+            {taxY ? <Chip size="small" variant="outlined" label={t("hub.taxYearFilter").replace("{year}", taxY)} /> : null}
           </Stack>
         </Box>
-      </Stack>
+      )}
 
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
@@ -370,120 +660,121 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
       ) : null}
 
       {loading ? (
-        <Typography color="text.secondary">{t("common.loading")}</Typography>
+        <Box
+          sx={{
+            py: 10,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 2,
+          }}
+        >
+          <CircularProgress size={40} thickness={4} />
+          <Typography variant="body2" color="text.secondary">
+            {t("common.loading")}
+          </Typography>
+        </Box>
       ) : (
-        <Stack spacing={2.5}>
-          <Paper
-            elevation={0}
-            sx={{
-              p: 2.5,
-              borderRadius: 3,
-              border: "1px solid",
-              borderColor: "divider",
-              background: (theme) =>
-                `linear-gradient(145deg, ${theme.palette.primary.main}10 0%, ${theme.palette.background.paper} 40%)`,
-            }}
-          >
-            <Typography variant="overline" color="primary" sx={{ fontWeight: 700 }}>
-              {t("hub.coreTitle")}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              {t("hub.coreHint")}
-            </Typography>
-            <Stack spacing={2}>
-              <Alert severity="info" sx={{ borderRadius: 2 }}>
-                <Typography variant="body2" sx={{ mb: 1 }}>
-                  {t("hub.employerFromOrg")}
-                </Typography>
-                <Button size="small" variant="outlined" onClick={() => navigate("/organization")}>
-                  {t("hub.openOrganization")}
+        <Stack direction="column" spacing={2.5} alignItems="flex-start">
+          {embedded ? (
+            <Alert severity="info" sx={{ width: "100%", borderRadius: 2 }}>
+              {t("hub.embeddedContextHint")}
+            </Alert>
+          ) : (
+            <Alert
+              severity="info"
+              sx={{ width: "100%", borderRadius: 2 }}
+              action={
+                <Button color="inherit" size="small" onClick={() => navigate(`/employees/${uid}`)}>
+                  {t("hub.openPeopleProfile")}
                 </Button>
-              </Alert>
-              <Divider />
-              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                {t("hr.workerBlock")}
+              }
+            >
+              {t("hub.pageSingleSourceHint")}
+            </Alert>
+          )}
+
+          <Stack spacing={2.5} sx={{ flex: 1, minWidth: 0, width: "100%" }}>
+            <Paper elevation={0} sx={(theme) => ({ ...hrModule.filterBar(theme), p: 2.25 })}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5, letterSpacing: "-0.02em" }}>
+                {t("hub.prefillPreviewTitle")}
               </Typography>
-              <Stack spacing={1.5}>
-                <TextField label={t("hr.preferredName")} value={preferredName} onChange={(e) => setPreferredName(e.target.value)} fullWidth size="small" disabled={!canEdit} />
-                <TextField
-                  label={t("hr.dateOfBirth")}
-                  type="date"
-                  value={dob}
-                  onChange={(e) => setDob(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                />
-                <TextField label={t("hr.altPhone")} value={altPhone} onChange={(e) => setAltPhone(e.target.value)} fullWidth size="small" disabled={!canEdit} />
-                <Typography variant="caption" color="text.secondary">
-                  {t("hr.mailingHint")}
-                </Typography>
-                <TextField
-                  label={t("hr.addressLine1")}
-                  value={work.address_line1 || work.mailing_address_line1}
-                  onChange={(e) => setWork((w) => ({ ...w, address_line1: e.target.value, mailing_address_line1: e.target.value }))}
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                />
-                <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                  <TextField label={t("hr.city")} value={work.city} onChange={(e) => setWork((w) => ({ ...w, city: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                  <TextField label={t("hr.state")} value={work.state} onChange={(e) => setWork((w) => ({ ...w, state: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                  <TextField label={t("hr.zip")} value={work.zip} onChange={(e) => setWork((w) => ({ ...w, zip: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                </Stack>
-                <TextField
-                  label={t("hr.middleInitial")}
-                  value={work.middle_initial}
-                  onChange={(e) => setWork((w) => ({ ...w, middle_initial: e.target.value.slice(0, 1) }))}
-                  fullWidth
-                  size="small"
-                  disabled={!canEdit}
-                  inputProps={{ maxLength: 1 }}
-                />
-                <TextField label={t("hr.jobTitle")} value={work.job_title} onChange={(e) => setWork((w) => ({ ...w, job_title: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                <TextField label={t("hr.department")} value={work.department} onChange={(e) => setWork((w) => ({ ...w, department: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                <TextField label={t("hr.supervisor")} value={work.supervisor_name} onChange={(e) => setWork((w) => ({ ...w, supervisor_name: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                <TextField label={t("hr.primaryLocation")} value={work.primary_work_location} onChange={(e) => setWork((w) => ({ ...w, primary_work_location: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
-                <TextField label={t("hr.language")} value={work.language_preference} onChange={(e) => setWork((w) => ({ ...w, language_preference: e.target.value }))} fullWidth size="small" disabled={!canEdit} />
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                {t("hub.prefillPreviewBlurb")}
+              </Typography>
+              <Stack spacing={1}>
+                {pdfPrefillSummary.map((row) => (
+                  <Box key={row.k}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                      {row.label}
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontWeight: row.k === "name" ? 600 : 500 }}>
+                      {row.value}
+                    </Typography>
+                    {row.hint ? (
+                      <Typography variant="caption" color="text.secondary">
+                        {row.hint}
+                      </Typography>
+                    ) : null}
+                  </Box>
+                ))}
               </Stack>
-              <Divider />
-              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                {t("hr.emergency")}
-              </Typography>
-              {emergency.map((row, i) => (
-                <Stack key={i} spacing={1} sx={{ mb: 1 }}>
-                  <Typography variant="caption" color="text.secondary">
-                    {i === 0 ? t("hr.contact1") : t("hr.contact2")}
-                  </Typography>
-                  <TextField label={t("hr.ecName")} value={row.name} onChange={(e) => setEmergency((rows) => rows.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)))} fullWidth size="small" disabled={!canEdit} />
-                  <TextField label={t("hr.ecRelation")} value={row.relationship} onChange={(e) => setEmergency((rows) => rows.map((r, j) => (j === i ? { ...r, relationship: e.target.value } : r)))} fullWidth size="small" disabled={!canEdit} />
-                  <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-                    <TextField label={t("hr.ecPhone")} value={row.phone} onChange={(e) => setEmergency((rows) => rows.map((r, j) => (j === i ? { ...r, phone: e.target.value } : r)))} fullWidth size="small" disabled={!canEdit} />
-                    <TextField label={t("hr.ecAltPhone")} value={row.alt_phone} onChange={(e) => setEmergency((rows) => rows.map((r, j) => (j === i ? { ...r, alt_phone: e.target.value } : r)))} fullWidth size="small" disabled={!canEdit} />
-                  </Stack>
-                </Stack>
-              ))}
-              <Divider />
-              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                {t("hr.notes")}
-              </Typography>
-              <TextField value={notes} onChange={(e) => setNotes(e.target.value)} fullWidth multiline minRows={2} size="small" disabled={!canEdit} />
-            </Stack>
-          </Paper>
+            </Paper>
 
           {showW2 || show1099 || showTemp ? (
-            <Paper variant="outlined" sx={{ borderRadius: 3, overflow: "hidden" }}>
+            <Paper
+              elevation={0}
+              sx={(theme) => ({
+                ...hrModule.tableCard(theme),
+                overflow: "hidden",
+              })}
+            >
               <Tabs
                 value={tabLane}
                 onChange={(_, v) => setTabLane(v)}
                 variant="fullWidth"
-                sx={{ borderBottom: 1, borderColor: "divider", px: 1 }}
+                sx={(theme) => hrModule.tabs(theme)}
               >
                 {showW2 ? <Tab value="employee_w2" label={t("hub.tabW2")} /> : null}
                 {show1099 ? <Tab value="contractor_1099" label={t("hub.tab1099")} /> : null}
                 {showTemp ? <Tab value="temp_worker" label={t("hub.tabTemp")} /> : null}
               </Tabs>
+              <Box sx={{ px: 2, pt: 1.5, pb: 0 }}>
+                <Stack direction="row" flexWrap="wrap" gap={1} alignItems="center">
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={!canEdit || bulkBusy || !!dlBusy || tabLane === "temp_worker"}
+                    onClick={downloadAllPrefillsForTab}
+                  >
+                    {bulkBusy ? t("hub.bulkPrefillBusy") : t("hub.bulkPrefillSelected")}
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      const next = {};
+                      for (const f of tabForms) next[f.id] = true;
+                      setFormBulkPick((p) => ({ ...p, ...next }));
+                    }}
+                  >
+                    {t("hub.selectAllFormsTab")}
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      const next = {};
+                      for (const f of tabForms) next[f.id] = false;
+                      setFormBulkPick((p) => ({ ...p, ...next }));
+                    }}
+                  >
+                    {t("hub.clearFormPicks")}
+                  </Button>
+                </Stack>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                  {t("hub.bulkPrefillHint")}
+                </Typography>
+              </Box>
               <Box sx={{ p: 2 }}>
                 {tabLane === "temp_worker" ? (
                   <Typography color="text.secondary">{t("hub.tempNoForms")}</Typography>
@@ -491,26 +782,88 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
                   <Typography color="text.secondary">{t("hub.noFormsInTab")}</Typography>
                 ) : (
                   tabForms.map((form) => (
-                    <Accordion key={form.id} defaultExpanded={form.id === "uscis_i9"} disableGutters sx={{ "&:before": { display: "none" }, mb: 1, borderRadius: "12px !important", border: "1px solid", borderColor: "divider" }}>
-                      <AccordionSummary expandIcon={<ExpandMore />}>
+                    <Accordion
+                      key={form.id}
+                      defaultExpanded={form.id === "uscis_i9"}
+                      disableGutters
+                      sx={{
+                        "&:before": { display: "none" },
+                        mb: 1,
+                        borderRadius: "14px !important",
+                        border: "1px solid",
+                        borderColor: "divider",
+                        overflow: "hidden",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                      }}
+                    >
+                      <AccordionSummary
+                        expandIcon={<ExpandMore />}
+                        sx={{
+                          bgcolor: (theme) => (theme.palette.mode === "dark" ? "rgba(255,255,255,0.04)" : "grey.50"),
+                          minHeight: 52,
+                          "&.Mui-expanded": { minHeight: 52 },
+                        }}
+                      >
                         <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap sx={{ pr: 1 }}>
+                          {form.fill_strategy === "acroform" ? (
+                            <Checkbox
+                              size="small"
+                              checked={!!formBulkPick[form.id]}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                setFormBulkPick((p) => ({ ...p, [form.id]: e.target.checked }));
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          ) : (
+                            <Box sx={{ width: 28 }} />
+                          )}
                           <Typography sx={{ fontWeight: 600 }}>{form.title}</Typography>
-                          <Chip size="small" label={form.kind === "internal_docx" ? t("hub.internal") : t("hub.official")} variant="outlined" />
+                          <Chip
+                            size="small"
+                            label={isInternalReferenceForm(form) ? t("hub.internalPdfRef") : t("hub.official")}
+                            variant="outlined"
+                          />
                           {form.fill_strategy === "print_only" ? <Chip size="small" label={t("hub.printOnly")} /> : null}
+                          {form.tax_year ? <Chip size="small" label={`TY ${form.tax_year}`} variant="outlined" /> : null}
                         </Stack>
                       </AccordionSummary>
                       <AccordionDetails>
                         <Stack spacing={2}>
-                          {form.id === "uscis_i9" ? (
-                            <>
-                              <Typography variant="body2" color="text.secondary">
-                                {t("hr.i9BlockHelp")}
+                          {getFormChecklistLines(form.id, t, form.title).length ? (
+                            <Box>
+                              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+                                {t("hub.checklistTitle")}
                               </Typography>
-                              <I9DetailsForm i9={i9} setI9={setI9} canEdit={canEdit} emptyPreparer={emptyPreparer} />
-                            </>
+                              <Box component="ul" sx={{ pl: 2.2, m: 0, mt: 0.5 }}>
+                                {getFormChecklistLines(form.id, t, form.title).map((line) => (
+                                  <Typography key={line} component="li" variant="body2" color="text.secondary">
+                                    {line}
+                                  </Typography>
+                                ))}
+                              </Box>
+                            </Box>
+                          ) : null}
+                          {form.id === "uscis_i9" ? (
+                            suppressI9Capture ? (
+                              <Alert severity="info">{t("hub.i9CaptureInComplianceTab")}</Alert>
+                            ) : (
+                              <>
+                                <Typography variant="body2" color="text.secondary">
+                                  {t("hr.i9BlockHelp")}
+                                </Typography>
+                                <I9DetailsForm
+                                  i9={i9}
+                                  setI9={setI9}
+                                  canEdit={canEdit}
+                                  emptyPreparer={emptyPreparer}
+                                  omitIdentityFields={embedded}
+                                />
+                              </>
+                            )
                           ) : (
                             <Typography variant="body2" color="text.secondary">
-                              {form.kind === "internal_docx" ? t("hub.internalBlurb") : t("hub.officialBlurb")}
+                              {isInternalReferenceForm(form) ? t("hub.internalBlurb") : t("hub.officialBlurb")}
                             </Typography>
                           )}
                           <Stack direction="row" flexWrap="wrap" gap={1}>
@@ -520,7 +873,11 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
                                   key={L.locale}
                                   variant={L.prefill_supported ? "contained" : "outlined"}
                                   size="small"
-                                  disabled={!canEdit || !!dlBusy}
+                                  disabled={
+                                    !canEdit ||
+                                    !!dlBusy ||
+                                    (L.prefill_supported && (formMissingMap[form.id] || []).length > 0)
+                                  }
                                   onClick={() => downloadForm(form, L.locale)}
                                 >
                                   {L.prefill_supported
@@ -530,6 +887,11 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
                               ) : null,
                             )}
                           </Stack>
+                          {(formMissingMap[form.id] || []).length ? (
+                            <Typography variant="caption" color="warning.main">
+                              {t("hub.prefillBlockedMissing")} {(formMissingMap[form.id] || []).join(", ")}
+                            </Typography>
+                          ) : null}
                         </Stack>
                       </AccordionDetails>
                     </Accordion>
@@ -546,6 +908,20 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
               {t("hr.docsBlurb")}
             </Typography>
+            <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 1 }} alignItems="center">
+              <Button size="small" variant="outlined" onClick={() => togglePickAllDocs(true)} disabled={!docRows.length}>
+                {t("hub.docSelectAll")}
+              </Button>
+              <Button size="small" onClick={() => togglePickAllDocs(false)} disabled={!docRows.length}>
+                {t("hub.docSelectNone")}
+              </Button>
+              <Button size="small" color="secondary" variant="contained" onClick={openUrlsForPrint} disabled={!docRows.length}>
+                {t("hub.openSelectedForPrint")}
+              </Button>
+              <Typography variant="caption" color="text.secondary">
+                {t("hub.openSelectedForPrintHint")}
+              </Typography>
+            </Stack>
             <Stack direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 1 }}>
               <TextField
                 label={t("hr.docsCode")}
@@ -572,8 +948,30 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
             ) : (
               <Stack spacing={1}>
                 {docRows.map((r) => (
-                  <Paper key={r.id} variant="outlined" sx={{ p: 1, borderRadius: 2 }}>
-                    <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+                  <Paper
+                    key={r.id}
+                    variant="outlined"
+                    sx={(theme) => ({
+                      p: 1,
+                      borderRadius: 2,
+                      borderWidth: r.file_uri || documentMetadataObject(r).evidence_uri ? 2 : 1,
+                      borderColor:
+                        r.file_uri || documentMetadataObject(r).evidence_uri ? theme.palette.success.main : undefined,
+                      bgcolor:
+                        r.file_uri || documentMetadataObject(r).evidence_uri
+                          ? theme.palette.mode === "dark"
+                            ? "rgba(46,125,50,0.12)"
+                            : "rgba(46,125,50,0.08)"
+                          : undefined,
+                    })}
+                  >
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "flex-start" }}>
+                      <Checkbox
+                        size="small"
+                        checked={!!docPrintPick[r.id]}
+                        onChange={(e) => setDocPrintPick((p) => ({ ...p, [r.id]: e.target.checked }))}
+                        sx={{ pt: 0.5 }}
+                      />
                       <TextField
                         label={t("hr.docsStatus")}
                         value={r.status || ""}
@@ -610,6 +1008,21 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
                         fullWidth
                         disabled={!canEdit}
                       />
+                      <TextField
+                        label={t("hub.evidenceUri")}
+                        value={documentMetadataObject(r).evidence_uri || ""}
+                        onChange={(e) =>
+                          patchDocument(r.id, {
+                            metadata_json: {
+                              ...documentMetadataObject(r),
+                              evidence_uri: e.target.value.trim() || null,
+                            },
+                          })
+                        }
+                        size="small"
+                        fullWidth
+                        disabled={!canEdit}
+                      />
                       <Button color="error" onClick={() => removeDocument(r.id)} disabled={!canEdit}>
                         {t("common.delete")}
                       </Button>
@@ -621,13 +1034,31 @@ export default function PayrollFormsHubPage({ user: sessionUser }) {
             )}
           </Paper>
 
-          <Paper sx={{ p: 2, position: "sticky", bottom: 16, borderRadius: 3, boxShadow: 3 }}>
-            <Button variant="contained" size="large" fullWidth disabled={!canEdit || saving} onClick={saveProfile}>
-              {saving ? t("common.saving") : t("hub.saveSharedProfile")}
-            </Button>
-          </Paper>
+          {embedded ? (
+            <Paper
+              sx={(theme) => ({
+                p: 2,
+                position: "sticky",
+                bottom: 16,
+                borderRadius: 3,
+                border: `1px solid ${theme.palette.divider}`,
+                boxShadow: theme.palette.mode === "dark" ? "0 -4px 24px rgba(0,0,0,0.35)" : "0 -4px 24px rgba(15,23,42,0.08)",
+                bgcolor: theme.palette.background.paper,
+              })}
+            >
+              <Button variant="contained" size="large" fullWidth disabled={!canEdit || saving} onClick={saveProfile}>
+                {saving ? t("common.saving") : t("hub.saveFormDataForDownloads")}
+              </Button>
+            </Paper>
+          ) : null}
+          </Stack>
         </Stack>
       )}
     </Box>
   );
+}
+
+export default function PayrollFormsHubPage({ user }) {
+  const { userId } = useParams();
+  return <PayrollFormsHubCore user={user} userId={Number(userId)} variant="page" suppressI9Capture />;
 }

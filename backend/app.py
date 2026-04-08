@@ -934,7 +934,8 @@ def require_admin(cursor):
     if not me:
         return None, jsonify({"error": "Unauthorized"}), 401
     roles = fetch_user_roles(cursor, me["user_id"])
-    if "ADMIN" not in roles:
+    rs = {str(r).upper() for r in roles}
+    if "ADMIN" not in rs and not (rs & {"SUPER_ADMIN", "PLATFORM_ADMIN"}):
         return None, jsonify({"error": "Forbidden"}), 403
     me["roles"] = roles
     return me, None, None
@@ -1627,6 +1628,13 @@ def get_orders():
         cap = orders_status_capabilities(cursor)
         has_batch_date = table_has_column(cursor, "orders_staging", "batch_date")
         has_created_at = table_has_column(cursor, "orders_staging", "created_at")
+        has_rush_type_col = table_has_column(cursor, "orders_staging", "rush_type")
+        _date_rush_sql = "CASE WHEN o.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
+        rush_type_sql = (
+            f"COALESCE(NULLIF(TRIM(o.rush_type), ''), {_date_rush_sql})"
+            if has_rush_type_col
+            else _date_rush_sql
+        )
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
         active_where = where_active_at_washpro_sql(cap)
@@ -1692,10 +1700,7 @@ def get_orders():
                 {"o.batch_date" if has_batch_date else "NULL"} AS batch_date,
                 {"o.ticket_id" if cap["has_ticket_id"] else "NULL"} AS ticket_id,
 
-                CASE
-                    WHEN o.date_clean < CURDATE() THEN 'RUSH'
-                    ELSE 'NON-RUSH'
-                END AS rush_type,
+                {rush_type_sql} AS rush_type,
 
                 {logistics_sql},
                 {processing_sql},
@@ -2019,6 +2024,7 @@ def get_checkout_log():
                     ORDER BY checkout_time DESC, id DESC
                 """, (checkout_date,))
         else:
+            # Default: recent checkouts (not server-today only — that hid undo after midnight / TZ skew).
             if has_staging_org:
                 cursor.execute(f"""
                     SELECT
@@ -2032,8 +2038,9 @@ def get_checkout_log():
                         c.employee
                     FROM checkout_log c
                     {join_sql}
-                    WHERE DATE(c.checkout_time) = CURDATE()
+                    WHERE c.checkout_time >= DATE_SUB(NOW(), INTERVAL 14 DAY)
                     ORDER BY c.checkout_time DESC, c.id DESC
+                    LIMIT 200
                 """, (tenant_oid,))
             else:
                 cursor.execute("""
@@ -2047,8 +2054,9 @@ def get_checkout_log():
                         checkout_time,
                         employee
                     FROM checkout_log
-                    WHERE DATE(checkout_time) = CURDATE()
+                    WHERE checkout_time >= DATE_SUB(NOW(), INTERVAL 14 DAY)
                     ORDER BY checkout_time DESC, id DESC
+                    LIMIT 200
                 """)
 
         return jsonify(cursor.fetchall())
@@ -2971,6 +2979,13 @@ def dashboard():
             dash_where = f"({active_where}) AND organization_id = %s"
             dash_params.append(tenant_oid)
 
+        has_dash_rush = table_has_column(cursor, "orders_staging", "rush_type")
+        _dash_eff = (
+            "COALESCE(NULLIF(TRIM(rush_type), ''), CASE WHEN date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END)"
+            if has_dash_rush
+            else "CASE WHEN date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
+        )
+
         cursor.execute(f"""
 
             SELECT
@@ -2982,11 +2997,11 @@ def dashboard():
                 SUM(service_type = 'WF') AS wf_total,
                 SUM(service_type = 'HD') AS hd_total,
 
-                SUM(service_type = 'WF' AND date_clean < CURDATE()) AS wf_rush,
-                SUM(service_type = 'WF' AND date_clean >= CURDATE()) AS wf_non_rush,
+                SUM(service_type = 'WF' AND ({_dash_eff}) = 'RUSH') AS wf_rush,
+                SUM(service_type = 'WF' AND ({_dash_eff}) <> 'RUSH') AS wf_non_rush,
 
-                SUM(service_type = 'HD' AND date_clean < CURDATE()) AS hd_rush,
-                SUM(service_type = 'HD' AND date_clean >= CURDATE()) AS hd_non_rush
+                SUM(service_type = 'HD' AND ({_dash_eff}) = 'RUSH') AS hd_rush,
+                SUM(service_type = 'HD' AND ({_dash_eff}) <> 'RUSH') AS hd_non_rush
 
             FROM orders_staging
             WHERE {dash_where}

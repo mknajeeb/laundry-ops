@@ -71,8 +71,84 @@ def payroll_profiles_active(conn) -> bool:
         return _payroll_profiles_active_cache
 
 
+_PLATFORM_OPERATOR_IMPLICIT_PERM_KEYS = frozenset(
+    {
+        "users.view",
+        "users.edit",
+        "users.add",
+        "ta.settings",
+        "ta.monitor",
+        "permissions.view",
+        "permissions.update",
+    }
+)
+
+# Tenant ADMIN (Washpro role code) can open /employees and the full profile, but some DBs never
+# attached users.* permissions to that role. Treat ADMIN like the UI route guard does.
+_TENANT_ADMIN_IMPLICIT_USER_PERM_KEYS = frozenset({"users.view", "users.edit", "users.add"})
+
+
+def washpro_user_is_platform_operator(conn, washpro_user_id: int) -> bool:
+    """True if Washpro user has SUPER_ADMIN or PLATFORM_ADMIN (any org)."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT 1 FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s AND UPPER(TRIM(r.code)) IN ('SUPER_ADMIN', 'PLATFORM_ADMIN')
+        LIMIT 1
+        """,
+        (int(washpro_user_id),),
+    )
+    return c.fetchone() is not None
+
+
+def washpro_user_has_tenant_admin_role(conn, washpro_user_id: int) -> bool:
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT 1 FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s AND UPPER(TRIM(r.code)) = 'ADMIN'
+        LIMIT 1
+        """,
+        (int(washpro_user_id),),
+    )
+    return c.fetchone() is not None
+
+
+def extend_permissions_for_platform_operator(conn, washpro_user_id: int, perms: list) -> None:
+    """In-place: grant standard HR/tenant perms to platform operators for bootstrap UI."""
+    if not washpro_user_is_platform_operator(conn, washpro_user_id):
+        return
+    have = set(perms)
+    for pk in sorted(_PLATFORM_OPERATOR_IMPLICIT_PERM_KEYS):
+        if pk not in have:
+            perms.append(pk)
+            have.add(pk)
+
+
+def extend_permissions_for_tenant_admin(conn, washpro_user_id: int, perms: list) -> None:
+    """In-place: mirror /employees ADMIN gate so bootstrap lists users.* when role row lacks role_permissions rows."""
+    if not washpro_user_has_tenant_admin_role(conn, washpro_user_id):
+        return
+    have = set(perms)
+    for pk in sorted(_TENANT_ADMIN_IMPLICIT_USER_PERM_KEYS):
+        if pk not in have:
+            perms.append(pk)
+            have.add(pk)
+
+
 def user_has_perm_washpro(conn, washpro_user_id: int, perm_key: str) -> bool:
     """Permission from Washpro roles only (no per-user TA role_id)."""
+    if perm_key in _PLATFORM_OPERATOR_IMPLICIT_PERM_KEYS and washpro_user_is_platform_operator(
+        conn, washpro_user_id
+    ):
+        return True
+    if perm_key in _TENANT_ADMIN_IMPLICIT_USER_PERM_KEYS and washpro_user_has_tenant_admin_role(
+        conn, washpro_user_id
+    ):
+        return True
     c = conn.cursor()
     c.execute(
         """
@@ -191,6 +267,8 @@ def fetch_payroll_profile_row(conn, washpro_user_id: int):
     role = _primary_role_for_user(conn, washpro_user_id)
     out = {k: row[k] for k in row}
     out["id"] = washpro_user_id
+    out["washpro_user_id"] = washpro_user_id
+    out["user_id"] = washpro_user_id
     if role:
         out["role_id"] = role["id"]
         out["role_code"] = role["code"]
