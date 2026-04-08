@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import threading
@@ -14,6 +15,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from backend.db import get_db
 from backend.payroll_identity import (
     eastern_now_naive,
+    ensure_payroll_profile_for_user_id,
     ensure_payroll_profile_for_washpro,
     extend_permissions_for_platform_operator,
     extend_permissions_for_tenant_admin,
@@ -73,6 +75,20 @@ from backend.ta_helpers import (
 ta_bp = Blueprint("ta_api", __name__)
 
 
+def _coerce_lat_lng(lat, lng):
+    """Parse lat/lng from query/json (strings allowed). Returns (None, None) if invalid."""
+    if lat is None or lng is None:
+        return None, None
+    try:
+        la = float(lat)
+        lo = float(lng)
+    except (TypeError, ValueError):
+        return None, None
+    if not math.isfinite(la) or not math.isfinite(lo):
+        return None, None
+    return la, lo
+
+
 def _serializer():
     return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="laundry-ta-auth")
 
@@ -122,6 +138,7 @@ def _default_clock_ui_dict() -> dict:
         "clock_in_gate_strict": False,
         "dim_app_until_clocked_in": False,
         "sign_out_after_clock_out": False,
+        "clock_out_require_inside_geofence": True,
         "geofence_reminder_enabled": True,
         "geofence_reminder_hours": 1.5,
         "geofence_reminder_cooldown_hours": 6.0,
@@ -890,7 +907,17 @@ def require_perm(perm_key: str):
             conn = get_db()
             try:
                 if not user_has_perm(conn, g.ta_user["id"], perm_key):
-                    return jsonify({"error": "Forbidden"}), 403
+                    return jsonify(
+                        {
+                            "error": "Forbidden",
+                            "missing_permission": perm_key,
+                            "detail": (
+                                f'Missing permission "{perm_key}". '
+                                "An admin can grant it under People - Permissions for your Washpro role, "
+                                "or assign a role that includes time clock access."
+                            ),
+                        }
+                    ), 403
             finally:
                 conn.close()
             return f(*args, **kwargs)
@@ -912,7 +939,12 @@ def require_any_perm(*perm_keys: str):
                     user_has_perm(conn, g.ta_user["id"], k) for k in perm_keys
                 )
                 if not ok:
-                    return jsonify({"error": "Forbidden"}), 403
+                    return jsonify(
+                        {
+                            "error": "Forbidden",
+                            "detail": "You do not have any of the permissions required for this action.",
+                        }
+                    ), 403
             finally:
                 conn.close()
             return f(*args, **kwargs)
@@ -1213,6 +1245,7 @@ def maybe_clock_in_geofence_reminder(
 
 def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, lng):
     """Shared logic for GET /sessions/current and GET /bootstrap. Commits conn."""
+    lat, lng = _coerce_lat_lng(lat, lng)
     c = conn.cursor(dictionary=True)
     c.execute(
         """
@@ -1248,7 +1281,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             sess["elapsed_break_seconds"] = int(break_live)
             sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
             gfn = get_primary_geofence(conn, ta_user["id"])
-            if lat and lng and gfn:
+            if lat is not None and lng is not None and gfn:
                 dist = haversine_meters(
                     float(lat), float(lng), float(gfn["latitude"]), float(gfn["longitude"])
                 )
@@ -1286,9 +1319,12 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
                     poll_ts = datetime.fromisoformat(str(poll_ts).replace("Z", "+00:00"))
                 if poll_ts and getattr(poll_ts, "tzinfo", None):
                     poll_ts = poll_ts.replace(tzinfo=None)
+                baseline = poll_ts
+                if baseline is None and clock_in:
+                    baseline = clock_in
                 outside_col = int(sess.get("outside_geofence_seconds") or 0)
-                if poll_ts:
-                    dt = (poll_now - poll_ts).total_seconds()
+                if baseline is not None:
+                    dt = (poll_now - baseline).total_seconds()
                     dt = min(max(dt, 0.0), 180.0)
                     if inside is False:
                         outside_col += int(dt)
@@ -1305,7 +1341,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
                 sess["last_geofence_poll_at"] = poll_now
                 sess["last_geofence_inside"] = 1 if inside else 0
 
-    elif lat and lng:
+    elif lat is not None and lng is not None:
         gfn = get_primary_geofence(conn, ta_user["id"])
         inside = None
         if gfn:
@@ -1524,6 +1560,43 @@ def clock_out():
 
         if get_open_break(conn, sess["id"]):
             return jsonify({"error": "End break before clocking out"}), 400
+
+        ui = load_clock_payroll_ui(conn, _tenant_id())
+        clock_cfg = ui.get("clock") or {}
+        require_inside_co = as_bool(
+            clock_cfg.get("clock_out_require_inside_geofence"), True
+        )
+        if require_inside_co:
+            if lat is None or lng is None:
+                return jsonify(
+                    {
+                        "error": "latitude and longitude required",
+                        "detail": "Location is required to clock out so we can verify you are at work.",
+                    }
+                ), 400
+            gfn_co = get_primary_geofence(conn, g.ta_user["id"])
+            if not gfn_co:
+                return jsonify({"error": "No primary geofence assigned"}), 400
+            try:
+                lat_f = float(lat)
+                lng_f = float(lng)
+            except (TypeError, ValueError):
+                return jsonify({"error": "Invalid coordinates"}), 400
+            dist_co = haversine_meters(
+                lat_f,
+                lng_f,
+                float(gfn_co["latitude"]),
+                float(gfn_co["longitude"]),
+            )
+            if dist_co > float(gfn_co["radius_meters"]):
+                return jsonify(
+                    {
+                        "error": "Outside active geofence",
+                        "distance_meters": round(dist_co, 1),
+                        "radius_meters": float(gfn_co["radius_meters"]),
+                        "detail": "Move inside the work area to clock out, or ask an admin to adjust your geofence.",
+                    }
+                ), 400
 
         br = sum_break_seconds(conn, sess["id"])
         now = eastern_now_naive()
@@ -1768,6 +1841,8 @@ def users_get(user_id):
         c = conn.cursor(dictionary=True)
         if payroll_profiles_active(conn):
             u = fetch_payroll_profile_row(conn, user_id)
+            if not u and _ta_user_can_access_payroll_subject(conn, user_id):
+                u = ensure_payroll_profile_for_user_id(conn, user_id)
             if not u:
                 return jsonify({"error": "Not found"}), 404
             if int(u.get("organization_id") or 1) != _tenant_id():
@@ -2031,6 +2106,13 @@ def users_update(user_id):
         if payroll_profiles_active(conn):
             c.execute("SELECT * FROM payroll_profiles WHERE user_id=%s", (user_id,))
             old = c.fetchone()
+            if not old:
+                if not _user_belongs_to_tenant(conn, user_id):
+                    return jsonify({"error": "Not found"}), 404
+                if not ensure_payroll_profile_for_user_id(conn, user_id):
+                    return jsonify({"error": "Not found"}), 404
+                c.execute("SELECT * FROM payroll_profiles WHERE user_id=%s", (user_id,))
+                old = c.fetchone()
             if not old:
                 return jsonify({"error": "Not found"}), 404
             if not _user_belongs_to_tenant(conn, user_id):
@@ -2471,6 +2553,8 @@ def user_hr_profile(user_id):
                 {"error": "HR profile requires unified payroll (payroll_profiles). Run payroll_unify_to_users_v1.sql"}
             ), 503
         u = fetch_payroll_profile_row(conn, user_id)
+        if not u and _ta_user_can_access_payroll_subject(conn, user_id):
+            u = ensure_payroll_profile_for_user_id(conn, user_id)
         if not u:
             return jsonify(
                 {

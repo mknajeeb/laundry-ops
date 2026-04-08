@@ -25,6 +25,7 @@ export const DEFAULT_CLOCK_PAYROLL_UI = {
     clock_in_gate_strict: false,
     dim_app_until_clocked_in: false,
     sign_out_after_clock_out: false,
+    clock_out_require_inside_geofence: true,
     geofence_reminder_enabled: true,
     geofence_reminder_hours: 1.5,
     geofence_reminder_cooldown_hours: 6,
@@ -257,6 +258,20 @@ export default function ClockPayrollUiSettingsPanel() {
             />
           }
           label="After clock out, sign the user out of the app (return to login)"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={!!clockPayrollUi.clock.clock_out_require_inside_geofence}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, clock_out_require_inside_geofence: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="Require user to be inside the primary geofence to clock out (uses GPS from the device)"
         />
         <FormControlLabel
           control={

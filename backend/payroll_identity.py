@@ -87,6 +87,10 @@ _PLATFORM_OPERATOR_IMPLICIT_PERM_KEYS = frozenset(
 # attached users.* permissions to that role. Treat ADMIN like the UI route guard does.
 _TENANT_ADMIN_IMPLICIT_USER_PERM_KEYS = frozenset({"users.view", "users.edit", "users.add"})
 
+# Narrow Washpro roles used for front-desk checkout are expected to clock in; many tenants
+# never attach role_permissions rows for custom roles. Grant ta.clock when CHECKOUT is present.
+_CHECKOUT_STYLE_IMPLICIT_CLOCK_PERM_KEYS = frozenset({"ta.clock"})
+
 
 def washpro_user_is_platform_operator(conn, washpro_user_id: int) -> bool:
     """True if Washpro user has SUPER_ADMIN or PLATFORM_ADMIN (any org)."""
@@ -96,6 +100,20 @@ def washpro_user_is_platform_operator(conn, washpro_user_id: int) -> bool:
         SELECT 1 FROM user_roles ur
         JOIN roles r ON r.id = ur.role_id
         WHERE ur.user_id = %s AND UPPER(TRIM(r.code)) IN ('SUPER_ADMIN', 'PLATFORM_ADMIN')
+        LIMIT 1
+        """,
+        (int(washpro_user_id),),
+    )
+    return c.fetchone() is not None
+
+
+def washpro_user_has_checkout_role(conn, washpro_user_id: int) -> bool:
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT 1 FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE ur.user_id = %s AND UPPER(TRIM(r.code)) = 'CHECKOUT'
         LIMIT 1
         """,
         (int(washpro_user_id),),
@@ -146,6 +164,10 @@ def user_has_perm_washpro(conn, washpro_user_id: int, perm_key: str) -> bool:
     ):
         return True
     if perm_key in _TENANT_ADMIN_IMPLICIT_USER_PERM_KEYS and washpro_user_has_tenant_admin_role(
+        conn, washpro_user_id
+    ):
+        return True
+    if perm_key in _CHECKOUT_STYLE_IMPLICIT_CLOCK_PERM_KEYS and washpro_user_has_checkout_role(
         conn, washpro_user_id
     ):
         return True
@@ -319,6 +341,36 @@ def ensure_payroll_profile_for_washpro(conn, wp: dict):
     except Exception:
         conn.rollback()
     return fetch_payroll_profile_row(conn, uid)
+
+
+def ensure_payroll_profile_for_user_id(conn, washpro_user_id: int):
+    """
+    Ensure a payroll_profiles row exists for this Washpro users.id (unified payroll).
+    Used when a login was created or migrated without a profile row — GET/PUT user and HR would otherwise 404.
+    """
+    existing = fetch_payroll_profile_row(conn, int(washpro_user_id))
+    if existing:
+        return existing
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT id, username, display_name, active
+        FROM users WHERE id=%s LIMIT 1
+        """,
+        (int(washpro_user_id),),
+    )
+    row = c.fetchone()
+    if not row:
+        return None
+    return ensure_payroll_profile_for_washpro(
+        conn,
+        {
+            "user_id": row["id"],
+            "username": row.get("username"),
+            "display_name": row.get("display_name"),
+            "active": row.get("active", True),
+        },
+    )
 
 
 def payroll_week_bounds(conn, d: date, organization_id: int = 1):

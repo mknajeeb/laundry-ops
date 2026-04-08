@@ -48,6 +48,25 @@ const DEFAULT_CLOCK_UI = {
 
 const BANNER_FALLBACK_TEXT = "Company notice — check with your supervisor for updates.";
 
+/** Same haversine as backend.ta_helpers (meters). */
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function apiErrorMessage(error, fallback) {
+  const d = error?.response?.data;
+  if (d?.detail && String(d.detail).trim()) return String(d.detail).trim();
+  if (d?.error && String(d.error).trim()) return String(d.error).trim();
+  return fallback;
+}
+
 function normalizeClockUi(raw) {
   const d = { ...DEFAULT_CLOCK_UI, ...(raw && typeof raw === "object" ? raw : {}) };
   return {
@@ -78,9 +97,13 @@ function ClockPage({ user: washproUser }) {
   const [checkoutStep, setCheckoutStep] = useState("bags");
   const [laundryBags, setLaundryBags] = useState("");
   const [doneSummary, setDoneSummary] = useState(null);
+  const [geoTick, setGeoTick] = useState(0);
 
   const lastPosRef = useRef({ lat: null, lng: null });
   const sessionLoadAbortRef = useRef(null);
+
+  const session = sessionRes?.session;
+  const isClockedIn = !!session;
 
   const foldedByName = useMemo(() => {
     if (taUser?.first_name || taUser?.last_name) {
@@ -119,7 +142,7 @@ function ClockPage({ user: washproUser }) {
       setSessionRes(res.data || null);
     } catch (error) {
       console.error(error);
-      const err = error?.response?.data?.error || "Failed to load clock state.";
+      const err = apiErrorMessage(error, "Failed to load clock state.");
       if (!silent) setMessage({ type: "error", text: err });
     } finally {
       if (!silent) setLoading(false);
@@ -133,6 +156,7 @@ function ClockPage({ user: washproUser }) {
           async (pos) => {
             const { latitude: la, longitude: ln } = pos.coords;
             lastPosRef.current = { lat: la, lng: ln };
+            setGeoTick((x) => x + 1);
             await loadSession(silent, la, ln);
             resolve();
           },
@@ -179,19 +203,62 @@ function ClockPage({ user: washproUser }) {
   }, [authLoading, refreshAll]);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      const { lat, lng } = lastPosRef.current;
-      loadSession(true, lat, lng);
-    }, 20000);
-    return () => clearInterval(id);
-  }, [loadSession]);
+    if (authLoading || !isClockedIn) return undefined;
+
+    let watchId = null;
+    let fallbackId = null;
+    const throttleMs = 1200;
+    let lastAt = 0;
+
+    const apply = (la, ln) => {
+      lastPosRef.current = { lat: la, lng: ln };
+      setGeoTick((x) => x + 1);
+      void loadSession(true, la, ln);
+    };
+
+    const onWatch = (pos) => {
+      const now = Date.now();
+      if (now - lastAt < throttleMs) return;
+      lastAt = now;
+      const { latitude: la, longitude: ln } = pos.coords;
+      apply(la, ln);
+    };
+
+    const geo = typeof navigator !== "undefined" ? navigator.geolocation : null;
+
+    // Fresh fix immediately (mobile watchPosition first callback is often delayed).
+    geo?.getCurrentPosition?.(onWatch, () => {}, {
+      enableHighAccuracy: true,
+      maximumAge: 0,
+      timeout: 15000,
+    });
+
+    if (geo?.watchPosition) {
+      watchId = geo.watchPosition(onWatch, () => {}, {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 20000,
+      });
+    }
+
+    fallbackId = setInterval(
+      () => {
+        refreshAll(true);
+      },
+      geo?.watchPosition ? 18000 : 8000
+    );
+
+    return () => {
+      if (watchId != null && geo?.clearWatch) geo.clearWatch(watchId);
+      if (fallbackId != null) clearInterval(fallbackId);
+    };
+  }, [authLoading, isClockedIn, loadSession, refreshAll]);
 
   useEffect(() => {
     const id = setInterval(() => setTick((x) => x + 1), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const session = sessionRes?.session;
   const operational = sessionRes?.operational;
 
   const runWithPosition = (fn) => {
@@ -200,12 +267,12 @@ function ClockPage({ user: washproUser }) {
       async (position) => {
         const { latitude, longitude } = position.coords;
         lastPosRef.current = { lat: latitude, lng: longitude };
+        setGeoTick((x) => x + 1);
         try {
           await fn(latitude, longitude);
         } catch (error) {
           console.error(error);
-          const err = error?.response?.data?.error || "Action failed.";
-          setMessage({ type: "error", text: err });
+          setMessage({ type: "error", text: apiErrorMessage(error, "Action failed.") });
         } finally {
           setBusy(false);
         }
@@ -235,8 +302,7 @@ function ClockPage({ user: washproUser }) {
         setMessage({ type: "success", text: "Break started." });
         await refreshAfterAction();
       } catch (error) {
-        const err = error?.response?.data?.error || "Action failed.";
-        setMessage({ type: "error", text: err });
+        setMessage({ type: "error", text: apiErrorMessage(error, "Action failed.") });
       } finally {
         setBusy(false);
       }
@@ -249,8 +315,7 @@ function ClockPage({ user: washproUser }) {
         setMessage({ type: "success", text: "Break ended." });
         await refreshAfterAction();
       } catch (error) {
-        const err = error?.response?.data?.error || "Action failed.";
-        setMessage({ type: "error", text: err });
+        setMessage({ type: "error", text: apiErrorMessage(error, "Action failed.") });
       } finally {
         setBusy(false);
       }
@@ -289,7 +354,6 @@ function ClockPage({ user: washproUser }) {
     });
   };
 
-  const isClockedIn = !!session;
   const onBreak = !!session?.open_break;
   const liveShiftSec = useMemo(() => {
     if (!session?.clock_in_at) return 0;
@@ -310,13 +374,23 @@ function ClockPage({ user: washproUser }) {
   const outsideSec = Number(session?.outside_geofence_seconds) || 0;
   const outsideLabel = formatDuration(outsideSec);
 
+  const displayGeofenceInside = useMemo(() => {
+    const srv = session?.geofence_inside;
+    if (srv === true || srv === false) return srv;
+    const g = session?.primary_geofence;
+    const { lat, lng } = lastPosRef.current;
+    if (!g || lat == null || lng == null) return null;
+    const dist = haversineMeters(lat, lng, Number(g.latitude), Number(g.longitude));
+    return dist <= Number(g.radius_meters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- geoTick bumps when GPS updates
+  }, [session?.geofence_inside, session?.primary_geofence, geoTick]);
+
   const showOutsideOnClock =
-    asBool(clockUi.show_outside_geofence_on_clock) && isClockedIn && !onBreak;
+    asBool(clockUi.show_outside_geofence_on_clock) && isClockedIn;
   const outsideWarning =
     asBool(clockUi.outside_geofence_label_enabled) &&
     isClockedIn &&
-    !onBreak &&
-    session?.geofence_inside === false;
+    displayGeofenceInside === false;
 
   if (loading) {
     return (
