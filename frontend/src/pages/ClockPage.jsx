@@ -382,8 +382,7 @@ function ClockPage({ user: washproUser }) {
     if (!g || lat == null || lng == null) return null;
     const dist = haversineMeters(lat, lng, Number(g.latitude), Number(g.longitude));
     return dist <= Number(g.radius_meters);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- geoTick bumps when GPS updates
-  }, [session?.geofence_inside, session?.primary_geofence, geoTick]);
+  }, [session, geoTick]);
 
   const showOutsideOnClock =
     asBool(clockUi.show_outside_geofence_on_clock) && isClockedIn;
