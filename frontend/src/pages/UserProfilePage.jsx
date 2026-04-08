@@ -144,6 +144,54 @@ function normalizeLoadedW4Compliance(raw) {
   return c;
 }
 
+/** Live preview for W-4 Step 3 auto amounts (matches backend w4_step3_compute defaults). */
+function w4Step3PreviewAmounts(w4Compliance, w4TaxSettings) {
+  const rateC = Number(w4TaxSettings?.w4_step3_child_credit_amount ?? 2000) || 2000;
+  const rateO = Number(w4TaxSettings?.w4_step3_other_dependent_credit_amount ?? 500) || 500;
+  const allowOther =
+    w4TaxSettings == null ||
+    (w4TaxSettings.w4_allow_other_credits !== 0 && w4TaxSettings.w4_allow_other_credits !== false);
+
+  const intish = (v) => {
+    if (v == null || v === "") return 0;
+    const n = parseInt(String(v).trim(), 10);
+    return Number.isFinite(n) ? Math.max(0, n) : 0;
+  };
+
+  const childN = intish(
+    w4Compliance?.w4_qualifying_children_under_17_count ?? w4Compliance?.w4_helper_children_under_17,
+  );
+  const otherN = intish(
+    w4Compliance?.w4_other_dependents_count ?? w4Compliance?.w4_helper_other_dependents,
+  );
+
+  let otherCred = 0;
+  if (allowOther && w4Compliance?.w4_step3_other_credits_amount != null && w4Compliance?.w4_step3_other_credits_amount !== "") {
+    const s = String(w4Compliance.w4_step3_other_credits_amount).replace(/,/g, "");
+    const x = parseFloat(s);
+    otherCred = Number.isFinite(x) ? x : 0;
+  }
+
+  const a = childN * rateC;
+  const b = otherN * rateO;
+  const t = a + b + otherCred;
+
+  const fmt = (n) => {
+    if (!Number.isFinite(n)) return "0";
+    const r = Math.round(n * 100) / 100;
+    if (Number.isInteger(r)) return String(r);
+    return String(r);
+  };
+
+  return {
+    a: fmt(a),
+    b: fmt(b),
+    t: fmt(t),
+    rateC: fmt(rateC),
+    rateO: fmt(rateO),
+  };
+}
+
 function emptyNyIt2104Compliance() {
   return {
     Resident: "",
@@ -760,10 +808,16 @@ export default function UserProfilePage({ user: sessionUser }) {
         setWpUsername(w.username || "");
         setWpDisplay(w.display_name || "");
         setWpActive(!!w.active);
-        setWpRoles([...(w.roles || [])]);
+        setWpRoles(
+          [...(w.roles || [])].map((c) => String(c || "").trim().toUpperCase()).filter(Boolean),
+        );
         setWpPassword("");
         setWashproRoleChoices(
-          (bundle.roles_catalog || []).map((r) => ({ code: r.code, name: r.name, id: r.id })),
+          (bundle.roles_catalog || []).map((r) => ({
+            code: String(r.code || "").trim().toUpperCase(),
+            name: r.name,
+            id: r.id,
+          })),
         );
         setHasPayroll(false);
         return;
@@ -785,9 +839,22 @@ export default function UserProfilePage({ user: sessionUser }) {
       setWpUsername(auth.username || "");
       setWpDisplay(auth.display_name || "");
       setWpActive(!!auth.active);
-      setWpRoles([...(auth.roles || [])]);
+      const wpRoleCodes = [...(auth.roles || [])]
+        .map((c) => String(c || "").trim().toUpperCase())
+        .filter(Boolean);
+      setWpRoles(wpRoleCodes);
       setWpPassword("");
-      setWashproRoleChoices(rRes.data || []);
+      const normalizedWashproChoices = (rRes.data || []).map((r) => ({
+        ...r,
+        code: String(r.code || "").trim().toUpperCase(),
+      }));
+      const choiceCodes = new Set(normalizedWashproChoices.map((r) => r.code));
+      const orphanWashpro = wpRoleCodes
+        .filter((c) => c && !choiceCodes.has(c))
+        .map((code) => ({ id: null, code, name: code }));
+      setWashproRoleChoices(
+        [...normalizedWashproChoices, ...orphanWashpro].sort((a, b) => a.code.localeCompare(b.code)),
+      );
       setGeofences(gRes.data || []);
       setCats(cRes.data || []);
 

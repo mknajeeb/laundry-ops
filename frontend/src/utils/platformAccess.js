@@ -1,5 +1,8 @@
-/** Roles that use day-to-day Laundry Ops (tenant portal). */
-export const TENANT_PORTAL_ROLES = [
+/**
+ * Operational roles that may use rinse-flow / production modules (not limited “desk only” roles).
+ * e.g. CHECKOUT-only staff should see Checkout + Clock, not Dashboard/Orders for everyone.
+ */
+export const TENANT_STANDARD_OPS_ROLES = [
   "ADMIN",
   "OPS",
   "FRONT_DESK",
@@ -8,6 +11,9 @@ export const TENANT_PORTAL_ROLES = [
   "PAYROLL_ADMIN",
   "FINANCE",
 ];
+
+/** All roles that may sign in to the tenant Laundry Ops app (includes narrow roles like CHECKOUT). */
+export const TENANT_PORTAL_ROLES = [...TENANT_STANDARD_OPS_ROLES, "CHECKOUT"];
 
 /** Platform operators: manage tenants and entitlements (not operational laundry UI). */
 export const PLATFORM_ADMIN_ROLES = ["SUPER_ADMIN", "PLATFORM_ADMIN"];

@@ -9,14 +9,27 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Drawer,
   Paper,
   Stack,
   Typography,
 } from "@mui/material";
-import { Bolt, CheckCircle, LocalShipping, Refresh, Undo } from "@mui/icons-material";
+import {
+  Bolt,
+  CheckCircle,
+  ChevronRight,
+  ExpandLess,
+  ExpandMore,
+  LocalShipping,
+  Refresh,
+  Undo,
+} from "@mui/icons-material";
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
 import TaOperationalBanner from "../components/TaOperationalBanner";
 import { useTaOperationalGate } from "../hooks/useTaOperationalGate";
+
+const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -42,6 +55,9 @@ function CheckoutPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [rushTab, setRushTab] = useState("RUSH");
+  const [openAlpha, setOpenAlpha] = useState(null);
+  const [openAlphaSent, setOpenAlphaSent] = useState(null);
+  const [sentDrawerOpen, setSentDrawerOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
   const [nameConfirmSelectedId, setNameConfirmSelectedId] = useState(null);
@@ -79,14 +95,33 @@ function CheckoutPage() {
   }, [load]);
 
   const rushOf = (r) => {
-    const raw = normalizeCode(r?.rush_type);
-    return raw === "RUSH" ? "RUSH" : "NON-RUSH";
+    const raw = String(r?.rush_type ?? "").trim();
+    if (raw) {
+      return normalizeCode(raw) === "RUSH" ? "RUSH" : "NON-RUSH";
+    }
+    if (r?.rush_date) {
+      const due = parseAsLocalDate(r.rush_date);
+      if (!due) return "NON-RUSH";
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      due.setHours(0, 0, 0, 0);
+      return due < today ? "RUSH" : "NON-RUSH";
+    }
+    return "NON-RUSH";
   };
+
   const serviceOf = (r) => normalizeCode(r?.service_type);
   const isHD = (r) => serviceOf(r) === "HD";
   const measureOf = (r) => {
     const n = Number(r?.weight_num ?? r?.weight ?? 0);
     return isHD(r) ? `${Math.round(n)} pcs` : `${n.toFixed(2)} lb`;
+  };
+
+  const logMeasureOf = (r) => {
+    const svc = normalizeCode(r?.service);
+    const n = Number(r?.weight ?? 0);
+    if (svc === "HD") return `${Math.round(n)} pcs`;
+    return `${n.toFixed(2)} lb`;
   };
   const formatDate = (value) => {
     const d = parseAsLocalDate(value);
@@ -95,31 +130,76 @@ function CheckoutPage() {
   };
 
   const normalizeName = (value) => String(value || "").trim().toLowerCase();
+  const nameOf = (r) => String(r?.name_clean || r?.name || "").trim();
+  const nameOfLog = (r) => String(r?.name || r?.name_clean || "").trim();
 
-  const queues = useMemo(() => {
-    const rushRows = rows.filter((r) => rushOf(r) === "RUSH");
-    const nonRushRows = rows.filter((r) => rushOf(r) === "NON-RUSH");
-    return {
-      RUSH: {
-        WF: rushRows.filter((r) => serviceOf(r) === "WF"),
-        HD: rushRows.filter((r) => serviceOf(r) === "HD"),
-      },
-      "NON-RUSH": {
-        WF: nonRushRows.filter((r) => serviceOf(r) === "WF"),
-        HD: nonRushRows.filter((r) => serviceOf(r) === "HD"),
-      },
-    };
-  }, [rows]);
+  const alphaOf = useCallback((row) => {
+    const ch = nameOf(row).charAt(0).toUpperCase();
+    return /^[A-Z]$/.test(ch) ? ch : "#";
+  }, []);
+
+  const alphaOfLog = useCallback((row) => {
+    const ch = nameOfLog(row).charAt(0).toUpperCase();
+    return /^[A-Z]$/.test(ch) ? ch : "#";
+  }, []);
+
+  const queueForRushTab = useMemo(() => {
+    return rows.filter((r) => rushOf(r) === rushTab);
+  }, [rows, rushTab]);
+
+  const groupedQueue = useMemo(() => {
+    const groups = {};
+    queueForRushTab.forEach((row) => {
+      const alpha = alphaOf(row);
+      if (!groups[alpha]) groups[alpha] = [];
+      groups[alpha].push(row);
+    });
+    ALPHAS.forEach((k) => {
+      if (!groups[k]) groups[k] = [];
+      groups[k].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    });
+    if (groups["#"]?.length) {
+      groups["#"].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+      return { keys: [...ALPHAS, "#"], groups };
+    }
+    return { keys: ALPHAS, groups };
+  }, [queueForRushTab, alphaOf]);
+
+  const groupedSent = useMemo(() => {
+    const groups = {};
+    checkedRows.forEach((row) => {
+      const alpha = alphaOfLog(row);
+      if (!groups[alpha]) groups[alpha] = [];
+      groups[alpha].push(row);
+    });
+    ALPHAS.forEach((k) => {
+      if (!groups[k]) groups[k] = [];
+      groups[k].sort((a, b) => nameOfLog(a).localeCompare(nameOfLog(b)));
+    });
+    if (groups["#"]?.length) {
+      groups["#"].sort((a, b) => nameOfLog(a).localeCompare(nameOfLog(b)));
+      return { keys: [...ALPHAS, "#"], groups };
+    }
+    return { keys: ALPHAS, groups };
+  }, [checkedRows, alphaOfLog]);
 
   const counters = useMemo(() => {
-    const rushCount = queues.RUSH.WF.length + queues.RUSH.HD.length;
-    const nonRushCount = queues["NON-RUSH"].WF.length + queues["NON-RUSH"].HD.length;
+    const rushCount = rows.filter((r) => rushOf(r) === "RUSH").length;
+    const nonRushCount = rows.filter((r) => rushOf(r) === "NON-RUSH").length;
     return {
       rushCount,
       nonRushCount,
       sentCount: checkedRows.length,
     };
-  }, [queues, checkedRows.length]);
+  }, [rows, checkedRows.length]);
+
+  const handleAlphaToggle = (alpha) => {
+    setOpenAlpha((prev) => (prev === alpha ? null : alpha));
+  };
+
+  const handleAlphaSentToggle = (alpha) => {
+    setOpenAlphaSent((prev) => (prev === alpha ? null : alpha));
+  };
 
   const confirmCheckout = async () => {
     if (!activeRow) return;
@@ -181,17 +261,31 @@ function CheckoutPage() {
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
       <TaOperationalBanner message={bannerMessage} />
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
+      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
         <Typography sx={{ fontSize: 30, fontWeight: 500 }}>Checkout</Typography>
-        <Button size="small" variant="text" startIcon={<Refresh />} onClick={load}>
-          Refresh
-        </Button>
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Button
+            size="small"
+            variant="outlined"
+            color="primary"
+            startIcon={<Undo />}
+            onClick={() => setSentDrawerOpen(true)}
+          >
+            Sent {counters.sentCount > 0 ? `(${counters.sentCount})` : ""}
+          </Button>
+          <Button size="small" variant="text" startIcon={<Refresh />} onClick={load}>
+            Refresh
+          </Button>
+        </Stack>
       </Stack>
 
       <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
         <Button
           fullWidth
-          onClick={() => setRushTab("RUSH")}
+          onClick={() => {
+            setRushTab("RUSH");
+            setOpenAlpha(null);
+          }}
           sx={{
             textTransform: "none",
             borderRadius: 2,
@@ -206,7 +300,10 @@ function CheckoutPage() {
         </Button>
         <Button
           fullWidth
-          onClick={() => setRushTab("NON-RUSH")}
+          onClick={() => {
+            setRushTab("NON-RUSH");
+            setOpenAlpha(null);
+          }}
           sx={{
             textTransform: "none",
             borderRadius: 2,
@@ -222,7 +319,7 @@ function CheckoutPage() {
       </Stack>
 
       <Stack direction="row" spacing={1} sx={{ mt: 0.8, overflowX: "auto", pb: 0.2 }}>
-        <Chip label={`Sent to Rinse ${counters.sentCount}`} />
+        <Chip label={`Queue: ${queueForRushTab.length} bags`} />
         {rushTab === "RUSH" && counters.rushCount === 0 && <Chip color="success" label="Rush queue empty" />}
       </Stack>
 
@@ -232,85 +329,193 @@ function CheckoutPage() {
         </Alert>
       )}
 
-      <Stack spacing={1.2} sx={{ mt: 1.2 }}>
-        {["WF", "HD"].map((svc) => {
-          const list = queues[rushTab][svc];
-          const isSvcHD = svc === "HD";
+      <Box sx={{ mt: 1.2 }}>
+        {groupedQueue.keys.map((alpha, idx) => {
+          const list = groupedQueue.groups[alpha] || [];
+          const expanded = openAlpha === alpha;
           return (
             <Paper
-              key={svc}
+              key={alpha}
               sx={{
+                mb: 1.1,
                 borderRadius: 2,
+                overflow: "hidden",
                 border: "1px solid #e5e7eb",
-                p: 1.1,
-                opacity: list.length === 0 ? 0.45 : 1,
+                boxShadow: "none",
+                bgcolor: "#ffffff",
               }}
             >
-              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.8 }}>
-                <Typography sx={{ fontSize: 18, fontWeight: 500 }}>
-                  {svc} • {list.length} bags
-                </Typography>
-              </Stack>
-              {list.length === 0 ? (
-                <Typography sx={{ color: "#6b7280" }}>No bags in this queue.</Typography>
-              ) : (
-                <Stack spacing={0.9}>
-                  {list.map((r) => (
-                    <Paper
-                      key={r.id}
-                      onClick={() => !checkoutBlocked && onSelectForCheckout(r)}
-                      sx={{
-                        p: 1.1,
-                        borderRadius: 2,
-                        cursor: checkoutBlocked ? "not-allowed" : "pointer",
-                        opacity: checkoutBlocked ? 0.45 : 1,
-                        bgcolor: isSvcHD ? "#0097b2" : "#0b1324",
-                        border: isSvcHD ? "1px solid #52d4e4" : "1px solid #1f2d4a",
-                        color: "#ffffff",
-                      }}
-                    >
-                      <Stack spacing={0.6}>
-                        <Typography sx={{ fontSize: 21, fontWeight: 500 }}>{r.name_clean}</Typography>
-                        <Typography sx={{ opacity: 0.95 }}>{formatDate(r.date_clean)} • {measureOf(r)}</Typography>
-                        <Stack direction="row" spacing={0.8}>
-                          <Chip size="small" label={svc} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
-                          <Chip
-                            size="small"
-                            label={rushTab}
-                            icon={rushTab === "RUSH" ? <Bolt sx={{ fontSize: 15 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
-                            sx={{ bgcolor: "#ffffff", color: "#111827" }}
-                          />
-                        </Stack>
-                      </Stack>
-                    </Paper>
-                  ))}
+              <Button
+                fullWidth
+                onClick={() => handleAlphaToggle(alpha)}
+                sx={{
+                  px: 1.1,
+                  py: 1.1,
+                  justifyContent: "space-between",
+                  color: "#111827",
+                  textTransform: "none",
+                  bgcolor: HEADER_BG[idx % HEADER_BG.length],
+                }}
+              >
+                <Stack direction="row" spacing={1.3} alignItems="center">
+                  <Box
+                    sx={{
+                      width: 31,
+                      height: 31,
+                      borderRadius: "50%",
+                      display: "grid",
+                      placeItems: "center",
+                      bgcolor: "#111827",
+                      color: "#fff",
+                      fontWeight: 500,
+                      fontSize: 14,
+                    }}
+                  >
+                    {alpha}
+                  </Box>
+                  <Typography sx={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.2 }}>{list.length} bags</Typography>
                 </Stack>
+                {expanded ? <ExpandLess /> : <ExpandMore />}
+              </Button>
+              {expanded && (
+                <Box sx={{ p: 1, bgcolor: "transparent" }}>
+                  {list.length === 0 ? (
+                    <Typography sx={{ color: "#6b7280", fontSize: 14, px: 0.25, py: 0.5 }}>No bags in this section.</Typography>
+                  ) : (
+                    <Stack spacing={0.9}>
+                      {list.map((r) => {
+                        const hd = isHD(r);
+                        const rt = rushOf(r);
+                        return (
+                          <Paper
+                            key={r.id}
+                            onClick={() => !checkoutBlocked && onSelectForCheckout(r)}
+                            sx={{
+                              p: 1.1,
+                              borderRadius: 2,
+                              cursor: checkoutBlocked ? "not-allowed" : "pointer",
+                              opacity: checkoutBlocked ? 0.45 : 1,
+                              bgcolor: hd ? "#0097b2" : "#0b1324",
+                              border: hd ? "1px solid #52d4e4" : "1px solid #1f2d4a",
+                              color: "#ffffff",
+                            }}
+                          >
+                            <Stack spacing={0.6}>
+                              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                <Typography sx={{ fontSize: 21, fontWeight: 500 }}>{r.name_clean}</Typography>
+                                <ChevronRight sx={{ color: "#fff" }} />
+                              </Stack>
+                              <Typography sx={{ opacity: 0.95 }}>
+                                {formatDate(r.date_clean)} • {measureOf(r)}
+                              </Typography>
+                              <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap>
+                                <Chip size="small" label={serviceOf(r) || "—"} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
+                                <Chip
+                                  size="small"
+                                  label={rt === "RUSH" ? "RUSH" : "NON-RUSH"}
+                                  icon={rt === "RUSH" ? <Bolt sx={{ fontSize: 15 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
+                                  sx={{ bgcolor: "#ffffff", color: "#111827" }}
+                                />
+                              </Stack>
+                            </Stack>
+                          </Paper>
+                        );
+                      })}
+                    </Stack>
+                  )}
+                </Box>
               )}
             </Paper>
           );
         })}
-      </Stack>
+      </Box>
 
-      <Paper sx={{ mt: 1.2, p: 1.1, borderRadius: 2, border: "1px solid #e5e7eb" }}>
-        <Typography sx={{ fontSize: 15, color: "#4b5563", mb: 0.7 }}>Recent sent items</Typography>
-        <Stack spacing={0.8}>
-          {checkedRows.slice(0, 8).map((r) => (
-            <Stack
-              key={`${r.id}-${r.order_id}`}
-              direction="row"
-              justifyContent="space-between"
-              alignItems="center"
-              sx={{ p: 0.7, border: "1px solid #edf2f7", borderRadius: 1.2 }}
-            >
-              <Typography sx={{ fontSize: 14 }}>{r.name || `#${r.order_id}`}</Typography>
-              <Button size="small" variant="text" onClick={() => setUndoRow(r)} startIcon={<Undo />}>
-                Undo
-              </Button>
-            </Stack>
-          ))}
-          {checkedRows.length === 0 && <Typography sx={{ color: "#6b7280" }}>No checked out bags yet.</Typography>}
-        </Stack>
-      </Paper>
+      <Drawer anchor="right" open={sentDrawerOpen} onClose={() => setSentDrawerOpen(false)} PaperProps={{ sx: { width: { xs: "100%", sm: 380 } } }}>
+        <Box sx={{ p: 1.5, borderBottom: "1px solid #e5e7eb" }}>
+          <Typography sx={{ fontSize: 18, fontWeight: 600 }}>Sent to rinse</Typography>
+          <Typography sx={{ fontSize: 13, color: "text.secondary", mt: 0.5 }}>
+            Tap a bag to undo and move it back to the queue.
+          </Typography>
+        </Box>
+        <Box sx={{ p: 1, overflow: "auto", pb: "env(safe-area-inset-bottom, 16px)" }}>
+          {checkedRows.length === 0 ? (
+            <Typography sx={{ color: "#6b7280", px: 1 }}>No recent sends yet.</Typography>
+          ) : (
+            groupedSent.keys.map((alpha, idx) => {
+              const list = groupedSent.groups[alpha] || [];
+              const expanded = openAlphaSent === alpha;
+              return (
+                <Paper
+                  key={`sent-${alpha}`}
+                  sx={{
+                    mb: 1,
+                    borderRadius: 2,
+                    overflow: "hidden",
+                    border: "1px solid #e5e7eb",
+                    boxShadow: "none",
+                  }}
+                >
+                  <Button
+                    fullWidth
+                    onClick={() => handleAlphaSentToggle(alpha)}
+                    sx={{
+                      px: 1,
+                      py: 1,
+                      justifyContent: "space-between",
+                      color: "#111827",
+                      textTransform: "none",
+                      bgcolor: HEADER_BG[idx % HEADER_BG.length],
+                    }}
+                  >
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Box
+                        sx={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: "50%",
+                          display: "grid",
+                          placeItems: "center",
+                          bgcolor: "#0f766e",
+                          color: "#fff",
+                          fontWeight: 600,
+                          fontSize: 13,
+                        }}
+                      >
+                        {alpha}
+                      </Box>
+                      <Typography sx={{ fontSize: 14, fontWeight: 600 }}>{list.length} sent</Typography>
+                    </Stack>
+                    {expanded ? <ExpandLess /> : <ExpandMore />}
+                  </Button>
+                  {expanded && list.length > 0 && (
+                    <Stack spacing={0.8} sx={{ p: 1 }}>
+                      {list.map((r) => (
+                        <Paper
+                          key={`${r.id}-${r.order_id}`}
+                          variant="outlined"
+                          sx={{ p: 1, borderRadius: 1.5 }}
+                        >
+                          <Stack spacing={0.8}>
+                            <Typography sx={{ fontWeight: 600 }}>{r.name || `#${r.order_id}`}</Typography>
+                            <Typography sx={{ fontSize: 13, color: "text.secondary" }}>
+                              #{r.order_id} • {formatDate(r.rush_date || r.checkout_time)} • {logMeasureOf(r)}
+                            </Typography>
+                            <Stack direction="row" justifyContent="flex-end">
+                              <Button size="small" variant="contained" color="warning" startIcon={<Undo />} onClick={() => setUndoRow(r)}>
+                                Undo
+                              </Button>
+                            </Stack>
+                          </Stack>
+                        </Paper>
+                      ))}
+                    </Stack>
+                  )}
+                </Paper>
+              );
+            })
+          )}
+        </Box>
+      </Drawer>
 
       <Dialog open={Boolean(activeRow)} onClose={() => setActiveRow(null)} fullWidth maxWidth="xs">
         <DialogTitle>Send to Rinse</DialogTitle>
@@ -318,19 +523,16 @@ function CheckoutPage() {
           {activeRow && (
             <Stack spacing={1}>
               <Typography sx={{ fontSize: 21 }}>{activeRow.name_clean}</Typography>
-              <Typography>{formatDate(activeRow.date_clean)} • {measureOf(activeRow)}</Typography>
+              <Typography>
+                {formatDate(activeRow.date_clean)} • {measureOf(activeRow)}
+              </Typography>
               <Alert severity="warning">Confirm physical tag before sending.</Alert>
             </Stack>
           )}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setActiveRow(null)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={checkoutBlocked || busy}
-            startIcon={<LocalShipping />}
-            onClick={confirmCheckout}
-          >
+          <Button variant="contained" disabled={checkoutBlocked || busy} startIcon={<LocalShipping />} onClick={confirmCheckout}>
             Confirm Send
           </Button>
         </DialogActions>
@@ -352,7 +554,9 @@ function CheckoutPage() {
                     onClick={() => setNameConfirmSelectedId(opt.id)}
                     sx={{ textTransform: "none", justifyContent: "flex-start" }}
                   >
-                    <span>{formatDate(opt.date_clean)} • {measureOf(opt)}</span>
+                    <span>
+                      {formatDate(opt.date_clean)} • {measureOf(opt)}
+                    </span>
                   </Button>
                 ))}
               </Stack>

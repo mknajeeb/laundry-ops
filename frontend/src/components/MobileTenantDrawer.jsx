@@ -1,8 +1,7 @@
 import { Box, Button, Chip, Divider, Drawer, List, ListItemButton, ListItemText, Typography } from "@mui/material";
 import { useNavigate, useLocation } from "react-router-dom";
-import { TENANT_NAV_ITEMS } from "../constants/tenantNav";
 import { useI18n } from "../i18n/I18nContext";
-import { hasPlatformAdminRole, isTenantModuleEnabled, userSatisfiesRoleGate } from "../utils/platformAccess";
+import { tenantNavItemVisible, TENANT_NAV_ITEMS } from "../constants/tenantNav";
 
 export default function MobileTenantDrawer({
   open,
@@ -16,19 +15,7 @@ export default function MobileTenantDrawer({
   const navigate = useNavigate();
   const { pathname } = useLocation();
 
-  const allow = (item) => {
-    const roleOk = !item.roles.length || userSatisfiesRoleGate(user, item.roles);
-    if (!roleOk) return false;
-    if (item.skipModuleCheck) {
-      return hasPlatformAdminRole(user);
-    }
-    return isTenantModuleEnabled(user, item.moduleKey || "home");
-  };
-
-  const navFilter = (item) => {
-    if (item.to === "/payroll" && !payrollNavVisible) return false;
-    return true;
-  };
+  const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible);
 
   const go = (to) => {
     navigate(to);
@@ -73,7 +60,7 @@ export default function MobileTenantDrawer({
         )}
         <Divider sx={{ my: 1 }} />
         <List dense disablePadding sx={{ flex: 1, overflow: "auto" }}>
-          {TENANT_NAV_ITEMS.filter(allow).filter(navFilter).map((item) => (
+          {TENANT_NAV_ITEMS.filter(allow).map((item) => (
             <ListItemButton
               key={item.to}
               selected={pathname === item.to || (item.to !== "/" && pathname.startsWith(item.to))}

@@ -1035,6 +1035,52 @@ def _platform_resolve_role_ids(cursor, org_id, role_codes):
     return [pick[c] for c in codes]
 
 
+def _tenant_resolve_washpro_role_ids(cursor, org_id, role_codes):
+    """
+    Map Washpro role codes to role IDs for tenant user create/update.
+    Includes platform template roles (organization_id=0) and the tenant org's roles.
+    Prefers a tenant row over a template when the same code exists in both.
+    Returns (role_ids, None) or (None, missing_codes).
+    """
+    codes = []
+    seen = set()
+    for r in role_codes or []:
+        c = str(r).upper().strip()
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        codes.append(c)
+    if not codes:
+        return [], None
+    ph = ",".join(["%s"] * len(codes))
+    if table_has_column(cursor, "roles", "organization_id"):
+        cursor.execute(
+            f"""
+            SELECT id, code, organization_id FROM roles
+            WHERE UPPER(TRIM(code)) IN ({ph})
+              AND (organization_id = 0 OR organization_id = %s)
+            ORDER BY organization_id DESC
+            """,
+            tuple(codes) + (int(org_id or 1),),
+        )
+        rows = cursor.fetchall() or []
+    else:
+        cursor.execute(
+            f"SELECT id, code FROM roles WHERE UPPER(TRIM(code)) IN ({ph})",
+            tuple(codes),
+        )
+        rows = cursor.fetchall() or []
+    pick = {}
+    for r in rows:
+        k = str(r["code"]).upper().strip()
+        if k not in pick:
+            pick[k] = int(r["id"])
+    missing = [c for c in codes if c not in pick]
+    if missing:
+        return None, missing
+    return [pick[c] for c in codes], None
+
+
 def auth_platform_user_bundle(cursor, conn, user_id):
     """Super-admin read model aligned with the unified profile UI."""
     cursor.execute(
@@ -5497,7 +5543,25 @@ def auth_roles():
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
     try:
-        cursor.execute("SELECT id, code, name FROM roles ORDER BY code")
+        me, err, status_code = require_admin(cursor)
+        if err:
+            return err, status_code
+        if table_has_column(cursor, "roles", "organization_id"):
+            oid_raw = me.get("organization_id")
+            if oid_raw is not None and str(oid_raw).strip() != "":
+                oid = int(oid_raw)
+                cursor.execute(
+                    """
+                    SELECT id, code, name FROM roles
+                    WHERE organization_id = 0 OR organization_id = %s
+                    ORDER BY code
+                    """,
+                    (oid,),
+                )
+            else:
+                cursor.execute("SELECT id, code, name FROM roles ORDER BY code")
+        else:
+            cursor.execute("SELECT id, code, name FROM roles ORDER BY code")
         return jsonify(cursor.fetchall())
     finally:
         cursor.close()
@@ -5558,12 +5622,13 @@ def auth_users():
         user_id = cursor.lastrowid
 
         if role_codes:
-            cursor.execute("SELECT id, code FROM roles WHERE code IN ({})".format(",".join(["%s"] * len(role_codes))), tuple(role_codes))
-            role_map = {r["code"].upper(): r["id"] for r in cursor.fetchall()}
-            for code in role_codes:
-                rid = role_map.get(code)
-                if rid:
-                    cursor.execute("INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s)", (user_id, rid))
+            tenant_oid = int(me.get("organization_id") or 1) if table_has_column(cursor, "users", "organization_id") else 1
+            role_ids, missing = _tenant_resolve_washpro_role_ids(cursor, tenant_oid, role_codes)
+            if missing:
+                conn.rollback()
+                return jsonify({"error": "Unknown role(s): " + ", ".join(missing)}), 400
+            for rid in role_ids:
+                cursor.execute("INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s)", (user_id, rid))
 
         conn.commit()
         return jsonify({"status": "created", "user_id": user_id})
@@ -5699,20 +5764,16 @@ def auth_user_detail(user_id):
 
         cursor.execute("DELETE FROM user_roles WHERE user_id=%s", (user_id,))
         if role_codes:
-            cursor.execute(
-                "SELECT id, code FROM roles WHERE code IN ({})".format(
-                    ",".join(["%s"] * len(role_codes))
-                ),
-                tuple(role_codes),
-            )
-            role_map = {r["code"].upper(): r["id"] for r in cursor.fetchall()}
-            for code in role_codes:
-                rid = role_map.get(code)
-                if rid:
-                    cursor.execute(
-                        "INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s)",
-                        (user_id, rid),
-                    )
+            tenant_oid = int(me.get("organization_id") or 1) if table_has_column(cursor, "users", "organization_id") else 1
+            role_ids, missing = _tenant_resolve_washpro_role_ids(cursor, tenant_oid, role_codes)
+            if missing:
+                conn.rollback()
+                return jsonify({"error": "Unknown role(s): " + ", ".join(missing)}), 400
+            for rid in role_ids:
+                cursor.execute(
+                    "INSERT INTO user_roles (user_id, role_id) VALUES (%s, %s)",
+                    (user_id, rid),
+                )
 
         conn.commit()
         return jsonify({"status": "ok"})

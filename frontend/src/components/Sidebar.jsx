@@ -4,8 +4,7 @@ import { Box, Button, Chip, Stack, ToggleButton, ToggleButtonGroup, Typography }
 import { getClockPayrollUiSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
-import { hasPlatformAdminRole, isTenantModuleEnabled, userSatisfiesRoleGate } from "../utils/platformAccess";
-import { TENANT_NAV_ITEMS } from "../constants/tenantNav";
+import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
@@ -23,19 +22,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
       .catch(() => setPayrollNavVisible(true));
   }, [authLoading, user?.id]);
 
-  const allow = (item) => {
-    const roleOk = !item.roles.length || userSatisfiesRoleGate(user, item.roles);
-    if (!roleOk) return false;
-    if (item.skipModuleCheck) {
-      return hasPlatformAdminRole(user);
-    }
-    return isTenantModuleEnabled(user, item.moduleKey || "home");
-  };
-
-  const navFilter = (item) => {
-    if (item.to === "/payroll" && !payrollNavVisible) return false;
-    return true;
-  };
+  const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible);
 
   return (
     <Box
@@ -100,7 +87,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
 
       <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", pr: 0.5, WebkitOverflowScrolling: "touch" }}>
         <Stack spacing={0.8}>
-          {TENANT_NAV_ITEMS.filter(allow).filter(navFilter).map((item) => (
+          {TENANT_NAV_ITEMS.filter(allow).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

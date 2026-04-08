@@ -14,6 +14,7 @@ import {
 import { ArrowBack, Logout, Menu, Refresh } from "@mui/icons-material";
 import ClockInGate from "./components/ClockInGate";
 import MobileTenantDrawer from "./components/MobileTenantDrawer";
+import TenantNavAccessBoundary from "./components/TenantNavAccessBoundary";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
@@ -326,6 +327,7 @@ function AppShell() {
         )}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
           <ClockInGate user={user}>
+          <TenantNavAccessBoundary user={user} payrollNavVisible={payrollNavVisible}>
           <Routes>
             <Route
               path="/login/:orgSlug"
@@ -334,7 +336,7 @@ function AppShell() {
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
-            <Route path="/" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><HomePage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><HomePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/orders" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
@@ -449,6 +451,7 @@ function AppShell() {
             />
             <Route path="/ta-employees" element={<Navigate to="/employees" replace />} />
           </Routes>
+          </TenantNavAccessBoundary>
           </ClockInGate>
         </Box>
       </Box>
