@@ -47,6 +47,7 @@ from backend.ta_routes import (
     register_ta_routes,
     write_audit,
 )
+from backend.daily_reset_scheduler import start_daily_reset_scheduler
 
 
 # ---------------------------------------------------
@@ -65,9 +66,11 @@ CORS(
 register_ta_routes(app)
 register_notification_routes(app)
 
+start_daily_reset_scheduler(app)
+
 
 def _trigger_daily_operational_reset_if_needed(conn, tenant_oid: int):
-    """Lazy rollover on first tenant API hit after Eastern midnight (when setting is on)."""
+    """Lazy catch-up on first tenant API hit after a new Eastern day (trigger=lazy only; midnight job is embedded)."""
     try:
         from backend.checkout_history import maybe_run_daily_operational_reset
 
@@ -80,20 +83,20 @@ def _trigger_daily_operational_reset_if_needed(conn, tenant_oid: int):
 @app.route("/internal/jobs/daily-operational-reset", methods=["POST"])
 def internal_daily_operational_reset_job():
     """
-    Nightly rollover for tenants with daily reset enabled + trigger=midnight_est.
-    Secure with env DAILY_OPERATIONAL_RESET_CRON_SECRET and header
-    X-Daily-Operational-Reset-Cron-Secret. Schedule ~00:05 America/New_York (e.g. Azure Logic App).
+    Manual / cloud-cron trigger: same pass as the embedded 00:05 America/New_York scheduler
+    (all tenants with daily reset enabled). Secure with DAILY_OPERATIONAL_RESET_CRON_SECRET
+    and header X-Daily-Operational-Reset-Cron-Secret. Optional if you rely only on the embedded job.
     """
     secret = (os.getenv("DAILY_OPERATIONAL_RESET_CRON_SECRET") or "").strip()
     if not secret:
         return jsonify({"error": "DAILY_OPERATIONAL_RESET_CRON_SECRET is not configured"}), 503
     if (request.headers.get("X-Daily-Operational-Reset-Cron-Secret") or "").strip() != secret:
         return jsonify({"error": "forbidden"}), 403
-    from backend.checkout_history import run_daily_operational_reset_cron_all_tenants
+    from backend.checkout_history import run_daily_operational_reset_scheduled_pass
 
     conn = get_db()
     try:
-        out = run_daily_operational_reset_cron_all_tenants(conn)
+        out = run_daily_operational_reset_scheduled_pass(conn)
         return jsonify(out)
     finally:
         conn.close()

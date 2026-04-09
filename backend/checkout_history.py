@@ -487,7 +487,7 @@ def set_daily_reset_trigger(cursor, tenant_oid: int, trigger: str) -> None:
 
 
 def list_org_ids_for_midnight_cron_reset(cursor) -> list[int]:
-    """Tenants with reset enabled and trigger=midnight_est (for scheduled job)."""
+    """Tenants with reset enabled and trigger=midnight_est (legacy; prefer list_org_ids_with_daily_reset_enabled)."""
     ensure_checkout_history_schema(cursor)
     if not table_exists(cursor, "system_settings") or not table_has_column(
         cursor, "system_settings", "organization_id"
@@ -514,14 +514,39 @@ def list_org_ids_for_midnight_cron_reset(cursor) -> list[int]:
     return out
 
 
-def run_daily_operational_reset_cron_all_tenants(conn) -> dict[str, Any]:
+def list_org_ids_with_daily_reset_enabled(cursor) -> list[int]:
+    """Every tenant with daily operational reset turned on (embedded midnight job + HTTP cron)."""
+    ensure_checkout_history_schema(cursor)
+    if not table_exists(cursor, "system_settings") or not table_has_column(
+        cursor, "system_settings", "organization_id"
+    ):
+        return []
+    cursor.execute(
+        """
+        SELECT DISTINCT organization_id AS oid
+        FROM system_settings
+        WHERE skey = %s
+          AND LOWER(TRIM(COALESCE(svalue, ''))) IN ('1', 'true', 'yes', 'on')
+        """,
+        (SETTINGS_ENABLED,),
+    )
+    rows = cursor.fetchall() or []
+    out: list[int] = []
+    for row in rows:
+        oid = row.get("oid") if isinstance(row, dict) else row[0]
+        if oid is not None:
+            out.append(int(oid))
+    return out
+
+
+def run_daily_operational_reset_scheduled_pass(conn) -> dict[str, Any]:
     """
-    Run maybe_run for each org configured for midnight_est trigger. Caller should use a
-    shared secret; intended to be invoked ~00:05 America/New_York daily.
+    For each org with reset enabled, run rollover when Eastern calendar has advanced
+    (source=cron). Used by embedded APScheduler and POST /internal/jobs/daily-operational-reset.
     """
     cursor = conn.cursor(dictionary=True)
     try:
-        oids = list_org_ids_for_midnight_cron_reset(cursor)
+        oids = list_org_ids_with_daily_reset_enabled(cursor)
     finally:
         cursor.close()
     tenants: list[dict[str, Any]] = []
@@ -532,3 +557,8 @@ def run_daily_operational_reset_cron_all_tenants(conn) -> dict[str, Any]:
         except Exception as e:
             tenants.append({"organization_id": oid, "error": str(e)})
     return {"ok": True, "tenant_count": len(oids), "tenants": tenants}
+
+
+def run_daily_operational_reset_cron_all_tenants(conn) -> dict[str, Any]:
+    """Same as run_daily_operational_reset_scheduled_pass (HTTP cron alias)."""
+    return run_daily_operational_reset_scheduled_pass(conn)
