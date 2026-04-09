@@ -518,6 +518,9 @@ export const TRANSLATIONS = {
     "profile.sectionGeofences": "Geofences",
     "profile.geofencesClockHint":
       "Time clock: you can clock in or out inside any of the locations you select here (no separate “primary” required).",
+    "profile.clockGeofenceExemptLabel": "Exempt from work-location (GPS) / geofence checks",
+    "profile.clockGeofenceExemptHint":
+      "Use for remote or overseas team members. They can clock in and out without being inside an assigned geofence. Location may still be recorded when their device provides it.",
     "profile.sectionEmployment": "Employment categories",
     "profile.addEmploymentRow": "Add category row",
     "profile.removeEmploymentRow": "Remove this category row",
@@ -1408,6 +1411,9 @@ export const TRANSLATIONS = {
     "profile.sectionGeofences": "Geocercas",
     "profile.geofencesClockHint":
       "Fichaje: puede fichar entrada o salida dentro de cualquiera de las ubicaciones seleccionadas (no hace falta marcar una “principal”).",
+    "profile.clockGeofenceExemptLabel": "Exento de fichaje por geocerca / GPS en el lugar de trabajo",
+    "profile.clockGeofenceExemptHint":
+      "Para empleados remotos o en el extranjero: pueden fichar sin estar dentro de una geocerca asignada. El dispositivo puede seguir enviando ubicación si la permite.",
     "profile.sectionEmployment": "Categorías de empleo",
     "profile.addEmploymentRow": "Añadir fila de categoría",
     "profile.removeEmploymentRow": "Quitar esta fila de categoría",

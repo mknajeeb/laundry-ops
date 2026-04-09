@@ -375,6 +375,7 @@ function ClockPage({ user: washproUser }) {
   const outsideLabel = formatDuration(outsideSec);
 
   const displayGeofenceInside = useMemo(() => {
+    if (session?.clock_geofence_exempt) return true;
     const srv = session?.geofence_inside;
     if (srv === true || srv === false) return srv;
     const { lat, lng } = lastPosRef.current;

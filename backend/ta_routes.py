@@ -193,7 +193,7 @@ def _tenant_id():
 
 
 # Bump when WORKSPACE_PAYROLL_EXTRA / seed lists change so each org re-runs ensure once per process.
-_PEOPLE_WORKSPACE_ENSURE_VERSION = 1
+_PEOPLE_WORKSPACE_ENSURE_VERSION = 2
 _people_workspace_ensured_version_by_org: dict[int, int] = {}
 
 
@@ -650,6 +650,38 @@ def list_user_clock_geofences(conn, user_id: int):
         (user_id,),
     )
     return c.fetchall() or []
+
+
+def _tenant_fallback_geofence_id(conn, tenant_id: int) -> Optional[int]:
+    """First active geofence in org (for shift_sessions.geofence_id when user has no assignment)."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id FROM geofences
+        WHERE organization_id=%s AND active=1
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        (int(tenant_id),),
+    )
+    row = c.fetchone()
+    return int(row[0]) if row else None
+
+
+def user_clock_geofence_exempt(conn, washpro_user_id: int) -> bool:
+    """Remote / overseas workers: skip clock-in and clock-out location checks (unified payroll only)."""
+    if not payroll_profiles_active(conn):
+        return False
+    chk = conn.cursor()
+    if not table_has_column(chk, "payroll_profiles", "clock_geofence_exempt"):
+        return False
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT clock_geofence_exempt FROM payroll_profiles WHERE user_id=%s LIMIT 1",
+        (int(washpro_user_id),),
+    )
+    row = c.fetchone()
+    return bool(row and as_bool(row.get("clock_geofence_exempt"), False))
 
 
 def user_inside_assigned_geofences(
@@ -1146,7 +1178,28 @@ def ta_bootstrap():
 def my_geofence():
     conn = get_db()
     try:
+        exempt = user_clock_geofence_exempt(conn, g.ta_user["id"])
         gfs = list_user_clock_geofences(conn, g.ta_user["id"])
+        if exempt:
+            if gfs:
+                body = dict(gfs[0])
+                body["clock_geofence_exempt"] = True
+                return jsonify(json_safe(body))
+            fid = _tenant_fallback_geofence_id(conn, _tenant_id())
+            if not fid:
+                return jsonify(
+                    {"clock_geofence_exempt": True, "note": "no_geofence_configured"}
+                )
+            c = conn.cursor(dictionary=True)
+            c.execute(
+                "SELECT * FROM geofences WHERE id=%s AND organization_id=%s LIMIT 1",
+                (fid, _tenant_id()),
+            )
+            row = c.fetchone()
+            if not row:
+                return jsonify({"clock_geofence_exempt": True, "note": "no_geofence_configured"})
+            row["clock_geofence_exempt"] = True
+            return jsonify(json_safe(row))
         if not gfs:
             return jsonify({"error": "No geofence assigned"}), 400
         return jsonify(json_safe(gfs[0]))
@@ -1172,6 +1225,8 @@ def maybe_clock_in_geofence_reminder(
         return
     uid = int(ta_user.get("id") or 0)
     if not uid:
+        return
+    if user_clock_geofence_exempt(conn, uid):
         return
 
     clock_cfg = load_clock_payroll_ui(conn, organization_id).get("clock") or {}
@@ -1307,9 +1362,14 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             sess["elapsed_shift_seconds"] = elapsed
             sess["elapsed_break_seconds"] = int(break_live)
             sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
+            exempt = user_clock_geofence_exempt(conn, ta_user["id"])
+            sess["clock_geofence_exempt"] = exempt
             gfs = list_user_clock_geofences(conn, ta_user["id"])
             gfn = gfs[0] if gfs else None
-            if lat is not None and lng is not None and gfs:
+            inside = None
+            if exempt:
+                inside = True
+            elif lat is not None and lng is not None and gfs:
                 inside, dist, _hit = user_inside_assigned_geofences(
                     conn, ta_user["id"], float(lat), float(lng)
                 )
@@ -1335,6 +1395,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
 
             if (
                 sess
+                and not exempt
                 and lat is not None
                 and lng is not None
                 and gfs
@@ -1372,7 +1433,9 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
     elif lat is not None and lng is not None:
         _gfs_rem = list_user_clock_geofences(conn, ta_user["id"])
         inside = None
-        if _gfs_rem:
+        if user_clock_geofence_exempt(conn, ta_user["id"]):
+            inside = None
+        elif _gfs_rem:
             inside, _, _ = user_inside_assigned_geofences(
                 conn, ta_user["id"], float(lat), float(lng)
             )
@@ -1426,14 +1489,15 @@ def get_operational_state(
     )
     if ob:
         return {"allowed": False, "reasons": ["on_break"]}
+    exempt = user_clock_geofence_exempt(conn, user_id)
     gfs = (
         list_user_clock_geofences(conn, user_id)
         if assigned_geofences_cached is _MISSING_OP_STATE
         else assigned_geofences_cached
     )
-    if not gfs:
+    if not gfs and not exempt:
         return {"allowed": False, "reasons": ["no_geofence"]}
-    if geofence_inside is False:
+    if geofence_inside is False and not exempt:
         return {"allowed": False, "reasons": ["outside_geofence"]}
     return {"allowed": True, "reasons": []}
 
@@ -1466,24 +1530,38 @@ def clock_in():
         if c.fetchone():
             return jsonify({"error": "Already clocked in"}), 400
 
+        exempt = user_clock_geofence_exempt(conn, g.ta_user["id"])
         gfs = list_user_clock_geofences(conn, g.ta_user["id"])
-        if not gfs:
-            return jsonify({"error": "Assign at least one geofence before clock-in"}), 400
-
-        inside, dist, matched_gf = user_inside_assigned_geofences(
-            conn, g.ta_user["id"], float(lat), float(lng)
-        )
-        if not inside:
-            ref = gfs[0]
-            return jsonify(
-                {
-                    "error": "Outside assigned work geofences",
-                    "distance_meters": round(float(dist), 1) if dist is not None else None,
-                    "radius_meters": float(ref["radius_meters"]),
-                }
-            ), 400
-
-        geofence_id_for_session = int(matched_gf["id"]) if matched_gf else int(gfs[0]["id"])
+        geofence_id_for_session = None
+        if exempt:
+            if gfs:
+                geofence_id_for_session = int(gfs[0]["id"])
+            else:
+                fid = _tenant_fallback_geofence_id(conn, _tenant_id())
+                if not fid:
+                    return jsonify(
+                        {
+                            "error": "No geofence available",
+                            "detail": "Add a geofence for this org or assign one to this user so shifts can be recorded.",
+                        }
+                    ), 400
+                geofence_id_for_session = fid
+        else:
+            if not gfs:
+                return jsonify({"error": "Assign at least one geofence before clock-in"}), 400
+            inside, dist, matched_gf = user_inside_assigned_geofences(
+                conn, g.ta_user["id"], float(lat), float(lng)
+            )
+            if not inside:
+                ref = gfs[0]
+                return jsonify(
+                    {
+                        "error": "Outside assigned work geofences",
+                        "distance_meters": round(float(dist), 1) if dist is not None else None,
+                        "radius_meters": float(ref["radius_meters"]),
+                    }
+                ), 400
+            geofence_id_for_session = int(matched_gf["id"]) if matched_gf else int(gfs[0]["id"])
 
         if clock_in_blocked_by_expired_documents(conn, g.ta_user["id"], _tenant_id()):
             return jsonify(
@@ -1596,7 +1674,7 @@ def clock_out():
         require_inside_co = as_bool(
             clock_cfg.get("clock_out_require_inside_geofence"), True
         )
-        if require_inside_co:
+        if require_inside_co and not user_clock_geofence_exempt(conn, g.ta_user["id"]):
             if lat is None or lng is None:
                 return jsonify(
                     {
@@ -2177,6 +2255,8 @@ def users_update(user_id):
                     if v is None:
                         continue
                     v = 1 if v else 0
+                elif key == "clock_geofence_exempt":
+                    v = 1 if as_bool(v) else 0
                 fields.append(f"{key}=%s")
                 vals.append(v)
             for json_k, col in mapping:

@@ -449,6 +449,8 @@ export default function UserProfilePage({ user: sessionUser }) {
   const [termDate, setTermDate] = useState("");
   const [rehired, setRehired] = useState(false);
   const [payrollActive, setPayrollActive] = useState(true);
+  /** Remote / overseas: skip GPS checks for clock-in and clock-out. */
+  const [clockGeofenceExempt, setClockGeofenceExempt] = useState(false);
   const [roleId, setRoleId] = useState("");
   const [payrollPassword, setPayrollPassword] = useState("");
   const [rehireParentId, setRehireParentId] = useState("");
@@ -618,6 +620,9 @@ export default function UserProfilePage({ user: sessionUser }) {
     setTermDate(ta.termination_date ? String(ta.termination_date).slice(0, 10) : "");
     setRehired(!!ta.rehired);
     setPayrollActive(!!ta.active);
+    setClockGeofenceExempt(
+      !!ta.clock_geofence_exempt || ta.clock_geofence_exempt === 1 || ta.clock_geofence_exempt === "1",
+    );
     setRoleId(ta.role_id != null ? String(ta.role_id) : "");
     setRehireParentId(
       ta.rehire_parent_user_id != null && ta.rehire_parent_user_id !== ""
@@ -915,6 +920,7 @@ export default function UserProfilePage({ user: sessionUser }) {
         setFirstName(parts[0] || "");
         setLastName(parts.slice(1).join(" ") || "");
         setEmail("");
+        setClockGeofenceExempt(false);
         setGeofenceIds((auth.geofence_ids || []).map(Number));
         const assigns = auth.employment_assignments || [];
         setCatRows(
@@ -1102,6 +1108,7 @@ export default function UserProfilePage({ user: sessionUser }) {
         if (employmentStatusCode) taPayload.employment_status_code = employmentStatusCode;
         if (languageCode) taPayload.language_code = languageCode;
         if (laundryExperience !== "") taPayload.laundry_experience = laundryExperience === "1";
+        taPayload.clock_geofence_exempt = clockGeofenceExempt;
         const geoCat =
           canEditPayrollRecords
             ? [
@@ -2034,6 +2041,19 @@ export default function UserProfilePage({ user: sessionUser }) {
               }
               label={t("profile.payrollRecordActive")}
             />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={clockGeofenceExempt}
+                  onChange={(e) => setClockGeofenceExempt(e.target.checked)}
+                  disabled={!canEditPayrollRecords}
+                />
+              }
+              label={t("profile.clockGeofenceExemptLabel")}
+            />
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              {t("profile.clockGeofenceExemptHint")}
+            </Typography>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, pt: 1 }}>
               {t("profile.sectionGeofences")}
             </Typography>
