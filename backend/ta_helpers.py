@@ -2,7 +2,8 @@ import json
 import math
 import re
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -36,17 +37,20 @@ def as_bool(value, default=False):
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+# Naive datetimes from TA/payroll (clock_in_at, breaks, etc.) are America/New_York wall time
+# (see eastern_now_naive in payroll_identity). Tag them correctly so browsers parse one instant.
+_PAYROLL_NAIVE_TZ = ZoneInfo("America/New_York")
+
+
 def json_safe(obj):
     if obj is None:
         return None
     if isinstance(obj, Decimal):
         return float(obj)
     if isinstance(obj, datetime):
-        # MySQL DATETIME is naive; API hosts (e.g. Azure) use UTC. Without tz, browsers
-        # parse ISO strings as *local* wall time and times appear ~offset from Eastern US.
         dt = obj
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=_PAYROLL_NAIVE_TZ)
         return dt.isoformat()
     if isinstance(obj, date):
         return obj.isoformat()

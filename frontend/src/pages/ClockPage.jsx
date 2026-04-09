@@ -355,12 +355,28 @@ function ClockPage({ user: washproUser }) {
   };
 
   const onBreak = !!session?.open_break;
+
+  /** Server uses Eastern-naive instants; avoid client Date.parse(clock_in_at) drift vs elapsed_* fields. */
+  const shiftAnchorRef = useRef(null);
   const liveShiftSec = useMemo(() => {
     if (!session?.clock_in_at) return 0;
+    const el = session.elapsed_shift_seconds;
+    if (el != null) {
+      const k = `${session.id}-${el}`;
+      if (!shiftAnchorRef.current || shiftAnchorRef.current.k !== k) {
+        shiftAnchorRef.current = {
+          k,
+          sec: Math.max(0, Math.floor(Number(el) || 0)),
+          atMs: Date.now(),
+        };
+      }
+      const a = shiftAnchorRef.current;
+      return Math.max(0, a.sec + Math.floor((Date.now() - a.atMs) / 1000));
+    }
     const t0 = Date.parse(session.clock_in_at);
     if (Number.isNaN(t0)) return 0;
     return Math.max(0, Math.floor((Date.now() - t0) / 1000));
-  }, [session?.clock_in_at, tick]);
+  }, [session?.id, session?.elapsed_shift_seconds, session?.clock_in_at, tick]);
 
   const shiftLabel = formatDuration(liveShiftSec);
   const workLabel =
