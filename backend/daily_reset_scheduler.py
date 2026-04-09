@@ -1,7 +1,8 @@
 """
 Embedded midnight (US Eastern) run for daily operational reset.
 
-Runs at 00:05 America/New_York when DAILY_OPERATIONAL_RESET_EMBEDDED_SCHEDULER is on (default).
+Runs daily at America/New_York (default 00:05) when DAILY_OPERATIONAL_RESET_EMBEDDED_SCHEDULER is on (default).
+Optional: DAILY_OPERATIONAL_RESET_SCHED_HOUR (0–23), DAILY_OPERATIONAL_RESET_SCHED_MINUTE (0–59).
 Uses MySQL GET_LOCK so only one Gunicorn worker / process runs the pass when scaled out.
 """
 
@@ -46,9 +47,15 @@ def start_daily_reset_scheduler(app) -> None:
 
             try:
                 out = run_daily_operational_reset_scheduled_pass(conn)
+                ran_n = sum(
+                    1
+                    for t in (out.get("tenants") or [])
+                    if isinstance((t or {}).get("result"), dict) and (t.get("result") or {}).get("ran")
+                )
                 app.logger.info(
-                    "daily reset embedded job: tenants=%s",
+                    "daily reset embedded job: tenants=%s rollovers_completed=%s",
                     out.get("tenant_count"),
+                    ran_n,
                 )
             finally:
                 rel = conn.cursor()
@@ -71,13 +78,32 @@ def start_daily_reset_scheduler(app) -> None:
                     pass
 
     tz = "America/New_York"
+
+    def _int_env(name: str, default: int, lo: int, hi: int) -> int:
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            v = int(raw, 10)
+        except ValueError:
+            return default
+        return max(lo, min(hi, v))
+
+    sched_h = _int_env("DAILY_OPERATIONAL_RESET_SCHED_HOUR", 0, 0, 23)
+    sched_m = _int_env("DAILY_OPERATIONAL_RESET_SCHED_MINUTE", 5, 0, 59)
+
     sched = BackgroundScheduler(timezone=tz)
     sched.add_job(
         job,
-        CronTrigger(hour=0, minute=5, timezone=tz),
+        CronTrigger(hour=sched_h, minute=sched_m, timezone=tz),
         id="washpro_daily_operational_reset",
         replace_existing=True,
     )
     sched.start()
     atexit.register(lambda: sched.shutdown(wait=False))
-    app.logger.info("daily reset embedded scheduler started (00:05 %s)", tz)
+    app.logger.info(
+        "daily reset embedded scheduler started (%02d:%02d %s)",
+        sched_h,
+        sched_m,
+        tz,
+    )
