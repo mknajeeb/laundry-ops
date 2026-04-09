@@ -29,6 +29,7 @@ import IssuePage from "./pages/IssuePage";
 import PeoplePage from "./pages/PeoplePage";
 import ClockPage from "./pages/ClockPage";
 import CheckoutPage from "./pages/CheckoutPage";
+import CheckoutHistoryPage from "./pages/CheckoutHistoryPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
 import HomePage from "./pages/HomePage";
@@ -359,6 +360,16 @@ function AppShell() {
             <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/orders" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/checkout-history"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user}>
+                    <CheckoutHistoryPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route
               path="/upload"
               element={

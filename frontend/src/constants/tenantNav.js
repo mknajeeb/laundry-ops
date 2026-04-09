@@ -23,6 +23,7 @@ export const TENANT_NAV_ITEMS = [
   },
   { to: "/orders", labelKey: "nav.orders", roles: OPS, moduleKey: "orders" },
   { to: "/checkout", labelKey: "nav.checkout", roles: PORTAL, moduleKey: "checkout" },
+  { to: "/checkout-history", labelKey: "nav.checkoutHistory", roles: OPS, moduleKey: "checkout" },
   {
     to: "/upload",
     labelKey: "nav.upload",

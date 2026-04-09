@@ -66,6 +66,39 @@ register_ta_routes(app)
 register_notification_routes(app)
 
 
+def _trigger_daily_operational_reset_if_needed(conn, tenant_oid: int):
+    """Lazy rollover on first tenant API hit after Eastern midnight (when setting is on)."""
+    try:
+        from backend.checkout_history import maybe_run_daily_operational_reset
+
+        return maybe_run_daily_operational_reset(conn, int(tenant_oid))
+    except Exception as e:
+        app.logger.exception("daily_operational_reset failed: %s", e)
+        return None
+
+
+@app.route("/internal/jobs/daily-operational-reset", methods=["POST"])
+def internal_daily_operational_reset_job():
+    """
+    Nightly rollover for tenants with daily reset enabled + trigger=midnight_est.
+    Secure with env DAILY_OPERATIONAL_RESET_CRON_SECRET and header
+    X-Daily-Operational-Reset-Cron-Secret. Schedule ~00:05 America/New_York (e.g. Azure Logic App).
+    """
+    secret = (os.getenv("DAILY_OPERATIONAL_RESET_CRON_SECRET") or "").strip()
+    if not secret:
+        return jsonify({"error": "DAILY_OPERATIONAL_RESET_CRON_SECRET is not configured"}), 503
+    if (request.headers.get("X-Daily-Operational-Reset-Cron-Secret") or "").strip() != secret:
+        return jsonify({"error": "forbidden"}), 403
+    from backend.checkout_history import run_daily_operational_reset_cron_all_tenants
+
+    conn = get_db()
+    try:
+        out = run_daily_operational_reset_cron_all_tenants(conn)
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
 @app.route("/internal/jobs/change-jobs", methods=["POST"])
 def internal_run_change_jobs():
     """
@@ -1671,6 +1704,7 @@ def get_orders():
         if err_resp:
             return err_resp, err_code
         oid = user_org_id(me)
+        _trigger_daily_operational_reset_if_needed(conn, oid)
         cap = orders_status_capabilities(cursor)
         has_batch_date = table_has_column(cursor, "orders_staging", "batch_date")
         has_created_at = table_has_column(cursor, "orders_staging", "created_at")
@@ -2109,6 +2143,138 @@ def get_checkout_log():
 
     finally:
 
+        cursor.close()
+        conn.close()
+
+
+@app.route("/maintenance/daily-operational-reset", methods=["GET", "PUT"])
+def daily_operational_reset_maintenance():
+    """Admin: enable/disable EST daily archive + clean slate for upload/checkout/staging."""
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_admin(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        from backend.checkout_history import (
+            ensure_checkout_history_schema,
+            get_daily_reset_settings,
+            set_daily_reset_enabled,
+            set_daily_reset_trigger,
+        )
+
+        ensure_checkout_history_schema(cursor)
+        if request.method == "GET":
+            return jsonify(get_daily_reset_settings(cursor, tenant_oid))
+        data = request.json or {}
+        en = data.get("enabled")
+        if en is None and "trigger" not in data:
+            return jsonify({"error": "enabled and/or trigger is required"}), 400
+        if en is not None:
+            set_daily_reset_enabled(cursor, tenant_oid, as_bool(en, False))
+        if "trigger" in data:
+            set_daily_reset_trigger(cursor, tenant_oid, str(data.get("trigger") or "lazy"))
+        conn.commit()
+        return jsonify(get_daily_reset_settings(cursor, tenant_oid))
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/checkout_history/snapshots", methods=["GET"])
+def checkout_history_snapshots_list():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if not table_exists(cursor, "checkout_history_snapshots"):
+            return jsonify([])
+        cursor.execute(
+            """
+            SELECT id, organization_id, business_date, archived_at,
+                   staging_count, checkout_log_count, upload_batch_count, upload_batch_row_count
+            FROM checkout_history_snapshots
+            WHERE organization_id=%s
+            ORDER BY business_date DESC, id DESC
+            LIMIT 120
+            """,
+            (tenant_oid,),
+        )
+        return jsonify(cursor.fetchall())
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/checkout_history/snapshots/<int:snapshot_id>/orders", methods=["GET"])
+def checkout_history_snapshot_orders(snapshot_id):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cursor.execute(
+            """
+            SELECT id FROM checkout_history_snapshots
+            WHERE id=%s AND organization_id=%s
+            LIMIT 1
+            """,
+            (snapshot_id, tenant_oid),
+        )
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        cursor.execute(
+            """
+            SELECT * FROM checkout_history_orders
+            WHERE snapshot_id=%s
+            ORDER BY id ASC
+            """,
+            (snapshot_id,),
+        )
+        return jsonify(cursor.fetchall())
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/checkout_history/snapshots/<int:snapshot_id>/checkouts", methods=["GET"])
+def checkout_history_snapshot_checkouts(snapshot_id):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cursor.execute(
+            """
+            SELECT id FROM checkout_history_snapshots
+            WHERE id=%s AND organization_id=%s
+            LIMIT 1
+            """,
+            (snapshot_id, tenant_oid),
+        )
+        if not cursor.fetchone():
+            return jsonify({"error": "Not found"}), 404
+        cursor.execute(
+            """
+            SELECT * FROM checkout_history_checkouts
+            WHERE snapshot_id=%s
+            ORDER BY checkout_time DESC, id DESC
+            """,
+            (snapshot_id,),
+        )
+        return jsonify(cursor.fetchall())
+    finally:
         cursor.close()
         conn.close()
 
@@ -3017,6 +3183,7 @@ def dashboard():
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
+        _trigger_daily_operational_reset_if_needed(conn, tenant_oid)
         cap = orders_status_capabilities(cursor)
         active_where = where_active_at_washpro_sql(cap)
         dash_where = active_where
@@ -7908,6 +8075,7 @@ def get_current_upload_batch():
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
+        _trigger_daily_operational_reset_if_needed(conn, tenant_oid)
         pk_col = get_upload_batches_pk(cursor)
         selected_cols = [
             f"{pk_col} AS id",

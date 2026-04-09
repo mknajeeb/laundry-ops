@@ -8,9 +8,15 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
+  FormControlLabel,
+  FormLabel,
   MenuItem,
+  Radio,
+  RadioGroup,
   Paper,
   Stack,
+  Switch,
   Tab,
   Tabs,
   TextField,
@@ -24,17 +30,20 @@ import {
   deleteMaintenanceAssignment,
   deleteMaintenanceLog,
   deleteMaintenanceTask,
+  getDailyOperationalResetSettings,
   getEmployees,
   getGeofenceConfig,
   getMaintenanceAgenda,
   getMaintenanceAssignments,
   getMaintenanceLogs,
   getMaintenanceTasks,
+  putDailyOperationalResetSettings,
   saveGeofenceConfig,
   updateMaintenanceAssignment,
   updateMaintenanceLog,
   updateMaintenanceTask,
 } from "../api";
+import { useI18n } from "../i18n/I18nContext";
 
 const emptyTaskForm = { task_code: "", task_name: "", category: "CLEANING", active: true };
 const emptyAssignForm = {
@@ -68,6 +77,7 @@ const emptyLogForm = {
 };
 
 function MaintenancePage() {
+  const { t } = useI18n();
   const [tab, setTab] = useState("ASSIGNED");
   const [tasks, setTasks] = useState([]);
   const [assignments, setAssignments] = useState([]);
@@ -76,6 +86,7 @@ function MaintenancePage() {
   const [agenda, setAgenda] = useState([]);
   const [message, setMessage] = useState({ type: "info", text: "" });
   const [saving, setSaving] = useState(false);
+  const [dailyResetSettings, setDailyResetSettings] = useState(undefined);
 
   const [openTask, setOpenTask] = useState(false);
   const [openAssign, setOpenAssign] = useState(false);
@@ -178,6 +189,24 @@ function MaintenancePage() {
 
   useEffect(() => {
     load();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await getDailyOperationalResetSettings();
+        if (!cancelled)
+          setDailyResetSettings(
+            r.data || { enabled: false, last_reset_est_date: null, trigger: "lazy" },
+          );
+      } catch {
+        if (!cancelled) setDailyResetSettings(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const overdueCount = useMemo(
@@ -414,6 +443,94 @@ function MaintenancePage() {
         </Stack>
       </Stack>
       {message.text && <Alert severity={message.type || "info"} sx={{ mt: 1 }}>{message.text}</Alert>}
+
+      {dailyResetSettings != null && (
+        <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2, border: "1px solid #e2e8f0" }}>
+          <Typography sx={{ fontWeight: 700, mb: 0.5 }}>{t("maintenance.dailyResetTitle")}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.2 }}>
+            {t("maintenance.dailyResetHint")}
+          </Typography>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={!!dailyResetSettings.enabled}
+                disabled={saving}
+                onChange={async (e) => {
+                  const v = e.target.checked;
+                  const trig =
+                    dailyResetSettings.trigger === "midnight_est" ? "midnight_est" : "lazy";
+                  try {
+                    setSaving(true);
+                    const r = await putDailyOperationalResetSettings({
+                      enabled: v,
+                      trigger: trig,
+                    });
+                    setDailyResetSettings(
+                      r.data || { ...dailyResetSettings, enabled: v, trigger: trig },
+                    );
+                    setMessage({ type: "success", text: t("maintenance.dailyResetSaved") });
+                  } catch (err) {
+                    console.error(err);
+                    setMessage({
+                      type: "error",
+                      text: err?.response?.data?.error || "Could not save daily reset setting.",
+                    });
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
+              />
+            }
+            label={t("maintenance.dailyResetLabel")}
+          />
+          <FormControl component="fieldset" variant="standard" sx={{ mt: 1.2, display: "block" }}>
+            <FormLabel component="legend">{t("maintenance.dailyResetTriggerLabel")}</FormLabel>
+            <RadioGroup
+              row
+              value={dailyResetSettings.trigger === "midnight_est" ? "midnight_est" : "lazy"}
+              onChange={async (e) => {
+                const v = e.target.value;
+                try {
+                  setSaving(true);
+                  const r = await putDailyOperationalResetSettings({
+                    enabled: !!dailyResetSettings.enabled,
+                    trigger: v,
+                  });
+                  setDailyResetSettings(r.data || { ...dailyResetSettings, trigger: v });
+                  setMessage({ type: "success", text: t("maintenance.dailyResetSaved") });
+                } catch (err) {
+                  console.error(err);
+                  setMessage({
+                    type: "error",
+                    text: err?.response?.data?.error || "Could not save daily reset setting.",
+                  });
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              <FormControlLabel
+                value="lazy"
+                control={<Radio disabled={saving} />}
+                label={t("maintenance.dailyResetTriggerLazy")}
+              />
+              <FormControlLabel
+                value="midnight_est"
+                control={<Radio disabled={saving} />}
+                label={t("maintenance.dailyResetTriggerMidnight")}
+              />
+            </RadioGroup>
+          </FormControl>
+          {dailyResetSettings.trigger === "midnight_est" && (
+            <Typography variant="caption" color="warning.main" display="block" sx={{ mt: 1 }}>
+              {t("maintenance.dailyResetCronHint")}
+            </Typography>
+          )}
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+            {t("maintenance.dailyResetLast")}: {dailyResetSettings.last_reset_est_date || "—"}
+          </Typography>
+        </Paper>
+      )}
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>
         <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto">

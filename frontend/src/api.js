@@ -343,6 +343,21 @@ export const resetAllUploadBatches = (cascade_data = true) =>
 export const deleteUploadBatch = (batch_id, cascade_data = true) =>
   axios.post(`${API_BASE}/upload_batches/${batch_id}/delete`, { cascade_data });
 
+export const getDailyOperationalResetSettings = () =>
+  axios.get(`${API_BASE}/maintenance/daily-operational-reset`);
+
+export const putDailyOperationalResetSettings = (body) =>
+  axios.put(`${API_BASE}/maintenance/daily-operational-reset`, body);
+
+export const listCheckoutHistorySnapshots = () =>
+  axios.get(`${API_BASE}/checkout_history/snapshots`);
+
+export const getCheckoutHistoryOrders = (snapshotId) =>
+  axios.get(`${API_BASE}/checkout_history/snapshots/${snapshotId}/orders`);
+
+export const getCheckoutHistoryCheckouts = (snapshotId) =>
+  axios.get(`${API_BASE}/checkout_history/snapshots/${snapshotId}/checkouts`);
+
 /* =========================================
    EMPLOYEES
 ========================================= */
