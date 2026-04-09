@@ -10,13 +10,20 @@ from __future__ import annotations
 
 import atexit
 import os
+import sys
 
 _LOCK_NAME = "washpro_daily_operational_reset"
+
+
+def _stderr_log(msg: str) -> None:
+    """Azure Log stream and gunicorn reliably show process stderr; Flask app.logger.info often does not."""
+    print(msg, file=sys.stderr, flush=True)
 
 
 def start_daily_reset_scheduler(app) -> None:
     raw = (os.getenv("DAILY_OPERATIONAL_RESET_EMBEDDED_SCHEDULER") or "1").strip().lower()
     if raw in ("0", "false", "no", "off"):
+        _stderr_log("[daily_reset] embedded scheduler disabled (DAILY_OPERATIONAL_RESET_EMBEDDED_SCHEDULER=0)")
         return
     # Flask/Werkzeug reloader: parent process must not start the scheduler.
     if os.environ.get("WERKZEUG_RUN_MAIN") == "false":
@@ -26,7 +33,9 @@ def start_daily_reset_scheduler(app) -> None:
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger
     except ImportError:
-        app.logger.warning("APScheduler not installed; embedded daily reset scheduler disabled")
+        msg = "[daily_reset] APScheduler not installed; embedded scheduler disabled"
+        _stderr_log(msg)
+        app.logger.warning(msg)
         return
 
     def job():
@@ -42,7 +51,7 @@ def start_daily_reset_scheduler(app) -> None:
             row = lock_cur.fetchone()
             got = row is not None and int(row[0]) == 1
             if not got:
-                app.logger.info("daily reset embedded job: skipped (lock not acquired)")
+                _stderr_log("[daily_reset] job skipped (MySQL lock not acquired; another worker may run)")
                 return
 
             try:
@@ -51,6 +60,9 @@ def start_daily_reset_scheduler(app) -> None:
                     1
                     for t in (out.get("tenants") or [])
                     if isinstance((t or {}).get("result"), dict) and (t.get("result") or {}).get("ran")
+                )
+                _stderr_log(
+                    f"[daily_reset] job finished tenants={out.get('tenant_count')} rollovers_completed={ran_n}"
                 )
                 app.logger.info(
                     "daily reset embedded job: tenants=%s rollovers_completed=%s",
@@ -64,6 +76,7 @@ def start_daily_reset_scheduler(app) -> None:
                 finally:
                     rel.close()
         except Exception:
+            _stderr_log("[daily_reset] job FAILED (see traceback in logs)")
             app.logger.exception("daily reset embedded job failed")
         finally:
             if lock_cur:
@@ -101,6 +114,7 @@ def start_daily_reset_scheduler(app) -> None:
     )
     sched.start()
     atexit.register(lambda: sched.shutdown(wait=False))
+    _stderr_log(f"[daily_reset] embedded scheduler started {sched_h:02d}:{sched_m:02d} {tz} (America/New_York)")
     app.logger.info(
         "daily reset embedded scheduler started (%02d:%02d %s)",
         sched_h,
