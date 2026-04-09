@@ -1504,6 +1504,13 @@ def get_operational_state(
     assigned_geofences_cached=_MISSING_OP_STATE,
 ):
     """When caller already loaded open break / geofence list, pass them to skip duplicate queries."""
+    clock_gate_exempt = user_clock_in_gate_exempt(conn, user_id)
+    geofence_exempt = user_clock_geofence_exempt(conn, user_id)
+    # Global TA gate bypass: either exemption should unblock operational gate checks
+    # (checkout/clock-driven gating) across the app.
+    if clock_gate_exempt or geofence_exempt:
+        return {"allowed": True, "reasons": []}
+
     if not sess:
         return {"allowed": False, "reasons": ["not_clocked_in"]}
     ob = (
@@ -1513,15 +1520,14 @@ def get_operational_state(
     )
     if ob:
         return {"allowed": False, "reasons": ["on_break"]}
-    exempt = user_clock_geofence_exempt(conn, user_id)
     gfs = (
         list_user_clock_geofences(conn, user_id)
         if assigned_geofences_cached is _MISSING_OP_STATE
         else assigned_geofences_cached
     )
-    if not gfs and not exempt:
+    if not gfs and not geofence_exempt:
         return {"allowed": False, "reasons": ["no_geofence"]}
-    if geofence_inside is False and not exempt:
+    if geofence_inside is False and not geofence_exempt:
         return {"allowed": False, "reasons": ["outside_geofence"]}
     return {"allowed": True, "reasons": []}
 
