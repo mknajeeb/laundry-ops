@@ -5,6 +5,7 @@ import {
   AppBar,
   Box,
   Button,
+  CircularProgress,
   IconButton,
   Snackbar,
   Toolbar,
@@ -44,6 +45,7 @@ import UserProfilePage from "./pages/UserProfilePage";
 import PayrollFormsHubPage from "./pages/PayrollFormsHubPage";
 import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
 import { authLogout, authMe, clearAuthSession, getClockPayrollUiSettings, getCurrentUploadBatch, getSavedUser } from "./api";
+import { useAuth } from "./context/AuthContext";
 
 function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const navigate = useNavigate();
@@ -116,10 +118,22 @@ function isLoginRoute(path) {
   return p === "/login" || p.startsWith("/login/");
 }
 
-function GuardedRoute({ user, roles, children }) {
+function GuardedRoute({ user, roles, permissionAnyOf, children }) {
+  const { hasPerm, loading: authLoading } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
-  if (!roles?.length) return children;
-  return userSatisfiesRoleGate(user, roles) ? children : <Navigate to="/" replace />;
+  const roleOk = !roles?.length || userSatisfiesRoleGate(user, roles);
+  if (roleOk) return children;
+  if (permissionAnyOf?.length) {
+    if (authLoading) {
+      return (
+        <Box sx={{ display: "grid", placeItems: "center", minHeight: "40vh" }}>
+          <CircularProgress size={28} />
+        </Box>
+      );
+    }
+    if (permissionAnyOf.some((k) => hasPerm(k))) return children;
+  }
+  return <Navigate to="/" replace />;
 }
 
 function TenantOnlyRoute({ user, children }) {
@@ -340,7 +354,20 @@ function AppShell() {
             <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/orders" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
-            <Route path="/upload" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><UploadPage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/upload"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute
+                    user={user}
+                    roles={["ADMIN", "OPS", "UPLOAD"]}
+                    permissionAnyOf={["upload.view", "upload.create"]}
+                  >
+                    <UploadPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route path="/employees" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN"]}><PeoplePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route
               path="/documents"

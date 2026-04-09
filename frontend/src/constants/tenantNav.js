@@ -13,13 +13,32 @@ const PORTAL = [...TENANT_PORTAL_ROLES];
 /** Tenant app sidebar / mobile drawer — single source of truth. */
 export const TENANT_NAV_ITEMS = [
   { to: "/", labelKey: "nav.home", anyTenantUser: true, moduleKey: "home" },
-  { to: "/dashboard", labelKey: "nav.dashboard", roles: OPS, moduleKey: "dashboard" },
+  {
+    to: "/dashboard",
+    labelKey: "nav.dashboard",
+    roles: OPS,
+    /** Matches TA matrix (custom roles may have permissions without OPS role code). */
+    permissionsAnyOf: ["dashboard.view", "dashboard.update"],
+    moduleKey: "dashboard",
+  },
   { to: "/orders", labelKey: "nav.orders", roles: OPS, moduleKey: "orders" },
   { to: "/checkout", labelKey: "nav.checkout", roles: PORTAL, moduleKey: "checkout" },
-  { to: "/upload", labelKey: "nav.upload", roles: ["ADMIN", "OPS"], moduleKey: "upload" },
+  {
+    to: "/upload",
+    labelKey: "nav.upload",
+    roles: ["ADMIN", "OPS", "UPLOAD"],
+    permissionsAnyOf: ["upload.view", "upload.create"],
+    moduleKey: "upload",
+  },
   { to: "/discrepancies", labelKey: "nav.discrepancies", roles: ["ADMIN", "OPS"], moduleKey: "discrepancies" },
   { to: "/inventory", labelKey: "nav.inventory", roles: ["ADMIN", "OPS", "FRONT_DESK"], moduleKey: "inventory" },
-  { to: "/clock", labelKey: "nav.clock", roles: PORTAL, moduleKey: "clock" },
+  {
+    to: "/clock",
+    labelKey: "nav.clock",
+    roles: PORTAL,
+    permissionsAnyOf: ["ta.clock", "clock.view"],
+    moduleKey: "clock",
+  },
   { to: "/issues", labelKey: "nav.issues", roles: OPS, moduleKey: "issues" },
   { to: "/production", labelKey: "nav.production", roles: OPS, moduleKey: "production" },
   { to: "/scoreboard", labelKey: "nav.scoreboard", roles: OPS, moduleKey: "scoreboard" },
@@ -39,15 +58,23 @@ export const TENANT_NAV_ITEMS = [
 ];
 
 /**
- * Sidebar / drawer visibility (roles + tenant module toggles + payroll nav flag).
+ * Sidebar / drawer visibility (roles + optional TA permission keys + tenant module toggles).
+ * @param {(key: string) => boolean} [hasPerm] — from `useAuth()`; when omitted, only role gates apply.
  */
-export function tenantNavItemVisible(user, item, payrollNavVisible = true) {
+export function tenantNavItemVisible(user, item, payrollNavVisible = true, hasPerm = null) {
   if (item.to === "/payroll" && payrollNavVisible === false) return false;
   if (item.skipModuleCheck) return hasPlatformAdminRole(user);
   if (item.anyTenantUser) return isTenantModuleEnabled(user, item.moduleKey || "home");
+
+  const moduleOk = () => isTenantModuleEnabled(user, item.moduleKey || "home");
+  const permKeys = item.permissionsAnyOf;
+  if (permKeys?.length && typeof hasPerm === "function") {
+    if (permKeys.some((k) => hasPerm(k))) return moduleOk();
+  }
+
   if (!item.roles?.length) return false;
   if (!userSatisfiesRoleGate(user, item.roles)) return false;
-  return isTenantModuleEnabled(user, item.moduleKey || "home");
+  return moduleOk();
 }
 
 /** Longest nav prefix match for nested routes (e.g. /employees/12 → /employees). */

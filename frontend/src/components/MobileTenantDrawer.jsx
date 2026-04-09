@@ -1,6 +1,7 @@
 import { Box, Button, Chip, Divider, Drawer, List, ListItemButton, ListItemText, Typography } from "@mui/material";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useI18n } from "../i18n/I18nContext";
+import { useAuth } from "../context/AuthContext";
 import { tenantNavItemVisible, TENANT_NAV_ITEMS } from "../constants/tenantNav";
 
 export default function MobileTenantDrawer({
@@ -14,8 +15,9 @@ export default function MobileTenantDrawer({
   const { t } = useI18n();
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const { hasPerm } = useAuth();
 
-  const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible);
+  const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible, hasPerm);
 
   const go = (to) => {
     navigate(to);

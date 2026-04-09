@@ -8,7 +8,7 @@ import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
-  const { loading: authLoading } = useAuth();
+  const { loading: authLoading, hasPerm } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
 
@@ -22,7 +22,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
       .catch(() => setPayrollNavVisible(true));
   }, [authLoading, user?.id]);
 
-  const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible);
+  const allow = (item) => tenantNavItemVisible(user, item, payrollNavVisible, hasPerm);
 
   return (
     <Box

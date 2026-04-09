@@ -10,6 +10,7 @@ import {
   PointOfSale,
 } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 
 const SECTION_CARD = {
@@ -31,11 +32,12 @@ const TILE_BASE = {
 
 function HomePage({ user }) {
   const navigate = useNavigate();
+  const { hasPerm } = useAuth();
 
   const can = (path) => {
     const item = TENANT_NAV_ITEMS.find((i) => i.to === path);
     if (!item || !user) return false;
-    return tenantNavItemVisible(user, item, true);
+    return tenantNavItemVisible(user, item, true, hasPerm);
   };
 
   const rinseTiles = [
