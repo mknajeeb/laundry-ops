@@ -73,6 +73,8 @@ def start_daily_reset_scheduler(app) -> None:
                 rel = conn.cursor()
                 try:
                     rel.execute("SELECT RELEASE_LOCK(%s)", (_LOCK_NAME,))
+                    # mysql-connector requires consuming the result set before closing cursor/connection.
+                    rel.fetchone()
                 finally:
                     rel.close()
         except Exception:
