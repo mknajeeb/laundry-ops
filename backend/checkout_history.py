@@ -409,6 +409,7 @@ def maybe_run_daily_operational_reset(
         ub_count = 0
         ubr_count = 0
         if table_exists(cursor, "upload_batches"):
+            has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
             bpk = "id"
             cursor.execute("SHOW COLUMNS FROM upload_batches LIKE 'batch_id'")
             if cursor.fetchone():
