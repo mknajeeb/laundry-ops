@@ -8,5 +8,6 @@
 -- ALTER TABLE payroll_profiles ADD COLUMN language_code VARCHAR(64) NULL;
 -- ALTER TABLE payroll_profiles ADD COLUMN laundry_experience TINYINT(1) NULL;
 -- ALTER TABLE payroll_profiles ADD COLUMN clock_geofence_exempt TINYINT(1) NOT NULL DEFAULT 0;
+-- ALTER TABLE payroll_profiles ADD COLUMN clock_in_gate_exempt TINYINT(1) NOT NULL DEFAULT 0;
 
 SELECT 'Apply via app: first /api/ta/users or /api/ta/org-hr-lookups call runs ensure_people_workspace_schema()' AS note;

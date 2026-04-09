@@ -193,7 +193,7 @@ def _tenant_id():
 
 
 # Bump when WORKSPACE_PAYROLL_EXTRA / seed lists change so each org re-runs ensure once per process.
-_PEOPLE_WORKSPACE_ENSURE_VERSION = 2
+_PEOPLE_WORKSPACE_ENSURE_VERSION = 3
 _people_workspace_ensured_version_by_org: dict[int, int] = {}
 
 
@@ -684,6 +684,22 @@ def user_clock_geofence_exempt(conn, washpro_user_id: int) -> bool:
     return bool(row and as_bool(row.get("clock_geofence_exempt"), False))
 
 
+def user_clock_in_gate_exempt(conn, washpro_user_id: int) -> bool:
+    """Skip mandatory clock-in gate (dim_app / redirect to /clock) for this user when tenant gate is on."""
+    if not payroll_profiles_active(conn):
+        return False
+    chk = conn.cursor()
+    if not table_has_column(chk, "payroll_profiles", "clock_in_gate_exempt"):
+        return False
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT clock_in_gate_exempt FROM payroll_profiles WHERE user_id=%s LIMIT 1",
+        (int(washpro_user_id),),
+    )
+    row = c.fetchone()
+    return bool(row and as_bool(row.get("clock_in_gate_exempt"), False))
+
+
 def user_inside_assigned_geofences(
     conn, user_id: int, lat: float, lng: float
 ) -> tuple[bool, Optional[float], Optional[dict]]:
@@ -1105,6 +1121,10 @@ def me():
             perms = [r["perm_key"] for r in c.fetchall()]
         u = fetch_user_row(conn, g.ta_user["id"])
         u.pop("password_hash", None)
+        if payroll_profiles_active(conn):
+            u["clock_in_gate_exempt"] = user_clock_in_gate_exempt(conn, int(g.ta_user["id"]))
+        else:
+            u["clock_in_gate_exempt"] = False
         return jsonify({"user": json_safe(u), "permissions": perms})
     finally:
         conn.close()
@@ -1152,6 +1172,10 @@ def ta_bootstrap():
             perms = [r["perm_key"] for r in c.fetchall()]
         u = fetch_user_row(conn, uid)
         u.pop("password_hash", None)
+        if payroll_profiles_active(conn):
+            u["clock_in_gate_exempt"] = user_clock_in_gate_exempt(conn, uid)
+        else:
+            u["clock_in_gate_exempt"] = False
         ui = load_clock_payroll_ui(conn, tid)
         session_state = None
         if user_has_perm(conn, uid, "ta.clock"):
@@ -2135,6 +2159,8 @@ def users_create():
                     if v is None:
                         continue
                     v = 1 if v else 0
+                elif key in ("clock_geofence_exempt", "clock_in_gate_exempt"):
+                    v = 1 if as_bool(v) else 0
                 extra_fields.append(f"{key}=%s")
                 extra_vals.append(v)
             if extra_fields:
@@ -2255,7 +2281,7 @@ def users_update(user_id):
                     if v is None:
                         continue
                     v = 1 if v else 0
-                elif key == "clock_geofence_exempt":
+                elif key in ("clock_geofence_exempt", "clock_in_gate_exempt"):
                     v = 1 if as_bool(v) else 0
                 fields.append(f"{key}=%s")
                 vals.append(v)

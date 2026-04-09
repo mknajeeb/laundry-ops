@@ -521,6 +521,9 @@ export const TRANSLATIONS = {
     "profile.clockGeofenceExemptLabel": "Exempt from work-location (GPS) / geofence checks",
     "profile.clockGeofenceExemptHint":
       "Use for remote or overseas team members. They can clock in and out without being inside an assigned geofence. Location may still be recorded when their device provides it.",
+    "profile.clockInGateExemptLabel": "Exempt from mandatory clock-in (app gate)",
+    "profile.clockInGateExemptHint":
+      "When the tenant requires clock-in before using the app, this user can open Home, Upload, and other modules without being redirected to the clock first. They may still use the clock if they have time-clock permission.",
     "profile.sectionEmployment": "Employment categories",
     "profile.addEmploymentRow": "Add category row",
     "profile.removeEmploymentRow": "Remove this category row",
@@ -1414,6 +1417,9 @@ export const TRANSLATIONS = {
     "profile.clockGeofenceExemptLabel": "Exento de fichaje por geocerca / GPS en el lugar de trabajo",
     "profile.clockGeofenceExemptHint":
       "Para empleados remotos o en el extranjero: pueden fichar sin estar dentro de una geocerca asignada. El dispositivo puede seguir enviando ubicación si la permite.",
+    "profile.clockInGateExemptLabel": "Exento del fichaje obligatorio al entrar en la app",
+    "profile.clockInGateExemptHint":
+      "Si el inquilino exige fichar antes de usar la app, este usuario puede abrir Inicio, Cargas y demás sin ir primero al reloj. Sigue pudiendo usar el reloj si tiene permiso de fichaje.",
     "profile.sectionEmployment": "Categorías de empleo",
     "profile.addEmploymentRow": "Añadir fila de categoría",
     "profile.removeEmploymentRow": "Quitar esta fila de categoría",

@@ -287,6 +287,7 @@ function UploadPage() {
       setMessage({ type: "success", text: "Batch confirmed and applied to staging." });
       await loadCurrentBatch(rowStatusFilter);
       await loadBatchHistory();
+      window.dispatchEvent(new CustomEvent("washpro-upload-batch-changed"));
     } catch (error) {
       const status = error?.response?.status;
       const data = error?.response?.data || {};
@@ -300,6 +301,7 @@ function UploadPage() {
           setMessage({ type: "success", text: "Batch force-confirmed and applied." });
           await loadCurrentBatch(rowStatusFilter);
           await loadBatchHistory();
+          window.dispatchEvent(new CustomEvent("washpro-upload-batch-changed"));
         }
       } else {
         setMessage({
@@ -337,6 +339,7 @@ function UploadPage() {
       });
       await loadCurrentBatch("ALL");
       await loadBatchHistory();
+      window.dispatchEvent(new CustomEvent("washpro-upload-batch-changed"));
     } catch (error) {
       console.error(error);
       setMessage({

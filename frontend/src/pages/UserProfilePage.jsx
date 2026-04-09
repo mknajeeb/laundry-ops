@@ -384,7 +384,7 @@ export default function UserProfilePage({ user: sessionUser }) {
   const { userId } = useParams();
   const navigate = useNavigate();
   const { t } = useI18n();
-  const { hasPerm, user: authBootstrapUser } = useAuth();
+  const { hasPerm, user: authBootstrapUser, refreshMe } = useAuth();
   const platformMode = Boolean(useMatch("/platform/users/:userId"));
 
   const uid = Number(userId);
@@ -451,6 +451,8 @@ export default function UserProfilePage({ user: sessionUser }) {
   const [payrollActive, setPayrollActive] = useState(true);
   /** Remote / overseas: skip GPS checks for clock-in and clock-out. */
   const [clockGeofenceExempt, setClockGeofenceExempt] = useState(false);
+  /** Skip mandatory clock-in gate (redirect to /clock) when tenant gate is enabled. */
+  const [clockInGateExempt, setClockInGateExempt] = useState(false);
   const [roleId, setRoleId] = useState("");
   const [payrollPassword, setPayrollPassword] = useState("");
   const [rehireParentId, setRehireParentId] = useState("");
@@ -622,6 +624,9 @@ export default function UserProfilePage({ user: sessionUser }) {
     setPayrollActive(!!ta.active);
     setClockGeofenceExempt(
       !!ta.clock_geofence_exempt || ta.clock_geofence_exempt === 1 || ta.clock_geofence_exempt === "1",
+    );
+    setClockInGateExempt(
+      !!ta.clock_in_gate_exempt || ta.clock_in_gate_exempt === 1 || ta.clock_in_gate_exempt === "1",
     );
     setRoleId(ta.role_id != null ? String(ta.role_id) : "");
     setRehireParentId(
@@ -1109,6 +1114,7 @@ export default function UserProfilePage({ user: sessionUser }) {
         if (languageCode) taPayload.language_code = languageCode;
         if (laundryExperience !== "") taPayload.laundry_experience = laundryExperience === "1";
         taPayload.clock_geofence_exempt = clockGeofenceExempt;
+        taPayload.clock_in_gate_exempt = clockInGateExempt;
         const geoCat =
           canEditPayrollRecords
             ? [
@@ -1172,6 +1178,8 @@ export default function UserProfilePage({ user: sessionUser }) {
           if (employmentStatusCode) createPayload.employment_status_code = employmentStatusCode;
           if (languageCode) createPayload.language_code = languageCode;
           if (laundryExperience !== "") createPayload.laundry_experience = laundryExperience === "1";
+          createPayload.clock_geofence_exempt = clockGeofenceExempt;
+          createPayload.clock_in_gate_exempt = clockInGateExempt;
           await createTaUser(createPayload);
           try {
             const hrNewBody = buildHrExtendedPutBody();
@@ -1209,6 +1217,18 @@ export default function UserProfilePage({ user: sessionUser }) {
       }
 
       await load({ skipHeavyCatalogs: true });
+
+      if (
+        !platformMode &&
+        authBootstrapUser?.id &&
+        Number(authBootstrapUser.id) === uid
+      ) {
+        try {
+          await refreshMe();
+        } catch {
+          /* ignore */
+        }
+      }
 
       if (
         !platformMode &&
@@ -2053,6 +2073,19 @@ export default function UserProfilePage({ user: sessionUser }) {
             />
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
               {t("profile.clockGeofenceExemptHint")}
+            </Typography>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={clockInGateExempt}
+                  onChange={(e) => setClockInGateExempt(e.target.checked)}
+                  disabled={!canEditPayrollRecords}
+                />
+              }
+              label={t("profile.clockInGateExemptLabel")}
+            />
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              {t("profile.clockInGateExemptHint")}
             </Typography>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, pt: 1 }}>
               {t("profile.sectionGeofences")}

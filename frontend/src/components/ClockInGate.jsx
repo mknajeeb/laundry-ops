@@ -16,7 +16,7 @@ function isLoginPath(path) {
  */
 export default function ClockInGate({ user, children }) {
   const location = useLocation();
-  const { hasPerm, loading: authLoading } = useAuth();
+  const { hasPerm, loading: authLoading, user: taIdentity } = useAuth();
   const path = location.pathname || "/";
 
   const [ui, setUi] = useState(null);
@@ -50,6 +50,7 @@ export default function ClockInGate({ user, children }) {
     if (!user) return true;
     if (!gateEnabled) return true;
     if (!hasPerm("ta.clock")) return true;
+    if (asBool(taIdentity?.clock_in_gate_exempt, false)) return true;
     if (strictGate) return false;
     const roles = Array.isArray(user.roles)
       ? user.roles.map((r) => String(r).toUpperCase())
@@ -59,7 +60,7 @@ export default function ClockInGate({ user, children }) {
     if (roles.includes("ADMIN")) return true;
     if (hasPerm("ta.monitor") || hasPerm("ta.settings")) return true;
     return false;
-  }, [user, gateEnabled, hasPerm, strictGate]);
+  }, [user, gateEnabled, hasPerm, strictGate, taIdentity?.clock_in_gate_exempt]);
 
   const pollSession = useCallback(() => {
     if (exempt || !hasPerm("ta.clock")) {

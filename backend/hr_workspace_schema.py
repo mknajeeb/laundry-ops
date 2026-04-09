@@ -11,6 +11,7 @@ WORKSPACE_PAYROLL_EXTRA = [
     ("language_code", "VARCHAR(64) NULL"),
     ("laundry_experience", "TINYINT(1) NULL"),
     ("clock_geofence_exempt", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ("clock_in_gate_exempt", "TINYINT(1) NOT NULL DEFAULT 0"),
 ]
 
 WORKSPACE_PAYROLL_EXTRA_KEYS = tuple(x[0] for x in WORKSPACE_PAYROLL_EXTRA)

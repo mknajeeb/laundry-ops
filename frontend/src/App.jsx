@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   AppBar,
@@ -230,30 +230,35 @@ function AppShell() {
       .catch(() => setPayrollNavVisible(true));
   }, [user?.id]);
 
+  const refreshUploadBatchBadge = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const res = await getCurrentUploadBatch();
+      setActiveBatch(res?.data || null);
+    } catch {
+      setActiveBatch(null);
+    }
+  }, [user?.id]);
+
   useEffect(() => {
     if (!user?.id) return;
     let cancelled = false;
     let intervalId;
-    async function loadBatch() {
-      try {
-        const res = await getCurrentUploadBatch();
-        if (!cancelled) setActiveBatch(res?.data || null);
-      } catch {
-        if (!cancelled) setActiveBatch(null);
-      }
-    }
     /** Stagger after auth / TA identity calls so the first paint does fewer parallel DB round-trips. */
     const t = window.setTimeout(() => {
       if (cancelled) return;
-      loadBatch();
-      intervalId = window.setInterval(loadBatch, 120000);
+      refreshUploadBatchBadge();
+      intervalId = window.setInterval(refreshUploadBatchBadge, 120000);
     }, 150);
+    const onBatchChanged = () => refreshUploadBatchBadge();
+    window.addEventListener("washpro-upload-batch-changed", onBatchChanged);
     return () => {
       cancelled = true;
       window.clearTimeout(t);
       if (intervalId) window.clearInterval(intervalId);
+      window.removeEventListener("washpro-upload-batch-changed", onBatchChanged);
     };
-  }, [user?.id]);
+  }, [user?.id, refreshUploadBatchBadge]);
 
   useEffect(() => {
     if (authLoading || isLoginRoute(pathname) || !user) return;

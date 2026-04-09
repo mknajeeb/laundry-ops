@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Box, CircularProgress, Paper, Stack, Typography } from "@mui/material";
 import { getCurrentUploadBatch, getDashboard } from "../api";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -17,41 +17,54 @@ function parseAsLocalDate(value) {
 
 function Dashboard() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeBatch, setActiveBatch] = useState(null);
 
-  useEffect(() => {
-    async function loadStats() {
+  const reloadDashboard = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError("");
+      const [dashRes, batchRes] = await Promise.all([getDashboard(), getCurrentUploadBatch()]);
+      setStats(dashRes.data || {});
+      setActiveBatch(batchRes?.data || null);
+    } catch (err) {
+      console.error(err);
+      setError("Could not load dashboard stats.");
       try {
-        setLoading(true);
-        setError("");
-        const res = await getDashboard();
-        setStats(res.data || {});
-      } catch (err) {
-        console.error(err);
-        setError("Could not load dashboard stats.");
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    loadStats();
-  }, []);
-
-  useEffect(() => {
-    async function loadBatch() {
-      try {
-        const res = await getCurrentUploadBatch();
-        setActiveBatch(res?.data || null);
-      } catch (err) {
-        console.error(err);
+        const batchRes = await getCurrentUploadBatch();
+        setActiveBatch(batchRes?.data || null);
+      } catch {
         setActiveBatch(null);
       }
+    } finally {
+      setLoading(false);
     }
-    loadBatch();
   }, []);
+
+  useEffect(() => {
+    if (location.pathname !== "/dashboard") return;
+    reloadDashboard();
+  }, [location.pathname, reloadDashboard]);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible" && location.pathname === "/dashboard") {
+        reloadDashboard();
+      }
+    };
+    const onBatch = () => {
+      if (location.pathname === "/dashboard") reloadDashboard();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("washpro-upload-batch-changed", onBatch);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("washpro-upload-batch-changed", onBatch);
+    };
+  }, [location.pathname, reloadDashboard]);
 
   const safe = stats || {};
 

@@ -3057,11 +3057,13 @@ def dashboard():
         stats = cursor.fetchone()
 
         if stats:
-
             for k, v in stats.items():
-
                 if v is None:
-                    stats[k] = 0
+                    # Keep batch_date / batch_day null when there are no staging rows (COUNT = 0).
+                    if k in ("batch_date", "batch_day"):
+                        stats[k] = None
+                    else:
+                        stats[k] = 0
 
         return jsonify(stats)
 
