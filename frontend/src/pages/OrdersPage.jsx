@@ -231,7 +231,7 @@ function OrdersPage({ user }) {
         Batch day: {formatBatchDayDate(activeBatchDate)}
       </Typography>
       <Typography sx={{ fontSize: 13, color: "#64748b", mb: 0.5 }}>
-        Submit processed bags, edit/delete orders, and ticket photos: go to{" "}
+        Ticket photo (one capture marks a bag processed), edit/delete, and replacements: go to{" "}
         <strong>Upload</strong> after the batch is confirmed — use the &quot;Live orders for this batch&quot; table.
       </Typography>
 

@@ -7,7 +7,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  IconButton,
   MenuItem,
   Paper,
   Stack,
@@ -19,7 +18,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Close, DeleteOutline, Image, Visibility } from "@mui/icons-material";
+import { DeleteOutline, Image, Visibility } from "@mui/icons-material";
 import {
   deleteOrder,
   deleteOrderTicket,
@@ -71,19 +70,12 @@ function inferMimeType(fileName) {
 }
 
 /**
- * After a batch is confirmed: edit/delete/submit/ticket actions for live staging orders on that batch date.
+ * After a batch is confirmed: ticket photo (auto-submits pending), view/replace/delete ticket, edit/delete for live staging orders on that batch date.
  */
 export default function StagingOrderManagementTable({ batchDate, user, onOrdersChanged }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [submitDialogRow, setSubmitDialogRow] = useState(null);
-  const [submitMeasure, setSubmitMeasure] = useState("");
-  const [submitTicketId, setSubmitTicketId] = useState("");
-  const [submitFile, setSubmitFile] = useState(null);
-  const [submitPreview, setSubmitPreview] = useState("");
-  const [ticketDialogRow, setTicketDialogRow] = useState(null);
-  const [ticketFile, setTicketFile] = useState(null);
   const [ticketView, setTicketView] = useState(null);
   const [ticketViewLoading, setTicketViewLoading] = useState(false);
   const [editRow, setEditRow] = useState(null);
@@ -122,63 +114,43 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
     load();
   }, [load]);
 
-  useEffect(() => {
-    if (!submitFile) {
-      setSubmitPreview("");
-      return;
-    }
-    const url = URL.createObjectURL(submitFile);
-    setSubmitPreview(url);
-    return () => URL.revokeObjectURL(url);
-  }, [submitFile]);
-
-  const onSubmitOrder = async () => {
-    if (!submitDialogRow) return;
+  const submitPendingWithTicketPhoto = async (row, file) => {
+    if (!row?.id || !file) return;
     try {
       setSaving(true);
-      const measureNum = Number(submitMeasure);
+      const st = String(row.service_type || "").toUpperCase();
+      const raw = Number(row.weight_num ?? 0);
+      const measureNum = st === "HD" ? Math.round(raw) : raw;
       if (!Number.isFinite(measureNum) || measureNum < 0) {
-        setNotice("Enter valid weight/count.");
+        setNotice("Order has invalid weight/count. Ask an admin to edit the order.");
         return;
       }
-      if (!submitFile) {
-        setNotice("Upload ticket photo.");
-        return;
-      }
-      const st = String(submitDialogRow.service_type || "").toUpperCase();
       if (st === "HD" && !Number.isInteger(measureNum)) {
-        setNotice("HD count must be a whole number.");
+        setNotice("HD count must be a whole number. Ask an admin to edit the order.");
         return;
       }
-      const payload = { weight_num: measureNum };
-      if (submitTicketId) payload.ticket_id = submitTicketId;
-      payload.ticket_image_base64 = await fileToBase64(submitFile);
-      payload.ticket_file_name = submitFile.name;
-      await submitProcessedOrder(submitDialogRow.id, payload);
-      setSubmitDialogRow(null);
-      setSubmitMeasure("");
-      setSubmitTicketId("");
-      setSubmitFile(null);
+      const tid = String(row.ticket_id || "").trim();
+      const payload = { weight_num: measureNum, ticket_image_base64: await fileToBase64(file), ticket_file_name: file.name };
+      if (tid) payload.ticket_id = tid;
+      await submitProcessedOrder(row.id, payload);
       await load();
       onOrdersChanged?.();
     } catch (error) {
       console.error(error);
-      setNotice(error?.response?.data?.error || "Failed to submit.");
+      setNotice(error?.response?.data?.error || "Failed to record ticket.");
     } finally {
       setSaving(false);
     }
   };
 
-  const onAddTicket = async () => {
-    if (!ticketDialogRow || !ticketFile) return;
+  const uploadTicketPhotoForProcessedRow = async (row, file) => {
+    if (!row?.id || !file) return;
     try {
       setSaving(true);
-      await uploadOrderTicket(ticketDialogRow.id, {
-        ticket_image_base64: await fileToBase64(ticketFile),
-        ticket_file_name: ticketFile.name,
+      await uploadOrderTicket(row.id, {
+        ticket_image_base64: await fileToBase64(file),
+        ticket_file_name: file.name,
       });
-      setTicketDialogRow(null);
-      setTicketFile(null);
       await load();
       onOrdersChanged?.();
     } catch (error) {
@@ -232,7 +204,7 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
         Live orders for this batch (staging)
       </Typography>
       <Typography color="text.secondary" sx={{ mb: 1.5, fontSize: 14 }}>
-        Submit processed bags, ticket photos, and corrections here after the batch is confirmed. Batch date: {bd}.
+        Capture one ticket photo per pending bag to mark it processed (uses the batch weight/count). Replace ticket photos on processed rows as needed. Batch date: {bd}.
       </Typography>
 
       {loading ? (
@@ -268,18 +240,23 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
                   <TableCell align="right">
                     <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
                       {pending && (
-                        <Button
-                          size="small"
-                          variant="contained"
-                          onClick={() => {
-                            setSubmitDialogRow(r);
-                            setSubmitMeasure("");
-                            setSubmitTicketId(String(r.ticket_id || ""));
-                            setSubmitFile(null);
-                          }}
-                        >
-                          Submit
-                        </Button>
+                        <>
+                          <Button size="small" variant="contained" component="label" htmlFor={`staging-pending-ticket-${r.id}`} disabled={saving}>
+                            Ticket photo
+                          </Button>
+                          <input
+                            id={`staging-pending-ticket-${r.id}`}
+                            hidden
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] || null;
+                              e.target.value = "";
+                              if (file) submitPendingWithTicketPhoto(r, file);
+                            }}
+                          />
+                        </>
                       )}
                       {!pending && mine && (
                         <>
@@ -288,9 +265,28 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
                               View ticket
                             </Button>
                           )}
-                          <Button size="small" variant="outlined" startIcon={<Image />} onClick={() => setTicketDialogRow(r)}>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<Image />}
+                            component="label"
+                            htmlFor={`staging-ticket-${r.id}`}
+                            disabled={saving}
+                          >
                             {Number(r?.has_ticket_image || 0) > 0 ? "Replace ticket" : "Add ticket"}
                           </Button>
+                          <input
+                            id={`staging-ticket-${r.id}`}
+                            hidden
+                            type="file"
+                            accept="image/*"
+                            capture="environment"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0] || null;
+                              e.target.value = "";
+                              if (file) uploadTicketPhotoForProcessedRow(r, file);
+                            }}
+                          />
                           {Number(r?.has_ticket_image || 0) > 0 && (
                             <Button
                               size="small"
@@ -359,74 +355,6 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
           </TableBody>
         </Table>
       )}
-
-      <Dialog open={Boolean(submitDialogRow)} onClose={() => setSubmitDialogRow(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Submit processed</DialogTitle>
-        <DialogContent dividers>
-          {submitDialogRow && (
-            <Stack spacing={1.1}>
-              <Typography>{submitDialogRow.name_clean}</Typography>
-              <TextField
-                label={String(submitDialogRow.service_type || "").toUpperCase() === "HD" ? "Count" : "Weight"}
-                type="number"
-                value={submitMeasure}
-                onChange={(e) => setSubmitMeasure(e.target.value)}
-              />
-              <Button variant="outlined" component="label">
-                Upload ticket
-                <input
-                  hidden
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={(e) => setSubmitFile(e.target.files?.[0] || null)}
-                />
-              </Button>
-              {submitPreview && (
-                <Box sx={{ position: "relative", borderRadius: 1, overflow: "hidden" }}>
-                  <Box component="img" src={submitPreview} alt="" sx={{ width: "100%", maxHeight: 220, objectFit: "contain" }} />
-                  <IconButton size="small" onClick={() => setSubmitFile(null)} sx={{ position: "absolute", top: 4, right: 4, bgcolor: "#fff" }}>
-                    <Close fontSize="small" />
-                  </IconButton>
-                </Box>
-              )}
-            </Stack>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSubmitDialogRow(null)}>Cancel</Button>
-          <Button variant="contained" onClick={onSubmitOrder} disabled={saving || !submitMeasure || !submitFile}>
-            Submit
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={Boolean(ticketDialogRow)} onClose={() => setTicketDialogRow(null)} fullWidth maxWidth="xs">
-        <DialogTitle>Ticket photo</DialogTitle>
-        <DialogContent dividers>
-          {ticketDialogRow && (
-            <Stack spacing={1}>
-              <Typography>{ticketDialogRow.name_clean}</Typography>
-              <Button variant="outlined" component="label">
-                {ticketFile ? ticketFile.name : "Select photo"}
-                <input
-                  hidden
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={(e) => setTicketFile(e.target.files?.[0] || null)}
-                />
-              </Button>
-            </Stack>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setTicketDialogRow(null)}>Cancel</Button>
-          <Button variant="contained" onClick={onAddTicket} disabled={!ticketFile || saving}>
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
 
       <Dialog open={Boolean(ticketView)} onClose={() => setTicketView(null)} fullWidth maxWidth="sm">
         <DialogTitle>Ticket</DialogTitle>

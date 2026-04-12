@@ -48,7 +48,6 @@ export default function OrderDryerFlowPage({ user }) {
   const [dryers, setDryers] = useState([]);
   const [busy, setBusy] = useState(false);
   const [manualCode, setManualCode] = useState("");
-  const [ticketFile, setTicketFile] = useState(null);
   const scannerRef = useRef(null);
   const startedRef = useRef(false);
 
@@ -192,15 +191,15 @@ export default function OrderDryerFlowPage({ user }) {
     }
   };
 
-  const onCompleteTicket = async () => {
-    if (!ticketFile || !lockToken) return;
+  const completeTicketWithFile = async (file) => {
+    if (!file || !lockToken) return;
     setBusy(true);
     try {
-      const b64 = await fileToBase64(ticketFile);
+      const b64 = await fileToBase64(file);
       await completeOrderGamingTicket(oid, {
         lock_token: lockToken,
         ticket_image_base64: b64,
-        ticket_file_name: ticketFile.name,
+        ticket_file_name: file.name,
       });
       navigate("/orders", { replace: true });
     } catch (e) {
@@ -252,7 +251,9 @@ export default function OrderDryerFlowPage({ user }) {
         <Button startIcon={<ArrowBack />} onClick={() => navigate("/orders")} sx={{ mb: 2 }}>
           Back to orders
         </Button>
-        <Alert severity="info">Dryer assignment is already completed for this order. Use Submit when ready.</Alert>
+        <Alert severity="info">
+          Dryer assignment is already completed for this order. Add or replace the ticket photo from Upload → Live orders for this batch if needed.
+        </Alert>
       </Box>
     );
   }
@@ -365,25 +366,20 @@ export default function OrderDryerFlowPage({ user }) {
           <Typography variant="h5" sx={{ fontWeight: 700 }}>
             Ticket photo
           </Typography>
-          <Typography color="text.secondary">Take or upload a clear photo of the ticket. Required to finish.</Typography>
-          <Button variant="outlined" component="label" startIcon={<CameraAlt />} sx={{ py: 2, borderRadius: 2 }}>
-            {ticketFile ? ticketFile.name : "Choose / capture photo"}
+          <Typography color="text.secondary">Take or upload one clear photo of the ticket — the flow finishes as soon as it is saved.</Typography>
+          <Button variant="contained" component="label" startIcon={<CameraAlt />} disabled={busy} sx={{ py: 2, borderRadius: 2 }}>
+            {busy ? "Saving…" : "Choose / capture photo"}
             <input
               hidden
               type="file"
               accept="image/*"
               capture="environment"
-              onChange={(e) => setTicketFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const file = e.target.files?.[0] || null;
+                e.target.value = "";
+                if (file) completeTicketWithFile(file);
+              }}
             />
-          </Button>
-          <Button
-            variant="contained"
-            size="large"
-            disabled={busy || !ticketFile}
-            onClick={onCompleteTicket}
-            sx={{ borderRadius: 999, py: 1.6, fontWeight: 700 }}
-          >
-            Complete
           </Button>
         </Stack>
       )}
