@@ -108,12 +108,6 @@ function OrdersPage({ user }) {
     return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   };
 
-  const formatBatchDayDate = (value) => {
-    const d = parseAsLocalDate(value);
-    if (!d) return "-";
-    return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", year: "numeric" });
-  };
-
   const visibleRows = useMemo(() => {
     const q = deferredSearch.trim().toLowerCase();
 
@@ -180,6 +174,16 @@ function OrdersPage({ user }) {
   }, [deferredSearch, visibleRows]);
 
   const activeBatchDate = batchInfo?.batch_date || rows[0]?.batch_date || null;
+  const batchDateScan = activeBatchDate ? String(activeBatchDate).slice(0, 10) : "";
+  const batchLabelShort = (() => {
+    if (!batchDateScan) return "";
+    const d = parseAsLocalDate(batchDateScan);
+    if (!d) return "";
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  })();
+  const headerDateLine = batchLabelShort
+    ? `${formatSystemDateLong()} · Batch ${batchLabelShort}`
+    : formatSystemDateLong();
   const searchActive = deferredSearch.trim().length > 0;
 
   const openDryerFlow = (r) => {
@@ -210,10 +214,18 @@ function OrdersPage({ user }) {
   };
 
   return (
-    <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        px: { xs: 1, sm: 1.5 },
+        py: 1,
+        background: "linear-gradient(185deg, #e8edf7 0%, #f1f5f9 18%, #fafbfc 55%, #ffffff 100%)",
+      }}
+    >
       <StandardScreenHeader
         title="Rinse orders"
-        dateLabel={formatSystemDateLong()}
+        dateLabel={headerDateLine}
+        dense
         right={
           <>
             <IconPillButton
@@ -227,13 +239,6 @@ function OrdersPage({ user }) {
           </>
         }
       />
-      <Typography sx={{ fontSize: 14, color: "#6b7280", fontWeight: 400, mt: -0.5, mb: 0.5 }}>
-        Batch day: {formatBatchDayDate(activeBatchDate)}
-      </Typography>
-      <Typography sx={{ fontSize: 13, color: "#64748b", mb: 0.5 }}>
-        Ticket photo (one capture marks a bag processed), edit/delete, and replacements: go to{" "}
-        <strong>Upload</strong> after the batch is confirmed — use the &quot;Live orders for this batch&quot; table.
-      </Typography>
 
       <RushTabCountBar
         value={rushFilter}
@@ -245,7 +250,11 @@ function OrdersPage({ user }) {
         ]}
       />
 
-      <OrderScanLookupBar storageKey="washpro_scan_lookup_orders" onPickOrder={onScanPickOrder} />
+      <OrderScanLookupBar
+        storageKey="washpro_scan_lookup_orders"
+        batchDate={batchDateScan}
+        onPickOrder={onScanPickOrder}
+      />
 
       <OpsSearchBar value={search} onChange={setSearch} />
 

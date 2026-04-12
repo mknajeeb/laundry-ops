@@ -215,6 +215,22 @@ function CheckoutPage() {
     };
   }, [searchFilteredRows, checkedRows.length]);
 
+  /** Narrows scan lookup to the dominant batch in the current queue (faster, fewer collisions). */
+  const lookupBatchDate = useMemo(() => {
+    const dates = rows
+      .map((r) => String(r?.batch_date || "").trim().slice(0, 10))
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    if (!dates.length) return "";
+    const counts = {};
+    dates.forEach((d) => {
+      counts[d] = (counts[d] || 0) + 1;
+    });
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const [best, n] = sorted[0] || ["", 0];
+    if (!best || n < dates.length * 0.5) return "";
+    return best;
+  }, [rows]);
+
   const handleAlphaToggle = (alpha) => {
     setOpenAlpha((prev) => (prev === alpha ? null : alpha));
   };
@@ -281,11 +297,19 @@ function CheckoutPage() {
   }
 
   return (
-    <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        px: { xs: 1, sm: 1.5 },
+        py: 1,
+        background: "linear-gradient(185deg, #e8edf7 0%, #f1f5f9 18%, #fafbfc 55%, #ffffff 100%)",
+      }}
+    >
       <TaOperationalBanner message={bannerMessage} />
       <StandardScreenHeader
         title="Checkout"
         dateLabel={formatSystemDateLong()}
+        dense
         right={
           <>
             <IconPillButton
@@ -317,6 +341,7 @@ function CheckoutPage() {
 
       <OrderScanLookupBar
         storageKey="washpro_scan_lookup_checkout"
+        batchDate={lookupBatchDate}
         disabled={scanDisabled}
         onPickOrder={(o) => onSelectForCheckout(o)}
       />
@@ -453,11 +478,8 @@ function CheckoutPage() {
       </Box>
 
       <Drawer anchor="right" open={sentDrawerOpen} onClose={() => setSentDrawerOpen(false)} PaperProps={{ sx: { width: { xs: "100%", sm: 380 } } }}>
-        <Box sx={{ p: 1.5, borderBottom: "1px solid #e5e7eb" }}>
-          <Typography sx={{ fontSize: 18, fontWeight: 600 }}>Sent to rinse</Typography>
-          <Typography sx={{ fontSize: 13, color: "text.secondary", mt: 0.5 }}>
-            Tap a bag to undo and move it back to the queue.
-          </Typography>
+        <Box sx={{ p: 1.25, borderBottom: "1px solid #e5e7eb" }}>
+          <Typography sx={{ fontSize: 17, fontWeight: 700 }}>Sent to rinse</Typography>
         </Box>
         <Box sx={{ p: 1, overflow: "auto", pb: "env(safe-area-inset-bottom, 16px)" }}>
           {checkedRows.length === 0 ? (

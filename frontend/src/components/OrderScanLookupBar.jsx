@@ -6,7 +6,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   List,
   ListItemButton,
   MenuItem,
@@ -21,7 +20,7 @@ import { lookupOrdersByScan } from "../api";
 
 const SCAN_READER_ID = "order-scan-reader";
 
-export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }) {
+export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate }) {
   const [enabled, setEnabled] = useState(() => localStorage.getItem(storageKey) === "1");
   const [open, setOpen] = useState(false);
   const [nameHint, setNameHint] = useState("");
@@ -61,11 +60,16 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
       }
       setBusy(true);
       try {
-        const res = await lookupOrdersByScan({
+        const body = {
           qr_text: q,
           name_hint: nameHint.trim(),
           service_hint: serviceHint.trim(),
-        });
+        };
+        const bd = String(batchDate || "").trim().slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(bd)) {
+          body.batch_date = bd;
+        }
+        const res = await lookupOrdersByScan(body);
         const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
         if (matches.length === 0) {
           window.alert("No matching order found. Check name and service on the tag (Wash & fold vs Hang dry).");
@@ -85,7 +89,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
         setBusy(false);
       }
     },
-    [nameHint, serviceHint, onPickOrder, stopScanner]
+    [nameHint, serviceHint, batchDate, onPickOrder, stopScanner]
   );
 
   useEffect(() => {
@@ -103,7 +107,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
       try {
         await html5.start(
           { facingMode: "environment" },
-          { fps: 8, qrbox: { width: 240, height: 240 } },
+          { fps: 15, qrbox: { width: 280, height: 280 } },
           async (text) => {
             if (scanBusyRef.current) return;
             scanBusyRef.current = true;
@@ -129,65 +133,61 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
   const onManualLookup = () => runLookup(manualQr);
 
   return (
-    <Box sx={{ mt: 1 }}>
-      <FormControlLabel
-        control={
-          <Switch
-            checked={enabled}
-            onChange={(_, v) => setEnabled(v)}
-            disabled={disabled}
+    <Box sx={{ mt: 0.75 }}>
+      <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Switch checked={enabled} onChange={(_, v) => setEnabled(v)} disabled={disabled} color="primary" size="medium" />
+          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>Scan</Typography>
+        </Stack>
+        {enabled && (
+          <Button
+            variant="contained"
             color="primary"
-          />
-        }
-        label={
-          <Typography component="span" sx={{ fontWeight: 600 }}>
-            Scan lookup (QR + optional name / service from tag)
-          </Typography>
-        }
-      />
-      {enabled && (
-        <Button
-          variant="outlined"
-          startIcon={<QrCodeScanner />}
-          onClick={() => setOpen(true)}
-          disabled={disabled}
-          sx={{ ml: 1, borderRadius: 999, textTransform: "none" }}
-        >
-          Scan bag
-        </Button>
-      )}
+            startIcon={<QrCodeScanner />}
+            onClick={() => setOpen(true)}
+            disabled={disabled}
+            sx={{
+              borderRadius: 2,
+              textTransform: "none",
+              fontWeight: 700,
+              minHeight: 48,
+              px: 2,
+              boxShadow: "0 4px 14px rgba(37, 99, 235, 0.28)",
+            }}
+          >
+            Scan bag
+          </Button>
+        )}
+      </Stack>
 
       <Dialog open={open} onClose={() => !busy && setOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Scan bag tag</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 700 }}>Scan tag</DialogTitle>
         <DialogContent dividers>
-          <Stack spacing={1.5}>
-            <Typography variant="body2" color="text.secondary">
-              Point the camera at the QR on the Rinse tag. If several orders share the same name, type the name and
-              choose the service printed on the tag (Wash &amp; fold vs Hang dry).
-            </Typography>
-            <Box
-              id={SCAN_READER_ID}
-              sx={{ minHeight: 220, bgcolor: "#000", borderRadius: 1, overflow: "hidden" }}
-            />
+          <Stack spacing={1.25}>
+            <Box id={SCAN_READER_ID} sx={{ minHeight: 240, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }} />
             <TextField
-              label="Name on tag (optional)"
+              label="Name on tag"
               value={nameHint}
               onChange={(e) => setNameHint(e.target.value)}
-              placeholder="e.g. Paris Rivera"
+              placeholder="Last or full name"
+              size="small"
+              fullWidth
             />
             <TextField
               select
-              label="Service on tag (optional)"
+              label="Service"
               value={serviceHint}
               onChange={(e) => setServiceHint(e.target.value)}
               SelectProps={{ displayEmpty: true }}
+              size="small"
+              fullWidth
             >
-              <MenuItem value="">Any / not sure</MenuItem>
+              <MenuItem value="">Any</MenuItem>
               <MenuItem value="Wash & fold">Wash &amp; fold</MenuItem>
               <MenuItem value="Wash and fold">Wash and fold</MenuItem>
               <MenuItem value="Hang dry">Hang dry</MenuItem>
-              <MenuItem value="WF">WF (code)</MenuItem>
-              <MenuItem value="HD">HD (code)</MenuItem>
+              <MenuItem value="WF">WF</MenuItem>
+              <MenuItem value="HD">HD</MenuItem>
             </TextField>
             <TextField
               label="Or paste QR text"
@@ -195,9 +195,10 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
               onChange={(e) => setManualQr(e.target.value)}
               multiline
               minRows={2}
+              size="small"
             />
-            <Button variant="contained" onClick={onManualLookup} disabled={busy}>
-              Look up with pasted text
+            <Button variant="contained" onClick={onManualLookup} disabled={busy} sx={{ py: 1.2, fontWeight: 700 }}>
+              Look up
             </Button>
           </Stack>
         </DialogContent>
@@ -209,7 +210,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
       </Dialog>
 
       <Dialog open={Boolean(pickList?.length)} onClose={() => setPickList(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Multiple matches — pick one</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 700 }}>Pick order</DialogTitle>
         <DialogContent dividers>
           <List dense>
             {pickList?.map((m) => (
@@ -222,9 +223,9 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled }
                 }}
               >
                 <Stack>
-                  <Typography fontWeight={600}>{m.name_clean}</Typography>
+                  <Typography fontWeight={700}>{m.name_clean}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    #{m.id} • {String(m.date_clean || "").slice(0, 10)} • {m.service_type} • weight {m.weight_num}
+                    #{m.id} • {String(m.date_clean || "").slice(0, 10)} • {m.service_type} • {m.weight_num}
                   </Typography>
                 </Stack>
               </ListItemButton>

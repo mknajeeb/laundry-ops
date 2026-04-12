@@ -4,14 +4,51 @@ Match Rinse tag QR / name / service hints to orders_staging rows still at Washpr
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 
 def normalize_scan_name(value: Any) -> str:
-    s = str(value or "").lower()
+    s = str(value or "")
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
     s = re.sub(r"[^a-z0-9\s]+", " ", s)
     return " ".join(s.split())
+
+
+def name_hint_matches_row(nn: str, name_clean: Any) -> bool:
+    """Loose match for tag typing: substring, full string, or every 2+ char token appears in the name."""
+    if not nn:
+        return True
+    rn = normalize_scan_name(name_clean)
+    if not rn:
+        return False
+    if rn == nn:
+        return True
+    if len(nn) >= 2 and (nn in rn or rn in nn):
+        return True
+    parts = [p for p in nn.split() if len(p) >= 2]
+    if parts and all(p in rn for p in parts):
+        return True
+    return False
+
+
+def name_match_score(nn: str, name_clean: Any) -> int:
+    if not nn:
+        return 0
+    rn = normalize_scan_name(name_clean)
+    if not rn:
+        return 0
+    if rn == nn:
+        return 120
+    if len(nn) >= 2 and (nn in rn or rn in nn):
+        return 70
+    parts = [p for p in nn.split() if len(p) >= 2]
+    if parts and all(p in rn for p in parts):
+        return 60
+    return 0
 
 
 def map_service_hint(hint: Any) -> str | None:
@@ -84,6 +121,13 @@ def run_order_lookup_scan(
     has_tid = cap.get("has_ticket_id")
     tid_sel = "o.ticket_id" if has_tid else "NULL AS ticket_id"
 
+    batch_raw = str(body.get("batch_date") or "").strip()[:10]
+    batch_date = batch_raw if re.fullmatch(r"\d{4}-\d{2}-\d{2}", batch_raw) else ""
+    batch_clause = " AND o.batch_date = %s " if batch_date else ""
+    exec_params: list[Any] = [tenant_oid]
+    if batch_date:
+        exec_params.append(batch_date)
+
     sql = f"""
         SELECT
             o.id,
@@ -98,9 +142,10 @@ def run_order_lookup_scan(
         FROM orders_staging o
         WHERE ({active_where_sql})
           AND o.organization_id = %s
+          {batch_clause}
         ORDER BY o.id ASC
     """
-    cursor.execute(sql, (tenant_oid,))
+    cursor.execute(sql, tuple(exec_params))
     candidates = cursor.fetchall() or []
 
     qr_text = str(body.get("qr_text") or "").strip()
@@ -111,10 +156,7 @@ def run_order_lookup_scan(
     mapped = map_service_hint(service_hint)
 
     def row_ok_name(row: dict) -> bool:
-        if not nn:
-            return True
-        rn = normalize_scan_name(row.get("name_clean"))
-        return rn == nn or (len(nn) >= 4 and (nn in rn or rn in nn))
+        return name_hint_matches_row(nn, row.get("name_clean"))
 
     def row_ok_service(row: dict) -> bool:
         if not mapped:
@@ -143,11 +185,7 @@ def run_order_lookup_scan(
         if row_qr_hit(row):
             score += 200
         if nn:
-            rn = normalize_scan_name(row.get("name_clean"))
-            if rn == nn:
-                score += 120
-            elif len(nn) >= 4 and (nn in rn or rn in nn):
-                score += 70
+            score += name_match_score(nn, row.get("name_clean"))
         if mapped and str(row.get("service_type") or "").strip().upper() == mapped:
             score += 80
 
