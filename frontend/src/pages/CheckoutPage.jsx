@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, useDeferredValue } from "react";
 import {
+  Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -29,6 +31,7 @@ import StandardScreenHeader from "../components/layout/StandardScreenHeader";
 import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
+import OrderScanLookupBar from "../components/OrderScanLookupBar";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -52,6 +55,7 @@ function normalizeCode(value) {
 
 function CheckoutPage() {
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
+  const scanDisabled = checkoutBlocked;
 
   const [rows, setRows] = useState([]);
   const [checkedRows, setCheckedRows] = useState([]);
@@ -311,6 +315,12 @@ function CheckoutPage() {
       />
 
       <OpsSearchBar value={search} onChange={setSearch} />
+
+      <OrderScanLookupBar
+        storageKey="washpro_scan_lookup_checkout"
+        disabled={scanDisabled}
+        onPickOrder={(o) => onSelectForCheckout(o)}
+      />
 
       <Box sx={{ mt: 1.2 }}>
         {groupedQueue.keys.map((alpha, idx) => {

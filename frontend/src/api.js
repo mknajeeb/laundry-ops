@@ -241,6 +241,8 @@ export const getDashboard = () =>
    ORDERS
 ========================================= */
 
+export const lookupOrdersByScan = (body) => axios.post(`${API_BASE}/orders/lookup_scan`, body);
+
 export const getOrders = (options = {}) =>
   axios.get(`${API_BASE}/orders`, {
     params: {

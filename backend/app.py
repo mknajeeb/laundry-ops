@@ -1817,6 +1817,36 @@ def get_orders():
         conn.close()
 
 
+@app.route("/orders/lookup_scan", methods=["POST"])
+def orders_lookup_scan_route():
+    """Match Rinse QR payload and/or printed name + service type to live staging orders (still at Washpro)."""
+    from backend.order_lookup_scan import run_order_lookup_scan
+
+    data = request.get_json(silent=True) or {}
+    qr_text = str(data.get("qr_text") or "").strip()
+    name_hint = str(data.get("name_hint") or "").strip()
+    service_hint = str(data.get("service_hint") or "").strip()
+    if not qr_text and not name_hint and not service_hint:
+        return jsonify({"error": "Provide qr_text and/or name_hint and/or service_hint"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cap = orders_status_capabilities(cursor)
+        active_where = where_active_at_washpro_sql(cap)
+        matches = run_order_lookup_scan(cursor, tenant_oid, active_where, cap, data)
+        return jsonify({"matches": [json_safe(m) for m in matches]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 # ---------------------------------------------------
 # Checkout Single Order
 # ---------------------------------------------------

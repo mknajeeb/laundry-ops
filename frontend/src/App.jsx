@@ -390,7 +390,7 @@ function AppShell() {
                     roles={["ADMIN", "OPS", "UPLOAD"]}
                     permissionAnyOf={["upload.view", "upload.create"]}
                   >
-                    <UploadPage />
+                    <UploadPage user={user} />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

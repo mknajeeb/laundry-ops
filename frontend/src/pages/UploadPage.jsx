@@ -34,6 +34,7 @@ import {
   overrideUploadBatchRow,
   uploadOrders,
 } from "../api";
+import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
 
 const EMPTY_FORM = {
   date_clean: "",
@@ -45,7 +46,7 @@ const EMPTY_FORM = {
   reason: "",
 };
 
-function UploadPage() {
+function UploadPage({ user }) {
   const [file, setFile] = useState(null);
   const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(false);
@@ -529,6 +530,14 @@ function UploadPage() {
                 ))}
               </TableBody>
             </Table>
+          )}
+
+          {isConfirmed && batch?.batch_date && (
+            <StagingOrderManagementTable
+              batchDate={batch.batch_date}
+              user={user}
+              onOrdersChanged={() => window.dispatchEvent(new CustomEvent("washpro-upload-batch-changed"))}
+            />
           )}
         </Paper>
       )}
