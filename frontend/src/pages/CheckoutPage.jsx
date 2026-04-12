@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -402,13 +401,43 @@ function CheckoutPage() {
                                 {formatDate(r.date_clean)} • {measureOf(r)}
                               </Typography>
                               <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap>
-                                <Chip size="small" label={serviceOf(r) || "—"} sx={{ bgcolor: "#ffffff", color: "#111827" }} />
-                                <Chip
-                                  size="small"
-                                  label={rt === "RUSH" ? "RUSH" : "NON-RUSH"}
-                                  icon={rt === "RUSH" ? <Bolt sx={{ fontSize: 15 }} /> : <CheckCircle sx={{ fontSize: 14 }} />}
-                                  sx={{ bgcolor: "#ffffff", color: "#111827" }}
-                                />
+                                <Stack
+                                  direction="row"
+                                  alignItems="center"
+                                  spacing={0.5}
+                                  sx={{
+                                    px: 1.1,
+                                    py: 0.35,
+                                    borderRadius: 999,
+                                    bgcolor: "#ffffff",
+                                    color: "#111827",
+                                  }}
+                                >
+                                  <Typography component="span" sx={{ fontSize: 12, fontWeight: 700 }}>
+                                    {serviceOf(r) || "—"}
+                                  </Typography>
+                                </Stack>
+                                <Stack
+                                  direction="row"
+                                  alignItems="center"
+                                  spacing={0.5}
+                                  sx={{
+                                    px: 1.1,
+                                    py: 0.35,
+                                    borderRadius: 999,
+                                    bgcolor: "#ffffff",
+                                    color: "#111827",
+                                  }}
+                                >
+                                  {rt === "RUSH" ? (
+                                    <Bolt sx={{ fontSize: 15, color: "#111827" }} />
+                                  ) : (
+                                    <CheckCircle sx={{ fontSize: 14, color: "#111827" }} />
+                                  )}
+                                  <Typography component="span" sx={{ fontSize: 12, fontWeight: 700 }}>
+                                    {rt === "RUSH" ? "RUSH" : "NON-RUSH"}
+                                  </Typography>
+                                </Stack>
                               </Stack>
                             </Stack>
                           </Paper>
