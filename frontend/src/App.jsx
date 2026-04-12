@@ -29,6 +29,7 @@ import IssuePage from "./pages/IssuePage";
 import PeoplePage from "./pages/PeoplePage";
 import ClockPage from "./pages/ClockPage";
 import CheckoutPage from "./pages/CheckoutPage";
+import OrderDryerFlowPage from "./pages/OrderDryerFlowPage";
 import CheckoutHistoryPage from "./pages/CheckoutHistoryPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
@@ -358,6 +359,16 @@ function AppShell() {
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
             <Route path="/" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><HomePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/orders/:orderId/dryer-flow"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user}>
+                    <OrderDryerFlowPage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route path="/orders" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route

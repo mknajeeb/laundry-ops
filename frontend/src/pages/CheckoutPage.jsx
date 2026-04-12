@@ -1,9 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useDeferredValue } from "react";
 import {
-  Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -27,6 +25,11 @@ import {
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
 import TaOperationalBanner from "../components/TaOperationalBanner";
 import { useTaOperationalGate } from "../hooks/useTaOperationalGate";
+import StandardScreenHeader from "../components/layout/StandardScreenHeader";
+import OpsSearchBar from "../components/layout/OpsSearchBar";
+import RushTabCountBar from "../components/layout/RushTabCountBar";
+import IconPillButton from "../components/layout/IconPillButton";
+import { formatSystemDateLong } from "../utils/formatDateLocal";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
@@ -54,7 +57,9 @@ function CheckoutPage() {
   const [checkedRows, setCheckedRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [rushTab, setRushTab] = useState("RUSH");
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [rushTab, setRushTab] = useState("ALL");
   const [openAlpha, setOpenAlpha] = useState(null);
   const [openAlphaSent, setOpenAlphaSent] = useState(null);
   const [sentDrawerOpen, setSentDrawerOpen] = useState(false);
@@ -143,9 +148,22 @@ function CheckoutPage() {
     return /^[A-Z]$/.test(ch) ? ch : "#";
   }, []);
 
+  const searchFilteredRows = useMemo(() => {
+    const q = deferredSearch.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => {
+      const name = String(r?.name_clean || "").toLowerCase();
+      const id = String(r?.id || "").toLowerCase();
+      const svc = String(r?.service_type || "").toLowerCase();
+      const w = String(r?.weight_num ?? r?.weight ?? "").toLowerCase();
+      return name.includes(q) || id.startsWith(q) || svc.includes(q) || w.includes(q);
+    });
+  }, [rows, deferredSearch]);
+
   const queueForRushTab = useMemo(() => {
-    return rows.filter((r) => rushOf(r) === rushTab);
-  }, [rows, rushTab]);
+    if (rushTab === "ALL") return searchFilteredRows;
+    return searchFilteredRows.filter((r) => rushOf(r) === rushTab);
+  }, [searchFilteredRows, rushTab]);
 
   const groupedQueue = useMemo(() => {
     const groups = {};
@@ -184,14 +202,15 @@ function CheckoutPage() {
   }, [checkedRows, alphaOfLog]);
 
   const counters = useMemo(() => {
-    const rushCount = rows.filter((r) => rushOf(r) === "RUSH").length;
-    const nonRushCount = rows.filter((r) => rushOf(r) === "NON-RUSH").length;
+    const rushCount = searchFilteredRows.filter((r) => rushOf(r) === "RUSH").length;
+    const nonRushCount = searchFilteredRows.filter((r) => rushOf(r) === "NON-RUSH").length;
     return {
+      allCount: searchFilteredRows.length,
       rushCount,
       nonRushCount,
       sentCount: checkedRows.length,
     };
-  }, [rows, checkedRows.length]);
+  }, [searchFilteredRows, checkedRows.length]);
 
   const handleAlphaToggle = (alpha) => {
     setOpenAlpha((prev) => (prev === alpha ? null : alpha));
@@ -223,7 +242,7 @@ function CheckoutPage() {
 
   const onSelectForCheckout = (row) => {
     const key = normalizeName(row?.name_clean);
-    const sameName = rows.filter((r) => normalizeName(r?.name_clean) === key);
+    const sameName = searchFilteredRows.filter((r) => normalizeName(r?.name_clean) === key);
     if (sameName.length > 1) {
       setNameConfirmDialog({
         name_clean: row?.name_clean,
@@ -261,73 +280,37 @@ function CheckoutPage() {
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
       <TaOperationalBanner message={bannerMessage} />
-      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
-        <Typography sx={{ fontSize: 30, fontWeight: 500 }}>Checkout</Typography>
-        <Stack direction="row" alignItems="center" spacing={0.5}>
-          <Button
-            size="small"
-            variant="outlined"
-            color="primary"
-            startIcon={<Undo />}
-            onClick={() => setSentDrawerOpen(true)}
-          >
-            Sent {counters.sentCount > 0 ? `(${counters.sentCount})` : ""}
-          </Button>
-          <Button size="small" variant="text" startIcon={<Refresh />} onClick={load}>
-            Refresh
-          </Button>
-        </Stack>
-      </Stack>
+      <StandardScreenHeader
+        title="Checkout"
+        dateLabel={formatSystemDateLong()}
+        right={
+          <>
+            <IconPillButton
+              title="Sent to rinse"
+              icon={<Undo />}
+              label={counters.sentCount ? `Sent (${counters.sentCount})` : "Sent"}
+              onClick={() => setSentDrawerOpen(true)}
+            />
+            <IconPillButton title="Refresh queue" icon={<Refresh />} label="" onClick={load} />
+          </>
+        }
+      />
 
-      <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-        <Button
-          fullWidth
-          onClick={() => {
-            setRushTab("RUSH");
-            setOpenAlpha(null);
-          }}
-          sx={{
-            textTransform: "none",
-            borderRadius: 2,
-            py: 0.8,
-            bgcolor: rushTab === "RUSH" ? "#b91c1c" : "#f1f5f9",
-            color: rushTab === "RUSH" ? "#ffffff" : "#111827",
-            opacity: counters.rushCount === 0 ? 0.45 : 1,
-          }}
-          startIcon={<Bolt />}
-        >
-          RUSH {counters.rushCount}
-        </Button>
-        <Button
-          fullWidth
-          onClick={() => {
-            setRushTab("NON-RUSH");
-            setOpenAlpha(null);
-          }}
-          sx={{
-            textTransform: "none",
-            borderRadius: 2,
-            py: 0.8,
-            bgcolor: rushTab === "NON-RUSH" ? "#0f766e" : "#f1f5f9",
-            color: rushTab === "NON-RUSH" ? "#ffffff" : "#111827",
-            opacity: counters.nonRushCount === 0 ? 0.45 : 1,
-          }}
-          startIcon={<CheckCircle />}
-        >
-          NON-RUSH {counters.nonRushCount}
-        </Button>
-      </Stack>
+      <RushTabCountBar
+        fullWidth
+        value={rushTab}
+        onChange={(k) => {
+          setRushTab(k);
+          setOpenAlpha(null);
+        }}
+        tabs={[
+          { key: "ALL", label: "All", count: counters.allCount },
+          { key: "RUSH", label: "Rush", count: counters.rushCount, Icon: Bolt, accent: "#b91c1c" },
+          { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
+        ]}
+      />
 
-      <Stack direction="row" spacing={1} sx={{ mt: 0.8, overflowX: "auto", pb: 0.2 }}>
-        <Chip label={`Queue: ${queueForRushTab.length} bags`} />
-        {rushTab === "RUSH" && counters.rushCount === 0 && <Chip color="success" label="Rush queue empty" />}
-      </Stack>
-
-      {rushTab === "RUSH" && counters.rushCount === 0 && (
-        <Alert sx={{ mt: 1 }} severity="success">
-          All rush bags are checked out.
-        </Alert>
-      )}
+      <OpsSearchBar value={search} onChange={setSearch} />
 
       <Box sx={{ mt: 1.2 }}>
         {groupedQueue.keys.map((alpha, idx) => {
@@ -530,9 +513,24 @@ function CheckoutPage() {
             </Stack>
           )}
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setActiveRow(null)}>Cancel</Button>
-          <Button variant="contained" disabled={checkoutBlocked || busy} startIcon={<LocalShipping />} onClick={confirmCheckout}>
+        <DialogActions sx={{ flexDirection: "column", gap: 1.5, px: 2, pb: 2, pt: 0 }}>
+          <Button fullWidth onClick={() => setActiveRow(null)} sx={{ borderRadius: 999, py: 1.2 }}>
+            Cancel
+          </Button>
+          <Button
+            fullWidth
+            variant="contained"
+            disabled={checkoutBlocked || busy}
+            startIcon={<LocalShipping />}
+            onClick={confirmCheckout}
+            sx={{
+              borderRadius: 999,
+              py: 2,
+              fontSize: "1.05rem",
+              fontWeight: 800,
+              boxShadow: "0 8px 24px rgba(15,118,110,0.35)",
+            }}
+          >
             Confirm Send
           </Button>
         </DialogActions>

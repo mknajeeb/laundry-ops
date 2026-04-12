@@ -8,7 +8,6 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
-  InputAdornment,
   IconButton,
   MenuItem,
   Paper,
@@ -16,14 +15,29 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Bolt, CheckCircle, Close, DeleteOutline, ExpandLess, ExpandMore, Image, Refresh, Search, Visibility } from "@mui/icons-material";
+import {
+  Bolt,
+  CheckCircle,
+  Close,
+  DeleteOutline,
+  ExpandLess,
+  ExpandMore,
+  Image,
+  Inventory2,
+  Refresh,
+  Visibility,
+} from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
+import StandardScreenHeader from "../components/layout/StandardScreenHeader";
+import OpsSearchBar from "../components/layout/OpsSearchBar";
+import RushTabCountBar from "../components/layout/RushTabCountBar";
+import IconPillButton from "../components/layout/IconPillButton";
+import { formatSystemDateLong } from "../utils/formatDateLocal";
 import {
   deleteOrderTicket,
   deleteOrder,
   getCurrentUploadBatch,
   getOrderTicket,
-  getOrderTickets,
   getOrders,
   submitProcessedOrder,
   updateOrder,
@@ -91,9 +105,6 @@ function OrdersPage({ user }) {
   const [ticketFile, setTicketFile] = useState(null);
   const [ticketView, setTicketView] = useState(null);
   const [ticketViewLoading, setTicketViewLoading] = useState(false);
-  const [adminTicketsOpen, setAdminTicketsOpen] = useState(false);
-  const [adminTicketsLoading, setAdminTicketsLoading] = useState(false);
-  const [adminTickets, setAdminTickets] = useState([]);
   const [notice, setNotice] = useState("");
   const [batchInfo, setBatchInfo] = useState(null);
 
@@ -341,150 +352,55 @@ function OrdersPage({ user }) {
     }
   };
 
-  const openAdminTickets = async () => {
-    try {
-      setAdminTicketsOpen(true);
-      setAdminTicketsLoading(true);
-      const res = await getOrderTickets({ limit: 500 });
-      setAdminTickets(Array.isArray(res?.data) ? res.data : []);
-    } catch (error) {
-      console.error(error);
-      setNotice("Failed to load all ticket images.");
-      setAdminTickets([]);
-    } finally {
-      setAdminTicketsLoading(false);
-    }
-  };
-
   const activeBatchDate = batchInfo?.batch_date || rows[0]?.batch_date || null;
   const searchActive = deferredSearch.trim().length > 0;
 
+  const openDryerFlow = (r) => {
+    if (showProcessed) return;
+    if (normalizeProcessing(r) !== "PENDING") return;
+    const st = String(r.gaming_flow_status || "").toUpperCase();
+    if (st === "COMPLETED") return;
+    const lockUid = Number(r.gaming_locked_by_user_id || 0);
+    if (st === "ACTIVE" && lockUid && lockUid !== userId) {
+      setNotice("This order is in use by another team member.");
+      return;
+    }
+    navigate(`/orders/${r.id}/dryer-flow`);
+  };
+
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "#ffffff", px: { xs: 1, sm: 1.5 }, py: 1 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center">
-        <Stack spacing={0.2}>
-          <Typography sx={{ fontSize: 30, fontWeight: 400 }}>Rinse orders</Typography>
-          <Typography sx={{ fontSize: 15, color: "#6b7280", fontWeight: 400 }}>
-            {formatBatchDayDate(activeBatchDate)}
-          </Typography>
-        </Stack>
-        <Stack direction="row" spacing={1}>
-          <Button
-            size="small"
-            variant={showProcessed ? "contained" : "outlined"}
-            onClick={() => setShowProcessed((prev) => !prev)}
-            sx={{ textTransform: "none", fontWeight: 400 }}
-          >
-            Processed
-          </Button>
-          <Button size="small" variant="text" onClick={load} sx={{ minWidth: 34 }}>
-            <Refresh />
-          </Button>
-          <Button
-            size="small"
-            variant="outlined"
-            onClick={() => navigate("/discrepancies")}
-            sx={{ textTransform: "none", fontWeight: 400 }}
-          >
-            Discrepancies
-          </Button>
-          {showProcessed && isAdmin && (
-            <Button size="small" variant="text" startIcon={<Image />} onClick={openAdminTickets} sx={{ textTransform: "none", fontWeight: 400 }}>
-              All Pictures
-            </Button>
-          )}
-        </Stack>
-      </Stack>
+      <StandardScreenHeader
+        title="Rinse orders"
+        dateLabel={formatSystemDateLong()}
+        right={
+          <>
+            <IconPillButton
+              title={showProcessed ? "Showing orders you folded" : "Show orders you folded"}
+              icon={<Inventory2 />}
+              label={showProcessed ? "Folded" : "Folded"}
+              variant={showProcessed ? "contained" : "outlined"}
+              onClick={() => setShowProcessed((p) => !p)}
+            />
+            <IconPillButton title="Refresh" icon={<Refresh />} label="" onClick={load} />
+          </>
+        }
+      />
+      <Typography sx={{ fontSize: 14, color: "#6b7280", fontWeight: 400, mt: -0.5, mb: 0.5 }}>
+        Batch day: {formatBatchDayDate(activeBatchDate)}
+      </Typography>
 
-      <Stack direction="row" justifyContent="flex-end" sx={{ mt: 0.2 }}>
-        <Box sx={{ textAlign: "right" }}>
-          <Button
-            size="small"
-            variant="outlined"
-            sx={{ textTransform: "none", fontWeight: 400, minWidth: 90 }}
-          >
-            Folded by
-          </Button>
-          <Typography sx={{ fontSize: 20, color: "#111827", mt: 0.1, lineHeight: 1.1 }}>
-            {user?.display_name || user?.username || "Unknown"}
-          </Typography>
-        </Box>
-      </Stack>
+      <RushTabCountBar
+        value={rushFilter}
+        onChange={setRushFilter}
+        tabs={[
+          { key: "ALL", label: "All", count: counts.all },
+          { key: "RUSH", label: "Rush", count: counts.rush, Icon: Bolt, accent: "#b91c1c" },
+          { key: "NON-RUSH", label: "Non-Rush", count: counts.nonRush, Icon: CheckCircle, accent: "#0f766e" },
+        ]}
+      />
 
-      <Stack direction="row" spacing={1} sx={{ mt: 1, overflowX: "auto", pb: 0.2 }}>
-        <Button
-          onClick={() => setRushFilter("ALL")}
-          sx={{
-            textTransform: "none",
-            borderRadius: 2,
-            px: 1.2,
-            py: 0.6,
-            fontWeight: 400,
-            bgcolor: rushFilter === "ALL" ? "#0f172a" : "#eef2f7",
-            color: rushFilter === "ALL" ? "#ffffff" : "#111827",
-          }}
-        >
-          All {counts.all}
-        </Button>
-        <Button
-          onClick={() => setRushFilter("RUSH")}
-          sx={{
-            textTransform: "none",
-            borderRadius: 2,
-            px: 1.2,
-            py: 0.6,
-            fontWeight: 400,
-            bgcolor: rushFilter === "RUSH" ? "#b91c1c" : "#eef2f7",
-            color: rushFilter === "RUSH" ? "#ffffff" : "#111827",
-          }}
-          startIcon={<Bolt sx={{ fontSize: 18 }} />}
-        >
-          Rush {counts.rush}
-        </Button>
-        <Button
-          onClick={() => setRushFilter("NON-RUSH")}
-          sx={{
-            textTransform: "none",
-            borderRadius: 2,
-            px: 1.2,
-            py: 0.6,
-            fontWeight: 400,
-            bgcolor: rushFilter === "NON-RUSH" ? "#0f766e" : "#eef2f7",
-            color: rushFilter === "NON-RUSH" ? "#ffffff" : "#111827",
-          }}
-          startIcon={<CheckCircle sx={{ fontSize: 16 }} />}
-        >
-          Non-Rush {counts.nonRush}
-        </Button>
-      </Stack>
-
-      <Paper sx={{ mt: 1.1, p: 1.1, borderRadius: 2, border: "1px solid #e5e7eb" }}>
-        <TextField
-          fullWidth
-          size="small"
-          placeholder="Search name, type, weight/count"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <Search fontSize="small" />
-              </InputAdornment>
-            ),
-            endAdornment: (
-              <InputAdornment position="end">
-                <Button
-                  size="small"
-                  onClick={() => setSearch("")}
-                  sx={{ textTransform: "none", minWidth: 48, fontWeight: 400 }}
-                >
-                  Clear
-                </Button>
-              </InputAdornment>
-            ),
-          }}
-        />
-      </Paper>
+      <OpsSearchBar value={search} onChange={setSearch} />
 
       {loading ? (
         <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.1}>
@@ -550,128 +466,155 @@ function OrdersPage({ user }) {
                           const rush = rushOf(r) === "RUSH";
                           const hd = isHD(r);
                           const pending = normalizeProcessing(r) === "PENDING";
+                          const gameSt = String(r.gaming_flow_status || "").toUpperCase();
+                          const lockUid = Number(r.gaming_locked_by_user_id || 0);
+                          const lockedOther = gameSt === "ACTIVE" && lockUid && lockUid !== userId;
+                          const lockedMe = gameSt === "ACTIVE" && lockUid === userId;
+                          const gameDone = gameSt === "COMPLETED";
+                          const cardCursor =
+                            showProcessed || !pending || gameDone || lockedOther ? "default" : "pointer";
                           return (
                             <Paper
                               key={r.id}
                               sx={{
-                                p: 1.2,
                                 borderRadius: 2,
                                 bgcolor: hd ? HD_BG : WF_BG,
                                 color: "#ffffff",
                                 border: hd ? "1px solid #44c3d6" : "1px solid #2b3342",
+                                outline: lockedOther ? "3px solid #fb923c" : lockedMe ? "3px solid #facc15" : gameDone ? "3px solid #4ade80" : "none",
+                                outlineOffset: 1,
                               }}
                             >
-                              <Stack spacing={0.9}>
-                                <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                  <Stack direction="row" spacing={0.7} alignItems="center">
-                                    {rush ? <Bolt sx={{ fontSize: 20, color: "#ffcb5b" }} /> : <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />}
-                                    <Typography sx={{ fontSize: 13, letterSpacing: 0.5, opacity: 0.9, fontWeight: 400 }}>
-                                      {rush ? "RUSH" : "NON-RUSH"}
+                              <Box
+                                role={!showProcessed && pending && !gameDone && !lockedOther ? "button" : undefined}
+                                onClick={() => openDryerFlow(r)}
+                                sx={{
+                                  p: 1.2,
+                                  cursor: cardCursor,
+                                  opacity: lockedOther ? 0.72 : 1,
+                                }}
+                              >
+                                <Stack spacing={0.9}>
+                                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                    <Stack direction="row" spacing={0.7} alignItems="center">
+                                      {rush ? <Bolt sx={{ fontSize: 20, color: "#ffcb5b" }} /> : <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />}
+                                      <Typography sx={{ fontSize: 13, letterSpacing: 0.5, opacity: 0.9, fontWeight: 400 }}>
+                                        {rush ? "RUSH" : "NON-RUSH"}
+                                      </Typography>
+                                    </Stack>
+                                    <Typography sx={{ fontSize: 13, opacity: 0.85, fontWeight: 400 }}>
+                                      {pending ? "Pending" : "Processed"}
+                                      {lockedOther ? " • In use" : lockedMe ? " • You" : gameDone ? " • Dryers OK" : ""}
                                     </Typography>
                                   </Stack>
-                                  <Typography sx={{ fontSize: 13, opacity: 0.85, fontWeight: 400 }}>
-                                    {pending ? "Pending" : "Processed"}
+
+                                  <Typography sx={{ fontSize: 38 > String(r?.name_clean || "").length ? 20 : 18, lineHeight: 1.15, fontWeight: 400 }}>
+                                    {r.name_clean}
+                                  </Typography>
+
+                                  <Typography sx={{ fontSize: 16, opacity: 0.92, fontWeight: 400 }}>
+                                    {formatDate(r.date_clean)} • {formatMeasure(r)}
                                   </Typography>
                                 </Stack>
+                              </Box>
 
-                                <Typography sx={{ fontSize: 38 > String(r?.name_clean || "").length ? 20 : 18, lineHeight: 1.15, fontWeight: 400 }}>
-                                  {r.name_clean}
-                                </Typography>
-
-                                <Typography sx={{ fontSize: 16, opacity: 0.92, fontWeight: 400 }}>
-                                  {formatDate(r.date_clean)} • {formatMeasure(r)}
-                                </Typography>
-
-                                <Box sx={{ pt: 0.45 }}>
-                                  {showProcessed ? (
-                                    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                                      {Number(r?.has_ticket_image || 0) > 0 && (
-                                        <Button
-                                          size="small"
-                                          variant="outlined"
-                                          startIcon={<Visibility />}
-                                          onClick={() => onViewTicket(r)}
-                                          sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
-                                        >
-                                          View picture
-                                        </Button>
-                                      )}
+                              <Box sx={{ px: 1.2, pb: 1.2, pt: 0 }} onClick={(e) => e.stopPropagation()}>
+                                {showProcessed ? (
+                                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                                    {Number(r?.has_ticket_image || 0) > 0 && (
                                       <Button
                                         size="small"
                                         variant="outlined"
-                                        startIcon={<Image />}
-                                        onClick={() => setTicketDialogRow(r)}
+                                        startIcon={<Visibility />}
+                                        onClick={() => onViewTicket(r)}
                                         sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
                                       >
-                                        {Number(r?.has_ticket_image || 0) > 0 ? "Replace picture" : "Add picture"}
+                                        View picture
                                       </Button>
-                                      {Number(r?.has_ticket_image || 0) > 0 && (
-                                        <Button
-                                          size="small"
-                                          variant="outlined"
-                                          color="error"
-                                          startIcon={<DeleteOutline />}
-                                          onClick={() => onDeleteTicket(r)}
-                                          sx={{ textTransform: "none", fontWeight: 400 }}
-                                        >
-                                          Delete picture
-                                        </Button>
-                                      )}
-                                    </Stack>
-                                  ) : (
+                                    )}
                                     <Button
                                       size="small"
-                                      variant="contained"
-                                      onClick={() => {
-                                        setSubmitDialogRow(r);
-                                        setSubmitMeasure("");
-                                        setSubmitTicketId(String(r.ticket_id || ""));
-                                        setSubmitFile(null);
-                                      }}
-                                      sx={{ textTransform: "none", bgcolor: "#ffffff", color: "#111827", fontWeight: 400 }}
+                                      variant="outlined"
+                                      startIcon={<Image />}
+                                      onClick={() => setTicketDialogRow(r)}
+                                      sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
                                     >
-                                      Submit
+                                      {Number(r?.has_ticket_image || 0) > 0 ? "Replace picture" : "Add picture"}
                                     </Button>
-                                  )}
-                                </Box>
-
-                                {isAdmin && (
-                                  <>
-                                    <Divider sx={{ borderColor: "rgba(255,255,255,0.2)" }} />
-                                    <Stack direction="row" spacing={1}>
-                                      <Button
-                                        size="small"
-                                        variant="outlined"
-                                        onClick={() =>
-                                          setEditRow({
-                                            id: r.id,
-                                            date_clean: String(r.date_clean || "").slice(0, 10),
-                                            name_clean: r.name_clean || "",
-                                            weight_num: r.weight_num ?? "",
-                                            service_type: r.service_type || "WF",
-                                          })
-                                        }
-                                        sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
-                                      >
-                                        Edit
-                                      </Button>
+                                    {Number(r?.has_ticket_image || 0) > 0 && (
                                       <Button
                                         size="small"
                                         variant="outlined"
                                         color="error"
-                                        onClick={async () => {
-                                          if (!window.confirm(`Delete #${r.id}?`)) return;
-                                          await deleteOrder(r.id);
-                                          await load();
-                                        }}
+                                        startIcon={<DeleteOutline />}
+                                        onClick={() => onDeleteTicket(r)}
                                         sx={{ textTransform: "none", fontWeight: 400 }}
                                       >
-                                        Delete
+                                        Delete picture
                                       </Button>
-                                    </Stack>
-                                  </>
+                                    )}
+                                  </Stack>
+                                ) : (
+                                  <Button
+                                    size="medium"
+                                    variant="contained"
+                                    onClick={() => {
+                                      setSubmitDialogRow(r);
+                                      setSubmitMeasure("");
+                                      setSubmitTicketId(String(r.ticket_id || ""));
+                                      setSubmitFile(null);
+                                    }}
+                                    sx={{
+                                      textTransform: "none",
+                                      bgcolor: "#ffffff",
+                                      color: "#111827",
+                                      fontWeight: 600,
+                                      borderRadius: 999,
+                                      px: 2.5,
+                                      py: 1,
+                                    }}
+                                  >
+                                    Submit
+                                  </Button>
                                 )}
-                              </Stack>
+                              </Box>
+
+                              {isAdmin && (
+                                <Box sx={{ px: 1.2, pb: 1.2 }} onClick={(e) => e.stopPropagation()}>
+                                  <Divider sx={{ borderColor: "rgba(255,255,255,0.2)", mb: 1 }} />
+                                  <Stack direction="row" spacing={1}>
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      onClick={() =>
+                                        setEditRow({
+                                          id: r.id,
+                                          date_clean: String(r.date_clean || "").slice(0, 10),
+                                          name_clean: r.name_clean || "",
+                                          weight_num: r.weight_num ?? "",
+                                          service_type: r.service_type || "WF",
+                                        })
+                                      }
+                                      sx={{ textTransform: "none", borderColor: "#ffffff", color: "#ffffff", fontWeight: 400 }}
+                                    >
+                                      Edit
+                                    </Button>
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      color="error"
+                                      onClick={async () => {
+                                        if (!window.confirm(`Delete #${r.id}?`)) return;
+                                        await deleteOrder(r.id);
+                                        await load();
+                                      }}
+                                      sx={{ textTransform: "none", fontWeight: 400 }}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </Stack>
+                                </Box>
+                              )}
                             </Paper>
                           );
                         })}
@@ -799,47 +742,6 @@ function OrdersPage({ user }) {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setTicketView(null)} sx={{ fontWeight: 400 }}>Close</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={adminTicketsOpen} onClose={() => setAdminTicketsOpen(false)} fullWidth maxWidth="md">
-        <DialogTitle sx={{ fontWeight: 400 }}>All Ticket Pictures</DialogTitle>
-        <DialogContent dividers>
-          {adminTicketsLoading ? (
-            <Stack alignItems="center" sx={{ py: 2 }}>
-              <CircularProgress size={24} />
-            </Stack>
-          ) : adminTickets.length === 0 ? (
-            <Typography sx={{ color: "#6b7280", fontWeight: 400 }}>No ticket records found.</Typography>
-          ) : (
-            <Stack spacing={1}>
-              {adminTickets.map((t) => (
-                <Paper key={`${t.id}-${t.order_id}`} sx={{ p: 1, borderRadius: 1.5, border: "1px solid #e5e7eb" }}>
-                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                    <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 400 }}>{t.name_clean || `Order #${t.order_id}`}</Typography>
-                      <Typography sx={{ fontSize: 13, color: "#6b7280", fontWeight: 400 }}>
-                        {t.username || "unknown"} • {t.ticket_file_name || "no filename"}
-                      </Typography>
-                    </Box>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      onClick={async () => {
-                        await onViewTicket({ id: t.order_id, name_clean: t.name_clean || `Order #${t.order_id}` });
-                      }}
-                      sx={{ textTransform: "none", fontWeight: 400 }}
-                    >
-                      View
-                    </Button>
-                  </Stack>
-                </Paper>
-              ))}
-            </Stack>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setAdminTicketsOpen(false)} sx={{ fontWeight: 400 }}>Close</Button>
         </DialogActions>
       </Dialog>
 

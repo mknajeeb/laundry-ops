@@ -2,6 +2,26 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getTaSessionCurrent } from "../api";
 import { useAuth } from "../context/AuthContext";
 
+/** Fast, cache-friendly read; never rejects — avoids checkout UI freezing on GPS cold start. */
+function getQuickPosition(opts = {}) {
+  const { timeoutMs = 4000, maximumAgeMs = 120000 } = opts;
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      resolve(null);
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      resolve,
+      () => resolve(null),
+      {
+        enableHighAccuracy: false,
+        maximumAge: maximumAgeMs,
+        timeout: timeoutMs,
+      }
+    );
+  });
+}
+
 /**
  * When signed in with ta.clock, checkout must match Time & Attendance "operational" rules
  * (clocked in, not on break, inside geofence when location is available).
@@ -11,36 +31,28 @@ export function useTaOperationalGate({ pollMs = 45000 } = {}) {
   const gateActive = !!(token && hasPerm("ta.clock"));
 
   const [loading, setLoading] = useState(false);
+  const [firstGateSettled, setFirstGateSettled] = useState(false);
   const [operationalAllowed, setOperationalAllowed] = useState(true);
   const [reasons, setReasons] = useState([]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options = {}) => {
+    const silent = !!options.silent;
     if (!gateActive) {
       setLoading(false);
+      setFirstGateSettled(false);
       setOperationalAllowed(true);
       setReasons([]);
       return;
     }
-    setLoading(true);
+    if (!silent) {
+      setLoading(true);
+    }
     try {
-      let params = {};
-      try {
-        const pos = await new Promise((resolve) => {
-          if (!navigator.geolocation) {
-            resolve(null);
-            return;
-          }
-          navigator.geolocation.getCurrentPosition(resolve, () => resolve(null), {
-            enableHighAccuracy: true,
-            timeout: 8000,
-          });
-        });
-        if (pos?.coords) {
-          params = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
-        }
-      } catch {
-        /* optional */
-      }
+      const pos = await getQuickPosition({ timeoutMs: silent ? 3500 : 5000 });
+      const params =
+        pos?.coords != null
+          ? { latitude: pos.coords.latitude, longitude: pos.coords.longitude }
+          : {};
       const res = await getTaSessionCurrent(params);
       const op = res.data?.operational;
       const allowed = op?.allowed !== false;
@@ -50,13 +62,22 @@ export function useTaOperationalGate({ pollMs = 45000 } = {}) {
       setOperationalAllowed(false);
       setReasons(["session_check_failed"]);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+        setFirstGateSettled(true);
+      }
+    }
+  }, [gateActive]);
+
+  useEffect(() => {
+    if (!gateActive) {
+      setFirstGateSettled(false);
     }
   }, [gateActive]);
 
   useEffect(() => {
     const t = setTimeout(() => {
-      refresh();
+      refresh({ silent: false });
     }, 0);
     return () => clearTimeout(t);
   }, [refresh]);
@@ -64,40 +85,30 @@ export function useTaOperationalGate({ pollMs = 45000 } = {}) {
   useEffect(() => {
     if (!gateActive) return undefined;
     const id = setInterval(() => {
-      refresh();
+      refresh({ silent: true });
     }, pollMs);
     return () => clearInterval(id);
   }, [gateActive, pollMs, refresh]);
 
+  // Block checkout only until the first gate result is known, not during background polls.
   const checkoutBlocked = useMemo(
-    () => gateActive && (loading || !operationalAllowed),
-    [gateActive, loading, operationalAllowed]
+    () => gateActive && (!firstGateSettled || !operationalAllowed),
+    [gateActive, firstGateSettled, operationalAllowed]
   );
 
   const assertCanCheckout = useCallback(async () => {
     if (!gateActive) {
       return { ok: true, reasons: [] };
     }
-    let params = {};
-    try {
-      const pos = await new Promise((resolve, reject) => {
-        if (!navigator.geolocation) {
-          reject(new Error("no geolocation"));
-          return;
-        }
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-        });
-      });
-      params = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
-    } catch {
-      /* still call API — server may allow without coords */
-    }
+    const pos = await getQuickPosition({ timeoutMs: 5000, maximumAgeMs: 60000 });
+    const params =
+      pos?.coords != null
+        ? { latitude: pos.coords.latitude, longitude: pos.coords.longitude }
+        : {};
     try {
       const res = await getTaSessionCurrent(params);
       const op = res.data?.operational;
-      const ok = op?.allowed === true;
+      const ok = op?.allowed !== false;
       const r = Array.isArray(op?.reasons) ? op.reasons : [];
       setOperationalAllowed(ok);
       setReasons(r);

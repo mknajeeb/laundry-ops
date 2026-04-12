@@ -1709,6 +1709,10 @@ def get_orders():
         oid = user_org_id(me)
         _trigger_daily_operational_reset_if_needed(conn, oid)
         cap = orders_status_capabilities(cursor)
+        from backend.order_gaming_flow import ensure_order_gaming_flow_columns, gaming_select_fragment
+
+        ensure_order_gaming_flow_columns(cursor)
+        gaming_sql = gaming_select_fragment(cursor)
         has_batch_date = table_has_column(cursor, "orders_staging", "batch_date")
         has_created_at = table_has_column(cursor, "orders_staging", "created_at")
         has_rush_type_col = table_has_column(cursor, "orders_staging", "rush_type")
@@ -1789,6 +1793,7 @@ def get_orders():
                 {processing_sql},
                 {"o.status" if cap["has_status"] else "NULL"} AS status,
                 {"o.created_at" if has_created_at else "NULL"} AS created_at
+                {gaming_sql}
                 {submission_select}
 
             FROM orders_staging o
@@ -2601,6 +2606,10 @@ def submit_processed_order(order_id):
         ensure_ticket_id_columns(cursor)
         prune_old_ticket_images(cursor)
         cap = orders_status_capabilities(cursor)
+        from backend.order_gaming_flow import ensure_order_gaming_flow_columns
+
+        ensure_order_gaming_flow_columns(cursor)
+        g_sel = ", gaming_flow_status" if table_has_column(cursor, "orders_staging", "gaming_flow_status") else ""
 
         logistics_sql = orders_logistics_select_sql(cap)
         processing_sql = orders_processing_select_sql(cap)
@@ -2614,6 +2623,7 @@ def submit_processed_order(order_id):
                 {logistics_sql},
                 {processing_sql},
                 status
+                {g_sel}
             FROM orders_staging
             WHERE id = %s
         """
@@ -2627,6 +2637,10 @@ def submit_processed_order(order_id):
 
         if not row:
             return jsonify({"error": "Order not found"}), 404
+
+        if table_has_column(cursor, "orders_staging", "gaming_flow_status"):
+            if (row.get("gaming_flow_status") or "").upper() == "ACTIVE":
+                return jsonify({"error": "Finish or cancel dryer assignment before submitting"}), 409
 
         logistics_status = (row.get("logistics_status") or "").upper()
         if logistics_status in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
@@ -2774,6 +2788,135 @@ def submit_processed_order(order_id):
         conn.rollback()
         return jsonify({"error": str(e)}), 500
 
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/gaming/session", methods=["GET"])
+def order_gaming_session(order_id):
+    from backend.order_gaming_flow import ensure_order_gaming_flow_columns, get_session_for_user
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cap = orders_status_capabilities(cursor)
+        ensure_order_gaming_flow_columns(cursor)
+        payload, code = get_session_for_user(cursor, me, tenant_oid, int(order_id), cap)
+        return jsonify(payload), code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/gaming/start", methods=["POST"])
+def order_gaming_start(order_id):
+    from backend.order_gaming_flow import ensure_order_gaming_flow_columns, start_session
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cap = orders_status_capabilities(cursor)
+        ensure_order_gaming_flow_columns(cursor)
+        payload, code = start_session(
+            cursor, conn, me, tenant_oid, int(order_id), request.get_json(silent=True) or {}, cap
+        )
+        return jsonify(payload), code
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/gaming/scan", methods=["POST"])
+def order_gaming_scan(order_id):
+    from backend.order_gaming_flow import ensure_order_gaming_flow_columns, scan_dryer
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cap = orders_status_capabilities(cursor)
+        ensure_order_gaming_flow_columns(cursor)
+        payload, code = scan_dryer(
+            cursor, conn, me, tenant_oid, int(order_id), request.get_json(silent=True) or {}, cap
+        )
+        return jsonify(payload), code
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/gaming/complete", methods=["POST"])
+def order_gaming_complete(order_id):
+    from backend.order_gaming_flow import complete_ticket, ensure_order_gaming_flow_columns
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cap = orders_status_capabilities(cursor)
+        ensure_order_gaming_flow_columns(cursor)
+        payload, code = complete_ticket(
+            cursor,
+            conn,
+            me,
+            tenant_oid,
+            int(order_id),
+            request.get_json(silent=True) or {},
+            cap,
+            save_ticket_image,
+        )
+        return jsonify(payload), code
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/orders/<int:order_id>/gaming/cancel", methods=["POST"])
+def order_gaming_cancel(order_id):
+    from backend.order_gaming_flow import cancel_session, ensure_order_gaming_flow_columns
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        cap = orders_status_capabilities(cursor)
+        ensure_order_gaming_flow_columns(cursor)
+        payload, code = cancel_session(
+            cursor, conn, me, tenant_oid, int(order_id), request.get_json(silent=True) or {}, cap
+        )
+        return jsonify(payload), code
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
     finally:
         cursor.close()
         conn.close()

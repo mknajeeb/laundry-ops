@@ -396,6 +396,21 @@ export const getOrderTicket = (order_id) =>
 export const deleteOrderTicket = (order_id) =>
   axios.delete(`${API_BASE}/orders/${order_id}/ticket`);
 
+export const getOrderGamingSession = (order_id) =>
+  axios.get(`${API_BASE}/orders/${order_id}/gaming/session`);
+
+export const startOrderGamingSession = (order_id, body) =>
+  axios.post(`${API_BASE}/orders/${order_id}/gaming/start`, body);
+
+export const scanOrderGamingDryer = (order_id, body) =>
+  axios.post(`${API_BASE}/orders/${order_id}/gaming/scan`, body);
+
+export const completeOrderGamingTicket = (order_id, body) =>
+  axios.post(`${API_BASE}/orders/${order_id}/gaming/complete`, body);
+
+export const cancelOrderGamingSession = (order_id, body) =>
+  axios.post(`${API_BASE}/orders/${order_id}/gaming/cancel`, body);
+
 export const getOrderTickets = (params = {}) =>
   axios.get(`${API_BASE}/order_tickets`, { params });
 
