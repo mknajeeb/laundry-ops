@@ -96,12 +96,14 @@ def load_staging_order_row(cursor, order_id: int, tenant_oid: int, cap: dict[str
             , o.gaming_dryers_json
         """
     org_sel = "o.organization_id" if table_has_column(cursor, "orders_staging", "organization_id") else "NULL AS organization_id"
+    status_sel = ", o.status" if table_has_column(cursor, "orders_staging", "status") else ""
     sql = f"""
         SELECT
             o.id,
             {org_sel},
             {logistics_sql},
             {processing_sql}
+            {status_sel}
             {gcols}
         FROM orders_staging o
         WHERE o.id = %s
@@ -419,8 +421,81 @@ def complete_ticket(
             *( [tenant_oid] if table_has_column(cursor, "orders_staging", "organization_id") else []),
         ),
     )
+
+    # Folding queue (Orders "Folded") keys off processing_status + order_process_submissions.user_id.
+    # Without this, gaming COMPLETED still leaves the row PENDING with no processed_by.
+    from backend.app import delete_ticket_blob, ensure_process_submissions_table, prune_old_ticket_images
+
+    ensure_process_submissions_table(cursor)
+    prune_old_ticket_images(cursor)
+
+    proc_sets: list[str] = []
+    if cap.get("has_processing"):
+        proc_sets.append("processing_status = 'PROCESSED'")
+    if cap.get("has_status"):
+        current = (row.get("status") or "").upper()
+        if current not in ("CHECKED_OUT", "SENT_TO_RINSE", "FORCED_CHECKOUT", "FORCE_CHECKOUT"):
+            proc_sets.append("status = 'PROCESSED'")
+    if proc_sets:
+        org_sql = " AND organization_id = %s" if table_has_column(cursor, "orders_staging", "organization_id") else ""
+        qargs: list[Any] = [order_id]
+        if table_has_column(cursor, "orders_staging", "organization_id"):
+            qargs.append(tenant_oid)
+        cursor.execute(
+            f"UPDATE orders_staging SET {', '.join(proc_sets)} WHERE id = %s{org_sql}",
+            tuple(qargs),
+        )
+
+    cursor.execute(
+        "SELECT ticket_blob_name, ticket_blob_url FROM order_process_submissions WHERE order_id = %s LIMIT 1",
+        (order_id,),
+    )
+    prev_ops = cursor.fetchone() or {}
+    cursor.execute(
+        """
+        INSERT INTO order_process_submissions
+        (
+            order_id,
+            user_id,
+            username,
+            ticket_image_base64,
+            ticket_file_name,
+            ticket_blob_url,
+            ticket_blob_name,
+            ticket_storage,
+            ticket_size_bytes,
+            created_at,
+            updated_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            user_id = VALUES(user_id),
+            username = VALUES(username),
+            ticket_image_base64 = VALUES(ticket_image_base64),
+            ticket_file_name = VALUES(ticket_file_name),
+            ticket_blob_url = VALUES(ticket_blob_url),
+            ticket_blob_name = VALUES(ticket_blob_name),
+            ticket_storage = VALUES(ticket_storage),
+            ticket_size_bytes = VALUES(ticket_size_bytes),
+            updated_at = NOW()
+        """,
+        (
+            order_id,
+            me.get("user_id"),
+            me.get("username"),
+            saved.get("ticket_image_base64"),
+            fname,
+            saved.get("ticket_blob_url"),
+            saved.get("ticket_blob_name"),
+            saved.get("ticket_storage"),
+            saved.get("ticket_size_bytes"),
+        ),
+    )
+    if prev_ops.get("ticket_blob_name") and prev_ops.get("ticket_blob_name") != saved.get("ticket_blob_name"):
+        delete_ticket_blob(prev_ops.get("ticket_blob_name"), prev_ops.get("ticket_blob_url"))
+
     conn.commit()
-    return {"status": "COMPLETED", "gaming_end_time": True}, 200
+    return {"status": "COMPLETED", "gaming_end_time": True, "processing": "PROCESSED"}, 200
 
 
 def cancel_session(
