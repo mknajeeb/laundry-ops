@@ -43,21 +43,24 @@ fi
 
 if [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN" ]; then
   _nd="$(dirname "$NODE_BIN")"
-  NPM="$_nd/npm"
-  NPX="$_nd/npx"
-  if [ -x "$NPM" ] && [ -x "$NPX" ]; then
-    mkdir -p "$RINSE_NM_PERSIST"
-    rm -rf "$RINSE_DIR/node_modules"
-    ln -sfn "$RINSE_NM_PERSIST" "$RINSE_DIR/node_modules"
-    echo "startup.sh: npm install in ${RINSE_DIR} (persistent ${RINSE_NM_PERSIST})"
-    (cd "$RINSE_DIR" && "$NPM" install --omit=dev --no-audit --no-fund) || echo "startup.sh: warning: npm install failed"
-    if [ ! -f "$PW_MARK" ]; then
-      echo "startup.sh: Playwright chromium (first run; may take a few minutes)"
-      (cd "$RINSE_DIR" && "$NPX" playwright install chromium && touch "$PW_MARK") \
-        || echo "startup.sh: warning: playwright install chromium failed"
-    fi
+  _prefix="$(dirname "$_nd")"
+  NPM_CLI="$_prefix/lib/node_modules/npm/bin/npm-cli.js"
+  mkdir -p "$RINSE_NM_PERSIST"
+  rm -rf "$RINSE_DIR/node_modules"
+  ln -sfn "$RINSE_NM_PERSIST" "$RINSE_DIR/node_modules"
+  echo "startup.sh: npm install in ${RINSE_DIR} (persistent ${RINSE_NM_PERSIST})"
+  if [ -f "$NPM_CLI" ]; then
+    (cd "$RINSE_DIR" && "$NODE_BIN" "$NPM_CLI" install --omit=dev --no-audit --no-fund) || echo "startup.sh: warning: npm install failed"
+  elif [ -x "$_nd/npm" ]; then
+    (cd "$RINSE_DIR" && "$_nd/npm" install --omit=dev --no-audit --no-fund) || echo "startup.sh: warning: npm install failed"
   else
-    echo "startup.sh: npm/npx not found beside NODE_BIN (${_nd}) — set NODE_BIN to the real node binary"
+    echo "startup.sh: warning: npm-cli.js not found at $NPM_CLI"
+  fi
+  PW_CLI="$RINSE_DIR/node_modules/playwright/cli.js"
+  if [ ! -f "$PW_MARK" ] && [ -f "$PW_CLI" ]; then
+    echo "startup.sh: Playwright chromium (first run; may take a few minutes)"
+    (cd "$RINSE_DIR" && "$NODE_BIN" "$PW_CLI" install chromium && touch "$PW_MARK") \
+      || echo "startup.sh: warning: playwright install chromium failed"
   fi
 else
   echo "startup.sh: Rinse scraper deps skipped (set NODE_BIN, e.g. /home/site/node-v20.18.0-linux-x64/bin/node)"

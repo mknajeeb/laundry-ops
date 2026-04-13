@@ -76,6 +76,7 @@ def diagnose() -> dict:
     node = node_binary()
     node_ok = _node_executable_ok(node)
     pw_pkg = sdir / "node_modules" / "playwright" / "package.json"
+    browsers = (os.getenv("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
     return {
         "enabled": export_enabled(),
         "repo_root": str(root),
@@ -84,12 +85,35 @@ def diagnose() -> dict:
         "node_path": node,
         "node_found": node_ok,
         "playwright_package_present": pw_pkg.is_file(),
+        "playwright_browsers_path": browsers,
+        "playwright_chromium_cached": _playwright_chromium_cached(Path(browsers)),
     }
 
 
 def _use_persistent_node_modules() -> bool:
     """Azure: wwwroot is replaced on deploy; /home/site persists."""
     return Path("/home/site").is_dir()
+
+
+def _playwright_cli_js(sdir: Path) -> Path | None:
+    p = sdir / "node_modules" / "playwright" / "cli.js"
+    return p if p.is_file() else None
+
+
+def _playwright_chromium_cached(browsers_path: Path) -> bool:
+    """True if a Playwright-downloaded headless Chromium binary is already present."""
+    if not browsers_path.is_dir():
+        return False
+    try:
+        for p in browsers_path.rglob("chrome-headless-shell"):
+            if p.is_file():
+                return True
+        for p in browsers_path.rglob("chromium"):
+            if p.is_file() and p.name == "chromium":
+                return True
+    except OSError:
+        pass
+    return False
 
 
 def _npm_install_command(node: str) -> tuple[list[str] | None, str]:
@@ -172,6 +196,45 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
     return True, ""
 
 
+def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool, str]:
+    """Download browser binaries (npm package alone is not enough). Uses node + cli.js (no npx shim)."""
+    cli = _playwright_cli_js(sdir)
+    if not cli:
+        return False, "Missing playwright cli.js after npm install."
+
+    browsers = (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
+    env = {**env, "PLAYWRIGHT_BROWSERS_PATH": browsers}
+    try:
+        Path(browsers).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    if _playwright_chromium_cached(Path(browsers)):
+        return True, ""
+
+    try:
+        r = subprocess.run(
+            [str(Path(node).resolve()), str(cli), "install", "chromium"],
+            cwd=str(sdir),
+            capture_output=True,
+            text=True,
+            timeout=900,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "playwright install chromium timed out after 900s."
+    except OSError as e:
+        return False, f"playwright install chromium could not run: {e}"
+
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "")[-2000:]
+        return False, f"playwright install chromium failed (exit {r.returncode}): {tail}"
+
+    if not _playwright_chromium_cached(Path(browsers)):
+        return False, "Chromium still missing after playwright install (check PLAYWRIGHT_BROWSERS_PATH and disk space)."
+    return True, ""
+
+
 def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
     """
     Run scrape.mjs with OUTPUT_CSV set to output_path (absolute).
@@ -196,7 +259,12 @@ def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
     if not (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip():
         env["PLAYWRIGHT_BROWSERS_PATH"] = "/home/site/ms-playwright"
 
-    cmd = [node_binary(), str(script)]
+    node = node_binary()
+    bok, berr = _ensure_playwright_chromium(sdir, node, env)
+    if not bok:
+        return -1, "", berr
+
+    cmd = [node, str(script)]
     timeout = scrape_timeout_sec()
     try:
         proc = subprocess.run(
