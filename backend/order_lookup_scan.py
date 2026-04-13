@@ -70,6 +70,47 @@ def map_service_hint(hint: Any) -> str | None:
     return None
 
 
+def map_service_hint_qr(qr_text: str) -> str | None:
+    """Infer WF/HD from URL path/query or short QR blobs (avoid whole-host false positives)."""
+    raw = str(qr_text or "").strip()
+    if not raw:
+        return None
+    chunk = raw[:400]
+    if "://" in raw:
+        try:
+            u = urlparse(raw)
+            chunk = f"{unquote(u.path or '')} {unquote(u.query or '')}"[:400]
+        except Exception:
+            chunk = raw[:400]
+    return map_service_hint(chunk.replace("+", " "))
+
+
+def qr_text_name_overlap_score(qr_text: str, name_clean: Any) -> int:
+    """When QR is a URL or blob that contains the customer name, score the row without ticket_id match."""
+    raw = str(qr_text or "").strip()
+    if not raw or len(raw) < 4:
+        return 0
+    rn = normalize_scan_name(name_clean)
+    if not rn:
+        return 0
+    qn = normalize_scan_name(raw)
+    if not qn:
+        return 0
+    q_words = {w for w in qn.split() if len(w) >= 3}
+    n_words = {w for w in rn.split() if len(w) >= 3}
+    overlap = q_words & n_words
+    if overlap:
+        best = max(len(w) for w in overlap)
+        return 45 + min(35, best * 2)
+    for w in q_words:
+        if len(w) >= 4 and w in rn:
+            return 42
+    for w in n_words:
+        if len(w) >= 4 and w in qn:
+            return 42
+    return 0
+
+
 def _qr_tokens(qr_text: str) -> list[str]:
     raw = str(qr_text or "").strip()
     if not raw:
@@ -147,13 +188,32 @@ def run_order_lookup_scan(
     """
     cursor.execute(sql, tuple(exec_params))
     candidates = cursor.fetchall() or []
+    if not candidates and batch_date:
+        sql_wide = f"""
+            SELECT
+                o.id,
+                o.date_clean,
+                o.batch_date,
+                o.name_clean,
+                o.weight_num,
+                o.service_type,
+                {logistics_sql},
+                {processing_sql},
+                {tid_sel}
+            FROM orders_staging o
+            WHERE ({active_where_sql})
+              AND o.organization_id = %s
+            ORDER BY o.id ASC
+        """
+        cursor.execute(sql_wide, (tenant_oid,))
+        candidates = cursor.fetchall() or []
 
     qr_text = str(body.get("qr_text") or "").strip()
     name_hint = str(body.get("name_hint") or "").strip()
     service_hint = str(body.get("service_hint") or "").strip()
     tokens = _qr_tokens(qr_text)
     nn = normalize_scan_name(name_hint) if name_hint else ""
-    mapped = map_service_hint(service_hint)
+    mapped = map_service_hint(service_hint) or map_service_hint_qr(qr_text)
 
     def row_ok_name(row: dict) -> bool:
         return name_hint_matches_row(nn, row.get("name_clean"))
@@ -184,6 +244,7 @@ def run_order_lookup_scan(
         score = 0
         if row_qr_hit(row):
             score += 200
+        score += qr_text_name_overlap_score(qr_text, row.get("name_clean"))
         if nn:
             score += name_match_score(nn, row.get("name_clean"))
         if mapped and str(row.get("service_type") or "").strip().upper() == mapped:
