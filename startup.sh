@@ -17,6 +17,14 @@ if [ ! -f "$SCRAPE" ] && [ -f output.tar.zst ] && command -v zstd >/dev/null 2>&
   zstd -dc output.tar.zst | tar xf -
 fi
 
+# Oryx tarball often includes antenv/ built for another layer; numpy then fails with missing
+# libscipy_openblas64_*.so. Drop it and use this container's Python + pip only.
+if [ -d antenv ]; then
+  echo "startup.sh: removing bundled antenv (incompatible with this host)"
+  rm -rf antenv
+fi
+unset VIRTUAL_ENV 2>/dev/null || true
+
 if [ -f requirements.txt ]; then
   python -m pip install --no-cache-dir -r requirements.txt
 fi
