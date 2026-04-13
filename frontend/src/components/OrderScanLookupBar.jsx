@@ -15,7 +15,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Search } from "@mui/icons-material";
+import { QrCodeScanner } from "@mui/icons-material";
 import { Html5Qrcode } from "html5-qrcode";
 import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
@@ -69,15 +69,6 @@ function deriveNameHintsFromQr(qrText) {
   return out.slice(0, 6);
 }
 
-function inferServiceHintFromQr(txt) {
-  const s = String(txt || "").toLowerCase();
-  if (s.includes("hang") && s.includes("dry")) return "Hang dry";
-  if (s.includes("wash") && s.includes("fold")) return "Wash & fold";
-  if (s.includes("hang_dry") || s.includes("hang-dry")) return "Hang dry";
-  if (s.includes("wash_fold") || s.includes("wash-fold")) return "Wash & fold";
-  return "";
-}
-
 function dedupeScanBodies(list) {
   const seen = new Set();
   return list.filter((b) => {
@@ -98,8 +89,7 @@ function buildScanLookupBodies(qrText, nameHint, serviceHint, batchStr) {
   const derived = deriveNameHintsFromQr(q);
   const hints = nh0 ? [nh0] : derived.length > 0 ? derived : [""];
 
-  const inferred = !sh0 ? inferServiceHintFromQr(q) : "";
-  const services = sh0 ? [sh0] : inferred ? ["", inferred] : [""];
+  const services = sh0 ? [sh0] : [""];
 
   const bodies = [];
   for (const nh of hints) {
@@ -121,7 +111,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   const [nameHint, setNameHint] = useState("");
   const [serviceHint, setServiceHint] = useState("");
   const [manualQr, setManualQr] = useState("");
-  const [useCamera, setUseCamera] = useState(false);
+  const [useCamera, setUseCamera] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
   const scannerRef = useRef(null);
@@ -151,7 +141,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     async (qrText) => {
       const q = String(qrText || "").trim();
       if (!q && (!nameHint.trim() || !serviceHint.trim())) {
-        window.alert(t("ops.scanAlertNeedTagFields"));
+        window.alert(t("ops.scanAlertNeedQrOrTagFields"));
         return;
       }
       setBusy(true);
@@ -194,10 +184,13 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
 
   useEffect(() => {
     if (!open) {
-      setUseCamera(false);
       void stopScanner();
     }
   }, [open, stopScanner]);
+
+  useEffect(() => {
+    if (open) setUseCamera(true);
+  }, [open]);
 
   useEffect(() => {
     if (!open || !enabled || !useCamera) {
@@ -257,7 +250,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           <Button
             variant="contained"
             color="primary"
-            startIcon={<Search />}
+            startIcon={<QrCodeScanner />}
             onClick={() => setOpen(true)}
             disabled={disabled}
             sx={{
@@ -280,6 +273,28 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           <Stack spacing={1.25}>
             <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
               {t("ops.scanDialogHint")}
+            </Typography>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={useCamera}
+                  onChange={(_, v) => setUseCamera(v)}
+                  disabled={busy}
+                  color="primary"
+                  size="small"
+                />
+              }
+              label={t("ops.scanCameraToggle")}
+              sx={{ m: 0, alignItems: "center" }}
+            />
+            {useCamera && (
+              <Box
+                id={SCAN_READER_ID}
+                sx={{ minHeight: 260, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }}
+              />
+            )}
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+              {t("ops.scanOptionalSection")}
             </Typography>
             <TextField
               label={t("ops.scanNameLabel")}
@@ -319,36 +334,6 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               <MenuItem value="WF">WF</MenuItem>
               <MenuItem value="HD">HD</MenuItem>
             </TextField>
-            <Button
-              variant="contained"
-              onClick={onManualLookup}
-              disabled={!canLookUp}
-              sx={{ py: 1.2, fontWeight: 700 }}
-            >
-              {t("ops.scanLookUp")}
-            </Button>
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-              {t("ops.scanOptionalSection")}
-            </Typography>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={useCamera}
-                  onChange={(_, v) => setUseCamera(v)}
-                  disabled={busy}
-                  color="primary"
-                  size="small"
-                />
-              }
-              label={t("ops.scanCameraToggle")}
-              sx={{ m: 0, alignItems: "center" }}
-            />
-            {useCamera && (
-              <Box
-                id={SCAN_READER_ID}
-                sx={{ minHeight: 240, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }}
-              />
-            )}
             <TextField
               label={t("ops.scanPasteQrLabel")}
               value={manualQr}
@@ -358,6 +343,14 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               size="small"
               placeholder={t("ops.scanPasteQrPlaceholder")}
             />
+            <Button
+              variant="contained"
+              onClick={onManualLookup}
+              disabled={!canLookUp}
+              sx={{ py: 1.2, fontWeight: 700 }}
+            >
+              {t("ops.scanLookUp")}
+            </Button>
           </Stack>
         </DialogContent>
         <DialogActions>

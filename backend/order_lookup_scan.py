@@ -165,10 +165,52 @@ def _qr_tokens(qr_text: str) -> list[str]:
             pass
     for part in re.split(r"[\s,;|]+", raw):
         add(part)
+    for part in re.split(r"[/:?&=#.]+", raw):
+        add(part)
+    for m in re.finditer(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        raw,
+    ):
+        u = m.group(0)
+        add(u)
+        add(u.replace("-", ""))
     alnum = re.sub(r"[^A-Z0-9]+", "", raw.upper())
     if len(alnum) >= 4:
         add(alnum)
     return out
+
+
+def _alnum_core(s: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(s or "").upper())
+
+
+def _token_matches_ticket_or_id(tokens: list[str], row: dict) -> bool:
+    """Loose ID match: Rinse URLs often use UUIDs or slugs that differ from DB formatting."""
+    oid_raw = str(row.get("id") or "").strip()
+    tid_raw = str(row.get("ticket_id") or "").strip()
+    oid_a = _alnum_core(oid_raw)
+    tid_a = _alnum_core(tid_raw)
+    try:
+        oid_int = int(oid_raw) if oid_raw.isdigit() else 0
+    except Exception:
+        oid_int = 0
+    for t in tokens:
+        tu = str(t or "").strip().upper()
+        if not tu:
+            continue
+        if tu.isdigit() and oid_int and int(tu) == oid_int:
+            return True
+        tc = _alnum_core(tu)
+        if len(tc) < 4:
+            continue
+        if oid_a and tc == oid_a:
+            return True
+        if tid_a:
+            if tc == tid_a:
+                return True
+            if len(tc) >= 8 and (tc in tid_a or tid_a in tc):
+                return True
+    return False
 
 
 def run_order_lookup_scan(
@@ -237,15 +279,18 @@ def run_order_lookup_scan(
     service_hint = str(body.get("service_hint") or "").strip()
     tokens = _qr_tokens(qr_text)
     nn = normalize_scan_name(name_hint) if name_hint else ""
-    mapped = map_service_hint(service_hint) or map_service_hint_qr(qr_text)
+    # Only apply service *filter* when the user explicitly picked a service. Inferring WF/HD from
+    # the URL often false-positives and drops every row on scan-only flows.
+    mapped_filter = map_service_hint(service_hint)
+    mapped_score = mapped_filter or map_service_hint_qr(qr_text)
 
     def row_ok_name(row: dict) -> bool:
         return name_hint_matches_row(nn, row.get("name_clean"))
 
     def row_ok_service(row: dict) -> bool:
-        if not mapped:
+        if not mapped_filter:
             return True
-        return str(row.get("service_type") or "").strip().upper() == mapped
+        return str(row.get("service_type") or "").strip().upper() == mapped_filter
 
     def row_qr_hit(row: dict) -> bool:
         if not tokens:
@@ -260,7 +305,7 @@ def run_order_lookup_scan(
                 return True
             if tid and (tid == tu or tu in tid or tid in tu):
                 return True
-        return False
+        return _token_matches_ticket_or_id(tokens, row)
 
     scored: list[tuple[int, dict]] = []
 
@@ -272,10 +317,10 @@ def run_order_lookup_scan(
         score += qr_embedded_name_score(qr_text, row.get("name_clean"))
         if nn:
             score += name_match_score(nn, row.get("name_clean"))
-        if mapped and str(row.get("service_type") or "").strip().upper() == mapped:
+        if mapped_score and str(row.get("service_type") or "").strip().upper() == mapped_score:
             score += 80
 
-        if nn or mapped:
+        if nn or mapped_filter:
             if not row_ok_name(row) or not row_ok_service(row):
                 continue
 
@@ -285,7 +330,7 @@ def run_order_lookup_scan(
     scored.sort(key=lambda x: (-x[0], -int(x[1].get("id") or 0)))
     out = [r for _, r in scored[:25]]
 
-    if not out and (nn or mapped):
+    if not out and (nn or mapped_filter):
         for row in candidates:
             if row_ok_name(row) and row_ok_service(row):
                 out.append(row)
