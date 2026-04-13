@@ -96,8 +96,10 @@ jobs:
 
       # Stops Oryx from replacing wwwroot with only build output (fixes missing scripts/).
       # Set repo variable AZURE_WEBAPP_RESOURCE_GROUP (Settings → Secrets and variables → Actions → Variables).
+      # Optional; GitHub OIDC principal may lack permission — do not fail the whole deploy.
       - name: Disable server Oryx rebuild (extract zip as-is)
         if: ${{ vars.AZURE_WEBAPP_RESOURCE_GROUP != '' }}
+        continue-on-error: true
         uses: azure/cli@v2
         with:
           azcliversion: 2.63.0
