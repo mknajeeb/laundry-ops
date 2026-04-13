@@ -162,14 +162,25 @@ function LoginPage({ onLoggedIn }) {
         }
       }
       if (!msg && !e?.response) {
+        const aborted =
+          e?.code === "ECONNABORTED" ||
+          String(e?.message || "")
+            .toLowerCase()
+            .includes("timeout");
+        if (aborted) {
+          msg =
+            "Login request timed out. The API may be cold-starting, blocked by a firewall, or the wrong URL is set (check VITE_API_BASE for production).";
+        }
         const net =
           e?.code === "ERR_NETWORK" ||
           String(e?.message || "")
             .toLowerCase()
             .includes("network");
-        msg = net
-          ? "Cannot reach the server. Start the backend and match the Vite proxy port (vite.config.js defaults to http://127.0.0.1:8000)."
-          : e?.message || "Login failed.";
+        if (!msg && net) {
+          msg =
+            "Cannot reach the server. Start the backend and match the Vite proxy port (vite.config.js defaults to http://127.0.0.1:8000).";
+        }
+        if (!msg) msg = e?.message || "Login failed.";
       }
       setError(msg || "Login failed.");
     } finally {

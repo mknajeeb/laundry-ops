@@ -17,11 +17,33 @@ import { chromium } from "playwright";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outFile = path.join(__dirname, "rinse-auth.json");
 
+const RINSE_LOGIN = "https://www.rinse.com/accounts/login/";
+
+/** Same as browser: login/?next=/cleanertickets/... so after MFA you land on your list. */
+function loginUrlWithNext() {
+  const fallback = "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
+  const raw = (process.env.RINSE_TICKETS_URL || "").trim() || fallback;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    u = new URL(fallback);
+  }
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  if (host !== "rinse.com") u = new URL(fallback);
+  const next = `${u.pathname}${u.search}`;
+  const login = new URL(RINSE_LOGIN);
+  login.searchParams.set("next", next);
+  return login.toString();
+}
+
 async function main() {
   const browser = await chromium.launch({ headless: false, slowMo: 50 });
   const context = await browser.newContext();
   const page = await context.newPage();
-  await page.goto("https://www.rinse.com/", { waitUntil: "domcontentloaded" });
+  const startUrl = loginUrlWithNext();
+  console.log("Opening:", startUrl);
+  await page.goto(startUrl, { waitUntil: "domcontentloaded" });
 
   console.log("\n1. Log in to Rinse in the browser window (MFA if needed).");
   console.log("2. Navigate once to Cleaner tickets so you know the session works.");

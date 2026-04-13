@@ -73,14 +73,21 @@ axios.interceptors.request.use((config) => {
    AUTH
 ========================================= */
 
+/** Avoid infinite "Signing in…" when the API is unreachable or a proxy hangs (no default axios timeout). */
+const AUTH_LOGIN_TIMEOUT_MS = 60000;
+
 export const authLogin = (username, password, organization_slug) =>
-  axios.post(`${API_BASE}/auth/login`, {
-    username,
-    password,
-    ...(organization_slug != null && String(organization_slug).trim() !== ""
-      ? { organization_slug: String(organization_slug).trim().toLowerCase() }
-      : {}),
-  });
+  axios.post(
+    `${API_BASE}/auth/login`,
+    {
+      username,
+      password,
+      ...(organization_slug != null && String(organization_slug).trim() !== ""
+        ? { organization_slug: String(organization_slug).trim().toLowerCase() }
+        : {}),
+    },
+    { timeout: AUTH_LOGIN_TIMEOUT_MS },
+  );
 
 /** Not logged in: change password with current password. */
 export const postPublicChangePassword = (body) =>
@@ -309,6 +316,13 @@ export const getRinseBagExportConfig = () =>
  */
 export const postRinseBagExport = () =>
   axios.post(`${API_BASE}/admin/rinse/bag-export`, {}, { responseType: "blob", timeout: 900000 });
+
+/**
+ * Admin: run Rinse portal scrape on the API and insert a draft upload batch (same pipeline as file upload).
+ * Optional body: { batch_date: "YYYY-MM-DD" } (defaults to today on the server).
+ */
+export const postRinseImportToUploadBatch = (body = {}) =>
+  axios.post(`${API_BASE}/admin/rinse/import-upload-batch`, body, { timeout: 900000 });
 
 export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
   axios.get(`${API_BASE}/upload_conflicts`, {

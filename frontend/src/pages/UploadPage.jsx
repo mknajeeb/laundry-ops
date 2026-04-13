@@ -34,6 +34,7 @@ import {
   getUploadBatchRows,
   overrideUploadBatchRow,
   postRinseBagExport,
+  postRinseImportToUploadBatch,
   uploadOrders,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
@@ -394,12 +395,60 @@ function UploadPage({ user }) {
             if (j?.stdout_tail) text = `${text}\n${String(j.stdout_tail).slice(-800)}`;
             if (j?.stderr_tail) text = `${text}\n${String(j.stderr_tail).slice(-1200)}`;
           } catch {
-            if (raw && raw.trim()) text = raw.trim().slice(0, 1200);
+            if (raw && raw.trim()) {
+              const snippet = raw.trim().slice(0, 800);
+              if (
+                /<html/i.test(snippet) ||
+                /Internal Server Error/i.test(snippet) ||
+                /502 Bad Gateway/i.test(snippet) ||
+                /504 Gateway/i.test(snippet)
+              ) {
+                text =
+                  "Rinse export failed: the API returned a generic HTML error (not JSON). " +
+                  "Common causes: Azure/proxy timeout (~2–4 min), Gunicorn worker killed (OOM/timeout), or an uncaught server crash. " +
+                  "Check Azure → laundryops-api → Log stream. Try RINSE_MAX_PAGES=3 for a shorter run, " +
+                  "ensure GUNICORN_TIMEOUT≥1200 on the API, and use a larger App Service SKU if the worker runs out of memory.";
+              } else {
+                text = snippet;
+              }
+            }
           }
         } catch {
           /* ignore */
         }
       }
+      setMessage({ type: "error", text });
+    } finally {
+      setRinseExportLoading(false);
+    }
+  };
+
+  const runRinseImportToBatch = async () => {
+    const ok = window.confirm(
+      "Import Rinse cleaner-tickets into a new draft batch on the server? Uses the same rules as Excel upload — no CSV download. This can take several minutes."
+    );
+    if (!ok) return;
+
+    try {
+      setRinseExportLoading(true);
+      setMessage({ type: "info", text: "Importing from Rinse into draft batch…" });
+      const res = await postRinseImportToUploadBatch({ batch_date: batchDate });
+      const d = res.data || {};
+      setMessage({
+        type: "success",
+        text: `Rinse import complete. Accepted: ${d.rows_inserted ?? 0}, Rejected: ${d.rejected_rows ?? 0}, Needs attention: ${d.needs_attention_rows ?? 0}.`,
+      });
+      await loadCurrentBatch("ALL");
+      await loadBatchHistory();
+      const cfg = await getRinseBagExportConfig();
+      setRinseExportHint(cfg.data?.hint || "");
+    } catch (error) {
+      console.error(error);
+      const text =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        "Rinse import failed.";
       setMessage({ type: "error", text });
     } finally {
       setRinseExportLoading(false);
@@ -480,23 +529,6 @@ function UploadPage({ user }) {
         </Alert>
       )}
 
-      {isRinseExportAdmin && (
-        <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
-          <Typography sx={{ fontWeight: 500, fontSize: 16, mb: 0.5 }}>Rinse — bag ID export</Typography>
-          <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
-            Runs the cleaner-tickets scraper on the <strong>API server</strong> (not your laptop). Production needs Node,
-            Playwright Chromium, session file, and{" "}
-            <Typography component="span" sx={{ fontFamily: "monospace", fontSize: 12 }}>
-              RINSE_BAG_EXPORT_ENABLED=1
-            </Typography>
-            . {rinseExportHint ? rinseExportHint : ""}
-          </Typography>
-          <Button variant="outlined" onClick={runRinseBagExport} disabled={rinseExportLoading || loading}>
-            {rinseExportLoading ? "Export running…" : "Download bag IDs CSV from Rinse"}
-          </Button>
-        </Paper>
-      )}
-
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
           <Stack spacing={0.6}>
@@ -526,6 +558,29 @@ function UploadPage({ user }) {
           </Button>
         </Stack>
       </Paper>
+
+      {isRinseExportAdmin && (
+        <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+          <Typography sx={{ fontWeight: 500, fontSize: 16, mb: 0.5 }}>Rinse — import / export</Typography>
+          <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+            Runs the cleaner-tickets scraper on the <strong>API server</strong> (not your laptop). Production needs Node,
+            Playwright Chromium, session file, and{" "}
+            <Typography component="span" sx={{ fontFamily: "monospace", fontSize: 12 }}>
+              RINSE_BAG_EXPORT_ENABLED=1
+            </Typography>
+            . <strong>Import into draft</strong> uses the Batch Date above and the same pipeline as Excel upload (no CSV
+            round trip). {rinseExportHint ? rinseExportHint : ""}
+          </Typography>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <Button variant="contained" onClick={runRinseImportToBatch} disabled={rinseExportLoading || loading}>
+              {rinseExportLoading ? "Rinse job running…" : "Import from Rinse into draft batch"}
+            </Button>
+            <Button variant="outlined" onClick={runRinseBagExport} disabled={rinseExportLoading || loading}>
+              {rinseExportLoading ? "Rinse job running…" : "Download bag IDs CSV from Rinse"}
+            </Button>
+          </Stack>
+        </Paper>
+      )}
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>
         <Tabs

@@ -289,9 +289,12 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
     return True, ""
 
 
-def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
+def run_bag_export_csv(
+    output_path: Path, extra_env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     """
     Run scrape.mjs with OUTPUT_CSV set to output_path (absolute).
+    Optional extra_env merged into the subprocess environment (e.g. RINSE_CSV_LAYOUT=portal).
     Returns (exit_code, stdout, stderr).
     """
     sdir = scraper_dir()
@@ -307,6 +310,8 @@ def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
     out_abs = str(output_path.resolve())
 
     env = os.environ.copy()
+    if extra_env:
+        env.update({k: str(v) for k, v in extra_env.items() if v is not None})
     env["OUTPUT_CSV"] = out_abs
     # Ensure dotenv in scraper can still load scripts/rinse-cleanertickets/.env
     env.setdefault("NODE_NO_WARNINGS", "1")

@@ -3462,6 +3462,298 @@ def summarize_batch_rows(cursor, batch_id, row_pk):
     return summary
 
 
+def commit_draft_upload_batch_from_orders_df(
+    conn,
+    cursor,
+    tenant_oid,
+    batch_date,
+    orders_df,
+    file_name: str,
+) -> dict:
+    """
+    Insert upload_batches + upload_batch_rows from a transformed orders DataFrame
+    (same columns as transform_orders() final output). Normalizes weights, commits, returns payload dict.
+    """
+    orders_df = orders_df.copy()
+    orders_df["Name_Clean"] = orders_df["Name_Clean"].astype(str).str.strip()
+    orders_df["Weight_Num"] = orders_df["Weight_Num"].apply(normalize_weight)
+    orders_df["fingerprint"] = orders_df.apply(
+        lambda row: build_fingerprint(
+            row.get("Name_Clean"),
+            row.get("Weight_Num"),
+            row.get("ServiceType"),
+        ),
+        axis=1,
+    )
+
+    upload_batches_pk = get_upload_batches_pk(cursor)
+    row_pk = get_upload_batch_rows_pk(cursor)
+
+    has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
+    has_state = table_has_column(cursor, "upload_batches", "state")
+    has_closed_at = table_has_column(cursor, "upload_batches", "closed_at")
+    has_updated_at = table_has_column(cursor, "upload_batches", "updated_at")
+    has_rows_inserted = table_has_column(cursor, "upload_batches", "rows_inserted")
+    time_col = upload_batches_time_col(cursor)
+
+    if has_state:
+        # Close any open draft batch first.
+        close_clause = "state = 'CLOSED'"
+        if has_closed_at:
+            close_clause += ", closed_at = NOW()"
+        if has_updated_at:
+            close_clause += ", updated_at = NOW()"
+
+        draft_where = "WHERE state = 'DRAFT'"
+        draft_args = []
+        if has_ub_org:
+            draft_where += " AND organization_id = %s"
+            draft_args.append(tenant_oid)
+        cursor.execute(
+            f"""
+            UPDATE upload_batches
+            SET {close_clause}
+            {draft_where}
+        """,
+            tuple(draft_args),
+        )
+
+        # Same-day overwrite: close previous non-confirmed batch for same date.
+        same_sql = f"""
+            UPDATE upload_batches
+            SET {close_clause}
+            WHERE batch_date = %s
+            AND state <> 'CONFIRMED'
+        """
+        same_args = [batch_date]
+        if has_ub_org:
+            same_sql += " AND organization_id = %s"
+            same_args.append(tenant_oid)
+        cursor.execute(same_sql, tuple(same_args))
+
+    insert_cols = ["file_name", "batch_date", "orders_loaded"]
+    insert_vals = ["%s", "%s", "%s"]
+    insert_args = [file_name, batch_date, 0]
+    if has_ub_org:
+        insert_cols = ["organization_id"] + insert_cols
+        insert_vals = ["%s"] + insert_vals
+        insert_args = [tenant_oid] + insert_args
+
+    if has_state:
+        insert_cols.append("state")
+        insert_vals.append("'DRAFT'")
+    if time_col == "created_at":
+        insert_cols.append("created_at")
+        insert_vals.append("NOW()")
+
+    cursor.execute(
+        f"""
+        INSERT INTO upload_batches
+        ({", ".join(insert_cols)})
+        VALUES ({", ".join(insert_vals)})
+    """,
+        tuple(insert_args),
+    )
+    upload_batch_id = cursor.lastrowid
+
+    # Configurable lookback window for duplicate checks against final records.
+    try:
+        duplicate_lookback_days = int(os.getenv("DUPLICATE_LOOKBACK_DAYS", "3"))
+    except Exception:
+        duplicate_lookback_days = 3
+    duplicate_lookback_days = max(1, min(duplicate_lookback_days, 30))
+
+    cap = orders_status_capabilities(cursor)
+
+    # Build identity index from all staging rows (including checked/forced/processed).
+    logistics_sql = orders_logistics_select_sql(cap)
+    processing_sql = orders_processing_select_sql(cap)
+    staging_sql = f"""
+        SELECT
+            id,
+            date_clean,
+            name_clean,
+            weight_num,
+            service_type,
+            {logistics_sql},
+            {processing_sql},
+            status
+        FROM orders_staging
+    """
+    staging_args = []
+    if table_has_column(cursor, "orders_staging", "organization_id"):
+        staging_sql += " WHERE organization_id = %s"
+        staging_args.append(tenant_oid)
+    cursor.execute(staging_sql, tuple(staging_args))
+    staging_rows = cursor.fetchall()
+    existing_identity_reasons = {}
+
+    def staging_reason_for_status(raw_logistics, raw_status):
+        logistics = (raw_logistics or "").strip().upper()
+        status = (raw_status or "").strip().upper()
+        # If logistics_status exists, trust it as source of truth.
+        if logistics:
+            if logistics in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
+                return "ALREADY_SENT_OR_FORCED"
+            return "DUPLICATE_IN_STAGING"
+
+        # Legacy fallback only when logistics_status column is not present.
+        if status in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCED_CHECKOUT", "FORCE_CHECKOUT"]:
+            return "ALREADY_SENT_OR_FORCED"
+        return "DUPLICATE_IN_STAGING"
+
+    for r in staging_rows:
+        identity_key = build_identity_key(
+            r.get("name_clean"),
+            r.get("weight_num"),
+            r.get("service_type"),
+            r.get("date_clean"),
+        )
+        next_reason = staging_reason_for_status(r.get("logistics_status"), r.get("status"))
+        prev_reason = existing_identity_reasons.get(identity_key)
+        # Keep the stronger signal if we already have one.
+        if prev_reason != "ALREADY_SENT_OR_FORCED":
+            existing_identity_reasons[identity_key] = next_reason
+
+    final_cutoff = datetime.utcnow() - timedelta(days=duplicate_lookback_days)
+    final_sql = """
+        SELECT
+            date_clean,
+            name_clean,
+            weight_num,
+            service_type
+        FROM orders_final
+        WHERE cleaned_at >= %s
+    """
+    final_args = [final_cutoff]
+    if table_exists(cursor, "orders_final") and table_has_column(cursor, "orders_final", "organization_id"):
+        final_sql += " AND organization_id = %s"
+        final_args.append(tenant_oid)
+    cursor.execute(final_sql, tuple(final_args))
+    final_rows = cursor.fetchall()
+    final_identity_keys = set(
+        build_identity_key(
+            r.get("name_clean"),
+            r.get("weight_num"),
+            r.get("service_type"),
+            r.get("date_clean"),
+        )
+        for r in final_rows
+    )
+
+    inserted = 0
+    rejected = 0
+    needs_attention = 0
+    for _, row in orders_df.iterrows():
+
+        date_clean = row.get("Date_Clean")
+        name_clean = row.get("Name_Clean")
+        weight_num = row.get("Weight_Num")
+        service_type = row.get("ServiceType")
+        rush_type_raw = row.get("RushType")
+
+        if pd.isna(date_clean) or pd.isna(name_clean):
+            continue
+
+        if pd.isna(weight_num):
+            weight_num = None
+
+        if isinstance(date_clean, datetime):
+            row_date = date_clean.date()
+        elif isinstance(date_clean, date):
+            row_date = date_clean
+        else:
+            row_date = parse_date_value(date_clean)
+        is_batch_date_rush = row_date == batch_date
+        rush_type = "RUSH" if (str(rush_type_raw).upper() == "RUSH" or is_batch_date_rush) else "NON-RUSH"
+
+        identity_key = build_identity_key(name_clean, weight_num, service_type, row_date)
+        row_status = "ACCEPTED"
+        reason = "OK"
+
+        if row_date < batch_date:
+            row_status = "NEEDS_ATTENTION"
+            reason = "OLDER_THAN_BATCH_DATE"
+            needs_attention += 1
+        elif identity_key in final_identity_keys:
+            row_status = "REJECTED_DUPLICATE"
+            reason = "ALREADY_IN_FINAL"
+            rejected += 1
+        elif identity_key in existing_identity_reasons:
+            row_status = "REJECTED_DUPLICATE"
+            reason = existing_identity_reasons[identity_key]
+            rejected += 1
+        else:
+            inserted += 1
+
+        cursor.execute(
+            """
+            INSERT INTO upload_batch_rows
+            (
+                upload_batch_id,
+                date_clean,
+                name_clean,
+                weight_num,
+                service_type,
+                rush_type,
+                row_status,
+                reason,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        """,
+            (
+                upload_batch_id,
+                row_date,
+                name_clean,
+                weight_num,
+                service_type,
+                rush_type,
+                row_status,
+                reason,
+            ),
+        )
+
+    set_parts = ["orders_loaded = %s"]
+    set_args = [inserted]
+    if has_rows_inserted:
+        set_parts.append("rows_inserted = %s")
+        set_args.append(inserted)
+    if has_state:
+        set_parts.append("state = 'DRAFT'")
+    if has_updated_at:
+        set_parts.append("updated_at = NOW()")
+
+    set_args.append(upload_batch_id)
+    upd_batch_where = f"WHERE {upload_batches_pk} = %s"
+    if has_ub_org:
+        upd_batch_where += " AND organization_id = %s"
+        set_args.append(tenant_oid)
+    cursor.execute(
+        f"""
+        UPDATE upload_batches
+        SET {", ".join(set_parts)}
+        {upd_batch_where}
+    """,
+        tuple(set_args),
+    )
+
+    conn.commit()
+    summary = summarize_batch_rows(cursor, upload_batch_id, row_pk)
+
+    return {
+        "status": "draft_uploaded",
+        "batch_id": upload_batch_id,
+        "batch_state": "DRAFT",
+        "rows_inserted": inserted,
+        "rejected_rows": rejected,
+        "needs_attention_rows": needs_attention,
+        "duplicate_lookback_days": duplicate_lookback_days,
+        "summary": summary,
+    }
+
+
 @app.route("/upload_orders", methods=["POST"])
 def upload_orders():
 
@@ -3488,19 +3780,6 @@ def upload_orders():
 
         orders_df, summary_df, ops_summary = transform_orders(df)
 
-        orders_df["Name_Clean"] = orders_df["Name_Clean"].astype(str).str.strip()
-
-        orders_df["Weight_Num"] = orders_df["Weight_Num"].apply(normalize_weight)
-
-        orders_df["fingerprint"] = orders_df.apply(
-            lambda row: build_fingerprint(
-                row.get("Name_Clean"),
-                row.get("Weight_Num"),
-                row.get("ServiceType")
-            ),
-            axis=1
-        )
-
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
 
@@ -3512,263 +3791,16 @@ def upload_orders():
         requested_batch_date = request.form.get("batch_date")
         batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
 
-        upload_batches_pk = get_upload_batches_pk(cursor)
-        row_pk = get_upload_batch_rows_pk(cursor)
-
-        has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
-        has_state = table_has_column(cursor, "upload_batches", "state")
-        has_closed_at = table_has_column(cursor, "upload_batches", "closed_at")
-        has_updated_at = table_has_column(cursor, "upload_batches", "updated_at")
-        has_rows_inserted = table_has_column(cursor, "upload_batches", "rows_inserted")
-        time_col = upload_batches_time_col(cursor)
-
-        if has_state:
-            # Close any open draft batch first.
-            close_clause = "state = 'CLOSED'"
-            if has_closed_at:
-                close_clause += ", closed_at = NOW()"
-            if has_updated_at:
-                close_clause += ", updated_at = NOW()"
-
-            draft_where = "WHERE state = 'DRAFT'"
-            draft_args = []
-            if has_ub_org:
-                draft_where += " AND organization_id = %s"
-                draft_args.append(tenant_oid)
-            cursor.execute(f"""
-                UPDATE upload_batches
-                SET {close_clause}
-                {draft_where}
-            """, tuple(draft_args))
-
-            # Same-day overwrite: close previous non-confirmed batch for same date.
-            same_sql = f"""
-                UPDATE upload_batches
-                SET {close_clause}
-                WHERE batch_date = %s
-                AND state <> 'CONFIRMED'
-            """
-            same_args = [batch_date]
-            if has_ub_org:
-                same_sql += " AND organization_id = %s"
-                same_args.append(tenant_oid)
-            cursor.execute(same_sql, tuple(same_args))
-
-        insert_cols = ["file_name", "batch_date", "orders_loaded"]
-        insert_vals = ["%s", "%s", "%s"]
-        insert_args = [file.filename, batch_date, 0]
-        if has_ub_org:
-            insert_cols = ["organization_id"] + insert_cols
-            insert_vals = ["%s"] + insert_vals
-            insert_args = [tenant_oid] + insert_args
-
-        if has_state:
-            insert_cols.append("state")
-            insert_vals.append("'DRAFT'")
-        if time_col == "created_at":
-            insert_cols.append("created_at")
-            insert_vals.append("NOW()")
-
-        cursor.execute(f"""
-            INSERT INTO upload_batches
-            ({", ".join(insert_cols)})
-            VALUES ({", ".join(insert_vals)})
-        """, tuple(insert_args))
-        upload_batch_id = cursor.lastrowid
-
-        # Configurable lookback window for duplicate checks against final records.
-        try:
-            duplicate_lookback_days = int(os.getenv("DUPLICATE_LOOKBACK_DAYS", "3"))
-        except Exception:
-            duplicate_lookback_days = 3
-        duplicate_lookback_days = max(1, min(duplicate_lookback_days, 30))
-
-        cap = orders_status_capabilities(cursor)
-
-        # Build identity index from all staging rows (including checked/forced/processed).
-        logistics_sql = orders_logistics_select_sql(cap)
-        processing_sql = orders_processing_select_sql(cap)
-        staging_sql = f"""
-            SELECT
-                id,
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type,
-                {logistics_sql},
-                {processing_sql},
-                status
-            FROM orders_staging
-        """
-        staging_args = []
-        if table_has_column(cursor, "orders_staging", "organization_id"):
-            staging_sql += " WHERE organization_id = %s"
-            staging_args.append(tenant_oid)
-        cursor.execute(staging_sql, tuple(staging_args))
-        staging_rows = cursor.fetchall()
-        existing_identity_reasons = {}
-
-        def staging_reason_for_status(raw_logistics, raw_status):
-            logistics = (raw_logistics or "").strip().upper()
-            status = (raw_status or "").strip().upper()
-            # If logistics_status exists, trust it as source of truth.
-            if logistics:
-                if logistics in ["SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"]:
-                    return "ALREADY_SENT_OR_FORCED"
-                return "DUPLICATE_IN_STAGING"
-
-            # Legacy fallback only when logistics_status column is not present.
-            if status in ["CHECKED_OUT", "SENT_TO_RINSE", "FORCED_CHECKOUT", "FORCE_CHECKOUT"]:
-                return "ALREADY_SENT_OR_FORCED"
-            return "DUPLICATE_IN_STAGING"
-
-        for r in staging_rows:
-            identity_key = build_identity_key(
-                r.get("name_clean"),
-                r.get("weight_num"),
-                r.get("service_type"),
-                r.get("date_clean")
-            )
-            next_reason = staging_reason_for_status(r.get("logistics_status"), r.get("status"))
-            prev_reason = existing_identity_reasons.get(identity_key)
-            # Keep the stronger signal if we already have one.
-            if prev_reason != "ALREADY_SENT_OR_FORCED":
-                existing_identity_reasons[identity_key] = next_reason
-
-        final_cutoff = datetime.utcnow() - timedelta(days=duplicate_lookback_days)
-        final_sql = """
-            SELECT
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type
-            FROM orders_final
-            WHERE cleaned_at >= %s
-        """
-        final_args = [final_cutoff]
-        if table_exists(cursor, "orders_final") and table_has_column(cursor, "orders_final", "organization_id"):
-            final_sql += " AND organization_id = %s"
-            final_args.append(tenant_oid)
-        cursor.execute(final_sql, tuple(final_args))
-        final_rows = cursor.fetchall()
-        final_identity_keys = set(
-            build_identity_key(
-                r.get("name_clean"),
-                r.get("weight_num"),
-                r.get("service_type"),
-                r.get("date_clean")
-            )
-            for r in final_rows
+        payload = commit_draft_upload_batch_from_orders_df(
+            conn, cursor, tenant_oid, batch_date, orders_df, file.filename
         )
 
-        inserted = 0
-        rejected = 0
-        needs_attention = 0
-        for _, row in orders_df.iterrows():
-
-            date_clean = row.get("Date_Clean")
-            name_clean = row.get("Name_Clean")
-            weight_num = row.get("Weight_Num")
-            service_type = row.get("ServiceType")
-            rush_type_raw = row.get("RushType")
-
-            if pd.isna(date_clean) or pd.isna(name_clean):
-                continue
-
-            if pd.isna(weight_num):
-                weight_num = None
-
-            if isinstance(date_clean, datetime):
-                row_date = date_clean.date()
-            elif isinstance(date_clean, date):
-                row_date = date_clean
-            else:
-                row_date = parse_date_value(date_clean)
-            is_batch_date_rush = (row_date == batch_date)
-            rush_type = "RUSH" if (str(rush_type_raw).upper() == "RUSH" or is_batch_date_rush) else "NON-RUSH"
-
-            identity_key = build_identity_key(name_clean, weight_num, service_type, row_date)
-            row_status = "ACCEPTED"
-            reason = "OK"
-
-            if row_date < batch_date:
-                row_status = "NEEDS_ATTENTION"
-                reason = "OLDER_THAN_BATCH_DATE"
-                needs_attention += 1
-            elif identity_key in final_identity_keys:
-                row_status = "REJECTED_DUPLICATE"
-                reason = "ALREADY_IN_FINAL"
-                rejected += 1
-            elif identity_key in existing_identity_reasons:
-                row_status = "REJECTED_DUPLICATE"
-                reason = existing_identity_reasons[identity_key]
-                rejected += 1
-            else:
-                inserted += 1
-
-            cursor.execute("""
-                INSERT INTO upload_batch_rows
-                (
-                    upload_batch_id,
-                    date_clean,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    row_status,
-                    reason,
-                    created_at,
-                    updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-            """, (
-                upload_batch_id,
-                row_date,
-                name_clean,
-                weight_num,
-                service_type,
-                rush_type,
-                row_status,
-                reason
-            ))
-
-        set_parts = ["orders_loaded = %s"]
-        set_args = [inserted]
-        if has_rows_inserted:
-            set_parts.append("rows_inserted = %s")
-            set_args.append(inserted)
-        if has_state:
-            set_parts.append("state = 'DRAFT'")
-        if has_updated_at:
-            set_parts.append("updated_at = NOW()")
-
-        set_args.append(upload_batch_id)
-        upd_batch_where = f"WHERE {upload_batches_pk} = %s"
-        if has_ub_org:
-            upd_batch_where += " AND organization_id = %s"
-            set_args.append(tenant_oid)
-        cursor.execute(f"""
-            UPDATE upload_batches
-            SET {", ".join(set_parts)}
-            {upd_batch_where}
-        """, tuple(set_args))
-
-        conn.commit()
-        summary = summarize_batch_rows(cursor, upload_batch_id, row_pk)
-
-        return jsonify({
-
-            "status": "draft_uploaded",
-            "batch_id": upload_batch_id,
-            "batch_state": "DRAFT",
-            "rows_inserted": inserted,
-            "rejected_rows": rejected,
-            "needs_attention_rows": needs_attention,
-            "duplicate_lookback_days": duplicate_lookback_days,
-            "summary": summary,
-            "summary_rows": 0 if summary_df is None else len(summary_df)
-
-        })
+        return jsonify(
+            {
+                **payload,
+                "summary_rows": 0 if summary_df is None else len(summary_df),
+            }
+        )
 
     except Exception as e:
 
