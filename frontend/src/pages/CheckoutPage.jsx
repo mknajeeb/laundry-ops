@@ -8,7 +8,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Drawer,
+  IconButton,
   Paper,
   Stack,
   Typography,
@@ -17,6 +17,7 @@ import {
   Bolt,
   CheckCircle,
   ChevronRight,
+  Close,
   ExpandLess,
   ExpandMore,
   LocalShipping,
@@ -296,56 +297,63 @@ function CheckoutPage() {
     );
   }
 
+  const sentOverlayBg = "linear-gradient(185deg, #e8edf7 0%, #f1f5f9 18%, #fafbfc 55%, #ffffff 100%)";
+
   return (
     <Box
       sx={{
         minHeight: "100vh",
         px: { xs: 1, sm: 1.5 },
         py: 1,
-        background: "linear-gradient(185deg, #e8edf7 0%, #f1f5f9 18%, #fafbfc 55%, #ffffff 100%)",
+        background: sentOverlayBg,
       }}
     >
-      <TaOperationalBanner message={bannerMessage} />
-      <StandardScreenHeader
-        title="Checkout"
-        dateLabel={formatSystemDateLong()}
-        dense
-        right={
-          <>
-            <IconPillButton
-              title="Sent to rinse"
-              icon={<Undo />}
-              label={counters.sentCount ? `Sent (${counters.sentCount})` : "Sent"}
-              onClick={() => setSentDrawerOpen(true)}
-            />
-            <IconPillButton title="Refresh queue" icon={<Refresh />} label="" onClick={load} />
-          </>
-        }
-      />
+      {!sentDrawerOpen && (
+        <>
+          <TaOperationalBanner message={bannerMessage} />
+          <StandardScreenHeader
+            title="Checkout"
+            dateLabel={formatSystemDateLong()}
+            dense
+            right={
+              <>
+                <IconPillButton
+                  title="Sent to rinse"
+                  icon={<Undo />}
+                  label={counters.sentCount ? `Sent (${counters.sentCount})` : "Sent"}
+                  onClick={() => setSentDrawerOpen(true)}
+                />
+                <IconPillButton title="Refresh queue" icon={<Refresh />} label="" onClick={load} />
+              </>
+            }
+          />
 
-      <RushTabCountBar
-        fullWidth
-        value={rushTab}
-        onChange={(k) => {
-          setRushTab(k);
-          setOpenAlpha(null);
-        }}
-        tabs={[
-          { key: "ALL", label: "All", count: counters.allCount },
-          { key: "RUSH", label: "Rush", count: counters.rushCount, Icon: Bolt, accent: "#b91c1c" },
-          { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
-        ]}
-      />
+          <RushTabCountBar
+            fullWidth
+            value={rushTab}
+            onChange={(k) => {
+              setRushTab(k);
+              setOpenAlpha(null);
+            }}
+            tabs={[
+              { key: "ALL", label: "All", count: counters.allCount },
+              { key: "RUSH", label: "Rush", count: counters.rushCount, Icon: Bolt, accent: "#b91c1c" },
+              { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
+            ]}
+          />
 
-      <OpsSearchBar value={search} onChange={setSearch} />
+          <OpsSearchBar value={search} onChange={setSearch} />
 
-      <OrderScanLookupBar
-        storageKey="washpro_scan_lookup_checkout"
-        batchDate={lookupBatchDate}
-        disabled={scanDisabled}
-        onPickOrder={(o) => onSelectForCheckout(o)}
-      />
+          <OrderScanLookupBar
+            storageKey="washpro_scan_lookup_checkout"
+            batchDate={lookupBatchDate}
+            disabled={scanDisabled}
+            onPickOrder={(o) => onSelectForCheckout(o)}
+          />
+        </>
+      )}
 
+      {!sentDrawerOpen && (
       <Box sx={{ mt: 1.2 }}>
         {groupedQueue.keys.map((alpha, idx) => {
           const list = groupedQueue.groups[alpha] || [];
@@ -476,90 +484,127 @@ function CheckoutPage() {
           );
         })}
       </Box>
+      )}
 
-      <Drawer anchor="right" open={sentDrawerOpen} onClose={() => setSentDrawerOpen(false)} PaperProps={{ sx: { width: { xs: "100%", sm: 380 } } }}>
-        <Box sx={{ p: 1.25, borderBottom: "1px solid #e5e7eb" }}>
-          <Typography sx={{ fontSize: 17, fontWeight: 700 }}>Sent to rinse</Typography>
-        </Box>
-        <Box sx={{ p: 1, overflow: "auto", pb: "env(safe-area-inset-bottom, 16px)" }}>
-          {checkedRows.length === 0 ? (
-            <Typography sx={{ color: "#6b7280", px: 1 }}>No recent sends yet.</Typography>
-          ) : (
-            groupedSent.keys.map((alpha, idx) => {
-              const list = groupedSent.groups[alpha] || [];
-              const expanded = openAlphaSent === alpha;
-              return (
-                <Paper
-                  key={`sent-${alpha}`}
-                  sx={{
-                    mb: 1,
-                    borderRadius: 2,
-                    overflow: "hidden",
-                    border: "1px solid #e5e7eb",
-                    boxShadow: "none",
-                  }}
-                >
-                  <Button
-                    fullWidth
-                    onClick={() => handleAlphaSentToggle(alpha)}
+      {sentDrawerOpen && (
+        <Box
+          role="dialog"
+          aria-modal="true"
+          aria-label="Sent to rinse"
+          sx={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1400,
+            display: "flex",
+            flexDirection: "column",
+            background: sentOverlayBg,
+            pb: "env(safe-area-inset-bottom, 0px)",
+          }}
+        >
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            sx={{
+              px: 1,
+              py: 0.5,
+              minHeight: 44,
+              borderBottom: "1px solid rgba(148, 163, 184, 0.35)",
+              flexShrink: 0,
+            }}
+          >
+            <Typography sx={{ fontSize: "1rem", fontWeight: 700, color: "#0f172a" }}>Sent to rinse</Typography>
+            <IconButton aria-label="Close" onClick={() => setSentDrawerOpen(false)} size="small" sx={{ color: "#475569" }}>
+              <Close />
+            </IconButton>
+          </Stack>
+          <Box sx={{ flex: 1, overflow: "auto", px: 1, pt: 0.75 }}>
+            {checkedRows.length === 0 ? (
+              <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.5 }}>No recent sends yet.</Typography>
+            ) : (
+              groupedSent.keys.map((alpha, idx) => {
+                const list = groupedSent.groups[alpha] || [];
+                const expanded = openAlphaSent === alpha;
+                return (
+                  <Paper
+                    key={`sent-${alpha}`}
                     sx={{
-                      px: 1,
-                      py: 1,
-                      justifyContent: "space-between",
-                      color: "#111827",
-                      textTransform: "none",
-                      bgcolor: HEADER_BG[idx % HEADER_BG.length],
+                      mb: 0.65,
+                      borderRadius: 1.5,
+                      overflow: "hidden",
+                      border: "1px solid rgba(148, 163, 184, 0.35)",
+                      boxShadow: "none",
                     }}
                   >
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Box
-                        sx={{
-                          width: 28,
-                          height: 28,
-                          borderRadius: "50%",
-                          display: "grid",
-                          placeItems: "center",
-                          bgcolor: "#0f766e",
-                          color: "#fff",
-                          fontWeight: 600,
-                          fontSize: 13,
-                        }}
-                      >
-                        {alpha}
-                      </Box>
-                      <Typography sx={{ fontSize: 14, fontWeight: 600 }}>{list.length} sent</Typography>
-                    </Stack>
-                    {expanded ? <ExpandLess /> : <ExpandMore />}
-                  </Button>
-                  {expanded && list.length > 0 && (
-                    <Stack spacing={0.8} sx={{ p: 1 }}>
-                      {list.map((r) => (
-                        <Paper
-                          key={`${r.id}-${r.order_id}`}
-                          variant="outlined"
-                          sx={{ p: 1, borderRadius: 1.5 }}
+                    <Button
+                      fullWidth
+                      onClick={() => handleAlphaSentToggle(alpha)}
+                      sx={{
+                        px: 0.85,
+                        py: 0.55,
+                        minHeight: 40,
+                        justifyContent: "space-between",
+                        color: "#111827",
+                        textTransform: "none",
+                        bgcolor: HEADER_BG[idx % HEADER_BG.length],
+                      }}
+                    >
+                      <Stack direction="row" spacing={0.85} alignItems="center">
+                        <Box
+                          sx={{
+                            width: 24,
+                            height: 24,
+                            borderRadius: "50%",
+                            display: "grid",
+                            placeItems: "center",
+                            bgcolor: "#0f766e",
+                            color: "#fff",
+                            fontWeight: 600,
+                            fontSize: 12,
+                          }}
                         >
-                          <Stack spacing={0.8}>
-                            <Typography sx={{ fontWeight: 600 }}>{r.name || `#${r.order_id}`}</Typography>
-                            <Typography sx={{ fontSize: 13, color: "text.secondary" }}>
-                              #{r.order_id} • {formatDate(r.rush_date || r.checkout_time)} • {logMeasureOf(r)}
-                            </Typography>
-                            <Stack direction="row" justifyContent="flex-end">
-                              <Button size="small" variant="contained" color="warning" startIcon={<Undo />} onClick={() => setUndoRow(r)}>
-                                Undo
-                              </Button>
+                          {alpha}
+                        </Box>
+                        <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{list.length} sent</Typography>
+                      </Stack>
+                      {expanded ? <ExpandLess sx={{ fontSize: 20 }} /> : <ExpandMore sx={{ fontSize: 20 }} />}
+                    </Button>
+                    {expanded && list.length > 0 && (
+                      <Stack spacing={0.55} sx={{ p: 0.65, pt: 0 }}>
+                        {list.map((r) => (
+                          <Paper
+                            key={`${r.id}-${r.order_id}`}
+                            variant="outlined"
+                            sx={{ p: 0.65, borderRadius: 1, borderColor: "rgba(148, 163, 184, 0.45)" }}
+                          >
+                            <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={0.75}>
+                              <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
+                                <Typography sx={{ fontWeight: 600, fontSize: 14 }}>{r.name || `#${r.order_id}`}</Typography>
+                                <Typography sx={{ fontSize: 11, color: "text.secondary", lineHeight: 1.35 }}>
+                                  #{r.order_id} • {formatDate(r.rush_date || r.checkout_time)} • {logMeasureOf(r)}
+                                </Typography>
+                              </Stack>
+                              <IconButton
+                                size="small"
+                                color="warning"
+                                aria-label="Undo send"
+                                onClick={() => setUndoRow(r)}
+                                sx={{ mt: -0.25, flexShrink: 0 }}
+                              >
+                                <Undo sx={{ fontSize: 18 }} />
+                              </IconButton>
                             </Stack>
-                          </Stack>
-                        </Paper>
-                      ))}
-                    </Stack>
-                  )}
-                </Paper>
-              );
-            })
-          )}
+                          </Paper>
+                        ))}
+                      </Stack>
+                    )}
+                  </Paper>
+                );
+              })
+            )}
+          </Box>
         </Box>
-      </Drawer>
+      )}
 
       <Dialog open={Boolean(activeRow)} onClose={() => setActiveRow(null)} fullWidth maxWidth="xs">
         <DialogTitle>Send to Rinse</DialogTitle>
