@@ -8,6 +8,7 @@ import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
+import { getOpsAlphaPalette, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 import { getCurrentUploadBatch, getOrders } from "../api";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -265,51 +266,57 @@ function OrdersPage({ user }) {
         </Stack>
       ) : (
         <Stack spacing={1} sx={{ mt: 1.2 }}>
-          {ALPHAS.map((alpha) => {
+          {ALPHAS.map((alpha, idx) => {
             const list = grouped[alpha] || [];
             if (searchActive && list.length === 0) return null;
             const expanded = searchActive ? true : openAlpha === alpha;
+            const pal = getOpsAlphaPalette(idx);
+            const empty = list.length === 0;
             return (
               <Paper
                 key={alpha}
                 sx={{
                   borderRadius: 2,
-                  border: "1px solid #e5e7eb",
+                  border: `1px solid ${pal.border}`,
                   overflow: "hidden",
-                  opacity: list.length === 0 ? 0.36 : 1,
+                  transition: "opacity 0.15s ease",
+                  ...opsAlphaEmptySectionSx(list.length),
                 }}
               >
                 <Button
                   fullWidth
                   onClick={() => toggleAlpha(alpha)}
                   sx={{
-                    px: 1.1,
-                    py: 1,
+                    px: 1.25,
+                    py: 1.35,
+                    minHeight: 56,
                     justifyContent: "space-between",
                     textTransform: "none",
-                    color: "#111827",
-                    bgcolor: "#f8fafc",
+                    color: "#0f172a",
+                    bgcolor: pal.rowBg,
                   }}
                 >
-                  <Stack direction="row" spacing={1.2} alignItems="center">
+                  <Stack direction="row" spacing={1.35} alignItems="center">
                     <Box
                       sx={{
-                        width: 28,
-                        height: 28,
+                        width: 42,
+                        height: 42,
                         borderRadius: "50%",
                         display: "grid",
                         placeItems: "center",
-                        bgcolor: "#111827",
-                        color: "#ffffff",
-                        fontSize: 14,
-                        fontWeight: 400,
+                        bgcolor: pal.chipBg,
+                        color: pal.chipColor,
+                        fontSize: 18,
+                        fontWeight: 700,
+                        letterSpacing: 0.02,
+                        boxShadow: empty ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
                       }}
                     >
                       {alpha}
                     </Box>
-                    <Typography sx={{ fontSize: 16, fontWeight: 400 }}>{list.length} bags</Typography>
+                    <Typography sx={{ fontSize: 17, fontWeight: 600 }}>{list.length} bags</Typography>
                   </Stack>
-                  {expanded ? <ExpandLess /> : <ExpandMore />}
+                  {expanded ? <ExpandLess sx={{ fontSize: 26, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 26, color: "#334155" }} />}
                 </Button>
 
                 {expanded && (

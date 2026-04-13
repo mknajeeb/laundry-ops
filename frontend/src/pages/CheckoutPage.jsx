@@ -33,9 +33,9 @@ import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
+import { getOpsAlphaPalette, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-const HEADER_BG = ["#f8fafc", "#fefce8", "#f0f9ff", "#fdf2f8", "#f0fdfa"];
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -358,6 +358,8 @@ function CheckoutPage() {
         {groupedQueue.keys.map((alpha, idx) => {
           const list = groupedQueue.groups[alpha] || [];
           const expanded = openAlpha === alpha;
+          const pal = getOpsAlphaPalette(idx);
+          const empty = list.length === 0;
           return (
             <Paper
               key={alpha}
@@ -365,42 +367,49 @@ function CheckoutPage() {
                 mb: 1.1,
                 borderRadius: 2,
                 overflow: "hidden",
-                border: "1px solid #e5e7eb",
+                border: `1px solid ${pal.border}`,
                 boxShadow: "none",
                 bgcolor: "#ffffff",
+                transition: "opacity 0.15s ease",
+                ...opsAlphaEmptySectionSx(list.length),
               }}
             >
               <Button
                 fullWidth
                 onClick={() => handleAlphaToggle(alpha)}
                 sx={{
-                  px: 1.1,
-                  py: 1.1,
+                  px: 1.25,
+                  py: 1.35,
+                  minHeight: 56,
                   justifyContent: "space-between",
-                  color: "#111827",
+                  color: "#0f172a",
                   textTransform: "none",
-                  bgcolor: HEADER_BG[idx % HEADER_BG.length],
+                  bgcolor: pal.rowBg,
                 }}
               >
-                <Stack direction="row" spacing={1.3} alignItems="center">
+                <Stack direction="row" spacing={1.4} alignItems="center">
                   <Box
                     sx={{
-                      width: 31,
-                      height: 31,
+                      width: 42,
+                      height: 42,
                       borderRadius: "50%",
                       display: "grid",
                       placeItems: "center",
-                      bgcolor: "#111827",
-                      color: "#fff",
-                      fontWeight: 500,
-                      fontSize: 14,
+                      bgcolor: pal.chipBg,
+                      color: pal.chipColor,
+                      fontWeight: 700,
+                      fontSize: 18,
+                      letterSpacing: 0.02,
+                      boxShadow: empty ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
                     }}
                   >
                     {alpha}
                   </Box>
-                  <Typography sx={{ fontSize: 16, fontWeight: 500, letterSpacing: 0.2 }}>{list.length} bags</Typography>
+                  <Typography sx={{ fontSize: 17, fontWeight: 600, letterSpacing: 0.02 }}>
+                    {list.length} bags
+                  </Typography>
                 </Stack>
-                {expanded ? <ExpandLess /> : <ExpandMore />}
+                {expanded ? <ExpandLess sx={{ fontSize: 26, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 26, color: "#334155" }} />}
               </Button>
               {expanded && (
                 <Box sx={{ p: 1, bgcolor: "transparent" }}>
@@ -525,49 +534,54 @@ function CheckoutPage() {
               groupedSent.keys.map((alpha, idx) => {
                 const list = groupedSent.groups[alpha] || [];
                 const expanded = openAlphaSent === alpha;
+                const pal = getOpsAlphaPalette(idx);
+                const empty = list.length === 0;
                 return (
                   <Paper
                     key={`sent-${alpha}`}
                     sx={{
-                      mb: 0.65,
-                      borderRadius: 1.5,
+                      mb: 0.75,
+                      borderRadius: 1.75,
                       overflow: "hidden",
-                      border: "1px solid rgba(148, 163, 184, 0.35)",
+                      border: `1px solid ${pal.border}`,
                       boxShadow: "none",
+                      transition: "opacity 0.15s ease",
+                      ...opsAlphaEmptySectionSx(list.length),
                     }}
                   >
                     <Button
                       fullWidth
                       onClick={() => handleAlphaSentToggle(alpha)}
                       sx={{
-                        px: 0.85,
-                        py: 0.55,
-                        minHeight: 40,
+                        px: 1,
+                        py: 1,
+                        minHeight: 52,
                         justifyContent: "space-between",
-                        color: "#111827",
+                        color: "#0f172a",
                         textTransform: "none",
-                        bgcolor: HEADER_BG[idx % HEADER_BG.length],
+                        bgcolor: pal.rowBg,
                       }}
                     >
-                      <Stack direction="row" spacing={0.85} alignItems="center">
+                      <Stack direction="row" spacing={1.1} alignItems="center">
                         <Box
                           sx={{
-                            width: 24,
-                            height: 24,
+                            width: 38,
+                            height: 38,
                             borderRadius: "50%",
                             display: "grid",
                             placeItems: "center",
-                            bgcolor: "#0f766e",
-                            color: "#fff",
-                            fontWeight: 600,
-                            fontSize: 12,
+                            bgcolor: pal.chipBg,
+                            color: pal.chipColor,
+                            fontWeight: 700,
+                            fontSize: 16,
+                            boxShadow: empty ? "none" : "0 2px 8px rgba(15,23,42,0.1)",
                           }}
                         >
                           {alpha}
                         </Box>
-                        <Typography sx={{ fontSize: 13, fontWeight: 600 }}>{list.length} sent</Typography>
+                        <Typography sx={{ fontSize: 15, fontWeight: 600 }}>{list.length} sent</Typography>
                       </Stack>
-                      {expanded ? <ExpandLess sx={{ fontSize: 20 }} /> : <ExpandMore sx={{ fontSize: 20 }} />}
+                      {expanded ? <ExpandLess sx={{ fontSize: 24, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 24, color: "#334155" }} />}
                     </Button>
                     {expanded && list.length > 0 && (
                       <Stack spacing={0.55} sx={{ p: 0.65, pt: 0 }}>
