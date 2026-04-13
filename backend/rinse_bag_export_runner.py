@@ -92,6 +92,22 @@ def _use_persistent_node_modules() -> bool:
     return Path("/home/site").is_dir()
 
 
+def _npm_install_command(node: str) -> tuple[list[str] | None, str]:
+    """
+    Build an npm install command that works even when `bin/npm` is not directly executable
+    (some hosts raise Exec format error on that shim).
+    """
+    node_path = Path(node).resolve()
+    nd = node_path.parent
+    npm = nd / "npm"
+    if not npm.is_file():
+        return None, f"npm not found beside Node ({node!r})."
+    npm_cli = nd.parent / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+    if npm_cli.is_file():
+        return [str(node_path), str(npm_cli), "install", "--omit=dev", "--no-audit", "--no-fund"], ""
+    return [str(npm), "install", "--omit=dev", "--no-audit", "--no-fund"], ""
+
+
 def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
     """
     Ensure scripts/rinse-cleanertickets/node_modules contains playwright.
@@ -108,9 +124,9 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
     if not _node_executable_ok(node):
         return False, f"Node is not runnable ({node!r}). Set NODE_BIN in Azure (e.g. {_AZURE_NODE_DEFAULT})."
 
-    npm = Path(node).resolve().parent / "npm"
-    if not npm.is_file():
-        return False, f"npm not found beside Node ({node!r})."
+    npm_cmd, npm_err = _npm_install_command(node)
+    if not npm_cmd:
+        return False, npm_err
 
     env = os.environ.copy()
     browsers = (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
@@ -135,7 +151,7 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
 
     try:
         r = subprocess.run(
-            [str(npm), "install", "--omit=dev", "--no-audit", "--no-fund"],
+            npm_cmd,
             cwd=str(sdir),
             capture_output=True,
             text=True,
