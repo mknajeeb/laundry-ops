@@ -29,27 +29,38 @@ if [ -f requirements.txt ]; then
   python -m pip install --no-cache-dir -r requirements.txt
 fi
 
-# Rinse bag export: scrape.mjs needs node_modules (Playwright). App Service Python images often have no npm.
-# Set NODE_BIN to your node executable; its directory is prepended to PATH so npm/npx resolve.
-if [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN" ]; then
-  _node_dir="$(dirname "$NODE_BIN")"
-  if [ "$_node_dir" != "." ]; then
-    export PATH="$_node_dir:$PATH"
-  fi
+# Rinse bag export: scrape.mjs needs node_modules (Playwright). Each Git deploy replaces wwwroot and
+# deletes local node_modules — keep them under /home/site and symlink from the app folder.
+RINSE_DIR="scripts/rinse-cleanertickets"
+RINSE_NM_PERSIST="/home/site/rinse_scraper_node_modules"
+PW_MARK="/home/site/.rinse_playwright_chromium_ok"
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/site/ms-playwright}"
+mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+
+if [ -z "${NODE_BIN:-}" ] && [ -x "/home/site/node-v20.18.0-linux-x64/bin/node" ]; then
+  export NODE_BIN="/home/site/node-v20.18.0-linux-x64/bin/node"
 fi
 
-RINSE_DIR="scripts/rinse-cleanertickets"
-if [ -f "$RINSE_DIR/package.json" ] && command -v npm >/dev/null 2>&1; then
-  echo "startup.sh: npm install in ${RINSE_DIR}"
-  (cd "$RINSE_DIR" && npm install --omit=dev --no-audit --no-fund) || echo "startup.sh: warning: npm install failed"
-  # Persist marker under /home/site so restarts skip the browser download when possible.
-  if [ ! -f /home/site/.rinse_playwright_chromium_ok ]; then
-    echo "startup.sh: Playwright chromium (first run; may take a few minutes)"
-    (cd "$RINSE_DIR" && npx playwright install chromium && touch /home/site/.rinse_playwright_chromium_ok) \
-      || echo "startup.sh: warning: playwright install chromium failed"
+if [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN" ]; then
+  _nd="$(dirname "$NODE_BIN")"
+  NPM="$_nd/npm"
+  NPX="$_nd/npx"
+  if [ -x "$NPM" ] && [ -x "$NPX" ]; then
+    mkdir -p "$RINSE_NM_PERSIST"
+    rm -rf "$RINSE_DIR/node_modules"
+    ln -sfn "$RINSE_NM_PERSIST" "$RINSE_DIR/node_modules"
+    echo "startup.sh: npm install in ${RINSE_DIR} (persistent ${RINSE_NM_PERSIST})"
+    (cd "$RINSE_DIR" && "$NPM" install --omit=dev --no-audit --no-fund) || echo "startup.sh: warning: npm install failed"
+    if [ ! -f "$PW_MARK" ]; then
+      echo "startup.sh: Playwright chromium (first run; may take a few minutes)"
+      (cd "$RINSE_DIR" && "$NPX" playwright install chromium && touch "$PW_MARK") \
+        || echo "startup.sh: warning: playwright install chromium failed"
+    fi
+  else
+    echo "startup.sh: npm/npx not found beside NODE_BIN (${_nd}) — set NODE_BIN to the real node binary"
   fi
 else
-  echo "startup.sh: npm not found — Rinse scraper deps skipped (install Node or add to PATH; set NODE_BIN)"
+  echo "startup.sh: Rinse scraper deps skipped (set NODE_BIN, e.g. /home/site/node-v20.18.0-linux-x64/bin/node)"
 fi
 
 exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout 600 backend.app:app
