@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "scrape": "node scrape.mjs"
+    "scrape": "node scrape.mjs",
+    "save-session": "node save-session.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

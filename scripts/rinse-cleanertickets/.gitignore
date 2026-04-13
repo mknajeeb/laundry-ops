@@ -1,4 +1,5 @@
 .env
 bag-ids.csv
+bag-ids-*.csv
 rinse-auth.json
 node_modules/

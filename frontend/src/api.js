@@ -294,6 +294,17 @@ export const uploadOrders = (formData) =>
     }
   });
 
+/** Admin: GET whether Rinse bag CSV export can run on the server (Node + scraper + env). */
+export const getRinseBagExportConfig = () =>
+  axios.get(`${API_BASE}/admin/rinse/bag-export/config`, { timeout: 15000 });
+
+/**
+ * Admin: run Playwright scrape on API host; returns CSV as blob on success.
+ * Long timeout — many ticket pages can take several minutes.
+ */
+export const postRinseBagExport = () =>
+  axios.post(`${API_BASE}/admin/rinse/bag-export`, {}, { responseType: "blob", timeout: 900000 });
+
 export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
   axios.get(`${API_BASE}/upload_conflicts`, {
     timeout: 30000,

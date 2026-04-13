@@ -28,10 +28,12 @@ import {
   confirmUploadBatch,
   deleteUploadBatch,
   deleteUploadBatchRow,
+  getRinseBagExportConfig,
   getUploadBatches,
   getCurrentUploadBatch,
   getUploadBatchRows,
   overrideUploadBatchRow,
+  postRinseBagExport,
   uploadOrders,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
@@ -65,6 +67,14 @@ function UploadPage({ user }) {
   const [addForm, setAddForm] = useState(EMPTY_FORM);
 
   const [message, setMessage] = useState({ type: "info", text: "" });
+
+  const [rinseExportLoading, setRinseExportLoading] = useState(false);
+  const [rinseExportHint, setRinseExportHint] = useState("");
+
+  const isRinseExportAdmin = useMemo(() => {
+    const r = (user?.roles || []).map((x) => String(x).toUpperCase());
+    return r.includes("ADMIN") || r.includes("SUPER_ADMIN") || r.includes("PLATFORM_ADMIN");
+  }, [user?.roles]);
 
   const isConfirmed = (batch?.state || "").toUpperCase() === "CONFIRMED";
   const isDraft = (batch?.state || "").toUpperCase() === "DRAFT";
@@ -163,6 +173,23 @@ function UploadPage({ user }) {
     loadBatchHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!isRinseExportAdmin) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await getRinseBagExportConfig();
+        if (cancelled) return;
+        setRinseExportHint(res.data?.hint || "");
+      } catch {
+        if (!cancelled) setRinseExportHint("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isRinseExportAdmin]);
 
   const uploadFile = async () => {
     if (!file) {
@@ -320,6 +347,59 @@ function UploadPage({ user }) {
     await loadRows(batch?.id, nextFilter);
   };
 
+  const runRinseBagExport = async () => {
+    const ok = window.confirm(
+      "Run Rinse cleaner-tickets export on the server? This can take several minutes. Your browser must stay open until the download starts."
+    );
+    if (!ok) return;
+
+    try {
+      setRinseExportLoading(true);
+      setMessage({ type: "info", text: "Running Rinse export on server…" });
+      const res = await postRinseBagExport();
+      const cd = res.headers["content-disposition"] || "";
+      let filename = `rinse-bag-export-${Date.now()}.csv`;
+      const star = /filename\*=UTF-8''([^;\n]+)/i.exec(cd);
+      const quoted = /filename="([^"]+)"/i.exec(cd);
+      const plain = /filename=([^;\n]+)/i.exec(cd);
+      if (star) {
+        filename = decodeURIComponent(star[1].trim());
+      } else if (quoted) {
+        filename = quoted[1].trim();
+      } else if (plain) {
+        filename = plain[1].trim().replace(/^["']|["']$/g, "");
+      }
+      if (!filename.endsWith(".csv")) filename += ".csv";
+      const blob = new Blob([res.data], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setMessage({ type: "success", text: `Downloaded ${filename}. This CSV is for bag / QR workflows — order upload still uses Excel above.` });
+      const cfg = await getRinseBagExportConfig();
+      setRinseExportHint(cfg.data?.hint || "");
+    } catch (error) {
+      console.error(error);
+      let text = error?.response?.data?.error || error?.message || "Rinse export failed.";
+      const data = error?.response?.data;
+      if (data instanceof Blob) {
+        try {
+          const raw = await data.text();
+          const j = JSON.parse(raw);
+          if (j?.error) text = j.error;
+          if (j?.stderr_tail) text = `${text}\n${String(j.stderr_tail).slice(-1200)}`;
+        } catch {
+          /* ignore */
+        }
+      }
+      setMessage({ type: "error", text });
+    } finally {
+      setRinseExportLoading(false);
+    }
+  };
+
   const handleDeleteBatch = async (batchId) => {
     const ok = window.confirm(
       `Delete batch #${batchId}? This removes the batch and will also clean matching staging/final/checkout/processing records.`
@@ -392,6 +472,23 @@ function UploadPage({ user }) {
           {message.text || "Ready."}
           {isDraft ? " • Draft only, not live until Confirm Batch." : ""}
         </Alert>
+      )}
+
+      {isRinseExportAdmin && (
+        <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+          <Typography sx={{ fontWeight: 500, fontSize: 16, mb: 0.5 }}>Rinse — bag ID export</Typography>
+          <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+            Runs the cleaner-tickets scraper on the <strong>API server</strong> (not your laptop). Production needs Node,
+            Playwright Chromium, session file, and{" "}
+            <Typography component="span" sx={{ fontFamily: "monospace", fontSize: 12 }}>
+              RINSE_BAG_EXPORT_ENABLED=1
+            </Typography>
+            . {rinseExportHint ? rinseExportHint : ""}
+          </Typography>
+          <Button variant="outlined" onClick={runRinseBagExport} disabled={rinseExportLoading || loading}>
+            {rinseExportLoading ? "Export running…" : "Download bag IDs CSV from Rinse"}
+          </Button>
+        </Paper>
       )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>

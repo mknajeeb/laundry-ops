@@ -1,12 +1,8 @@
 /**
  * Expand Rinse cleaner-ticket rows and extract "Bag: ABCD123456" style bag IDs.
+ * Supports multiple list pages (nightly export).
  *
- * 1. Adjust SELECTORS below if your DOM differs (use DevTools on a row).
- * 2. Set RINSE_EMAIL / RINSE_PASSWORD and RINSE_TICKETS_URL in .env
- * 3. First run: HEADED=1 npm run scrape — complete any MFA/captcha, confirm login selectors.
- *
- * To reuse a logged-in session: log in once with HEADED=1, then in scrape temporarily
- * call await context.storageState({ path: 'rinse-auth.json' }) and set RINSE_STORAGE_STATE.
+ * See README.md for .env, save-session.mjs, and cron / Task Scheduler.
  */
 
 import fs from "node:fs";
@@ -20,8 +16,8 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 
 /** ---- Tune if needed (DevTools on one ticket row) ---- */
 const SELECTORS = {
-  /** Main ticket rows in the big table (not inner “Scans” tables) */
-  bodyRows: "main table > tbody > tr, #content table > tbody > tr, .content table > tbody > tr, table.sortable > tbody > tr, article table > tbody > tr",
+  bodyRows:
+    "main table > tbody > tr, #content table > tbody > tr, .content table > tbody > tr, table.sortable > tbody > tr, article table > tbody > tr",
 };
 
 const BAG_RE = /Bag:\s*([A-Z0-9]+)\s*\(/i;
@@ -31,11 +27,32 @@ function csvEscape(s) {
   return `"${t}"`;
 }
 
+/** Build cleanertickets URL with a given page= (preserves other query params). */
+function urlForPage(baseUrl, pageNum) {
+  const u = String(baseUrl || "").trim();
+  if (!u) return `https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=${pageNum}`;
+  try {
+    const parsed = new URL(u);
+    parsed.searchParams.set("page", String(pageNum));
+    return parsed.toString();
+  } catch {
+    if (/[?&]page=\d+/.test(u)) {
+      return u.replace(/([?&])page=\d+/, `$1page=${pageNum}`);
+    }
+    return `${u}${u.includes("?") ? "&" : "?"}page=${pageNum}`;
+  }
+}
+
+function defaultOutputPath() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return path.join(__dirname, `bag-ids-${stamp}.csv`);
+}
+
 async function tryLogin(page) {
   const email = process.env.RINSE_EMAIL?.trim();
   const password = process.env.RINSE_PASSWORD?.trim();
   if (!email || !password) {
-    console.warn("RINSE_EMAIL / RINSE_PASSWORD not set — expecting you to already be logged in or using RINSE_STORAGE_STATE.");
+    console.warn("RINSE_EMAIL / RINSE_PASSWORD not set — use RINSE_STORAGE_STATE=./rinse-auth.json after save-session.mjs");
     return;
   }
 
@@ -86,7 +103,6 @@ async function clickExpandOnRow(rowLocator) {
   return false;
 }
 
-/** Rinse often injects detail rows or siblings below the header row — grab several following elements’ text. */
 async function readBagFromRowBlock(rowLocator) {
   const text = await rowLocator
     .evaluate((el) => {
@@ -134,7 +150,7 @@ async function scrapePage(page, pageLabel) {
   const out = [];
 
   if (n === 0) {
-    console.warn("No rows matched SELECTORS.bodyRows — open DevTools, pick the tickets <table> tbody > tr, update scrape.mjs");
+    console.warn("No rows matched SELECTORS.bodyRows — update scrape.mjs");
   }
 
   for (let i = 0; i < n; i++) {
@@ -146,53 +162,90 @@ async function scrapePage(page, pageLabel) {
     }
 
     const { bagId, raw, customer } = await expandRowAndReadBag(page, row);
-    out.push({ page: pageLabel, row_index: i + 1, customer_snippet: customer, bag_id: bagId, raw_line: raw });
+    out.push({
+      page: pageLabel,
+      row_index: i + 1,
+      customer_snippet: customer,
+      bag_id: bagId,
+      raw_line: raw,
+    });
 
     if (bagId) {
-      console.log(`Row ${i + 1}: ${bagId}  (${customer.slice(0, 40)})`);
-    } else {
-      console.log(`Row ${i + 1}: (no Bag: match — check expanded HTML or SELECTORS.bodyRows)`);
+      console.log(`  row ${i + 1}: ${bagId}`);
     }
   }
 
-  return out;
+  return { rows: out, tableRowCount: n };
 }
 
 async function main() {
-  const ticketsUrl =
+  const baseUrl =
     process.env.RINSE_TICKETS_URL?.trim() ||
     "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
   const headed = process.env.HEADED === "1" || process.env.HEADED === "true";
-  const storageState = process.env.RINSE_STORAGE_STATE?.trim();
+  const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
+  const storageState =
+    storageRel && fs.existsSync(path.resolve(__dirname, storageRel))
+      ? path.resolve(__dirname, storageRel)
+      : "";
+
+  const pageStart = Math.max(1, parseInt(process.env.RINSE_PAGE_START || "1", 10) || 1);
+  const maxPages = Math.min(500, Math.max(1, parseInt(process.env.RINSE_MAX_PAGES || "50", 10) || 50));
+  const outCsv =
+    (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) || defaultOutputPath();
 
   const browser = await chromium.launch({ headless: !headed, slowMo: headed ? 80 : 0 });
-  const context = await browser.newContext(
-    storageState && fs.existsSync(path.resolve(__dirname, storageState))
-      ? { storageState: path.resolve(__dirname, storageState) }
-      : {}
-  );
+  const context = await browser.newContext(storageState ? { storageState } : {});
   const page = await context.newPage();
 
   try {
-    if (!storageState || !fs.existsSync(path.resolve(__dirname, storageState))) {
+    if (!storageState) {
       await tryLogin(page);
     }
 
-    await page.goto(ticketsUrl, { waitUntil: "networkidle", timeout: 60000 });
-    await page.waitForTimeout(2000);
+    const allRows = [];
 
-    const allRows = await scrapePage(page, ticketsUrl);
+    for (let p = pageStart; p < pageStart + maxPages; p++) {
+      const url = urlForPage(baseUrl, p);
+      console.log(`\nPage ${p}: ${url}`);
+      await page.goto(url, { waitUntil: "networkidle", timeout: 90000 });
+      await page.waitForTimeout(2000);
+
+      const { rows, tableRowCount } = await scrapePage(page, url);
+
+      if (tableRowCount === 0) {
+        console.log(`Stopping: no table rows on page ${p}.`);
+        break;
+      }
+
+      allRows.push(...rows);
+
+      const withBag = rows.filter((r) => r.bag_id).length;
+      if (withBag === 0 && rows.length > 3) {
+        console.warn(
+          "Many rows but no Bag IDs — selectors or expand control may be wrong; check one row in DevTools."
+        );
+      }
+    }
 
     const header = "page,row_index,customer_snippet,bag_id,raw_line\n";
     const lines = allRows.map(
       (r) =>
-        [csvEscape(r.page), r.row_index, csvEscape(r.customer_snippet), csvEscape(r.bag_id), csvEscape(r.raw_line)].join(
-          ","
-        ) + "\n"
+        [
+          csvEscape(r.page),
+          r.row_index,
+          csvEscape(r.customer_snippet),
+          csvEscape(r.bag_id),
+          csvEscape(r.raw_line),
+        ].join(",") + "\n"
     );
-    const outPath = path.join(__dirname, "bag-ids.csv");
-    fs.writeFileSync(outPath, header + lines.join(""), "utf8");
-    console.log(`\nWrote ${allRows.length} rows → ${outPath}`);
+
+    const dir = path.dirname(path.resolve(outCsv));
+    if (dir && !fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(path.resolve(outCsv), header + lines.join(""), "utf8");
+    console.log(`\nWrote ${allRows.length} row records → ${path.resolve(outCsv)}`);
   } finally {
     await browser.close();
   }
