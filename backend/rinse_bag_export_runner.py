@@ -97,12 +97,21 @@ def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
 
     cmd = [node_binary(), str(script)]
     timeout = scrape_timeout_sec()
-    proc = subprocess.run(
-        cmd,
-        cwd=str(sdir),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    return proc.returncode, proc.stdout or "", proc.stderr or ""
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(sdir),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, proc.stdout or "", proc.stderr or ""
+    except subprocess.TimeoutExpired:
+        return (
+            -1,
+            "",
+            f"Scrape timed out after {timeout}s (increase RINSE_SCRAPE_TIMEOUT_SEC or reduce RINSE_MAX_PAGES).",
+        )
+    except OSError as e:
+        return -1, "", f"Failed to run Node scraper: {e}"

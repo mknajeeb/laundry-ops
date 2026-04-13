@@ -387,9 +387,14 @@ function UploadPage({ user }) {
       if (data instanceof Blob) {
         try {
           const raw = await data.text();
-          const j = JSON.parse(raw);
-          if (j?.error) text = j.error;
-          if (j?.stderr_tail) text = `${text}\n${String(j.stderr_tail).slice(-1200)}`;
+          try {
+            const j = JSON.parse(raw);
+            if (j?.error) text = j.error;
+            if (j?.stdout_tail) text = `${text}\n${String(j.stdout_tail).slice(-800)}`;
+            if (j?.stderr_tail) text = `${text}\n${String(j.stderr_tail).slice(-1200)}`;
+          } catch {
+            if (raw && raw.trim()) text = raw.trim().slice(0, 1200);
+          }
         } catch {
           /* ignore */
         }

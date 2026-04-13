@@ -78,7 +78,12 @@ def register_rinse_export_routes(app):
         out_name = f"rinse-bag-export-{stamp}.csv"
         out_path = os.path.join(base, out_name)
 
-        code, stdout, stderr = run_bag_export_csv(Path(out_path))
+        try:
+            code, stdout, stderr = run_bag_export_csv(Path(out_path))
+        except Exception as e:
+            app.logger.exception("rinse bag export subprocess error")
+            return jsonify({"error": str(e)}), 500
+
         if code != 0:
             app.logger.error("rinse bag export failed code=%s stderr=%s", code, stderr[:4000])
             return jsonify(
