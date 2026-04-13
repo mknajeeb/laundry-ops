@@ -1,6 +1,12 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
+#
+# If SSH shows only hostingstart.html + output.tar.zst under /home/site/wwwroot:
+#   Azure → laundryops-api → Configuration → add SCM_DO_BUILD_DURING_DEPLOYMENT = false
+#   so the deployed zip extracts fully (includes scripts/rinse-cleanertickets).
+#   Optional: GitHub repo → Settings → Variables → AZURE_WEBAPP_RESOURCE_GROUP = your RG
+#   so the deploy job sets that flag automatically via Azure CLI.
 
 name: Build and deploy Python app to Azure Web App - laundryops-api
 
@@ -31,7 +37,16 @@ jobs:
           python -m venv antenv
           source antenv/bin/activate
           pip install -r requirements.txt
-                
+
+      - name: Verify files that must reach Azure
+        run: |
+          test -f backend/app.py
+          test -f startup.sh
+          test -f requirements.txt
+          test -f scripts/rinse-cleanertickets/scrape.mjs
+          test -f scripts/rinse-cleanertickets/package.json
+          ls -la scripts/rinse-cleanertickets/
+
       # By default, when you enable GitHub CI/CD integration through the Azure portal, the platform automatically sets the SCM_DO_BUILD_DURING_DEPLOYMENT application setting to true. This triggers the use of Oryx, a build engine that handles application compilation and dependency installation (e.g., pip install) directly on the platform during deployment. Hence, we exclude the antenv virtual environment directory from the deployment artifact to reduce the payload size. 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
@@ -59,7 +74,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-      
+          path: deploy_pkg
+
+      - name: Confirm deploy bundle after download
+        run: |
+          cd deploy_pkg
+          pwd
+          test -f backend/app.py
+          test -f scripts/rinse-cleanertickets/scrape.mjs
+          ls -la scripts/rinse-cleanertickets/
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -67,10 +91,23 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_980B3988625145B8950C00217BB86C65 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1D4160C7070D4EB49054DE2E4C8AE35C }}
 
+      # Stops Oryx from replacing wwwroot with only build output (fixes missing scripts/).
+      # Set repo variable AZURE_WEBAPP_RESOURCE_GROUP (Settings → Secrets and variables → Actions → Variables).
+      - name: Disable server Oryx rebuild (extract zip as-is)
+        if: ${{ vars.AZURE_WEBAPP_RESOURCE_GROUP != '' }}
+        uses: azure/cli@v2
+        with:
+          azcliversion: 2.63.0
+          inlineScript: |
+            az webapp config appsettings set \
+              --resource-group "${{ vars.AZURE_WEBAPP_RESOURCE_GROUP }}" \
+              --name laundryops-api \
+              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
+
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
           app-name: 'laundryops-api'
-          package: '.'
+          package: './deploy_pkg'
           restart: true
