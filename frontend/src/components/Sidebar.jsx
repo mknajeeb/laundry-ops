@@ -5,6 +5,7 @@ import { getClockPayrollUiSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
+import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
@@ -46,7 +47,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
         {user?.organization_logo_url ? (
           <Box
             component="img"
-            src={user.organization_logo_url}
+            src={resolveOrgLogoUrl(user.organization_logo_url)}
             alt=""
             sx={{ maxHeight: 44, maxWidth: "100%", objectFit: "contain" }}
           />

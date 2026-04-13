@@ -47,6 +47,7 @@ import {
 import PermissionMatrixHierarchy from "../components/PermissionMatrixHierarchy";
 import { TENANT_MODULES } from "../constants/tenantModules";
 import { useI18n } from "../i18n/I18nContext";
+import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 function teamLoginHref(slug) {
   if (!slug) return "";
@@ -666,7 +667,7 @@ export default function PlatformAdminPage() {
                       {r.logo_url ? (
                         <Box
                           component="img"
-                          src={r.logo_url}
+                          src={resolveOrgLogoUrl(r.logo_url)}
                           alt=""
                           sx={{ width: 28, height: 28, objectFit: "contain", borderRadius: 0.5 }}
                         />
@@ -719,7 +720,7 @@ export default function PlatformAdminPage() {
             {editRow?.logo_url ? (
               <Box
                 component="img"
-                src={editRow.logo_url}
+                src={resolveOrgLogoUrl(editRow.logo_url)}
                 alt=""
                 sx={{ maxHeight: 56, maxWidth: 160, objectFit: "contain", borderRadius: 1, border: "1px solid #e2e8f0" }}
               />

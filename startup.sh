@@ -29,4 +29,27 @@ if [ -f requirements.txt ]; then
   python -m pip install --no-cache-dir -r requirements.txt
 fi
 
+# Rinse bag export: scrape.mjs needs node_modules (Playwright). App Service Python images often have no npm.
+# Set NODE_BIN to your node executable; its directory is prepended to PATH so npm/npx resolve.
+if [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN" ]; then
+  _node_dir="$(dirname "$NODE_BIN")"
+  if [ "$_node_dir" != "." ]; then
+    export PATH="$_node_dir:$PATH"
+  fi
+fi
+
+RINSE_DIR="scripts/rinse-cleanertickets"
+if [ -f "$RINSE_DIR/package.json" ] && command -v npm >/dev/null 2>&1; then
+  echo "startup.sh: npm install in ${RINSE_DIR}"
+  (cd "$RINSE_DIR" && npm install --omit=dev --no-audit --no-fund) || echo "startup.sh: warning: npm install failed"
+  # Persist marker under /home/site so restarts skip the browser download when possible.
+  if [ ! -f /home/site/.rinse_playwright_chromium_ok ]; then
+    echo "startup.sh: Playwright chromium (first run; may take a few minutes)"
+    (cd "$RINSE_DIR" && npx playwright install chromium && touch /home/site/.rinse_playwright_chromium_ok) \
+      || echo "startup.sh: warning: playwright install chromium failed"
+  fi
+else
+  echo "startup.sh: npm not found — Rinse scraper deps skipped (install Node or add to PATH; set NODE_BIN)"
+fi
+
 exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout 600 backend.app:app

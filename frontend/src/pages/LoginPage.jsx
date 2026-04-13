@@ -23,6 +23,7 @@ import {
   setAuthSession,
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
+import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -274,7 +275,7 @@ function LoginPage({ onLoggedIn }) {
             {branding?.logo_url ? (
               <Box
                 component="img"
-                src={branding.logo_url}
+                src={resolveOrgLogoUrl(branding.logo_url)}
                 alt=""
                 sx={{ maxHeight: 36, maxWidth: "100%", objectFit: "contain" }}
               />

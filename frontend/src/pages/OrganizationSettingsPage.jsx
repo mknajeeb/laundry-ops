@@ -29,6 +29,7 @@ import {
 import { useStreetAutocomplete } from "../components/GooglePlacesAutocomplete";
 import { useI18n } from "../i18n/I18nContext";
 import { isValidEmail, isValidUsPhone10, normalizeUsPhoneDigits } from "../utils/validation";
+import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 function normalizeEin(s) {
   const d = String(s || "").replace(/\D/g, "").slice(0, 9);
@@ -404,7 +405,7 @@ function OrganizationSettingsPage() {
               }}
             >
               <img
-                src={logoUrl}
+                src={resolveOrgLogoUrl(logoUrl)}
                 alt=""
                 style={{ maxHeight: 56, maxWidth: "100%", objectFit: "contain" }}
                 onError={(e) => {

@@ -11,6 +11,11 @@ const API_BASE =
       ? ""
       : "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net";
 
+/** No trailing slash; empty in dev when Vite proxy is used. */
+export function getWashproApiBase() {
+  return String(API_BASE || "").trim().replace(/\/+$/, "");
+}
+
 const AUTH_TOKEN_KEY = "washpro_token";
 const AUTH_USER_KEY = "washpro_user";
 

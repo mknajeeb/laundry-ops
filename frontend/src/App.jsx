@@ -48,6 +48,7 @@ import PayrollFormsHubPage from "./pages/PayrollFormsHubPage";
 import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
 import { authLogout, authMe, clearAuthSession, getClockPayrollUiSettings, getCurrentUploadBatch, getSavedUser } from "./api";
 import { useAuth } from "./context/AuthContext";
+import { resolveOrgLogoUrl } from "./utils/resolveOrgLogoUrl";
 
 function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const navigate = useNavigate();
@@ -85,7 +86,7 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
           {user?.organization_logo_url ? (
             <Box
               component="img"
-              src={user.organization_logo_url}
+              src={resolveOrgLogoUrl(user.organization_logo_url)}
               alt=""
               sx={{
                 height: 24,
