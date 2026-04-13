@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from backend.org_branding_urls import rewrite_org_logo_url_for_client
 from backend.ta_helpers import cycle_ref_for_week_start, hash_password, week_bounds_for_date
 
 _schema_lock = threading.Lock()
@@ -304,7 +305,9 @@ def fetch_payroll_profile_row(conn, washpro_user_id: int):
     if "organization_name" in row:
         out["organization_name"] = row.get("organization_name")
     if "organization_logo_url" in row:
-        out["organization_logo_url"] = row.get("organization_logo_url")
+        out["organization_logo_url"] = rewrite_org_logo_url_for_client(
+            row.get("organization_logo_url")
+        )
     role_codes = _role_codes_for_user(conn, washpro_user_id)
     if role_codes:
         out["roles"] = role_codes

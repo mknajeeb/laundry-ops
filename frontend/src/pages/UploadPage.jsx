@@ -37,6 +37,7 @@ import {
   uploadOrders,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
+import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
 
 const EMPTY_FORM = {
   date_clean: "",
@@ -143,8 +144,8 @@ function UploadPage({ user }) {
       setBatch(current);
 
       if (current?.batch_date) {
-        const d = String(current.batch_date).slice(0, 10);
-        setBatchDate(d);
+        const d = toDateInputValue(current.batch_date);
+        if (d) setBatchDate(d);
       }
 
       if (current?.id) {
@@ -543,7 +544,7 @@ function UploadPage({ user }) {
             <Box>
               <Typography sx={{ fontSize: 20, fontWeight: 500 }}>{formatBatchLabel(batch)}</Typography>
               <Typography color="text.secondary">
-                Date {String(batch.batch_date || "").slice(0, 10)} • State {batch.state || "DRAFT"}
+                Date {formatCalendarDateLabel(batch.batch_date)} • State {batch.state || "DRAFT"}
               </Typography>
             </Box>
 
@@ -599,7 +600,7 @@ function UploadPage({ user }) {
                 {filteredRows.map((row) => (
                   <TableRow key={row.id}>
                     <TableCell>{row.id}</TableCell>
-                    <TableCell>{String(row.date_clean || "").slice(0, 10)}</TableCell>
+                    <TableCell>{formatCalendarDateLabel(row.date_clean)}</TableCell>
                     <TableCell>{row.name_clean}</TableCell>
                     <TableCell>
                       {String(row.service_type || "").toUpperCase() === "HD"

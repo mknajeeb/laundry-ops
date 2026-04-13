@@ -8,11 +8,38 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import dotenv from "dotenv";
 import { chromium } from "playwright";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, ".env") });
+
+/** Optional .env next to this script (no npm `dotenv` — Azure App Service injects env vars). */
+function loadLocalEnvFile() {
+  try {
+    const p = path.join(__dirname, ".env");
+    if (!fs.existsSync(p)) return;
+    const text = fs.readFileSync(p, "utf8");
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let val = trimmed.slice(eq + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (process.env[key] === undefined) {
+        process.env[key] = val;
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+loadLocalEnvFile();
 
 /** ---- Tune if needed (DevTools on one ticket row) ---- */
 const SELECTORS = {

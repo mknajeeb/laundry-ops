@@ -34,6 +34,7 @@ except Exception:
 from etl.transform_orders import transform_orders
 
 from backend.db import get_db
+from backend.org_branding_urls import rewrite_org_logo_url_for_client
 from backend.payroll_identity import (
     ensure_payroll_profile_for_washpro,
     fetch_payroll_profile_row,
@@ -4519,7 +4520,9 @@ def auth_login():
                         user["organization_slug"] = o.get("slug")
                         user["organization_name"] = o.get("display_name")
                         if o.get("logo_url"):
-                            user["organization_logo_url"] = o.get("logo_url")
+                            user["organization_logo_url"] = rewrite_org_logo_url_for_client(
+                                o.get("logo_url")
+                            )
 
         if not user or not as_bool(user.get("active"), default=False):
             if not user and org_slug and has_orgs and has_u_org:
@@ -5097,7 +5100,9 @@ def auth_me():
         if me.get("organization_name"):
             out["organization_name"] = me["organization_name"]
         if me.get("organization_logo_url"):
-            out["organization_logo_url"] = me["organization_logo_url"]
+            out["organization_logo_url"] = rewrite_org_logo_url_for_client(
+                me["organization_logo_url"]
+            )
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -5217,7 +5222,7 @@ def public_organization_branding():
             return jsonify({"error": "Unknown organization"}), 404
         out = {"slug": row["slug"], "display_name": row["display_name"]}
         if "logo_url" in row:
-            out["logo_url"] = row.get("logo_url")
+            out["logo_url"] = rewrite_org_logo_url_for_client(row.get("logo_url"))
         return jsonify(out)
     finally:
         cursor.close()
@@ -5241,7 +5246,10 @@ def auth_organization_get():
         row = cursor.fetchone()
         if not row:
             return jsonify({"error": "Not found"}), 404
-        return jsonify(row)
+        payload = dict(row)
+        if payload.get("logo_url"):
+            payload["logo_url"] = rewrite_org_logo_url_for_client(payload["logo_url"])
+        return jsonify(payload)
     finally:
         cursor.close()
         conn.close()
@@ -5426,6 +5434,9 @@ def auth_platform_organizations_list():
         sel = _organizations_public_columns_sql(cursor)
         cursor.execute(f"SELECT {sel} FROM organizations ORDER BY id ASC")
         rows = cursor.fetchall() or []
+        for r in rows:
+            if r.get("logo_url"):
+                r["logo_url"] = rewrite_org_logo_url_for_client(r["logo_url"])
         return jsonify({"organizations": rows})
     finally:
         cursor.close()
@@ -5469,7 +5480,10 @@ def auth_platform_organizations_create():
         sel = _organizations_public_columns_sql(cursor)
         cursor.execute(f"SELECT {sel} FROM organizations WHERE id = %s LIMIT 1", (int(new_id),))
         row = cursor.fetchone()
-        return jsonify({"organization": row}), 201
+        org_payload = dict(row) if row else row
+        if org_payload and org_payload.get("logo_url"):
+            org_payload["logo_url"] = rewrite_org_logo_url_for_client(org_payload["logo_url"])
+        return jsonify({"organization": org_payload}), 201
     finally:
         cursor.close()
         conn.close()

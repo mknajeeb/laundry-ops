@@ -28,6 +28,7 @@ import {
   updateOrder,
   uploadOrderTicket,
 } from "../api";
+import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
 
 function normalizeCode(value) {
   return String(value || "").trim().toUpperCase();
@@ -85,7 +86,7 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
   const isAdmin = roleCodes.includes("ADMIN");
   const userId = Number(user?.user_id || 0);
 
-  const bd = String(batchDate || "").slice(0, 10);
+  const bd = toDateInputValue(batchDate);
 
   const load = useCallback(async () => {
     if (!bd) {
@@ -97,7 +98,7 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
       const res = await getOrders({ include_all: true });
       const all = Array.isArray(res?.data) ? res.data : [];
       const scoped = all.filter((r) => {
-        const d = String(r?.batch_date || r?.date_clean || "").slice(0, 10);
+        const d = toDateInputValue(r?.batch_date || r?.date_clean);
         if (d !== bd) return false;
         return normalizeLogistics(r) === "AT_WASHPRO";
       });
@@ -204,7 +205,8 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
         Live orders for this batch (staging)
       </Typography>
       <Typography color="text.secondary" sx={{ mb: 1.5, fontSize: 14 }}>
-        Capture one ticket photo per pending bag to mark it processed (uses the batch weight/count). Replace ticket photos on processed rows as needed. Batch date: {bd}.
+        Capture one ticket photo per pending bag to mark it processed (uses the batch weight/count). Replace ticket photos on processed rows as needed. Batch date:{" "}
+        {formatCalendarDateLabel(batchDate)}.
       </Typography>
 
       {loading ? (
@@ -318,7 +320,7 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
                             onClick={() =>
                               setEditRow({
                                 id: r.id,
-                                date_clean: String(r.date_clean || "").slice(0, 10),
+                                date_clean: toDateInputValue(r.date_clean),
                                 name_clean: r.name_clean || "",
                                 weight_num: r.weight_num ?? "",
                                 service_type: r.service_type || "WF",
