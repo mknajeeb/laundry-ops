@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useDeferredValue } from "react";
+import { useCallback, useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import {
   Alert,
   Box,
@@ -28,12 +28,14 @@ import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
 import TaOperationalBanner from "../components/TaOperationalBanner";
 import { useTaOperationalGate } from "../hooks/useTaOperationalGate";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
+import OpsAlphaJumpRail from "../components/layout/OpsAlphaJumpRail";
 import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
+import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
-import { getOpsAlphaPalette, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
+import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -54,8 +56,11 @@ function normalizeCode(value) {
 }
 
 function CheckoutPage() {
+  const { t } = useI18n();
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
   const scanDisabled = checkoutBlocked;
+  const alphaQueueRefs = useRef({});
+  const alphaSentRefs = useRef({});
 
   const [rows, setRows] = useState([]);
   const [checkedRows, setCheckedRows] = useState([]);
@@ -342,7 +347,18 @@ function CheckoutPage() {
             ]}
           />
 
-          <OpsSearchBar value={search} onChange={setSearch} />
+          <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
+
+          <OpsAlphaJumpRail
+            letters={groupedQueue.keys}
+            ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
+            onPick={(letter) => {
+              setOpenAlpha(letter);
+              requestAnimationFrame(() => {
+                alphaQueueRefs.current[letter]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              });
+            }}
+          />
 
           <OrderScanLookupBar
             storageKey="washpro_scan_lookup_checkout"
@@ -355,14 +371,16 @@ function CheckoutPage() {
 
       {!sentDrawerOpen && (
       <Box sx={{ mt: 1.2 }}>
-        {groupedQueue.keys.map((alpha, idx) => {
+        {groupedQueue.keys.map((alpha) => {
           const list = groupedQueue.groups[alpha] || [];
           const expanded = openAlpha === alpha;
-          const pal = getOpsAlphaPalette(idx);
-          const empty = list.length === 0;
+          const pal = getOpsAlphaPaletteForLetter(alpha);
           return (
             <Paper
               key={alpha}
+              ref={(el) => {
+                alphaQueueRefs.current[alpha] = el;
+              }}
               sx={{
                 mb: 1.1,
                 borderRadius: 2,
@@ -370,7 +388,7 @@ function CheckoutPage() {
                 border: `1px solid ${pal.border}`,
                 boxShadow: "none",
                 bgcolor: "#ffffff",
-                transition: "opacity 0.15s ease",
+                transition: "border-color 0.15s ease, background-color 0.15s ease",
                 ...opsAlphaEmptySectionSx(list.length),
               }}
             >
@@ -400,13 +418,13 @@ function CheckoutPage() {
                       fontWeight: 700,
                       fontSize: 18,
                       letterSpacing: 0.02,
-                      boxShadow: empty ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
+                      boxShadow: list.length === 0 ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
                     }}
                   >
                     {alpha}
                   </Box>
                   <Typography sx={{ fontSize: 17, fontWeight: 600, letterSpacing: 0.02 }}>
-                    {list.length} bags
+                    {t("ops.nBags").replace("{n}", String(list.length))}
                   </Typography>
                 </Stack>
                 {expanded ? <ExpandLess sx={{ fontSize: 26, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 26, color: "#334155" }} />}
@@ -414,7 +432,7 @@ function CheckoutPage() {
               {expanded && (
                 <Box sx={{ p: 1, bgcolor: "transparent" }}>
                   {list.length === 0 ? (
-                    <Typography sx={{ color: "#6b7280", fontSize: 14, px: 0.25, py: 0.5 }}>No bags in this section.</Typography>
+                    <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.25, py: 0.5 }}>{t("ops.emptyBagsLetter")}</Typography>
                   ) : (
                     <Stack spacing={0.9}>
                       {list.map((r) => {
@@ -499,7 +517,7 @@ function CheckoutPage() {
         <Box
           role="dialog"
           aria-modal="true"
-          aria-label="Sent to rinse"
+          aria-label={t("ops.sentTitle")}
           sx={{
             position: "fixed",
             inset: 0,
@@ -522,30 +540,43 @@ function CheckoutPage() {
               flexShrink: 0,
             }}
           >
-            <Typography sx={{ fontSize: "1rem", fontWeight: 700, color: "#0f172a" }}>Sent to rinse</Typography>
+            <Typography sx={{ fontSize: "1rem", fontWeight: 700, color: "#0f172a" }}>{t("ops.sentTitle")}</Typography>
             <IconButton aria-label="Close" onClick={() => setSentDrawerOpen(false)} size="small" sx={{ color: "#475569" }}>
               <Close />
             </IconButton>
           </Stack>
           <Box sx={{ flex: 1, overflow: "auto", px: 1, pt: 0.75 }}>
             {checkedRows.length === 0 ? (
-              <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.5 }}>No recent sends yet.</Typography>
+              <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.5 }}>{t("ops.noSentRecent")}</Typography>
             ) : (
-              groupedSent.keys.map((alpha, idx) => {
+              <>
+                <OpsAlphaJumpRail
+                  letters={groupedSent.keys}
+                  ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
+                  onPick={(letter) => {
+                    setOpenAlphaSent(letter);
+                    requestAnimationFrame(() => {
+                      alphaSentRefs.current[letter]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                    });
+                  }}
+                />
+                {groupedSent.keys.map((alpha) => {
                 const list = groupedSent.groups[alpha] || [];
                 const expanded = openAlphaSent === alpha;
-                const pal = getOpsAlphaPalette(idx);
-                const empty = list.length === 0;
+                const pal = getOpsAlphaPaletteForLetter(alpha);
                 return (
                   <Paper
                     key={`sent-${alpha}`}
+                    ref={(el) => {
+                      alphaSentRefs.current[alpha] = el;
+                    }}
                     sx={{
                       mb: 0.75,
                       borderRadius: 1.75,
                       overflow: "hidden",
                       border: `1px solid ${pal.border}`,
                       boxShadow: "none",
-                      transition: "opacity 0.15s ease",
+                      transition: "border-color 0.15s ease, background-color 0.15s ease",
                       ...opsAlphaEmptySectionSx(list.length),
                     }}
                   >
@@ -574,15 +605,22 @@ function CheckoutPage() {
                             color: pal.chipColor,
                             fontWeight: 700,
                             fontSize: 16,
-                            boxShadow: empty ? "none" : "0 2px 8px rgba(15,23,42,0.1)",
+                            boxShadow: list.length === 0 ? "none" : "0 2px 8px rgba(15,23,42,0.1)",
                           }}
                         >
                           {alpha}
                         </Box>
-                        <Typography sx={{ fontSize: 15, fontWeight: 600 }}>{list.length} sent</Typography>
+                        <Typography sx={{ fontSize: 15, fontWeight: 600 }}>
+                          {t("ops.nSent").replace("{n}", String(list.length))}
+                        </Typography>
                       </Stack>
                       {expanded ? <ExpandLess sx={{ fontSize: 24, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 24, color: "#334155" }} />}
                     </Button>
+                    {expanded && list.length === 0 && (
+                      <Box sx={{ px: 1, pb: 0.75 }}>
+                        <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptySentLetter")}</Typography>
+                      </Box>
+                    )}
                     {expanded && list.length > 0 && (
                       <Stack spacing={0.55} sx={{ p: 0.65, pt: 0 }}>
                         {list.map((r) => (
@@ -614,7 +652,8 @@ function CheckoutPage() {
                     )}
                   </Paper>
                 );
-              })
+              })}
+              </>
             )}
           </Box>
         </Box>

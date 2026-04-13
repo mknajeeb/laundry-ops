@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState, useDeferredValue } from "react";
+import { useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import { Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Paper, Stack, Typography } from "@mui/material";
 import { Bolt, CheckCircle, ExpandLess, ExpandMore, Inventory2, Refresh } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
+import OpsAlphaJumpRail from "../components/layout/OpsAlphaJumpRail";
 import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
+import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
-import { getOpsAlphaPalette, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
+import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 import { getCurrentUploadBatch, getOrders } from "../api";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -32,7 +34,9 @@ function normalizeCode(value) {
 }
 
 function OrdersPage({ user }) {
+  const { t } = useI18n();
   const navigate = useNavigate();
+  const alphaRefs = useRef({});
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -131,10 +135,10 @@ function OrdersPage({ user }) {
       const service = String(r?.service_type || "").toLowerCase();
       const weight = String(r?.weight_num ?? "").toLowerCase();
       return (
-        name.startsWith(q) ||
+        name.includes(q) ||
         id.startsWith(q) ||
-        service.startsWith(q) ||
-        weight.startsWith(q)
+        service.includes(q) ||
+        weight.includes(q)
       );
     });
   }, [rows, deferredSearch, rushFilter, showProcessed, userId]);
@@ -257,7 +261,20 @@ function OrdersPage({ user }) {
         onPickOrder={onScanPickOrder}
       />
 
-      <OpsSearchBar value={search} onChange={setSearch} />
+      <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
+
+      {!loading && (
+        <OpsAlphaJumpRail
+          letters={ALPHAS}
+          ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
+          onPick={(letter) => {
+            setOpenAlpha(letter);
+            requestAnimationFrame(() => {
+              alphaRefs.current[letter]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            });
+          }}
+        />
+      )}
 
       {loading ? (
         <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.1}>
@@ -266,20 +283,22 @@ function OrdersPage({ user }) {
         </Stack>
       ) : (
         <Stack spacing={1} sx={{ mt: 1.2 }}>
-          {ALPHAS.map((alpha, idx) => {
+          {ALPHAS.map((alpha) => {
             const list = grouped[alpha] || [];
             if (searchActive && list.length === 0) return null;
             const expanded = searchActive ? true : openAlpha === alpha;
-            const pal = getOpsAlphaPalette(idx);
-            const empty = list.length === 0;
+            const pal = getOpsAlphaPaletteForLetter(alpha);
             return (
               <Paper
                 key={alpha}
+                ref={(el) => {
+                  alphaRefs.current[alpha] = el;
+                }}
                 sx={{
                   borderRadius: 2,
                   border: `1px solid ${pal.border}`,
                   overflow: "hidden",
-                  transition: "opacity 0.15s ease",
+                  transition: "border-color 0.15s ease, background-color 0.15s ease",
                   ...opsAlphaEmptySectionSx(list.length),
                 }}
               >
@@ -309,12 +328,14 @@ function OrdersPage({ user }) {
                         fontSize: 18,
                         fontWeight: 700,
                         letterSpacing: 0.02,
-                        boxShadow: empty ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
+                        boxShadow: list.length === 0 ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
                       }}
                     >
                       {alpha}
                     </Box>
-                    <Typography sx={{ fontSize: 17, fontWeight: 600 }}>{list.length} bags</Typography>
+                    <Typography sx={{ fontSize: 17, fontWeight: 600 }}>
+                      {t("ops.nBags").replace("{n}", String(list.length))}
+                    </Typography>
                   </Stack>
                   {expanded ? <ExpandLess sx={{ fontSize: 26, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 26, color: "#334155" }} />}
                 </Button>
@@ -322,7 +343,7 @@ function OrdersPage({ user }) {
                 {expanded && (
                   <Box sx={{ p: 1 }}>
                     {list.length === 0 ? (
-                      <Typography sx={{ color: "#6b7280", fontSize: 14 }}>No orders.</Typography>
+                      <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptyOrdersLetter")}</Typography>
                     ) : (
                       <Stack spacing={1}>
                         {list.map((r) => {

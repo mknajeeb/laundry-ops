@@ -1,6 +1,6 @@
 /**
- * Shared A–Z section styling for checkout / orders lists: color rotation + empty dimming.
- * Keep logic here so pages stay lean and updates stay one place.
+ * Shared A–Z section styling for checkout / orders lists.
+ * Colors are keyed by LETTER so A is always the same hue (workers learn the color for their letter).
  */
 
 export const OPS_ALPHA_PALETTE = [
@@ -19,12 +19,23 @@ export function getOpsAlphaPalette(index) {
   return OPS_ALPHA_PALETTE[((index % n) + n) % n];
 }
 
-/** Strong dim for sections with zero bags — fast (no extra DOM). */
+/** Same color for the same letter every time (A–Z); '#' maps to a stable slot. */
+export function getOpsAlphaPaletteForLetter(alpha) {
+  const u = String(alpha || "#").toUpperCase().trim();
+  let slot = 0;
+  if (u.length === 1 && u >= "A" && u <= "Z") {
+    slot = u.charCodeAt(0) - 65;
+  } else {
+    slot = 7;
+  }
+  return getOpsAlphaPalette(slot);
+}
+
+/** Empty section: still clearly visible; only a light cue that there are zero bags. */
 export function opsAlphaEmptySectionSx(count) {
   if (count > 0) return {};
   return {
-    opacity: 0.14,
-    filter: "grayscale(1)",
-    pointerEvents: "auto",
+    borderStyle: "dashed",
+    bgcolor: "rgba(248, 250, 252, 0.75)",
   };
 }
