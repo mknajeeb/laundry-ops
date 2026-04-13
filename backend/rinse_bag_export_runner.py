@@ -87,7 +87,7 @@ def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
     if not script.is_file():
         return -1, "", f"Missing scraper: {script}"
 
-    output_path.parent.mkdir(parent=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     out_abs = str(output_path.resolve())
 
     env = os.environ.copy()
