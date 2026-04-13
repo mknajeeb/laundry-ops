@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Box,
   Button,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   List,
   ListItemButton,
   MenuItem,
@@ -15,93 +15,71 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { QrCodeScanner } from "@mui/icons-material";
-import { Html5Qrcode } from "html5-qrcode";
+import { PhotoCamera } from "@mui/icons-material";
+import { createWorker } from "tesseract.js";
 import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
 
-const SCAN_READER_ID = "order-scan-reader";
+/** Parse Rinse-style tag: name (+ address), then QR block, then WASH & FOLD / HANG DRY at bottom. */
+export function parseTagOcrText(raw) {
+  const lines = String(raw || "")
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\|/g, "I").trim())
+    .filter((l) => l.length > 1);
 
-function deriveNameHintsFromQr(qrText) {
-  const raw = String(qrText || "").trim();
-  if (!raw) return [];
-  const out = [];
-  const seen = new Set();
-  const push = (s) => {
-    const x = String(s || "")
-      .trim()
-      .replace(/\s+/g, " ");
-    if (x.length < 3) return;
-    const k = x.toLowerCase();
-    if (seen.has(k)) return;
-    seen.add(k);
-    out.push(x);
-  };
-  try {
-    const u = new URL(raw);
-    for (let seg of u.pathname.split("/")) {
-      if (!seg || seg.length < 3) continue;
-      try {
-        seg = decodeURIComponent(seg);
-      } catch {
-        /* keep seg */
-      }
-      const spaced = seg.replace(/[-_.+]+/g, " ").trim();
-      if (spaced.length >= 3) push(spaced);
-    }
-    const sp = new URLSearchParams(u.search);
-    for (const v of sp.values()) {
-      const s = String(v || "").trim();
-      if (s.length > 2 && /[a-zA-Z]/.test(s)) {
-        try {
-          push(decodeURIComponent(s).replace(/\+/g, " "));
-        } catch {
-          push(s.replace(/\+/g, " "));
-        }
-      }
-    }
-  } catch {
-    /* not a valid absolute URL */
+  const blob = lines.join("\n");
+  let service = "";
+  if (/\bhang\s*[-&]?\s*dry\b|\bhang\s+dry\b|\bHD\b/i.test(blob)) {
+    service = "Hang dry";
+  } else if (/\bwash\s*&\s*fold\b|\bwash\s+and\s+fold\b|\bwash\s*[- ]?\s*fold\b|\bWF\b/i.test(blob)) {
+    service = "Wash & fold";
   }
-  const brutal = raw.replace(/[^a-zA-Z0-9]+/g, " ").trim();
-  const parts = brutal.split(/\s+/).filter((w) => w.length >= 4);
-  for (const p of parts.slice(0, 8)) push(p);
-  return out.slice(0, 6);
+
+  const nameLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^(wash|hang)\b/i.test(l) && l.length < 40) {
+      break;
+    }
+    if (/^\d{2,5}\s+[\w\s#.',-]+(ave|avenue|st\b|street|road|rd\b|blvd|dr\b|way|ln\b|ct\b)/i.test(l)) {
+      break;
+    }
+    if (/^[A-Z0-9]{24,}$/.test(l.replace(/\s/g, ""))) {
+      break;
+    }
+    if (/^[a-zA-Z]/.test(l) && !/^(wash|hang)\s/i.test(l)) {
+      nameLines.push(l);
+    } else if (nameLines.length && /^[\d#]/.test(l)) {
+      break;
+    }
+  }
+
+  let name = nameLines.slice(0, 2).join(" ").replace(/\s+/g, " ").trim();
+  if (!name && lines[0] && !/^(wash|hang)\b/i.test(lines[0])) {
+    name = lines[0].replace(/\s+/g, " ").trim();
+  }
+
+  return { name, service };
 }
 
-function dedupeScanBodies(list) {
+function buildLookupBodies(nameHint, serviceHint, batchStr) {
+  const nh0 = String(nameHint || "").trim();
+  const sh0 = String(serviceHint || "").trim();
+  const bd = String(batchStr || "").trim().slice(0, 10);
+  const batchOk = /^\d{4}-\d{2}-\d{2}$/.test(bd);
+  const base = { qr_text: "", name_hint: nh0, service_hint: sh0 };
+  const bodies = [];
+  if (batchOk) {
+    bodies.push({ ...base, batch_date: bd });
+  }
+  bodies.push({ ...base });
   const seen = new Set();
-  return list.filter((b) => {
+  return bodies.filter((b) => {
     const k = JSON.stringify(b);
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
-}
-
-function buildScanLookupBodies(qrText, nameHint, serviceHint, batchStr) {
-  const q = String(qrText || "").trim();
-  const nh0 = String(nameHint || "").trim();
-  const sh0 = String(serviceHint || "").trim();
-  const bd = String(batchStr || "").trim().slice(0, 10);
-  const batchOk = /^\d{4}-\d{2}-\d{2}$/.test(bd);
-
-  const derived = deriveNameHintsFromQr(q);
-  const hints = nh0 ? [nh0] : derived.length > 0 ? derived : [""];
-
-  const services = sh0 ? [sh0] : [""];
-
-  const bodies = [];
-  for (const nh of hints) {
-    for (const sh of services) {
-      const base = { qr_text: q, name_hint: nh, service_hint: sh };
-      if (batchOk) {
-        bodies.push({ ...base, batch_date: bd });
-      }
-      bodies.push({ ...base });
-    }
-  }
-  return dedupeScanBodies(bodies);
 }
 
 export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate }) {
@@ -110,134 +88,179 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   const [open, setOpen] = useState(false);
   const [nameHint, setNameHint] = useState("");
   const [serviceHint, setServiceHint] = useState("");
-  const [manualQr, setManualQr] = useState("");
-  const [useCamera, setUseCamera] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
-  const scannerRef = useRef(null);
-  const scanBusyRef = useRef(false);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const workerRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem(storageKey, enabled ? "1" : "0");
   }, [enabled, storageKey]);
 
-  const stopScanner = useCallback(async () => {
-    const h = scannerRef.current;
-    scannerRef.current = null;
-    if (!h) return;
-    try {
-      await h.stop();
-    } catch {
-      /* */
-    }
-    try {
-      await h.clear();
-    } catch {
-      /* */
+  const terminateWorker = useCallback(async () => {
+    const w = workerRef.current;
+    workerRef.current = null;
+    if (w) {
+      try {
+        await w.terminate();
+      } catch {
+        /* */
+      }
     }
   }, []);
 
-  const runLookup = useCallback(
-    async (qrText) => {
-      const q = String(qrText || "").trim();
-      if (!q && (!nameHint.trim() || !serviceHint.trim())) {
-        window.alert(t("ops.scanAlertNeedQrOrTagFields"));
-        return;
-      }
-      setBusy(true);
+  const stopCamera = useCallback(() => {
+    const s = streamRef.current;
+    streamRef.current = null;
+    if (s) {
       try {
-        const bd = String(batchDate || "").trim().slice(0, 10);
-        const bodies = buildScanLookupBodies(q, nameHint, serviceHint, bd);
-        let lastErr = null;
-        for (const body of bodies) {
-          try {
-            const res = await lookupOrdersByScan(body);
-            const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
-            if (matches.length === 1) {
-              await stopScanner();
-              setOpen(false);
-              onPickOrder(matches[0]);
-              return;
-            }
-            if (matches.length > 1) {
-              await stopScanner();
-              setPickList(matches);
-              return;
-            }
-          } catch (e) {
-            lastErr = e;
-          }
-        }
-        if (lastErr) {
-          window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
-          return;
-        }
-        window.alert(t("ops.scanAlertNoMatch"));
-      } catch (e) {
-        window.alert(e?.response?.data?.error || t("ops.scanAlertLookupFailed"));
-      } finally {
-        setBusy(false);
+        s.getTracks().forEach((tr) => tr.stop());
+      } catch {
+        /* */
       }
-    },
-    [nameHint, serviceHint, batchDate, onPickOrder, stopScanner, t]
-  );
+    }
+    const v = videoRef.current;
+    if (v) {
+      v.srcObject = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (!open) {
-      void stopScanner();
-    }
-  }, [open, stopScanner]);
-
-  useEffect(() => {
-    if (open) setUseCamera(true);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open || !enabled || !useCamera) {
-      void stopScanner();
+      stopCamera();
+      void terminateWorker();
+      setNameHint("");
+      setServiceHint("");
       return undefined;
     }
     let cancelled = false;
-    scanBusyRef.current = false;
-
-    const start = async () => {
-      await stopScanner();
-      if (cancelled) return;
-      const el = document.getElementById(SCAN_READER_ID);
-      if (!el) return;
-      const html5 = new Html5Qrcode(SCAN_READER_ID);
-      scannerRef.current = html5;
+    (async () => {
       try {
-        await html5.start(
-          { facingMode: "environment" },
-          { fps: 15, qrbox: { width: 280, height: 280 } },
-          async (text) => {
-            if (scanBusyRef.current) return;
-            scanBusyRef.current = true;
-            try {
-              await runLookup(text);
-            } finally {
-              scanBusyRef.current = false;
-            }
-          },
-          () => {}
-        );
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((tr) => tr.stop());
+          return;
+        }
+        streamRef.current = stream;
+        const v = videoRef.current;
+        if (v) {
+          v.srcObject = stream;
+          await v.play().catch(() => {});
+        }
       } catch {
-        /* camera unavailable */
+        /* no camera */
       }
-    };
-    start();
+    })();
     return () => {
       cancelled = true;
-      stopScanner();
+      stopCamera();
     };
-  }, [open, enabled, useCamera, runLookup, stopScanner]);
+  }, [open, stopCamera]);
 
-  const onManualLookup = () => runLookup(manualQr);
+  const runOrderLookup = useCallback(
+    async (nh, sh) => {
+      const bd = String(batchDate || "").trim().slice(0, 10);
+      const bodies = buildLookupBodies(nh, sh, bd);
+      let lastErr = null;
+      for (const body of bodies) {
+        try {
+          const res = await lookupOrdersByScan(body);
+          const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
+          if (matches.length === 1) {
+            setOpen(false);
+            onPickOrder(matches[0]);
+            return true;
+          }
+          if (matches.length > 1) {
+            setPickList(matches);
+            return true;
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (lastErr) {
+        window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
+        return false;
+      }
+      window.alert(t("ops.scanAlertNoMatch"));
+      return false;
+    },
+    [batchDate, onPickOrder, t]
+  );
 
-  const canLookUp =
-    !busy &&
-    (Boolean(manualQr.trim()) || (Boolean(nameHint.trim()) && Boolean(serviceHint.trim())));
+  const captureAndOcr = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) {
+      return { name: "", service: "", noVideo: true };
+    }
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return { name: "", service: "", noVideo: true };
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+    if (!workerRef.current) {
+      workerRef.current = await createWorker("eng");
+    }
+    const {
+      data: { text },
+    } = await workerRef.current.recognize(canvas);
+    return { ...parseTagOcrText(text), noVideo: false };
+  }, []);
+
+  const onPrimary = useCallback(async () => {
+    setBusy(true);
+    try {
+      const hasBoth = nameHint.trim() && serviceHint.trim();
+      if (!hasBoth) {
+        const parsed = await captureAndOcr();
+        if (parsed.noVideo) {
+          window.alert(t("ops.tagNoVideo"));
+          return;
+        }
+        const nNext = (parsed.name || nameHint).trim();
+        const sNext = (parsed.service || serviceHint).trim();
+        if (parsed.name) {
+          setNameHint(parsed.name);
+        }
+        if (parsed.service) {
+          setServiceHint(parsed.service);
+        }
+        if (nNext && sNext) {
+          await runOrderLookup(nNext, sNext);
+          return;
+        }
+        if (!nNext) {
+          window.alert(t("ops.tagOcrNoName"));
+          return;
+        }
+        window.alert(t("ops.tagOcrNoService"));
+        return;
+      }
+      await runOrderLookup(nameHint.trim(), serviceHint.trim());
+    } finally {
+      setBusy(false);
+    }
+  }, [captureAndOcr, nameHint, serviceHint, runOrderLookup, t]);
+
+  useEffect(() => {
+    return () => {
+      void terminateWorker();
+      stopCamera();
+    };
+  }, [stopCamera, terminateWorker]);
+
+  const primaryLabel =
+    nameHint.trim() && serviceHint.trim() ? t("ops.tagFindOrder") : t("ops.tagReadButton");
 
   return (
     <Box sx={{ mt: 0.75 }}>
@@ -250,7 +273,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           <Button
             variant="contained"
             color="primary"
-            startIcon={<QrCodeScanner />}
+            startIcon={<PhotoCamera />}
             onClick={() => setOpen(true)}
             disabled={disabled}
             sx={{
@@ -267,42 +290,36 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
         )}
       </Stack>
 
-      <Dialog open={open} onClose={() => !busy && setOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanDialogTitle")}</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={1.25}>
-            <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
-              {t("ops.scanDialogHint")}
-            </Typography>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={useCamera}
-                  onChange={(_, v) => setUseCamera(v)}
-                  disabled={busy}
-                  color="primary"
-                  size="small"
-                />
-              }
-              label={t("ops.scanCameraToggle")}
-              sx={{ m: 0, alignItems: "center" }}
-            />
-            {useCamera && (
-              <Box
-                id={SCAN_READER_ID}
-                sx={{ minHeight: 260, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }}
+      <Dialog open={open} onClose={() => !busy && setOpen(false)} fullWidth maxWidth="sm" aria-labelledby="tag-read-title">
+        <DialogTitle id="tag-read-title" sx={{ fontWeight: 700, py: 1.5, px: 2 }}>
+          {t("ops.tagDialogTitle")}
+        </DialogTitle>
+        <DialogContent sx={{ px: 2, pt: 0, pb: 2 }}>
+          <Stack spacing={1.5}>
+            <Box
+              sx={{
+                borderRadius: 2,
+                overflow: "hidden",
+                bgcolor: "#0f172a",
+                minHeight: 280,
+                position: "relative",
+              }}
+            >
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                style={{ width: "100%", height: 280, objectFit: "cover", display: "block" }}
               />
-            )}
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-              {t("ops.scanOptionalSection")}
-            </Typography>
+            </Box>
             <TextField
               label={t("ops.scanNameLabel")}
               value={nameHint}
               onChange={(e) => setNameHint(e.target.value)}
-              placeholder={t("ops.scanNamePlaceholder")}
               size="small"
               fullWidth
+              autoComplete="off"
             />
             <TextField
               select
@@ -313,7 +330,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               SelectProps={{
                 displayEmpty: true,
                 renderValue: (selected) => {
-                  if (!selected) return t("ops.scanServiceAny");
+                  if (!selected) return "—";
                   const labels = {
                     "Wash & fold": t("ops.svcWashFold"),
                     "Wash and fold": t("ops.svcWashAndFold"),
@@ -327,33 +344,25 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               size="small"
               fullWidth
             >
-              <MenuItem value="">{t("ops.scanServiceAny")}</MenuItem>
+              <MenuItem value="">—</MenuItem>
               <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
               <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
               <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
               <MenuItem value="WF">WF</MenuItem>
               <MenuItem value="HD">HD</MenuItem>
             </TextField>
-            <TextField
-              label={t("ops.scanPasteQrLabel")}
-              value={manualQr}
-              onChange={(e) => setManualQr(e.target.value)}
-              multiline
-              minRows={2}
-              size="small"
-              placeholder={t("ops.scanPasteQrPlaceholder")}
-            />
             <Button
               variant="contained"
-              onClick={onManualLookup}
-              disabled={!canLookUp}
-              sx={{ py: 1.2, fontWeight: 700 }}
+              size="large"
+              onClick={onPrimary}
+              disabled={busy || disabled}
+              sx={{ py: 1.5, fontWeight: 700 }}
             >
-              {t("ops.scanLookUp")}
+              {busy ? <CircularProgress size={22} color="inherit" /> : primaryLabel}
             </Button>
           </Stack>
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ px: 2, pb: 2 }}>
           <Button onClick={() => setOpen(false)} disabled={busy}>
             {t("ops.scanClose")}
           </Button>

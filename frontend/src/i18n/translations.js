@@ -43,8 +43,14 @@ export const TRANSLATIONS = {
     "ops.emptySentLetter": "None sent under this letter.",
     "ops.sentTitle": "Sent to rinse",
     "ops.noSentRecent": "No recent sends yet.",
-    "ops.scanToggleLabel": "Scan tag",
-    "ops.scanBagButton": "Scan tag",
+    "ops.scanToggleLabel": "Tag",
+    "ops.scanBagButton": "Tag",
+    "ops.tagDialogTitle": "Tag",
+    "ops.tagReadButton": "Read tag",
+    "ops.tagFindOrder": "Find order",
+    "ops.tagOcrNoName": "Could not read the name. Point the camera at the full tag and try again, or type the name.",
+    "ops.tagOcrNoService": "Pick wash & fold or hang dry, then tap Find order.",
+    "ops.tagNoVideo": "Camera is not ready. Allow camera access and try again.",
     "ops.scanDialogTitle": "Scan tag",
     "ops.scanDialogHint":
       "Point the camera at the QR on the bag tag. The app matches the code to your open orders and opens the card—no need to read the name in English. If the camera fails, paste the code or use name + service below.",
@@ -62,8 +68,7 @@ export const TRANSLATIONS = {
     "ops.scanAlertNeedInput": "Scan a QR code or type name / service hints.",
     "ops.scanAlertNeedQrOrTagFields":
       "Scan the QR on the tag, or paste the code above, or enter both name and service from the tag and tap Look up.",
-    "ops.scanAlertNoMatch":
-      "No open order matched this code. The QR must match the ticket ID stored on the order, or use name + service below (wash & fold vs hang dry).",
+    "ops.scanAlertNoMatch": "No matching order for that name and service.",
     "ops.scanAlertLookupFailed": "Lookup failed",
     "ops.svcWashFold": "Wash & fold",
     "ops.svcWashAndFold": "Wash and fold",
@@ -1006,8 +1011,14 @@ export const TRANSLATIONS = {
     "ops.emptySentLetter": "Sin enviados en esta letra.",
     "ops.sentTitle": "Enviados al lavado",
     "ops.noSentRecent": "Aún no hay envíos recientes.",
-    "ops.scanToggleLabel": "Escanear etiqueta",
-    "ops.scanBagButton": "Escanear etiqueta",
+    "ops.scanToggleLabel": "Etiqueta",
+    "ops.scanBagButton": "Etiqueta",
+    "ops.tagDialogTitle": "Etiqueta",
+    "ops.tagReadButton": "Leer etiqueta",
+    "ops.tagFindOrder": "Buscar pedido",
+    "ops.tagOcrNoName": "No se leyó el nombre. Enfoque la etiqueta completa o escríbalo.",
+    "ops.tagOcrNoService": "Elija lavado y doblado o colgar, luego pulse Buscar pedido.",
+    "ops.tagNoVideo": "La cámara no está lista. Permita el acceso a la cámara.",
     "ops.scanDialogTitle": "Escanear etiqueta",
     "ops.scanDialogHint":
       "Apunte la cámara al código QR de la bolsa. La app busca el mismo código en sus pedidos abiertos y abre la tarjeta: no hace falta leer el nombre en inglés. Si falla la cámara, pegue el texto o use nombre y servicio abajo.",
@@ -1025,8 +1036,7 @@ export const TRANSLATIONS = {
     "ops.scanAlertNeedInput": "Escanee un código QR o escriba pistas de nombre / servicio.",
     "ops.scanAlertNeedQrOrTagFields":
       "Escanee el QR de la etiqueta, o pegue el código arriba, o escriba nombre y servicio de la etiqueta y pulse Buscar.",
-    "ops.scanAlertNoMatch":
-      "Ningún pedido abierto coincide con este código. El QR debe coincidir con el ID de ticket guardado en el pedido, o use nombre y servicio abajo (lavado y doblado vs colgar).",
+    "ops.scanAlertNoMatch": "No hay pedido con ese nombre y servicio.",
     "ops.scanAlertLookupFailed": "La búsqueda falló",
     "ops.svcWashFold": "Lavado y doblado",
     "ops.svcWashAndFold": "Lavado y doblado",
