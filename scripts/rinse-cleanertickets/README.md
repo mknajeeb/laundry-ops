@@ -20,6 +20,7 @@ Edit **`.env`**:
 
 - **`RINSE_TICKETS_URL`** — same filters you use at night (status, etc.). The `page=` value is replaced automatically.
 - **`RINSE_PAGE_START`** / **`RINSE_MAX_PAGES`** — how many list pages to walk (stops early if a page has **no table rows**).
+- **`RINSE_NAV_TIMEOUT_MS`** — max wait per `page.goto` (default **120000**). Raise on Azure if `www.rinse.com` is slow or blocked from the datacenter; max **300000**.
 - **`OUTPUT_CSV`** — optional; default is `bag-ids-YYYY-MM-DD.csv` in this folder.
 
 ## Save login once (recommended for every night)

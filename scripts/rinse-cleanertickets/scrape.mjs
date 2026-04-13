@@ -49,6 +49,16 @@ const SELECTORS = {
 
 const BAG_RE = /Bag:\s*([A-Z0-9]+)\s*\(/i;
 
+/** Default 120s — Azure egress to rinse.com is often slower than a laptop; override with RINSE_NAV_TIMEOUT_MS. */
+function navTimeoutMs() {
+  const n = parseInt(process.env.RINSE_NAV_TIMEOUT_MS || "120000", 10);
+  return Math.max(15000, Math.min(300000, Number.isFinite(n) ? n : 120000));
+}
+
+function navGotoOpts(waitUntil = "domcontentloaded") {
+  return { waitUntil, timeout: navTimeoutMs() };
+}
+
 function csvEscape(s) {
   const t = String(s ?? "").replace(/"/g, '""');
   return `"${t}"`;
@@ -83,14 +93,14 @@ async function tryLogin(page) {
     return;
   }
 
-  await page.goto("https://www.rinse.com/", { waitUntil: "domcontentloaded" });
+  await page.goto("https://www.rinse.com/", navGotoOpts("domcontentloaded"));
   await page.waitForTimeout(800);
 
   const loginLink = page.getByRole("link", { name: /log\s*in|sign\s*in/i }).first();
   if (await loginLink.isVisible().catch(() => false)) {
     await loginLink.click();
   } else {
-    await page.goto("https://www.rinse.com/login", { waitUntil: "domcontentloaded" }).catch(() => {});
+    await page.goto("https://www.rinse.com/login", navGotoOpts("domcontentloaded")).catch(() => {});
   }
 
   await page.waitForTimeout(1200);
@@ -221,7 +231,11 @@ async function main() {
   const outCsv =
     (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) || defaultOutputPath();
 
-  const browser = await chromium.launch({ headless: !headed, slowMo: headed ? 80 : 0 });
+  const browser = await chromium.launch({
+    headless: !headed,
+    slowMo: headed ? 80 : 0,
+    args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
+  });
   const context = await browser.newContext(storageState ? { storageState } : {});
   const page = await context.newPage();
 
@@ -235,7 +249,10 @@ async function main() {
     for (let p = pageStart; p < pageStart + maxPages; p++) {
       const url = urlForPage(baseUrl, p);
       console.log(`\nPage ${p}: ${url}`);
-      await page.goto(url, { waitUntil: "networkidle", timeout: 90000 });
+      await page.goto(url, {
+        waitUntil: "networkidle",
+        timeout: Math.max(navTimeoutMs(), 90000),
+      });
       await page.waitForTimeout(2000);
 
       const { rows, tableRowCount } = await scrapePage(page, url);
