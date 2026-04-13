@@ -120,6 +120,14 @@ function isLoginRoute(path) {
   return p === "/login" || p.startsWith("/login/");
 }
 
+/** Floor ops screens use StandardScreenHeader only — hide duplicate global bar (menu, locale, refresh). */
+function hideOpsMobileTopBar(pathname) {
+  const p = pathname || "";
+  if (p === "/checkout" || p.startsWith("/checkout/")) return true;
+  if (p === "/orders" || p.startsWith("/orders/")) return true;
+  return false;
+}
+
 function GuardedRoute({ user, roles, permissionAnyOf, children }) {
   const { hasPerm, loading: authLoading } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
@@ -343,7 +351,26 @@ function AppShell() {
               activeBatch={activeBatch}
               onLogout={doLogout}
             />
-            <MobileTopBar pathname={pathname} user={user} onOpenNav={() => setMobileNavOpen(true)} onLogout={doLogout} />
+            {hideOpsMobileTopBar(pathname) ? (
+              <AppBar
+                position="sticky"
+                elevation={0}
+                sx={{
+                  top: 0,
+                  pt: "env(safe-area-inset-top, 0px)",
+                  background: "#ffffff",
+                  borderBottom: "1px solid #e2e8f0",
+                }}
+              >
+                <Toolbar sx={{ minHeight: "46px !important", px: 0.75 }}>
+                  <IconButton size="medium" onClick={() => setMobileNavOpen(true)} aria-label="Menu" sx={{ color: "#0f172a" }}>
+                    <Menu sx={{ fontSize: 26 }} />
+                  </IconButton>
+                </Toolbar>
+              </AppBar>
+            ) : (
+              <MobileTopBar pathname={pathname} user={user} onOpenNav={() => setMobileNavOpen(true)} onLogout={doLogout} />
+            )}
           </>
         )}
         <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>

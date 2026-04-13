@@ -8,7 +8,6 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  IconButton,
   Paper,
   Stack,
   Typography,
@@ -17,11 +16,11 @@ import {
   Bolt,
   CheckCircle,
   ChevronRight,
-  Close,
   ExpandLess,
   ExpandMore,
   LocalShipping,
   Refresh,
+  Send,
   Undo,
 } from "@mui/icons-material";
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
@@ -33,6 +32,7 @@ import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
+import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
@@ -57,6 +57,7 @@ function normalizeCode(value) {
 
 function CheckoutPage() {
   const { t } = useI18n();
+  const { logout } = useAuth();
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
   const scanDisabled = checkoutBlocked;
   const alphaQueueRefs = useRef({});
@@ -302,7 +303,10 @@ function CheckoutPage() {
     );
   }
 
-  const sentOverlayBg = "linear-gradient(185deg, #e8edf7 0%, #f1f5f9 18%, #fafbfc 55%, #ffffff 100%)";
+  const checkoutPageBg =
+    "linear-gradient(168deg, #e3f0ff 0%, #dbeafe 32%, #eff6ff 62%, #f8fafc 100%)";
+  const sentOverlayBg =
+    "linear-gradient(168deg, #fff4e6 0%, #ffedd5 28%, #fff7ed 58%, #fffefb 100%)";
 
   return (
     <Box
@@ -310,7 +314,7 @@ function CheckoutPage() {
         minHeight: "100vh",
         px: { xs: 1, sm: 1.5 },
         py: 1,
-        background: sentOverlayBg,
+        background: checkoutPageBg,
       }}
     >
       {!sentDrawerOpen && (
@@ -320,11 +324,12 @@ function CheckoutPage() {
             title="Checkout"
             dateLabel={formatSystemDateLong()}
             dense
+            onLogout={logout}
             right={
               <>
                 <IconPillButton
                   title="Sent to rinse"
-                  icon={<Undo />}
+                  icon={<Send />}
                   label={counters.sentCount ? `Sent (${counters.sentCount})` : "Sent"}
                   onClick={() => setSentDrawerOpen(true)}
                 />
@@ -526,26 +531,19 @@ function CheckoutPage() {
             flexDirection: "column",
             background: sentOverlayBg,
             pb: "env(safe-area-inset-bottom, 0px)",
+            px: { xs: 1, sm: 1.5 },
+            pt: 1,
           }}
         >
-          <Stack
-            direction="row"
-            alignItems="center"
-            justifyContent="space-between"
-            sx={{
-              px: 1,
-              py: 0.5,
-              minHeight: 44,
-              borderBottom: "1px solid rgba(148, 163, 184, 0.35)",
-              flexShrink: 0,
-            }}
-          >
-            <Typography sx={{ fontSize: "1rem", fontWeight: 700, color: "#0f172a" }}>{t("ops.sentTitle")}</Typography>
-            <IconButton aria-label="Close" onClick={() => setSentDrawerOpen(false)} size="small" sx={{ color: "#475569" }}>
-              <Close />
-            </IconButton>
-          </Stack>
-          <Box sx={{ flex: 1, overflow: "auto", px: 1, pt: 0.75 }}>
+          <StandardScreenHeader
+            title={t("ops.sentTitle")}
+            dense
+            onBack={() => setSentDrawerOpen(false)}
+            homePath="/checkout"
+            onLogout={logout}
+            right={<IconPillButton title="Refresh sent list" icon={<Refresh />} label="" onClick={load} />}
+          />
+          <Box sx={{ flex: 1, overflow: "auto", pt: 0.5 }}>
             {checkedRows.length === 0 ? (
               <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.5 }}>{t("ops.noSentRecent")}</Typography>
             ) : (
@@ -627,24 +625,39 @@ function CheckoutPage() {
                           <Paper
                             key={`${r.id}-${r.order_id}`}
                             variant="outlined"
-                            sx={{ p: 0.65, borderRadius: 1, borderColor: "rgba(148, 163, 184, 0.45)" }}
+                            sx={{
+                              p: 1,
+                              borderRadius: 2,
+                              borderColor: "rgba(148, 163, 184, 0.5)",
+                              bgcolor: "rgba(255,255,255,0.88)",
+                            }}
                           >
-                            <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={0.75}>
-                              <Stack spacing={0.25} sx={{ minWidth: 0, flex: 1 }}>
-                                <Typography sx={{ fontWeight: 600, fontSize: 14 }}>{r.name || `#${r.order_id}`}</Typography>
-                                <Typography sx={{ fontSize: 11, color: "text.secondary", lineHeight: 1.35 }}>
+                            <Stack spacing={1}>
+                              <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+                                <Typography sx={{ fontWeight: 700, fontSize: "1.05rem" }}>
+                                  {r.name || `#${r.order_id}`}
+                                </Typography>
+                                <Typography sx={{ fontSize: 12.5, color: "text.secondary", lineHeight: 1.4 }}>
                                   #{r.order_id} • {formatDate(r.rush_date || r.checkout_time)} • {logMeasureOf(r)}
                                 </Typography>
                               </Stack>
-                              <IconButton
-                                size="small"
+                              <Button
+                                fullWidth
+                                variant="outlined"
                                 color="warning"
-                                aria-label="Undo send"
+                                size="medium"
+                                startIcon={<Undo sx={{ fontSize: 22 }} />}
                                 onClick={() => setUndoRow(r)}
-                                sx={{ mt: -0.25, flexShrink: 0 }}
+                                sx={{
+                                  py: 1.1,
+                                  fontWeight: 700,
+                                  borderRadius: 2,
+                                  textTransform: "none",
+                                  fontSize: "0.95rem",
+                                }}
                               >
-                                <Undo sx={{ fontSize: 18 }} />
-                              </IconButton>
+                                {t("ops.undoSend")}
+                              </Button>
                             </Stack>
                           </Paper>
                         ))}

@@ -8,6 +8,7 @@ import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
 import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
+import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
@@ -35,6 +36,7 @@ function normalizeCode(value) {
 
 function OrdersPage({ user }) {
   const { t } = useI18n();
+  const { logout } = useAuth();
   const navigate = useNavigate();
   const alphaRefs = useRef({});
   const [rows, setRows] = useState([]);
@@ -224,13 +226,15 @@ function OrdersPage({ user }) {
         minHeight: "100vh",
         px: { xs: 1, sm: 1.5 },
         py: 1,
-        background: "linear-gradient(185deg, #e8edf7 0%, #f1f5f9 18%, #fafbfc 55%, #ffffff 100%)",
+        background:
+          "linear-gradient(168deg, #ecfdf5 0%, #d1fae5 26%, #f0fdf4 58%, #f7fef9 100%)",
       }}
     >
       <StandardScreenHeader
         title="Rinse orders"
         dateLabel={headerDateLine}
         dense
+        onLogout={logout}
         right={
           <>
             <IconPillButton

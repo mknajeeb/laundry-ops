@@ -8,9 +8,12 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Add, ArrowBack, CameraAlt, Remove } from "@mui/icons-material";
+import { Add, CameraAlt, Remove } from "@mui/icons-material";
 import { Html5Qrcode } from "html5-qrcode";
 import { useNavigate, useParams } from "react-router-dom";
+import StandardScreenHeader from "../components/layout/StandardScreenHeader";
+import { useAuth } from "../context/AuthContext";
+import { useI18n } from "../i18n/I18nContext";
 import {
   cancelOrderGamingSession,
   completeOrderGamingTicket,
@@ -36,6 +39,8 @@ async function fileToBase64(file) {
 export default function OrderDryerFlowPage({ user }) {
   const { orderId } = useParams();
   const navigate = useNavigate();
+  const { t } = useI18n();
+  const { logout } = useAuth();
   const oid = Number(orderId);
   const uid = Number(user?.user_id || 0);
 
@@ -236,22 +241,32 @@ export default function OrderDryerFlowPage({ user }) {
 
   if (blocked) {
     return (
-      <Box sx={{ p: 2, minHeight: "100vh", bgcolor: "#fff" }}>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate(-1)} sx={{ mb: 2 }}>
-          Back
-        </Button>
-        <Alert severity="warning">{blocked}</Alert>
+      <Box
+        sx={{
+          p: { xs: 1, sm: 2 },
+          minHeight: "100vh",
+          background: "linear-gradient(168deg, #faf5ff 0%, #f3e8ff 40%, #fafafa 100%)",
+        }}
+      >
+        <StandardScreenHeader title={t("ops.dryerFlowTitle")} dense onBack={() => navigate(-1)} onLogout={logout} />
+        <Alert severity="warning" sx={{ mt: 2 }}>
+          {blocked}
+        </Alert>
       </Box>
     );
   }
 
   if (alreadyDone) {
     return (
-      <Box sx={{ p: 2, minHeight: "100vh", bgcolor: "#fff" }}>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/orders")} sx={{ mb: 2 }}>
-          Back to orders
-        </Button>
-        <Alert severity="info">
+      <Box
+        sx={{
+          p: { xs: 1, sm: 2 },
+          minHeight: "100vh",
+          background: "linear-gradient(168deg, #faf5ff 0%, #f3e8ff 40%, #fafafa 100%)",
+        }}
+      >
+        <StandardScreenHeader title={t("ops.dryerFlowTitle")} dense onBack={() => navigate("/orders")} onLogout={logout} />
+        <Alert severity="info" sx={{ mt: 2 }}>
           Dryer assignment is already completed for this order. Add or replace the ticket photo from Upload → Live orders for this batch if needed.
         </Alert>
       </Box>
@@ -262,19 +277,21 @@ export default function OrderDryerFlowPage({ user }) {
     <Box
       sx={{
         minHeight: "100vh",
-        bgcolor: "#f8fafc",
+        background: "linear-gradient(168deg, #faf5ff 0%, #ede9fe 35%, #f5f3ff 70%, #fafafa 100%)",
         display: "flex",
         flexDirection: "column",
         pb: "env(safe-area-inset-bottom, 16px)",
+        px: { xs: 1, sm: 1.5 },
+        pt: 1,
       }}
     >
-      <Box sx={{ px: 2, pt: 2, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1 }}>
-        <Button startIcon={<ArrowBack />} onClick={onCancelFlow} disabled={busy} sx={{ textTransform: "none" }}>
-          Back
-        </Button>
-        <Typography sx={{ fontWeight: 700, fontSize: "1rem" }}>Order #{oid}</Typography>
-        <Box sx={{ width: 72 }} />
-      </Box>
+      <StandardScreenHeader
+        title={`${t("ops.dryerFlowTitle")} #${oid}`}
+        dense
+        onBack={onCancelFlow}
+        homePath="/orders"
+        onLogout={logout}
+      />
 
       {step === 1 && (
         <Stack spacing={2} sx={{ flex: 1, px: 2, py: 3, maxWidth: 420, mx: "auto", width: "100%" }}>

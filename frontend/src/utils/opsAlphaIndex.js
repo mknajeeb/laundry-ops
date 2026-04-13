@@ -4,12 +4,12 @@
  */
 
 export const OPS_ALPHA_PALETTE = [
-  { rowBg: "#eff6ff", chipBg: "#1d4ed8", chipColor: "#ffffff", border: "#93c5fd" },
+  { rowBg: "#eef4ff", chipBg: "#1e40af", chipColor: "#ffffff", border: "#93c5fd" },
   { rowBg: "#fffbeb", chipBg: "#b45309", chipColor: "#ffffff", border: "#fcd34d" },
-  { rowBg: "#f0fdf4", chipBg: "#15803d", chipColor: "#ffffff", border: "#86efac" },
-  { rowBg: "#fdf4ff", chipBg: "#a21caf", chipColor: "#ffffff", border: "#e879f9" },
-  { rowBg: "#fff7ed", chipBg: "#c2410c", chipColor: "#ffffff", border: "#fdba74" },
-  { rowBg: "#ecfeff", chipBg: "#0e7490", chipColor: "#ffffff", border: "#5eead4" },
+  { rowBg: "#ecfdf3", chipBg: "#047857", chipColor: "#ffffff", border: "#6ee7b7" },
+  { rowBg: "#faf5ff", chipBg: "#86198f", chipColor: "#ffffff", border: "#e879f9" },
+  { rowBg: "#fff4e6", chipBg: "#c2410c", chipColor: "#ffffff", border: "#fdba74" },
+  { rowBg: "#ecfeff", chipBg: "#0f766e", chipColor: "#ffffff", border: "#5eead4" },
   { rowBg: "#f5f3ff", chipBg: "#5b21b6", chipColor: "#ffffff", border: "#c4b5fd" },
   { rowBg: "#fef2f2", chipBg: "#b91c1c", chipColor: "#ffffff", border: "#fca5a5" },
 ];
