@@ -111,6 +111,30 @@ def qr_text_name_overlap_score(qr_text: str, name_clean: Any) -> int:
     return 0
 
 
+def qr_embedded_name_score(qr_text: str, name_clean: Any) -> int:
+    """Score when a name token appears inside an opaque URL/path (no word boundaries after normalize)."""
+    raw = str(qr_text or "").strip()
+    if not raw:
+        return 0
+    rn = normalize_scan_name(name_clean)
+    if not rn:
+        return 0
+    try:
+        dec = unquote(raw)
+    except Exception:
+        dec = raw
+    camel = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", dec)
+    blob = " ".join([raw.lower(), dec.lower(), camel.lower()])
+    blob = blob.replace("%20", " ").replace("+", " ")
+    best = 0
+    for w in rn.split():
+        if len(w) < 4:
+            continue
+        if w in blob:
+            best = max(best, 40 + min(25, len(w)))
+    return best
+
+
 def _qr_tokens(qr_text: str) -> list[str]:
     raw = str(qr_text or "").strip()
     if not raw:
@@ -245,6 +269,7 @@ def run_order_lookup_scan(
         if row_qr_hit(row):
             score += 200
         score += qr_text_name_overlap_score(qr_text, row.get("name_clean"))
+        score += qr_embedded_name_score(qr_text, row.get("name_clean"))
         if nn:
             score += name_match_score(nn, row.get("name_clean"))
         if mapped and str(row.get("service_type") or "").strip().upper() == mapped:

@@ -6,6 +6,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   List,
   ListItemButton,
   MenuItem,
@@ -14,12 +15,104 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { QrCodeScanner } from "@mui/icons-material";
+import { Search } from "@mui/icons-material";
 import { Html5Qrcode } from "html5-qrcode";
 import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
 
 const SCAN_READER_ID = "order-scan-reader";
+
+function deriveNameHintsFromQr(qrText) {
+  const raw = String(qrText || "").trim();
+  if (!raw) return [];
+  const out = [];
+  const seen = new Set();
+  const push = (s) => {
+    const x = String(s || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    if (x.length < 3) return;
+    const k = x.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(x);
+  };
+  try {
+    const u = new URL(raw);
+    for (let seg of u.pathname.split("/")) {
+      if (!seg || seg.length < 3) continue;
+      try {
+        seg = decodeURIComponent(seg);
+      } catch {
+        /* keep seg */
+      }
+      const spaced = seg.replace(/[-_.+]+/g, " ").trim();
+      if (spaced.length >= 3) push(spaced);
+    }
+    const sp = new URLSearchParams(u.search);
+    for (const v of sp.values()) {
+      const s = String(v || "").trim();
+      if (s.length > 2 && /[a-zA-Z]/.test(s)) {
+        try {
+          push(decodeURIComponent(s).replace(/\+/g, " "));
+        } catch {
+          push(s.replace(/\+/g, " "));
+        }
+      }
+    }
+  } catch {
+    /* not a valid absolute URL */
+  }
+  const brutal = raw.replace(/[^a-zA-Z0-9]+/g, " ").trim();
+  const parts = brutal.split(/\s+/).filter((w) => w.length >= 4);
+  for (const p of parts.slice(0, 8)) push(p);
+  return out.slice(0, 6);
+}
+
+function inferServiceHintFromQr(txt) {
+  const s = String(txt || "").toLowerCase();
+  if (s.includes("hang") && s.includes("dry")) return "Hang dry";
+  if (s.includes("wash") && s.includes("fold")) return "Wash & fold";
+  if (s.includes("hang_dry") || s.includes("hang-dry")) return "Hang dry";
+  if (s.includes("wash_fold") || s.includes("wash-fold")) return "Wash & fold";
+  return "";
+}
+
+function dedupeScanBodies(list) {
+  const seen = new Set();
+  return list.filter((b) => {
+    const k = JSON.stringify(b);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function buildScanLookupBodies(qrText, nameHint, serviceHint, batchStr) {
+  const q = String(qrText || "").trim();
+  const nh0 = String(nameHint || "").trim();
+  const sh0 = String(serviceHint || "").trim();
+  const bd = String(batchStr || "").trim().slice(0, 10);
+  const batchOk = /^\d{4}-\d{2}-\d{2}$/.test(bd);
+
+  const derived = deriveNameHintsFromQr(q);
+  const hints = nh0 ? [nh0] : derived.length > 0 ? derived : [""];
+
+  const inferred = !sh0 ? inferServiceHintFromQr(q) : "";
+  const services = sh0 ? [sh0] : inferred ? ["", inferred] : [""];
+
+  const bodies = [];
+  for (const nh of hints) {
+    for (const sh of services) {
+      const base = { qr_text: q, name_hint: nh, service_hint: sh };
+      if (batchOk) {
+        bodies.push({ ...base, batch_date: bd });
+      }
+      bodies.push({ ...base });
+    }
+  }
+  return dedupeScanBodies(bodies);
+}
 
 export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate }) {
   const { t } = useI18n();
@@ -28,6 +121,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   const [nameHint, setNameHint] = useState("");
   const [serviceHint, setServiceHint] = useState("");
   const [manualQr, setManualQr] = useState("");
+  const [useCamera, setUseCamera] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
   const scannerRef = useRef(null);
@@ -56,35 +150,39 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   const runLookup = useCallback(
     async (qrText) => {
       const q = String(qrText || "").trim();
-      if (!q && !nameHint.trim() && !serviceHint.trim()) {
-        window.alert(t("ops.scanAlertNeedInput"));
+      if (!q && (!nameHint.trim() || !serviceHint.trim())) {
+        window.alert(t("ops.scanAlertNeedTagFields"));
         return;
       }
       setBusy(true);
       try {
-        const body = {
-          qr_text: q,
-          name_hint: nameHint.trim(),
-          service_hint: serviceHint.trim(),
-        };
         const bd = String(batchDate || "").trim().slice(0, 10);
-        if (/^\d{4}-\d{2}-\d{2}$/.test(bd)) {
-          body.batch_date = bd;
+        const bodies = buildScanLookupBodies(q, nameHint, serviceHint, bd);
+        let lastErr = null;
+        for (const body of bodies) {
+          try {
+            const res = await lookupOrdersByScan(body);
+            const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
+            if (matches.length === 1) {
+              await stopScanner();
+              setOpen(false);
+              onPickOrder(matches[0]);
+              return;
+            }
+            if (matches.length > 1) {
+              await stopScanner();
+              setPickList(matches);
+              return;
+            }
+          } catch (e) {
+            lastErr = e;
+          }
         }
-        const res = await lookupOrdersByScan(body);
-        const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
-        if (matches.length === 0) {
-          window.alert(t("ops.scanAlertNoMatch"));
+        if (lastErr) {
+          window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
           return;
         }
-        if (matches.length === 1) {
-          await stopScanner();
-          setOpen(false);
-          onPickOrder(matches[0]);
-          return;
-        }
-        await stopScanner();
-        setPickList(matches);
+        window.alert(t("ops.scanAlertNoMatch"));
       } catch (e) {
         window.alert(e?.response?.data?.error || t("ops.scanAlertLookupFailed"));
       } finally {
@@ -95,7 +193,17 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   );
 
   useEffect(() => {
-    if (!open || !enabled) return undefined;
+    if (!open) {
+      setUseCamera(false);
+      void stopScanner();
+    }
+  }, [open, stopScanner]);
+
+  useEffect(() => {
+    if (!open || !enabled || !useCamera) {
+      void stopScanner();
+      return undefined;
+    }
     let cancelled = false;
     scanBusyRef.current = false;
 
@@ -122,7 +230,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           () => {}
         );
       } catch {
-        /* camera unavailable — manual QR still works */
+        /* camera unavailable */
       }
     };
     start();
@@ -130,9 +238,13 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       cancelled = true;
       stopScanner();
     };
-  }, [open, enabled, runLookup, stopScanner]);
+  }, [open, enabled, useCamera, runLookup, stopScanner]);
 
   const onManualLookup = () => runLookup(manualQr);
+
+  const canLookUp =
+    !busy &&
+    (Boolean(manualQr.trim()) || (Boolean(nameHint.trim()) && Boolean(serviceHint.trim())));
 
   return (
     <Box sx={{ mt: 0.75 }}>
@@ -145,7 +257,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           <Button
             variant="contained"
             color="primary"
-            startIcon={<QrCodeScanner />}
+            startIcon={<Search />}
             onClick={() => setOpen(true)}
             disabled={disabled}
             sx={{
@@ -166,7 +278,9 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
         <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanDialogTitle")}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={1.25}>
-            <Box id={SCAN_READER_ID} sx={{ minHeight: 240, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }} />
+            <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
+              {t("ops.scanDialogHint")}
+            </Typography>
             <TextField
               label={t("ops.scanNameLabel")}
               value={nameHint}
@@ -180,7 +294,21 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               label={t("ops.scanServiceLabel")}
               value={serviceHint}
               onChange={(e) => setServiceHint(e.target.value)}
-              SelectProps={{ displayEmpty: true }}
+              InputLabelProps={{ shrink: true }}
+              SelectProps={{
+                displayEmpty: true,
+                renderValue: (selected) => {
+                  if (!selected) return t("ops.scanServiceAny");
+                  const labels = {
+                    "Wash & fold": t("ops.svcWashFold"),
+                    "Wash and fold": t("ops.svcWashAndFold"),
+                    "Hang dry": t("ops.svcHangDry"),
+                    WF: "WF",
+                    HD: "HD",
+                  };
+                  return labels[selected] || selected;
+                },
+              }}
               size="small"
               fullWidth
             >
@@ -191,6 +319,36 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               <MenuItem value="WF">WF</MenuItem>
               <MenuItem value="HD">HD</MenuItem>
             </TextField>
+            <Button
+              variant="contained"
+              onClick={onManualLookup}
+              disabled={!canLookUp}
+              sx={{ py: 1.2, fontWeight: 700 }}
+            >
+              {t("ops.scanLookUp")}
+            </Button>
+            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+              {t("ops.scanOptionalSection")}
+            </Typography>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={useCamera}
+                  onChange={(_, v) => setUseCamera(v)}
+                  disabled={busy}
+                  color="primary"
+                  size="small"
+                />
+              }
+              label={t("ops.scanCameraToggle")}
+              sx={{ m: 0, alignItems: "center" }}
+            />
+            {useCamera && (
+              <Box
+                id={SCAN_READER_ID}
+                sx={{ minHeight: 240, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }}
+              />
+            )}
             <TextField
               label={t("ops.scanPasteQrLabel")}
               value={manualQr}
@@ -198,10 +356,8 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               multiline
               minRows={2}
               size="small"
+              placeholder={t("ops.scanPasteQrPlaceholder")}
             />
-            <Button variant="contained" onClick={onManualLookup} disabled={busy} sx={{ py: 1.2, fontWeight: 700 }}>
-              {t("ops.scanLookUp")}
-            </Button>
           </Stack>
         </DialogContent>
         <DialogActions>
