@@ -1,4 +1,4 @@
-import { Button, Paper } from "@mui/material";
+import { Box, Button, Paper } from "@mui/material";
 import { getOpsAlphaPaletteForLetter } from "../../utils/opsAlphaIndex";
 
 /**
