@@ -16,11 +16,13 @@ import {
 } from "@mui/material";
 import { QrCodeScanner } from "@mui/icons-material";
 import { Html5Qrcode } from "html5-qrcode";
+import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
 
 const SCAN_READER_ID = "order-scan-reader";
 
 export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate }) {
+  const { t } = useI18n();
   const [enabled, setEnabled] = useState(() => localStorage.getItem(storageKey) === "1");
   const [open, setOpen] = useState(false);
   const [nameHint, setNameHint] = useState("");
@@ -55,7 +57,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     async (qrText) => {
       const q = String(qrText || "").trim();
       if (!q && !nameHint.trim() && !serviceHint.trim()) {
-        window.alert("Scan a QR code or enter name / service hints.");
+        window.alert(t("ops.scanAlertNeedInput"));
         return;
       }
       setBusy(true);
@@ -72,7 +74,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
         const res = await lookupOrdersByScan(body);
         const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
         if (matches.length === 0) {
-          window.alert("No matching order found. Check name and service on the tag (Wash & fold vs Hang dry).");
+          window.alert(t("ops.scanAlertNoMatch"));
           return;
         }
         if (matches.length === 1) {
@@ -84,12 +86,12 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
         await stopScanner();
         setPickList(matches);
       } catch (e) {
-        window.alert(e?.response?.data?.error || "Lookup failed");
+        window.alert(e?.response?.data?.error || t("ops.scanAlertLookupFailed"));
       } finally {
         setBusy(false);
       }
     },
-    [nameHint, serviceHint, batchDate, onPickOrder, stopScanner]
+    [nameHint, serviceHint, batchDate, onPickOrder, stopScanner, t]
   );
 
   useEffect(() => {
@@ -137,7 +139,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <Switch checked={enabled} onChange={(_, v) => setEnabled(v)} disabled={disabled} color="primary" size="medium" />
-          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>Scan</Typography>
+          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>{t("ops.scanToggleLabel")}</Typography>
         </Stack>
         {enabled && (
           <Button
@@ -155,42 +157,42 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               boxShadow: "0 4px 14px rgba(37, 99, 235, 0.28)",
             }}
           >
-            Scan bag
+            {t("ops.scanBagButton")}
           </Button>
         )}
       </Stack>
 
       <Dialog open={open} onClose={() => !busy && setOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle sx={{ fontWeight: 700 }}>Scan tag</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanDialogTitle")}</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={1.25}>
             <Box id={SCAN_READER_ID} sx={{ minHeight: 240, bgcolor: "#0f172a", borderRadius: 2, overflow: "hidden" }} />
             <TextField
-              label="Name on tag"
+              label={t("ops.scanNameLabel")}
               value={nameHint}
               onChange={(e) => setNameHint(e.target.value)}
-              placeholder="Last or full name"
+              placeholder={t("ops.scanNamePlaceholder")}
               size="small"
               fullWidth
             />
             <TextField
               select
-              label="Service"
+              label={t("ops.scanServiceLabel")}
               value={serviceHint}
               onChange={(e) => setServiceHint(e.target.value)}
               SelectProps={{ displayEmpty: true }}
               size="small"
               fullWidth
             >
-              <MenuItem value="">Any</MenuItem>
-              <MenuItem value="Wash & fold">Wash &amp; fold</MenuItem>
-              <MenuItem value="Wash and fold">Wash and fold</MenuItem>
-              <MenuItem value="Hang dry">Hang dry</MenuItem>
+              <MenuItem value="">{t("ops.scanServiceAny")}</MenuItem>
+              <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
+              <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
+              <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
               <MenuItem value="WF">WF</MenuItem>
               <MenuItem value="HD">HD</MenuItem>
             </TextField>
             <TextField
-              label="Or paste QR text"
+              label={t("ops.scanPasteQrLabel")}
               value={manualQr}
               onChange={(e) => setManualQr(e.target.value)}
               multiline
@@ -198,19 +200,19 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
               size="small"
             />
             <Button variant="contained" onClick={onManualLookup} disabled={busy} sx={{ py: 1.2, fontWeight: 700 }}>
-              Look up
+              {t("ops.scanLookUp")}
             </Button>
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOpen(false)} disabled={busy}>
-            Close
+            {t("ops.scanClose")}
           </Button>
         </DialogActions>
       </Dialog>
 
       <Dialog open={Boolean(pickList?.length)} onClose={() => setPickList(null)} fullWidth maxWidth="sm">
-        <DialogTitle sx={{ fontWeight: 700 }}>Pick order</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanPickOrder")}</DialogTitle>
         <DialogContent dividers>
           <List dense>
             {pickList?.map((m) => (
@@ -233,7 +235,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           </List>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setPickList(null)}>Cancel</Button>
+          <Button onClick={() => setPickList(null)}>{t("common.cancel")}</Button>
         </DialogActions>
       </Dialog>
     </Box>
