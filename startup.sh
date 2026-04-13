@@ -63,8 +63,10 @@ if [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN
       || echo "startup.sh: warning: playwright install chromium failed"
   fi
   SYSDEPS_MARK="/home/site/.rinse_playwright_sysdeps_ok"
-  if [ ! -f "$SYSDEPS_MARK" ] && [ -f "$PW_CLI" ]; then
-    echo "startup.sh: Playwright system dependencies (apt; first run)"
+  # Marker lives on persistent /home; new workers may lack /usr packages — recheck libglib.
+  GLIB_LIB="/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0"
+  if [ -f "$PW_CLI" ] && { [ ! -f "$SYSDEPS_MARK" ] || [ ! -f "$GLIB_LIB" ]; }; then
+    echo "startup.sh: Playwright system dependencies (apt)"
     if (cd "$RINSE_DIR" && "$NODE_BIN" "$PW_CLI" install-deps chromium); then
       touch "$SYSDEPS_MARK"
     else

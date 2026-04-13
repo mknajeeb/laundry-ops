@@ -88,6 +88,7 @@ def diagnose() -> dict:
         "playwright_browsers_path": browsers,
         "playwright_chromium_cached": _playwright_chromium_cached(Path(browsers)),
         "playwright_sysdeps_marker": _SYSDEPS_MARKER.is_file(),
+        "chromium_os_libs_present": _chromium_os_libs_likely_present(),
     }
 
 
@@ -200,6 +201,19 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
 _SYSDEPS_MARKER = Path("/home/site/.rinse_playwright_sysdeps_ok")
 
 
+def _chromium_os_libs_likely_present() -> bool:
+    """
+    /home/site markers persist across App Service worker swaps; apt packages under /usr may not.
+    Re-run install-deps when glib is missing even if the marker file exists.
+    """
+    candidates = (
+        Path("/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0"),
+        Path("/lib/x86_64-linux-gnu/libglib-2.0.so.0"),
+        Path("/usr/lib/aarch64-linux-gnu/libglib-2.0.so.0"),
+    )
+    return any(p.is_file() for p in candidates)
+
+
 def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool, str]:
     """Download Chromium + OS libraries (glibc GTK stack). Uses node + cli.js (no npx shim)."""
     cli = _playwright_cli_js(sdir)
@@ -237,7 +251,7 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
             return False, "Chromium still missing after playwright install (check PLAYWRIGHT_BROWSERS_PATH and disk space)."
 
     # Headless shell still needs libglib etc. on Debian/Ubuntu (Azure App Service Linux).
-    if not _SYSDEPS_MARKER.is_file():
+    if not _SYSDEPS_MARKER.is_file() or not _chromium_os_libs_likely_present():
         try:
             r2 = subprocess.run(
                 [node_resolved, str(cli), "install-deps", "chromium"],
