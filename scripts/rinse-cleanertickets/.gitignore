@@ -1,0 +1,4 @@
+.env
+bag-ids.csv
+rinse-auth.json
+node_modules/
