@@ -25,8 +25,16 @@ def scraper_script() -> Path:
     return scraper_dir() / "scrape.mjs"
 
 
+_AZURE_NODE_DEFAULT = "/home/site/node-v20.18.0-linux-x64/bin/node"
+
+
 def node_binary() -> str:
-    return (os.getenv("NODE_BIN") or "").strip() or shutil.which("node") or "node"
+    explicit = (os.getenv("NODE_BIN") or "").strip()
+    if explicit:
+        return explicit
+    if os.path.isfile(_AZURE_NODE_DEFAULT):
+        return _AZURE_NODE_DEFAULT
+    return shutil.which("node") or "node"
 
 
 def export_enabled() -> bool:
@@ -67,6 +75,7 @@ def diagnose() -> dict:
     script = scraper_script()
     node = node_binary()
     node_ok = _node_executable_ok(node)
+    pw_pkg = sdir / "node_modules" / "playwright" / "package.json"
     return {
         "enabled": export_enabled(),
         "repo_root": str(root),
@@ -74,7 +83,77 @@ def diagnose() -> dict:
         "scraper_script_exists": script.is_file(),
         "node_path": node,
         "node_found": node_ok,
+        "playwright_package_present": pw_pkg.is_file(),
     }
+
+
+def _use_persistent_node_modules() -> bool:
+    """Azure: wwwroot is replaced on deploy; /home/site persists."""
+    return Path("/home/site").is_dir()
+
+
+def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
+    """
+    Ensure scripts/rinse-cleanertickets/node_modules contains playwright.
+    On Azure, symlink node_modules -> /home/site/rinse_scraper_node_modules so deploys do not wipe deps.
+    """
+    sdir = scraper_dir()
+    nm = sdir / "node_modules"
+    pw_pkg = nm / "playwright" / "package.json"
+
+    if pw_pkg.is_file():
+        return True, ""
+
+    node = node_binary()
+    if not _node_executable_ok(node):
+        return False, f"Node is not runnable ({node!r}). Set NODE_BIN in Azure (e.g. {_AZURE_NODE_DEFAULT})."
+
+    npm = Path(node).resolve().parent / "npm"
+    if not npm.is_file():
+        return False, f"npm not found beside Node ({node!r})."
+
+    env = os.environ.copy()
+    browsers = (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
+    env["PLAYWRIGHT_BROWSERS_PATH"] = browsers
+    try:
+        Path(browsers).mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    if _use_persistent_node_modules():
+        persist = Path("/home/site/rinse_scraper_node_modules")
+        try:
+            persist.mkdir(parents=True, exist_ok=True)
+            if nm.exists() or nm.is_symlink():
+                if nm.is_symlink() or nm.is_file():
+                    nm.unlink(missing_ok=True)
+                elif nm.is_dir():
+                    shutil.rmtree(nm)
+            nm.symlink_to(persist, target_is_directory=True)
+        except OSError as e:
+            return False, f"Could not link node_modules to {persist}: {e}"
+
+    try:
+        r = subprocess.run(
+            [str(npm), "install", "--omit=dev", "--no-audit", "--no-fund"],
+            cwd=str(sdir),
+            capture_output=True,
+            text=True,
+            timeout=600,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "npm install timed out after 600s."
+    except OSError as e:
+        return False, f"npm install could not run: {e}"
+
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "")[-2000:]
+        return False, f"npm install failed (exit {r.returncode}): {tail}"
+
+    if not pw_pkg.is_file():
+        return False, "playwright is still missing after npm install."
+    return True, ""
 
 
 def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
@@ -87,6 +166,10 @@ def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
     if not script.is_file():
         return -1, "", f"Missing scraper: {script}"
 
+    ok, prep_err = _ensure_rinse_scraper_node_modules()
+    if not ok:
+        return -1, "", prep_err
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     out_abs = str(output_path.resolve())
 
@@ -94,6 +177,8 @@ def run_bag_export_csv(output_path: Path) -> tuple[int, str, str]:
     env["OUTPUT_CSV"] = out_abs
     # Ensure dotenv in scraper can still load scripts/rinse-cleanertickets/.env
     env.setdefault("NODE_NO_WARNINGS", "1")
+    if not (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip():
+        env["PLAYWRIGHT_BROWSERS_PATH"] = "/home/site/ms-playwright"
 
     cmd = [node_binary(), str(script)]
     timeout = scrape_timeout_sec()
