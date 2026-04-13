@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +9,9 @@ from pathlib import Path
 from flask import jsonify, send_file
 
 from backend.rinse_bag_export_runner import diagnose, export_enabled, run_bag_export_csv, scraper_script
+
+# uploads/ lives next to backend/ at deploy root (wwwroot), not under backend/ — avoid cwd-relative paths.
+_RINSE_EXPORT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def register_rinse_export_routes(app):
@@ -72,14 +74,14 @@ def register_rinse_export_routes(app):
         if not d["node_found"]:
             return jsonify({"error": "Node.js not found on server (set NODE_BIN)."}), 503
 
-        base = os.path.join("uploads", "rinse_exports")
-        os.makedirs(base, exist_ok=True)
+        export_dir = _RINSE_EXPORT_ROOT / "uploads" / "rinse_exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         out_name = f"rinse-bag-export-{stamp}.csv"
-        out_path = os.path.join(base, out_name)
+        out_path = export_dir / out_name
 
         try:
-            code, stdout, stderr = run_bag_export_csv(Path(out_path))
+            code, stdout, stderr = run_bag_export_csv(out_path)
         except Exception as e:
             app.logger.exception("rinse bag export subprocess error")
             return jsonify({"error": str(e)}), 500
@@ -95,7 +97,7 @@ def register_rinse_export_routes(app):
                 }
             ), 500
 
-        if not os.path.isfile(out_path) or os.path.getsize(out_path) < 1:
+        if not out_path.is_file() or out_path.stat().st_size < 1:
             return jsonify(
                 {
                     "error": "Scrape finished but CSV was not written.",
@@ -106,7 +108,7 @@ def register_rinse_export_routes(app):
 
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", out_name)
         return send_file(
-            out_path,
+            out_path.resolve(),
             mimetype="text/csv",
             as_attachment=True,
             download_name=safe,

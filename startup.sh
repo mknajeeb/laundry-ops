@@ -56,7 +56,9 @@ if [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN
   else
     echo "startup.sh: warning: npm-cli.js not found at $NPM_CLI"
   fi
-  PW_CLI="$RINSE_DIR/node_modules/playwright/cli.js"
+  # Absolute path: inside (cd "$RINSE_DIR" && node "$PW_CLI" ...) a relative PW_CLI is resolved
+  # against cwd and becomes scripts/rinse-cleanertickets/scripts/rinse-cleanertickets/... (wrong).
+  PW_CLI="$(pwd)/$RINSE_DIR/node_modules/playwright/cli.js"
   if [ ! -f "$PW_MARK" ] && [ -f "$PW_CLI" ]; then
     echo "startup.sh: Playwright chromium (first run; may take a few minutes)"
     (cd "$RINSE_DIR" && "$NODE_BIN" "$PW_CLI" install chromium && touch "$PW_MARK") \
@@ -77,4 +79,5 @@ else
   echo "startup.sh: Rinse scraper deps skipped (set NODE_BIN, e.g. /home/site/node-v20.18.0-linux-x64/bin/node)"
 fi
 
-exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout 600 backend.app:app
+# Rinse export can run Playwright for up to RINSE_SCRAPE_TIMEOUT_SEC (default 900s); worker must outlive that.
+exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout="${GUNICORN_TIMEOUT:-1200}" backend.app:app
