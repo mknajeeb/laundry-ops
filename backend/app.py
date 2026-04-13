@@ -57,9 +57,24 @@ from backend.daily_reset_scheduler import start_daily_reset_scheduler
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "dev-only-change-for-production")
+
+
+def _cors_origins_config():
+    """
+    Comma-separated list in CORS_ALLOWED_ORIGINS (or CORS_ORIGINS), e.g.
+    https://zealous-bay-0fb502610.4.azurestaticapps.net,http://localhost:5173
+    If unset, allow all origins (may fail in some browsers when the API errors before Flask runs).
+    """
+    raw = (os.getenv("CORS_ALLOWED_ORIGINS") or os.getenv("CORS_ORIGINS") or "").strip()
+    if not raw:
+        return "*"
+    parts = [o.strip() for o in raw.split(",") if o.strip()]
+    return parts if parts else "*"
+
+
 CORS(
     app,
-    resources={r"/*": {"origins": "*"}},
+    resources={r"/*": {"origins": _cors_origins_config()}},
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
@@ -69,6 +84,12 @@ register_notification_routes(app)
 register_rinse_export_routes(app)
 
 start_daily_reset_scheduler(app)
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """Liveness probe; does not touch the database."""
+    return jsonify({"status": "ok"}), 200
 
 
 def _trigger_daily_operational_reset_if_needed(conn, tenant_oid: int):
