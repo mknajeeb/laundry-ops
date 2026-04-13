@@ -62,6 +62,15 @@ if [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN
     (cd "$RINSE_DIR" && "$NODE_BIN" "$PW_CLI" install chromium && touch "$PW_MARK") \
       || echo "startup.sh: warning: playwright install chromium failed"
   fi
+  SYSDEPS_MARK="/home/site/.rinse_playwright_sysdeps_ok"
+  if [ ! -f "$SYSDEPS_MARK" ] && [ -f "$PW_CLI" ]; then
+    echo "startup.sh: Playwright system dependencies (apt; first run)"
+    if (cd "$RINSE_DIR" && "$NODE_BIN" "$PW_CLI" install-deps chromium); then
+      touch "$SYSDEPS_MARK"
+    else
+      echo "startup.sh: warning: playwright install-deps failed — run once as root over SSH (see backend rinse runner error text)"
+    fi
+  fi
 else
   echo "startup.sh: Rinse scraper deps skipped (set NODE_BIN, e.g. /home/site/node-v20.18.0-linux-x64/bin/node)"
 fi

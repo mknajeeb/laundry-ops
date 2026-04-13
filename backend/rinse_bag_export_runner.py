@@ -87,6 +87,7 @@ def diagnose() -> dict:
         "playwright_package_present": pw_pkg.is_file(),
         "playwright_browsers_path": browsers,
         "playwright_chromium_cached": _playwright_chromium_cached(Path(browsers)),
+        "playwright_sysdeps_marker": _SYSDEPS_MARKER.is_file(),
     }
 
 
@@ -196,42 +197,81 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
     return True, ""
 
 
+_SYSDEPS_MARKER = Path("/home/site/.rinse_playwright_sysdeps_ok")
+
+
 def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool, str]:
-    """Download browser binaries (npm package alone is not enough). Uses node + cli.js (no npx shim)."""
+    """Download Chromium + OS libraries (glibc GTK stack). Uses node + cli.js (no npx shim)."""
     cli = _playwright_cli_js(sdir)
     if not cli:
         return False, "Missing playwright cli.js after npm install."
 
     browsers = (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
     env = {**env, "PLAYWRIGHT_BROWSERS_PATH": browsers}
+    node_resolved = str(Path(node).resolve())
     try:
         Path(browsers).mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
 
-    if _playwright_chromium_cached(Path(browsers)):
-        return True, ""
-
-    try:
-        r = subprocess.run(
-            [str(Path(node).resolve()), str(cli), "install", "chromium"],
-            cwd=str(sdir),
-            capture_output=True,
-            text=True,
-            timeout=900,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return False, "playwright install chromium timed out after 900s."
-    except OSError as e:
-        return False, f"playwright install chromium could not run: {e}"
-
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "")[-2000:]
-        return False, f"playwright install chromium failed (exit {r.returncode}): {tail}"
-
     if not _playwright_chromium_cached(Path(browsers)):
-        return False, "Chromium still missing after playwright install (check PLAYWRIGHT_BROWSERS_PATH and disk space)."
+        try:
+            r = subprocess.run(
+                [node_resolved, str(cli), "install", "chromium"],
+                cwd=str(sdir),
+                capture_output=True,
+                text=True,
+                timeout=900,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "playwright install chromium timed out after 900s."
+        except OSError as e:
+            return False, f"playwright install chromium could not run: {e}"
+
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "")[-2000:]
+            return False, f"playwright install chromium failed (exit {r.returncode}): {tail}"
+
+        if not _playwright_chromium_cached(Path(browsers)):
+            return False, "Chromium still missing after playwright install (check PLAYWRIGHT_BROWSERS_PATH and disk space)."
+
+    # Headless shell still needs libglib etc. on Debian/Ubuntu (Azure App Service Linux).
+    if not _SYSDEPS_MARKER.is_file():
+        try:
+            r2 = subprocess.run(
+                [node_resolved, str(cli), "install-deps", "chromium"],
+                cwd=str(sdir),
+                capture_output=True,
+                text=True,
+                timeout=600,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "playwright install-deps chromium timed out after 600s."
+        except OSError as e:
+            return False, f"playwright install-deps could not run: {e}"
+
+        if r2.returncode != 0:
+            tail = (r.stderr or r.stdout or "")[-2500:]
+            ssh_hint = (
+                "Missing system libraries for Chromium (e.g. libglib). SSH as root into the API app and run:\n"
+                f"  cd {sdir} && export PATH=\"$(dirname {node_resolved}):$PATH\" && "
+                f"{node_resolved} node_modules/playwright/cli.js install-deps chromium\n"
+                "If that fails, on Debian/Ubuntu try:\n"
+                "  apt-get update && apt-get install -y "
+                "libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 "
+                "libxcb1 libxkbcommon0 libx11-6 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxrandr2 "
+                "libgbm1 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0\n"
+                f"install-deps output (tail): {tail}"
+            )
+            return False, ssh_hint
+
+        try:
+            _SYSDEPS_MARKER.touch()
+        except OSError:
+            pass
+
     return True, ""
 
 
