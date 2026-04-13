@@ -67,19 +67,25 @@ export function AuthProvider({ children }) {
     refreshMe();
   }, [token, refreshMe]);
 
+  /** Only unlink OneSignal after a real logout / session loss — not on first paint when user is null (avoids SDK errors on /login). */
+  const hadAuthenticatedUserRef = useRef(false);
+
   useEffect(() => {
-    if (!user?.id) {
-      clearOneSignalUser();
-      return;
+    if (user?.id) {
+      hadAuthenticatedUserRef.current = true;
+      const t = window.setTimeout(() => {
+        try {
+          syncOneSignalUser(user);
+        } catch (e) {
+          console.warn("OneSignal sync skipped", e);
+        }
+      }, 0);
+      return () => window.clearTimeout(t);
     }
-    const t = window.setTimeout(() => {
-      try {
-        syncOneSignalUser(user);
-      } catch (e) {
-        console.warn("OneSignal sync skipped", e);
-      }
-    }, 0);
-    return () => window.clearTimeout(t);
+    if (hadAuthenticatedUserRef.current) {
+      hadAuthenticatedUserRef.current = false;
+      clearOneSignalUser();
+    }
   }, [user]);
 
   const login = useCallback(async (email, password) => {

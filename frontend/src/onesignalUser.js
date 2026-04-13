@@ -38,6 +38,7 @@ export function syncOneSignalUser(user) {
 
   deferredPush(async function linkUser(OneSignal) {
     try {
+      if (!OneSignal || typeof OneSignal.login !== "function") return;
       await OneSignal.login(externalId);
     } catch (e) {
       console.warn("OneSignal.login failed", e);
@@ -53,6 +54,7 @@ export function clearOneSignalUser() {
 
   deferredPush(async function unlinkUser(OneSignal) {
     try {
+      if (!OneSignal || typeof OneSignal.logout !== "function") return;
       await OneSignal.logout();
     } catch (e) {
       console.warn("OneSignal.logout failed", e);
