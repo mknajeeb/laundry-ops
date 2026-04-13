@@ -41,11 +41,24 @@ def scrape_timeout_sec() -> int:
 
 
 def _node_executable_ok(node: str) -> bool:
+    """Use `node --version`; os.access(X_OK) is unreliable on some Azure /home mounts."""
     if not node:
         return False
-    if os.path.isabs(node) or os.sep in node:
-        return os.path.isfile(node) and os.access(node, os.X_OK)
-    return bool(shutil.which(node))
+    if not (os.path.isabs(node) or os.sep in node):
+        return bool(shutil.which(node))
+    if not os.path.isfile(node):
+        return False
+    try:
+        r = subprocess.run(
+            [node, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        out = (r.stdout or r.stderr or "").strip()
+        return r.returncode == 0 and out.startswith("v")
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def diagnose() -> dict:
