@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "scrape": "node scrape.mjs",
+    "scrape:portal": "RINSE_CSV_LAYOUT=portal node scrape.mjs",
     "save-session": "node save-session.mjs"
   },
   "dependencies": {
