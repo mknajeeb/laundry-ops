@@ -44,13 +44,23 @@ def _rinse_job_created_utc(row_created: datetime | str | None):
     return dt.astimezone(timezone.utc)
 
 
+def _rinse_import_heartbeat_sec() -> int:
+    """Seconds between DB heartbeats while scraping; 0 disables (stale logic uses scrape timeout)."""
+    hb_raw = (os.getenv("RINSE_IMPORT_HEARTBEAT_SEC") or "60").strip()
+    if hb_raw == "0":
+        return 0
+    return max(20, min(300, int(hb_raw or "60")))
+
+
 def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> dict:
     """
     Mark dead jobs failed so the UI stops polling forever.
 
     - queued: worker should start within ~minutes; if not, treat as lost.
-    - running: row is only updated again when the scrape finishes; if the API restarts, the thread
-      dies and status stays 'running'. Use updated_at + scrape timeout + grace as a ceiling.
+    - running: the worker bumps updated_at on a heartbeat while Playwright runs. If the API
+      restarts, heartbeats stop — treat as stale after RINSE_IMPORT_NO_HEARTBEAT_STALE_SEC (default
+      ~4× heartbeat interval). If heartbeats are disabled (RINSE_IMPORT_HEARTBEAT_SEC=0), fall back
+      to scrape timeout + grace.
     """
     status = row.get("status")
     if status not in ("queued", "running"):
@@ -72,18 +82,32 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
                     "The API may have restarted or the job thread did not start. Start a new import."
                 )
     else:
-        scrape_t = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
-        grace = int(os.getenv("RINSE_IMPORT_RUNNING_GRACE_SEC", "300"))
-        cap = int(os.getenv("RINSE_IMPORT_JOB_STALE_SEC", str(scrape_t + grace)))
         ref = _rinse_job_created_utc(row.get("updated_at")) or _rinse_job_created_utc(row.get("created_at"))
-        if ref is not None and (now - ref).total_seconds() > cap:
-            stale = True
-            msg = (
-                f"No completion within {cap}s after this job started running (matches scrape timeout + grace). "
-                "Common cause: Azure restarted the API while Playwright was running—the background thread is "
-                "killed but MySQL still shows running. Enable Always On, avoid deploying during import, and "
-                "use a persistent venv so cold starts are shorter. Start a new import when the app is stable."
-            )
+        if ref is None:
+            pass
+        else:
+            age = (now - ref).total_seconds()
+            hb_sec = _rinse_import_heartbeat_sec()
+            if hb_sec > 0:
+                mult = max(3, int(os.getenv("RINSE_IMPORT_HEARTBEAT_MISS_MULT", "4")))
+                cap = int(os.getenv("RINSE_IMPORT_NO_HEARTBEAT_STALE_SEC", str(hb_sec * mult)))
+                if age > cap:
+                    stale = True
+                    msg = (
+                        f"No heartbeat for ~{cap:.0f}s while status was running (worker likely died when the API "
+                        "restarted). Enable Always On, avoid deploys during import, then start a new import."
+                    )
+            else:
+                scrape_t = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
+                grace = int(os.getenv("RINSE_IMPORT_RUNNING_GRACE_SEC", "300"))
+                cap = int(os.getenv("RINSE_IMPORT_JOB_STALE_SEC", str(scrape_t + grace)))
+                if age > cap:
+                    stale = True
+                    msg = (
+                        f"No completion within {cap}s after this job started running (heartbeat disabled; "
+                        "scrape timeout + grace). Azure restarts kill the worker—stabilize the app or enable "
+                        "heartbeats (default RINSE_IMPORT_HEARTBEAT_SEC=60)."
+                    )
     if not stale:
         return row
     row2 = None
@@ -478,6 +502,33 @@ def register_rinse_export_routes(app):
 
         def worker():
             with app.app_context():
+                hb_sec = _rinse_import_heartbeat_sec()
+                hb_stop = threading.Event()
+
+                def heartbeat_loop():
+                    while not hb_stop.wait(hb_sec):
+                        try:
+                            conn_h = db_conn()
+                            try:
+                                ch = conn_h.cursor(dictionary=True)
+                                try:
+                                    ensure_rinse_import_jobs_table(ch)
+                                    update_rinse_import_job(
+                                        ch,
+                                        job_id,
+                                        tenant_oid,
+                                        status="running",
+                                        progress_note="Scraping Rinse (Playwright)…",
+                                    )
+                                    conn_h.commit()
+                                finally:
+                                    ch.close()
+                            finally:
+                                conn_h.close()
+                        except Exception:
+                            app.logger.debug("rinse import heartbeat failed", exc_info=True)
+
+                hb_thread: threading.Thread | None = None
                 try:
                     conn_run = db_conn()
                     try:
@@ -496,6 +547,14 @@ def register_rinse_export_routes(app):
                             c2.close()
                     finally:
                         conn_run.close()
+
+                    if hb_sec > 0:
+                        hb_thread = threading.Thread(
+                            target=heartbeat_loop,
+                            name=f"rinse-hb-{job_id[:8]}",
+                            daemon=True,
+                        )
+                        hb_thread.start()
 
                     res = _rinse_import_after_auth(app, batch_date, tenant_oid, virtual_name)
 
@@ -558,6 +617,10 @@ def register_rinse_export_routes(app):
                             conn_err.close()
                     except Exception:
                         app.logger.exception("rinse import job worker cleanup")
+                finally:
+                    hb_stop.set()
+                    if hb_thread is not None:
+                        hb_thread.join(timeout=3.0)
 
         threading.Thread(target=worker, name=f"rinse-import-{job_id[:8]}", daemon=True).start()
 
