@@ -562,66 +562,54 @@ async function scrapePage(page, pageLabel, layout) {
 
   const out = [];
   let recordIndex = 0;
-  const maxPasses = Math.min(
-    600,
-    Math.max(initialRowCount * 4, initialRowCount + 8, 24),
-  );
-  let passes = 0;
+  const rowsAll = page.locator(sel);
+  const n = await rowsAll.count();
 
-  while (passes++ < maxPasses) {
-    const freshRows = page.locator(sel);
-    const n = await freshRows.count();
-    if (n === 0) break;
+  // One pass over tbody <tr> indices. (A previous while+for+break re-read nth(0) every pass,
+  // so every "ticket" showed the same bag id.)
+  for (let i = 0; i < n; i++) {
+    const row = rowsAll.nth(i);
+    await row.scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(100);
+    if (!(await row.isVisible().catch(() => false))) continue;
+    const tdCount = await row.locator("td").count().catch(() => 0);
+    const thOnly =
+      (await row.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
+    if (thOnly) continue;
 
-    let processedOne = false;
-    for (let i = 0; i < n; i++) {
-      const row = freshRows.nth(i);
-      await row.scrollIntoViewIfNeeded().catch(() => {});
-      await page.waitForTimeout(100);
-      if (!(await row.isVisible().catch(() => false))) continue;
-      const tdCount = await row.locator("td").count().catch(() => 0);
-      const thOnly =
-        (await row.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
-      if (thOnly) continue;
+    const rowText = (await row.innerText().catch(() => "")) || "";
+    const trimmed = rowText.trim();
+    if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
+      continue;
+    }
+    if (await isProbablySingleCellDetailRow(row)) continue;
+    if (isLikelyExpandedDetailSubRow(trimmed)) continue;
 
-      const rowText = (await row.innerText().catch(() => "")) || "";
-      const trimmed = rowText.trim();
-      if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
-        continue;
-      }
-      if (await isProbablySingleCellDetailRow(row)) continue;
-      if (isLikelyExpandedDetailSubRow(trimmed)) continue;
-
-      recordIndex += 1;
-      const { bagId, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
-        page,
-        row,
-        rowText,
-      );
-      const base = {
-        page: pageLabel,
-        row_index: recordIndex,
-        customer_snippet: customer,
-        bag_id: bagId,
-        raw_line: raw,
-      };
-      if (layout === "portal") {
-        const portal = parsePortalFields(collapsed || rowText, fullText);
-        out.push({ ...base, portal });
-      } else {
-        out.push(base);
-      }
-
-      if (bagId) {
-        console.log(`  ticket ${recordIndex}: ${bagId}`);
-      }
-
-      await ensureRowCollapsedAfterTicket(row, page);
-      processedOne = true;
-      break;
+    recordIndex += 1;
+    const { bagId, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
+      page,
+      row,
+      rowText,
+    );
+    const base = {
+      page: pageLabel,
+      row_index: recordIndex,
+      customer_snippet: customer,
+      bag_id: bagId,
+      raw_line: raw,
+    };
+    if (layout === "portal") {
+      const portal = parsePortalFields(collapsed || rowText, fullText);
+      out.push({ ...base, portal });
+    } else {
+      out.push(base);
     }
 
-    if (!processedOne) break;
+    if (bagId) {
+      console.log(`  ticket ${recordIndex}: ${bagId}`);
+    }
+
+    await ensureRowCollapsedAfterTicket(row, page);
   }
 
   if (initialRowCount > 0 && out.length === 0) {
