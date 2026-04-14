@@ -560,9 +560,55 @@ function cleanPortalCustomerName(name) {
   s = s.replace(/\b#?\s*HD\s*:?\s*\d+\b/gi, " ");
   s = s.replace(/\b#?\s*WF\s*(?:LBS|COUNT|ITEMS)\s*:?\s*[\d.]+\b/gi, " ");
   s = s.replace(/\b\d+\.?\d*\s*LBS\b/gi, " ");
+  s = s.replace(/\buse\s+hypoallergenic\s+soap\b/gi, " ");
+  s = s.replace(/\buse\s+fabric\s+softener\b/gi, " ");
+  s = s.replace(/\buse\s+oxiclean\b/gi, " ");
   s = s.replace(/\s+/g, " ").trim();
   s = s.replace(/\s+0\s*$/i, "").trim();
+  s = s.replace(/^\d+\s+/,"").trim();
   return s.slice(0, 200);
+}
+
+/** Lines in one <td>-per-line snapshot that follow the row’s date line (customer is usually the next “name” line). */
+function linesAfterPortalDate(collapsedRowText, expandedFullText) {
+  for (const block of [collapsedRowText, expandedFullText]) {
+    const lines = String(block || "")
+      .split(/\r?\n/)
+      .map((l) => l.trim().replace(/\t+/g, " "))
+      .filter((l) => l.length > 0);
+    const idx = lines.findIndex((l) => PORTAL_TICKET_DATE_LINE_RE.test(l));
+    if (idx >= 0) return lines.slice(idx + 1);
+  }
+  return [];
+}
+
+function pickCustomerFromPortalLines(lines) {
+  for (const line of lines) {
+    const L = String(line || "").trim();
+    if (L.length < 2 || L.length > 88) continue;
+    if (PORTAL_TICKET_DATE_LINE_RE.test(L)) continue;
+    if (/^\?\?\s*LBS|^\d+\.?\d*\s*LBS$/i.test(L)) continue;
+    if (/^#?\s*HD\b|^#\s*HD\b|^HD\s*:/i.test(L)) continue;
+    if (/^#\s*WF\b|^WF\s*LBS/i.test(L)) continue;
+    if (/^\d{1,4}$/.test(L)) continue;
+    if (/^use\s+/i.test(L)) continue;
+    if (
+      /fabric\s+softener|oxiclean|hypoallergenic|unscented|low\s+dry|wash\s*&\s*fold|hang\s+dry|extra\s+scented|no\s+scent/i.test(
+        L,
+      )
+    ) {
+      continue;
+    }
+    if (/assembled|bagged|sent\s+to\s+vendor|processed\s+by|received\s+from|show\s+|hide\s+bag/i.test(L)) {
+      continue;
+    }
+    if (!/[a-zA-Z]{2,}/.test(L)) continue;
+    const digits = (L.match(/\d/g) || []).length;
+    if (digits / Math.max(L.length, 1) > 0.35) continue;
+    if (L.split(/\s+/).length > 10) continue;
+    return L;
+  }
+  return "";
 }
 
 /** Rinse often packs columns into <td>s; innerText on <tr> can omit the date line — stitch cells. */
@@ -591,20 +637,26 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     buildPortalRowSummary(collapsedRowText, "") ||
     buildPortalRowSummary("", expandedFullText) ||
     pickPortalListLine(collapsedRowText, expandedFullText);
+  const dateLineOnly = pickPortalListLine(collapsedRowText, expandedFullText);
+
+  const dateRe =
+    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i;
 
   let dateDisplay = "";
-  // Include optional /year so "Tue 04/14/2026" is one match — otherwise rest becomes "/2026 Name …".
-  const dm = primary.match(
-    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
-  );
+  let dm = dateLineOnly.match(dateRe);
   if (dm) {
     dateDisplay = `${dm[1]} ${dm[2]}`;
   }
   if (!dateDisplay) {
-    const dm2 = combined.match(
-      /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
-    );
-    if (dm2) dateDisplay = `${dm2[1]} ${dm2[2]}`;
+    dm = primary.match(dateRe);
+    if (dm) dateDisplay = `${dm[1]} ${dm[2]}`;
+  }
+  if (!dateDisplay) {
+    const dm2 = combined.match(dateRe);
+    if (dm2) {
+      dm = dm2;
+      dateDisplay = `${dm2[1]} ${dm2[2]}`;
+    }
   }
 
   const firstLine = primary;
@@ -619,9 +671,12 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     if (wm) weight = wm[0].replace(/\s+/g, " ").toUpperCase();
   }
 
-  let customer = "";
-  if (dm) {
-    let rest = firstLine.slice(dm.index + dm[0].length).trim();
+  let customer =
+    pickCustomerFromPortalLines(linesAfterPortalDate(collapsedRowText, "")) ||
+    pickCustomerFromPortalLines(linesAfterPortalDate("", expandedFullText));
+  const dmSingle = dateLineOnly.match(dateRe);
+  if (!customer && dmSingle) {
+    let rest = dateLineOnly.slice(dmSingle.index + dmSingle[0].length).trim();
     rest = rest.replace(/^\/?\d{4}\b\s*/, "").trim();
     rest = rest.replace(/\?\?\s*LBS/gi, "").replace(/\d+(?:\.\d+)?\s*(?:lbs|lb)\b/gi, "").trim();
     rest = rest
@@ -658,7 +713,7 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   const tl = t.toLowerCase();
   const flags = {
     USE_OXIC: /oxic|oxi\s*clean/i.test(t) ? "X" : "",
-    Use_Hypo: /\bhypo\b/i.test(t) && !/hypochlor/i.test(tl) ? "X" : "",
+    Use_Hypo: /hypoallergenic|\bhypo\b/i.test(t) && !/hypochlor/i.test(tl) ? "X" : "",
     USE_FAB: /fab(?:ric)?|softener|soft\s*ener/i.test(tl) ? "X" : "",
     Low_DRY: /low\s*dry/i.test(tl) ? "X" : "",
     NO_SCEN: /no\s*scen|no\s*scent|unscented/i.test(tl) ? "X" : "",
@@ -793,6 +848,16 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
     (process.env.RINSE_SKIP_SHOW_BAG_DETAILS || "").trim() === "1";
 
   if (!r.bagId && !skipShow) {
+    const pollMs = Math.max(30, Math.min(200, parseInt(process.env.RINSE_BAG_DOM_POLL_MS || "60", 10) || 60));
+    const maxDom = Math.max(
+      0,
+      Math.min(2500, parseInt(process.env.RINSE_BAG_DOM_WAIT_MS || "900", 10) || 900),
+    );
+    const tEnd = Date.now() + maxDom;
+    while (!r.bagId && Date.now() < tEnd) {
+      await page.waitForTimeout(pollMs);
+      r = await readBagFromRowBlock(rowLocator);
+    }
     const bagOk = await ensureShowBagDetailsForTicketRow(rowLocator);
     if (!bagOk) {
       const hint = (collapsedRowText || "").trim().replace(/\s+/g, " ").slice(0, 80);
@@ -814,11 +879,14 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
           !/lbs/i.test(l) &&
           !/^scans$/i.test(l),
       ) || "";
+    const custStructured = pickCustomerFromPortalLines(
+      linesAfterPortalDate(collapsedRowText, ""),
+    );
     r = {
       bagId: bagMatch.bagId || r2.bagId || r.bagId,
       bagDisplay: bagMatch.bagDisplay || r2.bagDisplay || r.bagDisplay,
       raw: bagMatch.raw || r2.raw || r.raw,
-      customer: (custLine || r2.customer || r.customer || "").slice(0, 80),
+      customer: (custStructured || custLine || r2.customer || r.customer || "").slice(0, 80),
       fullText: merged,
     };
   } else if (!r.bagId && skipShow) {
