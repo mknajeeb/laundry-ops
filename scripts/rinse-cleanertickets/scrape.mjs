@@ -531,6 +531,11 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   const wfCntM = combined.match(/#\s*WF\s*COUNT\s*:?\s*(\d+)\b/i);
   if (wfCntM) wf_count = wfCntM[1];
 
+  /** Shown on the portal only when the list page includes at least one Hang Dry–style order. */
+  let wf_items = "";
+  const wfItemsM = combined.match(/#\s*WF\s*ITEMS\s*:?\s*(\d+)\b/i);
+  if (wfItemsM) wf_items = wfItemsM[1];
+
   return {
     date_display: dateDisplay,
     estd_delivery,
@@ -538,6 +543,7 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     weight_display: weight,
     wf_lbs,
     wf_count,
+    wf_items,
     notes_summary: notes,
     ...flags,
   };
@@ -556,6 +562,7 @@ function portalHeaderRow() {
     "Customer",
     "# WF LBS",
     "# WF COUNT",
+    "# WF ITEMS",
     "Weight",
     "Notes",
     "USE OXIC",
@@ -576,6 +583,7 @@ function portalDataRow(portal, bagDisplay) {
     portal.customer_name,
     portal.wf_lbs || "",
     portal.wf_count || "",
+    portal.wf_items || "",
     portal.weight_display,
     portal.notes_summary,
     portal.USE_OXIC,

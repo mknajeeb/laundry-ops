@@ -98,15 +98,30 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
         bag = _cell(r, "Bag ID")
         wf_lbs_col = _cell(r, "# WF LBS")
         wf_cnt_col = _cell(r, "# WF COUNT")
+        wf_items_col = _cell(r, "# WF ITEMS")
         ticket_id = _ticket_id_from_bag(bag)
         if not cust:
             continue
         d = _parse_portal_date(date_raw)
         if d is None:
             continue
-        cells = [x for x in (date_raw, cust, wf_lbs_col, wf_cnt_col, weight, notes, bag) if x]
+        cells = [
+            x
+            for x in (
+                date_raw,
+                cust,
+                wf_lbs_col,
+                wf_cnt_col,
+                wf_items_col,
+                weight,
+                notes,
+                bag,
+            )
+            if x
+        ]
+        # wf_items is a Hang Dry item count, not pounds — do not feed extract_weight (would confuse lbs).
         w = extract_weight([wf_lbs_col, wf_cnt_col, weight, notes, bag])
-        st = classify_service([wf_lbs_col, wf_cnt_col, weight, notes, bag])
+        st = classify_service([wf_lbs_col, wf_cnt_col, wf_items_col, weight, notes, bag])
         rush = "RUSH" if detect_rush_hint(cells) else "NON-RUSH"
         out_rows.append(
             {
