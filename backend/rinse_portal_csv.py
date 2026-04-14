@@ -24,6 +24,17 @@ from etl.transform_orders import (
 PORTAL_REQUIRED = {"Date", "Customer", "Weight", "Notes", "Bag ID"}
 
 
+def _ticket_id_from_bag(bag: str | None) -> str | None:
+    """Strip `CODE (Wash & Fold) (…)` down to the alphanumeric bag / ticket id."""
+    if bag is None:
+        return None
+    s = str(bag).strip()
+    if not s:
+        return None
+    m = re.match(r"^([A-Z0-9]{4,})", s, re.I)
+    return m.group(1).upper() if m else None
+
+
 def _cell(row: pd.Series, key: str):
     v = row.get(key)
     if pd.isna(v):
@@ -85,17 +96,17 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
         weight = _cell(r, "Weight")
         notes = _cell(r, "Notes")
         bag = _cell(r, "Bag ID")
-        ticket_id = str(bag).strip().upper() if bag else None
-        if not ticket_id:
-            ticket_id = None
+        wf_lbs_col = _cell(r, "# WF LBS")
+        wf_cnt_col = _cell(r, "# WF COUNT")
+        ticket_id = _ticket_id_from_bag(bag)
         if not cust:
             continue
         d = _parse_portal_date(date_raw)
         if d is None:
             continue
-        cells = [x for x in (date_raw, cust, weight, notes, bag) if x]
-        w = extract_weight([weight, notes, bag])
-        st = classify_service([weight, notes, bag])
+        cells = [x for x in (date_raw, cust, wf_lbs_col, wf_cnt_col, weight, notes, bag) if x]
+        w = extract_weight([wf_lbs_col, wf_cnt_col, weight, notes, bag])
+        st = classify_service([wf_lbs_col, wf_cnt_col, weight, notes, bag])
         rush = "RUSH" if detect_rush_hint(cells) else "NON-RUSH"
         out_rows.append(
             {

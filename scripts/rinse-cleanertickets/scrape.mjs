@@ -81,6 +81,23 @@ function matchBagInText(text) {
   return { bagId: "", raw: "" };
 }
 
+/** Bag line for CSV: `CODE (Service) (Sub…)` after `Bag:`; `bagId` is the code only. */
+function matchBagDisplayInText(text) {
+  const t = String(text || "");
+  const mline = t.match(/Bag:\s*([^\n]+)/i);
+  if (mline) {
+    const rest = mline[1].trim().replace(/\s+/g, " ");
+    const idm = rest.match(/^([A-Z0-9]+)/i);
+    return {
+      bagId: idm ? idm[1].toUpperCase() : "",
+      bagDisplay: rest,
+      raw: mline[0].trim().replace(/\s+/g, " "),
+    };
+  }
+  const b = matchBagInText(t);
+  return { bagId: b.bagId, bagDisplay: b.bagId || "", raw: b.raw };
+}
+
 /** Rinse email/password form (avoid homepage hop). */
 const RINSE_LOGIN_URL = "https://www.rinse.com/accounts/login/";
 
@@ -265,6 +282,12 @@ function isLikelyExpandedDetailSubRow(trimmed) {
   return hasPortalDetailLinks && !hasListRowDateLine;
 }
 
+/** Top-level cleaner-ticket row (not a nested <tr> inside an expanded ticket). */
+function isMainListTicketRow(trimmed) {
+  const t = trimmed.slice(0, 500);
+  return /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}\/\d{1,2}/i.test(t);
+}
+
 async function isProbablySingleCellDetailRow(rowLocator) {
   const tdCount = await rowLocator.locator("td").count().catch(() => 0);
   if (tdCount !== 1) return false;
@@ -351,7 +374,7 @@ async function readBagFromRowBlock(rowLocator) {
     })
     .catch(() => "");
 
-  const { bagId, raw: bagRaw } = matchBagInText(text);
+  const { bagId, raw: bagRaw, bagDisplay } = matchBagDisplayInText(text);
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const customer =
     lines.find(
@@ -364,7 +387,13 @@ async function readBagFromRowBlock(rowLocator) {
         !/^scans$/i.test(l)
     ) || "";
 
-  return { bagId, raw: bagRaw, customer: customer.slice(0, 80), fullText: text };
+  return {
+    bagId,
+    bagDisplay: bagDisplay || bagId,
+    raw: bagRaw,
+    customer: customer.slice(0, 80),
+    fullText: text,
+  };
 }
 
 /** Match the manual “copy from portal” Excel: date, customer, weight, notes, X-columns, bag id. */
@@ -431,10 +460,31 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   if (!notes) notes = noteLines.slice(0, 3).join("; ");
   notes = notes.slice(0, 500);
 
+  let estd_delivery = dateDisplay;
+  const em = combined.match(/\bEstd\.?\s*Del(?:ivery)?\s*:?\s*([^\n]+)/i);
+  if (em) {
+    estd_delivery = em[1].trim().replace(/\s+/g, " ").slice(0, 120);
+  }
+
+  let wf_lbs = "";
+  const wfLbsM = combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
+  if (wfLbsM) wf_lbs = wfLbsM[1];
+  if (!wf_lbs && weight) {
+    const wn = String(weight).match(/(\d+\.\d+)/);
+    if (wn) wf_lbs = wn[1];
+  }
+
+  let wf_count = "";
+  const wfCntM = combined.match(/#\s*WF\s*COUNT\s*:?\s*(\d+)\b/i);
+  if (wfCntM) wf_count = wfCntM[1];
+
   return {
     date_display: dateDisplay,
+    estd_delivery,
     customer_name: customer,
     weight_display: weight,
+    wf_lbs,
+    wf_count,
     notes_summary: notes,
     ...flags,
   };
@@ -449,7 +499,10 @@ function csvLayout() {
 function portalHeaderRow() {
   return [
     "Date",
+    "Estd. Delivery",
     "Customer",
+    "# WF LBS",
+    "# WF COUNT",
     "Weight",
     "Notes",
     "USE OXIC",
@@ -462,10 +515,14 @@ function portalHeaderRow() {
   ];
 }
 
-function portalDataRow(portal, bagId) {
+function portalDataRow(portal, bagDisplay) {
+  const bd = bagDisplay || "";
   return [
     portal.date_display,
+    portal.estd_delivery || portal.date_display,
     portal.customer_name,
+    portal.wf_lbs || "",
+    portal.wf_count || "",
     portal.weight_display,
     portal.notes_summary,
     portal.USE_OXIC,
@@ -474,7 +531,7 @@ function portalDataRow(portal, bagId) {
     portal.Low_DRY,
     portal.NO_SCEN,
     portal.Extra_Scen,
-    bagId,
+    bd,
   ];
 }
 
@@ -500,7 +557,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
     }
     const r2 = await readBagFromRowBlock(rowLocator);
     const merged = `${r.fullText}\n${r2.fullText}`.trim();
-    const bagMatch = matchBagInText(merged);
+    const bagMatch = matchBagDisplayInText(merged);
     const lines = merged.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     const custLine =
       lines.find(
@@ -514,6 +571,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
       ) || "";
     r = {
       bagId: bagMatch.bagId || r2.bagId || r.bagId,
+      bagDisplay: bagMatch.bagDisplay || r2.bagDisplay || r.bagDisplay,
       raw: bagMatch.raw || r2.raw || r.raw,
       customer: (custLine || r2.customer || r.customer || "").slice(0, 80),
       fullText: merged,
@@ -538,8 +596,10 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
             !/lbs/i.test(l) &&
             !/^scans$/i.test(l)
         ) || "";
+      const bd = matchBagDisplayInText(collapsedRowText);
       return {
         bagId: fromCollapsed.bagId,
+        bagDisplay: bd.bagDisplay || fromCollapsed.bagId,
         raw: fromCollapsed.raw,
         customer: customer.slice(0, 80),
         fullText: r.fullText || collapsedRowText,
@@ -547,7 +607,9 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
       };
     }
   }
-  return { ...r, collapsed: collapsedRowText };
+  const outR = { ...r, collapsed: collapsedRowText };
+  if (!outR.bagDisplay) outR.bagDisplay = outR.bagId || "";
+  return outR;
 }
 
 async function scrapePage(page, pageLabel, layout) {
@@ -584,9 +646,10 @@ async function scrapePage(page, pageLabel, layout) {
     }
     if (await isProbablySingleCellDetailRow(row)) continue;
     if (isLikelyExpandedDetailSubRow(trimmed)) continue;
+    if (!isMainListTicketRow(trimmed)) continue;
 
     recordIndex += 1;
-    const { bagId, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
+    const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
       page,
       row,
       rowText,
@@ -596,6 +659,7 @@ async function scrapePage(page, pageLabel, layout) {
       row_index: recordIndex,
       customer_snippet: customer,
       bag_id: bagId,
+      bag_display: bagDisplay || bagId,
       raw_line: raw,
     };
     if (layout === "portal") {
@@ -791,7 +855,7 @@ async function main() {
     if (layout === "portal") {
       header = portalHeaderRow().map(csvEscape).join(",") + "\n";
       lines = allRows.map((r) =>
-        portalDataRow(r.portal, r.bag_id)
+        portalDataRow(r.portal, r.bag_display || r.bag_id)
           .map(csvEscape)
           .join(",") + "\n"
       );
