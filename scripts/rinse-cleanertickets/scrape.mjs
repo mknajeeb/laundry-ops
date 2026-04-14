@@ -481,19 +481,51 @@ async function readBagFromRowBlock(rowLocator) {
   };
 }
 
+/**
+ * List row often starts with status (“AT VENDOR”, chevrons) before “Tue 4/14 … Name …”.
+ * Using only the first non-empty line drops Date/Customer into empty while Bag still parses.
+ */
+function pickPortalListLine(collapsedRowText, expandedFullText) {
+  const dateRe =
+    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i;
+  for (const block of [collapsedRowText, expandedFullText]) {
+    const lines = String(block || "")
+      .split(/\r?\n/)
+      .map((l) => l.trim().replace(/\t+/g, " "))
+      .filter((l) => l.length > 2);
+    for (const line of lines) {
+      if (dateRe.test(line)) return line;
+    }
+  }
+  return (
+    String(collapsedRowText || "")
+      .split(/\r?\n/)
+      .map((l) => l.trim().replace(/\t+/g, " "))
+      .find((l) => l.length > 0) || ""
+  );
+}
+
 /** Match the manual “copy from portal” Excel: date, customer, weight, notes, X-columns, bag id. */
 function parsePortalFields(collapsedRowText, expandedFullText) {
   const combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
-  const firstLine = (collapsedRowText || "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
+  const listLine = pickPortalListLine(collapsedRowText, expandedFullText);
 
   let dateDisplay = "";
   // Include optional /year so "Tue 04/14/2026" is one match — otherwise rest becomes "/2026 Name …".
-  const dm = firstLine.match(
+  const dm = listLine.match(
     /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i
   );
   if (dm) {
     dateDisplay = `${dm[1]} ${dm[2]}`;
   }
+  if (!dateDisplay) {
+    const dm2 = combined.match(
+      /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i
+    );
+    if (dm2) dateDisplay = `${dm2[1]} ${dm2[2]}`;
+  }
+
+  const firstLine = listLine;
 
   let weight = "?? LBS";
   if (/\?\?\s*LBS/i.test(firstLine) || /\?\?\s*LBS/i.test(combined)) {
@@ -508,10 +540,32 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     let rest = firstLine.slice(dm.index + dm[0].length).trim();
     rest = rest.replace(/^\/?\d{4}\b\s*/, "").trim();
     rest = rest.replace(/\?\?\s*LBS/gi, "").replace(/\d+(?:\.\d+)?\s*(?:lbs|lb)\b/gi, "").trim();
+    rest = rest
+      .replace(/^\s*(at\s+vendor|at\s+customer|in\s+process|pending|picked\s*up|delivered)\b\s*/gi, "")
+      .trim();
     customer = rest.replace(/\s+/g, " ").slice(0, 200);
   }
   if (!customer) {
-    customer = (collapsedRowText || "").replace(/\s+/g, " ").trim().slice(0, 200);
+    customer = String(collapsedRowText || combined)
+      .replace(/\t/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+  }
+  if ((!customer || customer.length < 2) && dateDisplay) {
+    const parts = combined.split(
+      new RegExp(dateDisplay.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
+    );
+    const tail = parts.length > 1 ? parts[1] : "";
+    const one = tail.trim().split(/\r?\n/)[0] || "";
+    const c2 = one
+      .replace(/\?\?\s*LBS/gi, "")
+      .replace(/\d+(?:\.\d+)?\s*(?:lbs|lb)\b/gi, "")
+      .replace(/^\s*(at\s+vendor|at\s+customer|in\s+process|pending)\b\s*/gi, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 200);
+    if (c2.length >= 2) customer = c2;
   }
 
   const t = combined;
@@ -552,7 +606,9 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   }
 
   let wf_lbs = "";
-  const wfLbsM = combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
+  const wfLbsM =
+    combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i) ||
+    combined.match(/\bWF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
   if (wfLbsM) wf_lbs = wfLbsM[1];
   if (!wf_lbs && weight) {
     const wn = String(weight).match(/(\d+\.\d+)/);
@@ -560,12 +616,16 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   }
 
   let wf_count = "";
-  const wfCntM = combined.match(/#\s*WF\s*COUNT\s*:?\s*(\d+)\b/i);
+  const wfCntM =
+    combined.match(/#\s*WF\s*COUNT\s*:?\s*(\d+)\b/i) ||
+    combined.match(/\bWF\s*COUNT\s*:?\s*(\d+)\b/i);
   if (wfCntM) wf_count = wfCntM[1];
 
   /** Shown on the portal only when the list page includes at least one Hang Dry–style order. */
   let wf_items = "";
-  const wfItemsM = combined.match(/#\s*WF\s*ITEMS\s*:?\s*(\d+)\b/i);
+  const wfItemsM =
+    combined.match(/#\s*WF\s*ITEMS\s*:?\s*(\d+)\b/i) ||
+    combined.match(/\bWF\s*ITEMS\s*:?\s*(\d+)\b/i);
   if (wfItemsM) wf_items = wfItemsM[1];
 
   return {
@@ -702,6 +762,13 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
   }
   const outR = { ...r, collapsed: collapsedRowText };
   if (!outR.bagDisplay) outR.bagDisplay = outR.bagId || "";
+  const c0 = String(collapsedRowText || "").trim();
+  const f0 = String(outR.fullText || "").trim();
+  if (c0 && f0 && !/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}\/\d{1,2}/i.test(f0)) {
+    outR.fullText = `${c0}\n${f0}`.trim();
+  } else if (c0 && !f0) {
+    outR.fullText = c0;
+  }
   return outR;
 }
 
