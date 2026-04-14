@@ -215,8 +215,15 @@ async function tryLogin(page, cleanerTicketsUrlForNext) {
 
 /** Keep clicks bounded so one bad control cannot block the whole export (Playwright default can be 30s+). */
 function rowActionTimeoutMs() {
-  const n = parseInt(process.env.RINSE_ROW_ACTION_TIMEOUT_MS || "5000", 10);
-  return Math.max(1500, Math.min(25000, Number.isFinite(n) ? n : 5000));
+  const n = parseInt(process.env.RINSE_ROW_ACTION_TIMEOUT_MS || "3200", 10);
+  return Math.max(1200, Math.min(25000, Number.isFinite(n) ? n : 3200));
+}
+
+/** Notes column: `none` (default) = empty — ops use X-columns; `full` = legacy long text. */
+function portalNotesMode() {
+  const v = (process.env.RINSE_PORTAL_NOTES || "none").trim().toLowerCase();
+  if (v === "full" || v === "1" || v === "yes" || v === "true") return "full";
+  return "none";
 }
 
 /** Row chevron vs “Show/Hide bag details” — first <a> in the cell is often bag details; clicking it never collapses the ticket. */
@@ -284,8 +291,8 @@ async function ensureRowExpandedForTicket(rowLocator, page) {
   if (await ticketExpansionHasBagLinks(rowLocator)) return true;
   const clicked = await clickExpandOnRow(rowLocator);
   const expandSettle = Math.max(
-    400,
-    Math.min(12000, parseInt(process.env.RINSE_EXPAND_SETTLE_MS || "1200", 10) || 1200),
+    200,
+    Math.min(12000, parseInt(process.env.RINSE_EXPAND_SETTLE_MS || "450", 10) || 450),
   );
   if (clicked) await page.waitForTimeout(expandSettle);
   return clicked || (await ticketExpansionHasBagLinks(rowLocator));
@@ -413,13 +420,13 @@ function bagDetailsToggleLocators(rowLocator, mode) {
 async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const page = rowLocator.page();
   const settleMs = Math.max(
-    400,
-    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "1200", 10) || 1200),
+    200,
+    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "350", 10) || 350),
   );
-  const pollMs = 200;
+  const pollMs = Math.max(40, Math.min(500, parseInt(process.env.RINSE_BAG_DETAILS_POLL_MS || "75", 10) || 75));
   const deadline =
     Date.now() +
-    Math.max(3000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "7000", 10) || 7000);
+    Math.max(2000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "4000", 10) || 4000);
   const clickT = rowActionTimeoutMs();
 
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
@@ -604,7 +611,9 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
 
   let weight = "?? LBS";
   if (/\?\?\s*LBS/i.test(firstLine) || /\?\?\s*LBS/i.test(combined)) {
-    weight = "?? LBS";
+    const wfW = combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
+    if (wfW) weight = `${wfW[1]} LBS`;
+    else weight = "?? LBS";
   } else {
     const wm = combined.match(/(\d+(?:\.\d+)?)\s*(?:lbs|lb)\b/i);
     if (wm) weight = wm[0].replace(/\s+/g, " ").toUpperCase();
@@ -665,19 +674,24 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     /^rack\b/i.test(l) ||
     /^time\s+scanned/i.test(l);
 
-  const noteLines = t
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 1 && !skipLine(l) && !/^\d+$/.test(l));
-  let notes = noteLines
-    .filter((l) => /use |dry|scen|hypo|fab|oxic|wash|fold|hang/i.test(l) || l.length > 12)
-    .slice(0, 6)
-    .join("; ");
-  if (!notes) notes = noteLines.slice(0, 3).join("; ");
-  notes = notes.slice(0, 500);
+  let notes = "";
+  if (portalNotesMode() === "full") {
+    const noteLines = t
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 1 && !skipLine(l) && !/^\d+$/.test(l));
+    notes = noteLines
+      .filter((l) => /use |dry|scen|hypo|fab|oxic|wash|fold|hang/i.test(l) || l.length > 12)
+      .slice(0, 6)
+      .join("; ");
+    if (!notes) notes = noteLines.slice(0, 3).join("; ");
+    notes = notes.slice(0, 500);
+  }
 
   let estd_delivery = dateDisplay;
-  const em = combined.match(/\bEstd\.?\s*Del(?:ivery)?\s*:?\s*([^\n]+)/i);
+  const em =
+    combined.match(/\bEstd\.?\s*Del(?:ivery)?\s*:?\s*([^\n]+)/i) ||
+    combined.match(/\bEst\.?\s*(?:imated)?\s*Del(?:ivery)?\s*:?\s*([^\n]+)/i);
   if (em) {
     estd_delivery = em[1].trim().replace(/\s+/g, " ").slice(0, 120);
   }
@@ -770,7 +784,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
   await ensureRowExpandedForTicket(rowLocator, page);
   const inlineSettle = Math.max(
     0,
-    Math.min(5000, parseInt(process.env.RINSE_VENDORINLINE_SETTLE_MS || "800", 10) || 800),
+    Math.min(5000, parseInt(process.env.RINSE_VENDORINLINE_SETTLE_MS || "200", 10) || 200),
   );
   if (inlineSettle > 0) await page.waitForTimeout(inlineSettle);
 
@@ -852,9 +866,11 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
 
 async function scrapePage(page, pageLabel, layout) {
   const sel = bodyRowsSelector();
-  await page.waitForTimeout(2000);
+  const tableWait = Math.max(400, Math.min(8000, parseInt(process.env.RINSE_TABLE_WAIT_MS || "900", 10) || 900));
+  const tableAfter = Math.max(0, Math.min(5000, parseInt(process.env.RINSE_TABLE_AFTER_MS || "350", 10) || 350));
+  await page.waitForTimeout(tableWait);
   await page.locator(sel).first().waitFor({ state: "visible", timeout: 25000 }).catch(() => {});
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(tableAfter);
   const initialRowCount = await page.locator(sel).count();
   if (initialRowCount === 0) {
     console.warn("No rows matched row selectors — set RINSE_EXTRA_ROW_SELECTORS from DevTools or inspect page HTML.");
@@ -875,7 +891,8 @@ async function scrapePage(page, pageLabel, layout) {
     for (let j = 0; j < n; j++) {
       const cand = rowsAll.nth(j);
       await cand.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
-      await page.waitForTimeout(60);
+      const rowGap = Math.max(0, Math.min(400, parseInt(process.env.RINSE_ROW_GAP_MS || "25", 10) || 25));
+      await page.waitForTimeout(rowGap);
       if (!(await cand.isVisible().catch(() => false))) continue;
       const tdCount = await cand.locator("td").count().catch(() => 0);
       const thOnly =
@@ -971,7 +988,7 @@ async function main() {
   const maxPages = Math.min(500, Math.max(1, parseInt(process.env.RINSE_MAX_PAGES || "20", 10) || 20));
   const pageSettleMs = Math.max(
     600,
-    Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "3500", 10) || 3500),
+    Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "2200", 10) || 2200),
   );
   const outCsv =
     (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) || defaultOutputPath();
