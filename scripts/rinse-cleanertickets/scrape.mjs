@@ -209,7 +209,14 @@ async function tryLogin(page, cleanerTicketsUrlForNext) {
   await page.waitForTimeout(2000);
 }
 
+/** Keep clicks bounded so one bad control cannot block the whole export (Playwright default can be 30s+). */
+function rowActionTimeoutMs() {
+  const n = parseInt(process.env.RINSE_ROW_ACTION_TIMEOUT_MS || "5000", 10);
+  return Math.max(1500, Math.min(25000, Number.isFinite(n) ? n : 5000));
+}
+
 async function clickExpandOnRow(rowLocator) {
+  const t = rowActionTimeoutMs();
   const firstCell = rowLocator.locator("td").first();
   const candidates = [
     firstCell.locator("button").first(),
@@ -218,9 +225,13 @@ async function clickExpandOnRow(rowLocator) {
     rowLocator.locator("button").first(),
   ];
   for (const loc of candidates) {
-    if (await loc.isVisible().catch(() => false)) {
-      await loc.click({ timeout: 8000 });
-      return true;
+    try {
+      if (await loc.isVisible().catch(() => false)) {
+        await loc.click({ timeout: t, noWaitAfter: true });
+        return true;
+      }
+    } catch {
+      /* wrong control or overlay — try next candidate */
     }
   }
   return false;
@@ -251,18 +262,57 @@ async function ensureRowExpandedForTicket(rowLocator, page) {
   return clicked || (await ticketExpansionHasBagLinks(rowLocator));
 }
 
+async function hideBagDetailsIfVisible(rowLocator, page) {
+  const t = rowActionTimeoutMs();
+  for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
+    const first = loc.first();
+    try {
+      if (await first.isVisible().catch(() => false)) {
+        await first.click({ timeout: t, noWaitAfter: true });
+        await page.waitForTimeout(250);
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return false;
+}
+
 async function ensureRowCollapsedAfterTicket(rowLocator, page) {
-  if (!(await ticketExpansionHasBagLinks(rowLocator))) return;
+  if ((process.env.RINSE_SKIP_ROW_COLLAPSE || "").trim() === "1") {
+    return;
+  }
+  const maxMs = Math.max(
+    2000,
+    Math.min(60000, parseInt(process.env.RINSE_COLLAPSE_MAX_MS || "12000", 10) || 12000),
+  );
   const ms = Math.max(
     200,
     Math.min(5000, parseInt(process.env.RINSE_COLLAPSE_SETTLE_MS || "600", 10) || 600),
   );
-  await clickExpandOnRow(rowLocator);
-  await page.waitForTimeout(ms);
-  if (await ticketExpansionHasBagLinks(rowLocator)) {
-    await page.waitForTimeout(350);
-    await clickExpandOnRow(rowLocator);
+  const deadline = Date.now() + maxMs;
+
+  await hideBagDetailsIfVisible(rowLocator, page);
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(120);
+
+  while (Date.now() < deadline && (await ticketExpansionHasBagLinks(rowLocator))) {
+    try {
+      await clickExpandOnRow(rowLocator);
+    } catch (e) {
+      console.warn("  row collapse click:", (e && e.message) || e);
+    }
     await page.waitForTimeout(ms);
+    await hideBagDetailsIfVisible(rowLocator, page);
+    await page.keyboard.press("Escape").catch(() => {});
+    await page.waitForTimeout(120);
+  }
+
+  if (await ticketExpansionHasBagLinks(rowLocator)) {
+    console.warn(
+      "  Ticket row still shows bag details links after collapse window — continuing (set RINSE_SKIP_ROW_COLLAPSE=1 to skip collapse).",
+    );
   }
 }
 
@@ -323,7 +373,10 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
     Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "1200", 10) || 1200),
   );
   const pollMs = 200;
-  const deadline = Date.now() + Math.max(8000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "14000", 10) || 14000);
+  const deadline =
+    Date.now() +
+    Math.max(8000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "14000", 10) || 14000);
+  const clickT = rowActionTimeoutMs();
 
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
     const first = loc.first();
@@ -337,7 +390,7 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
     for (const loc of bagDetailsToggleLocators(rowLocator, "show")) {
       const first = loc.first();
       if (await first.isVisible().catch(() => false)) {
-        await first.click({ timeout: 8000 });
+        await first.click({ timeout: clickT, noWaitAfter: true });
         await page.waitForTimeout(settleMs);
         return true;
       }
@@ -625,11 +678,12 @@ async function scrapePage(page, pageLabel, layout) {
   const out = [];
   let recordIndex = 0;
   const rowsAll = page.locator(sel);
-  const n = await rowsAll.count();
 
-  // One pass over tbody <tr> indices. (A previous while+for+break re-read nth(0) every pass,
-  // so every "ticket" showed the same bag id.)
-  for (let i = 0; i < n; i++) {
+  // Re-count rows each index: expanding a ticket can insert <tr> nodes; a fixed `n` can skip rows
+  // or pair the wrong locator with the wrong ticket after the DOM shifts.
+  for (let i = 0; ; i++) {
+    const n = await rowsAll.count();
+    if (i >= n) break;
     const row = rowsAll.nth(i);
     await row.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(100);
@@ -723,6 +777,9 @@ async function main() {
   });
   const context = await browser.newContext(storageState ? { storageState } : {});
   const page = await context.newPage();
+  const pwTimeout = Math.max(5000, Math.min(120000, navTimeoutMs()));
+  page.setDefaultTimeout(pwTimeout);
+  page.setDefaultNavigationTimeout(Math.max(pwTimeout, navTimeoutMs()));
 
   try {
     if (!storageState) {
