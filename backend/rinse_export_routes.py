@@ -58,9 +58,8 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
 
     - queued: worker should start within ~minutes; if not, treat as lost.
     - running: the worker bumps updated_at on a heartbeat while Playwright runs. If the API
-      restarts, heartbeats stop — treat as stale after RINSE_IMPORT_NO_HEARTBEAT_STALE_SEC (default
-      ~4× heartbeat interval). If heartbeats are disabled (RINSE_IMPORT_HEARTBEAT_SEC=0), fall back
-      to scrape timeout + grace.
+      restarts, heartbeats stop — treat as stale after min(heartbeat window, scrape timeout + grace).
+      If heartbeats are disabled (RINSE_IMPORT_HEARTBEAT_SEC=0), use scrape timeout + grace only.
     """
     status = row.get("status")
     if status not in ("queued", "running"):
@@ -88,19 +87,23 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
         else:
             age = (now - ref).total_seconds()
             hb_sec = _rinse_import_heartbeat_sec()
+            scrape_t = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
+            grace = int(os.getenv("RINSE_IMPORT_RUNNING_GRACE_SEC", "300"))
+            abs_silence_max = int(os.getenv("RINSE_IMPORT_JOB_STALE_SEC", str(scrape_t + grace)))
             if hb_sec > 0:
-                mult = max(3, int(os.getenv("RINSE_IMPORT_HEARTBEAT_MISS_MULT", "4")))
-                cap = int(os.getenv("RINSE_IMPORT_NO_HEARTBEAT_STALE_SEC", str(hb_sec * mult)))
+                mult = max(3, int(os.getenv("RINSE_IMPORT_HEARTBEAT_MISS_MULT", "3")))
+                cap_hb = int(os.getenv("RINSE_IMPORT_NO_HEARTBEAT_STALE_SEC", str(hb_sec * mult)))
+                # Never wait longer than scrape timeout silence (older servers / HB misconfig).
+                cap = min(cap_hb, abs_silence_max)
                 if age > cap:
                     stale = True
                     msg = (
-                        f"No heartbeat for ~{cap:.0f}s while status was running (worker likely died when the API "
-                        "restarted). Enable Always On, avoid deploys during import, then start a new import."
+                        f"No DB update for ~{cap:.0f}s while status was running (heartbeats should refresh every "
+                        f"~{hb_sec:.0f}s; worker likely died on API restart or DB updates failed). "
+                        "Enable Always On, avoid deploys during import, then start a new import."
                     )
             else:
-                scrape_t = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
-                grace = int(os.getenv("RINSE_IMPORT_RUNNING_GRACE_SEC", "300"))
-                cap = int(os.getenv("RINSE_IMPORT_JOB_STALE_SEC", str(scrape_t + grace)))
+                cap = abs_silence_max
                 if age > cap:
                     stale = True
                     msg = (
@@ -526,7 +529,7 @@ def register_rinse_export_routes(app):
                             finally:
                                 conn_h.close()
                         except Exception:
-                            app.logger.debug("rinse import heartbeat failed", exc_info=True)
+                            app.logger.warning("rinse import heartbeat failed", exc_info=True)
 
                 hb_thread: threading.Thread | None = None
                 try:
