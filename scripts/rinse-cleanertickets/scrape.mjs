@@ -359,6 +359,15 @@ async function ensureRowCollapsedAfterTicket(rowLocator, page) {
  * Those rows show portal links (Show bag details) but not the list “Estd. delivery + date” pattern.
  */
 function isLikelyExpandedDetailSubRow(trimmed) {
+  const t0 = String(trimmed || "").trim();
+  const headHasListDate = PORTAL_TICKET_DATE_LINE_RE.test(t0.slice(0, 400));
+  if (/^scans\b/i.test(t0.slice(0, 80)) && !headHasListDate) return true;
+  if (
+    /\bmove-bag\b|\bweight-entry\b|\bstart-cleaning\b|\bqc-?hold\b/i.test(t0.slice(0, 2500)) &&
+    !headHasListDate
+  ) {
+    return true;
+  }
   const head = trimmed.slice(0, 420);
   const hasPortalDetailLinks =
     /show\s+bag\s+details|hide\s+bag\s+details|show\s+issue\s+details|show\s+qc\s+details/i.test(
@@ -410,7 +419,7 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const pollMs = 200;
   const deadline =
     Date.now() +
-    Math.max(8000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "14000", 10) || 14000);
+    Math.max(3000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "7000", 10) || 7000);
   const clickT = rowActionTimeoutMs();
 
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
@@ -506,17 +515,47 @@ function pickPortalListLine(collapsedRowText, expandedFullText) {
   );
 }
 
+/**
+ * Rinse often puts the date in one <td> and name/weight/# HD on the next lines. Using only the
+ * date line makes every ticket on the same calendar day share one fingerprint → scrape stops after 1.
+ */
+function buildPortalRowSummary(collapsedRowText, expandedFullText) {
+  for (const block of [collapsedRowText, expandedFullText]) {
+    const lines = String(block || "")
+      .split(/\r?\n/)
+      .map((l) => l.trim().replace(/\t+/g, " "))
+      .filter((l) => l.length > 1);
+    const idx = lines.findIndex((l) => PORTAL_TICKET_DATE_LINE_RE.test(l));
+    if (idx >= 0) {
+      return lines
+        .slice(idx, Math.min(idx + 12, lines.length))
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+  return "";
+}
+
 /** Dedupe processed tickets when row 1 stays expanded (index-based loop would repeat ticket 1). */
 function ticketRowFingerprint(trimmedMainListRow) {
-  const line = pickPortalListLine(trimmedMainListRow, "");
-  let norm = line.replace(/\s+/g, " ").trim().slice(0, 280);
-  if (norm.length < 10) {
-    norm = String(trimmedMainListRow || "")
+  const s =
+    buildPortalRowSummary(trimmedMainListRow, "") ||
+    String(trimmedMainListRow || "")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 280);
-  }
-  return norm;
+      .trim();
+  return s.slice(0, 360);
+}
+
+function cleanPortalCustomerName(name) {
+  let s = String(name || "").trim();
+  s = s.replace(/\b(TODAY|RUSH|NON-?\s*RUSH)\b/gi, " ");
+  s = s.replace(/\b#?\s*HD\s*:?\s*\d+\b/gi, " ");
+  s = s.replace(/\b#?\s*WF\s*(?:LBS|COUNT|ITEMS)\s*:?\s*[\d.]+\b/gi, " ");
+  s = s.replace(/\b\d+\.?\d*\s*LBS\b/gi, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  s = s.replace(/\s+0\s*$/i, "").trim();
+  return s.slice(0, 200);
 }
 
 /** Rinse often packs columns into <td>s; innerText on <tr> can omit the date line — stitch cells. */
@@ -541,11 +580,14 @@ async function readTicketRowTextSnapshot(rowLocator) {
 /** Match the manual “copy from portal” Excel: date, customer, weight, notes, X-columns, bag id. */
 function parsePortalFields(collapsedRowText, expandedFullText) {
   const combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
-  const listLine = pickPortalListLine(collapsedRowText, expandedFullText);
+  const primary =
+    buildPortalRowSummary(collapsedRowText, "") ||
+    buildPortalRowSummary("", expandedFullText) ||
+    pickPortalListLine(collapsedRowText, expandedFullText);
 
   let dateDisplay = "";
   // Include optional /year so "Tue 04/14/2026" is one match — otherwise rest becomes "/2026 Name …".
-  const dm = listLine.match(
+  const dm = primary.match(
     /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
   );
   if (dm) {
@@ -558,7 +600,7 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     if (dm2) dateDisplay = `${dm2[1]} ${dm2[2]}`;
   }
 
-  const firstLine = listLine;
+  const firstLine = primary;
 
   let weight = "?? LBS";
   if (/\?\?\s*LBS/i.test(firstLine) || /\?\?\s*LBS/i.test(combined)) {
@@ -600,6 +642,8 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
       .slice(0, 200);
     if (c2.length >= 2) customer = c2;
   }
+
+  customer = cleanPortalCustomerName(customer);
 
   const t = combined;
   const tl = t.toLowerCase();
@@ -651,7 +695,8 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   let wf_count = "";
   const wfCntM =
     combined.match(/#\s*WF\s*COUNT\s*:?\s*(\d+)\b/i) ||
-    combined.match(/\bWF\s*COUNT\s*:?\s*(\d+)\b/i);
+    combined.match(/\bWF\s*COUNT\s*:?\s*(\d+)\b/i) ||
+    combined.match(/#\s*HD\s*:?\s*(\d+)\b/i);
   if (wfCntM) wf_count = wfCntM[1];
 
   /** Shown on the portal only when the list page includes at least one Hang Dry–style order. */
@@ -845,7 +890,7 @@ async function scrapePage(page, pageLabel, layout) {
       if (!isMainListTicketRow(trimmed)) continue;
 
       const fp0 = ticketRowFingerprint(trimmed);
-      if (fp0.length < 8) continue;
+      if (fp0.length < 4) continue;
       if (processed.has(fp0)) continue;
       const peek = matchBagInText(trimmed).bagId;
       if (peek && processed.has(`bag:${String(peek).toUpperCase()}`)) continue;
