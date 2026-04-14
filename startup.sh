@@ -26,11 +26,36 @@ if [ -d antenv ]; then
 fi
 unset VIRTUAL_ENV 2>/dev/null || true
 
+# Keep deps on persistent /home so restarts do not re-download pandas/mysql/etc. every time
+# (new instances still run pip once when requirements.txt changes).
+_PY="python3"
+command -v "$_PY" >/dev/null 2>&1 || _PY="python"
+VENV="/home/site/laundry_venv"
+REQ_HASH_FILE="/home/site/.laundry_requirements.sha256"
 if [ -f requirements.txt ]; then
-  echo "startup.sh: pip install -r requirements.txt"
-  if ! python -m pip install --no-cache-dir -r requirements.txt; then
-    echo "startup.sh: FATAL pip install failed — fix requirements or disk space; see Log stream above."
-    exit 1
+  _hash="$(sha256sum requirements.txt 2>/dev/null | awk '{print $1}' || true)"
+  _reuse=0
+  if [ -n "$_hash" ] && [ -x "$VENV/bin/gunicorn" ] && [ -f "$REQ_HASH_FILE" ] && [ "$(cat "$REQ_HASH_FILE")" = "$_hash" ]; then
+    _reuse=1
+  fi
+  if [ "$_reuse" = "1" ]; then
+    echo "startup.sh: using persistent venv $VENV (requirements unchanged)"
+  else
+    echo "startup.sh: updating venv at $VENV (first boot or requirements changed)"
+    mkdir -p /home/site
+    if [ ! -x "$VENV/bin/python" ]; then
+      "$_PY" -m venv "$VENV" || { echo "startup.sh: FATAL could not create venv"; exit 1; }
+    fi
+    if ! "$VENV/bin/python" -m pip install --upgrade pip setuptools wheel; then
+      echo "startup.sh: warning: pip upgrade in venv failed; continuing"
+    fi
+    if ! "$VENV/bin/python" -m pip install --no-cache-dir -r requirements.txt; then
+      echo "startup.sh: FATAL pip install in venv failed — fix requirements or disk; delete $VENV to retry clean."
+      exit 1
+    fi
+    if [ -n "$_hash" ]; then
+      echo "$_hash" > "$REQ_HASH_FILE"
+    fi
   fi
 fi
 
@@ -125,4 +150,7 @@ fi
 
 echo "startup.sh: starting gunicorn on 0.0.0.0:${PORT:-8000} workers=${WORKERS:-2} timeout=${GUNICORN_TIMEOUT:-1200}"
 # Rinse export can run Playwright for up to RINSE_SCRAPE_TIMEOUT_SEC (default 900s, max 7200s); worker must outlive that.
+if [ -x "$VENV/bin/gunicorn" ]; then
+  exec "$VENV/bin/gunicorn" --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout="${GUNICORN_TIMEOUT:-1200}" backend.app:app
+fi
 exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout="${GUNICORN_TIMEOUT:-1200}" backend.app:app

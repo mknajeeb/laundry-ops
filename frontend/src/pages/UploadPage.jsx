@@ -496,10 +496,11 @@ function UploadPage({ user }) {
         "Rinse import failed.";
       const msg = String(error?.message || "");
       const code = error?.code;
-      if (!error?.response && (code === "ECONNABORTED" || /network error/i.test(msg))) {
+      if (!error?.response && (code === "ECONNABORTED" || code === "ERR_CANCELED" || /network error|canceled/i.test(msg))) {
         text =
-          "Lost connection while talking to the API (often a proxy timeout on the start request, or the API was restarting). " +
-          "Retry after confirming laundryops-api is healthy; scrape itself now runs in the background once the job starts.";
+          "A request to the API timed out or was canceled while the import was running. " +
+          "Often this is the parallel “current batch” call (nav badge) when the server is busy — the Rinse job may still be running. " +
+          "Refresh this page in a minute and check Azure Log stream; if you saw HTTP 202 with a job id, the scrape can finish without this tab staying open.";
       }
       setMessage({ type: "error", text });
     } finally {

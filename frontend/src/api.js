@@ -332,7 +332,7 @@ export const startRinseImportUploadBatchJob = (body = {}) =>
 /** Admin: poll async Rinse import job until succeeded or failed. */
 export const getRinseImportUploadBatchJob = (jobId) =>
   axios.get(`${API_BASE}/admin/rinse/import-upload-batch/jobs/${encodeURIComponent(jobId)}`, {
-    timeout: 60000,
+    timeout: 120000,
   });
 
 export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
@@ -350,8 +350,9 @@ export const overrideUploadConflicts = (conflict_ids, overridden_by = "admin") =
     overridden_by
   });
 
+/** Badge + Upload page — can exceed 30s when API workers are busy (e.g. Rinse scrape). */
 export const getCurrentUploadBatch = () =>
-  axios.get(`${API_BASE}/upload_batches/current`, { timeout: 30000 });
+  axios.get(`${API_BASE}/upload_batches/current`, { timeout: 120000 });
 
 export const getUploadBatches = (limit = 20) =>
   axios.get(`${API_BASE}/upload_batches`, {
