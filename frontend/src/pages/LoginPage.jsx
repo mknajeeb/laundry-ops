@@ -17,6 +17,7 @@ import {
 import {
   authLogin,
   getPublicOrgBranding,
+  getWashproApiBase,
   postPasswordResetComplete,
   postPasswordResetRequest,
   postPublicChangePassword,
@@ -177,8 +178,11 @@ function LoginPage({ onLoggedIn }) {
             .toLowerCase()
             .includes("network");
         if (!msg && net) {
+          const base = getWashproApiBase();
           msg =
-            "Cannot reach the server. Start the backend and match the Vite proxy port (vite.config.js defaults to http://127.0.0.1:8000).";
+            base && /^https?:\/\//i.test(base)
+              ? `Cannot reach the API (${base}). The site may still be starting after a deploy/restart — wait 1–2 minutes and retry, or check Azure → laundryops-api → Log stream.`
+              : "Cannot reach the server. For local dev, start the API and use the Vite proxy (see vite.config.js).";
         }
         if (!msg) msg = e?.message || "Login failed.";
       }

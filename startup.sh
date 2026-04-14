@@ -39,9 +39,9 @@ if [ -f requirements.txt ]; then
     _reuse=1
   fi
   if [ "$_reuse" = "1" ]; then
-    echo "startup.sh: using persistent venv $VENV (requirements unchanged)"
+    printf 'startup.sh: using persistent venv %s; requirements unchanged\n' "$VENV"
   else
-    echo "startup.sh: updating venv at $VENV (first boot or requirements changed)"
+    printf 'startup.sh: updating venv at %s; first boot or requirements changed\n' "$VENV"
     mkdir -p /home/site
     if [ ! -x "$VENV/bin/python" ]; then
       "$_PY" -m venv "$VENV" || { echo "startup.sh: FATAL could not create venv"; exit 1; }
@@ -50,7 +50,7 @@ if [ -f requirements.txt ]; then
       echo "startup.sh: warning: pip upgrade in venv failed; continuing"
     fi
     if ! "$VENV/bin/python" -m pip install --no-cache-dir -r requirements.txt; then
-      echo "startup.sh: FATAL pip install in venv failed — fix requirements or disk; delete $VENV to retry clean."
+      echo "startup.sh: FATAL pip install in venv failed - fix requirements or disk; delete $VENV to retry clean."
       exit 1
     fi
     if [ -n "$_hash" ]; then
