@@ -443,15 +443,41 @@ function UploadPage({ user }) {
       }
 
       const deadline = Date.now() + 55 * 60 * 1000;
+      /** If API never marks the job failed, stop spinning when MySQL updated_at stops moving. */
+      const STUCK_RUNNING_MS = 3 * 60 * 1000;
+      let lastUpdatedAt = null;
+      let runningQuietSince = null;
+
       while (Date.now() < deadline) {
         const st = await getRinseImportUploadBatchJob(jobId);
         const row = st.data || {};
         const status = row.status;
         const note = row.progress_note || status || "…";
+        const updatedAt = row.updated_at != null ? String(row.updated_at) : "";
         setMessage({
           type: "info",
           text: `Rinse import (${jobId.slice(0, 8)}…): ${note}`,
         });
+
+        if (status === "running") {
+          if (updatedAt !== lastUpdatedAt) {
+            lastUpdatedAt = updatedAt;
+            runningQuietSince = Date.now();
+          } else if (runningQuietSince != null && Date.now() - runningQuietSince > STUCK_RUNNING_MS) {
+            setMessage({
+              type: "error",
+              text:
+                `Rinse import (${jobId.slice(0, 8)}…) looks stuck: no job progress in the API for ${Math.round(
+                  STUCK_RUNNING_MS / 60000
+                )} minutes (updated_at unchanged). The worker may have been killed when the app restarted. ` +
+                "In MySQL, set this job to failed or wait for the API deploy that auto-fails stale jobs, then refresh and start a new import. Enable Always On on the API app.",
+            });
+            return;
+          }
+        } else {
+          lastUpdatedAt = null;
+          runningQuietSince = null;
+        }
 
         if (status === "succeeded") {
           const d = row.result || {};

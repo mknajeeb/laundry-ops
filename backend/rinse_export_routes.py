@@ -25,20 +25,37 @@ _RINSE_EXPORT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _rinse_job_created_utc(row_created: datetime | str | None):
-    """Parse job created_at from API row (iso string from fetch) or raw datetime."""
+    """Parse job created_at / updated_at from API row (iso string from fetch) or raw datetime."""
     if row_created is None:
         return None
     if isinstance(row_created, datetime):
         dt = row_created
     else:
-        t = str(row_created).strip().replace(" ", "T", 1)
+        raw = str(row_created).strip()
+        t = raw.replace(" ", "T", 1)
         if "T" in t and "+" not in t[t.find("T") :] and "Z" not in t:
             t = t + "+00:00"
         t = t.replace("Z", "+00:00")
+        dt = None
         try:
             dt = datetime.fromisoformat(t)
         except ValueError:
-            return None
+            candidates = []
+            for c in (raw, raw.replace("T", " ")):
+                c = c.strip()
+                if c and c not in candidates:
+                    candidates.append(c)
+            for c in candidates:
+                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        dt = datetime.strptime(c[:26], fmt)
+                        break
+                    except ValueError:
+                        continue
+                if dt is not None:
+                    break
+            if dt is None:
+                return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
@@ -86,12 +103,20 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
             pass
         else:
             age = (now - ref).total_seconds()
+            if age < -120:
+                stale = True
+                msg = (
+                    "Job timestamps are far ahead of server time (clock skew). "
+                    "Marking failed so the UI can recover; fix DB/app clock alignment."
+                )
+            elif age < 0:
+                age = 0.0
             hb_sec = _rinse_import_heartbeat_sec()
             scrape_t = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
             grace = int(os.getenv("RINSE_IMPORT_RUNNING_GRACE_SEC", "300"))
             abs_silence_max = int(os.getenv("RINSE_IMPORT_JOB_STALE_SEC", str(scrape_t + grace)))
             if hb_sec > 0:
-                mult = max(3, int(os.getenv("RINSE_IMPORT_HEARTBEAT_MISS_MULT", "3")))
+                mult = max(3, int(os.getenv("RINSE_IMPORT_HEARTBEAT_MISS_MULT") or "3"))
                 cap_hb = int(os.getenv("RINSE_IMPORT_NO_HEARTBEAT_STALE_SEC", str(hb_sec * mult)))
                 # Never wait longer than scrape timeout silence (older servers / HB misconfig).
                 cap = min(cap_hb, abs_silence_max)
@@ -119,6 +144,9 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
         cur = conn.cursor(dictionary=True)
         try:
             ensure_rinse_import_jobs_table(cur)
+            row_now = fetch_rinse_import_job(cur, job_id, tenant_oid)
+            if not row_now or row_now.get("status") not in ("queued", "running"):
+                return row_now or row
             update_rinse_import_job(
                 cur,
                 job_id,
