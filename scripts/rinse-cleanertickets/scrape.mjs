@@ -215,24 +215,49 @@ function rowActionTimeoutMs() {
   return Math.max(1500, Math.min(25000, Number.isFinite(n) ? n : 5000));
 }
 
+/** Row chevron vs “Show/Hide bag details” — first <a> in the cell is often bag details; clicking it never collapses the ticket. */
+async function isBagDetailsControl(loc) {
+  try {
+    const text = ((await loc.innerText().catch(() => "")) || "").trim();
+    const al = ((await loc.getAttribute("aria-label").catch(() => "")) || "").trim();
+    const title = ((await loc.getAttribute("title").catch(() => "")) || "").trim();
+    const blob = `${text} ${al} ${title}`.toLowerCase();
+    return /show\s+bag\s+details|hide\s+bag\s+details/.test(blob);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Click the ticket row expand/collapse control (first cell), skipping bag-details links.
+ */
 async function clickExpandOnRow(rowLocator) {
   const t = rowActionTimeoutMs();
   const firstCell = rowLocator.locator("td").first();
-  const candidates = [
-    firstCell.locator("button").first(),
-    firstCell.locator("a").first(),
-    firstCell.locator('[role="button"]').first(),
-    rowLocator.locator("button").first(),
-  ];
-  for (const loc of candidates) {
-    try {
-      if (await loc.isVisible().catch(() => false)) {
+  const kinds = ["button", '[role="button"]', "a"];
+  for (const kind of kinds) {
+    const n = await firstCell.locator(kind).count().catch(() => 0);
+    for (let j = 0; j < Math.min(n, 20); j++) {
+      const loc = firstCell.locator(kind).nth(j);
+      try {
+        if (!(await loc.isVisible().catch(() => false))) continue;
+        if (kind === "a" && (await isBagDetailsControl(loc))) continue;
         await loc.click({ timeout: t, noWaitAfter: true });
         return true;
+      } catch {
+        /* try next */
       }
-    } catch {
-      /* wrong control or overlay — try next candidate */
     }
+  }
+  /* Rare layouts: control not in first td */
+  const rowBtn = rowLocator.locator("> td button, > td [role='button']").first();
+  try {
+    if (await rowBtn.isVisible().catch(() => false)) {
+      await rowBtn.click({ timeout: t, noWaitAfter: true });
+      return true;
+    }
+  } catch {
+    /* ignore */
   }
   return false;
 }
@@ -284,20 +309,27 @@ async function ensureRowCollapsedAfterTicket(rowLocator, page) {
     return;
   }
   const maxMs = Math.max(
-    2000,
-    Math.min(60000, parseInt(process.env.RINSE_COLLAPSE_MAX_MS || "12000", 10) || 12000),
+    1500,
+    Math.min(45000, parseInt(process.env.RINSE_COLLAPSE_MAX_MS || "6000", 10) || 6000),
   );
   const ms = Math.max(
     200,
-    Math.min(5000, parseInt(process.env.RINSE_COLLAPSE_SETTLE_MS || "600", 10) || 600),
+    Math.min(5000, parseInt(process.env.RINSE_COLLAPSE_SETTLE_MS || "450", 10) || 450),
   );
+  const maxIters = Math.max(2, Math.min(40, parseInt(process.env.RINSE_COLLAPSE_MAX_ITERS || "12", 10) || 12));
   const deadline = Date.now() + maxMs;
 
   await hideBagDetailsIfVisible(rowLocator, page);
   await page.keyboard.press("Escape").catch(() => {});
   await page.waitForTimeout(120);
 
-  while (Date.now() < deadline && (await ticketExpansionHasBagLinks(rowLocator))) {
+  let iter = 0;
+  while (
+    iter < maxIters &&
+    Date.now() < deadline &&
+    (await ticketExpansionHasBagLinks(rowLocator))
+  ) {
+    iter += 1;
     try {
       await clickExpandOnRow(rowLocator);
     } catch (e) {
@@ -311,7 +343,7 @@ async function ensureRowCollapsedAfterTicket(rowLocator, page) {
 
   if (await ticketExpansionHasBagLinks(rowLocator)) {
     console.warn(
-      "  Ticket row still shows bag details links after collapse window — continuing (set RINSE_SKIP_ROW_COLLAPSE=1 to skip collapse).",
+      "  Ticket row still expanded after collapse — continuing. Set RINSE_SKIP_ROW_COLLAPSE=1 if the scrape stalls here.",
     );
   }
 }
@@ -693,7 +725,7 @@ async function scrapePage(page, pageLabel, layout) {
     const n = await rowsAll.count();
     if (i >= n) break;
     const row = rowsAll.nth(i);
-    await row.scrollIntoViewIfNeeded().catch(() => {});
+    await row.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
     await page.waitForTimeout(100);
     if (!(await row.isVisible().catch(() => false))) continue;
     const tdCount = await row.locator("td").count().catch(() => 0);
