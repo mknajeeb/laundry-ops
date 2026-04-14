@@ -42,10 +42,31 @@ def export_enabled() -> bool:
 
 
 def scrape_timeout_sec() -> int:
+    """Subprocess timeout for scrape.mjs (separate from any HTTP proxy limit)."""
     try:
-        return max(60, min(3600, int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))))
+        return max(60, min(7200, int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))))
     except (TypeError, ValueError):
         return 900
+
+
+def rinse_import_subprocess_extra_env() -> dict[str, str]:
+    """
+    Env merged only for POST /admin/rinse/import-upload-batch.
+
+    Draft import defaults to fewer pages + slightly shorter page settle so a typical
+    queue finishes under RINSE_SCRAPE_TIMEOUT_SEC. Full CSV export still uses RINSE_MAX_PAGES
+    (default 20) unless you set RINSE_IMPORT_MAX_PAGES higher alongside a higher timeout.
+    """
+    out: dict[str, str] = {"RINSE_CSV_LAYOUT": "portal"}
+    raw = (os.getenv("RINSE_IMPORT_MAX_PAGES") or "10").strip() or "10"
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 10
+    out["RINSE_MAX_PAGES"] = str(max(1, min(500, n)))
+    if not (os.getenv("RINSE_PAGE_SETTLE_MS") or "").strip():
+        out["RINSE_PAGE_SETTLE_MS"] = "2200"
+    return out
 
 
 def _node_executable_ok(node: str) -> bool:
@@ -339,7 +360,7 @@ def run_bag_export_csv(
         return (
             -1,
             "",
-            f"Scrape timed out after {timeout}s (increase RINSE_SCRAPE_TIMEOUT_SEC or reduce RINSE_MAX_PAGES).",
+            f"Scrape timed out after {timeout}s (raise RINSE_SCRAPE_TIMEOUT_SEC, cap pages with RINSE_MAX_PAGES or RINSE_IMPORT_MAX_PAGES, or lower RINSE_PAGE_SETTLE_MS if pages load quickly).",
         )
     except OSError as e:
         return -1, "", f"Failed to run Node scraper: {e}"

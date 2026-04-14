@@ -471,6 +471,10 @@ async function main() {
   const pageStart = Math.max(1, parseInt(process.env.RINSE_PAGE_START || "1", 10) || 1);
   // Default 20 so a missed “end of pagination” signal does not run 50 slow pages; override with RINSE_MAX_PAGES.
   const maxPages = Math.min(500, Math.max(1, parseInt(process.env.RINSE_MAX_PAGES || "20", 10) || 20));
+  const pageSettleMs = Math.max(
+    600,
+    Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "3500", 10) || 3500),
+  );
   const outCsv =
     (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) || defaultOutputPath();
   const layout = csvLayout();
@@ -511,7 +515,7 @@ async function main() {
         waitUntil: "domcontentloaded",
         timeout: Math.max(navTimeoutMs(), 90000),
       });
-      await page.waitForTimeout(3500);
+      await page.waitForTimeout(pageSettleMs);
       await page
         .waitForSelector("table tbody tr", { timeout: 20000 })
         .catch(() => {});

@@ -20,6 +20,7 @@ Edit **`.env`**:
 
 - **`RINSE_TICKETS_URL`** — same filters you use at night (status, etc.). The `page=` value is replaced automatically.
 - **`RINSE_PAGE_START`** / **`RINSE_MAX_PAGES`** — how many list pages to walk (stops early if a page has **no table rows**).
+- **`RINSE_PAGE_SETTLE_MS`** — wait after each `page.goto` before reading the table (default **3500**). Lower on a fast host if stable; import uses **2200** unless you set this globally on the API.
 - **`RINSE_NAV_TIMEOUT_MS`** — max wait per `page.goto` (default **120000**). Raise on Azure if `www.rinse.com` is slow or blocked from the datacenter; max **300000**.
 - **`OUTPUT_CSV`** — optional; default is `bag-ids-YYYY-MM-DD.csv` in this folder.
 
@@ -66,7 +67,8 @@ Admins can trigger **`POST /admin/rinse/bag-export`** from **Upload → Rinse �
 2. From this directory: **`npm install`** and **`npx playwright install chromium`** (Chromium must exist where Node runs).
 3. Create **`scripts/rinse-cleanertickets/.env`** (or export vars in the process environment) with **`RINSE_TICKETS_URL`**, pagination, and either **`RINSE_STORAGE_STATE`** (path to `rinse-auth.json` on that machine) or email/password if Rinse allows unattended login.
 4. Set **`RINSE_BAG_EXPORT_ENABLED=1`** on the API server (feature gate).
-5. Raise HTTP timeouts: the scrape can run many minutes — configure **Gunicorn/uwsgi** and your **reverse proxy** (`proxy_read_timeout`, etc.) for long requests, or the connection will drop before the CSV returns. Scheduling later can move this off the request thread.
+5. **Draft “Import from Rinse”** uses **`RINSE_IMPORT_MAX_PAGES`** (default **10**) and a shorter page settle unless you override **`RINSE_PAGE_SETTLE_MS`**. Set **`RINSE_SCRAPE_TIMEOUT_SEC`** (up to **7200**) if you raise pages or the queue is large.
+6. Raise HTTP timeouts: the scrape can run many minutes — configure **Gunicorn/uwsgi** and your **reverse proxy** (`proxy_read_timeout`, etc.) for long requests, or the connection will drop before the CSV returns. Scheduling later can move this off the request thread.
 
 If any step is missing, **`GET /admin/rinse/bag-export/config`** returns hints the UI shows on the Upload page.
 

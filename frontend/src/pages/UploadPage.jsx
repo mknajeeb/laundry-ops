@@ -32,9 +32,10 @@ import {
   getUploadBatches,
   getCurrentUploadBatch,
   getUploadBatchRows,
+  getRinseImportUploadBatchJob,
   overrideUploadBatchRow,
   postRinseBagExport,
-  postRinseImportToUploadBatch,
+  startRinseImportUploadBatchJob,
   uploadOrders,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
@@ -425,30 +426,81 @@ function UploadPage({ user }) {
 
   const runRinseImportToBatch = async () => {
     const ok = window.confirm(
-      "Import Rinse cleaner-tickets into a new draft batch on the server? Uses the same rules as Excel upload — no CSV download. This can take several minutes."
+      "Import Rinse cleaner-tickets into a new draft batch on the server? Uses the same rules as Excel upload — no CSV download. The server runs Playwright in the background while this page polls for status (several minutes is normal)."
     );
     if (!ok) return;
 
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
     try {
       setRinseExportLoading(true);
-      setMessage({ type: "info", text: "Importing from Rinse into draft batch…" });
-      const res = await postRinseImportToUploadBatch({ batch_date: batchDate });
-      const d = res.data || {};
+      setMessage({ type: "info", text: "Starting Rinse import job on the server…" });
+      const startRes = await startRinseImportUploadBatchJob({ batch_date: batchDate });
+      const jobId = startRes.data?.job_id;
+      if (!jobId) {
+        setMessage({ type: "error", text: "Server did not return a job id for Rinse import." });
+        return;
+      }
+
+      const deadline = Date.now() + 55 * 60 * 1000;
+      while (Date.now() < deadline) {
+        const st = await getRinseImportUploadBatchJob(jobId);
+        const row = st.data || {};
+        const status = row.status;
+        const note = row.progress_note || status || "…";
+        setMessage({
+          type: "info",
+          text: `Rinse import (${jobId.slice(0, 8)}…): ${note}`,
+        });
+
+        if (status === "succeeded") {
+          const d = row.result || {};
+          setMessage({
+            type: "success",
+            text: `Rinse import complete. Accepted: ${d.rows_inserted ?? 0}, Rejected: ${d.rejected_rows ?? 0}, Needs attention: ${d.needs_attention_rows ?? 0}.`,
+          });
+          await loadCurrentBatch("ALL");
+          await loadBatchHistory();
+          const cfg = await getRinseBagExportConfig();
+          setRinseExportHint(cfg.data?.hint || "");
+          return;
+        }
+
+        if (status === "failed") {
+          let text =
+            row.error ||
+            row.stderr_tail ||
+            row.stdout_tail ||
+            "Rinse import failed (see Azure Log stream for details).";
+          if (typeof text === "string" && text.length > 1200) {
+            text = `${text.slice(0, 1200)}…`;
+          }
+          setMessage({ type: "error", text });
+          return;
+        }
+
+        await sleep(2000);
+      }
+
       setMessage({
-        type: "success",
-        text: `Rinse import complete. Accepted: ${d.rows_inserted ?? 0}, Rejected: ${d.rejected_rows ?? 0}, Needs attention: ${d.needs_attention_rows ?? 0}.`,
+        type: "error",
+        text:
+          "Stopped waiting for Rinse import after 55 minutes. The job may still be running — check Azure Log stream and the upload batch list.",
       });
-      await loadCurrentBatch("ALL");
-      await loadBatchHistory();
-      const cfg = await getRinseBagExportConfig();
-      setRinseExportHint(cfg.data?.hint || "");
     } catch (error) {
       console.error(error);
-      const text =
+      let text =
         error?.response?.data?.error ||
         error?.response?.data?.message ||
         error?.message ||
         "Rinse import failed.";
+      const msg = String(error?.message || "");
+      const code = error?.code;
+      if (!error?.response && (code === "ECONNABORTED" || /network error/i.test(msg))) {
+        text =
+          "Lost connection while talking to the API (often a proxy timeout on the start request, or the API was restarting). " +
+          "Retry after confirming laundryops-api is healthy; scrape itself now runs in the background once the job starts.";
+      }
       setMessage({ type: "error", text });
     } finally {
       setRinseExportLoading(false);

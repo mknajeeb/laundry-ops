@@ -320,9 +320,20 @@ export const postRinseBagExport = () =>
 /**
  * Admin: run Rinse portal scrape on the API and insert a draft upload batch (same pipeline as file upload).
  * Optional body: { batch_date: "YYYY-MM-DD" } (defaults to today on the server).
+ * Prefer startRinseImportUploadBatchJob + polling — this call holds one HTTP request for the entire scrape.
  */
 export const postRinseImportToUploadBatch = (body = {}) =>
   axios.post(`${API_BASE}/admin/rinse/import-upload-batch`, body, { timeout: 900000 });
+
+/** Admin: enqueue async Rinse → draft batch import (returns job_id, HTTP 202). */
+export const startRinseImportUploadBatchJob = (body = {}) =>
+  axios.post(`${API_BASE}/admin/rinse/import-upload-batch/jobs`, body, { timeout: 120000 });
+
+/** Admin: poll async Rinse import job until succeeded or failed. */
+export const getRinseImportUploadBatchJob = (jobId) =>
+  axios.get(`${API_BASE}/admin/rinse/import-upload-batch/jobs/${encodeURIComponent(jobId)}`, {
+    timeout: 60000,
+  });
 
 export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
   axios.get(`${API_BASE}/upload_conflicts`, {

@@ -124,5 +124,5 @@ else
 fi
 
 echo "startup.sh: starting gunicorn on 0.0.0.0:${PORT:-8000} workers=${WORKERS:-2} timeout=${GUNICORN_TIMEOUT:-1200}"
-# Rinse export can run Playwright for up to RINSE_SCRAPE_TIMEOUT_SEC (default 900s); worker must outlive that.
+# Rinse export can run Playwright for up to RINSE_SCRAPE_TIMEOUT_SEC (default 900s, max 7200s); worker must outlive that.
 exec gunicorn --bind="0.0.0.0:${PORT:-8000}" --workers="${WORKERS:-2}" --timeout="${GUNICORN_TIMEOUT:-1200}" backend.app:app
