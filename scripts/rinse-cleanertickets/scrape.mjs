@@ -426,7 +426,7 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const pollMs = Math.max(40, Math.min(500, parseInt(process.env.RINSE_BAG_DETAILS_POLL_MS || "75", 10) || 75));
   const deadline =
     Date.now() +
-    Math.max(2000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "4000", 10) || 4000);
+    Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "3200", 10) || 3200);
   const clickT = rowActionTimeoutMs();
 
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
@@ -569,16 +569,18 @@ function cleanPortalCustomerName(name) {
   return s.slice(0, 200);
 }
 
-/** Lines in one <td>-per-line snapshot that follow the row’s date line (customer is usually the next “name” line). */
-function linesAfterPortalDate(collapsedRowText, expandedFullText) {
-  for (const block of [collapsedRowText, expandedFullText]) {
-    const lines = String(block || "")
-      .split(/\r?\n/)
-      .map((l) => l.trim().replace(/\t+/g, " "))
-      .filter((l) => l.length > 0);
-    const idx = lines.findIndex((l) => PORTAL_TICKET_DATE_LINE_RE.test(l));
-    if (idx >= 0) return lines.slice(idx + 1);
-  }
+/**
+ * Lines after the date **only from the list-row snapshot** (pre-expand).
+ * Never walk expanded/vendor HTML — it contains labels like “Service Type”, “Description”, … that
+ * look like names and break customer + fingerprints.
+ */
+function linesAfterPortalDateInListRow(collapsedRowText) {
+  const lines = String(collapsedRowText || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim().replace(/\t+/g, " "))
+    .filter((l) => l.length > 0);
+  const idx = lines.findIndex((l) => PORTAL_TICKET_DATE_LINE_RE.test(l));
+  if (idx >= 0) return lines.slice(idx + 1);
   return [];
 }
 
@@ -602,6 +604,14 @@ function pickCustomerFromPortalLines(lines) {
     if (/assembled|bagged|sent\s+to\s+vendor|processed\s+by|received\s+from|show\s+|hide\s+bag/i.test(L)) {
       continue;
     }
+    if (
+      /^(service\s*type|description|type|special\s*instructions|vendor\s*notes|vendor\s*price|vendor\b|add\s+new|save\b|processed\b)/i.test(
+        L,
+      )
+    ) {
+      continue;
+    }
+    if (/\bservice\s+type\b.*\bdescription\b/i.test(L)) continue;
     if (!/[a-zA-Z]{2,}/.test(L)) continue;
     const digits = (L.match(/\d/g) || []).length;
     if (digits / Math.max(L.length, 1) > 0.35) continue;
@@ -635,9 +645,9 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   const combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
   const primary =
     buildPortalRowSummary(collapsedRowText, "") ||
-    buildPortalRowSummary("", expandedFullText) ||
     pickPortalListLine(collapsedRowText, expandedFullText);
-  const dateLineOnly = pickPortalListLine(collapsedRowText, expandedFullText);
+  const dateLineOnly =
+    pickPortalListLine(collapsedRowText, "") || pickPortalListLine("", expandedFullText);
 
   const dateRe =
     /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i;
@@ -671,9 +681,7 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     if (wm) weight = wm[0].replace(/\s+/g, " ").toUpperCase();
   }
 
-  let customer =
-    pickCustomerFromPortalLines(linesAfterPortalDate(collapsedRowText, "")) ||
-    pickCustomerFromPortalLines(linesAfterPortalDate("", expandedFullText));
+  let customer = pickCustomerFromPortalLines(linesAfterPortalDateInListRow(collapsedRowText));
   const dmSingle = dateLineOnly.match(dateRe);
   if (!customer && dmSingle) {
     let rest = dateLineOnly.slice(dmSingle.index + dmSingle[0].length).trim();
@@ -685,14 +693,15 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     customer = rest.replace(/\s+/g, " ").slice(0, 200);
   }
   if (!customer) {
-    customer = String(collapsedRowText || combined)
-      .replace(/\t/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 200);
+    customer = pickCustomerFromPortalLines(
+      String(collapsedRowText || "")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean),
+    );
   }
   if ((!customer || customer.length < 2) && dateDisplay) {
-    const parts = combined.split(
+    const parts = String(collapsedRowText || "").split(
       new RegExp(dateDisplay.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
     );
     const tail = parts.length > 1 ? parts[1] : "";
@@ -836,6 +845,8 @@ function portalDataRow(portal, bagDisplay) {
 }
 
 async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
+  await rowLocator.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
+  await page.waitForTimeout(120);
   await ensureRowExpandedForTicket(rowLocator, page);
   const inlineSettle = Math.max(
     0,
@@ -880,7 +891,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
           !/^scans$/i.test(l),
       ) || "";
     const custStructured = pickCustomerFromPortalLines(
-      linesAfterPortalDate(collapsedRowText, ""),
+      linesAfterPortalDateInListRow(collapsedRowText),
     );
     r = {
       bagId: bagMatch.bagId || r2.bagId || r.bagId,
@@ -986,7 +997,14 @@ async function scrapePage(page, pageLabel, layout) {
       break;
     }
 
-    if (!row || chosenFp == null) break;
+    if (!row || chosenFp == null) {
+      if (pass === 1 && out.length === 1) {
+        console.warn(
+          "  Only one ticket was scraped: the next list rows were all skipped (filters/visibility) or treated as already processed. Try HEADED=1 or widen RINSE_EXTRA_ROW_SELECTORS.",
+        );
+      }
+      break;
+    }
 
     recordIndex += 1;
     const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
