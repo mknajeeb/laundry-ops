@@ -1,6 +1,6 @@
 # Rinse cleaner tickets — nightly Bag ID export
 
-Expands rows on the Rinse **Cleaner tickets** list and reads **`Bag: XXXXX (Wash & Fold)`** so you get the same **bag / QR source** your team copies by hand. The script walks **multiple `page=` URLs** and writes **one CSV** per run.
+For **each** ticket row, the script expands the row, clicks **Show bag details** (or accepts **Hide bag details** if already open), reads **`Bag: XXXXX (Wash & Fold)`**, then collapses before moving on — same steps as in the portal. It walks **multiple `page=` URLs** and writes **one CSV** per run.
 
 ## Rules
 
@@ -21,7 +21,15 @@ Edit **`.env`**:
 - **`RINSE_TICKETS_URL`** — same filters you use at night (status, etc.). The `page=` value is replaced automatically.
 - **`RINSE_PAGE_START`** / **`RINSE_MAX_PAGES`** — how many list pages to walk (stops early if a page has **no table rows**).
 - **`RINSE_PAGE_SETTLE_MS`** — wait after each `page.goto` before reading the table (default **3500**). Lower on a fast host if stable; import uses **2200** unless you set this globally on the API.
+- **`RINSE_EXPAND_SETTLE_MS`** — after clicking the row chevron, wait before looking for **Show bag details** (default **1200**). The portal loads expanded row UI in a sibling `<tr>`, not always inside the main row.
+- **`RINSE_SHOW_BAG_WAIT_MS`** — max time to poll for the **Show bag details** link after expand (default **14000**).
+- **`RINSE_BAG_DETAILS_SETTLE_MS`** — after clicking **Show bag details**, wait for the bag sub-table before scraping text (default **1200**).
+- **`RINSE_COLLAPSE_SETTLE_MS`** — after each ticket, the scraper collapses the row again so the next ticket is the next list row; wait after toggle (default **600**).
+- **`RINSE_VENDORINLINE_SETTLE_MS`** — short wait after row expand so the detail fragment (e.g. `vendorinline` HTML with `.bag-details`) can land in the DOM before reading (default **800**; set **0** to disable).
+- **`RINSE_SKIP_SHOW_BAG_DETAILS=1`** — do not click **Show bag details**; only use expand + DOM read (including `.bag-details` `textContent`). Use only if you confirm the bag id is present without the click.
 - **`RINSE_NAV_TIMEOUT_MS`** — max wait per `page.goto` (default **120000**). Raise on Azure if `www.rinse.com` is slow or blocked from the datacenter; max **300000**.
+
+**Note:** Rinse loads expanded ticket HTML client-side (often a `vendorinline` request). The scraper reads `.bag-details` with `textContent` so hidden-but-present markup still yields **Bag:** / weight when possible. **Show bag details** is only clicked if no bag id was found after that read. A faster future approach is to call the same `vendorinline` URL with Playwright’s session cookies (no row clicks); that needs the exact URL shape and CSRF from DevTools.
 - **`OUTPUT_CSV`** — optional; default is `bag-ids-YYYY-MM-DD.csv` in this folder.
 
 ## Save login once (recommended for every night)

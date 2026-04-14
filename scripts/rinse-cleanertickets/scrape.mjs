@@ -209,28 +209,145 @@ async function clickExpandOnRow(rowLocator) {
   return false;
 }
 
-/** Bag line is hidden until this link is clicked (Rinse cleaner tickets expanded row). */
-async function clickShowBagDetailsInRow(rowLocator) {
+/** True if this ticket row already has an expansion row with bag UI (Show or Hide bag details). */
+async function ticketExpansionHasBagLinks(rowLocator) {
+  const tr1 = rowLocator.locator("xpath=./following-sibling::tr[1]");
+  const show1 = tr1.getByRole("link", { name: /show\s+bag\s+details/i });
+  const hide1 = tr1.getByRole("link", { name: /hide\s+bag\s+details/i });
+  if (await show1.first().isVisible().catch(() => false)) return true;
+  if (await hide1.first().isVisible().catch(() => false)) return true;
+  const show0 = rowLocator.getByRole("link", { name: /show\s+bag\s+details/i });
+  const hide0 = rowLocator.getByRole("link", { name: /hide\s+bag\s+details/i });
+  if (await show0.first().isVisible().catch(() => false)) return true;
+  if (await hide0.first().isVisible().catch(() => false)) return true;
+  return false;
+}
+
+async function ensureRowExpandedForTicket(rowLocator, page) {
+  if (await ticketExpansionHasBagLinks(rowLocator)) return true;
+  const clicked = await clickExpandOnRow(rowLocator);
+  const expandSettle = Math.max(
+    400,
+    Math.min(12000, parseInt(process.env.RINSE_EXPAND_SETTLE_MS || "1200", 10) || 1200),
+  );
+  if (clicked) await page.waitForTimeout(expandSettle);
+  return clicked || (await ticketExpansionHasBagLinks(rowLocator));
+}
+
+async function ensureRowCollapsedAfterTicket(rowLocator, page) {
+  if (!(await ticketExpansionHasBagLinks(rowLocator))) return;
+  const ms = Math.max(
+    200,
+    Math.min(5000, parseInt(process.env.RINSE_COLLAPSE_SETTLE_MS || "600", 10) || 600),
+  );
+  await clickExpandOnRow(rowLocator);
+  await page.waitForTimeout(ms);
+  if (await ticketExpansionHasBagLinks(rowLocator)) {
+    await page.waitForTimeout(350);
+    await clickExpandOnRow(rowLocator);
+    await page.waitForTimeout(ms);
+  }
+}
+
+/**
+ * Skip tbody <tr> that are the *expanded detail* row for a ticket (not a new ticket).
+ * Those rows show portal links (Show bag details) but not the list “Estd. delivery + date” pattern.
+ */
+function isLikelyExpandedDetailSubRow(trimmed) {
+  const head = trimmed.slice(0, 420);
+  const hasPortalDetailLinks =
+    /show\s+bag\s+details|hide\s+bag\s+details|show\s+issue\s+details|show\s+qc\s+details/i.test(
+      head,
+    );
+  const hasListRowDateLine = /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b.+\d{1,2}\/\d{1,2}/i.test(
+    trimmed.slice(0, 200),
+  );
+  return hasPortalDetailLinks && !hasListRowDateLine;
+}
+
+async function isProbablySingleCellDetailRow(rowLocator) {
+  const tdCount = await rowLocator.locator("td").count().catch(() => 0);
+  if (tdCount !== 1) return false;
+  const colspan = await rowLocator.locator("td").first().getAttribute("colspan").catch(() => null);
+  const n = colspan ? parseInt(colspan, 10) : 0;
+  return Number.isFinite(n) && n >= 3;
+}
+
+/**
+ * Bag line is hidden until this link is clicked (per ticket). Rinse puts the link in the main <tr>
+ * or in the *next* sibling <tr>.
+ * If the section is already open, Rinse shows “Hide bag details” instead — treat as OK.
+ */
+function bagDetailsToggleLocators(rowLocator, mode) {
+  const nameRe =
+    mode === "hide" ? /hide\s+bag\s+details/i : /show\s+bag\s+details/i;
+  const out = [];
+  out.push(rowLocator.getByRole("link", { name: nameRe }));
+  for (let k = 1; k <= 6; k++) {
+    out.push(
+      rowLocator
+        .locator(`xpath=./following-sibling::tr[${k}]`)
+        .getByRole("link", { name: nameRe }),
+    );
+  }
+  return out;
+}
+
+async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const page = rowLocator.page();
-  const link = rowLocator.getByRole("link", { name: /show\s+bag\s+details/i }).first();
-  if (await link.isVisible().catch(() => false)) {
-    await link.click({ timeout: 8000 });
-    await page.waitForTimeout(700);
-    return true;
+  const settleMs = Math.max(
+    400,
+    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "1200", 10) || 1200),
+  );
+  const pollMs = 200;
+  const deadline = Date.now() + Math.max(8000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "14000", 10) || 14000);
+
+  for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
+    const first = loc.first();
+    if (await first.isVisible().catch(() => false)) {
+      await page.waitForTimeout(settleMs);
+      return true;
+    }
+  }
+
+  while (Date.now() < deadline) {
+    for (const loc of bagDetailsToggleLocators(rowLocator, "show")) {
+      const first = loc.first();
+      if (await first.isVisible().catch(() => false)) {
+        await first.click({ timeout: 8000 });
+        await page.waitForTimeout(settleMs);
+        return true;
+      }
+    }
+    await page.waitForTimeout(pollMs);
   }
   return false;
 }
 
+/**
+ * After row expand, Rinse injects detail HTML (often after vendorinline). `.bag-details` may exist
+ * but stay hidden until “Show bag details”; `textContent` still includes that subtree for Bag:/weight.
+ */
 async function readBagFromRowBlock(rowLocator) {
   const text = await rowLocator
     .evaluate((el) => {
-      const parts = [el.innerText || ""];
+      const chunks = [];
+      const appendNode = (node) => {
+        if (!node) return;
+        chunks.push(node.innerText || "");
+        const bd = node.querySelector && node.querySelector(".bag-details");
+        if (bd) {
+          const tc = bd.textContent || "";
+          if (tc.trim()) chunks.push(tc);
+        }
+      };
+      appendNode(el);
       let n = el.nextElementSibling;
       for (let i = 0; i < 8 && n; i++) {
-        parts.push(n.innerText || "");
+        appendNode(n);
         n = n.nextElementSibling;
       }
-      return parts.join("\n");
+      return chunks.join("\n");
     })
     .catch(() => "");
 
@@ -362,12 +479,51 @@ function portalDataRow(portal, bagId) {
 }
 
 async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
-  const clicked = await clickExpandOnRow(rowLocator);
-  if (clicked) {
-    await page.waitForTimeout(500);
-    await clickShowBagDetailsInRow(rowLocator);
+  await ensureRowExpandedForTicket(rowLocator, page);
+  const inlineSettle = Math.max(
+    0,
+    Math.min(5000, parseInt(process.env.RINSE_VENDORINLINE_SETTLE_MS || "800", 10) || 800),
+  );
+  if (inlineSettle > 0) await page.waitForTimeout(inlineSettle);
+
+  let r = await readBagFromRowBlock(rowLocator);
+  const skipShow =
+    (process.env.RINSE_SKIP_SHOW_BAG_DETAILS || "").trim() === "1";
+
+  if (!r.bagId && !skipShow) {
+    const bagOk = await ensureShowBagDetailsForTicketRow(rowLocator);
+    if (!bagOk) {
+      const hint = (collapsedRowText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+      console.warn(
+        `  Show bag details not found or not clickable for a ticket row${hint ? ` (${hint})` : ""} — bag/weight may be wrong.`,
+      );
+    }
+    const r2 = await readBagFromRowBlock(rowLocator);
+    const merged = `${r.fullText}\n${r2.fullText}`.trim();
+    const bagMatch = matchBagInText(merged);
+    const lines = merged.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const custLine =
+      lines.find(
+        (l) =>
+          l.length > 2 &&
+          !/^bag:/i.test(l) &&
+          !/hide\s+bag/i.test(l) &&
+          !/estd\.?/i.test(l) &&
+          !/lbs/i.test(l) &&
+          !/^scans$/i.test(l),
+      ) || "";
+    r = {
+      bagId: bagMatch.bagId || r2.bagId || r.bagId,
+      raw: bagMatch.raw || r2.raw || r.raw,
+      customer: (custLine || r2.customer || r.customer || "").slice(0, 80),
+      fullText: merged,
+    };
+  } else if (!r.bagId && skipShow) {
+    const hint = (collapsedRowText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+    console.warn(
+      `  No bag id after expand (RINSE_SKIP_SHOW_BAG_DETAILS=1)${hint ? ` (${hint})` : ""}.`,
+    );
   }
-  const r = await readBagFromRowBlock(rowLocator);
   if (!r.bagId && collapsedRowText) {
     const fromCollapsed = matchBagInText(collapsedRowText);
     if (fromCollapsed.bagId) {
@@ -396,65 +552,91 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
 
 async function scrapePage(page, pageLabel, layout) {
   const sel = bodyRowsSelector();
-  const rows = page.locator(sel);
   await page.waitForTimeout(2000);
   await page.locator(sel).first().waitFor({ state: "visible", timeout: 25000 }).catch(() => {});
   await page.waitForTimeout(800);
-  let n = await rows.count();
-  if (n === 0) {
+  const initialRowCount = await page.locator(sel).count();
+  if (initialRowCount === 0) {
     console.warn("No rows matched row selectors — set RINSE_EXTRA_ROW_SELECTORS from DevTools or inspect page HTML.");
   }
 
   const out = [];
+  let recordIndex = 0;
+  const maxPasses = Math.min(
+    600,
+    Math.max(initialRowCount * 4, initialRowCount + 8, 24),
+  );
+  let passes = 0;
 
-  for (let i = 0; i < n; i++) {
-    const row = rows.nth(i);
-    await row.scrollIntoViewIfNeeded().catch(() => {});
-    await page.waitForTimeout(120);
-    if (!(await row.isVisible().catch(() => false))) continue;
-    const tdCount = await row.locator("td").count().catch(() => 0);
-    const thOnly =
-      (await row.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
-    if (thOnly) continue;
+  while (passes++ < maxPasses) {
+    const freshRows = page.locator(sel);
+    const n = await freshRows.count();
+    if (n === 0) break;
 
-    const rowText = (await row.innerText().catch(() => "")) || "";
-    const trimmed = rowText.trim();
-    if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
-      continue;
+    let processedOne = false;
+    for (let i = 0; i < n; i++) {
+      const row = freshRows.nth(i);
+      await row.scrollIntoViewIfNeeded().catch(() => {});
+      await page.waitForTimeout(100);
+      if (!(await row.isVisible().catch(() => false))) continue;
+      const tdCount = await row.locator("td").count().catch(() => 0);
+      const thOnly =
+        (await row.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
+      if (thOnly) continue;
+
+      const rowText = (await row.innerText().catch(() => "")) || "";
+      const trimmed = rowText.trim();
+      if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
+        continue;
+      }
+      if (await isProbablySingleCellDetailRow(row)) continue;
+      if (isLikelyExpandedDetailSubRow(trimmed)) continue;
+
+      recordIndex += 1;
+      const { bagId, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
+        page,
+        row,
+        rowText,
+      );
+      const base = {
+        page: pageLabel,
+        row_index: recordIndex,
+        customer_snippet: customer,
+        bag_id: bagId,
+        raw_line: raw,
+      };
+      if (layout === "portal") {
+        const portal = parsePortalFields(collapsed || rowText, fullText);
+        out.push({ ...base, portal });
+      } else {
+        out.push(base);
+      }
+
+      if (bagId) {
+        console.log(`  ticket ${recordIndex}: ${bagId}`);
+      }
+
+      await ensureRowCollapsedAfterTicket(row, page);
+      processedOne = true;
+      break;
     }
 
-    const { bagId, raw, customer, fullText, collapsed } = await expandRowAndReadBag(page, row, rowText);
-    const base = {
-      page: pageLabel,
-      row_index: i + 1,
-      customer_snippet: customer,
-      bag_id: bagId,
-      raw_line: raw,
-    };
-    if (layout === "portal") {
-      const portal = parsePortalFields(collapsed || rowText, fullText);
-      out.push({ ...base, portal });
-    } else {
-      out.push(base);
-    }
-
-    if (bagId) {
-      console.log(`  row ${i + 1}: ${bagId}`);
-    }
+    if (!processedOne) break;
   }
 
-  if (n > 0 && out.length === 0) {
+  if (initialRowCount > 0 && out.length === 0) {
+    const rows = page.locator(sel);
     const previews = [];
-    for (let j = 0; j < Math.min(3, n); j++) {
+    for (let j = 0; j < Math.min(3, initialRowCount); j++) {
       const t = (await rows.nth(j).innerText().catch(() => "")) || "";
       previews.push(t.trim().replace(/\s+/g, " ").slice(0, 300));
     }
     console.warn(
-      `Table matched ${n} row(s) but 0 became export rows (visibility, <th>-only header rows, short text filter, or expand failed). First rows (truncated):\n---\n${previews.join("\n---\n")}\n---\nTry HEADED=1 to watch the browser, refresh rinse-auth.json, or set RINSE_EXTRA_ROW_SELECTORS to the ticket <tr> from DevTools.`,
+      `Table matched ${initialRowCount} row(s) but 0 became export rows (visibility, <th>-only header rows, short text filter, or expand failed). First rows (truncated):\n---\n${previews.join("\n---\n")}\n---\nTry HEADED=1 to watch the browser, refresh rinse-auth.json, or set RINSE_EXTRA_ROW_SELECTORS to the ticket <tr> from DevTools.`,
     );
   }
 
-  return { rows: out, tableRowCount: n };
+  return { rows: out, tableRowCount: initialRowCount };
 }
 
 async function main() {
