@@ -10,7 +10,7 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from flask import jsonify, request, send_file
+from flask import current_app, jsonify, request, send_file
 
 from backend.rinse_bag_export_runner import (
     diagnose,
@@ -22,6 +22,97 @@ from backend.rinse_bag_export_runner import (
 
 # uploads/ lives next to backend/ at deploy root (wwwroot), not under backend/ — avoid cwd-relative paths.
 _RINSE_EXPORT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _rinse_job_created_utc(row_created: datetime | str | None):
+    """Parse job created_at from API row (iso string from fetch) or raw datetime."""
+    if row_created is None:
+        return None
+    if isinstance(row_created, datetime):
+        dt = row_created
+    else:
+        t = str(row_created).strip().replace(" ", "T", 1)
+        if "T" in t and "+" not in t[t.find("T") :] and "Z" not in t:
+            t = t + "+00:00"
+        t = t.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(t)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> dict:
+    """
+    Mark dead jobs failed so the UI stops polling forever.
+
+    - queued: worker should start within ~minutes; if not, treat as lost.
+    - running: row is only updated again when the scrape finishes; if the API restarts, the thread
+      dies and status stays 'running'. Use updated_at + scrape timeout + grace as a ceiling.
+    """
+    status = row.get("status")
+    if status not in ("queued", "running"):
+        return row
+    now = datetime.now(timezone.utc)
+    from backend.db import get_db as db_conn
+    from backend.rinse_import_jobs import ensure_rinse_import_jobs_table, fetch_rinse_import_job, update_rinse_import_job
+
+    stale = False
+    msg = ""
+    if status == "queued":
+        created_utc = _rinse_job_created_utc(row.get("created_at"))
+        if created_utc is not None:
+            qmax = int(os.getenv("RINSE_IMPORT_QUEUED_STALE_SEC", "600"))
+            if (now - created_utc).total_seconds() > qmax:
+                stale = True
+                msg = (
+                    f"Job stayed queued longer than {qmax}s (worker never updated it). "
+                    "The API may have restarted or the job thread did not start. Start a new import."
+                )
+    else:
+        scrape_t = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
+        grace = int(os.getenv("RINSE_IMPORT_RUNNING_GRACE_SEC", "300"))
+        cap = int(os.getenv("RINSE_IMPORT_JOB_STALE_SEC", str(scrape_t + grace)))
+        ref = _rinse_job_created_utc(row.get("updated_at")) or _rinse_job_created_utc(row.get("created_at"))
+        if ref is not None and (now - ref).total_seconds() > cap:
+            stale = True
+            msg = (
+                f"No completion within {cap}s after this job started running (matches scrape timeout + grace). "
+                "Common cause: Azure restarted the API while Playwright was running—the background thread is "
+                "killed but MySQL still shows running. Enable Always On, avoid deploying during import, and "
+                "use a persistent venv so cold starts are shorter. Start a new import when the app is stable."
+            )
+    if not stale:
+        return row
+    row2 = None
+    conn = db_conn()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            ensure_rinse_import_jobs_table(cur)
+            update_rinse_import_job(
+                cur,
+                job_id,
+                tenant_oid,
+                status="failed",
+                progress_note="Stale job (server restarted or hung)",
+                error_summary=msg[:4000],
+                http_status=500,
+            )
+            conn.commit()
+            row2 = fetch_rinse_import_job(cur, job_id, tenant_oid)
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+    ref_log = _rinse_job_created_utc(row.get("updated_at" if status == "running" else "created_at"))
+    age_s = (now - ref_log).total_seconds() if ref_log else -1
+    current_app.logger.warning(
+        "rinse import job %s marked stale (status=%s, ~%.0fs since ref)", job_id[:8], status, age_s
+    )
+    return row2 or row
 
 
 def _rinse_import_after_auth(
@@ -505,6 +596,8 @@ def register_rinse_export_routes(app):
 
         if not row:
             return jsonify({"error": "Job not found."}), 404
+
+        row = _fail_stale_rinse_job_if_needed(job_id, tenant_oid, row)
 
         out = {
             "job_id": row["id"],
