@@ -53,12 +53,15 @@ def rinse_import_subprocess_extra_env() -> dict[str, str]:
     """
     Env merged only for POST /admin/rinse/import-upload-batch.
 
-    Draft import defaults to fewer pages + slightly shorter page settle so a typical
-    queue finishes under RINSE_SCRAPE_TIMEOUT_SEC. Full CSV export still uses RINSE_MAX_PAGES
-    (default 20) unless you set RINSE_IMPORT_MAX_PAGES higher alongside a higher timeout.
+    Draft import: page cap is RINSE_IMPORT_MAX_PAGES if set, else RINSE_MAX_PAGES, else 10.
+    Slightly shorter page settle when RINSE_PAGE_SETTLE_MS is unset (see rinse_export_routes).
     """
     out: dict[str, str] = {"RINSE_CSV_LAYOUT": "portal"}
-    raw = (os.getenv("RINSE_IMPORT_MAX_PAGES") or "10").strip() or "10"
+    imp = (os.getenv("RINSE_IMPORT_MAX_PAGES") or "").strip()
+    if imp:
+        raw = imp
+    else:
+        raw = (os.getenv("RINSE_MAX_PAGES") or "10").strip() or "10"
     try:
         n = int(raw)
     except ValueError:

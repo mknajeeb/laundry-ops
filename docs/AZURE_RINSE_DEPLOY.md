@@ -38,8 +38,8 @@ Set these under **Configuration → Application settings** (add if missing). Val
 | Name | Value | Notes |
 |------|--------|--------|
 | `RINSE_SCRAPE_TIMEOUT_SEC` | `1800` | Subprocess cap for `scrape.mjs` (60–7200). Raise if you increase pages and the queue is large. |
-| `RINSE_IMPORT_MAX_PAGES` | `10` | **Draft import only** (default in code if unset). Lower (e.g. `6`) for faster smoke tests. |
-| `RINSE_MAX_PAGES` | `20` | Used by **bag CSV export** CLI/route when you do not override. |
+| `RINSE_IMPORT_MAX_PAGES` | *(omit or e.g. `25`)* | If set, **draft import** uses this page cap. If omitted, import uses **`RINSE_MAX_PAGES`** (below), then default `10`. |
+| `RINSE_MAX_PAGES` | `20` | **Bag CSV export** and **draft import** (when `RINSE_IMPORT_MAX_PAGES` is not set). Your screenshot value `25` applies to import after this behavior. |
 | `RINSE_PAGE_SETTLE_MS` | *(omit)* | Import sets `2200` internally unless you set this globally (then it wins). |
 | `GUNICORN_TIMEOUT` | `1200` | In **startup** / App settings; worker must stay alive for long requests (bag export is still synchronous). |
 | `WORKERS` | `2` | Default in `startup.sh`. Async import runs in a **thread**; DB holds job state so polling works across workers. |
@@ -60,7 +60,7 @@ Set these under **Configuration → Application settings** (add if missing). Val
 
 | Name | Value | Notes |
 |------|--------|--------|
-| `VITE_API_BASE` | `https://your-api.azurewebsites.net` | Must be the **API** URL the browser calls (no trailing slash). |
+| `VITE_API_BASE` | `https://your-api.azurewebsites.net` | **Build-time** for the React app. Set this in **GitHub Actions** (secret/env for the SWA build) or your Static Web App pipeline — **not** on the API Web App unless you also inject it into the frontend build. Putting it only under `laundryops-api` does nothing for the deployed SPA. |
 
 ---
 
