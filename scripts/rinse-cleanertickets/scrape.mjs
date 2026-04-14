@@ -81,6 +81,10 @@ function matchBagInText(text) {
   return { bagId: "", raw: "" };
 }
 
+/** “Tue 4/14” or “Monday 04/14/2026” style list marker on cleaner-ticket rows. */
+const PORTAL_TICKET_DATE_LINE_RE =
+  /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/i;
+
 /** Bag line for CSV: `CODE (Service) (Sub…)` after `Bag:`; `bagId` is the code only. */
 function matchBagDisplayInText(text) {
   const t = String(text || "");
@@ -305,7 +309,9 @@ async function hideBagDetailsIfVisible(rowLocator, page) {
 }
 
 async function ensureRowCollapsedAfterTicket(rowLocator, page) {
-  if ((process.env.RINSE_SKIP_ROW_COLLAPSE || "").trim() === "1") {
+  /* Default OFF: collapsing between tickets often stalls (wrong control / DOM). Set RINSE_SKIP_ROW_COLLAPSE=0 to try. */
+  const v = (process.env.RINSE_SKIP_ROW_COLLAPSE ?? "1").trim().toLowerCase();
+  if (v !== "0" && v !== "false" && v !== "off") {
     return;
   }
   const maxMs = Math.max(
@@ -358,16 +364,13 @@ function isLikelyExpandedDetailSubRow(trimmed) {
     /show\s+bag\s+details|hide\s+bag\s+details|show\s+issue\s+details|show\s+qc\s+details/i.test(
       head,
     );
-  const hasListRowDateLine = /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b.+\d{1,2}\/\d{1,2}/i.test(
-    trimmed.slice(0, 200),
-  );
+  const hasListRowDateLine = PORTAL_TICKET_DATE_LINE_RE.test(trimmed.slice(0, 240));
   return hasPortalDetailLinks && !hasListRowDateLine;
 }
 
 /** Top-level cleaner-ticket row (not a nested <tr> inside an expanded ticket). */
 function isMainListTicketRow(trimmed) {
-  const t = trimmed.slice(0, 500);
-  return /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}\/\d{1,2}/i.test(t);
+  return PORTAL_TICKET_DATE_LINE_RE.test(String(trimmed || "").slice(0, 900));
 }
 
 async function isProbablySingleCellDetailRow(rowLocator) {
@@ -486,15 +489,13 @@ async function readBagFromRowBlock(rowLocator) {
  * Using only the first non-empty line drops Date/Customer into empty while Bag still parses.
  */
 function pickPortalListLine(collapsedRowText, expandedFullText) {
-  const dateRe =
-    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i;
   for (const block of [collapsedRowText, expandedFullText]) {
     const lines = String(block || "")
       .split(/\r?\n/)
       .map((l) => l.trim().replace(/\t+/g, " "))
       .filter((l) => l.length > 2);
     for (const line of lines) {
-      if (dateRe.test(line)) return line;
+      if (PORTAL_TICKET_DATE_LINE_RE.test(line)) return line;
     }
   }
   return (
@@ -505,6 +506,38 @@ function pickPortalListLine(collapsedRowText, expandedFullText) {
   );
 }
 
+/** Dedupe processed tickets when row 1 stays expanded (index-based loop would repeat ticket 1). */
+function ticketRowFingerprint(trimmedMainListRow) {
+  const line = pickPortalListLine(trimmedMainListRow, "");
+  let norm = line.replace(/\s+/g, " ").trim().slice(0, 280);
+  if (norm.length < 10) {
+    norm = String(trimmedMainListRow || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 280);
+  }
+  return norm;
+}
+
+/** Rinse often packs columns into <td>s; innerText on <tr> can omit the date line — stitch cells. */
+async function readTicketRowTextSnapshot(rowLocator) {
+  const t1 = ((await rowLocator.innerText().catch(() => "")) || "").trim();
+  if (PORTAL_TICKET_DATE_LINE_RE.test(t1)) return t1;
+  const t2 = await rowLocator
+    .evaluate((el) => {
+      const tds = el.querySelectorAll(":scope > td");
+      if (!tds.length) return (el.innerText || "").trim();
+      return Array.from(tds)
+        .map((td) => (td.innerText || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .join("\n");
+    })
+    .catch(() => "");
+  const t2t = (t2 || "").trim();
+  if (t2t && PORTAL_TICKET_DATE_LINE_RE.test(t2t)) return t2t;
+  return t1 || t2t;
+}
+
 /** Match the manual “copy from portal” Excel: date, customer, weight, notes, X-columns, bag id. */
 function parsePortalFields(collapsedRowText, expandedFullText) {
   const combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
@@ -513,14 +546,14 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   let dateDisplay = "";
   // Include optional /year so "Tue 04/14/2026" is one match — otherwise rest becomes "/2026 Name …".
   const dm = listLine.match(
-    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i
+    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
   );
   if (dm) {
     dateDisplay = `${dm[1]} ${dm[2]}`;
   }
   if (!dateDisplay) {
     const dm2 = combined.match(
-      /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i
+      /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
     );
     if (dm2) dateDisplay = `${dm2[1]} ${dm2[2]}`;
   }
@@ -764,7 +797,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
   if (!outR.bagDisplay) outR.bagDisplay = outR.bagId || "";
   const c0 = String(collapsedRowText || "").trim();
   const f0 = String(outR.fullText || "").trim();
-  if (c0 && f0 && !/\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}\/\d{1,2}/i.test(f0)) {
+  if (c0 && f0 && !PORTAL_TICKET_DATE_LINE_RE.test(f0)) {
     outR.fullText = `${c0}\n${f0}`.trim();
   } else if (c0 && !f0) {
     outR.fullText = c0;
@@ -785,29 +818,45 @@ async function scrapePage(page, pageLabel, layout) {
   const out = [];
   let recordIndex = 0;
   const rowsAll = page.locator(sel);
+  const processed = new Set();
+  const maxPasses = Math.max(80, Math.min(2000, initialRowCount * 20 || 200));
 
-  // Re-count rows each index: expanding a ticket can insert <tr> nodes; a fixed `n` can skip rows
-  // or pair the wrong locator with the wrong ticket after the DOM shifts.
-  for (let i = 0; ; i++) {
+  for (let pass = 0; pass < maxPasses; pass++) {
     const n = await rowsAll.count();
-    if (i >= n) break;
-    const row = rowsAll.nth(i);
-    await row.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(100);
-    if (!(await row.isVisible().catch(() => false))) continue;
-    const tdCount = await row.locator("td").count().catch(() => 0);
-    const thOnly =
-      (await row.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
-    if (thOnly) continue;
+    let row = null;
+    let rowText = "";
+    let chosenFp = null;
 
-    const rowText = (await row.innerText().catch(() => "")) || "";
-    const trimmed = rowText.trim();
-    if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
-      continue;
+    for (let j = 0; j < n; j++) {
+      const cand = rowsAll.nth(j);
+      await cand.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(60);
+      if (!(await cand.isVisible().catch(() => false))) continue;
+      const tdCount = await cand.locator("td").count().catch(() => 0);
+      const thOnly =
+        (await cand.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
+      if (thOnly) continue;
+
+      const rt = await readTicketRowTextSnapshot(cand);
+      const trimmed = rt.trim();
+      if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) continue;
+      if (await isProbablySingleCellDetailRow(cand)) continue;
+      if (isLikelyExpandedDetailSubRow(trimmed)) continue;
+      if (!isMainListTicketRow(trimmed)) continue;
+
+      const fp0 = ticketRowFingerprint(trimmed);
+      if (fp0.length < 8) continue;
+      if (processed.has(fp0)) continue;
+      const peek = matchBagInText(trimmed).bagId;
+      if (peek && processed.has(`bag:${String(peek).toUpperCase()}`)) continue;
+
+      row = cand;
+      rowText = rt;
+      chosenFp = fp0;
+      break;
     }
-    if (await isProbablySingleCellDetailRow(row)) continue;
-    if (isLikelyExpandedDetailSubRow(trimmed)) continue;
-    if (!isMainListTicketRow(trimmed)) continue;
+
+    if (!row || chosenFp == null) break;
 
     recordIndex += 1;
     const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
@@ -815,6 +864,11 @@ async function scrapePage(page, pageLabel, layout) {
       row,
       rowText,
     );
+    processed.add(chosenFp);
+    if (String(bagId || "").trim()) {
+      processed.add(`bag:${String(bagId).trim().toUpperCase()}`);
+    }
+
     const base = {
       page: pageLabel,
       row_index: recordIndex,
@@ -823,15 +877,19 @@ async function scrapePage(page, pageLabel, layout) {
       bag_display: bagDisplay || bagId,
       raw_line: raw,
     };
+    let portal = null;
     if (layout === "portal") {
-      const portal = parsePortalFields(collapsed || rowText, fullText);
+      portal = parsePortalFields(collapsed || rowText, fullText);
       out.push({ ...base, portal });
     } else {
       out.push(base);
     }
 
     if (bagId) {
-      console.log(`  ticket ${recordIndex}: ${bagId}`);
+      const pn = (portal && portal.customer_name) || customer || "";
+      console.log(
+        `  ticket ${recordIndex}: ${bagId}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}`,
+      );
     }
 
     await ensureRowCollapsedAfterTicket(row, page);
