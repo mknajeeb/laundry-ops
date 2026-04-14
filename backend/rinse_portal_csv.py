@@ -85,6 +85,9 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
         weight = _cell(r, "Weight")
         notes = _cell(r, "Notes")
         bag = _cell(r, "Bag ID")
+        ticket_id = str(bag).strip().upper() if bag else None
+        if not ticket_id:
+            ticket_id = None
         if not cust:
             continue
         d = _parse_portal_date(date_raw)
@@ -101,6 +104,7 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
                 "Weight_Num": w,
                 "ServiceType": st,
                 "RushType": rush,
+                "ticket_id": ticket_id,
             }
         )
 

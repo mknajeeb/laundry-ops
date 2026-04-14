@@ -644,6 +644,7 @@ function UploadPage({ user }) {
                   <TableCell>Date</TableCell>
                   <TableCell>Name</TableCell>
                   <TableCell>Weight/Count</TableCell>
+                  <TableCell>Bag ID</TableCell>
                   <TableCell>Service</TableCell>
                   <TableCell>Rush</TableCell>
                   <TableCell>Status</TableCell>
@@ -663,6 +664,9 @@ function UploadPage({ user }) {
                         : row.weight_num == null
                           ? "-"
                           : `${Number(row.weight_num).toFixed(2)} lb`}
+                    </TableCell>
+                    <TableCell sx={{ fontFamily: "monospace", fontSize: 13 }}>
+                      {row.ticket_id ? String(row.ticket_id) : "—"}
                     </TableCell>
                     <TableCell>{row.service_type}</TableCell>
                     <TableCell>{row.rush_type}</TableCell>

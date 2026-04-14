@@ -256,8 +256,9 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   const firstLine = (collapsedRowText || "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
 
   let dateDisplay = "";
+  // Include optional /year so "Tue 04/14/2026" is one match — otherwise rest becomes "/2026 Name …".
   const dm = firstLine.match(
-    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2})\b/i
+    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i
   );
   if (dm) {
     dateDisplay = `${dm[1]} ${dm[2]}`;
@@ -274,6 +275,7 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   let customer = "";
   if (dm) {
     let rest = firstLine.slice(dm.index + dm[0].length).trim();
+    rest = rest.replace(/^\/?\d{4}\b\s*/, "").trim();
     rest = rest.replace(/\?\?\s*LBS/gi, "").replace(/\d+(?:\.\d+)?\s*(?:lbs|lb)\b/gi, "").trim();
     customer = rest.replace(/\s+/g, " ").slice(0, 200);
   }
@@ -407,6 +409,8 @@ async function scrapePage(page, pageLabel, layout) {
 
   for (let i = 0; i < n; i++) {
     const row = rows.nth(i);
+    await row.scrollIntoViewIfNeeded().catch(() => {});
+    await page.waitForTimeout(120);
     if (!(await row.isVisible().catch(() => false))) continue;
     const tdCount = await row.locator("td").count().catch(() => 0);
     const thOnly =
@@ -507,7 +511,7 @@ async function main() {
         waitUntil: "domcontentloaded",
         timeout: Math.max(navTimeoutMs(), 90000),
       });
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(3500);
       await page
         .waitForSelector("table tbody tr", { timeout: 20000 })
         .catch(() => {});

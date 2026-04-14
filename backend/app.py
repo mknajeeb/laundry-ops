@@ -1652,6 +1652,14 @@ def ensure_ticket_id_columns(cursor):
         cursor.execute("ALTER TABLE orders_final ADD COLUMN ticket_id VARCHAR(120) NULL")
 
 
+def ensure_upload_batch_rows_ticket_id(cursor):
+    """Rinse bag / ticket id on draft upload rows (optional column; added on first use)."""
+    if not table_exists(cursor, "upload_batch_rows"):
+        return
+    if not table_has_column(cursor, "upload_batch_rows", "ticket_id"):
+        cursor.execute("ALTER TABLE upload_batch_rows ADD COLUMN ticket_id VARCHAR(120) NULL")
+
+
 def orders_logistics_select_sql(cap):
     if cap["has_logistics"]:
         if cap["has_status"]:
@@ -3486,6 +3494,9 @@ def commit_draft_upload_batch_from_orders_df(
         axis=1,
     )
 
+    ensure_ticket_id_columns(cursor)
+    ensure_upload_batch_rows_ticket_id(cursor)
+
     upload_batches_pk = get_upload_batches_pk(cursor)
     row_pk = get_upload_batch_rows_pk(cursor)
 
@@ -3644,6 +3655,10 @@ def commit_draft_upload_batch_from_orders_df(
     inserted = 0
     rejected = 0
     needs_attention = 0
+    has_ticket_source = "ticket_id" in orders_df.columns
+    has_ubr_ticket = table_has_column(cursor, "upload_batch_rows", "ticket_id")
+    include_tid = bool(has_ticket_source and has_ubr_ticket)
+
     for _, row in orders_df.iterrows():
 
         date_clean = row.get("Date_Clean")
@@ -3686,34 +3701,73 @@ def commit_draft_upload_batch_from_orders_df(
         else:
             inserted += 1
 
-        cursor.execute(
-            """
-            INSERT INTO upload_batch_rows
-            (
-                upload_batch_id,
-                date_clean,
-                name_clean,
-                weight_num,
-                service_type,
-                rush_type,
-                row_status,
-                reason,
-                created_at,
-                updated_at
+        ticket_id = None
+        if include_tid:
+            tv = row.get("ticket_id")
+            if tv is not None and not (isinstance(tv, float) and pd.isna(tv)):
+                ts = str(tv).strip().upper()
+                ticket_id = ts if ts else None
+
+        if include_tid:
+            cursor.execute(
+                """
+                INSERT INTO upload_batch_rows
+                (
+                    upload_batch_id,
+                    date_clean,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    rush_type,
+                    row_status,
+                    reason,
+                    ticket_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """,
+                (
+                    upload_batch_id,
+                    row_date,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    rush_type,
+                    row_status,
+                    reason,
+                    ticket_id,
+                ),
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-        """,
-            (
-                upload_batch_id,
-                row_date,
-                name_clean,
-                weight_num,
-                service_type,
-                rush_type,
-                row_status,
-                reason,
-            ),
-        )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO upload_batch_rows
+                (
+                    upload_batch_id,
+                    date_clean,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    rush_type,
+                    row_status,
+                    reason,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """,
+                (
+                    upload_batch_id,
+                    row_date,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    rush_type,
+                    row_status,
+                    reason,
+                ),
+            )
 
     set_parts = ["orders_loaded = %s"]
     set_args = [inserted]
@@ -8840,6 +8894,7 @@ def get_upload_batch_rows(batch_id):
         if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
             return jsonify({"error": "Batch not found"}), 404
         row_pk = get_upload_batch_rows_pk(cursor)
+        ubr_tid_sel = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
         if row_status:
             cursor.execute(f"""
                 SELECT
@@ -8854,6 +8909,7 @@ def get_upload_batch_rows(batch_id):
                     reason,
                     created_at,
                     updated_at
+                    {ubr_tid_sel}
                 FROM upload_batch_rows
                 WHERE upload_batch_id = %s
                 AND row_status = %s
@@ -8873,6 +8929,7 @@ def get_upload_batch_rows(batch_id):
                     reason,
                     created_at,
                     updated_at
+                    {ubr_tid_sel}
                 FROM upload_batch_rows
                 WHERE upload_batch_id = %s
                 ORDER BY {row_pk} ASC
@@ -9139,6 +9196,8 @@ def confirm_upload_batch(batch_id):
         tenant_oid = user_org_id(me)
         batch_pk = get_upload_batches_pk(cursor)
         row_pk = get_upload_batch_rows_pk(cursor)
+        ensure_ticket_id_columns(cursor)
+        ensure_upload_batch_rows_ticket_id(cursor)
         cap = orders_status_capabilities(cursor)
         has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
         has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
@@ -9175,6 +9234,7 @@ def confirm_upload_batch(batch_id):
                 "attention_count": attention_count
             }), 409
 
+        ubr_tid_sel = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
         cursor.execute(f"""
             SELECT
                 {row_pk} AS id,
@@ -9183,6 +9243,7 @@ def confirm_upload_batch(batch_id):
                 weight_num,
                 service_type,
                 rush_type
+                {ubr_tid_sel}
             FROM upload_batch_rows
             WHERE upload_batch_id = %s
             AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
@@ -9372,6 +9433,13 @@ def confirm_upload_batch(batch_id):
                 cols.append("status")
                 vals.append("%s")
                 args.append("PENDING")
+
+            if cap.get("has_ticket_id") and table_has_column(cursor, "upload_batch_rows", "ticket_id"):
+                tid = (row.get("ticket_id") or "").strip() if row.get("ticket_id") is not None else ""
+                if tid:
+                    cols.append("ticket_id")
+                    vals.append("%s")
+                    args.append(tid[:120])
 
             cursor.execute(f"""
                 INSERT INTO orders_staging
