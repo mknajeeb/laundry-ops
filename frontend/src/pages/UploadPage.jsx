@@ -81,7 +81,14 @@ function UploadPage({ user }) {
   const [rinseImportStopBusy, setRinseImportStopBusy] = useState(false);
   const [rinseExportHint, setRinseExportHint] = useState("");
   const [portalScrapeLog, setPortalScrapeLog] = useState("");
+  const [rinseImportProgressNote, setRinseImportProgressNote] = useState("");
+  const [showFullPortalScrapeLog, setShowFullPortalScrapeLog] = useState(false);
   const portalLogRef = useRef(null);
+
+  const rinseImportTicketNo = useMemo(() => {
+    const m = String(rinseImportProgressNote || "").match(/\bticket\s+(\d+)/i);
+    return m ? parseInt(m[1], 10) : null;
+  }, [rinseImportProgressNote]);
 
   const isRinseExportAdmin = useMemo(() => {
     const r = (user?.roles || []).map((x) => String(x).toUpperCase());
@@ -188,10 +195,11 @@ function UploadPage({ user }) {
   }, []);
 
   useEffect(() => {
+    if (!showFullPortalScrapeLog) return;
     const el = portalLogRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [portalScrapeLog]);
+  }, [portalScrapeLog, showFullPortalScrapeLog]);
 
   useEffect(() => {
     if (!canRunPortalScrape) return;
@@ -498,6 +506,8 @@ function UploadPage({ user }) {
     try {
       setRinseExportLoading(true);
       setPortalScrapeLog("");
+      setRinseImportProgressNote("");
+      setShowFullPortalScrapeLog(false);
       setMessage({ type: "info", text: "Starting Rinse import job on the server…" });
       const startRes = await startRinseImportUploadBatchJob({ batch_date: batchDate });
       const jobId = startRes.data?.job_id;
@@ -518,6 +528,7 @@ function UploadPage({ user }) {
         const row = st.data || {};
         const status = row.status;
         const note = row.progress_note || status || "…";
+        setRinseImportProgressNote(String(row.progress_note || ""));
         const updatedAt = row.updated_at != null ? String(row.updated_at) : "";
         const outLog = row.stdout_tail != null ? String(row.stdout_tail) : "";
         const errLog = row.stderr_tail != null ? String(row.stderr_tail).trim() : "";
@@ -632,6 +643,7 @@ function UploadPage({ user }) {
       setMessage({ type: "error", text });
     } finally {
       setRinseImportJobId(null);
+      setRinseImportProgressNote("");
       setRinseExportLoading(false);
     }
   };
@@ -783,31 +795,60 @@ function UploadPage({ user }) {
         <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.5 }}>Scrape progress</Typography>
         <Typography color="text.secondary" sx={{ fontSize: 12, mb: 0.8 }}>
           {canRunPortalScrape
-            ? "Live log while the API runs Playwright (same as your local terminal scrape). Then the server applies the portal mapper to the temp CSV and loads the draft."
+            ? "Status updates use a light counter while the job runs. Full log is optional (larger API/DB updates when enabled)."
             : "Ask an admin to run the server scrape, or upload a portal CSV you exported elsewhere."}
         </Typography>
-        <Box
-          ref={portalLogRef}
-          sx={{
-            maxHeight: 360,
-            overflow: "auto",
-            p: 1.5,
-            borderRadius: 1,
-            bgcolor: "grey.900",
-            color: "grey.100",
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-            fontSize: 12,
-            lineHeight: 1.45,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-            mb: 2,
-          }}
-        >
-          {portalScrapeLog ||
-            (rinseExportLoading
-              ? "Waiting for log output from the server…"
-              : "Run a server scrape or upload a CSV — scrape output appears here in real time.")}
-        </Box>
+        {canRunPortalScrape && rinseExportLoading && rinseImportJobId ? (
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1}
+            alignItems={{ xs: "stretch", sm: "center" }}
+            sx={{ mb: 1.5 }}
+          >
+            <Chip
+              color="primary"
+              label={rinseImportTicketNo != null ? `Ticket ${rinseImportTicketNo}` : "Rinse import running"}
+              sx={{ fontWeight: 700, alignSelf: "flex-start" }}
+            />
+            <Typography variant="body2" color="text.secondary" sx={{ flex: 1, minWidth: 0 }}>
+              {rinseImportProgressNote
+                ? `${String(rinseImportProgressNote).slice(0, 220)}${String(rinseImportProgressNote).length > 220 ? "…" : ""}`
+                : "Waiting for server…"}
+            </Typography>
+            <Button size="small" variant="outlined" onClick={() => setShowFullPortalScrapeLog((v) => !v)}>
+              {showFullPortalScrapeLog ? "Hide full log" : "Full log"}
+            </Button>
+          </Stack>
+        ) : null}
+        {!(
+          canRunPortalScrape &&
+          rinseExportLoading &&
+          rinseImportJobId &&
+          !showFullPortalScrapeLog
+        ) && (
+          <Box
+            ref={portalLogRef}
+            sx={{
+              maxHeight: showFullPortalScrapeLog ? 360 : 140,
+              overflow: "auto",
+              p: 1.5,
+              borderRadius: 1,
+              bgcolor: "grey.900",
+              color: "grey.100",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              fontSize: 12,
+              lineHeight: 1.45,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              mb: 2,
+            }}
+          >
+            {portalScrapeLog ||
+              (rinseExportLoading
+                ? "Waiting for log output from the server…"
+                : "Run a server scrape or upload a CSV — open Full log during import to stream output.")}
+          </Box>
+        )}
 
         {canRunPortalScrape && (
           <>

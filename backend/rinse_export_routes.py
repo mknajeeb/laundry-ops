@@ -723,6 +723,15 @@ def register_rinse_export_routes(app):
                             pass
                         return bool(_cancel_cache["v"])
 
+                    # Writing full stdout_tail to MySQL every ~1.25s is heavy; progress_note carries the
+                    # latest line for the UI counter. Throttle tail blobs (RINSE_IMPORT_STDOUT_DB_SEC, 0=always).
+                    try:
+                        _stdout_db_sec = float(os.getenv("RINSE_IMPORT_STDOUT_DB_SEC", "8"))
+                    except ValueError:
+                        _stdout_db_sec = 8.0
+                    _stdout_db_sec = max(0.0, min(120.0, _stdout_db_sec))
+                    _last_stdout_db_at = [float("-inf")]
+
                     def push_scrape_progress(so_tail: str, se_tail: str) -> None:
                         try:
                             cancel_req = import_job_cancel_requested()
@@ -739,15 +748,30 @@ def register_rinse_export_routes(app):
                                             t = ln.strip()
                                             if t:
                                                 note = t[:500]
-                                    update_rinse_import_job(
-                                        cp,
-                                        job_id,
-                                        tenant_oid,
-                                        status="running",
-                                        progress_note=note,
-                                        stdout_tail=(so_tail or "")[-65000:],
-                                        stderr_tail=(se_tail or "")[-8000:],
+                                    now = time.monotonic()
+                                    write_tails = _stdout_db_sec <= 0 or (
+                                        now - _last_stdout_db_at[0] >= _stdout_db_sec
                                     )
+                                    if write_tails:
+                                        _last_stdout_db_at[0] = now
+                                    if write_tails:
+                                        update_rinse_import_job(
+                                            cp,
+                                            job_id,
+                                            tenant_oid,
+                                            status="running",
+                                            progress_note=note,
+                                            stdout_tail=(so_tail or "")[-65000:],
+                                            stderr_tail=(se_tail or "")[-8000:],
+                                        )
+                                    else:
+                                        update_rinse_import_job(
+                                            cp,
+                                            job_id,
+                                            tenant_oid,
+                                            status="running",
+                                            progress_note=note,
+                                        )
                                     conn_p.commit()
                                 finally:
                                     cp.close()
