@@ -442,7 +442,7 @@ function OrdersPage({ user }) {
         value={rushFilter}
         onChange={setRushFilter}
         tabs={[
-          { key: "ALL", label: "All", count: counts.all, Icon: GridView, accent: "#0f172a" },
+          { key: "ALL", label: "All", count: counts.all, Icon: GridView, accent: "#4338ca" },
           { key: "RUSH", label: "Rush", count: counts.rush, Icon: Bolt, accent: "#b91c1c" },
           { key: "NON-RUSH", label: "Non-Rush", count: counts.nonRush, Icon: CheckCircle, accent: "#0f766e" },
         ]}

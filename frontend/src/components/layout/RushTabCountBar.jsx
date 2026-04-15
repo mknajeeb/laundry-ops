@@ -24,9 +24,9 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
           let fg;
           let border;
           if (empty) {
-            bg = selected ? "#15803d" : "#f0fdf4";
-            fg = selected ? "#ffffff" : "#166534";
-            border = selected ? "2px solid #22c55e" : "1px solid #bbf7d0";
+            bg = selected ? "#475569" : "#f8fafc";
+            fg = selected ? "#ffffff" : "#64748b";
+            border = selected ? "2px solid #64748b" : "1px solid #e2e8f0";
           } else if (selected) {
             bg = base;
             fg = "#ffffff";
@@ -102,8 +102,8 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
         let bg;
         let fg;
         if (empty) {
-          bg = selected ? "#15803d" : "#dcfce7";
-          fg = selected ? "#ffffff" : "#166534";
+          bg = selected ? "#475569" : "#f1f5f9";
+          fg = selected ? "#ffffff" : "#64748b";
         } else if (selected) {
           bg = base;
           fg = "#ffffff";
@@ -125,7 +125,7 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
               minHeight: fullWidth ? 52 : 44,
               bgcolor: bg,
               color: fg,
-              border: empty ? "1px solid #86efac" : "1px solid transparent",
+              border: empty ? "1px solid #cbd5e1" : "1px solid transparent",
               whiteSpace: "nowrap",
             }}
             startIcon={Icon ? <Icon sx={{ fontSize: 20 }} /> : null}

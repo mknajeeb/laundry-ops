@@ -516,7 +516,7 @@ function CheckoutPage() {
               setOpenAlpha(null);
             }}
             tabs={[
-              { key: "ALL", label: "All", count: counters.allCount, Icon: GridView, accent: "#0f172a" },
+              { key: "ALL", label: "All", count: counters.allCount, Icon: GridView, accent: "#4338ca" },
               { key: "RUSH", label: "Rush", count: counters.rushCount, Icon: Bolt, accent: "#b91c1c" },
               { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
             ]}

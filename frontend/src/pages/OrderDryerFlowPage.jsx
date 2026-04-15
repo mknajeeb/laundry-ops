@@ -11,7 +11,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Add, CameraAlt, Remove } from "@mui/icons-material";
+import { Add, CameraAlt, CheckCircle, Remove } from "@mui/icons-material";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { useNavigate, useParams } from "react-router-dom";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
@@ -27,6 +27,26 @@ import { displayCustomerName } from "../utils/displayCustomerName";
 
 const READER_ID = "dryer-qr-reader";
 const DRYER_MAINT_KEY = "washpro_dryer_scan_maintenance";
+
+const DRYER_QR_READER_OUTER_SX = {
+  borderRadius: 2,
+  overflow: "hidden",
+  bgcolor: "#0b1220",
+  width: "100%",
+  minWidth: 200,
+  minHeight: "min(42vh, 400px)",
+  maxHeight: { xs: "42vh", sm: 420 },
+  position: "relative",
+  border: "1px solid rgba(148,163,184,0.35)",
+};
+
+const DRYER_QR_READER_INNER_SX = {
+  display: "block",
+  width: "100%",
+  minWidth: 200,
+  minHeight: "min(42vh, 400px)",
+  boxSizing: "border-box",
+};
 
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -193,7 +213,7 @@ export default function OrderDryerFlowPage({ user }) {
   }, [oid, uid]);
 
   useEffect(() => {
-    if (step === 4 && sessionOrder) {
+    if (step === 5 && sessionOrder) {
       const w = Number(sessionOrder.weight_num);
       setWeightInput(Number.isFinite(w) ? w : 0);
     }
@@ -223,12 +243,22 @@ export default function OrderDryerFlowPage({ user }) {
       const html5 = new Html5Qrcode(READER_ID, {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        useBarCodeDetectorIfSupported: false,
       });
       scannerRef.current = html5;
       try {
         await html5.start(
           { facingMode: { ideal: "environment" } },
-          { fps: 8 },
+          {
+            fps: 10,
+            aspectRatio: 1,
+            qrbox: (vw, vh) => {
+              const w = Number(vw) || 320;
+              const h = Number(vh) || 320;
+              const side = Math.floor(Math.min(w, h) * 0.88);
+              return { width: Math.max(200, side), height: Math.max(200, side) };
+            },
+          },
           async (text) => {
             if (startedRef.current) return;
             const tx = String(text || "").trim();
@@ -448,26 +478,36 @@ export default function OrderDryerFlowPage({ user }) {
 
         {step === 1 && (
           <Stack spacing={2} sx={{ flex: 1, px: 1, py: 1, maxWidth: 420, mx: "auto", width: "100%" }}>
-            <FormControlLabel
-              sx={{ alignItems: "center", mx: 0 }}
-              control={
-                <Switch
-                  checked={dryerMaintenanceOn}
-                  disabled={maintToggleDisabled}
-                  onChange={(_, v) => setDryerMaintenanceOn(v)}
-                  color="primary"
-                />
-              }
-              label={
-                <Typography sx={{ fontWeight: 700, fontSize: 15 }}>
-                  Dryer QR scan {dryerMaintenanceOn ? "on" : "off"}
-                </Typography>
-              }
-            />
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, bgcolor: "#fafafa", borderColor: "#c4b5fd" }}>
+              <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: "#5b21b6", mb: 1.25 }}>
+                Dryer maintenance
+              </Typography>
+              <FormControlLabel
+                sx={{ alignItems: "center", mx: 0, display: "flex" }}
+                control={
+                  <Switch
+                    checked={dryerMaintenanceOn}
+                    disabled={maintToggleDisabled}
+                    onChange={(_, v) => setDryerMaintenanceOn(v)}
+                    color="primary"
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography sx={{ fontWeight: 700, fontSize: 15 }}>
+                      Dryer QR scan {dryerMaintenanceOn ? "on" : "off"}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.35 }}>
+                      Off skips dryer count and scanning — ticket photo, then mark complete, then weight.
+                    </Typography>
+                  </Box>
+                }
+              />
+            </Paper>
             {!dryerMaintenanceOn ? (
               <>
                 <Typography color="text.secondary">
-                  Skip dryer count and QR scan. You will take a ticket photo, confirm weight, then complete the order.
+                  Continue to capture the ticket, confirm complete, then enter weight to finish.
                 </Typography>
                 <Button
                   variant="contained"
@@ -530,23 +570,26 @@ export default function OrderDryerFlowPage({ user }) {
                 minHeight: 0,
               }}
             >
-              <Box
-                id={READER_ID}
-                sx={{
-                  borderRadius: 2,
-                  overflow: "hidden",
-                  bgcolor: "#000",
-                  minHeight: { xs: 220, sm: 320 },
-                  border: "2px solid #e2e8f0",
-                }}
-              />
+              <Box sx={{ ...DRYER_QR_READER_OUTER_SX, border: "2px solid #e2e8f0" }}>
+                <Box id={READER_ID} sx={DRYER_QR_READER_INNER_SX} />
+              </Box>
               <Stack spacing={1.2} sx={{ p: 1, bgcolor: "#fff", borderRadius: 2, border: "1px solid #e2e8f0" }}>
                 <Typography sx={{ fontWeight: 600 }}>
                   Dryers ({dryers.length} / {dryerCount})
                 </Typography>
                 <Stack direction="row" flexWrap="wrap" gap={0.75}>
                   {dryers.map((d) => (
-                    <Box key={d} sx={{ px: 1.2, py: 0.5, bgcolor: "#dcfce7", borderRadius: 999, fontWeight: 700 }}>
+                    <Box
+                      key={d}
+                      sx={{
+                        px: 1.2,
+                        py: 0.5,
+                        bgcolor: "#e0e7ff",
+                        color: "#312e81",
+                        borderRadius: 999,
+                        fontWeight: 700,
+                      }}
+                    >
                       {d}
                     </Box>
                   ))}
@@ -579,7 +622,7 @@ export default function OrderDryerFlowPage({ user }) {
             </Typography>
             <Typography color="text.secondary">
               {isSimpleSession
-                ? "Take or upload one clear ticket photo. On the next step you will confirm weight and complete the order."
+                ? "Take or upload one clear ticket photo. Next you will mark the order complete and enter weight."
                 : "Take or upload one clear photo of the ticket — the flow finishes as soon as it is saved."}
             </Typography>
             <Button variant="contained" component="label" startIcon={<CameraAlt />} disabled={busy} sx={{ py: 2, borderRadius: 2 }}>
@@ -602,10 +645,32 @@ export default function OrderDryerFlowPage({ user }) {
         {step === 4 && isSimpleSession && (
           <Stack spacing={2.5} sx={{ flex: 1, px: 1, py: 2, maxWidth: 440, mx: "auto", width: "100%" }}>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              Mark complete
+            </Typography>
+            <Typography color="text.secondary">
+              Ticket photo is saved on this device for this session. Continue to enter ticket weight and send to the
+              server.
+            </Typography>
+            <Button
+              variant="contained"
+              size="large"
+              startIcon={<CheckCircle />}
+              disabled={!pendingTicketB64}
+              onClick={() => setStep(5)}
+              sx={{ borderRadius: 999, py: 1.6, fontWeight: 700 }}
+            >
+              Mark complete
+            </Button>
+          </Stack>
+        )}
+
+        {step === 5 && isSimpleSession && (
+          <Stack spacing={2.5} sx={{ flex: 1, px: 1, py: 2, maxWidth: 440, mx: "auto", width: "100%" }}>
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>
               Ticket weight
             </Typography>
             <Typography color="text.secondary">
-              Adjust if needed, then complete. Units: {isHdRow(sessionOrder) ? "pieces" : "lb"}.
+              Adjust if needed, then finish. Units: {isHdRow(sessionOrder) ? "pieces" : "lb"}.
             </Typography>
             <Paper
               elevation={0}
@@ -635,7 +700,7 @@ export default function OrderDryerFlowPage({ user }) {
               onClick={submitSimpleComplete}
               sx={{ borderRadius: 999, py: 1.6, fontWeight: 700 }}
             >
-              Complete order
+              Finish order
             </Button>
           </Stack>
         )}

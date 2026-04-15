@@ -26,6 +26,27 @@ import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
 import { displayCustomerName } from "../utils/displayCustomerName";
 
+/** html5-qrcode sets video width from this node's clientWidth — must be non-zero before start. */
+const QR_READER_OUTER_SX = {
+  borderRadius: 2,
+  overflow: "hidden",
+  bgcolor: "#0b1220",
+  width: "100%",
+  minWidth: 200,
+  minHeight: "min(46vh, 420px)",
+  maxHeight: { xs: "46vh", sm: 380 },
+  position: "relative",
+  border: "1px solid rgba(148,163,184,0.35)",
+};
+
+const QR_READER_INNER_SX = {
+  display: "block",
+  width: "100%",
+  minWidth: 200,
+  minHeight: "min(46vh, 420px)",
+  boxSizing: "border-box",
+};
+
 function cropCanvasFraction(src, y0Frac, y1Frac) {
   const y0 = Math.max(0, Math.floor(src.height * y0Frac));
   const y1 = Math.min(src.height, Math.ceil(src.height * y1Frac));
@@ -501,13 +522,22 @@ export default function OrderScanLookupBar({
       const html5 = new Html5Qrcode(readerId, {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        useBarCodeDetectorIfSupported: false,
       });
       scannerRef.current = html5;
       try {
-        // No `qrbox` → full frame scan, no dimmed “aim” overlay (library default).
         await html5.start(
           { facingMode: { ideal: "environment" } },
-          { fps: 6 },
+          {
+            fps: 8,
+            aspectRatio: 1,
+            qrbox: (vw, vh) => {
+              const w = Number(vw) || 320;
+              const h = Number(vh) || 320;
+              const side = Math.floor(Math.min(w, h) * 0.88);
+              return { width: Math.max(200, side), height: Math.max(200, side) };
+            },
+          },
           onDecoded,
           () => {}
         );
@@ -667,24 +697,8 @@ export default function OrderScanLookupBar({
 
   const scanSurface = compactEmbedded ? (
     <Stack spacing={0.5} sx={{ width: "100%" }}>
-      <Box
-        sx={{
-          borderRadius: 2,
-          overflow: "hidden",
-          bgcolor: "#0f172a",
-          minHeight: { xs: "36vh", sm: 260 },
-          maxHeight: { xs: "46vh", sm: 360 },
-          position: "relative",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <Box
-          key={`${readerId}-${qrRemount}`}
-          id={readerId}
-          sx={{ width: "100%", height: "100%", minHeight: { xs: "36vh", sm: 260 } }}
-        />
+      <Box sx={QR_READER_OUTER_SX}>
+        <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={QR_READER_INNER_SX} />
       </Box>
       {scanStatus ? (
         <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center", minHeight: 18 }}>
@@ -694,17 +708,12 @@ export default function OrderScanLookupBar({
     </Stack>
   ) : (
     <Stack spacing={1} sx={{ width: "100%" }}>
-      <Box
-        sx={{
-          borderRadius: 2,
-          overflow: "hidden",
-          bgcolor: "#0f172a",
-          minHeight: { xs: "38vh", sm: 260 },
-          maxHeight: { xs: "48vh", sm: 360 },
-          position: "relative",
-        }}
-      >
-        <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={{ width: "100%", height: "100%", minHeight: { xs: "38vh", sm: 260 } }} />
+      <Box sx={{ ...QR_READER_OUTER_SX, minHeight: "min(48vh, 440px)", maxHeight: { xs: "48vh", sm: 400 } }}>
+        <Box
+          key={`${readerId}-${qrRemount}`}
+          id={readerId}
+          sx={{ ...QR_READER_INNER_SX, minHeight: "min(48vh, 440px)" }}
+        />
       </Box>
       <Typography variant="body2" color="text.secondary" sx={{ minHeight: 22 }}>
         {scanStatus || (isEmbedded ? t("ops.scanStatusIdle") : "")}
