@@ -20,7 +20,7 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import { PhotoCamera, QrCodeScanner } from "@mui/icons-material";
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { createWorker, PSM } from "tesseract.js";
 import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
@@ -498,20 +498,16 @@ export default function OrderScanLookupBar({
       if (cancelled) return;
       const el = document.getElementById(readerId);
       if (!el) return;
-      const html5 = new Html5Qrcode(readerId);
+      const html5 = new Html5Qrcode(readerId, {
+        verbose: false,
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+      });
       scannerRef.current = html5;
       try {
+        // No `qrbox` → full frame scan, no dimmed “aim” overlay (library default).
         await html5.start(
           { facingMode: { ideal: "environment" } },
-          {
-            fps: 6,
-            qrbox: (vw, vh) => {
-              const w = Number(vw) || 300;
-              const h = Number(vh) || 300;
-              const side = Math.max(160, Math.min(280, Math.floor(Math.min(w, h) * 0.72)));
-              return { width: side, height: side };
-            },
-          },
+          { fps: 6 },
           onDecoded,
           () => {}
         );

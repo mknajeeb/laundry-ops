@@ -12,7 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import { Add, CameraAlt, Remove } from "@mui/icons-material";
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { useNavigate, useParams } from "react-router-dom";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
 import { useI18n } from "../i18n/I18nContext";
@@ -220,20 +220,15 @@ export default function OrderDryerFlowPage({ user }) {
       if (cancelled) return;
       const el = document.getElementById(READER_ID);
       if (!el) return;
-      const html5 = new Html5Qrcode(READER_ID);
+      const html5 = new Html5Qrcode(READER_ID, {
+        verbose: false,
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+      });
       scannerRef.current = html5;
       try {
         await html5.start(
           { facingMode: { ideal: "environment" } },
-          {
-            fps: 8,
-            qrbox: (vw, vh) => {
-              const w = Number(vw) || 300;
-              const h = Number(vh) || 300;
-              const side = Math.max(160, Math.min(280, Math.floor(Math.min(w, h) * 0.72)));
-              return { width: side, height: side };
-            },
-          },
+          { fps: 8 },
           async (text) => {
             if (startedRef.current) return;
             const tx = String(text || "").trim();
