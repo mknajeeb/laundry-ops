@@ -77,6 +77,7 @@ function CheckoutPage() {
   const [rushTab, setRushTab] = useState("ALL");
   const [openAlpha, setOpenAlpha] = useState(null);
   const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_CHECKOUT) === "1");
+  const [scanEnabled, setScanEnabled] = useState(() => localStorage.getItem(SCAN_STORAGE_CHECKOUT) !== "0");
   const [sentDrawerOpen, setSentDrawerOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
