@@ -514,7 +514,7 @@ function bagDetailsToggleLocators(rowLocator, mode) {
   };
   pushScoped(rowLocator);
   /* Large “Scans” expansions can push the bag-details link into a deeper following <tr>. */
-  for (let k = 1; k <= 12; k++) {
+  for (let k = 1; k <= 8; k++) {
     const sib = rowLocator.locator(`xpath=./following-sibling::tr[${k}]`);
     pushScoped(sib);
   }
@@ -554,12 +554,12 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const page = rowLocator.page();
   const settleMs = Math.max(
     200,
-    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "450", 10) || 450),
+    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "350", 10) || 350),
   );
   const pollMs = Math.max(40, Math.min(500, parseInt(process.env.RINSE_BAG_DETAILS_POLL_MS || "75", 10) || 75));
   const deadline =
     Date.now() +
-    Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "6000", 10) || 6000);
+    Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "3200", 10) || 3200);
   const clickT = rowActionTimeoutMs();
 
   await rowLocator.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
@@ -570,7 +570,6 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
 
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
     const first = loc.first();
-    await first.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
     if (await first.isVisible().catch(() => false)) {
       await page.waitForTimeout(settleMs);
       return true;
@@ -578,14 +577,15 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   }
 
   while (Date.now() < deadline) {
+    await rowLocator.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => {});
     for (const loc of bagDetailsToggleLocators(rowLocator, "show")) {
       const first = loc.first();
-      await first.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
       if (await first.isVisible().catch(() => false)) {
         try {
           await first.click({ timeout: clickT, noWaitAfter: true });
         } catch {
           try {
+            await first.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
             await first.click({ timeout: clickT, noWaitAfter: true, force: true });
           } catch {
             await tryClickShowBagDetailsDom(rowLocator);
@@ -1503,6 +1503,9 @@ async function scrapePage(page, pageLabel, layout) {
     }
 
     recordIndex += 1;
+    progressLine(
+      `  ticket ${recordIndex} (${j + 1}/${rowCount}): ${trimmed.replace(/\s+/g, " ").slice(0, 72)}…`,
+    );
     const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
       page,
       cand,

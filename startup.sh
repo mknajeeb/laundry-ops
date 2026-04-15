@@ -82,6 +82,7 @@ _SKIP_RINSE="$(printf '%s' "$_raw_skip" | tr '[:upper:]' '[:lower:]' | sed -e 's
 echo "startup.sh: LAUNDRYOPS_SKIP_RINSE_STARTUP raw='${_raw_skip}' normalized='${_SKIP_RINSE}'"
 if [ "$_SKIP_RINSE" = "1" ] || [ "$_SKIP_RINSE" = "true" ] || [ "$_SKIP_RINSE" = "yes" ] || [ "$_SKIP_RINSE" = "on" ]; then
   echo "startup.sh: skipping Rinse/Playwright bootstrap (LAUNDRYOPS_SKIP_RINSE_STARTUP)"
+  echo "startup.sh: WARNING — first scrape after a clean /home may fail until npm+Playwright exist under /home/site; remove LAUNDRYOPS_SKIP_RINSE_STARTUP or run install once with it unset."
 elif [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_BIN" ]; then
   _nd="$(dirname "$NODE_BIN")"
   _prefix="$(dirname "$_nd")"
