@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Box,
   Button,
@@ -26,25 +26,17 @@ import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
 import { displayCustomerName } from "../utils/displayCustomerName";
 
-/** html5-qrcode sets video width from this node's clientWidth — must be non-zero before start. */
-const QR_READER_OUTER_SX = {
+/** html5-qrcode sets video width from `#readerId` clientWidth — must be explicit px height before start. */
+const QR_SHELL_SX = {
   borderRadius: 2,
   overflow: "hidden",
   bgcolor: "#0b1220",
   width: "100%",
-  minWidth: 200,
-  minHeight: "min(46vh, 420px)",
-  maxHeight: { xs: "46vh", sm: 380 },
+  minWidth: 280,
+  minHeight: 280,
+  maxHeight: { xs: "50vh", sm: 440 },
   position: "relative",
   border: "1px solid rgba(148,163,184,0.35)",
-};
-
-const QR_READER_INNER_SX = {
-  display: "block",
-  width: "100%",
-  minWidth: 200,
-  minHeight: "min(46vh, 420px)",
-  boxSizing: "border-box",
 };
 
 function cropCanvasFraction(src, y0Frac, y1Frac) {
@@ -297,6 +289,11 @@ export default function OrderScanLookupBar({
   const qrDecodeLockRef = useRef(false);
   const lastQrPayloadRef = useRef({ text: "", at: 0 });
   const hadPickListRef = useRef(false);
+  const qrShellRef = useRef(null);
+  const [readerPx, setReaderPx] = useState(() => ({
+    w: typeof window !== "undefined" ? Math.min(440, Math.max(300, Math.floor(window.innerWidth - 32))) : 360,
+    h: 380,
+  }));
 
   useEffect(() => {
     if (scanIsControlled) return;
@@ -453,6 +450,47 @@ export default function OrderScanLookupBar({
 
   const qrActiveEmbedded = isEmbedded && enabled && !disabled && dialogTab === "qr" && !ocrDialogOpen;
   const qrActiveDialog = !isEmbedded && open && dialogTab === "qr";
+  const qrCameraOn = qrActiveEmbedded || qrActiveDialog;
+
+  const fixQrVideoSurface = useCallback((id) => {
+    const host = document.getElementById(id);
+    if (!host) return;
+    const v = host.querySelector("video");
+    if (!v) return;
+    v.muted = true;
+    v.playsInline = true;
+    v.setAttribute("playsinline", "true");
+    v.setAttribute("muted", "true");
+    v.style.width = "100%";
+    v.style.height = "100%";
+    v.style.objectFit = "cover";
+    v.style.display = "block";
+    v.style.minHeight = "220px";
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!qrCameraOn) return undefined;
+    const shell = qrShellRef.current;
+    if (!shell) return undefined;
+    let debounceId;
+    const applySize = () => {
+      const w = Math.floor(shell.clientWidth);
+      if (w < 80) return;
+      const h = Math.min(500, Math.max(260, Math.round(w * 0.72)));
+      setReaderPx((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    applySize();
+    const schedule = () => {
+      window.clearTimeout(debounceId);
+      debounceId = window.setTimeout(applySize, 120);
+    };
+    const ro = new ResizeObserver(() => schedule());
+    ro.observe(shell);
+    return () => {
+      window.clearTimeout(debounceId);
+      ro.disconnect();
+    };
+  }, [qrCameraOn]);
 
   useEffect(() => {
     if (!qrActiveEmbedded && !qrActiveDialog) {
@@ -522,25 +560,26 @@ export default function OrderScanLookupBar({
       const html5 = new Html5Qrcode(readerId, {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        useBarCodeDetectorIfSupported: false,
       });
       scannerRef.current = html5;
       try {
         await html5.start(
-          { facingMode: { ideal: "environment" } },
+          { facingMode: "environment" },
           {
-            fps: 8,
-            aspectRatio: 1,
+            fps: 10,
             qrbox: (vw, vh) => {
               const w = Number(vw) || 320;
               const h = Number(vh) || 320;
-              const side = Math.floor(Math.min(w, h) * 0.88);
+              const side = Math.floor(Math.min(w, h) * 0.9);
               return { width: Math.max(200, side), height: Math.max(200, side) };
             },
           },
           onDecoded,
           () => {}
         );
+        fixQrVideoSurface(readerId);
+        window.setTimeout(() => fixQrVideoSurface(readerId), 120);
+        window.setTimeout(() => fixQrVideoSurface(readerId), 450);
       } catch {
         /* camera blocked */
       }
@@ -560,6 +599,9 @@ export default function OrderScanLookupBar({
     disabled,
     t,
     qrRemount,
+    readerPx.w,
+    readerPx.h,
+    fixQrVideoSurface,
   ]);
 
   useEffect(() => {
@@ -695,10 +737,19 @@ export default function OrderScanLookupBar({
     }
   };
 
+  const readerInnerSx = {
+    display: "block",
+    width: "100%",
+    minWidth: 280,
+    height: readerPx.h,
+    minHeight: readerPx.h,
+    boxSizing: "border-box",
+  };
+
   const scanSurface = compactEmbedded ? (
     <Stack spacing={0.5} sx={{ width: "100%" }}>
-      <Box sx={QR_READER_OUTER_SX}>
-        <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={QR_READER_INNER_SX} />
+      <Box ref={qrShellRef} sx={QR_SHELL_SX}>
+        <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={readerInnerSx} />
       </Box>
       {scanStatus ? (
         <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center", minHeight: 18 }}>
@@ -708,12 +759,8 @@ export default function OrderScanLookupBar({
     </Stack>
   ) : (
     <Stack spacing={1} sx={{ width: "100%" }}>
-      <Box sx={{ ...QR_READER_OUTER_SX, minHeight: "min(48vh, 440px)", maxHeight: { xs: "48vh", sm: 400 } }}>
-        <Box
-          key={`${readerId}-${qrRemount}`}
-          id={readerId}
-          sx={{ ...QR_READER_INNER_SX, minHeight: "min(48vh, 440px)" }}
-        />
+      <Box ref={qrShellRef} sx={{ ...QR_SHELL_SX, minHeight: "min(48vh, 300px)", maxHeight: { xs: "48vh", sm: 440 } }}>
+        <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={readerInnerSx} />
       </Box>
       <Typography variant="body2" color="text.secondary" sx={{ minHeight: 22 }}>
         {scanStatus || (isEmbedded ? t("ops.scanStatusIdle") : "")}

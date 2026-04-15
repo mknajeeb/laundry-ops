@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -28,25 +28,33 @@ import { displayCustomerName } from "../utils/displayCustomerName";
 const READER_ID = "dryer-qr-reader";
 const DRYER_MAINT_KEY = "washpro_dryer_scan_maintenance";
 
-const DRYER_QR_READER_OUTER_SX = {
+const DRYER_QR_SHELL_SX = {
   borderRadius: 2,
   overflow: "hidden",
   bgcolor: "#0b1220",
   width: "100%",
-  minWidth: 200,
-  minHeight: "min(42vh, 400px)",
-  maxHeight: { xs: "42vh", sm: 420 },
+  minWidth: 280,
+  minHeight: 280,
+  maxHeight: { xs: "42vh", sm: 440 },
   position: "relative",
   border: "1px solid rgba(148,163,184,0.35)",
 };
 
-const DRYER_QR_READER_INNER_SX = {
-  display: "block",
-  width: "100%",
-  minWidth: 200,
-  minHeight: "min(42vh, 400px)",
-  boxSizing: "border-box",
-};
+function fixDryerQrVideo() {
+  const host = document.getElementById(READER_ID);
+  if (!host) return;
+  const v = host.querySelector("video");
+  if (!v) return;
+  v.muted = true;
+  v.playsInline = true;
+  v.setAttribute("playsinline", "true");
+  v.setAttribute("muted", "true");
+  v.style.width = "100%";
+  v.style.height = "100%";
+  v.style.objectFit = "cover";
+  v.style.display = "block";
+  v.style.minHeight = "220px";
+}
 
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -101,6 +109,37 @@ export default function OrderDryerFlowPage({ user }) {
   const [completedFlash, setCompletedFlash] = useState(false);
   const scannerRef = useRef(null);
   const startedRef = useRef(false);
+  const dryerShellRef = useRef(null);
+  const [dryerReaderPx, setDryerReaderPx] = useState(() => ({
+    w: typeof window !== "undefined" ? Math.min(440, Math.max(300, Math.floor(window.innerWidth - 48))) : 360,
+    h: 380,
+  }));
+
+  const dryerCamOn = step === 2 && Boolean(lockToken);
+
+  useLayoutEffect(() => {
+    if (!dryerCamOn) return undefined;
+    const shell = dryerShellRef.current;
+    if (!shell) return undefined;
+    let debounceId;
+    const apply = () => {
+      const w = Math.floor(shell.clientWidth);
+      if (w < 80) return;
+      const h = Math.min(500, Math.max(260, Math.round(w * 0.72)));
+      setDryerReaderPx((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    apply();
+    const schedule = () => {
+      window.clearTimeout(debounceId);
+      debounceId = window.setTimeout(apply, 120);
+    };
+    const ro = new ResizeObserver(() => schedule());
+    ro.observe(shell);
+    return () => {
+      window.clearTimeout(debounceId);
+      ro.disconnect();
+    };
+  }, [dryerCamOn]);
 
   useEffect(() => {
     localStorage.setItem(DRYER_MAINT_KEY, dryerMaintenanceOn ? "1" : "0");
@@ -243,19 +282,17 @@ export default function OrderDryerFlowPage({ user }) {
       const html5 = new Html5Qrcode(READER_ID, {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        useBarCodeDetectorIfSupported: false,
       });
       scannerRef.current = html5;
       try {
         await html5.start(
-          { facingMode: { ideal: "environment" } },
+          { facingMode: "environment" },
           {
             fps: 10,
-            aspectRatio: 1,
             qrbox: (vw, vh) => {
               const w = Number(vw) || 320;
               const h = Number(vh) || 320;
-              const side = Math.floor(Math.min(w, h) * 0.88);
+              const side = Math.floor(Math.min(w, h) * 0.9);
               return { width: Math.max(200, side), height: Math.max(200, side) };
             },
           },
@@ -272,6 +309,9 @@ export default function OrderDryerFlowPage({ user }) {
           },
           () => {}
         );
+        fixDryerQrVideo();
+        window.setTimeout(fixDryerQrVideo, 120);
+        window.setTimeout(fixDryerQrVideo, 450);
       } catch {
         /* camera blocked — manual entry still works */
       }
@@ -281,7 +321,7 @@ export default function OrderDryerFlowPage({ user }) {
       cancelled = true;
       stopScanner();
     };
-  }, [step, lockToken, stopScanner, onScanDryer]);
+  }, [step, lockToken, stopScanner, onScanDryer, dryerReaderPx.w, dryerReaderPx.h]);
 
   const onNextFromCount = async () => {
     setBusy(true);
@@ -570,8 +610,18 @@ export default function OrderDryerFlowPage({ user }) {
                 minHeight: 0,
               }}
             >
-              <Box sx={{ ...DRYER_QR_READER_OUTER_SX, border: "2px solid #e2e8f0" }}>
-                <Box id={READER_ID} sx={DRYER_QR_READER_INNER_SX} />
+              <Box ref={dryerShellRef} sx={{ ...DRYER_QR_SHELL_SX, border: "2px solid #e2e8f0" }}>
+                <Box
+                  id={READER_ID}
+                  sx={{
+                    display: "block",
+                    width: "100%",
+                    minWidth: 280,
+                    height: dryerReaderPx.h,
+                    minHeight: dryerReaderPx.h,
+                    boxSizing: "border-box",
+                  }}
+                />
               </Box>
               <Stack spacing={1.2} sx={{ p: 1, bgcolor: "#fff", borderRadius: 2, border: "1px solid #e2e8f0" }}>
                 <Typography sx={{ fontWeight: 600 }}>
