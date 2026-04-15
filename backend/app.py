@@ -15,7 +15,12 @@ from flask_cors import CORS
 import mysql.connector
 from werkzeug.security import check_password_hash, generate_password_hash
 from urllib.parse import urlparse
+from pathlib import Path
 
+# Load repo-root `.env` first so Flask sees the same vars no matter the process cwd (e.g. `RINSE_BAG_EXPORT_ENABLED`
+# must live here for local admin Rinse routes — not only in `scripts/rinse-cleanertickets/.env`, which Node uses).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_REPO_ROOT / ".env")
 load_dotenv()
 
 try:
@@ -2136,6 +2141,9 @@ def get_checkout_log():
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
+        ensure_ticket_id_columns(cursor)
+        has_ticket_id = table_has_column(cursor, "orders_staging", "ticket_id")
+        tid_sel = ", o.ticket_id" if has_ticket_id else ""
         has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
         join_sql = ""
         if has_staging_org:
@@ -2153,26 +2161,45 @@ def get_checkout_log():
                         c.rush_date,
                         c.checkout_time,
                         c.employee
+                        {tid_sel}
                     FROM checkout_log c
                     {join_sql}
                     WHERE DATE(c.checkout_time) = %s
                     ORDER BY c.checkout_time DESC, c.id DESC
                 """, (tenant_oid, checkout_date))
             else:
-                cursor.execute("""
-                    SELECT
-                        id,
-                        order_id,
-                        name,
-                        weight,
-                        service,
-                        rush_date,
-                        checkout_time,
-                        employee
-                    FROM checkout_log
-                    WHERE DATE(checkout_time) = %s
-                    ORDER BY checkout_time DESC, id DESC
-                """, (checkout_date,))
+                if has_ticket_id:
+                    cursor.execute(f"""
+                        SELECT
+                            c.id,
+                            c.order_id,
+                            c.name,
+                            c.weight,
+                            c.service,
+                            c.rush_date,
+                            c.checkout_time,
+                            c.employee,
+                            o.ticket_id
+                        FROM checkout_log c
+                        LEFT JOIN orders_staging o ON o.id = c.order_id
+                        WHERE DATE(c.checkout_time) = %s
+                        ORDER BY c.checkout_time DESC, c.id DESC
+                    """, (checkout_date,))
+                else:
+                    cursor.execute("""
+                        SELECT
+                            id,
+                            order_id,
+                            name,
+                            weight,
+                            service,
+                            rush_date,
+                            checkout_time,
+                            employee
+                        FROM checkout_log
+                        WHERE DATE(checkout_time) = %s
+                        ORDER BY checkout_time DESC, id DESC
+                    """, (checkout_date,))
         else:
             # Default: recent checkouts (not server-today only — that hid undo after midnight / TZ skew).
             if has_staging_org:
@@ -2186,6 +2213,7 @@ def get_checkout_log():
                         c.rush_date,
                         c.checkout_time,
                         c.employee
+                        {tid_sel}
                     FROM checkout_log c
                     {join_sql}
                     WHERE c.checkout_time >= DATE_SUB(NOW(), INTERVAL 14 DAY)
@@ -2193,21 +2221,40 @@ def get_checkout_log():
                     LIMIT 200
                 """, (tenant_oid,))
             else:
-                cursor.execute("""
-                    SELECT
-                        id,
-                        order_id,
-                        name,
-                        weight,
-                        service,
-                        rush_date,
-                        checkout_time,
-                        employee
-                    FROM checkout_log
-                    WHERE checkout_time >= DATE_SUB(NOW(), INTERVAL 14 DAY)
-                    ORDER BY checkout_time DESC, id DESC
-                    LIMIT 200
-                """)
+                if has_ticket_id:
+                    cursor.execute("""
+                        SELECT
+                            c.id,
+                            c.order_id,
+                            c.name,
+                            c.weight,
+                            c.service,
+                            c.rush_date,
+                            c.checkout_time,
+                            c.employee,
+                            o.ticket_id
+                        FROM checkout_log c
+                        LEFT JOIN orders_staging o ON o.id = c.order_id
+                        WHERE c.checkout_time >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+                        ORDER BY c.checkout_time DESC, c.id DESC
+                        LIMIT 200
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT
+                            id,
+                            order_id,
+                            name,
+                            weight,
+                            service,
+                            rush_date,
+                            checkout_time,
+                            employee
+                        FROM checkout_log
+                        WHERE checkout_time >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+                        ORDER BY checkout_time DESC, id DESC
+                        LIMIT 200
+                    """)
 
         return jsonify(cursor.fetchall())
 
@@ -3877,6 +3924,83 @@ def upload_orders():
 
         if conn:
             conn.close()
+
+
+@app.route("/upload_orders_portal_csv", methods=["POST"])
+def upload_orders_portal_csv():
+    """
+    Upload a Rinse portal-style CSV (e.g. from scripts/rinse-cleanertickets scrape with
+    RINSE_CSV_LAYOUT=portal). Uses backend.rinse_portal_csv.portal_csv_to_orders_df — not
+    pd.read_excel + etl.transform_orders (that path stays on /upload_orders).
+    """
+    conn = None
+    cursor = None
+    filepath = None
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+
+        orig_name = (file.filename or "").strip()
+        if not orig_name.lower().endswith(".csv"):
+            return jsonify({"error": "Expected a .csv file (Rinse portal export)."}), 400
+
+        os.makedirs("uploads", exist_ok=True)
+        safe_name = f"{uuid.uuid4().hex}_{orig_name}"
+        filepath = os.path.join("uploads", safe_name)
+        file.save(filepath)
+
+        from backend.rinse_portal_csv import portal_csv_to_orders_df
+
+        orders_df = portal_csv_to_orders_df(filepath)
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+
+        requested_batch_date = request.form.get("batch_date")
+        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
+
+        payload = commit_draft_upload_batch_from_orders_df(
+            conn, cursor, tenant_oid, batch_date, orders_df, orig_name
+        )
+
+        return jsonify(
+            {
+                **payload,
+                "summary_rows": len(orders_df),
+                "source": "upload_portal_csv",
+            }
+        )
+
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print("UPLOAD PORTAL CSV ERROR:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+        if filepath:
+            try:
+                os.unlink(filepath)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------

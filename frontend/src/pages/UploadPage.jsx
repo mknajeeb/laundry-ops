@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -37,6 +37,7 @@ import {
   postRinseBagExport,
   startRinseImportUploadBatchJob,
   uploadOrders,
+  uploadPortalOrdersCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
 import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
@@ -53,6 +54,7 @@ const EMPTY_FORM = {
 
 function UploadPage({ user }) {
   const [file, setFile] = useState(null);
+  const [portalCsvFile, setPortalCsvFile] = useState(null);
   const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [loading, setLoading] = useState(false);
   const [loadingRows, setLoadingRows] = useState(false);
@@ -73,6 +75,8 @@ function UploadPage({ user }) {
 
   const [rinseExportLoading, setRinseExportLoading] = useState(false);
   const [rinseExportHint, setRinseExportHint] = useState("");
+  const [portalScrapeLog, setPortalScrapeLog] = useState("");
+  const portalLogRef = useRef(null);
 
   const isRinseExportAdmin = useMemo(() => {
     const r = (user?.roles || []).map((x) => String(x).toUpperCase());
@@ -178,13 +182,30 @@ function UploadPage({ user }) {
   }, []);
 
   useEffect(() => {
+    const el = portalLogRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [portalScrapeLog]);
+
+  useEffect(() => {
     if (!isRinseExportAdmin) return;
     let cancelled = false;
     (async () => {
       try {
         const res = await getRinseBagExportConfig();
         if (cancelled) return;
-        setRinseExportHint(res.data?.hint || "");
+        const d = res.data || {};
+        let hint = d.hint || "";
+        if (!d.enabled) {
+          if (d.rinse_export_env_key_present === false) {
+            hint +=
+              " Workers may not see the flag until you Restart the API App Service (Save settings first). SSH can show printenv=1 before gunicorn reloads.";
+          } else {
+            hint +=
+              " Set Value to 1 (no quotes), Save, then Restart the App Service.";
+          }
+        }
+        setRinseExportHint(hint.trim());
       } catch {
         if (!cancelled) setRinseExportHint("");
       }
@@ -220,6 +241,36 @@ function UploadPage({ user }) {
         error?.response?.data?.error ||
         error?.message ||
         "Upload failed";
+      setMessage({ type: "error", text: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const uploadPortalCsv = async () => {
+    if (!portalCsvFile) {
+      setMessage({ type: "warning", text: "Choose a portal CSV (.csv) first." });
+      return;
+    }
+    const formData = new FormData();
+    formData.append("file", portalCsvFile);
+    formData.append("batch_date", batchDate);
+    try {
+      setLoading(true);
+      const res = await uploadPortalOrdersCsv(formData);
+      setMessage({
+        type: "success",
+        text: `Portal CSV draft uploaded. Accepted: ${res.data.rows_inserted}, Rejected: ${res.data.rejected_rows}, Needs Attention: ${res.data.needs_attention_rows}`,
+      });
+      await loadCurrentBatch("ALL");
+      await loadBatchHistory();
+    } catch (error) {
+      console.error(error);
+      const msg =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        "Portal CSV upload failed";
       setMessage({ type: "error", text: msg });
     } finally {
       setLoading(false);
@@ -380,7 +431,10 @@ function UploadPage({ user }) {
       a.download = filename;
       a.click();
       URL.revokeObjectURL(url);
-      setMessage({ type: "success", text: `Downloaded ${filename}. This CSV is for bag / QR workflows — order upload still uses Excel above.` });
+      setMessage({
+        type: "success",
+        text: `Downloaded ${filename}. Bag-ID export for bag / QR workflows. For order staging, use portal CSV upload or “Run portal scrape & load draft” above.`,
+      });
       const cfg = await getRinseBagExportConfig();
       setRinseExportHint(cfg.data?.hint || "");
     } catch (error) {
@@ -426,7 +480,10 @@ function UploadPage({ user }) {
 
   const runRinseImportToBatch = async () => {
     const ok = window.confirm(
-      "Import Rinse cleaner-tickets into a new draft batch on the server? Uses the same rules as Excel upload — no CSV download. The server runs Playwright in the background while this page polls for status (several minutes is normal)."
+      "Run the Rinse portal scrape on the API server and add rows to your draft batch for the Batch Date above? " +
+        "This is the same flow as run-local-portal-csv.sh: Playwright expands tickets, writes a temporary CSV, " +
+        "then the server parses it with the portal mapper and commits the draft (no file download). " +
+        "This page will poll for status; several minutes is normal."
     );
     if (!ok) return;
 
@@ -434,6 +491,7 @@ function UploadPage({ user }) {
 
     try {
       setRinseExportLoading(true);
+      setPortalScrapeLog("");
       setMessage({ type: "info", text: "Starting Rinse import job on the server…" });
       const startRes = await startRinseImportUploadBatchJob({ batch_date: batchDate });
       const jobId = startRes.data?.job_id;
@@ -454,6 +512,9 @@ function UploadPage({ user }) {
         const status = row.status;
         const note = row.progress_note || status || "…";
         const updatedAt = row.updated_at != null ? String(row.updated_at) : "";
+        const outLog = row.stdout_tail != null ? String(row.stdout_tail) : "";
+        const errLog = row.stderr_tail != null ? String(row.stderr_tail).trim() : "";
+        setPortalScrapeLog(errLog ? `${outLog}\n--- stderr ---\n${errLog}` : outLog);
         setMessage({
           type: "info",
           text: `Rinse import (${jobId.slice(0, 8)}…): ${note}`,
@@ -515,11 +576,28 @@ function UploadPage({ user }) {
       });
     } catch (error) {
       console.error(error);
+      const d = error?.response?.data;
       let text =
-        error?.response?.data?.error ||
-        error?.response?.data?.message ||
+        d?.error ||
+        d?.message ||
         error?.message ||
         "Rinse import failed.";
+      if (
+        error?.response?.status === 503 &&
+        d &&
+        Object.prototype.hasOwnProperty.call(d, "rinse_export_env_key_present")
+      ) {
+        if (d.rinse_export_env_key_present === false) {
+          text =
+            "Rinse import is off: the running API workers do not see RINSE_BAG_EXPORT_ENABLED. On this API App Service, set the app setting to 1, Save, then Restart (gunicorn must reload; SSH printenv alone does not update workers).";
+        } else if (Number(d.rinse_export_env_value_len) === 0) {
+          text =
+            "Rinse import is off: the flag is empty in the API environment. Set Value to 1, Save, then Restart.";
+        } else {
+          text =
+            "Rinse import is off: the value is not treated as on. Use 1 (no quotes), Save, then Restart.";
+        }
+      }
       const msg = String(error?.message || "");
       const code = error?.code;
       if (!error?.response && (code === "ECONNABORTED" || code === "ERR_CANCELED" || /network error|canceled/i.test(msg))) {
@@ -609,55 +687,135 @@ function UploadPage({ user }) {
       )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+        <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 0.5 }}>Batch date (staging)</Typography>
+        <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1.2 }}>
+          Applies to Excel upload, portal CSV upload, and the server-side portal scrape → draft job.
+        </Typography>
+        <TextField
+          type="date"
+          size="small"
+          label="Batch date"
+          InputLabelProps={{ shrink: true }}
+          value={batchDate}
+          onChange={(e) => setBatchDate(e.target.value)}
+        />
+      </Paper>
+
+      <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+        <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 1 }}>Excel Upload (w/o bag id)</Typography>
+        <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1.2 }}>
+          Legacy workbook path: <code>pd.read_excel</code> → <code>transform_orders</code>. Does not use Rinse portal bag
+          columns. Use portal import below when you need bag id / service columns.
+        </Typography>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
           <Stack spacing={0.6}>
-            <Typography sx={{ fontWeight: 500, fontSize: 14 }}>Batch Date</Typography>
-            <TextField
-              type="date"
-              size="small"
-              value={batchDate}
-              onChange={(e) => setBatchDate(e.target.value)}
-            />
-          </Stack>
-
-          <Stack spacing={0.6}>
-            <Typography sx={{ fontWeight: 500, fontSize: 14 }}>File</Typography>
+            <Typography sx={{ fontWeight: 500, fontSize: 14 }}>Workbook</Typography>
             <input
               type="file"
+              accept=".xlsx,.xls"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
             />
           </Stack>
 
           <Button variant="contained" onClick={uploadFile} disabled={loading}>
-            {loading ? "Uploading..." : "Upload Draft"}
+            {loading ? "Uploading..." : "Upload draft"}
           </Button>
 
           <Button variant="outlined" onClick={() => loadCurrentBatch(rowStatusFilter)} disabled={loading || loadingRows}>
-            Refresh
+            Refresh staging
+          </Button>
+        </Stack>
+      </Paper>
+
+      <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+        <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 1 }}>Rinse portal CSV (with bag id)</Typography>
+        <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1.2 }}>
+          Portal columns (Date, Customer, Weight, Bag ID, service fields, etc.). Parsed with{" "}
+          <code>portal_csv_to_orders_df</code> — not the Excel pipeline. Rows go to the same draft batch for the batch
+          date above; confirm batch when ready.
+        </Typography>
+
+        <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.5 }}>Scrape progress</Typography>
+        <Typography color="text.secondary" sx={{ fontSize: 12, mb: 0.8 }}>
+          {isRinseExportAdmin
+            ? "Live log while the API runs Playwright (same as your local terminal scrape). Then the server applies the portal mapper to the temp CSV and loads the draft."
+            : "Ask an admin to run the server scrape, or upload a portal CSV you exported elsewhere."}
+        </Typography>
+        <Box
+          ref={portalLogRef}
+          sx={{
+            maxHeight: 360,
+            overflow: "auto",
+            p: 1.5,
+            borderRadius: 1,
+            bgcolor: "grey.900",
+            color: "grey.100",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            fontSize: 12,
+            lineHeight: 1.45,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+            mb: 2,
+          }}
+        >
+          {portalScrapeLog ||
+            (rinseExportLoading
+              ? "Waiting for log output from the server…"
+              : "Run a server scrape or upload a CSV — scrape output appears here in real time.")}
+        </Box>
+
+        {isRinseExportAdmin && (
+          <>
+            <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.5 }}>Server scrape → temp CSV → draft</Typography>
+            <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+              Same as <code>run-local-portal-csv.sh</code>, but on the API host: <code>scrape.mjs</code> with{" "}
+              <code>RINSE_CSV_LAYOUT=portal</code>, temp file, then import. Needs Node, Playwright, session in{" "}
+              <code>scripts/rinse-cleanertickets/</code>, and{" "}
+              <Typography component="span" sx={{ fontFamily: "monospace", fontSize: 12 }}>
+                RINSE_BAG_EXPORT_ENABLED=1
+              </Typography>
+              . {rinseExportHint ? rinseExportHint : ""}
+            </Typography>
+            <Button
+              variant="contained"
+              onClick={runRinseImportToBatch}
+              disabled={rinseExportLoading || loading}
+              sx={{ mb: 2 }}
+            >
+              {rinseExportLoading ? "Scrape / import running…" : "Run portal scrape & load draft batch"}
+            </Button>
+          </>
+        )}
+
+        <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.5 }}>Upload CSV from this computer</Typography>
+        <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+          If you already ran <code>run-local-portal-csv.sh</code> (or any portal-layout export), pick the file here.
+        </Typography>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
+          <Stack spacing={0.6}>
+            <Typography sx={{ fontWeight: 500, fontSize: 14 }}>Portal CSV</Typography>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => setPortalCsvFile(e.target.files?.[0] || null)}
+            />
+          </Stack>
+          <Button variant="contained" color="secondary" onClick={uploadPortalCsv} disabled={loading}>
+            {loading ? "Uploading…" : "Upload portal CSV to draft"}
           </Button>
         </Stack>
       </Paper>
 
       {isRinseExportAdmin && (
         <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
-          <Typography sx={{ fontWeight: 500, fontSize: 16, mb: 0.5 }}>Rinse — import / export</Typography>
+          <Typography sx={{ fontWeight: 500, fontSize: 16, mb: 0.5 }}>Rinse — bag ID export (admin)</Typography>
           <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
-            Runs the cleaner-tickets scraper on the <strong>API server</strong> (not your laptop). Production needs Node,
-            Playwright Chromium, session file, and{" "}
-            <Typography component="span" sx={{ fontFamily: "monospace", fontSize: 12 }}>
-              RINSE_BAG_EXPORT_ENABLED=1
-            </Typography>
-            . <strong>Import into draft</strong> uses the Batch Date above and the same pipeline as Excel upload (no CSV
-            round trip). {rinseExportHint ? rinseExportHint : ""}
+            Download-only: runs the server scraper and returns that CSV to your browser. It does <strong>not</strong> add
+            rows to the draft batch (use Option A or B above for staging).
           </Typography>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <Button variant="contained" onClick={runRinseImportToBatch} disabled={rinseExportLoading || loading}>
-              {rinseExportLoading ? "Rinse job running…" : "Import from Rinse into draft batch"}
-            </Button>
-            <Button variant="outlined" onClick={runRinseBagExport} disabled={rinseExportLoading || loading}>
-              {rinseExportLoading ? "Rinse job running…" : "Download bag IDs CSV from Rinse"}
-            </Button>
-          </Stack>
+          <Button variant="outlined" onClick={runRinseBagExport} disabled={rinseExportLoading || loading}>
+            {rinseExportLoading ? "Rinse job running…" : "Download bag IDs CSV from Rinse"}
+          </Button>
         </Paper>
       )}
 

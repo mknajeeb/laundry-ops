@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Easiest reliable path: run Playwright on YOUR machine, then upload the CSV on Upload Orders
-# (same pipeline as Excel — no API job, no Azure restarts).
+# Run Playwright on YOUR machine, then either upload the CSV on Upload Orders (portal CSV path)
+# or use "Run portal scrape & load draft batch" on the server (no local file).
 #
 # One-time: cd here, npm install, npx playwright install chromium, cp .env.example .env,
 #           edit .env, npm run save-session → rinse-auth.json
 #
 # Usage:
-#   bash run-local-portal-csv.sh           # uses RINSE_MAX_PAGES from .env (default in scrape)
-#   bash run-local-portal-csv.sh 3       # cap at 3 list pages for a quick test
+#   bash run-local-portal-csv.sh           # uses RINSE_MAX_PAGES from .env (default 500 cap; stops when a page repeats an earlier one)
+#   bash run-local-portal-csv.sh 3         # cap at 3 list pages for a quick test
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -37,4 +37,4 @@ fi
 echo "Running scrape (portal CSV for upload)…"
 npm run scrape
 echo ""
-echo "Next: Upload Orders → choose the CSV shown above as your draft upload (same as Excel)."
+echo "Next: Upload Orders → Rinse portal → draft → upload that CSV, or use Run portal scrape & load draft batch (API server)."

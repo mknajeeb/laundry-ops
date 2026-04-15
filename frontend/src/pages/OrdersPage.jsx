@@ -1,5 +1,19 @@
 import { useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
-import { Box, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, Paper, Stack, Typography } from "@mui/material";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
+  Paper,
+  Stack,
+  Switch,
+  Typography,
+} from "@mui/material";
 import { Bolt, CheckCircle, ExpandLess, ExpandMore, Inventory2, Refresh } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
@@ -13,10 +27,12 @@ import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 import { getCurrentUploadBatch, getOrders } from "../api";
+import { displayCustomerName } from "../utils/displayCustomerName";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WF_BG = "#141922";
 const HD_BG = "#0a869d";
+const BROWSE_STORAGE_ORDERS = "washpro_ops_browse_orders";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -46,6 +62,7 @@ function OrdersPage({ user }) {
 
   const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON-RUSH
   const [showProcessed, setShowProcessed] = useState(false);
+  const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_ORDERS) === "1");
   const [openAlpha, setOpenAlpha] = useState(null);
 
   const [notice, setNotice] = useState("");
@@ -83,6 +100,10 @@ function OrdersPage({ user }) {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(BROWSE_STORAGE_ORDERS, showBrowse ? "1" : "0");
+  }, [showBrowse]);
 
   const normalizeLogistics = (r) => {
     const v = normalizeCode(r?.logistics_status);
@@ -133,11 +154,15 @@ function OrdersPage({ user }) {
 
       if (!q) return true;
       const name = String(r?.name_clean || "").toLowerCase();
+      const disp = displayCustomerName(r?.name_clean || "").toLowerCase();
+      const tid = String(r?.ticket_id || "").toLowerCase();
       const id = String(r?.id || "").toLowerCase();
       const service = String(r?.service_type || "").toLowerCase();
       const weight = String(r?.weight_num ?? "").toLowerCase();
       return (
         name.includes(q) ||
+        disp.includes(q) ||
+        tid.includes(q) ||
         id.startsWith(q) ||
         service.includes(q) ||
         weight.includes(q)
@@ -149,11 +174,21 @@ function OrdersPage({ user }) {
     const out = {};
     for (const a of ALPHAS) out[a] = [];
     for (const r of visibleRows) {
-      const c = String(r?.name_clean || "").trim().charAt(0).toUpperCase();
+      const c = String(displayCustomerName(r?.name_clean || "")).trim().charAt(0).toUpperCase();
       const k = /^[A-Z]$/.test(c) ? c : "A";
       out[k].push(r);
     }
     return out;
+  }, [visibleRows]);
+
+  const sequentialFolded = useMemo(() => {
+    return [...visibleRows].sort((a, b) => {
+      const na = displayCustomerName(a?.name_clean || "").toLowerCase();
+      const nb = displayCustomerName(b?.name_clean || "").toLowerCase();
+      const cmp = na.localeCompare(nb);
+      if (cmp) return cmp;
+      return Number(a?.id || 0) - Number(b?.id || 0);
+    });
   }, [visibleRows]);
 
   const counts = useMemo(() => {
@@ -175,7 +210,7 @@ function OrdersPage({ user }) {
     const q = deferredSearch.trim();
     if (!q || visibleRows.length === 0) return;
     const first = visibleRows[0];
-    const c = String(first?.name_clean || "").trim().charAt(0).toUpperCase();
+    const c = String(displayCustomerName(first?.name_clean || "")).trim().charAt(0).toUpperCase();
     const alpha = /^[A-Z]$/.test(c) ? c : "A";
     setOpenAlpha(alpha);
   }, [deferredSearch, visibleRows]);
@@ -218,6 +253,69 @@ function OrdersPage({ user }) {
       return;
     }
     navigate(`/orders/${Number(o.id)}/dryer-flow`);
+  };
+
+  const renderOrderCard = (r) => {
+    const rush = rushOf(r) === "RUSH";
+    const hd = isHD(r);
+    const pending = normalizeProcessing(r) === "PENDING";
+    const gameSt = String(r.gaming_flow_status || "").toUpperCase();
+    const lockUid = Number(r.gaming_locked_by_user_id || 0);
+    const lockedOther = gameSt === "ACTIVE" && lockUid && lockUid !== userId;
+    const lockedMe = gameSt === "ACTIVE" && lockUid === userId;
+    const gameDone = gameSt === "COMPLETED";
+    const cardCursor = showProcessed || !pending || gameDone || lockedOther ? "default" : "pointer";
+    const showName = displayCustomerName(r.name_clean);
+    const nameSize = 38 > String(showName || "").length ? 20 : 18;
+    return (
+      <Paper
+        key={r.id}
+        sx={{
+          borderRadius: 2,
+          bgcolor: hd ? HD_BG : WF_BG,
+          color: "#ffffff",
+          border: hd ? "1px solid #44c3d6" : "1px solid #2b3342",
+          outline: lockedOther ? "3px solid #fb923c" : lockedMe ? "3px solid #facc15" : gameDone ? "3px solid #4ade80" : "none",
+          outlineOffset: 1,
+        }}
+      >
+        <Box
+          role={!showProcessed && pending && !gameDone && !lockedOther ? "button" : undefined}
+          onClick={() => openDryerFlow(r)}
+          sx={{
+            p: 1.2,
+            cursor: cardCursor,
+            opacity: lockedOther ? 0.72 : 1,
+          }}
+        >
+          <Stack spacing={0.9}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Stack direction="row" spacing={0.7} alignItems="center">
+                {rush ? <Bolt sx={{ fontSize: 20, color: "#ffcb5b" }} /> : <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />}
+                <Typography sx={{ fontSize: 13, letterSpacing: 0.5, opacity: 0.9, fontWeight: 400 }}>
+                  {rush ? "RUSH" : "NON-RUSH"}
+                </Typography>
+              </Stack>
+              <Typography sx={{ fontSize: 13, opacity: 0.85, fontWeight: 400 }}>
+                {pending ? "Pending" : "Processed"}
+                {lockedOther ? " • In use" : lockedMe ? " • You" : gameDone ? " • Dryers OK" : ""}
+              </Typography>
+            </Stack>
+
+            <Typography sx={{ fontSize: nameSize, lineHeight: 1.15, fontWeight: 400 }}>{showName}</Typography>
+            {r.ticket_id ? (
+              <Typography sx={{ fontSize: 15, opacity: 0.9, fontWeight: 500 }}>
+                {t("ops.bagIdShort")} {String(r.ticket_id)}
+              </Typography>
+            ) : null}
+
+            <Typography sx={{ fontSize: 16, opacity: 0.92, fontWeight: 400 }}>
+              {formatDate(r.date_clean)} • {formatMeasure(r)}
+            </Typography>
+          </Stack>
+        </Box>
+      </Paper>
+    );
   };
 
   return (
@@ -265,9 +363,23 @@ function OrdersPage({ user }) {
         onPickOrder={onScanPickOrder}
       />
 
-      <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
+      <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+        <FormControlLabel
+          control={
+            <Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />
+          }
+          label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
+        />
+        <Typography variant="body2" color="text.secondary" sx={{ pl: 0.25 }}>
+          {t("ops.browseHint")}
+        </Typography>
+      </Stack>
 
-      {!loading && (
+      {(showProcessed || (!showProcessed && showBrowse)) && (
+        <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
+      )}
+
+      {!loading && !showProcessed && showBrowse && (
         <OpsAlphaJumpRail
           letters={ALPHAS}
           ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
@@ -280,6 +392,12 @@ function OrdersPage({ user }) {
         />
       )}
 
+      {!loading && !showProcessed && !showBrowse && (
+        <Alert severity="info" sx={{ mt: 1 }}>
+          {t("ops.browseCollapsedHintOrders")}
+        </Alert>
+      )}
+
       {loading ? (
         <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }} spacing={1.1}>
           <CircularProgress size={26} />
@@ -287,134 +405,83 @@ function OrdersPage({ user }) {
         </Stack>
       ) : (
         <Stack spacing={1} sx={{ mt: 1.2 }}>
-          {ALPHAS.map((alpha) => {
-            const list = grouped[alpha] || [];
-            if (searchActive && list.length === 0) return null;
-            const expanded = searchActive ? true : openAlpha === alpha;
-            const pal = getOpsAlphaPaletteForLetter(alpha);
-            return (
-              <Paper
-                key={alpha}
-                ref={(el) => {
-                  alphaRefs.current[alpha] = el;
-                }}
-                sx={{
-                  borderRadius: 2,
-                  border: `1px solid ${pal.border}`,
-                  overflow: "hidden",
-                  transition: "border-color 0.15s ease, background-color 0.15s ease",
-                  ...opsAlphaEmptySectionSx(list.length),
-                }}
-              >
-                <Button
-                  fullWidth
-                  onClick={() => toggleAlpha(alpha)}
+          {showProcessed ? (
+            sequentialFolded.length === 0 ? (
+              <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptyOrdersLetter")}</Typography>
+            ) : (
+              <Stack spacing={1}>{sequentialFolded.map((r) => renderOrderCard(r))}</Stack>
+            )
+          ) : showBrowse ? (
+            ALPHAS.map((alpha) => {
+              const list = grouped[alpha] || [];
+              if (searchActive && list.length === 0) return null;
+              const expanded = searchActive ? true : openAlpha === alpha;
+              const pal = getOpsAlphaPaletteForLetter(alpha);
+              return (
+                <Paper
+                  key={alpha}
+                  ref={(el) => {
+                    alphaRefs.current[alpha] = el;
+                  }}
                   sx={{
-                    px: 1.25,
-                    py: 1.35,
-                    minHeight: 56,
-                    justifyContent: "space-between",
-                    textTransform: "none",
-                    color: "#0f172a",
-                    bgcolor: pal.rowBg,
+                    borderRadius: 2,
+                    border: `1px solid ${pal.border}`,
+                    overflow: "hidden",
+                    transition: "border-color 0.15s ease, background-color 0.15s ease",
+                    ...opsAlphaEmptySectionSx(list.length),
                   }}
                 >
-                  <Stack direction="row" spacing={1.35} alignItems="center">
-                    <Box
-                      sx={{
-                        width: 42,
-                        height: 42,
-                        borderRadius: "50%",
-                        display: "grid",
-                        placeItems: "center",
-                        bgcolor: pal.chipBg,
-                        color: pal.chipColor,
-                        fontSize: 18,
-                        fontWeight: 700,
-                        letterSpacing: 0.02,
-                        boxShadow: list.length === 0 ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
-                      }}
-                    >
-                      {alpha}
+                  <Button
+                    fullWidth
+                    onClick={() => toggleAlpha(alpha)}
+                    sx={{
+                      px: 1.25,
+                      py: 1.35,
+                      minHeight: 56,
+                      justifyContent: "space-between",
+                      textTransform: "none",
+                      color: "#0f172a",
+                      bgcolor: pal.rowBg,
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.35} alignItems="center">
+                      <Box
+                        sx={{
+                          width: 42,
+                          height: 42,
+                          borderRadius: "50%",
+                          display: "grid",
+                          placeItems: "center",
+                          bgcolor: pal.chipBg,
+                          color: pal.chipColor,
+                          fontSize: 18,
+                          fontWeight: 700,
+                          letterSpacing: 0.02,
+                          boxShadow: list.length === 0 ? "none" : "0 2px 8px rgba(15,23,42,0.12)",
+                        }}
+                      >
+                        {alpha}
+                      </Box>
+                      <Typography sx={{ fontSize: 17, fontWeight: 600 }}>
+                        {t("ops.nBags").replace("{n}", String(list.length))}
+                      </Typography>
+                    </Stack>
+                    {expanded ? <ExpandLess sx={{ fontSize: 26, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 26, color: "#334155" }} />}
+                  </Button>
+
+                  {expanded && (
+                    <Box sx={{ p: 1 }}>
+                      {list.length === 0 ? (
+                        <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptyOrdersLetter")}</Typography>
+                      ) : (
+                        <Stack spacing={1}>{list.map((r) => renderOrderCard(r))}</Stack>
+                      )}
                     </Box>
-                    <Typography sx={{ fontSize: 17, fontWeight: 600 }}>
-                      {t("ops.nBags").replace("{n}", String(list.length))}
-                    </Typography>
-                  </Stack>
-                  {expanded ? <ExpandLess sx={{ fontSize: 26, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 26, color: "#334155" }} />}
-                </Button>
-
-                {expanded && (
-                  <Box sx={{ p: 1 }}>
-                    {list.length === 0 ? (
-                      <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptyOrdersLetter")}</Typography>
-                    ) : (
-                      <Stack spacing={1}>
-                        {list.map((r) => {
-                          const rush = rushOf(r) === "RUSH";
-                          const hd = isHD(r);
-                          const pending = normalizeProcessing(r) === "PENDING";
-                          const gameSt = String(r.gaming_flow_status || "").toUpperCase();
-                          const lockUid = Number(r.gaming_locked_by_user_id || 0);
-                          const lockedOther = gameSt === "ACTIVE" && lockUid && lockUid !== userId;
-                          const lockedMe = gameSt === "ACTIVE" && lockUid === userId;
-                          const gameDone = gameSt === "COMPLETED";
-                          const cardCursor =
-                            showProcessed || !pending || gameDone || lockedOther ? "default" : "pointer";
-                          return (
-                            <Paper
-                              key={r.id}
-                              sx={{
-                                borderRadius: 2,
-                                bgcolor: hd ? HD_BG : WF_BG,
-                                color: "#ffffff",
-                                border: hd ? "1px solid #44c3d6" : "1px solid #2b3342",
-                                outline: lockedOther ? "3px solid #fb923c" : lockedMe ? "3px solid #facc15" : gameDone ? "3px solid #4ade80" : "none",
-                                outlineOffset: 1,
-                              }}
-                            >
-                              <Box
-                                role={!showProcessed && pending && !gameDone && !lockedOther ? "button" : undefined}
-                                onClick={() => openDryerFlow(r)}
-                                sx={{
-                                  p: 1.2,
-                                  cursor: cardCursor,
-                                  opacity: lockedOther ? 0.72 : 1,
-                                }}
-                              >
-                                <Stack spacing={0.9}>
-                                  <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                    <Stack direction="row" spacing={0.7} alignItems="center">
-                                      {rush ? <Bolt sx={{ fontSize: 20, color: "#ffcb5b" }} /> : <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />}
-                                      <Typography sx={{ fontSize: 13, letterSpacing: 0.5, opacity: 0.9, fontWeight: 400 }}>
-                                        {rush ? "RUSH" : "NON-RUSH"}
-                                      </Typography>
-                                    </Stack>
-                                    <Typography sx={{ fontSize: 13, opacity: 0.85, fontWeight: 400 }}>
-                                      {pending ? "Pending" : "Processed"}
-                                      {lockedOther ? " • In use" : lockedMe ? " • You" : gameDone ? " • Dryers OK" : ""}
-                                    </Typography>
-                                  </Stack>
-
-                                  <Typography sx={{ fontSize: 38 > String(r?.name_clean || "").length ? 20 : 18, lineHeight: 1.15, fontWeight: 400 }}>
-                                    {r.name_clean}
-                                  </Typography>
-
-                                  <Typography sx={{ fontSize: 16, opacity: 0.92, fontWeight: 400 }}>
-                                    {formatDate(r.date_clean)} • {formatMeasure(r)}
-                                  </Typography>
-                                </Stack>
-                              </Box>
-                            </Paper>
-                          );
-                        })}
-                      </Stack>
-                    )}
-                  </Box>
-                )}
-              </Paper>
-            );
-          })}
+                  )}
+                </Paper>
+              );
+            })
+          ) : null}
         </Stack>
       )}
 

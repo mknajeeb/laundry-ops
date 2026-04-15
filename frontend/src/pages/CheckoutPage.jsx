@@ -8,8 +8,10 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   Paper,
   Stack,
+  Switch,
   Typography,
 } from "@mui/material";
 import {
@@ -61,7 +63,6 @@ function CheckoutPage() {
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
   const scanDisabled = checkoutBlocked;
   const alphaQueueRefs = useRef({});
-  const alphaSentRefs = useRef({});
 
   const [rows, setRows] = useState([]);
   const [checkedRows, setCheckedRows] = useState([]);
@@ -71,7 +72,7 @@ function CheckoutPage() {
   const deferredSearch = useDeferredValue(search);
   const [rushTab, setRushTab] = useState("ALL");
   const [openAlpha, setOpenAlpha] = useState(null);
-  const [openAlphaSent, setOpenAlphaSent] = useState(null);
+  const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_CHECKOUT) === "1");
   const [sentDrawerOpen, setSentDrawerOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
@@ -109,6 +110,10 @@ function CheckoutPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    localStorage.setItem(BROWSE_STORAGE_CHECKOUT, showBrowse ? "1" : "0");
+  }, [showBrowse]);
+
   const rushOf = (r) => {
     const raw = String(r?.rush_type ?? "").trim();
     if (raw) {
@@ -145,16 +150,12 @@ function CheckoutPage() {
   };
 
   const normalizeName = (value) => String(value || "").trim().toLowerCase();
-  const nameOf = (r) => String(r?.name_clean || r?.name || "").trim();
-  const nameOfLog = (r) => String(r?.name || r?.name_clean || "").trim();
+  const nameOf = (r) => displayCustomerName(String(r?.name_clean || r?.name || "").trim());
 
   const alphaOf = useCallback((row) => {
-    const ch = nameOf(row).charAt(0).toUpperCase();
-    return /^[A-Z]$/.test(ch) ? ch : "#";
-  }, []);
-
-  const alphaOfLog = useCallback((row) => {
-    const ch = nameOfLog(row).charAt(0).toUpperCase();
+    const ch = displayCustomerName(String(row?.name_clean || row?.name || "").trim())
+      .charAt(0)
+      .toUpperCase();
     return /^[A-Z]$/.test(ch) ? ch : "#";
   }, []);
 
@@ -163,10 +164,19 @@ function CheckoutPage() {
     if (!q) return rows;
     return rows.filter((r) => {
       const name = String(r?.name_clean || "").toLowerCase();
+      const disp = displayCustomerName(r?.name_clean || "").toLowerCase();
+      const tid = String(r?.ticket_id || "").toLowerCase();
       const id = String(r?.id || "").toLowerCase();
       const svc = String(r?.service_type || "").toLowerCase();
       const w = String(r?.weight_num ?? r?.weight ?? "").toLowerCase();
-      return name.includes(q) || id.startsWith(q) || svc.includes(q) || w.includes(q);
+      return (
+        name.includes(q) ||
+        disp.includes(q) ||
+        tid.includes(q) ||
+        id.startsWith(q) ||
+        svc.includes(q) ||
+        w.includes(q)
+      );
     });
   }, [rows, deferredSearch]);
 
@@ -193,23 +203,15 @@ function CheckoutPage() {
     return { keys: ALPHAS, groups };
   }, [queueForRushTab, alphaOf]);
 
-  const groupedSent = useMemo(() => {
-    const groups = {};
-    checkedRows.forEach((row) => {
-      const alpha = alphaOfLog(row);
-      if (!groups[alpha]) groups[alpha] = [];
-      groups[alpha].push(row);
+  const sentSequential = useMemo(() => {
+    return [...checkedRows].sort((a, b) => {
+      const na = displayCustomerName(String(a?.name || a?.name_clean || "").trim()).toLowerCase();
+      const nb = displayCustomerName(String(b?.name || b?.name_clean || "").trim()).toLowerCase();
+      const cmp = na.localeCompare(nb);
+      if (cmp) return cmp;
+      return String(b.checkout_time || "").localeCompare(String(a.checkout_time || ""));
     });
-    ALPHAS.forEach((k) => {
-      if (!groups[k]) groups[k] = [];
-      groups[k].sort((a, b) => nameOfLog(a).localeCompare(nameOfLog(b)));
-    });
-    if (groups["#"]?.length) {
-      groups["#"].sort((a, b) => nameOfLog(a).localeCompare(nameOfLog(b)));
-      return { keys: [...ALPHAS, "#"], groups };
-    }
-    return { keys: ALPHAS, groups };
-  }, [checkedRows, alphaOfLog]);
+  }, [checkedRows]);
 
   const counters = useMemo(() => {
     const rushCount = searchFilteredRows.filter((r) => rushOf(r) === "RUSH").length;
@@ -240,10 +242,6 @@ function CheckoutPage() {
 
   const handleAlphaToggle = (alpha) => {
     setOpenAlpha((prev) => (prev === alpha ? null : alpha));
-  };
-
-  const handleAlphaSentToggle = (alpha) => {
-    setOpenAlphaSent((prev) => (prev === alpha ? null : alpha));
   };
 
   const confirmCheckout = async () => {
@@ -352,29 +350,51 @@ function CheckoutPage() {
             ]}
           />
 
-          <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
-
-          <OpsAlphaJumpRail
-            letters={groupedQueue.keys}
-            ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
-            onPick={(letter) => {
-              setOpenAlpha(letter);
-              requestAnimationFrame(() => {
-                alphaQueueRefs.current[letter]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-              });
-            }}
-          />
-
           <OrderScanLookupBar
             storageKey="washpro_scan_lookup_checkout"
             batchDate={lookupBatchDate}
             disabled={scanDisabled}
             onPickOrder={(o) => onSelectForCheckout(o)}
           />
+
+          <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+            <FormControlLabel
+              control={
+                <Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />
+              }
+              label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
+            />
+            <Typography variant="body2" color="text.secondary" sx={{ pl: 0.25 }}>
+              {t("ops.browseHint")}
+            </Typography>
+          </Stack>
+
+          {showBrowse && (
+            <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
+          )}
+
+          {showBrowse && (
+            <OpsAlphaJumpRail
+              letters={groupedQueue.keys}
+              ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
+              onPick={(letter) => {
+                setOpenAlpha(letter);
+                requestAnimationFrame(() => {
+                  alphaQueueRefs.current[letter]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                });
+              }}
+            />
+          )}
+
+          {!showBrowse && (
+            <Alert severity="info" sx={{ mt: 1 }}>
+              {t("ops.browseCollapsedHint")}
+            </Alert>
+          )}
         </>
       )}
 
-      {!sentDrawerOpen && (
+      {!sentDrawerOpen && showBrowse && (
       <Box sx={{ mt: 1.2 }}>
         {groupedQueue.keys.map((alpha) => {
           const list = groupedQueue.groups[alpha] || [];
@@ -459,9 +479,16 @@ function CheckoutPage() {
                           >
                             <Stack spacing={0.6}>
                               <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography sx={{ fontSize: 21, fontWeight: 500 }}>{r.name_clean}</Typography>
+                                <Typography sx={{ fontSize: 21, fontWeight: 500 }}>
+                                  {displayCustomerName(r.name_clean)}
+                                </Typography>
                                 <ChevronRight sx={{ color: "#fff" }} />
                               </Stack>
+                              {r.ticket_id ? (
+                                <Typography sx={{ fontSize: 14, opacity: 0.92, fontWeight: 600 }}>
+                                  {t("ops.bagIdShort")} {String(r.ticket_id)}
+                                </Typography>
+                              ) : null}
                               <Typography sx={{ opacity: 0.95 }}>
                                 {formatDate(r.date_clean)} • {measureOf(r)}
                               </Typography>
@@ -547,126 +574,53 @@ function CheckoutPage() {
             {checkedRows.length === 0 ? (
               <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.5 }}>{t("ops.noSentRecent")}</Typography>
             ) : (
-              <>
-                <OpsAlphaJumpRail
-                  letters={groupedSent.keys}
-                  ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
-                  onPick={(letter) => {
-                    setOpenAlphaSent(letter);
-                    requestAnimationFrame(() => {
-                      alphaSentRefs.current[letter]?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-                    });
-                  }}
-                />
-                {groupedSent.keys.map((alpha) => {
-                const list = groupedSent.groups[alpha] || [];
-                const expanded = openAlphaSent === alpha;
-                const pal = getOpsAlphaPaletteForLetter(alpha);
-                return (
+              <Stack spacing={0.75} sx={{ pt: 0.5 }}>
+                {sentSequential.map((r) => (
                   <Paper
-                    key={`sent-${alpha}`}
-                    ref={(el) => {
-                      alphaSentRefs.current[alpha] = el;
-                    }}
+                    key={`${r.id}-${r.order_id}`}
+                    variant="outlined"
                     sx={{
-                      mb: 0.75,
-                      borderRadius: 1.75,
-                      overflow: "hidden",
-                      border: `1px solid ${pal.border}`,
-                      boxShadow: "none",
-                      transition: "border-color 0.15s ease, background-color 0.15s ease",
-                      ...opsAlphaEmptySectionSx(list.length),
+                      p: 1,
+                      borderRadius: 2,
+                      borderColor: "rgba(148, 163, 184, 0.5)",
+                      bgcolor: "rgba(255,255,255,0.88)",
                     }}
                   >
-                    <Button
-                      fullWidth
-                      onClick={() => handleAlphaSentToggle(alpha)}
-                      sx={{
-                        px: 1,
-                        py: 1,
-                        minHeight: 52,
-                        justifyContent: "space-between",
-                        color: "#0f172a",
-                        textTransform: "none",
-                        bgcolor: pal.rowBg,
-                      }}
-                    >
-                      <Stack direction="row" spacing={1.1} alignItems="center">
-                        <Box
-                          sx={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: "50%",
-                            display: "grid",
-                            placeItems: "center",
-                            bgcolor: pal.chipBg,
-                            color: pal.chipColor,
-                            fontWeight: 700,
-                            fontSize: 16,
-                            boxShadow: list.length === 0 ? "none" : "0 2px 8px rgba(15,23,42,0.1)",
-                          }}
-                        >
-                          {alpha}
-                        </Box>
-                        <Typography sx={{ fontSize: 15, fontWeight: 600 }}>
-                          {t("ops.nSent").replace("{n}", String(list.length))}
+                    <Stack spacing={1}>
+                      <Stack spacing={0.35} sx={{ minWidth: 0 }}>
+                        <Typography sx={{ fontWeight: 700, fontSize: "1.05rem" }}>
+                          {displayCustomerName(r.name || "") || `#${r.order_id}`}
+                        </Typography>
+                        {r.ticket_id ? (
+                          <Typography sx={{ fontSize: 12.5, fontWeight: 600, color: "text.primary" }}>
+                            {t("ops.bagIdShort")} {String(r.ticket_id)}
+                          </Typography>
+                        ) : null}
+                        <Typography sx={{ fontSize: 12.5, color: "text.secondary", lineHeight: 1.4 }}>
+                          #{r.order_id} • {formatDate(r.rush_date || r.checkout_time)} • {logMeasureOf(r)}
                         </Typography>
                       </Stack>
-                      {expanded ? <ExpandLess sx={{ fontSize: 24, color: "#334155" }} /> : <ExpandMore sx={{ fontSize: 24, color: "#334155" }} />}
-                    </Button>
-                    {expanded && list.length === 0 && (
-                      <Box sx={{ px: 1, pb: 0.75 }}>
-                        <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptySentLetter")}</Typography>
-                      </Box>
-                    )}
-                    {expanded && list.length > 0 && (
-                      <Stack spacing={0.55} sx={{ p: 0.65, pt: 0 }}>
-                        {list.map((r) => (
-                          <Paper
-                            key={`${r.id}-${r.order_id}`}
-                            variant="outlined"
-                            sx={{
-                              p: 1,
-                              borderRadius: 2,
-                              borderColor: "rgba(148, 163, 184, 0.5)",
-                              bgcolor: "rgba(255,255,255,0.88)",
-                            }}
-                          >
-                            <Stack spacing={1}>
-                              <Stack spacing={0.35} sx={{ minWidth: 0 }}>
-                                <Typography sx={{ fontWeight: 700, fontSize: "1.05rem" }}>
-                                  {r.name || `#${r.order_id}`}
-                                </Typography>
-                                <Typography sx={{ fontSize: 12.5, color: "text.secondary", lineHeight: 1.4 }}>
-                                  #{r.order_id} • {formatDate(r.rush_date || r.checkout_time)} • {logMeasureOf(r)}
-                                </Typography>
-                              </Stack>
-                              <Button
-                                fullWidth
-                                variant="outlined"
-                                color="warning"
-                                size="medium"
-                                startIcon={<Undo sx={{ fontSize: 22 }} />}
-                                onClick={() => setUndoRow(r)}
-                                sx={{
-                                  py: 1.1,
-                                  fontWeight: 700,
-                                  borderRadius: 2,
-                                  textTransform: "none",
-                                  fontSize: "0.95rem",
-                                }}
-                              >
-                                {t("ops.undoSend")}
-                              </Button>
-                            </Stack>
-                          </Paper>
-                        ))}
-                      </Stack>
-                    )}
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        color="warning"
+                        size="medium"
+                        startIcon={<Undo sx={{ fontSize: 22 }} />}
+                        onClick={() => setUndoRow(r)}
+                        sx={{
+                          py: 1.1,
+                          fontWeight: 700,
+                          borderRadius: 2,
+                          textTransform: "none",
+                          fontSize: "0.95rem",
+                        }}
+                      >
+                        {t("ops.undoSend")}
+                      </Button>
+                    </Stack>
                   </Paper>
-                );
-              })}
-              </>
+                ))}
+              </Stack>
             )}
           </Box>
         </Box>
@@ -677,7 +631,12 @@ function CheckoutPage() {
         <DialogContent dividers>
           {activeRow && (
             <Stack spacing={1}>
-              <Typography sx={{ fontSize: 21 }}>{activeRow.name_clean}</Typography>
+              <Typography sx={{ fontSize: 21 }}>{displayCustomerName(activeRow.name_clean)}</Typography>
+              {activeRow.ticket_id ? (
+                <Typography sx={{ fontSize: 15, fontWeight: 600 }}>
+                  {t("ops.bagIdShort")} {String(activeRow.ticket_id)}
+                </Typography>
+              ) : null}
               <Typography>
                 {formatDate(activeRow.date_clean)} • {measureOf(activeRow)}
               </Typography>
@@ -714,7 +673,8 @@ function CheckoutPage() {
           {nameConfirmDialog && (
             <Stack spacing={1}>
               <Alert severity="warning">
-                Multiple active orders found for {nameConfirmDialog.name_clean}. Verify ticket weight/count and date.
+                Multiple active orders found for {displayCustomerName(nameConfirmDialog.name_clean)}. Verify ticket
+                weight/count and date.
               </Alert>
               <Stack spacing={0.8}>
                 {nameConfirmDialog.options.map((opt) => (
@@ -725,6 +685,7 @@ function CheckoutPage() {
                     sx={{ textTransform: "none", justifyContent: "flex-start" }}
                   >
                     <span>
+                      {opt.ticket_id ? `${t("ops.bagIdShort")} ${opt.ticket_id} · ` : ""}
                       {formatDate(opt.date_clean)} • {measureOf(opt)}
                     </span>
                   </Button>
@@ -754,7 +715,14 @@ function CheckoutPage() {
         <DialogContent dividers>
           {undoRow && (
             <Stack spacing={1}>
-              <Typography sx={{ fontSize: 19 }}>{undoRow.name || `Order #${undoRow.order_id}`}</Typography>
+              <Typography sx={{ fontSize: 19 }}>
+                {displayCustomerName(undoRow.name || "") || `Order #${undoRow.order_id}`}
+              </Typography>
+              {undoRow.ticket_id ? (
+                <Typography sx={{ fontWeight: 600 }}>
+                  {t("ops.bagIdShort")} {String(undoRow.ticket_id)}
+                </Typography>
+              ) : null}
               <Typography>Move this bag back to the operations queue.</Typography>
             </Stack>
           )}

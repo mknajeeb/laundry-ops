@@ -24,6 +24,25 @@ from backend.rinse_bag_export_runner import (
 _RINSE_EXPORT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _json_rinse_export_disabled(*, bag_export: bool = False):
+    """503 with diagnostics so operators can tell missing env vs bad value vs wrong host."""
+    dg = diagnose()
+    if bag_export:
+        err = "Rinse bag export is disabled (RINSE_BAG_EXPORT_ENABLED not on for this worker)."
+    else:
+        err = "Rinse import is disabled (RINSE_BAG_EXPORT_ENABLED not on for this worker)."
+    return (
+        jsonify(
+            {
+                "error": err,
+                "rinse_export_env_key_present": dg.get("rinse_export_env_key_present"),
+                "rinse_export_env_value_len": dg.get("rinse_export_env_value_len"),
+            }
+        ),
+        503,
+    )
+
+
 def _rinse_job_created_utc(row_created: datetime | str | None):
     """Parse job created_at / updated_at from API row (iso string from fetch) or raw datetime."""
     if row_created is None:
@@ -175,10 +194,13 @@ def _rinse_import_after_auth(
     batch_date: date,
     tenant_oid: int,
     virtual_name: str,
-) -> dict:
+    scrape_progress=None,
+):
     """
     Scrape → portal CSV → orders_df → commit draft upload batch.
     Caller must have already verified admin + feature flags (no request auth here).
+
+    scrape_progress: optional callable(stdout_tail: str, stderr_tail: str) for live job log (import jobs).
 
     Returns dict with keys: ok (bool), status_code (int), body (dict for JSON),
     and on scrape failure optionally exit_code, stdout_tail, stderr_tail.
@@ -192,7 +214,9 @@ def _rinse_import_after_auth(
     path = Path(tmp_path)
     try:
         code, stdout, stderr = run_bag_export_csv(
-            path, extra_env=rinse_import_subprocess_extra_env()
+            path,
+            extra_env=rinse_import_subprocess_extra_env(),
+            progress_callback=scrape_progress,
         )
     except Exception as e:
         app.logger.exception("rinse import scrape error")
@@ -232,6 +256,15 @@ def _rinse_import_after_auth(
                 "stderr_tail": (stderr or "")[-8000:],
             },
         }
+
+    if scrape_progress:
+        try:
+            scrape_progress(
+                (stdout or "") + "\n→ Parsing portal CSV and building order rows…\n",
+                stderr or "",
+            )
+        except Exception:
+            pass
 
     nonempty_lines: list[str] = []
     try:
@@ -275,6 +308,15 @@ def _rinse_import_after_auth(
             "status_code": 400,
             "body": {"error": "No orders parsed from Rinse portal CSV."},
         }
+
+    if scrape_progress:
+        try:
+            scrape_progress(
+                (stdout or "") + "\n→ Saving to upload draft batch…\n",
+                stderr or "",
+            )
+        except Exception:
+            pass
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -341,11 +383,7 @@ def register_rinse_export_routes(app):
         from backend.app import get_db, require_admin
 
         if not export_enabled():
-            return jsonify(
-                {
-                    "error": "Rinse bag export is disabled. Set RINSE_BAG_EXPORT_ENABLED=1 on the server.",
-                }
-            ), 503
+            return _json_rinse_export_disabled(bag_export=True)
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -439,11 +477,7 @@ def register_rinse_export_routes(app):
         from backend.app import get_db, parse_date_value, require_admin, user_org_id
 
         if not export_enabled():
-            return jsonify(
-                {
-                    "error": "Rinse import is disabled. Set RINSE_BAG_EXPORT_ENABLED=1 on the server.",
-                }
-            ), 503
+            return _json_rinse_export_disabled(bag_export=False)
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -486,11 +520,7 @@ def register_rinse_export_routes(app):
         )
 
         if not export_enabled():
-            return jsonify(
-                {
-                    "error": "Rinse import is disabled. Set RINSE_BAG_EXPORT_ENABLED=1 on the server.",
-                }
-            ), 503
+            return _json_rinse_export_disabled(bag_export=False)
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -587,7 +617,42 @@ def register_rinse_export_routes(app):
                         )
                         hb_thread.start()
 
-                    res = _rinse_import_after_auth(app, batch_date, tenant_oid, virtual_name)
+                    def push_scrape_progress(so_tail: str, se_tail: str) -> None:
+                        try:
+                            conn_p = db_conn()
+                            try:
+                                cp = conn_p.cursor(dictionary=True)
+                                try:
+                                    ensure_rinse_import_jobs_table(cp)
+                                    note = "Scraping Rinse (Playwright)…"
+                                    for ln in (so_tail or "").splitlines():
+                                        t = ln.strip()
+                                        if t:
+                                            note = t[:500]
+                                    update_rinse_import_job(
+                                        cp,
+                                        job_id,
+                                        tenant_oid,
+                                        status="running",
+                                        progress_note=note,
+                                        stdout_tail=(so_tail or "")[-65000:],
+                                        stderr_tail=(se_tail or "")[-8000:],
+                                    )
+                                    conn_p.commit()
+                                finally:
+                                    cp.close()
+                            finally:
+                                conn_p.close()
+                        except Exception:
+                            app.logger.warning("rinse import progress push failed", exc_info=True)
+
+                    res = _rinse_import_after_auth(
+                        app,
+                        batch_date,
+                        tenant_oid,
+                        virtual_name,
+                        scrape_progress=push_scrape_progress,
+                    )
 
                     conn_done = db_conn()
                     try:
@@ -673,7 +738,7 @@ def register_rinse_export_routes(app):
         from backend.rinse_import_jobs import ensure_rinse_import_jobs_table, fetch_rinse_import_job
 
         if not export_enabled():
-            return jsonify({"error": "Rinse import is disabled."}), 503
+            return _json_rinse_export_disabled(bag_export=False)
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -703,12 +768,13 @@ def register_rinse_export_routes(app):
         }
         if row.get("result"):
             out["result"] = row["result"]
+        # Live scrape log for UI monitor while running (stdout/stderr tails refreshed by worker).
+        if row.get("stdout_tail"):
+            out["stdout_tail"] = row["stdout_tail"]
+        if row.get("stderr_tail"):
+            out["stderr_tail"] = row["stderr_tail"]
         if row["status"] == "failed":
             out["error"] = row.get("error_summary")
             out["http_status"] = row.get("http_status")
             out["exit_code"] = row.get("exit_code")
-            if row.get("stdout_tail"):
-                out["stdout_tail"] = row["stdout_tail"]
-            if row.get("stderr_tail"):
-                out["stderr_tail"] = row["stderr_tail"]
         return jsonify(out)

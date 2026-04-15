@@ -306,6 +306,13 @@ export const uploadOrders = (formData) =>
     }
   });
 
+/** Portal-style CSV (Rinse scrape export). Does not use Excel `transform_orders`. */
+export const uploadPortalOrdersCsv = (formData) =>
+  axios.post(`${API_BASE}/upload_orders_portal_csv`, formData, {
+    timeout: 120000,
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
 /** Admin: GET whether Rinse bag CSV export can run on the server (Node + scraper + env). */
 export const getRinseBagExportConfig = () =>
   axios.get(`${API_BASE}/admin/rinse/bag-export/config`, { timeout: 15000 });

@@ -13,12 +13,16 @@ import {
   Stack,
   Switch,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { PhotoCamera } from "@mui/icons-material";
+import { PhotoCamera, QrCodeScanner } from "@mui/icons-material";
+import { Html5Qrcode } from "html5-qrcode";
 import { createWorker, PSM } from "tesseract.js";
 import { useI18n } from "../i18n/I18nContext";
 import { lookupOrdersByScan } from "../api";
+import { displayCustomerName } from "../utils/displayCustomerName";
 
 function cropCanvasFraction(src, y0Frac, y1Frac) {
   const y0 = Math.max(0, Math.floor(src.height * y0Frac));
@@ -208,21 +212,54 @@ function buildLookupBodies(nameHint, serviceHint, batchStr) {
   });
 }
 
+function buildLookupBodiesForQr(qrText, batchStr) {
+  const qr = String(qrText || "").trim();
+  if (!qr) return [];
+  const bd = String(batchStr || "").trim().slice(0, 10);
+  const batchOk = /^\d{4}-\d{2}-\d{2}$/.test(bd);
+  const base = { qr_text: qr, name_hint: "", service_hint: "" };
+  const bodies = [];
+  if (batchOk) {
+    bodies.push({ ...base, batch_date: bd });
+  }
+  bodies.push({ ...base });
+  const seen = new Set();
+  return bodies.filter((b) => {
+    const k = JSON.stringify(b);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+const dialogTabKey = (storageKey) => `${storageKey}_dialog_tab`;
+
 export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate }) {
   const { t } = useI18n();
-  const [enabled, setEnabled] = useState(() => localStorage.getItem(storageKey) === "1");
+  const readerId = `order-scan-qr-${storageKey.replace(/[^a-z0-9_-]/gi, "-")}`;
+  const [enabled, setEnabled] = useState(() => localStorage.getItem(storageKey) !== "0");
   const [open, setOpen] = useState(false);
+  const [dialogTab, setDialogTab] = useState(() => localStorage.getItem(dialogTabKey(storageKey)) || "qr");
   const [nameHint, setNameHint] = useState("");
   const [serviceHint, setServiceHint] = useState("");
+  const [qrPaste, setQrPaste] = useState("");
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const workerRef = useRef(null);
+  const scannerRef = useRef(null);
+  const qrDecodeLockRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(storageKey, enabled ? "1" : "0");
   }, [enabled, storageKey]);
+
+  useEffect(() => {
+    if (open) {
+      localStorage.setItem(dialogTabKey(storageKey), dialogTab);
+    }
+  }, [dialogTab, open, storageKey]);
 
   const terminateWorker = useCallback(async () => {
     const w = workerRef.current;
@@ -252,12 +289,83 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     }
   }, []);
 
+  const stopQrScanner = useCallback(async () => {
+    const h = scannerRef.current;
+    scannerRef.current = null;
+    if (!h) return;
+    try {
+      await h.stop();
+    } catch {
+      /* */
+    }
+    try {
+      await h.clear();
+    } catch {
+      /* */
+    }
+  }, []);
+
+  const runBodies = useCallback(
+    async (bodies) => {
+      if (!bodies.length) {
+        window.alert(t("ops.scanAlertNeedInput"));
+        return false;
+      }
+      let lastErr = null;
+      for (const body of bodies) {
+        try {
+          const res = await lookupOrdersByScan(body);
+          const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
+          if (matches.length === 1) {
+            setOpen(false);
+            onPickOrder(matches[0]);
+            return true;
+          }
+          if (matches.length > 1) {
+            setPickList(matches);
+            return true;
+          }
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      if (lastErr) {
+        window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
+        return false;
+      }
+      const usedQr = bodies.some((b) => String(b.qr_text || "").trim());
+      window.alert(usedQr ? t("ops.scanAlertNoMatchQr") : t("ops.scanAlertNoMatch"));
+      return false;
+    },
+    [onPickOrder, t]
+  );
+
+  const runOrderLookup = useCallback(
+    async (nh, sh) => {
+      const bodies = buildLookupBodies(nh, sh, batchDate);
+      return runBodies(bodies);
+    },
+    [batchDate, runBodies]
+  );
+
+  const onPasteQrLookup = useCallback(async () => {
+    setBusy(true);
+    try {
+      await runBodies(buildLookupBodiesForQr(qrPaste, batchDate));
+    } finally {
+      setBusy(false);
+    }
+  }, [batchDate, qrPaste, runBodies]);
+
   useEffect(() => {
-    if (!open) {
+    if (!open || dialogTab !== "ocr") {
       stopCamera();
       void terminateWorker();
-      setNameHint("");
-      setServiceHint("");
+      if (!open) {
+        setNameHint("");
+        setServiceHint("");
+        setQrPaste("");
+      }
       return undefined;
     }
     let cancelled = false;
@@ -285,39 +393,50 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       cancelled = true;
       stopCamera();
     };
-  }, [open, stopCamera]);
+  }, [open, dialogTab, stopCamera]);
 
-  const runOrderLookup = useCallback(
-    async (nh, sh) => {
-      const bd = String(batchDate || "").trim().slice(0, 10);
-      const bodies = buildLookupBodies(nh, sh, bd);
-      let lastErr = null;
-      for (const body of bodies) {
-        try {
-          const res = await lookupOrdersByScan(body);
-          const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
-          if (matches.length === 1) {
-            setOpen(false);
-            onPickOrder(matches[0]);
-            return true;
-          }
-          if (matches.length > 1) {
-            setPickList(matches);
-            return true;
-          }
-        } catch (e) {
-          lastErr = e;
-        }
+  useEffect(() => {
+    if (!open || dialogTab !== "qr") {
+      void stopQrScanner();
+      return undefined;
+    }
+    let cancelled = false;
+    qrDecodeLockRef.current = false;
+
+    const run = async () => {
+      await stopQrScanner();
+      if (cancelled) return;
+      const el = document.getElementById(readerId);
+      if (!el) return;
+      const html5 = new Html5Qrcode(readerId);
+      scannerRef.current = html5;
+      try {
+        await html5.start(
+          { facingMode: "environment" },
+          { fps: 8, qrbox: { width: 260, height: 260 } },
+          async (text) => {
+            if (qrDecodeLockRef.current) return;
+            const raw = String(text || "").trim();
+            if (!raw) return;
+            qrDecodeLockRef.current = true;
+            try {
+              await runBodies(buildLookupBodiesForQr(raw, batchDate));
+            } finally {
+              qrDecodeLockRef.current = false;
+            }
+          },
+          () => {}
+        );
+      } catch {
+        /* camera blocked */
       }
-      if (lastErr) {
-        window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
-        return false;
-      }
-      window.alert(t("ops.scanAlertNoMatch"));
-      return false;
-    },
-    [batchDate, onPickOrder, t]
-  );
+    };
+    run();
+    return () => {
+      cancelled = true;
+      void stopQrScanner();
+    };
+  }, [open, dialogTab, readerId, batchDate, runBodies, stopQrScanner]);
 
   const captureAndOcr = useCallback(async () => {
     const video = videoRef.current;
@@ -369,7 +488,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     return { ...parseTagOcrStructured(merged, rawFallback), noVideo: false };
   }, []);
 
-  const onPrimary = useCallback(async () => {
+  const onPrimaryOcr = useCallback(async () => {
     setBusy(true);
     try {
       const hasBoth = nameHint.trim() && serviceHint.trim();
@@ -408,11 +527,17 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     return () => {
       void terminateWorker();
       stopCamera();
+      void stopQrScanner();
     };
-  }, [stopCamera, terminateWorker]);
+  }, [stopCamera, stopQrScanner, terminateWorker]);
 
-  const primaryLabel =
+  const primaryOcrLabel =
     nameHint.trim() && serviceHint.trim() ? t("ops.tagFindOrder") : t("ops.tagReadButton");
+
+  const handleDialogClose = () => {
+    if (busy) return;
+    setOpen(false);
+  };
 
   return (
     <Box sx={{ mt: 0.75 }}>
@@ -425,7 +550,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           <Button
             variant="contained"
             color="primary"
-            startIcon={<PhotoCamera />}
+            startIcon={<QrCodeScanner />}
             onClick={() => setOpen(true)}
             disabled={disabled}
             sx={{
@@ -442,80 +567,133 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
         )}
       </Stack>
 
-      <Dialog open={open} onClose={() => !busy && setOpen(false)} fullWidth maxWidth="sm" aria-labelledby="tag-read-title">
-        <DialogTitle id="tag-read-title" sx={{ fontWeight: 700, py: 1.5, px: 2 }}>
-          {t("ops.tagDialogTitle")}
+      <Dialog open={open} onClose={handleDialogClose} fullWidth maxWidth="sm" aria-labelledby="order-scan-title">
+        <DialogTitle id="order-scan-title" sx={{ fontWeight: 700, py: 1.5, px: 2 }}>
+          {t("ops.scanDialogTitle")}
         </DialogTitle>
         <DialogContent sx={{ px: 2, pt: 0, pb: 2 }}>
           <Stack spacing={1.5}>
-            <Box
-              sx={{
-                borderRadius: 2,
-                overflow: "hidden",
-                bgcolor: "#0f172a",
-                minHeight: 280,
-                position: "relative",
-              }}
-            >
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                style={{ width: "100%", height: 280, objectFit: "cover", display: "block" }}
-              />
-            </Box>
-            <TextField
-              label={t("ops.scanNameLabel")}
-              value={nameHint}
-              onChange={(e) => setNameHint(e.target.value)}
-              size="small"
+            <ToggleButtonGroup
+              exclusive
               fullWidth
-              autoComplete="off"
-            />
-            <TextField
-              select
-              label={t("ops.scanServiceLabel")}
-              value={serviceHint}
-              onChange={(e) => setServiceHint(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-              SelectProps={{
-                displayEmpty: true,
-                renderValue: (selected) => {
-                  if (!selected) return "—";
-                  const labels = {
-                    "Wash & fold": t("ops.svcWashFold"),
-                    "Wash and fold": t("ops.svcWashAndFold"),
-                    "Hang dry": t("ops.svcHangDry"),
-                    WF: "WF",
-                    HD: "HD",
-                  };
-                  return labels[selected] || selected;
-                },
-              }}
               size="small"
-              fullWidth
+              value={dialogTab}
+              onChange={(_, v) => v && setDialogTab(v)}
+              sx={{ mb: 0.5 }}
             >
-              <MenuItem value="">—</MenuItem>
-              <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
-              <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
-              <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
-              <MenuItem value="WF">WF</MenuItem>
-              <MenuItem value="HD">HD</MenuItem>
-            </TextField>
-            <Button
-              variant="contained"
-              size="large"
-              onClick={onPrimary}
-              disabled={busy || disabled}
-              sx={{ py: 1.5, fontWeight: 700 }}
-            >
-              {busy ? <CircularProgress size={22} color="inherit" /> : primaryLabel}
-            </Button>
+              <ToggleButton value="qr">{t("ops.scanModeBagQr")}</ToggleButton>
+              <ToggleButton value="ocr">{t("ops.scanModeTagOcr")}</ToggleButton>
+            </ToggleButtonGroup>
+
+            {dialogTab === "qr" && (
+              <Stack spacing={1.25}>
+                <Typography variant="body2" color="text.secondary">
+                  {t("ops.scanBagQrHint")}
+                </Typography>
+                <Box
+                  sx={{
+                    borderRadius: 2,
+                    overflow: "hidden",
+                    bgcolor: "#0f172a",
+                    minHeight: 280,
+                    position: "relative",
+                  }}
+                >
+                  <Box id={readerId} sx={{ width: "100%", minHeight: 280 }} />
+                </Box>
+                <TextField
+                  label={t("ops.scanPasteBagCode")}
+                  value={qrPaste}
+                  onChange={(e) => setQrPaste(e.target.value)}
+                  size="small"
+                  fullWidth
+                  autoComplete="off"
+                />
+                <Button
+                  variant="contained"
+                  size="large"
+                  onClick={onPasteQrLookup}
+                  disabled={busy || disabled || !qrPaste.trim()}
+                  sx={{ py: 1.5, fontWeight: 700 }}
+                >
+                  {busy ? <CircularProgress size={22} color="inherit" /> : t("ops.scanLookUp")}
+                </Button>
+              </Stack>
+            )}
+
+            {dialogTab === "ocr" && (
+              <Stack spacing={1.5}>
+                <Box
+                  sx={{
+                    borderRadius: 2,
+                    overflow: "hidden",
+                    bgcolor: "#0f172a",
+                    minHeight: 280,
+                    position: "relative",
+                  }}
+                >
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    style={{ width: "100%", height: 280, objectFit: "cover", display: "block" }}
+                  />
+                </Box>
+                <TextField
+                  label={t("ops.scanNameLabel")}
+                  value={nameHint}
+                  onChange={(e) => setNameHint(e.target.value)}
+                  size="small"
+                  fullWidth
+                  autoComplete="off"
+                />
+                <TextField
+                  select
+                  label={t("ops.scanServiceLabel")}
+                  value={serviceHint}
+                  onChange={(e) => setServiceHint(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  SelectProps={{
+                    displayEmpty: true,
+                    renderValue: (selected) => {
+                      if (!selected) return "—";
+                      const labels = {
+                        "Wash & fold": t("ops.svcWashFold"),
+                        "Wash and fold": t("ops.svcWashAndFold"),
+                        "Hang dry": t("ops.svcHangDry"),
+                        WF: "WF",
+                        HD: "HD",
+                      };
+                      return labels[selected] || selected;
+                    },
+                  }}
+                  size="small"
+                  fullWidth
+                >
+                  <MenuItem value="">—</MenuItem>
+                  <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
+                  <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
+                  <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
+                  <MenuItem value="WF">WF</MenuItem>
+                  <MenuItem value="HD">HD</MenuItem>
+                </TextField>
+                <Button
+                  variant="contained"
+                  size="large"
+                  startIcon={<PhotoCamera />}
+                  onClick={onPrimaryOcr}
+                  disabled={busy || disabled}
+                  sx={{ py: 1.5, fontWeight: 700 }}
+                >
+                  {busy ? <CircularProgress size={22} color="inherit" /> : primaryOcrLabel}
+                </Button>
+              </Stack>
+            )}
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button onClick={() => setOpen(false)} disabled={busy}>
+          <Button onClick={handleDialogClose} disabled={busy}>
             {t("ops.scanClose")}
           </Button>
         </DialogActions>
@@ -535,9 +713,10 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
                 }}
               >
                 <Stack>
-                  <Typography fontWeight={700}>{m.name_clean}</Typography>
+                  <Typography fontWeight={700}>{displayCustomerName(m.name_clean)}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    #{m.id} • {String(m.date_clean || "").slice(0, 10)} • {m.service_type} • {m.weight_num}
+                    {m.ticket_id ? `${t("ops.bagIdShort")} ${m.ticket_id} • ` : ""}#{m.id} • {String(m.date_clean || "").slice(0, 10)} •{" "}
+                    {m.service_type} • {m.weight_num}
                   </Typography>
                 </Stack>
               </ListItemButton>

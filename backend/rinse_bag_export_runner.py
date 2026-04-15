@@ -10,7 +10,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+import time
+from collections import deque
 from pathlib import Path
+from typing import Callable
 
 
 def _repo_root() -> Path:
@@ -28,6 +32,26 @@ def scraper_script() -> Path:
 _AZURE_NODE_DEFAULT = "/home/site/node-v20.18.0-linux-x64/bin/node"
 
 
+def effective_playwright_browsers_path(env: dict | None = None) -> str:
+    """
+    Playwright browser cache directory.
+    Azure App Service Linux uses /home/site/ms-playwright (persistent volume).
+    macOS and generic local dev do not have /home/site — use ~/.cache/ms-playwright.
+    """
+    src = env if env is not None else os.environ
+    b = (src.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if b:
+        return b
+    if Path("/home/site").is_dir():
+        return "/home/site/ms-playwright"
+    p = Path.home() / ".cache" / "ms-playwright"
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(p)
+
+
 def node_binary() -> str:
     explicit = (os.getenv("NODE_BIN") or "").strip()
     if explicit:
@@ -37,8 +61,38 @@ def node_binary() -> str:
     return shutil.which("node") or "node"
 
 
+def _parse_env_truthy(raw: str | None) -> bool:
+    """Azure / Key Vault values sometimes include BOM, NBSP, or odd casing."""
+    if raw is None:
+        return False
+    v = (
+        str(raw)
+        .replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\xa0", " ")
+        .strip()
+        .lower()
+    )
+    if not v:
+        return False
+    return v in ("1", "true", "yes", "on", "y")
+
+
+def rinse_bag_export_env_raw() -> str | None:
+    """
+    First non-None value for the Rinse export flag.
+    Azure App Service may expose the same setting as RINSE_BAG_EXPORT_ENABLED and/or
+    APPSETTING_RINSE_BAG_EXPORT_ENABLED (legacy / slot tooling). Prefer the plain name.
+    """
+    for key in ("RINSE_BAG_EXPORT_ENABLED", "APPSETTING_RINSE_BAG_EXPORT_ENABLED"):
+        v = os.getenv(key)
+        if v is not None:
+            return v
+    return None
+
+
 def export_enabled() -> bool:
-    return os.getenv("RINSE_BAG_EXPORT_ENABLED", "").strip().lower() in ("1", "true", "yes", "on")
+    return _parse_env_truthy(rinse_bag_export_env_raw())
 
 
 def scrape_timeout_sec() -> int:
@@ -100,9 +154,12 @@ def diagnose() -> dict:
     node = node_binary()
     node_ok = _node_executable_ok(node)
     pw_pkg = sdir / "node_modules" / "playwright" / "package.json"
-    browsers = (os.getenv("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
+    browsers = effective_playwright_browsers_path()
+    raw_flag = rinse_bag_export_env_raw()
     return {
         "enabled": export_enabled(),
+        "rinse_export_env_key_present": raw_flag is not None,
+        "rinse_export_env_value_len": len(str(raw_flag)) if raw_flag is not None else 0,
         "repo_root": str(root),
         "scraper_dir": str(sdir),
         "scraper_script_exists": script.is_file(),
@@ -179,7 +236,7 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
         return False, npm_err
 
     env = os.environ.copy()
-    browsers = (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
+    browsers = effective_playwright_browsers_path(env)
     env["PLAYWRIGHT_BROWSERS_PATH"] = browsers
     try:
         Path(browsers).mkdir(parents=True, exist_ok=True)
@@ -244,7 +301,7 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
     if not cli:
         return False, "Missing playwright cli.js after npm install."
 
-    browsers = (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip() or "/home/site/ms-playwright"
+    browsers = effective_playwright_browsers_path(env)
     env = {**env, "PLAYWRIGHT_BROWSERS_PATH": browsers}
     node_resolved = str(Path(node).resolve())
     try:
@@ -275,7 +332,8 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
             return False, "Chromium still missing after playwright install (check PLAYWRIGHT_BROWSERS_PATH and disk space)."
 
     # Headless shell still needs libglib etc. on Debian/Ubuntu (Azure App Service Linux).
-    if not _SYSDEPS_MARKER.is_file() or not _chromium_os_libs_likely_present():
+    # Skip on macOS / hosts without /home/site — `install-deps` is apt-oriented and breaks local Darwin.
+    if Path("/home/site").is_dir() and (not _SYSDEPS_MARKER.is_file() or not _chromium_os_libs_likely_present()):
         try:
             r2 = subprocess.run(
                 [node_resolved, str(cli), "install-deps", "chromium"],
@@ -314,11 +372,16 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
 
 
 def run_bag_export_csv(
-    output_path: Path, extra_env: dict[str, str] | None = None
+    output_path: Path,
+    extra_env: dict[str, str] | None = None,
+    progress_callback: Callable[[str, str], None] | None = None,
 ) -> tuple[int, str, str]:
     """
     Run scrape.mjs with OUTPUT_CSV set to output_path (absolute).
     Optional extra_env merged into the subprocess environment (e.g. RINSE_CSV_LAYOUT=portal).
+    If progress_callback is set, stdout/stderr are streamed and the callback receives
+    cumulative tails (throttled ~1.25s) so a UI can show live scrape progress.
+
     Returns (exit_code, stdout, stderr).
     """
     sdir = scraper_dir()
@@ -340,7 +403,7 @@ def run_bag_export_csv(
     # Ensure dotenv in scraper can still load scripts/rinse-cleanertickets/.env
     env.setdefault("NODE_NO_WARNINGS", "1")
     if not (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip():
-        env["PLAYWRIGHT_BROWSERS_PATH"] = "/home/site/ms-playwright"
+        env["PLAYWRIGHT_BROWSERS_PATH"] = effective_playwright_browsers_path(env)
 
     node = node_binary()
     bok, berr = _ensure_playwright_chromium(sdir, node, env)
@@ -349,21 +412,118 @@ def run_bag_export_csv(
 
     cmd = [node, str(script)]
     timeout = scrape_timeout_sec()
+
+    if progress_callback is None:
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=str(sdir),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            return proc.returncode, proc.stdout or "", proc.stderr or ""
+        except subprocess.TimeoutExpired:
+            return (
+                -1,
+                "",
+                f"Scrape timed out after {timeout}s (raise RINSE_SCRAPE_TIMEOUT_SEC, cap pages with RINSE_MAX_PAGES or RINSE_IMPORT_MAX_PAGES, or lower RINSE_PAGE_SETTLE_MS if pages load quickly).",
+            )
+        except OSError as e:
+            return -1, "", f"Failed to run Node scraper: {e}"
+
+    # Piped scrape with live progress (bounded memory).
+    stdout_d: deque[str] = deque(maxlen=8000)
+    stderr_d: deque[str] = deque(maxlen=2000)
+
+    def _read_pipe(pipe, buf: deque[str]) -> None:
+        try:
+            for line in iter(pipe.readline, ""):
+                buf.append(line)
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=str(sdir),
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-        )
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
-    except subprocess.TimeoutExpired:
-        return (
-            -1,
-            "",
-            f"Scrape timed out after {timeout}s (raise RINSE_SCRAPE_TIMEOUT_SEC, cap pages with RINSE_MAX_PAGES or RINSE_IMPORT_MAX_PAGES, or lower RINSE_PAGE_SETTLE_MS if pages load quickly).",
+            bufsize=1,
         )
     except OSError as e:
         return -1, "", f"Failed to run Node scraper: {e}"
+
+    t_out = threading.Thread(
+        target=_read_pipe,
+        args=(proc.stdout, stdout_d),
+        name="rinse-scrape-stdout",
+        daemon=True,
+    )
+    t_err = threading.Thread(
+        target=_read_pipe,
+        args=(proc.stderr, stderr_d),
+        name="rinse-scrape-stderr",
+        daemon=True,
+    )
+    t_out.start()
+    t_err.start()
+
+    deadline = time.monotonic() + timeout
+    last_cb = 0.0
+    code: int | None = None
+    try:
+        while True:
+            code = proc.poll()
+            if code is not None:
+                break
+            now = time.monotonic()
+            if now >= deadline:
+                proc.kill()
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass
+                t_out.join(timeout=5.0)
+                t_err.join(timeout=5.0)
+                return (
+                    -1,
+                    "".join(stdout_d),
+                    "".join(stderr_d)
+                    + "\nScrape timed out after "
+                    + str(timeout)
+                    + "s (raise RINSE_SCRAPE_TIMEOUT_SEC, cap pages with RINSE_MAX_PAGES or RINSE_IMPORT_MAX_PAGES).",
+                )
+            if now - last_cb >= 1.25:
+                last_cb = now
+                so = "".join(stdout_d)
+                se = "".join(stderr_d)
+                try:
+                    progress_callback(so[-600_000:], se[-32_000:])
+                except Exception:
+                    pass
+            time.sleep(0.2)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
+        t_out.join(timeout=5.0)
+        t_err.join(timeout=5.0)
+
+    full_out = "".join(stdout_d)
+    full_err = "".join(stderr_d)
+    final_code = int(code if code is not None else proc.returncode or -1)
+    try:
+        progress_callback(full_out[-600_000:], full_err[-32_000:])
+    except Exception:
+        pass
+    return final_code, full_out, full_err

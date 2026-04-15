@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const API_PREFIXES = [
+  'admin',
   'auth',
   'api',
   'dashboard',
@@ -15,6 +16,7 @@ const API_PREFIXES = [
   'checkout_log',
   'checkout_undo',
   'upload_orders',
+  'upload_orders_portal_csv',
   'upload_conflicts',
   'upload_batches',
   'employees',

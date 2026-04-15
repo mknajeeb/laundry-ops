@@ -144,6 +144,11 @@ def classify_service(cells):
             continue
 
         text = c.upper().strip()
+        if text in ("", "NA"):
+            continue
+        if re.search(r"\bHANG[\s-]*DRY\b", text):
+            return "HD"
+
         text_no_lbs = text.replace("LBS", "").strip()
 
         # Explicit WF markers

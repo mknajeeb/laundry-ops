@@ -42,26 +42,60 @@ function loadLocalEnvFile() {
 loadLocalEnvFile();
 
 /**
+ * Write one log line to fd 1 so piped subprocess output updates promptly for server-side UI monitors.
+ */
+function progressLine(msg) {
+  const s = typeof msg === "string" ? msg : String(msg);
+  const out = s.endsWith("\n") ? s : `${s}\n`;
+  try {
+    fs.writeSync(1, out);
+  } catch {
+    console.log(typeof msg === "string" ? msg : String(msg));
+  }
+}
+
+/**
  * Ticket list rows. Rinse has changed layout before; we use several patterns.
  * Optional: RINSE_EXTRA_ROW_SELECTORS=comma-separated CSS appended to this list (DevTools → Copy → selector).
  */
 function bodyRowsSelector() {
+  /* IMPORTANT: `tbody tr` matches nested <tr> inside “Scans” mini-tables — wrong order & dupes.
+   * Prefer only direct children of tbody / rowgroup. */
   const base = [
-    "main table tbody tr",
     "main table > tbody > tr",
-    "table tbody tr",
+    "table.sortable > tbody > tr",
+    "#content table > tbody > tr",
+    ".content table > tbody > tr",
+    "article table > tbody > tr",
     "table > tbody > tr",
-    "#content table tbody tr",
-    ".content table tbody tr",
-    "article table tbody tr",
-    "table.sortable tbody tr",
-    "[role='grid'] tbody tr",
+    "[role='grid'] > [role='rowgroup'] > [role='row']",
+    "[role='grid'] tbody > tr",
+    "div[role='table'] > [role='rowgroup'] > [role='row']",
+    "[role='table'] > [role='rowgroup'] > [role='row']",
     "[role='grid'] [role='row']",
     "div[role='table'] [role='row']",
     "[role='table'] [role='row']",
   ].join(", ");
   const extra = (process.env.RINSE_EXTRA_ROW_SELECTORS || "").trim();
   return extra ? `${base}, ${extra}` : base;
+}
+
+/**
+ * Only `<tr>` in the big cleaner-tickets grid (avoids other `table > tbody > tr` on the page).
+ * Override with RINSE_TICKET_TABLE_SELECTOR=CSS to a specific `<table>` if needed.
+ */
+function ticketTableBodyRows(page) {
+  const env = (process.env.RINSE_TICKET_TABLE_SELECTOR || "").trim();
+  if (env) {
+    return page.locator(env).locator("> tbody > tr");
+  }
+  const tables = page.getByRole("table").filter({
+    hasText: /Customer/i,
+  });
+  const ticketLike = tables.filter({
+    hasText: /Estd|Estimated|#\s*WF|WF\s*LBS|#\s*HD/i,
+  });
+  return ticketLike.first().locator("> tbody > tr");
 }
 
 /** Rinse copy varies ("Bag: ABC123 (", "Bag: ABC123", "Bag ID: …"); try in order. */
@@ -155,6 +189,51 @@ function urlForPage(baseUrl, pageNum) {
       return u.replace(/([?&])page=\d+/, `$1page=${pageNum}`);
     }
     return `${u}${u.includes("?") ? "&" : "?"}page=${pageNum}`;
+  }
+}
+
+/** Whether pagination UI shows there is another page after `currentPageNum`. */
+async function hasNextPageInUi(page, currentPageNum) {
+  return page
+    .evaluate((n) => {
+      const hasEnabledNextControl = (() => {
+        const nextLike = Array.from(
+          document.querySelectorAll(
+            "a[rel='next'], button[rel='next'], [aria-label*='next' i], .next a, .pagination-next a",
+          ),
+        );
+        for (const el of nextLike) {
+          const cls = String(el.className || "").toLowerCase();
+          const ariaDisabled = String(el.getAttribute("aria-disabled") || "").toLowerCase();
+          if (ariaDisabled === "true") continue;
+          if (cls.includes("disabled")) continue;
+          if (el instanceof HTMLAnchorElement && !el.href) continue;
+          return true;
+        }
+        return false;
+      })();
+      if (hasEnabledNextControl) return true;
+      const byPageNumber = Array.from(document.querySelectorAll("a[href], button, [role='button']")).some(
+        (el) => {
+          const txt = (el.textContent || "").trim();
+          if (txt !== String(n + 1)) return false;
+          const cls = String(el.className || "").toLowerCase();
+          if (cls.includes("disabled")) return false;
+          return true;
+        },
+      );
+      return byPageNumber;
+    }, currentPageNum)
+    .catch(() => true);
+}
+
+function pageNumFromUrl(u) {
+  try {
+    const parsed = new URL(String(u || ""));
+    const n = parseInt(parsed.searchParams.get("page") || "", 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
   }
 }
 
@@ -275,15 +354,35 @@ async function clickExpandOnRow(rowLocator) {
 
 /** True if this ticket row already has an expansion row with bag UI (Show or Hide bag details). */
 async function ticketExpansionHasBagLinks(rowLocator) {
-  const tr1 = rowLocator.locator("xpath=./following-sibling::tr[1]");
-  const show1 = tr1.getByRole("link", { name: /show\s+bag\s+details/i });
-  const hide1 = tr1.getByRole("link", { name: /hide\s+bag\s+details/i });
-  if (await show1.first().isVisible().catch(() => false)) return true;
-  if (await hide1.first().isVisible().catch(() => false)) return true;
-  const show0 = rowLocator.getByRole("link", { name: /show\s+bag\s+details/i });
-  const hide0 = rowLocator.getByRole("link", { name: /hide\s+bag\s+details/i });
-  if (await show0.first().isVisible().catch(() => false)) return true;
-  if (await hide0.first().isVisible().catch(() => false)) return true;
+  const showRe = /show\s+bag\s+details/i;
+  const hideRe = /hide\s+bag\s+details/i;
+  const roots = [rowLocator.locator("xpath=./following-sibling::tr[1]"), rowLocator];
+  for (const root of roots) {
+    for (const role of ["link", "button"]) {
+      if (await root.getByRole(role, { name: showRe }).first().isVisible().catch(() => false)) return true;
+      if (await root.getByRole(role, { name: hideRe }).first().isVisible().catch(() => false)) return true;
+    }
+    if (
+      await root
+        .locator("a, button, [role='button']")
+        .filter({ hasText: showRe })
+        .first()
+        .isVisible()
+        .catch(() => false)
+    ) {
+      return true;
+    }
+    if (
+      await root
+        .locator("a, button, [role='button']")
+        .filter({ hasText: hideRe })
+        .first()
+        .isVisible()
+        .catch(() => false)
+    ) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -386,7 +485,7 @@ function isLikelyExpandedDetailSubRow(trimmed) {
 
 /** Top-level cleaner-ticket row (not a nested <tr> inside an expanded ticket). */
 function isMainListTicketRow(trimmed) {
-  return PORTAL_TICKET_DATE_LINE_RE.test(String(trimmed || "").slice(0, 900));
+        return PORTAL_TICKET_DATE_LINE_RE.test(String(trimmed || "").slice(0, 900));
 }
 
 async function isProbablySingleCellDetailRow(rowLocator) {
@@ -406,15 +505,48 @@ function bagDetailsToggleLocators(rowLocator, mode) {
   const nameRe =
     mode === "hide" ? /hide\s+bag\s+details/i : /show\s+bag\s+details/i;
   const out = [];
-  out.push(rowLocator.getByRole("link", { name: nameRe }));
-  for (let k = 1; k <= 6; k++) {
+  const pushScoped = (root) => {
+    out.push(root.getByRole("link", { name: nameRe }));
+    out.push(root.getByRole("button", { name: nameRe }));
     out.push(
-      rowLocator
-        .locator(`xpath=./following-sibling::tr[${k}]`)
-        .getByRole("link", { name: nameRe }),
+      root.locator("a, button, [role='button']").filter({ hasText: nameRe }),
     );
+  };
+  pushScoped(rowLocator);
+  for (let k = 1; k <= 6; k++) {
+    const sib = rowLocator.locator(`xpath=./following-sibling::tr[${k}]`);
+    pushScoped(sib);
   }
   return out;
+}
+
+/** When Playwright role/name matching misses (icon-only, odd ARIA), click by visible text in the row block. */
+async function tryClickShowBagDetailsDom(rowLocator) {
+  return rowLocator
+    .evaluate((el) => {
+      const wantShow = (blob) => /show\s+bag\s+details/i.test(blob);
+      const wantHide = (blob) => /hide\s+bag\s+details/i.test(blob);
+      const tryClick = (root) => {
+        if (!root || !root.querySelectorAll) return false;
+        const cand = root.querySelectorAll("a, button, [role='button'], [role='link']");
+        for (const node of cand) {
+          const blob = `${node.textContent || ""} ${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""}`;
+          if (wantShow(blob)) {
+            (node).click();
+            return true;
+          }
+        }
+        return false;
+      };
+      if (tryClick(el)) return true;
+      let n = el.nextElementSibling;
+      for (let i = 0; i < 8 && n && n.tagName === "TR"; i++) {
+        if (tryClick(n)) return true;
+        n = n.nextElementSibling;
+      }
+      return false;
+    })
+    .catch(() => false);
 }
 
 async function ensureShowBagDetailsForTicketRow(rowLocator) {
@@ -429,6 +561,11 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
     Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "3200", 10) || 3200);
   const clickT = rowActionTimeoutMs();
 
+  await rowLocator
+    .locator("xpath=./following-sibling::tr[1]")
+    .scrollIntoViewIfNeeded({ timeout: 4000 })
+    .catch(() => {});
+
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
     const first = loc.first();
     if (await first.isVisible().catch(() => false)) {
@@ -441,10 +578,18 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
     for (const loc of bagDetailsToggleLocators(rowLocator, "show")) {
       const first = loc.first();
       if (await first.isVisible().catch(() => false)) {
-        await first.click({ timeout: clickT, noWaitAfter: true });
+        try {
+          await first.click({ timeout: clickT, noWaitAfter: true });
+        } catch {
+          await tryClickShowBagDetailsDom(rowLocator);
+        }
         await page.waitForTimeout(settleMs);
         return true;
       }
+    }
+    if (await tryClickShowBagDetailsDom(rowLocator)) {
+      await page.waitForTimeout(settleMs);
+      return true;
     }
     await page.waitForTimeout(pollMs);
   }
@@ -544,14 +689,108 @@ function buildPortalRowSummary(collapsedRowText, expandedFullText) {
   return "";
 }
 
-/** Dedupe processed tickets when row 1 stays expanded (index-based loop would repeat ticket 1). */
-function ticketRowFingerprint(trimmedMainListRow) {
-  const s =
-    buildPortalRowSummary(trimmedMainListRow, "") ||
-    String(trimmedMainListRow || "")
-      .replace(/\s+/g, " ")
-      .trim();
-  return s.slice(0, 360);
+/**
+ * Same row as one space-joined blob (many portals put date/name/lbs/#HD in one innerText line).
+ */
+function parsePortalListRowFlat(blob) {
+  const flat = String(blob || "").replace(/\s+/g, " ").trim();
+  const dm0 = flat.match(
+    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
+  );
+  if (!dm0) return null;
+  const dateDisplay = `${dm0[1]} ${dm0[2]}`;
+  let after = flat.slice(dm0.index + dm0[0].length).trim();
+  after = after.replace(/\b(TODAY|RUSH|NON-?\s*RUSH|⚡)\b/gi, " ").replace(/\s+/g, " ").trim();
+  const lbsRe = /(\?\?\s*LBS|\d+(?:\.\d+)?\s*LBS)\b/i;
+  const lm = after.match(lbsRe);
+  if (!lm) return null;
+  const custRaw = after.slice(0, lm.index).trim();
+  const customer_name = cleanPortalCustomerName(custRaw);
+  const lbsTok = lm[1].replace(/\s+/g, " ").toUpperCase();
+  const weight_display = /\?\?/i.test(lbsTok) ? "?? LBS" : lbsTok;
+  const wn = lbsTok.match(/(\d+(?:\.\d+)?)/);
+  const wf_lbs = wn && !/\?\?/i.test(lbsTok) ? wn[1] : "";
+  const tail = after.slice(lm.index + lm[0].length).trim();
+  let hd_count = "";
+  const hdM = tail.match(/^(\d{1,3})\b/);
+  if (hdM) hd_count = hdM[1];
+  if (!dateDisplay || !customer_name) return null;
+  return { dateDisplay, customer_name, weight_display, wf_lbs, hd_count };
+}
+
+/**
+ * Cleaner-ticket list row: 1st cell block = date, 2nd = customer, 3rd = LBS (?? or n.n LBS),
+ * 4th = # HD (1–3 digits) **when that column exists** on the page; if there is no # HD column,
+ * the 4th line is often special instructions (text) → hd_count stays empty.
+ */
+function parsePortalListRowOrdered(collapsedRowText) {
+  const lines = String(collapsedRowText || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim().replace(/\t+/g, " "))
+    .filter((l) => l.length > 0);
+  if (!lines.length) return null;
+  const d = lines.findIndex((l) => PORTAL_TICKET_DATE_LINE_RE.test(l));
+  if (d < 0) return null;
+
+  const dateLine = lines[d];
+  const dm = dateLine.match(
+    /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i,
+  );
+  const dateDisplay = dm ? `${dm[1]} ${dm[2]}` : "";
+  const nameLine = (lines[d + 1] || "").trim();
+  const lbsLine = (lines[d + 2] || "").trim();
+  const fourth = (lines[d + 3] || "").trim();
+  let hd_count = "";
+  if (fourth && /^\d{1,3}$/.test(fourth)) {
+    hd_count = fourth;
+  }
+  let weight_display = "?? LBS";
+  const L = lbsLine;
+  if (/\?\?\s*LBS/i.test(L)) {
+    weight_display = "?? LBS";
+  } else {
+    const wm = L.match(/(\d+(?:\.\d+)?)\s*LBS/i);
+    if (wm) weight_display = `${wm[1]} LBS`.replace(/\s+/g, " ").toUpperCase();
+    else if (/LBS/i.test(L)) weight_display = L.replace(/\s+/g, " ").toUpperCase();
+  }
+  let wf_lbs = "";
+  const wn = L.match(/(\d+\.\d+)/);
+  if (wn) wf_lbs = wn[1];
+  const customer_name = cleanPortalCustomerName(nameLine);
+
+  const fromFlat = () => parsePortalListRowFlat(lines.slice(d).join("\n"));
+
+  if (!dateDisplay) return fromFlat();
+  if (!customer_name || customer_name.length < 2) {
+    const f = fromFlat();
+    if (f) return f;
+    return null;
+  }
+  const lbsOk =
+    L &&
+    (/\?\?\s*LBS/i.test(L) || /\d+(?:\.\d+)?\s*LBS/i.test(L) || /\bLBS\b/i.test(L));
+  if (!lbsOk) {
+    const f = fromFlat();
+    if (f) return f;
+  }
+  return {
+    dateDisplay,
+    customer_name,
+    weight_display,
+    wf_lbs,
+    hd_count,
+  };
+}
+
+function parseBagLineDecorationsFromCombined(combined) {
+  const m = String(combined || "").match(/Bag:\s*([^\n]+)/i);
+  if (!m) return { bag_service: "", bag_subservice: "" };
+  const rest = m[1].trim().replace(/\s+/g, " ");
+  const dm = rest.match(/^([A-Z0-9]{4,})\s*\(\s*([^)]*?)\s*\)\s*\(\s*([^)]*?)\s*\)/i);
+  if (dm) return { bag_service: dm[2].trim(), bag_subservice: dm[3].trim() };
+  const one = rest.match(/^([A-Z0-9]{4,})\s*\(\s*([^)]*?)\s*\)/i);
+  if (one) return { bag_service: one[2].trim(), bag_subservice: "" };
+  return { bag_service: "", bag_subservice: "" };
 }
 
 function cleanPortalCustomerName(name) {
@@ -623,100 +862,304 @@ function pickCustomerFromPortalLines(lines) {
 
 /** Rinse often packs columns into <td>s; innerText on <tr> can omit the date line — stitch cells. */
 async function readTicketRowTextSnapshot(rowLocator) {
-  const t1 = ((await rowLocator.innerText().catch(() => "")) || "").trim();
-  if (PORTAL_TICKET_DATE_LINE_RE.test(t1)) return t1;
-  const t2 = await rowLocator
+  const fromCells = await rowLocator
     .evaluate((el) => {
-      const tds = el.querySelectorAll(":scope > td");
+      let tds = Array.from(el.querySelectorAll(":scope > td"));
+      if (!tds.length) tds = Array.from(el.querySelectorAll(":scope > [role='gridcell']"));
       if (!tds.length) return (el.innerText || "").trim();
-      return Array.from(tds)
-        .map((td) => (td.innerText || "").replace(/\s+/g, " ").trim())
-        .filter(Boolean)
-        .join("\n");
+      const first = (tds[0].innerText || "").trim();
+      if (tds.length > 1 && first.length <= 2 && !/\d{1,2}\/\d{1,2}/.test(first)) {
+        tds = tds.slice(1);
+      }
+      const normLines = (s) => {
+        if (!s) return "";
+        return String(s)
+          .replace(/\u00a0/g, " ")
+          .replace(/\r\n/g, "\n")
+          .split("\n")
+          .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+      };
+      const parts = [];
+      for (const td of tds) {
+        let chunk = normLines(td.innerText || "");
+        if (td.querySelector("table")) {
+          const c = td.cloneNode(true);
+          c.querySelectorAll("table").forEach((t) => t.remove());
+          const stripped = normLines(c.innerText || "");
+          if (stripped.length) chunk = stripped;
+        }
+        if (chunk) parts.push(chunk);
+      }
+      return parts.join("\n");
     })
     .catch(() => "");
-  const t2t = (t2 || "").trim();
-  if (t2t && PORTAL_TICKET_DATE_LINE_RE.test(t2t)) return t2t;
-  return t1 || t2t;
+
+  const t1 = ((await rowLocator.innerText().catch(() => "")) || "").trim();
+  const fc = (fromCells || "").trim();
+  if (fc && PORTAL_TICKET_DATE_LINE_RE.test(fc)) return fc;
+  if (t1 && PORTAL_TICKET_DATE_LINE_RE.test(t1)) return fc || t1;
+  if (fc) return fc;
+  return t1 || fc;
 }
 
-/** Match the manual “copy from portal” Excel: date, customer, weight, notes, X-columns, bag id. */
-function parsePortalFields(collapsedRowText, expandedFullText) {
-  const combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
-  const primary =
-    buildPortalRowSummary(collapsedRowText, "") ||
-    pickPortalListLine(collapsedRowText, expandedFullText);
-  const dateLineOnly =
-    pickPortalListLine(collapsedRowText, "") || pickPortalListLine("", expandedFullText);
+/** One string per direct list cell (`<td>` or `[role=gridcell]`), before expand. */
+async function readTicketRowDirectCells(rowLocator) {
+  const arr = await rowLocator
+    .evaluate((el) => {
+      let tds = Array.from(el.querySelectorAll(":scope > td"));
+      if (!tds.length) tds = Array.from(el.querySelectorAll(":scope > [role='gridcell']"));
+      if (tds.length > 1) {
+        const first = (tds[0].innerText || "").trim();
+        if (first.length <= 2 && !/\d{1,2}\/\d{1,2}/.test(first)) {
+          tds = tds.slice(1);
+        }
+      }
+      const normLines = (s) => {
+        if (!s) return "";
+        return String(s)
+          .replace(/\u00a0/g, " ")
+          .replace(/\r\n/g, "\n")
+          .split("\n")
+          .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+      };
+      return tds.map((td) => normLines(td.innerText || td.textContent || ""));
+    })
+    .catch(() => []);
+  return Array.isArray(arr) ? arr : [];
+}
+
+/**
+ * List row as date + customer + weight + fourth column, from stitched row text.
+ * Rinse may insert # WF LBS / # HD / other numbers *before* the `?? LBS` / `n.n LBS` line — fixed
+ * [+1],[+2],[+3] indexing puts that number into the weight slot and hides LBS in the fourth slot.
+ */
+function rawFourFromStitchedText(text) {
+  const lines = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((l) => l.replace(/[ \t\f\v]+/g, " ").trim())
+    .filter(
+      (l) =>
+        l.length > 0 &&
+        !/^show\s+(bag|issue|qc)/i.test(l) &&
+        !/^hide\s+bag/i.test(l),
+    );
+  let start = lines.findIndex(
+    (l) =>
+      PORTAL_TICKET_DATE_LINE_RE.test(l) ||
+      /\btoday\b/i.test(l) ||
+      /\b\d{1,2}\/\d{1,2}\b/.test(l),
+  );
+  if (start < 0) {
+    start = 0;
+    if (lines[0] && lines[0].length <= 2 && !/\d/.test(lines[0])) start = 1;
+  }
+  const dateLine = lines[start] || "";
+  const afterDate = lines.slice(start + 1);
+  const looksLikeListWeight = (s) =>
+    /\?\?\s*LBS|\d+(?:\.\d+)?\s*LBS|\bLBS\b/i.test(String(s || ""));
+  const looksLikeHdDigits = (s) => /^\d{1,3}$/.test(String(s || "").trim());
+
+  const wi = afterDate.findIndex((l) => looksLikeListWeight(l));
+  if (wi < 0) {
+    return [
+      dateLine,
+      afterDate[0] || "",
+      afterDate[1] || "",
+      afterDate[2] || "",
+    ];
+  }
+  const weightLine = afterDate[wi].trim();
+  const customerLine = afterDate.slice(0, wi).join(" ").trim();
+  const afterWeight = afterDate.slice(wi + 1);
+  let fourthLine = "";
+  const di = afterWeight.findIndex((l) => looksLikeHdDigits(l));
+  if (di >= 0) fourthLine = afterWeight[di].trim();
+  else if (afterWeight.length) fourthLine = afterWeight[0].trim();
+
+  return [dateLine, customerLine, weightLine, fourthLine];
+}
+
+/**
+ * First four list columns as plain text (Estd / Customer / WF LBS / fourth). No guessing —
+ * upload code can normalize dates, HD digits vs notes, etc.
+ */
+function splitPortalListRawFour(tdTexts) {
+  const out = ["", "", "", ""];
+  if (!Array.isArray(tdTexts) || tdTexts.length === 0) return out;
+  const cells = tdTexts.map((x) =>
+    String(x || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+  if (cells.length >= 4) {
+    return [cells[0], cells[1], cells[2], cells[3]];
+  }
+  const lines = [];
+  for (const c of cells) {
+    for (const line of c.split(/\r?\n/).map((x) => x.trim()).filter(Boolean)) {
+      if (/^show\s+(bag|issue|qc)/i.test(line) || /^hide\s+bag/i.test(line)) continue;
+      lines.push(line.replace(/\s+/g, " ").trim());
+    }
+  }
+  out[0] = lines[0] || "";
+  out[1] = lines[1] || "";
+  out[2] = lines[2] || "";
+  out[3] = lines[3] || "";
+  return out;
+}
+
+/** Row is a ticket list row if we have real cell text or the stitched snapshot looks like a ticket. */
+function portalListRowPeekOk(tdTexts, trimmed) {
+  const four = splitPortalListRawFour(tdTexts);
+  if (four.filter((x) => String(x).trim().length > 0).length >= 2) return true;
+  const fromLines = rawFourFromStitchedText(trimmed);
+  if (fromLines.filter((x) => String(x).trim().length > 0).length >= 2) return true;
+  const t = String(trimmed || "");
+  if (PORTAL_TICKET_DATE_LINE_RE.test(t.slice(0, 900))) return true;
+  if (/\btoday\b/i.test(t) && t.length > 8) return true;
+  if (/\d{1,2}\/\d{1,2}/.test(t) && /\b(lbs|vendor|fold|wash|rinse)\b/i.test(t)) return true;
+  return false;
+}
+
+/** Bag line: first/second `(...)` after bag code → service type & sub-service (Rinse `Bag:` row). */
+function parseBagLineRawParts(combined) {
+  const empty = {
+    bag_service: "",
+    bag_subservice: "",
+    service_type: "",
+    sub_service: "",
+  };
+  const src = String(combined || "").trim();
+  if (!src) return empty;
+  const m = src.match(/Bag:\s*([^\n]+)/i);
+  const rest = (m ? m[1] : src).trim().replace(/\s+/g, " ");
+  if (!rest) return empty;
+  const idm = rest.match(/^([A-Za-z0-9]{4,})\b\s*/);
+  if (!idm) return empty;
+  const afterId = rest.slice(idm[0].length).trim();
+  const paren = [];
+  let s = afterId;
+  for (let k = 0; k < 4 && s.length; k++) {
+    const open = s.indexOf("(");
+    if (open < 0) break;
+    let depth = 0;
+    let i = open;
+    for (; i < s.length; i++) {
+      if (s[i] === "(") depth++;
+      else if (s[i] === ")") {
+        depth--;
+        if (depth === 0) {
+          paren.push(s.slice(open + 1, i).trim());
+          s = s.slice(i + 1).trim();
+          break;
+        }
+      }
+    }
+    if (depth !== 0) break;
+  }
+  /** First paren = service type (e.g. Hang Dry vs Wash & Fold). Second paren = WF-style add-on (e.g. Rush), not HD. */
+  const st = paren[0] || "";
+  const sub = paren[1] || "";
+  return {
+    bag_service: st || afterId || "",
+    bag_subservice: sub,
+    service_type: st,
+    sub_service: sub,
+  };
+}
+
+/**
+ * # HD is only meaningful for Hang Dry bags (list may omit the # HD column entirely on some pages).
+ * Never take WF COUNT or other integers as # HD. Use explicit `# HD: n` in expanded text, else
+ * a 1–3 digit fourth list column only when service is Hang Dry; otherwise `NA`.
+ */
+function finalizePortalHd({ rawFourth, combined, serviceType }) {
+  const bagm = combined.match(/Bag:\s*[^\n]+/i);
+  const bagLine = bagm ? bagm[0] : "";
+  const hangRe = /\bhang[\s-]*dry\b/i;
+  /** Sub-Service paren is WF-oriented; HD comes from service type or the literal `Bag:` line only. */
+  const hang = hangRe.test(String(serviceType || "")) || hangRe.test(bagLine);
+  if (!hang) return "NA";
+  const labeled = combined.match(/#\s*HD\s*:?\s*(\d+)\b/i);
+  if (labeled) return labeled[1];
+  const fourth = String(rawFourth || "").trim();
+  if (/^\d{1,3}$/.test(fourth)) return fourth;
+  return "NA";
+}
+
+/** Portal CSV: first four `<td>`s (or first four logical lines) go out raw; bag parens raw. */
+function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts = null, bagDisplay = "") {
+  let combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
+  if (!/Bag:\s*[^\n]+/i.test(combined) && String(bagDisplay || "").trim()) {
+    combined = `${combined}\nBag: ${String(bagDisplay).trim()}`.trim();
+  }
+  const cellFour = splitPortalListRawFour(Array.isArray(directCellTexts) ? directCellTexts : []);
+  const lineFour = rawFourFromStitchedText(collapsedRowText);
+  /** Prefer stitched lines first (they anchor on the date row); cells only fill gaps. */
+  const rawFour = [0, 1, 2, 3].map(
+    (i) => (lineFour[i] || "").trim() || (cellFour[i] || "").trim(),
+  );
+  let date_display = rawFour[0].trim();
+  let customer_name = rawFour[1].trim();
+  let weight_display = rawFour[2].trim();
+  const fourthListRaw = rawFour[3].trim();
+  /** Stray `# WF` / count cells without `LBS` are not weight — let expanded text fill. */
+  if (
+    weight_display &&
+    !/\?\?\s*LBS/i.test(weight_display) &&
+    !/\d+(?:\.\d+)?\s*LBS/i.test(weight_display) &&
+    /^\d{1,4}$/.test(weight_display)
+  ) {
+    weight_display = "";
+  }
+
+  const collapsedLines = String(collapsedRowText || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!date_display && collapsedLines[0]) date_display = collapsedLines[0];
+  if (!customer_name && collapsedLines[1]) customer_name = collapsedLines[1];
+  if (!weight_display && collapsedLines[2]) weight_display = collapsedLines[2];
 
   const dateRe =
     /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/i;
-
-  let dateDisplay = "";
-  let dm = dateLineOnly.match(dateRe);
-  if (dm) {
-    dateDisplay = `${dm[1]} ${dm[2]}`;
-  }
-  if (!dateDisplay) {
-    dm = primary.match(dateRe);
-    if (dm) dateDisplay = `${dm[1]} ${dm[2]}`;
-  }
-  if (!dateDisplay) {
-    const dm2 = combined.match(dateRe);
-    if (dm2) {
-      dm = dm2;
-      dateDisplay = `${dm2[1]} ${dm2[2]}`;
-    }
+  if (!date_display) {
+    const dm = combined.match(dateRe);
+    if (dm) date_display = `${dm[1]} ${dm[2]}`;
   }
 
-  const firstLine = primary;
+  if (!customer_name) {
+    customer_name = pickCustomerFromPortalLines(
+      linesAfterPortalDateInListRow(collapsedRowText),
+    );
+  }
+  if (!customer_name) {
+    customer_name = pickCustomerFromPortalLines(collapsedLines);
+  }
+  customer_name = customer_name.replace(/\s+/g, " ").trim();
 
-  let weight = "?? LBS";
-  if (/\?\?\s*LBS/i.test(firstLine) || /\?\?\s*LBS/i.test(combined)) {
+  if (!weight_display) {
     const wfW = combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
-    if (wfW) weight = `${wfW[1]} LBS`;
-    else weight = "?? LBS";
-  } else {
+    if (wfW) weight_display = `${wfW[1]} LBS`;
+  }
+  if (!weight_display) {
     const wm = combined.match(/(\d+(?:\.\d+)?)\s*(?:lbs|lb)\b/i);
-    if (wm) weight = wm[0].replace(/\s+/g, " ").toUpperCase();
+    if (wm) weight_display = wm[0].replace(/\s+/g, " ").toUpperCase();
   }
 
-  let customer = pickCustomerFromPortalLines(linesAfterPortalDateInListRow(collapsedRowText));
-  const dmSingle = dateLineOnly.match(dateRe);
-  if (!customer && dmSingle) {
-    let rest = dateLineOnly.slice(dmSingle.index + dmSingle[0].length).trim();
-    rest = rest.replace(/^\/?\d{4}\b\s*/, "").trim();
-    rest = rest.replace(/\?\?\s*LBS/gi, "").replace(/\d+(?:\.\d+)?\s*(?:lbs|lb)\b/gi, "").trim();
-    rest = rest
-      .replace(/^\s*(at\s+vendor|at\s+customer|in\s+process|pending|picked\s*up|delivered)\b\s*/gi, "")
-      .trim();
-    customer = rest.replace(/\s+/g, " ").slice(0, 200);
-  }
-  if (!customer) {
-    customer = pickCustomerFromPortalLines(
-      String(collapsedRowText || "")
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean),
-    );
-  }
-  if ((!customer || customer.length < 2) && dateDisplay) {
-    const parts = String(collapsedRowText || "").split(
-      new RegExp(dateDisplay.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"),
-    );
-    const tail = parts.length > 1 ? parts[1] : "";
-    const one = tail.trim().split(/\r?\n/)[0] || "";
-    const c2 = one
-      .replace(/\?\?\s*LBS/gi, "")
-      .replace(/\d+(?:\.\d+)?\s*(?:lbs|lb)\b/gi, "")
-      .replace(/^\s*(at\s+vendor|at\s+customer|in\s+process|pending)\b\s*/gi, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 200);
-    if (c2.length >= 2) customer = c2;
-  }
-
-  customer = cleanPortalCustomerName(customer);
+  let wf_lbs = "";
+  const wdec = weight_display.match(/(\d+\.\d+)/);
+  if (wdec) wf_lbs = wdec[1];
+  const wfLbsM =
+    combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i) ||
+    combined.match(/\bWF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
+  if (!wf_lbs && wfLbsM) wf_lbs = wfLbsM[1];
 
   const t = combined;
   const tl = t.toLowerCase();
@@ -752,7 +1195,7 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     notes = notes.slice(0, 500);
   }
 
-  let estd_delivery = dateDisplay;
+  let estd_delivery = date_display;
   const em =
     combined.match(/\bEstd\.?\s*Del(?:ivery)?\s*:?\s*([^\n]+)/i) ||
     combined.match(/\bEst\.?\s*(?:imated)?\s*Del(?:ivery)?\s*:?\s*([^\n]+)/i);
@@ -760,22 +1203,17 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
     estd_delivery = em[1].trim().replace(/\s+/g, " ").slice(0, 120);
   }
 
-  let wf_lbs = "";
-  const wfLbsM =
-    combined.match(/#\s*WF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i) ||
-    combined.match(/\bWF\s*LBS\s*:?\s*(\d+\.?\d*)\b/i);
-  if (wfLbsM) wf_lbs = wfLbsM[1];
-  if (!wf_lbs && weight) {
-    const wn = String(weight).match(/(\d+\.\d+)/);
-    if (wn) wf_lbs = wn[1];
+  if (!wf_lbs && weight_display) {
+    const wnx = String(weight_display).match(/(\d+\.\d+)/);
+    if (wnx) wf_lbs = wnx[1];
   }
 
-  let wf_count = "";
-  const wfCntM =
-    combined.match(/#\s*WF\s*COUNT\s*:?\s*(\d+)\b/i) ||
-    combined.match(/\bWF\s*COUNT\s*:?\s*(\d+)\b/i) ||
-    combined.match(/#\s*HD\s*:?\s*(\d+)\b/i);
-  if (wfCntM) wf_count = wfCntM[1];
+  const bagParts = parseBagLineRawParts(combined);
+  const hd_count = finalizePortalHd({
+    rawFourth: fourthListRaw || (collapsedLines[3] || "").trim(),
+    combined,
+    serviceType: bagParts.service_type,
+  });
 
   /** Shown on the portal only when the list page includes at least one Hang Dry–style order. */
   let wf_items = "";
@@ -785,14 +1223,18 @@ function parsePortalFields(collapsedRowText, expandedFullText) {
   if (wfItemsM) wf_items = wfItemsM[1];
 
   return {
-    date_display: dateDisplay,
+    date_display,
     estd_delivery,
-    customer_name: customer,
-    weight_display: weight,
+    customer_name,
+    weight_display,
     wf_lbs,
-    wf_count,
+    hd_count,
     wf_items,
     notes_summary: notes,
+    bag_service: bagParts.bag_service,
+    bag_subservice: bagParts.bag_subservice,
+    service_type: bagParts.service_type,
+    sub_service: bagParts.sub_service,
     ...flags,
   };
 }
@@ -809,7 +1251,7 @@ function portalHeaderRow() {
     "Estd. Delivery",
     "Customer",
     "# WF LBS",
-    "# WF COUNT",
+    "# HD",
     "# WF ITEMS",
     "Weight",
     "Notes",
@@ -819,6 +1261,8 @@ function portalHeaderRow() {
     "Low DRY",
     "NO SCEN",
     "Extra Scen",
+    "Service Type",
+    "Sub-Service",
     "Bag ID",
   ];
 }
@@ -830,7 +1274,7 @@ function portalDataRow(portal, bagDisplay) {
     portal.estd_delivery || portal.date_display,
     portal.customer_name,
     portal.wf_lbs || "",
-    portal.wf_count || "",
+    portal.hd_count === undefined || portal.hd_count === null ? "" : String(portal.hd_count),
     portal.wf_items || "",
     portal.weight_display,
     portal.notes_summary,
@@ -840,17 +1284,19 @@ function portalDataRow(portal, bagDisplay) {
     portal.Low_DRY,
     portal.NO_SCEN,
     portal.Extra_Scen,
+    portal.service_type || portal.bag_service || "",
+    portal.sub_service || portal.bag_subservice || "",
     bd,
   ];
 }
 
 async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
   await rowLocator.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
-  await page.waitForTimeout(120);
+  await page.waitForTimeout(70);
   await ensureRowExpandedForTicket(rowLocator, page);
   const inlineSettle = Math.max(
     0,
-    Math.min(5000, parseInt(process.env.RINSE_VENDORINLINE_SETTLE_MS || "200", 10) || 200),
+    Math.min(5000, parseInt(process.env.RINSE_VENDORINLINE_SETTLE_MS || "120", 10) || 120),
   );
   if (inlineSettle > 0) await page.waitForTimeout(inlineSettle);
 
@@ -890,6 +1336,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
           !/lbs/i.test(l) &&
           !/^scans$/i.test(l),
       ) || "";
+    const ordCust = parsePortalListRowOrdered(String(collapsedRowText || ""))?.customer_name || "";
     const custStructured = pickCustomerFromPortalLines(
       linesAfterPortalDateInListRow(collapsedRowText),
     );
@@ -897,7 +1344,7 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
       bagId: bagMatch.bagId || r2.bagId || r.bagId,
       bagDisplay: bagMatch.bagDisplay || r2.bagDisplay || r.bagDisplay,
       raw: bagMatch.raw || r2.raw || r.raw,
-      customer: (custStructured || custLine || r2.customer || r.customer || "").slice(0, 80),
+      customer: (ordCust || custStructured || custLine || r2.customer || r.customer || "").slice(0, 80),
       fullText: merged,
     };
   } else if (!r.bagId && skipShow) {
@@ -945,77 +1392,112 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
 
 async function scrapePage(page, pageLabel, layout) {
   const sel = bodyRowsSelector();
-  const tableWait = Math.max(400, Math.min(8000, parseInt(process.env.RINSE_TABLE_WAIT_MS || "900", 10) || 900));
-  const tableAfter = Math.max(0, Math.min(5000, parseInt(process.env.RINSE_TABLE_AFTER_MS || "350", 10) || 350));
+  const tableWait = Math.max(250, Math.min(8000, parseInt(process.env.RINSE_TABLE_WAIT_MS || "450", 10) || 450));
+  const tableAfter = Math.max(0, Math.min(5000, parseInt(process.env.RINSE_TABLE_AFTER_MS || "180", 10) || 180));
   await page.waitForTimeout(tableWait);
   await page.locator(sel).first().waitFor({ state: "visible", timeout: 25000 }).catch(() => {});
   await page.waitForTimeout(tableAfter);
-  const initialRowCount = await page.locator(sel).count();
+  await page
+    .evaluate(() => {
+      window.scrollTo(0, document.body.scrollHeight);
+    })
+    .catch(() => {});
+  await page.waitForTimeout(350);
+  await page
+    .evaluate(() => {
+      window.scrollTo(0, 0);
+    })
+    .catch(() => {});
+  await page.waitForTimeout(200);
+  const broadCount = await page.locator(sel).count();
+  let rowsAll = ticketTableBodyRows(page);
+  let ticketTableCount = await rowsAll.count();
+  if (ticketTableCount === 0) {
+    rowsAll = page.locator(sel);
+    ticketTableCount = await rowsAll.count();
+    console.warn(
+      `Scoped ticket table matched 0 <tr>; falling back to broad selector (count=${ticketTableCount}). Set RINSE_TICKET_TABLE_SELECTOR to the tickets <table> from DevTools if needed.`,
+    );
+  }
+  const initialRowCount = ticketTableCount;
   if (initialRowCount === 0) {
     console.warn("No rows matched row selectors — set RINSE_EXTRA_ROW_SELECTORS from DevTools or inspect page HTML.");
+  } else {
+    progressLine(`  Ticket table rows: ${initialRowCount} (broad locator count was ${broadCount}).`);
   }
+
+  const wheelSteps = Math.max(
+    0,
+    Math.min(80, parseInt(process.env.RINSE_TABLE_WHEEL_STEPS || "7", 10) || 7),
+  );
+  for (let w = 0; w < wheelSteps; w++) {
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(22);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  await page.waitForTimeout(100);
 
   const out = [];
   let recordIndex = 0;
-  const rowsAll = page.locator(sel);
-  const processed = new Set();
-  const maxPasses = Math.max(80, Math.min(2000, initialRowCount * 20 || 200));
+  /* # HD column is omitted when there are no hang-dry rows on the page — allow fewer <td>. */
+  const minListTd = Math.max(2, Math.min(12, parseInt(process.env.RINSE_MIN_LIST_TD || "2", 10) || 2));
 
-  for (let pass = 0; pass < maxPasses; pass++) {
-    const n = await rowsAll.count();
-    let row = null;
-    let rowText = "";
-    let chosenFp = null;
+  /*
+   * Expanding a ticket inserts a sibling <tr> for details, so tbody grows. A fixed `for (j < n)`
+   * where `n` was snapshotted at the start stops early (e.g. 6 of 25). Re-read count each step.
+   */
+  let j = 0;
+  while (true) {
+    const rowCount = await rowsAll.count();
+    if (j >= rowCount) break;
 
-    for (let j = 0; j < n; j++) {
-      const cand = rowsAll.nth(j);
-      await cand.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
-      const rowGap = Math.max(0, Math.min(400, parseInt(process.env.RINSE_ROW_GAP_MS || "25", 10) || 25));
-      await page.waitForTimeout(rowGap);
-      if (!(await cand.isVisible().catch(() => false))) continue;
-      const tdCount = await cand.locator("td").count().catch(() => 0);
-      const thOnly =
-        (await cand.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
-      if (thOnly) continue;
-
-      const rt = await readTicketRowTextSnapshot(cand);
-      const trimmed = rt.trim();
-      if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) continue;
-      if (await isProbablySingleCellDetailRow(cand)) continue;
-      if (isLikelyExpandedDetailSubRow(trimmed)) continue;
-      if (!isMainListTicketRow(trimmed)) continue;
-
-      const fp0 = ticketRowFingerprint(trimmed);
-      if (fp0.length < 4) continue;
-      if (processed.has(fp0)) continue;
-      const peek = matchBagInText(trimmed).bagId;
-      if (peek && processed.has(`bag:${String(peek).toUpperCase()}`)) continue;
-
-      row = cand;
-      rowText = rt;
-      chosenFp = fp0;
-      break;
+    const cand = rowsAll.nth(j);
+    await cand.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
+    const rowGap = Math.max(0, Math.min(400, parseInt(process.env.RINSE_ROW_GAP_MS || "25", 10) || 25));
+    await page.waitForTimeout(rowGap);
+    const tdCount = await cand.locator("td").count().catch(() => 0);
+    const thOnly =
+      (await cand.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
+    if (thOnly) {
+      j += 1;
+      continue;
     }
 
-    if (!row || chosenFp == null) {
-      if (pass === 1 && out.length === 1) {
-        console.warn(
-          "  Only one ticket was scraped: the next list rows were all skipped (filters/visibility) or treated as already processed. Try HEADED=1 or widen RINSE_EXTRA_ROW_SELECTORS.",
-        );
-      }
-      break;
+    const directTd = await cand.locator(":scope > td").count().catch(() => 0);
+    const directGrid = await cand.locator(":scope > [role='gridcell']").count().catch(() => 0);
+    const nListCells = Math.max(directTd, directGrid);
+    if (nListCells < minListTd) {
+      j += 1;
+      continue;
+    }
+
+    const tdTexts = await readTicketRowDirectCells(cand);
+    const rt = await readTicketRowTextSnapshot(cand);
+    const trimmed = rt.trim();
+    const fromTdsPeek = portalListRowPeekOk(tdTexts, trimmed);
+    if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
+      j += 1;
+      continue;
+    }
+    if (await isProbablySingleCellDetailRow(cand)) {
+      j += 1;
+      continue;
+    }
+    if (isLikelyExpandedDetailSubRow(trimmed)) {
+      j += 1;
+      continue;
+    }
+    if (!isMainListTicketRow(trimmed) && !fromTdsPeek) {
+      j += 1;
+      continue;
     }
 
     recordIndex += 1;
     const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
       page,
-      row,
-      rowText,
+      cand,
+      rt,
     );
-    processed.add(chosenFp);
-    if (String(bagId || "").trim()) {
-      processed.add(`bag:${String(bagId).trim().toUpperCase()}`);
-    }
 
     const base = {
       page: pageLabel,
@@ -1027,7 +1509,7 @@ async function scrapePage(page, pageLabel, layout) {
     };
     let portal = null;
     if (layout === "portal") {
-      portal = parsePortalFields(collapsed || rowText, fullText);
+      portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId);
       out.push({ ...base, portal });
     } else {
       out.push(base);
@@ -1035,12 +1517,30 @@ async function scrapePage(page, pageLabel, layout) {
 
     if (bagId) {
       const pn = (portal && portal.customer_name) || customer || "";
-      console.log(
-        `  ticket ${recordIndex}: ${bagId}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}`,
+      const bits =
+        layout === "portal" && portal
+          ? ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)}`
+          : "";
+      progressLine(
+        `  ticket ${recordIndex}: ${bagId}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}${bits}`,
       );
     }
 
-    await ensureRowCollapsedAfterTicket(row, page);
+    await ensureRowCollapsedAfterTicket(cand, page);
+    await page
+      .evaluate(() => {
+        window.scrollBy(0, Math.min(420, Math.floor(window.innerHeight * 0.4)));
+      })
+      .catch(() => {});
+
+    j += 1;
+  }
+
+  if (initialRowCount > 0 && out.length > 0) {
+    const tailCount = await rowsAll.count().catch(() => initialRowCount);
+    progressLine(
+      `  Scraped ${out.length} ticket row(s) (~${initialRowCount} list <tr> before run, ${tailCount} <tr> in tbody after).`,
+    );
   }
 
   if (initialRowCount > 0 && out.length === 0) {
@@ -1070,17 +1570,19 @@ async function main() {
       : "";
 
   const pageStart = Math.max(1, parseInt(process.env.RINSE_PAGE_START || "1", 10) || 1);
-  // Default 20 so a missed “end of pagination” signal does not run 50 slow pages; override with RINSE_MAX_PAGES.
-  const maxPages = Math.min(500, Math.max(1, parseInt(process.env.RINSE_MAX_PAGES || "20", 10) || 20));
+  /* Cap only; we stop much earlier on empty table, duplicate fingerprint, or duplicate bag set. */
+  const maxPages = Math.min(500, Math.max(1, parseInt(process.env.RINSE_MAX_PAGES || "500", 10) || 500));
   const pageSettleMs = Math.max(
-    600,
-    Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "2200", 10) || 2200),
+    400,
+    Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "1100", 10) || 1100),
   );
   const outCsv =
     (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) || defaultOutputPath();
   const layout = csvLayout();
   if (layout === "portal") {
-    console.log("CSV layout: portal (Excel-style columns + Bag ID). Set RINSE_CSV_LAYOUT=legacy for the compact debug CSV.");
+    progressLine(
+      "CSV layout: portal (Excel-style columns + Bag ID). Set RINSE_CSV_LAYOUT=legacy for the compact debug CSV.",
+    );
   }
 
   const browser = await chromium.launch({
@@ -1100,10 +1602,10 @@ async function main() {
     }
 
     const allRows = [];
-    /** Fingerprint of visible ticket rows so we stop when Rinse keeps serving the last page for page=3,4,… */
-    let prevPageRowFingerprint = null;
-    /** Sorted bag IDs on the previous page — Rinse often repeats the last page with the same tickets. */
-    let prevPageBagSig = null;
+    /** Any earlier page’s table fingerprint — Rinse may repeat page 1 (or another page) after the real last page. */
+    const seenRowFingerprints = new Set();
+    /** Any earlier page’s sorted bag-id signature — same as fingerprint but keyed on exported IDs. */
+    const seenBagSigs = new Set();
 
     function normFingerprint(s) {
       return String(s || "")
@@ -1113,7 +1615,7 @@ async function main() {
 
     for (let p = pageStart; p < pageStart + maxPages; p++) {
       const url = urlForPage(baseUrl, p);
-      console.log(`\nPage ${p}: ${url}`);
+      progressLine(`\nPage ${p}: ${url}`);
       // "networkidle" often never settles on SPAs; domcontentloaded + fixed wait is more reliable on Azure.
       await page.goto(url, {
         waitUntil: "domcontentloaded",
@@ -1123,6 +1625,14 @@ async function main() {
       await page
         .waitForSelector("table tbody tr", { timeout: 20000 })
         .catch(() => {});
+
+      const landedPageNum = pageNumFromUrl(page.url());
+      if (landedPageNum != null && landedPageNum !== p) {
+        progressLine(
+          `Stopping: requested page ${p} but landed on page ${landedPageNum} (pagination wrapped/redirected).`,
+        );
+        break;
+      }
 
       if (await isLikelyLoginPage(page)) {
         console.error(
@@ -1165,17 +1675,16 @@ async function main() {
         .catch(() => "");
 
       const nf = normFingerprint(rowFingerprint);
-      const np = prevPageRowFingerprint != null ? normFingerprint(prevPageRowFingerprint) : null;
-      if (np != null && nf.length > 24 && nf === np) {
-        console.log(
-          `Stopping: page ${p} table text matches the previous page (pagination past the end).`,
+      if (nf.length > 24 && seenRowFingerprints.has(nf)) {
+        progressLine(
+          `Stopping: page ${p} matches an earlier page’s table (pagination wrapped or duplicate list — end of data).`,
         );
         break;
       }
-      prevPageRowFingerprint = rowFingerprint;
+      if (nf.length > 24) seenRowFingerprints.add(nf);
 
       if (p > pageStart && rows.length === 0) {
-        console.log(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
+        progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
         break;
       }
 
@@ -1187,20 +1696,13 @@ async function main() {
         .sort()
         .join("\u241e");
 
-      if (
-        p > pageStart &&
-        pageBagSig.length > 0 &&
-        prevPageBagSig != null &&
-        pageBagSig === prevPageBagSig
-      ) {
-        console.log(
-          `Stopping: page ${p} has the same bag IDs as the previous page (no new tickets — stop pagination).`,
+      if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
+        progressLine(
+          `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets — end of pagination).`,
         );
         break;
       }
-      if (pageBagSig.length > 0) {
-        prevPageBagSig = pageBagSig;
-      }
+      if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
 
       allRows.push(...rows);
 
@@ -1209,6 +1711,11 @@ async function main() {
         console.warn(
           "Many rows but no Bag IDs — selectors or expand control may be wrong; check one row in DevTools."
         );
+      }
+      const hasNextUi = await hasNextPageInUi(page, p);
+      if (!hasNextUi) {
+        progressLine(`Stopping: pagination UI shows no next page after page ${p}.`);
+        break;
       }
     }
 
@@ -1248,7 +1755,7 @@ async function main() {
       fs.mkdirSync(dir, { recursive: true });
     }
     fs.writeFileSync(path.resolve(outCsv), header + lines.join(""), "utf8");
-    console.log(`\nWrote ${allRows.length} row records → ${path.resolve(outCsv)}`);
+    progressLine(`\nWrote ${allRows.length} row records → ${path.resolve(outCsv)}`);
   } finally {
     await browser.close();
   }
