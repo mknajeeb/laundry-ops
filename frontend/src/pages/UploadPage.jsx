@@ -517,7 +517,13 @@ function UploadPage({ user }) {
         const updatedAt = row.updated_at != null ? String(row.updated_at) : "";
         const outLog = row.stdout_tail != null ? String(row.stdout_tail) : "";
         const errLog = row.stderr_tail != null ? String(row.stderr_tail).trim() : "";
-        setPortalScrapeLog(errLog ? `${outLog}\n--- stderr ---\n${errLog}` : outLog);
+        let combined = errLog ? `${outLog}\n--- stderr ---\n${errLog}` : outLog;
+        if (!combined.trim() && (status === "running" || status === "queued")) {
+          combined =
+            (note && String(note).trim()) ||
+            "Server is running Playwright; live log lines appear once rinse.com emits output (often after the browser starts).";
+        }
+        setPortalScrapeLog(combined);
         setMessage({
           type: "info",
           text: `Rinse import (${jobId.slice(0, 8)}…): ${note}`,

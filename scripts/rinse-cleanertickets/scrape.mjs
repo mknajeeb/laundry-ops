@@ -513,7 +513,8 @@ function bagDetailsToggleLocators(rowLocator, mode) {
     );
   };
   pushScoped(rowLocator);
-  for (let k = 1; k <= 6; k++) {
+  /* Large “Scans” expansions can push the bag-details link into a deeper following <tr>. */
+  for (let k = 1; k <= 12; k++) {
     const sib = rowLocator.locator(`xpath=./following-sibling::tr[${k}]`);
     pushScoped(sib);
   }
@@ -553,14 +554,15 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const page = rowLocator.page();
   const settleMs = Math.max(
     200,
-    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "350", 10) || 350),
+    Math.min(15000, parseInt(process.env.RINSE_BAG_DETAILS_SETTLE_MS || "450", 10) || 450),
   );
   const pollMs = Math.max(40, Math.min(500, parseInt(process.env.RINSE_BAG_DETAILS_POLL_MS || "75", 10) || 75));
   const deadline =
     Date.now() +
-    Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "3200", 10) || 3200);
+    Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "6000", 10) || 6000);
   const clickT = rowActionTimeoutMs();
 
+  await rowLocator.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
   await rowLocator
     .locator("xpath=./following-sibling::tr[1]")
     .scrollIntoViewIfNeeded({ timeout: 4000 })
@@ -568,6 +570,7 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
 
   for (const loc of bagDetailsToggleLocators(rowLocator, "hide")) {
     const first = loc.first();
+    await first.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
     if (await first.isVisible().catch(() => false)) {
       await page.waitForTimeout(settleMs);
       return true;
@@ -577,11 +580,16 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   while (Date.now() < deadline) {
     for (const loc of bagDetailsToggleLocators(rowLocator, "show")) {
       const first = loc.first();
+      await first.scrollIntoViewIfNeeded({ timeout: 2500 }).catch(() => {});
       if (await first.isVisible().catch(() => false)) {
         try {
           await first.click({ timeout: clickT, noWaitAfter: true });
         } catch {
-          await tryClickShowBagDetailsDom(rowLocator);
+          try {
+            await first.click({ timeout: clickT, noWaitAfter: true, force: true });
+          } catch {
+            await tryClickShowBagDetailsDom(rowLocator);
+          }
         }
         await page.waitForTimeout(settleMs);
         return true;
@@ -1319,7 +1327,9 @@ async function expandRowAndReadBag(page, rowLocator, collapsedRowText) {
     if (!bagOk) {
       const hint = (collapsedRowText || "").trim().replace(/\s+/g, " ").slice(0, 80);
       console.warn(
-        `  Show bag details not found or not clickable for a ticket row${hint ? ` (${hint})` : ""} — bag/weight may be wrong.`,
+        `  Show bag details not found or not clickable for a ticket row${hint ? ` (${hint})` : ""} — ` +
+          `Rinse may still be rendering the link, it may be off-screen under another expanded ticket, or the click was blocked. ` +
+          `Not a geography issue. Try RINSE_SHOW_BAG_WAIT_MS=10000 RINSE_EXPAND_SETTLE_MS=900 on the API, or HEADED=1 locally.`,
       );
     }
     const r2 = await readBagFromRowBlock(rowLocator);
