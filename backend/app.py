@@ -52,6 +52,7 @@ from backend.ta_routes import (
     _build_permission_hierarchy,
     _sanitize_role_code,
     register_ta_routes,
+    user_has_perm_for_washpro_user_id,
     write_audit,
 )
 from backend.daily_reset_scheduler import start_daily_reset_scheduler
@@ -1026,9 +1027,8 @@ def require_admin_or_perm(cursor, perm_key: str):
         uid = int(me["user_id"])
     except (TypeError, ValueError):
         return None, jsonify({"error": "Forbidden"}), 403
-    from backend.payroll_identity import user_has_perm_washpro
 
-    if user_has_perm_washpro(conn, uid, perm_key):
+    if user_has_perm_for_washpro_user_id(conn, uid, perm_key):
         me["roles"] = roles
         return me, None, None
     return None, jsonify({"error": "Forbidden"}), 403

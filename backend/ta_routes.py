@@ -383,6 +383,32 @@ def user_has_perm(conn, user_id: int, perm_key: str) -> bool:
     return c.fetchone() is not None
 
 
+def user_has_perm_for_washpro_user_id(conn, washpro_user_id: int, perm_key: str) -> bool:
+    """
+    Same permission resolution as /ta/bootstrap for a Washpro users.id (auth_sessions.user_id).
+
+    When payroll_profiles is off, /ta/bootstrap lists perms via ta_users.role_id, keyed by
+    ta_users.id — not by Washpro users.id. Routes that only called user_has_perm_washpro would
+    wrongly 403 those users (e.g. upload.create for Rinse import).
+    """
+    uid = int(washpro_user_id)
+    if payroll_profiles_active(conn):
+        return user_has_perm_washpro(conn, uid, perm_key)
+    c = conn.cursor(dictionary=True)
+    try:
+        c.execute(
+            "SELECT id FROM ta_users WHERE washpro_user_id=%s LIMIT 1",
+            (uid,),
+        )
+        row = c.fetchone()
+        if row and row.get("id") is not None:
+            if user_has_perm(conn, int(row["id"]), perm_key):
+                return True
+    finally:
+        c.close()
+    return user_has_perm_washpro(conn, uid, perm_key)
+
+
 def fetch_user_row(conn, user_id: int):
     if payroll_profiles_active(conn):
         return fetch_payroll_profile_row(conn, int(user_id))
