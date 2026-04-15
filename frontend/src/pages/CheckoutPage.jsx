@@ -41,6 +41,7 @@ import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const BROWSE_STORAGE_CHECKOUT = "washpro_ops_browse_checkout";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
