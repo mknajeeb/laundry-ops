@@ -484,13 +484,25 @@ export default function OrderScanLookupBar({
     const run = async () => {
       await stopQrScanner();
       if (cancelled) return;
+      // First paint often has 0×0 reader bounds; html5-qrcode then mis-draws the viewfinder until a remount.
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        if (cancelled) return;
+        const probe = document.getElementById(readerId);
+        if (probe) {
+          const rect = probe.getBoundingClientRect();
+          if (rect.width >= 120 && rect.height >= 120) break;
+        }
+        await new Promise((r) => window.setTimeout(r, 50));
+      }
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      if (cancelled) return;
       const el = document.getElementById(readerId);
       if (!el) return;
       const html5 = new Html5Qrcode(readerId);
       scannerRef.current = html5;
       try {
         await html5.start(
-          { facingMode: "environment" },
+          { facingMode: { ideal: "environment" } },
           {
             fps: 6,
             qrbox: (vw, vh) => {

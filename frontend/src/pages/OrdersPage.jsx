@@ -19,6 +19,7 @@ import {
   CheckCircle,
   ExpandLess,
   ExpandMore,
+  GridView,
   Inventory2,
   QrCodeScanner,
   Refresh,
@@ -259,6 +260,7 @@ function OrdersPage({ user }) {
     const rush = rushOf(r) === "RUSH";
     const hd = isHD(r);
     const pending = normalizeProcessing(r) === "PENDING";
+    const rushComplete = rush && !pending;
     const gameSt = String(r.gaming_flow_status || "").toUpperCase();
     const lockUid = Number(r.gaming_locked_by_user_id || 0);
     const lockedOther = gameSt === "ACTIVE" && lockUid && lockUid !== userId;
@@ -291,8 +293,20 @@ function OrdersPage({ user }) {
           <Stack spacing={0.9}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Stack direction="row" spacing={0.7} alignItems="center">
-                {rush ? <Bolt sx={{ fontSize: 20, color: "#ffcb5b" }} /> : <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />}
-                <Typography sx={{ fontSize: 13, letterSpacing: 0.5, opacity: 0.9, fontWeight: 400 }}>
+                {rush ? (
+                  <Bolt sx={{ fontSize: 20, color: rushComplete ? "#4ade80" : "#ffcb5b" }} />
+                ) : (
+                  <CheckCircle sx={{ fontSize: 17, color: "#d1fae5" }} />
+                )}
+                <Typography
+                  sx={{
+                    fontSize: 13,
+                    letterSpacing: 0.5,
+                    opacity: 0.9,
+                    fontWeight: 600,
+                    color: rushComplete ? "#bbf7d0" : "inherit",
+                  }}
+                >
                   {rush ? "RUSH" : "NON-RUSH"}
                 </Typography>
               </Stack>
@@ -428,7 +442,7 @@ function OrdersPage({ user }) {
         value={rushFilter}
         onChange={setRushFilter}
         tabs={[
-          { key: "ALL", label: "All", count: counts.all },
+          { key: "ALL", label: "All", count: counts.all, Icon: GridView, accent: "#0f172a" },
           { key: "RUSH", label: "Rush", count: counts.rush, Icon: Bolt, accent: "#b91c1c" },
           { key: "NON-RUSH", label: "Non-Rush", count: counts.nonRush, Icon: CheckCircle, accent: "#0f766e" },
         ]}

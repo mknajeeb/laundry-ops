@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ExpandLess,
   ExpandMore,
+  GridView,
   LocalShipping,
   QrCodeScanner,
   Refresh,
@@ -77,7 +78,11 @@ function CheckoutPage() {
   const [rushTab, setRushTab] = useState("ALL");
   const [openAlpha, setOpenAlpha] = useState(null);
   const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_CHECKOUT) === "1");
-  const [scanEnabled, setScanEnabled] = useState(() => localStorage.getItem(SCAN_STORAGE_CHECKOUT) !== "0");
+  const [scanEnabled, setScanEnabled] = useState(() => {
+    const v = localStorage.getItem(SCAN_STORAGE_CHECKOUT);
+    if (v === "0") return false;
+    return true;
+  });
   const [sentDrawerOpen, setSentDrawerOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
@@ -511,7 +516,7 @@ function CheckoutPage() {
               setOpenAlpha(null);
             }}
             tabs={[
-              { key: "ALL", label: "All", count: counters.allCount },
+              { key: "ALL", label: "All", count: counters.allCount, Icon: GridView, accent: "#0f172a" },
               { key: "RUSH", label: "Rush", count: counters.rushCount, Icon: Bolt, accent: "#b91c1c" },
               { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
             ]}

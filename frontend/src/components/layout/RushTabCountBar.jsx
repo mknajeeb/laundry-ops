@@ -62,7 +62,16 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
               }}
             >
               <Stack spacing={0.6} alignItems="center" textAlign="center">
-                {Icon ? <Icon sx={{ fontSize: 26 }} /> : null}
+                <Box
+                  sx={{
+                    height: 28,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {Icon ? <Icon sx={{ fontSize: 26 }} /> : null}
+                </Box>
                 <Typography sx={{ fontWeight: 800, fontSize: "1.05rem", letterSpacing: 0.02 }}>
                   {label}
                 </Typography>

@@ -207,13 +207,24 @@ export default function OrderDryerFlowPage({ user }) {
     const run = async () => {
       await stopScanner();
       if (cancelled) return;
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        if (cancelled) return;
+        const probe = document.getElementById(READER_ID);
+        if (probe) {
+          const rect = probe.getBoundingClientRect();
+          if (rect.width >= 120 && rect.height >= 120) break;
+        }
+        await new Promise((r) => window.setTimeout(r, 50));
+      }
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      if (cancelled) return;
       const el = document.getElementById(READER_ID);
       if (!el) return;
       const html5 = new Html5Qrcode(READER_ID);
       scannerRef.current = html5;
       try {
         await html5.start(
-          { facingMode: "environment" },
+          { facingMode: { ideal: "environment" } },
           {
             fps: 8,
             qrbox: (vw, vh) => {
