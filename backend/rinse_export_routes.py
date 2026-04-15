@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -693,15 +694,44 @@ def register_rinse_export_routes(app):
                         )
                         hb_thread.start()
 
+                    # Cancel must be DB-backed (other Gunicorn workers handle POST /cancel), but a full
+                    # fetch on every scrape poll (~5/s) starves MySQL and slows Playwright badly — cache it.
+                    _cancel_poll_s = max(
+                        0.35,
+                        min(5.0, float(os.getenv("RINSE_IMPORT_CANCEL_POLL_SEC", "1.2"))),
+                    )
+                    _cancel_cache: dict[str, float | bool] = {"t": -1e9, "v": False}
+
+                    def import_job_cancel_requested() -> bool:
+                        now = time.monotonic()
+                        if now - float(_cancel_cache["t"]) < _cancel_poll_s:
+                            return bool(_cancel_cache["v"])
+                        _cancel_cache["t"] = now
+                        try:
+                            conn_q = db_conn()
+                            try:
+                                cq = conn_q.cursor(dictionary=True)
+                                try:
+                                    ensure_rinse_import_jobs_table(cq)
+                                    row_q = fetch_rinse_import_job(cq, job_id, tenant_oid)
+                                    _cancel_cache["v"] = bool(row_q and row_q.get("cancel_requested_at"))
+                                finally:
+                                    cq.close()
+                            finally:
+                                conn_q.close()
+                        except Exception:
+                            pass
+                        return bool(_cancel_cache["v"])
+
                     def push_scrape_progress(so_tail: str, se_tail: str) -> None:
                         try:
+                            cancel_req = import_job_cancel_requested()
                             conn_p = db_conn()
                             try:
                                 cp = conn_p.cursor(dictionary=True)
                                 try:
                                     ensure_rinse_import_jobs_table(cp)
-                                    row_p = fetch_rinse_import_job(cp, job_id, tenant_oid)
-                                    if row_p and row_p.get("cancel_requested_at"):
+                                    if cancel_req:
                                         note = "Stop requested — halting scrape…"
                                     else:
                                         note = "Scraping Rinse (Playwright)…"
@@ -725,22 +755,6 @@ def register_rinse_export_routes(app):
                                 conn_p.close()
                         except Exception:
                             app.logger.warning("rinse import progress push failed", exc_info=True)
-
-                    def import_job_cancel_requested() -> bool:
-                        try:
-                            conn_q = db_conn()
-                            try:
-                                cq = conn_q.cursor(dictionary=True)
-                                try:
-                                    ensure_rinse_import_jobs_table(cq)
-                                    row_q = fetch_rinse_import_job(cq, job_id, tenant_oid)
-                                    return bool(row_q and row_q.get("cancel_requested_at"))
-                                finally:
-                                    cq.close()
-                            finally:
-                                conn_q.close()
-                        except Exception:
-                            return False
 
                     res = _rinse_import_after_auth(
                         app,
