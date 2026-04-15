@@ -40,6 +40,7 @@ import {
   uploadPortalOrdersCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
+import { useAuth } from "../context/AuthContext";
 import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
 
 const EMPTY_FORM = {
@@ -53,6 +54,7 @@ const EMPTY_FORM = {
 };
 
 function UploadPage({ user }) {
+  const { hasPerm } = useAuth();
   const [file, setFile] = useState(null);
   const [portalCsvFile, setPortalCsvFile] = useState(null);
   const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -82,6 +84,7 @@ function UploadPage({ user }) {
     const r = (user?.roles || []).map((x) => String(x).toUpperCase());
     return r.includes("ADMIN") || r.includes("SUPER_ADMIN") || r.includes("PLATFORM_ADMIN");
   }, [user?.roles]);
+  const canRunPortalScrape = isRinseExportAdmin || hasPerm("upload.create");
 
   const isConfirmed = (batch?.state || "").toUpperCase() === "CONFIRMED";
   const isDraft = (batch?.state || "").toUpperCase() === "DRAFT";
@@ -188,7 +191,7 @@ function UploadPage({ user }) {
   }, [portalScrapeLog]);
 
   useEffect(() => {
-    if (!isRinseExportAdmin) return;
+    if (!canRunPortalScrape) return;
     let cancelled = false;
     (async () => {
       try {
@@ -213,7 +216,7 @@ function UploadPage({ user }) {
     return () => {
       cancelled = true;
     };
-  }, [isRinseExportAdmin]);
+  }, [canRunPortalScrape]);
 
   const uploadFile = async () => {
     if (!file) {
@@ -737,7 +740,7 @@ function UploadPage({ user }) {
 
         <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.5 }}>Scrape progress</Typography>
         <Typography color="text.secondary" sx={{ fontSize: 12, mb: 0.8 }}>
-          {isRinseExportAdmin
+          {canRunPortalScrape
             ? "Live log while the API runs Playwright (same as your local terminal scrape). Then the server applies the portal mapper to the temp CSV and loads the draft."
             : "Ask an admin to run the server scrape, or upload a portal CSV you exported elsewhere."}
         </Typography>
@@ -764,7 +767,7 @@ function UploadPage({ user }) {
               : "Run a server scrape or upload a CSV — scrape output appears here in real time.")}
         </Box>
 
-        {isRinseExportAdmin && (
+        {canRunPortalScrape && (
           <>
             <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.5 }}>Server scrape → temp CSV → draft</Typography>
             <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
