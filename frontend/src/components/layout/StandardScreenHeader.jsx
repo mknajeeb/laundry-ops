@@ -10,7 +10,11 @@ import { useI18n } from "../../i18n/I18nContext";
  */
 export default function StandardScreenHeader({
   title,
+  /** Shown on the same row as `title` (e.g. date on the right). Desktop ops screens. */
+  titleRight,
   dateLabel,
+  /** Icons between Home and the title (e.g. folded / scan / index on floor screens). */
+  mid,
   right,
   onBack,
   homePath = "/",
@@ -61,27 +65,44 @@ export default function StandardScreenHeader({
           >
             <HomeRounded />
           </IconButton>
+          {mid ? (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 0.35, flexWrap: "nowrap" }}>{mid}</Box>
+          ) : null}
         </Stack>
-        {title ? (
-          <Typography
-            component="div"
+        {title || titleRight ? (
+          <Box
             sx={{
               flex: 1,
               minWidth: 0,
-              textAlign: "center",
-              fontWeight: 700,
-              fontSize: { xs: "1.12rem", sm: "1.28rem" },
-              letterSpacing: 0.15,
-              color: "#0f172a",
-              lineHeight: 1.25,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: title ? "space-between" : "flex-end",
+              gap: 1,
               px: 0.5,
             }}
           >
-            {title}
-          </Typography>
+            {title ? (
+              <Typography
+                component="div"
+                sx={{
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: "left",
+                  fontWeight: 700,
+                  fontSize: { xs: "1.12rem", sm: "1.28rem" },
+                  letterSpacing: 0.15,
+                  color: "#0f172a",
+                  lineHeight: 1.25,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {title}
+              </Typography>
+            ) : null}
+            {titleRight ? <Box sx={{ flexShrink: 0 }}>{titleRight}</Box> : null}
+          </Box>
         ) : (
           <Box sx={{ flex: 1, minWidth: 0 }} />
         )}

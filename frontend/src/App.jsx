@@ -49,6 +49,7 @@ import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
 import { authLogout, authMe, clearAuthSession, getClockPayrollUiSettings, getCurrentUploadBatch, getSavedUser } from "./api";
 import { useAuth } from "./context/AuthContext";
 import { resolveOrgLogoUrl } from "./utils/resolveOrgLogoUrl";
+import { formatSystemDateLong } from "./utils/formatDateLocal";
 
 function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const navigate = useNavigate();
@@ -369,20 +370,37 @@ function AppShell() {
                     <Menu sx={{ fontSize: 26 }} />
                   </IconButton>
                   {pathname === "/orders" ? (
-                    <Typography
-                      component="span"
-                      sx={{
-                        fontWeight: 800,
-                        fontSize: "1.02rem",
-                        color: "#0f172a",
-                        letterSpacing: 0.02,
-                        flex: 1,
-                        minWidth: 0,
-                        lineHeight: 1.2,
-                      }}
-                    >
-                      {t("ops.mobileBarOrdersTitle")}
-                    </Typography>
+                    <>
+                      <Typography
+                        component="span"
+                        sx={{
+                          fontWeight: 800,
+                          fontSize: "1.02rem",
+                          color: "#0f172a",
+                          letterSpacing: 0.02,
+                          flex: 1,
+                          minWidth: 0,
+                          lineHeight: 1.2,
+                        }}
+                      >
+                        {t("ops.mobileBarOrdersTitle")}
+                      </Typography>
+                      <Typography
+                        component="span"
+                        sx={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "#64748b",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                          lineHeight: 1.2,
+                          textAlign: "right",
+                          maxWidth: "42%",
+                        }}
+                      >
+                        {formatSystemDateLong()}
+                      </Typography>
+                    </>
                   ) : pathname.startsWith("/orders/") && pathname.includes("dryer-flow") ? (
                     <Typography
                       component="span"
@@ -398,19 +416,36 @@ function AppShell() {
                       {t("ops.dryerFlowTitle")}
                     </Typography>
                   ) : pathname === "/checkout" ? (
-                    <Typography
-                      component="span"
-                      sx={{
-                        fontWeight: 800,
-                        fontSize: "1.02rem",
-                        color: "#0f172a",
-                        flex: 1,
-                        minWidth: 0,
-                        lineHeight: 1.2,
-                      }}
-                    >
-                      {t("ops.mobileBarCheckoutTitle")}
-                    </Typography>
+                    <>
+                      <Typography
+                        component="span"
+                        sx={{
+                          fontWeight: 800,
+                          fontSize: "1.02rem",
+                          color: "#0f172a",
+                          flex: 1,
+                          minWidth: 0,
+                          lineHeight: 1.2,
+                        }}
+                      >
+                        {t("ops.mobileBarCheckoutTitle")}
+                      </Typography>
+                      <Typography
+                        component="span"
+                        sx={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          color: "#64748b",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                          lineHeight: 1.2,
+                          textAlign: "right",
+                          maxWidth: "42%",
+                        }}
+                      >
+                        {formatSystemDateLong()}
+                      </Typography>
+                    </>
                   ) : (
                     <Box sx={{ flex: 1 }} />
                   )}

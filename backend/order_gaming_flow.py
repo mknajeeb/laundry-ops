@@ -83,6 +83,15 @@ def _processing_sql(cap: dict[str, bool]) -> str:
     return "'PENDING' AS processing_status"
 
 
+def _order_display_sql(cursor) -> str:
+    """Optional customer-facing columns for session / resume UIs."""
+    parts: list[str] = []
+    for col in ("name_clean", "date_clean", "weight_num", "service_type", "ticket_id", "rush_type"):
+        if table_has_column(cursor, "orders_staging", col):
+            parts.append(f"o.{col}")
+    return (",\n            " + ",\n            ".join(parts)) if parts else ""
+
+
 def load_staging_order_row(cursor, order_id: int, tenant_oid: int, cap: dict[str, bool]) -> dict[str, Any] | None:
     logistics_sql = _logistics_sql(cap)
     processing_sql = _processing_sql(cap)
@@ -95,6 +104,7 @@ def load_staging_order_row(cursor, order_id: int, tenant_oid: int, cap: dict[str
             , o.gaming_dryer_count
             , o.gaming_dryers_json
         """
+    disp = _order_display_sql(cursor)
     org_sel = "o.organization_id" if table_has_column(cursor, "orders_staging", "organization_id") else "NULL AS organization_id"
     status_sel = ", o.status" if table_has_column(cursor, "orders_staging", "status") else ""
     sql = f"""
@@ -105,6 +115,7 @@ def load_staging_order_row(cursor, order_id: int, tenant_oid: int, cap: dict[str
             {processing_sql}
             {status_sel}
             {gcols}
+            {disp}
         FROM orders_staging o
         WHERE o.id = %s
     """
@@ -220,6 +231,9 @@ def get_session_for_user(
         "gaming_locked_by_user_id": row.get("gaming_locked_by_user_id"),
         "lock_token": None,
     }
+    for k in ("name_clean", "date_clean", "weight_num", "service_type", "ticket_id", "rush_type"):
+        if k in row:
+            out[k] = row.get(k)
     if st == "ACTIVE" and int(row.get("gaming_locked_by_user_id") or 0) == uid:
         tok = (row.get("gaming_lock_token") or "").strip()
         out["lock_token"] = tok or None
@@ -264,11 +278,22 @@ def start_session(
                 "resumed": True,
             }, 200
 
+    def _truthy(v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        s = str(v or "").strip().lower()
+        return s in ("1", "true", "yes", "on")
+
+    simple_flow = _truthy(body.get("simple_flow"))
     try:
         n = int(body.get("dryer_count") or 0)
     except Exception:
         n = 0
-    if n < 1 or n > 20:
+    if simple_flow:
+        if n != 0:
+            return {"error": "simple_flow requires dryer_count 0"}, 400
+        n = 0
+    elif n < 1 or n > 20:
         return {"error": "dryer_count must be between 1 and 20"}, 400
 
     token = str(uuid.uuid4())
@@ -344,6 +369,8 @@ def scan_dryer(
 
     dryers = _parse_dryers_json(row.get("gaming_dryers_json"))
     need = int(row.get("gaming_dryer_count") or 0)
+    if need <= 0:
+        return {"error": "Dryer scan not required for this session"}, 409
     if len(dryers) >= need:
         return {"error": "All dryers already scanned"}, 409
     if code in dryers:
@@ -383,7 +410,7 @@ def complete_ticket(
 
     dryers = _parse_dryers_json(row.get("gaming_dryers_json"))
     need = int(row.get("gaming_dryer_count") or 0)
-    if len(dryers) < need:
+    if need > 0 and len(dryers) < need:
         return {"error": "Scan all dryers before uploading ticket"}, 409
 
     b64 = body.get("ticket_image_base64")
@@ -421,6 +448,21 @@ def complete_ticket(
             *( [tenant_oid] if table_has_column(cursor, "orders_staging", "organization_id") else []),
         ),
     )
+
+    wraw = body.get("weight_num")
+    if wraw not in (None, "") and table_has_column(cursor, "orders_staging", "weight_num"):
+        from backend.app import normalize_weight
+
+        wn = normalize_weight(wraw)
+        if wn is not None:
+            org_sql = " AND organization_id = %s" if table_has_column(cursor, "orders_staging", "organization_id") else ""
+            wargs: list[Any] = [wn, order_id]
+            if table_has_column(cursor, "orders_staging", "organization_id"):
+                wargs.append(tenant_oid)
+            cursor.execute(
+                f"UPDATE orders_staging SET weight_num = %s WHERE id = %s{org_sql}",
+                tuple(wargs),
+            )
 
     # Folding queue (Orders "Folded") keys off processing_status + order_process_submissions.user_id.
     # Without this, gaming COMPLETED still leaves the row PENDING with no processed_by.

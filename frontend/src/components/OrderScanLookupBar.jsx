@@ -236,12 +236,29 @@ function buildLookupBodiesForQr(qrText, batchStr) {
 
 const dialogTabKey = (storageKey) => `${storageKey}_dialog_tab`;
 
-export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate, variant = "dialog" }) {
+export default function OrderScanLookupBar({
+  storageKey,
+  onPickOrder,
+  disabled,
+  batchDate,
+  variant = "dialog",
+  /** Parent-controlled scan on/off (parent should persist). Omit to use `storageKey` in localStorage. */
+  scanEnabled: scanEnabledProp,
+  onScanEnabledChange,
+  /** Embedded: strip paste / lookup / tag / idle line; parent supplies toolbar toggles. */
+  compactEmbedded = false,
+}) {
   const { t } = useI18n();
   const isEmbedded = variant === "embedded";
   const fullScreenDialog = useMediaQuery("(max-width:600px)");
   const readerId = `order-scan-qr-${storageKey.replace(/[^a-z0-9_-]/gi, "-")}`;
-  const [enabled, setEnabled] = useState(() => localStorage.getItem(storageKey) !== "0");
+  const scanIsControlled = typeof scanEnabledProp === "boolean" && typeof onScanEnabledChange === "function";
+  const [internalScanEnabled, setInternalScanEnabled] = useState(() => localStorage.getItem(storageKey) !== "0");
+  const enabled = scanIsControlled ? scanEnabledProp : internalScanEnabled;
+  const setEnabled = (v) => {
+    if (scanIsControlled) onScanEnabledChange(v);
+    else setInternalScanEnabled(v);
+  };
   const [open, setOpen] = useState(false);
   const [ocrDialogOpen, setOcrDialogOpen] = useState(false);
   const [dialogTab, setDialogTab] = useState(() => localStorage.getItem(dialogTabKey(storageKey)) || "qr");
@@ -261,8 +278,9 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   const hadPickListRef = useRef(false);
 
   useEffect(() => {
+    if (scanIsControlled) return;
     localStorage.setItem(storageKey, enabled ? "1" : "0");
-  }, [enabled, storageKey]);
+  }, [enabled, storageKey, scanIsControlled]);
 
   useEffect(() => {
     if (open || ocrDialogOpen) {
@@ -478,7 +496,8 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
             qrbox: (vw, vh) => {
               const w = Number(vw) || 300;
               const h = Number(vh) || 300;
-              return { width: Math.min(280, Math.floor(w * 0.82)), height: Math.min(280, Math.floor(h * 0.5)) };
+              const side = Math.max(160, Math.min(280, Math.floor(Math.min(w, h) * 0.72)));
+              return { width: side, height: side };
             },
           },
           onDecoded,
@@ -638,7 +657,34 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     }
   };
 
-  const scanSurface = (
+  const scanSurface = compactEmbedded ? (
+    <Stack spacing={0.5} sx={{ width: "100%" }}>
+      <Box
+        sx={{
+          borderRadius: 2,
+          overflow: "hidden",
+          bgcolor: "#0f172a",
+          minHeight: { xs: "36vh", sm: 260 },
+          maxHeight: { xs: "46vh", sm: 360 },
+          position: "relative",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Box
+          key={`${readerId}-${qrRemount}`}
+          id={readerId}
+          sx={{ width: "100%", height: "100%", minHeight: { xs: "36vh", sm: 260 } }}
+        />
+      </Box>
+      {scanStatus ? (
+        <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center", minHeight: 18 }}>
+          {scanStatus}
+        </Typography>
+      ) : null}
+    </Stack>
+  ) : (
     <Stack spacing={1} sx={{ width: "100%" }}>
       <Box
         sx={{
@@ -680,11 +726,13 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
 
   if (isEmbedded) {
     return (
-      <Box sx={{ mt: 0.5 }}>
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-          <Switch checked={enabled} onChange={(_, v) => setEnabled(v)} disabled={disabled} color="primary" size="medium" />
-          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>{t("ops.scanToggleLabel")}</Typography>
-        </Stack>
+      <Box sx={{ mt: compactEmbedded ? 0.75 : 0.5 }}>
+        {!compactEmbedded ? (
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+            <Switch checked={enabled} onChange={(_, v) => setEnabled(v)} disabled={disabled} color="primary" size="medium" />
+            <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>{t("ops.scanToggleLabel")}</Typography>
+          </Stack>
+        ) : null}
         {enabled && !disabled ? scanSurface : null}
 
         <Dialog open={ocrDialogOpen} onClose={closeOcrDialog} fullWidth maxWidth="sm" fullScreen={fullScreenDialog}>

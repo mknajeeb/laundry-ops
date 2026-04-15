@@ -4,7 +4,10 @@ import {
   Box,
   Button,
   CircularProgress,
+  FormControlLabel,
+  Paper,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from "@mui/material";
@@ -12,7 +15,6 @@ import { Add, CameraAlt, Remove } from "@mui/icons-material";
 import { Html5Qrcode } from "html5-qrcode";
 import { useNavigate, useParams } from "react-router-dom";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
-import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import {
   cancelOrderGamingSession,
@@ -21,8 +23,10 @@ import {
   scanOrderGamingDryer,
   startOrderGamingSession,
 } from "../api";
+import { displayCustomerName } from "../utils/displayCustomerName";
 
 const READER_ID = "dryer-qr-reader";
+const DRYER_MAINT_KEY = "washpro_dryer_scan_maintenance";
 
 async function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -36,11 +40,26 @@ async function fileToBase64(file) {
   });
 }
 
+function normSvc(r) {
+  return String(r?.service_type || "").trim().toUpperCase();
+}
+
+function isHdRow(r) {
+  return normSvc(r) === "HD";
+}
+
+function formatOrderLine(r) {
+  if (!r) return "";
+  const n = Number(r.weight_num ?? 0);
+  const m = isHdRow(r) ? `${Math.round(n)} pcs` : `${Number.isFinite(n) ? n.toFixed(2) : "0.00"} lb`;
+  const ds = String(r.date_clean || "").slice(0, 10);
+  return ds ? `${ds} · ${m}` : m;
+}
+
 export default function OrderDryerFlowPage({ user }) {
   const { orderId } = useParams();
   const navigate = useNavigate();
   const { t } = useI18n();
-  const { logout } = useAuth();
   const oid = Number(orderId);
   const uid = Number(user?.user_id || 0);
 
@@ -53,8 +72,19 @@ export default function OrderDryerFlowPage({ user }) {
   const [dryers, setDryers] = useState([]);
   const [busy, setBusy] = useState(false);
   const [manualCode, setManualCode] = useState("");
+  const [sessionOrder, setSessionOrder] = useState(null);
+  const [dryerMaintenanceOn, setDryerMaintenanceOn] = useState(() => localStorage.getItem(DRYER_MAINT_KEY) !== "0");
+  const [isSimpleSession, setIsSimpleSession] = useState(false);
+  const [pendingTicketB64, setPendingTicketB64] = useState("");
+  const [pendingTicketFname, setPendingTicketFname] = useState("ticket.jpg");
+  const [weightInput, setWeightInput] = useState(0);
+  const [completedFlash, setCompletedFlash] = useState(false);
   const scannerRef = useRef(null);
   const startedRef = useRef(false);
+
+  useEffect(() => {
+    localStorage.setItem(DRYER_MAINT_KEY, dryerMaintenanceOn ? "1" : "0");
+  }, [dryerMaintenanceOn]);
 
   const stopScanner = useCallback(async () => {
     const h = scannerRef.current;
@@ -71,6 +101,11 @@ export default function OrderDryerFlowPage({ user }) {
       /* ignore */
     }
   }, []);
+
+  const finishSuccess = useCallback(() => {
+    setCompletedFlash(true);
+    window.setTimeout(() => navigate("/orders", { replace: true }), 2200);
+  }, [navigate]);
 
   const onScanDryer = useCallback(
     async (code) => {
@@ -105,6 +140,14 @@ export default function OrderDryerFlowPage({ user }) {
         const res = await getOrderGamingSession(oid);
         if (cancelled) return;
         const d = res.data || {};
+        setSessionOrder({
+          name_clean: d.name_clean,
+          date_clean: d.date_clean,
+          weight_num: d.weight_num,
+          service_type: d.service_type,
+          ticket_id: d.ticket_id,
+          rush_type: d.rush_type,
+        });
         const st = String(d.gaming_flow_status || "").toUpperCase();
         if (st === "COMPLETED") {
           setAlreadyDone(true);
@@ -120,17 +163,24 @@ export default function OrderDryerFlowPage({ user }) {
           }
           if (d.lock_token) {
             setLockToken(String(d.lock_token));
-            const n = Number(d.gaming_dryer_count) || 1;
-            setDryerCount(n);
+            const n = Number(d.gaming_dryer_count) || 0;
+            setIsSimpleSession(n === 0);
+            setDryerCount(n < 1 ? 1 : n);
             const list = Array.isArray(d.gaming_dryers) ? d.gaming_dryers : [];
             setDryers(list);
-            if (list.length >= n) setStep(3);
-            else setStep(2);
+            if (n === 0) {
+              setStep(3);
+            } else if (list.length >= n) {
+              setStep(3);
+            } else {
+              setStep(2);
+            }
             setLoading(false);
             return;
           }
         }
         setStep(1);
+        setIsSimpleSession(false);
       } catch (e) {
         if (!cancelled) setBlocked(e?.response?.data?.error || "Could not load session.");
       } finally {
@@ -141,6 +191,13 @@ export default function OrderDryerFlowPage({ user }) {
       cancelled = true;
     };
   }, [oid, uid]);
+
+  useEffect(() => {
+    if (step === 4 && sessionOrder) {
+      const w = Number(sessionOrder.weight_num);
+      setWeightInput(Number.isFinite(w) ? w : 0);
+    }
+  }, [step, sessionOrder]);
 
   useEffect(() => {
     if (step !== 2 || !lockToken) return undefined;
@@ -157,14 +214,22 @@ export default function OrderDryerFlowPage({ user }) {
       try {
         await html5.start(
           { facingMode: "environment" },
-          { fps: 8, qrbox: { width: 260, height: 260 } },
+          {
+            fps: 8,
+            qrbox: (vw, vh) => {
+              const w = Number(vw) || 300;
+              const h = Number(vh) || 300;
+              const side = Math.max(160, Math.min(280, Math.floor(Math.min(w, h) * 0.72)));
+              return { width: side, height: side };
+            },
+          },
           async (text) => {
             if (startedRef.current) return;
-            const t = String(text || "").trim();
-            if (!t) return;
+            const tx = String(text || "").trim();
+            if (!tx) return;
             startedRef.current = true;
             try {
-              await onScanDryer(t);
+              await onScanDryer(tx);
             } finally {
               startedRef.current = false;
             }
@@ -188,7 +253,24 @@ export default function OrderDryerFlowPage({ user }) {
       const res = await startOrderGamingSession(oid, { dryer_count: dryerCount });
       setLockToken(res.data?.lock_token || "");
       setDryers(res.data?.dryers || []);
+      setIsSimpleSession(false);
       setStep(2);
+    } catch (e) {
+      window.alert(e?.response?.data?.error || "Could not start assignment");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onStartSimplePath = async () => {
+    setBusy(true);
+    try {
+      const res = await startOrderGamingSession(oid, { dryer_count: 0, simple_flow: true });
+      setLockToken(res.data?.lock_token || "");
+      setDryers([]);
+      setDryerCount(0);
+      setIsSimpleSession(true);
+      setStep(3);
     } catch (e) {
       window.alert(e?.response?.data?.error || "Could not start assignment");
     } finally {
@@ -201,17 +283,50 @@ export default function OrderDryerFlowPage({ user }) {
     setBusy(true);
     try {
       const b64 = await fileToBase64(file);
-      await completeOrderGamingTicket(oid, {
-        lock_token: lockToken,
-        ticket_image_base64: b64,
-        ticket_file_name: file.name,
-      });
-      navigate("/orders", { replace: true });
+      if (isSimpleSession) {
+        setPendingTicketB64(b64);
+        setPendingTicketFname(file.name || "ticket.jpg");
+        setStep(4);
+      } else {
+        await completeOrderGamingTicket(oid, {
+          lock_token: lockToken,
+          ticket_image_base64: b64,
+          ticket_file_name: file.name,
+        });
+        finishSuccess();
+      }
     } catch (e) {
       window.alert(e?.response?.data?.error || "Upload failed");
     } finally {
       setBusy(false);
     }
+  };
+
+  const submitSimpleComplete = async () => {
+    if (!lockToken || !pendingTicketB64) return;
+    setBusy(true);
+    try {
+      await completeOrderGamingTicket(oid, {
+        lock_token: lockToken,
+        ticket_image_base64: pendingTicketB64,
+        ticket_file_name: pendingTicketFname,
+        weight_num: weightInput,
+      });
+      finishSuccess();
+    } catch (e) {
+      window.alert(e?.response?.data?.error || "Could not complete order");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const bumpWeight = (dir) => {
+    const stepAmt = isHdRow(sessionOrder) ? 1 : 0.25;
+    setWeightInput((w) => {
+      const cur = Number(w) || 0;
+      const next = cur + dir * stepAmt;
+      return isHdRow(sessionOrder) ? Math.max(0, Math.round(next)) : Math.max(0, Math.round(next * 100) / 100);
+    });
   };
 
   const onCancelFlow = async () => {
@@ -231,6 +346,33 @@ export default function OrderDryerFlowPage({ user }) {
     }
   };
 
+  const orderBanner = sessionOrder && (
+    <Paper
+      elevation={0}
+      sx={{
+        mb: 1.25,
+        p: 1.25,
+        borderRadius: 2,
+        border: "1px solid #e9d5ff",
+        bgcolor: "rgba(255,255,255,0.92)",
+      }}
+    >
+      <Typography sx={{ fontWeight: 800, fontSize: "1.05rem", color: "#1e1b4b", lineHeight: 1.25 }}>
+        {displayCustomerName(sessionOrder.name_clean) || `Order #${oid}`}
+      </Typography>
+      {sessionOrder.ticket_id ? (
+        <Typography sx={{ fontSize: 14, fontWeight: 600, color: "#4c1d95", mt: 0.35 }}>
+          {t("ops.bagIdShort")} {String(sessionOrder.ticket_id)}
+        </Typography>
+      ) : null}
+      <Typography sx={{ fontSize: 13.5, color: "#64748b", mt: 0.35 }}>
+        #{oid}
+        {sessionOrder.service_type ? ` · ${String(sessionOrder.service_type)}` : ""}
+        {formatOrderLine(sessionOrder) ? ` · ${formatOrderLine(sessionOrder)}` : ""}
+      </Typography>
+    </Paper>
+  );
+
   if (loading) {
     return (
       <Stack alignItems="center" justifyContent="center" sx={{ minHeight: "100vh" }}>
@@ -248,7 +390,7 @@ export default function OrderDryerFlowPage({ user }) {
           background: "linear-gradient(168deg, #faf5ff 0%, #f3e8ff 40%, #fafafa 100%)",
         }}
       >
-        <StandardScreenHeader title={t("ops.dryerFlowTitle")} dense onBack={() => navigate(-1)} onLogout={logout} />
+        <StandardScreenHeader title={t("ops.dryerFlowTitle")} dense onBack={() => navigate(-1)} />
         <Alert severity="warning" sx={{ mt: 2 }}>
           {blocked}
         </Alert>
@@ -265,13 +407,15 @@ export default function OrderDryerFlowPage({ user }) {
           background: "linear-gradient(168deg, #faf5ff 0%, #f3e8ff 40%, #fafafa 100%)",
         }}
       >
-        <StandardScreenHeader title={t("ops.dryerFlowTitle")} dense onBack={() => navigate("/orders")} onLogout={logout} />
+        <StandardScreenHeader title={t("ops.dryerFlowTitle")} dense onBack={() => navigate("/orders")} />
         <Alert severity="info" sx={{ mt: 2 }}>
           Dryer assignment is already completed for this order. Add or replace the ticket photo from Upload → Live orders for this batch if needed.
         </Alert>
       </Box>
     );
   }
+
+  const maintToggleDisabled = Boolean(lockToken);
 
   return (
     <Box
@@ -283,6 +427,7 @@ export default function OrderDryerFlowPage({ user }) {
         pb: "env(safe-area-inset-bottom, 16px)",
         px: { xs: 1, sm: 1.5 },
         pt: 1,
+        position: "relative",
       }}
     >
       <StandardScreenHeader
@@ -290,116 +435,224 @@ export default function OrderDryerFlowPage({ user }) {
         dense
         onBack={onCancelFlow}
         homePath="/orders"
-        onLogout={logout}
       />
 
-      {step === 1 && (
-        <Stack spacing={2} sx={{ flex: 1, px: 2, py: 3, maxWidth: 420, mx: "auto", width: "100%" }}>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            How many Dryers?
-          </Typography>
-          <Stack direction="row" alignItems="center" justifyContent="center" spacing={3}>
-            <Button
-              variant="outlined"
-              size="large"
-              onClick={() => setDryerCount((c) => Math.max(1, c - 1))}
-              sx={{ minWidth: 56, minHeight: 56, borderRadius: 2 }}
+      <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {orderBanner}
+
+        {step === 1 && (
+          <Stack spacing={2} sx={{ flex: 1, px: 1, py: 1, maxWidth: 420, mx: "auto", width: "100%" }}>
+            <FormControlLabel
+              sx={{ alignItems: "center", mx: 0 }}
+              control={
+                <Switch
+                  checked={dryerMaintenanceOn}
+                  disabled={maintToggleDisabled}
+                  onChange={(_, v) => setDryerMaintenanceOn(v)}
+                  color="primary"
+                />
+              }
+              label={
+                <Typography sx={{ fontWeight: 700, fontSize: 15 }}>
+                  Dryer QR scan {dryerMaintenanceOn ? "on" : "off"}
+                </Typography>
+              }
+            />
+            {!dryerMaintenanceOn ? (
+              <>
+                <Typography color="text.secondary">
+                  Skip dryer count and QR scan. You will take a ticket photo, confirm weight, then complete the order.
+                </Typography>
+                <Button
+                  variant="contained"
+                  size="large"
+                  disabled={busy}
+                  onClick={onStartSimplePath}
+                  sx={{ borderRadius: 999, py: 1.6, fontWeight: 700, fontSize: "1.05rem" }}
+                >
+                  Continue
+                </Button>
+              </>
+            ) : (
+              <>
+                <Typography variant="h5" sx={{ fontWeight: 700 }}>
+                  How many dryers?
+                </Typography>
+                <Stack direction="row" alignItems="center" justifyContent="center" spacing={3}>
+                  <Button
+                    variant="outlined"
+                    size="large"
+                    onClick={() => setDryerCount((c) => Math.max(1, c - 1))}
+                    sx={{ minWidth: 56, minHeight: 56, borderRadius: 2 }}
+                  >
+                    <Remove fontSize="large" />
+                  </Button>
+                  <Typography sx={{ fontSize: 42, fontWeight: 800, minWidth: 64, textAlign: "center" }}>{dryerCount}</Typography>
+                  <Button
+                    variant="outlined"
+                    size="large"
+                    onClick={() => setDryerCount((c) => Math.min(20, c + 1))}
+                    sx={{ minWidth: 56, minHeight: 56, borderRadius: 2 }}
+                  >
+                    <Add fontSize="large" />
+                  </Button>
+                </Stack>
+                <Button
+                  variant="contained"
+                  size="large"
+                  disabled={busy}
+                  onClick={onNextFromCount}
+                  sx={{ borderRadius: 999, py: 1.6, fontWeight: 700, fontSize: "1.05rem" }}
+                >
+                  Next
+                </Button>
+              </>
+            )}
+          </Stack>
+        )}
+
+        {step === 2 && (
+          <Stack sx={{ flex: 1, px: 0.5, py: 0.5, overflow: "hidden" }}>
+            <Typography sx={{ fontWeight: 700, mb: 1, px: 0.5 }}>Scan dryer QR codes</Typography>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateRows: { xs: "1fr 1fr", sm: "1fr" },
+                gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+                gap: 1,
+                flex: 1,
+                minHeight: 0,
+              }}
             >
-              <Remove fontSize="large" />
-            </Button>
-            <Typography sx={{ fontSize: 42, fontWeight: 800, minWidth: 64, textAlign: "center" }}>{dryerCount}</Typography>
-            <Button
-              variant="outlined"
-              size="large"
-              onClick={() => setDryerCount((c) => Math.min(20, c + 1))}
-              sx={{ minWidth: 56, minHeight: 56, borderRadius: 2 }}
-            >
-              <Add fontSize="large" />
+              <Box
+                id={READER_ID}
+                sx={{
+                  borderRadius: 2,
+                  overflow: "hidden",
+                  bgcolor: "#000",
+                  minHeight: { xs: 220, sm: 320 },
+                  border: "2px solid #e2e8f0",
+                }}
+              />
+              <Stack spacing={1.2} sx={{ p: 1, bgcolor: "#fff", borderRadius: 2, border: "1px solid #e2e8f0" }}>
+                <Typography sx={{ fontWeight: 600 }}>
+                  Dryers ({dryers.length} / {dryerCount})
+                </Typography>
+                <Stack direction="row" flexWrap="wrap" gap={0.75}>
+                  {dryers.map((d) => (
+                    <Box key={d} sx={{ px: 1.2, py: 0.5, bgcolor: "#dcfce7", borderRadius: 999, fontWeight: 700 }}>
+                      {d}
+                    </Box>
+                  ))}
+                </Stack>
+                <Typography variant="body2" color="text.secondary">
+                  Point the camera at each dryer QR. No duplicates. Need {dryerCount - dryers.length} more.
+                </Typography>
+                <TextField
+                  size="small"
+                  label="Or type dryer code"
+                  value={manualCode}
+                  onChange={(e) => setManualCode(e.target.value)}
+                />
+                <Button
+                  variant="outlined"
+                  disabled={busy || !manualCode.trim()}
+                  onClick={() => onScanDryer(manualCode).then(() => setManualCode(""))}
+                >
+                  Add code
+                </Button>
+              </Stack>
+            </Box>
+          </Stack>
+        )}
+
+        {step === 3 && (
+          <Stack spacing={2} sx={{ flex: 1, px: 1, py: 2, maxWidth: 480, mx: "auto", width: "100%" }}>
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              Ticket photo
+            </Typography>
+            <Typography color="text.secondary">
+              {isSimpleSession
+                ? "Take or upload one clear ticket photo. On the next step you will confirm weight and complete the order."
+                : "Take or upload one clear photo of the ticket — the flow finishes as soon as it is saved."}
+            </Typography>
+            <Button variant="contained" component="label" startIcon={<CameraAlt />} disabled={busy} sx={{ py: 2, borderRadius: 2 }}>
+              {busy ? "Saving…" : "Choose / capture photo"}
+              <input
+                hidden
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] || null;
+                  e.target.value = "";
+                  if (file) completeTicketWithFile(file);
+                }}
+              />
             </Button>
           </Stack>
-          <Button
-            variant="contained"
-            size="large"
-            disabled={busy}
-            onClick={onNextFromCount}
-            sx={{ borderRadius: 999, py: 1.6, fontWeight: 700, fontSize: "1.05rem" }}
-          >
-            Next
-          </Button>
-        </Stack>
-      )}
+        )}
 
-      {step === 2 && (
-        <Stack sx={{ flex: 1, px: 1.5, py: 1, overflow: "hidden" }}>
-          <Typography sx={{ fontWeight: 700, mb: 1, px: 0.5 }}>Scan dryer QR codes</Typography>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateRows: { xs: "1fr 1fr", sm: "1fr" },
-              gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
-              gap: 1,
-              flex: 1,
-              minHeight: 0,
-            }}
-          >
-            <Box
-              id={READER_ID}
+        {step === 4 && isSimpleSession && (
+          <Stack spacing={2.5} sx={{ flex: 1, px: 1, py: 2, maxWidth: 440, mx: "auto", width: "100%" }}>
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>
+              Ticket weight
+            </Typography>
+            <Typography color="text.secondary">
+              Adjust if needed, then complete. Units: {isHdRow(sessionOrder) ? "pieces" : "lb"}.
+            </Typography>
+            <Paper
+              elevation={0}
               sx={{
-                borderRadius: 2,
-                overflow: "hidden",
-                bgcolor: "#000",
-                minHeight: { xs: 220, sm: 320 },
-                border: "2px solid #e2e8f0",
+                p: 2,
+                borderRadius: 3,
+                border: "1px solid #e2e8f0",
+                bgcolor: "#fff",
               }}
-            />
-            <Stack spacing={1.2} sx={{ p: 1, bgcolor: "#fff", borderRadius: 2, border: "1px solid #e2e8f0" }}>
-              <Typography sx={{ fontWeight: 600 }}>Dryers ({dryers.length} / {dryerCount})</Typography>
-              <Stack direction="row" flexWrap="wrap" gap={0.75}>
-                {dryers.map((d) => (
-                  <Box key={d} sx={{ px: 1.2, py: 0.5, bgcolor: "#dcfce7", borderRadius: 999, fontWeight: 700 }}>
-                    {d}
-                  </Box>
-                ))}
+            >
+              <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2}>
+                <Button variant="outlined" size="large" onClick={() => bumpWeight(-1)} sx={{ minWidth: 56, minHeight: 56 }}>
+                  <Remove />
+                </Button>
+                <Typography sx={{ fontSize: 36, fontWeight: 800, textAlign: "center", flex: 1 }}>
+                  {isHdRow(sessionOrder) ? Math.round(Number(weightInput) || 0) : Number(weightInput || 0).toFixed(2)}
+                </Typography>
+                <Button variant="outlined" size="large" onClick={() => bumpWeight(1)} sx={{ minWidth: 56, minHeight: 56 }}>
+                  <Add />
+                </Button>
               </Stack>
-              <Typography variant="body2" color="text.secondary">
-                Point the camera at each dryer QR. No duplicates. Need {dryerCount - dryers.length} more.
-              </Typography>
-              <TextField
-                size="small"
-                label="Or type dryer code"
-                value={manualCode}
-                onChange={(e) => setManualCode(e.target.value)}
-              />
-              <Button variant="outlined" disabled={busy || !manualCode.trim()} onClick={() => onScanDryer(manualCode).then(() => setManualCode(""))}>
-                Add code
-              </Button>
-            </Stack>
-          </Box>
-        </Stack>
-      )}
+            </Paper>
+            <Button
+              variant="contained"
+              size="large"
+              disabled={busy || !pendingTicketB64}
+              onClick={submitSimpleComplete}
+              sx={{ borderRadius: 999, py: 1.6, fontWeight: 700 }}
+            >
+              Complete order
+            </Button>
+          </Stack>
+        )}
+      </Box>
 
-      {step === 3 && (
-        <Stack spacing={2} sx={{ flex: 1, px: 2, py: 3, maxWidth: 480, mx: "auto", width: "100%" }}>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            Ticket photo
+      {completedFlash ? (
+        <Box
+          sx={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 2000,
+            bgcolor: "rgba(15, 23, 42, 0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            px: 2,
+          }}
+        >
+          <Typography sx={{ color: "#f8fafc", fontWeight: 800, fontSize: "1.35rem", letterSpacing: 0.04 }}>
+            Completed
           </Typography>
-          <Typography color="text.secondary">Take or upload one clear photo of the ticket — the flow finishes as soon as it is saved.</Typography>
-          <Button variant="contained" component="label" startIcon={<CameraAlt />} disabled={busy} sx={{ py: 2, borderRadius: 2 }}>
-            {busy ? "Saving…" : "Choose / capture photo"}
-            <input
-              hidden
-              type="file"
-              accept="image/*"
-              capture="environment"
-              onChange={(e) => {
-                const file = e.target.files?.[0] || null;
-                e.target.value = "";
-                if (file) completeTicketWithFile(file);
-              }}
-            />
-          </Button>
-        </Stack>
-      )}
+        </Box>
+      ) : null}
     </Box>
   );
 }

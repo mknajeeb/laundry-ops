@@ -8,10 +8,10 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
+  IconButton,
   Paper,
   Stack,
-  Switch,
+  Tooltip,
   Typography,
   useMediaQuery,
 } from "@mui/material";
@@ -22,8 +22,10 @@ import {
   ExpandLess,
   ExpandMore,
   LocalShipping,
+  QrCodeScanner,
   Refresh,
   Send,
+  SortByAlpha,
   Undo,
 } from "@mui/icons-material";
 import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
@@ -33,15 +35,15 @@ import StandardScreenHeader from "../components/layout/StandardScreenHeader";
 import OpsAlphaJumpRail from "../components/layout/OpsAlphaJumpRail";
 import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
-import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
-import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
+import { displayCustomerName } from "../utils/displayCustomerName";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const BROWSE_STORAGE_CHECKOUT = "washpro_ops_browse_checkout";
+const SCAN_STORAGE_CHECKOUT = "washpro_ops_scan_checkout";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -62,7 +64,6 @@ function normalizeCode(value) {
 function CheckoutPage() {
   const { t } = useI18n();
   const isMobile = useMediaQuery("(max-width:900px)");
-  const { logout } = useAuth();
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
   const scanDisabled = checkoutBlocked;
   const alphaQueueRefs = useRef({});
@@ -116,6 +117,10 @@ function CheckoutPage() {
   useEffect(() => {
     localStorage.setItem(BROWSE_STORAGE_CHECKOUT, showBrowse ? "1" : "0");
   }, [showBrowse]);
+
+  useEffect(() => {
+    localStorage.setItem(SCAN_STORAGE_CHECKOUT, scanEnabled ? "1" : "0");
+  }, [scanEnabled]);
 
   const rushOf = (r) => {
     const raw = String(r?.rush_type ?? "").trim();
@@ -206,6 +211,10 @@ function CheckoutPage() {
     return { keys: ALPHAS, groups };
   }, [queueForRushTab, alphaOf]);
 
+  const sequentialCheckoutRows = useMemo(() => {
+    return [...queueForRushTab].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+  }, [queueForRushTab]);
+
   const sentSequential = useMemo(() => {
     return [...checkedRows].sort((a, b) => {
       const na = displayCustomerName(String(a?.name || a?.name_clean || "").trim()).toLowerCase();
@@ -281,6 +290,80 @@ function CheckoutPage() {
     setActiveRow(row);
   };
 
+  const renderCheckoutQueueCard = (r) => {
+    const hd = isHD(r);
+    const rt = rushOf(r);
+    return (
+      <Paper
+        key={r.id}
+        onClick={() => !checkoutBlocked && onSelectForCheckout(r)}
+        sx={{
+          p: 1.1,
+          borderRadius: 2,
+          cursor: checkoutBlocked ? "not-allowed" : "pointer",
+          opacity: checkoutBlocked ? 0.45 : 1,
+          bgcolor: hd ? "#0097b2" : "#0b1324",
+          border: hd ? "1px solid #52d4e4" : "1px solid #1f2d4a",
+          color: "#ffffff",
+        }}
+      >
+        <Stack spacing={0.6}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Typography sx={{ fontSize: 21, fontWeight: 500 }}>{displayCustomerName(r.name_clean)}</Typography>
+            <ChevronRight sx={{ color: "#fff" }} />
+          </Stack>
+          {r.ticket_id ? (
+            <Typography sx={{ fontSize: 14, opacity: 0.92, fontWeight: 600 }}>
+              {t("ops.bagIdShort")} {String(r.ticket_id)}
+            </Typography>
+          ) : null}
+          <Typography sx={{ opacity: 0.95 }}>
+            {formatDate(r.date_clean)} • {measureOf(r)}
+          </Typography>
+          <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap>
+            <Stack
+              direction="row"
+              alignItems="center"
+              spacing={0.5}
+              sx={{
+                px: 1.1,
+                py: 0.35,
+                borderRadius: 999,
+                bgcolor: "#ffffff",
+                color: "#111827",
+              }}
+            >
+              <Typography component="span" sx={{ fontSize: 12, fontWeight: 700 }}>
+                {serviceOf(r) || "—"}
+              </Typography>
+            </Stack>
+            <Stack
+              direction="row"
+              alignItems="center"
+              spacing={0.5}
+              sx={{
+                px: 1.1,
+                py: 0.35,
+                borderRadius: 999,
+                bgcolor: "#ffffff",
+                color: "#111827",
+              }}
+            >
+              {rt === "RUSH" ? (
+                <Bolt sx={{ fontSize: 15, color: "#111827" }} />
+              ) : (
+                <CheckCircle sx={{ fontSize: 14, color: "#111827" }} />
+              )}
+              <Typography component="span" sx={{ fontSize: 12, fontWeight: 700 }}>
+                {rt === "RUSH" ? "RUSH" : "NON-RUSH"}
+              </Typography>
+            </Stack>
+          </Stack>
+        </Stack>
+      </Paper>
+    );
+  };
+
   const confirmUndo = async () => {
     if (!undoRow) return;
     try {
@@ -323,29 +406,95 @@ function CheckoutPage() {
           <TaOperationalBanner message={bannerMessage} />
           <StandardScreenHeader
             title={isMobile ? undefined : "Checkout"}
-            dateLabel={formatSystemDateLong()}
+            titleRight={
+              isMobile ? undefined : (
+                <Typography sx={{ fontSize: 12, fontWeight: 600, color: "text.secondary", whiteSpace: "nowrap" }}>
+                  {formatSystemDateLong()}
+                </Typography>
+              )
+            }
             dense
-            onLogout={logout}
-            right={
+            mid={
               <>
-                <IconPillButton
-                  title="Sent to rinse"
-                  icon={<Send />}
-                  label={counters.sentCount ? `Sent (${counters.sentCount})` : "Sent"}
-                  onClick={() => setSentDrawerOpen(true)}
-                />
-                <IconPillButton title="Refresh queue" icon={<Refresh />} label="" onClick={load} />
+                <Tooltip title={t("ops.checkoutSentOpen")}>
+                  <IconButton
+                    size="large"
+                    onClick={() => setSentDrawerOpen(true)}
+                    aria-pressed={sentDrawerOpen}
+                    sx={{
+                      bgcolor: "rgba(254, 243, 199, 0.95)",
+                      color: "#b45309",
+                      width: 48,
+                      height: 48,
+                      "&:hover": { bgcolor: "rgba(253, 230, 138, 0.98)" },
+                    }}
+                  >
+                    <Send />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={scanEnabled ? t("ops.scanToggleOnHint") : t("ops.scanToggleOffHint")}>
+                  <IconButton
+                    size="large"
+                    onClick={() => setScanEnabled((v) => !v)}
+                    aria-pressed={scanEnabled}
+                    disabled={scanDisabled}
+                    sx={{
+                      bgcolor: scanEnabled ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                      color: scanEnabled ? "primary.main" : "#64748b",
+                      width: 48,
+                      height: 48,
+                      border: scanEnabled ? "2px solid" : "none",
+                      borderColor: "primary.main",
+                      "&:hover": { bgcolor: scanEnabled ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                    }}
+                  >
+                    <QrCodeScanner />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title={showBrowse ? t("ops.indexToggleOnHint") : t("ops.indexToggleOffHint")}>
+                  <IconButton
+                    size="large"
+                    onClick={() => setShowBrowse((v) => !v)}
+                    aria-pressed={showBrowse}
+                    sx={{
+                      bgcolor: showBrowse ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                      color: showBrowse ? "primary.main" : "#64748b",
+                      width: 48,
+                      height: 48,
+                      border: showBrowse ? "2px solid" : "none",
+                      borderColor: "primary.main",
+                      "&:hover": { bgcolor: showBrowse ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                    }}
+                  >
+                    <SortByAlpha />
+                  </IconButton>
+                </Tooltip>
               </>
+            }
+            right={
+              <Tooltip title={t("common.refresh")}>
+                <IconButton
+                  size="large"
+                  onClick={load}
+                  sx={{
+                    bgcolor: "rgba(219, 234, 254, 0.95)",
+                    color: "primary.main",
+                    width: 48,
+                    height: 48,
+                    "&:hover": { bgcolor: "rgba(191, 219, 254, 0.98)" },
+                  }}
+                >
+                  <Refresh />
+                </IconButton>
+              </Tooltip>
             }
           />
 
-          <FormControlLabel
-            sx={{ mt: 0.5, display: "flex", alignItems: "center" }}
-            control={<Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />}
-            label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
-          />
-
           <OrderScanLookupBar
+            variant="embedded"
+            compactEmbedded
+            scanEnabled={scanEnabled}
+            onScanEnabledChange={setScanEnabled}
             storageKey="washpro_scan_lookup_checkout"
             batchDate={lookupBatchDate}
             disabled={scanDisabled}
@@ -353,6 +502,7 @@ function CheckoutPage() {
           />
 
           <RushTabCountBar
+            variant="cards"
             fullWidth
             value={rushTab}
             onChange={(k) => {
@@ -383,11 +533,6 @@ function CheckoutPage() {
             />
           )}
 
-          {!showBrowse && (
-            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: "block", px: 0.25 }}>
-              {t("ops.browseCollapsedHint")}
-            </Typography>
-          )}
         </>
       )}
 
@@ -456,83 +601,7 @@ function CheckoutPage() {
                   {list.length === 0 ? (
                     <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.25, py: 0.5 }}>{t("ops.emptyBagsLetter")}</Typography>
                   ) : (
-                    <Stack spacing={0.9}>
-                      {list.map((r) => {
-                        const hd = isHD(r);
-                        const rt = rushOf(r);
-                        return (
-                          <Paper
-                            key={r.id}
-                            onClick={() => !checkoutBlocked && onSelectForCheckout(r)}
-                            sx={{
-                              p: 1.1,
-                              borderRadius: 2,
-                              cursor: checkoutBlocked ? "not-allowed" : "pointer",
-                              opacity: checkoutBlocked ? 0.45 : 1,
-                              bgcolor: hd ? "#0097b2" : "#0b1324",
-                              border: hd ? "1px solid #52d4e4" : "1px solid #1f2d4a",
-                              color: "#ffffff",
-                            }}
-                          >
-                            <Stack spacing={0.6}>
-                              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Typography sx={{ fontSize: 21, fontWeight: 500 }}>
-                                  {displayCustomerName(r.name_clean)}
-                                </Typography>
-                                <ChevronRight sx={{ color: "#fff" }} />
-                              </Stack>
-                              {r.ticket_id ? (
-                                <Typography sx={{ fontSize: 14, opacity: 0.92, fontWeight: 600 }}>
-                                  {t("ops.bagIdShort")} {String(r.ticket_id)}
-                                </Typography>
-                              ) : null}
-                              <Typography sx={{ opacity: 0.95 }}>
-                                {formatDate(r.date_clean)} • {measureOf(r)}
-                              </Typography>
-                              <Stack direction="row" spacing={0.8} flexWrap="wrap" useFlexGap>
-                                <Stack
-                                  direction="row"
-                                  alignItems="center"
-                                  spacing={0.5}
-                                  sx={{
-                                    px: 1.1,
-                                    py: 0.35,
-                                    borderRadius: 999,
-                                    bgcolor: "#ffffff",
-                                    color: "#111827",
-                                  }}
-                                >
-                                  <Typography component="span" sx={{ fontSize: 12, fontWeight: 700 }}>
-                                    {serviceOf(r) || "—"}
-                                  </Typography>
-                                </Stack>
-                                <Stack
-                                  direction="row"
-                                  alignItems="center"
-                                  spacing={0.5}
-                                  sx={{
-                                    px: 1.1,
-                                    py: 0.35,
-                                    borderRadius: 999,
-                                    bgcolor: "#ffffff",
-                                    color: "#111827",
-                                  }}
-                                >
-                                  {rt === "RUSH" ? (
-                                    <Bolt sx={{ fontSize: 15, color: "#111827" }} />
-                                  ) : (
-                                    <CheckCircle sx={{ fontSize: 14, color: "#111827" }} />
-                                  )}
-                                  <Typography component="span" sx={{ fontSize: 12, fontWeight: 700 }}>
-                                    {rt === "RUSH" ? "RUSH" : "NON-RUSH"}
-                                  </Typography>
-                                </Stack>
-                              </Stack>
-                            </Stack>
-                          </Paper>
-                        );
-                      })}
-                    </Stack>
+                    <Stack spacing={0.9}>{list.map((r) => renderCheckoutQueueCard(r))}</Stack>
                   )}
                 </Box>
               )}
@@ -540,6 +609,16 @@ function CheckoutPage() {
           );
         })}
       </Box>
+      )}
+
+      {!sentDrawerOpen && !showBrowse && (
+        <Box sx={{ mt: 1.2 }}>
+          {sequentialCheckoutRows.length === 0 ? (
+            <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.25 }}>{t("ops.emptyBagsLetter")}</Typography>
+          ) : (
+            <Stack spacing={0.9}>{sequentialCheckoutRows.map((r) => renderCheckoutQueueCard(r))}</Stack>
+          )}
+        </Box>
       )}
 
       {sentDrawerOpen && (
@@ -564,8 +643,23 @@ function CheckoutPage() {
             dense
             onBack={() => setSentDrawerOpen(false)}
             homePath="/checkout"
-            onLogout={logout}
-            right={<IconPillButton title="Refresh sent list" icon={<Refresh />} label="" onClick={load} />}
+            right={
+              <Tooltip title={t("common.refresh")}>
+                <IconButton
+                  size="large"
+                  onClick={load}
+                  sx={{
+                    bgcolor: "rgba(219, 234, 254, 0.95)",
+                    color: "primary.main",
+                    width: 48,
+                    height: 48,
+                    "&:hover": { bgcolor: "rgba(191, 219, 254, 0.98)" },
+                  }}
+                >
+                  <Refresh />
+                </IconButton>
+              </Tooltip>
+            }
           />
           <Box sx={{ flex: 1, overflow: "auto", pt: 0.5 }}>
             {checkedRows.length === 0 ? (

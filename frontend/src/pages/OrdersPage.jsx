@@ -7,22 +7,29 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
+  IconButton,
   Paper,
   Stack,
-  Switch,
+  Tooltip,
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { Bolt, CheckCircle, ExpandLess, ExpandMore, Inventory2, Refresh } from "@mui/icons-material";
+import {
+  Bolt,
+  CheckCircle,
+  ExpandLess,
+  ExpandMore,
+  Inventory2,
+  QrCodeScanner,
+  Refresh,
+  SortByAlpha,
+} from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
 import OpsAlphaJumpRail from "../components/layout/OpsAlphaJumpRail";
 import OpsSearchBar from "../components/layout/OpsSearchBar";
 import RushTabCountBar from "../components/layout/RushTabCountBar";
-import IconPillButton from "../components/layout/IconPillButton";
 import OrderScanLookupBar from "../components/OrderScanLookupBar";
-import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
@@ -33,6 +40,7 @@ const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WF_BG = "#141922";
 const HD_BG = "#0a869d";
 const BROWSE_STORAGE_ORDERS = "washpro_ops_browse_orders";
+const SCAN_STORAGE_ORDERS = "washpro_ops_scan_orders";
 
 function parseAsLocalDate(value) {
   if (!value) return null;
@@ -52,7 +60,6 @@ function normalizeCode(value) {
 
 function OrdersPage({ user }) {
   const { t } = useI18n();
-  const { logout } = useAuth();
   const navigate = useNavigate();
   const isMobile = useMediaQuery("(max-width:900px)");
   const alphaRefs = useRef({});
@@ -64,6 +71,7 @@ function OrdersPage({ user }) {
   const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON-RUSH
   const [showProcessed, setShowProcessed] = useState(false);
   const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_ORDERS) === "1");
+  const [scanEnabled, setScanEnabled] = useState(() => localStorage.getItem(SCAN_STORAGE_ORDERS) !== "0");
   const [openAlpha, setOpenAlpha] = useState(null);
 
   const [notice, setNotice] = useState("");
@@ -218,15 +226,6 @@ function OrdersPage({ user }) {
 
   const activeBatchDate = batchInfo?.batch_date || rows[0]?.batch_date || null;
   const batchDateScan = activeBatchDate ? String(activeBatchDate).slice(0, 10) : "";
-  const batchLabelShort = (() => {
-    if (!batchDateScan) return "";
-    const d = parseAsLocalDate(batchDateScan);
-    if (!d) return "";
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  })();
-  const headerDateLine = batchLabelShort
-    ? `${formatSystemDateLong()} · Batch ${batchLabelShort}`
-    : formatSystemDateLong();
   const searchActive = deferredSearch.trim().length > 0;
 
   const openDryerFlow = (r) => {
@@ -331,37 +330,101 @@ function OrdersPage({ user }) {
     >
       <StandardScreenHeader
         title={isMobile ? undefined : "Rinse orders"}
-        dateLabel={headerDateLine}
+        titleRight={
+          isMobile ? undefined : (
+            <Typography sx={{ fontSize: 12, fontWeight: 600, color: "text.secondary", whiteSpace: "nowrap" }}>
+              {formatSystemDateLong()}
+            </Typography>
+          )
+        }
         dense
-        onLogout={logout}
-        right={
+        mid={
           <>
-            <IconPillButton
-              title={showProcessed ? "Showing orders you folded" : "Show orders you folded"}
-              icon={<Inventory2 />}
-              label={showProcessed ? "Folded" : "Folded"}
-              variant={showProcessed ? "contained" : "outlined"}
-              onClick={() => setShowProcessed((p) => !p)}
-            />
-            <IconPillButton title="Refresh" icon={<Refresh />} label="" onClick={load} />
+            <Tooltip title={showProcessed ? t("ops.foldedShowMine") : t("ops.foldedShowPending")}>
+              <IconButton
+                size="large"
+                onClick={() => setShowProcessed((p) => !p)}
+                aria-pressed={showProcessed}
+                sx={{
+                  bgcolor: showProcessed ? "primary.main" : "rgba(226, 232, 240, 0.95)",
+                  color: showProcessed ? "#fff" : "#334155",
+                  width: 48,
+                  height: 48,
+                  "&:hover": { bgcolor: showProcessed ? "primary.dark" : "rgba(203, 213, 225, 0.95)" },
+                }}
+              >
+                <Inventory2 />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title={scanEnabled ? t("ops.scanToggleOnHint") : t("ops.scanToggleOffHint")}>
+              <IconButton
+                size="large"
+                onClick={() => setScanEnabled((v) => !v)}
+                aria-pressed={scanEnabled}
+                sx={{
+                  bgcolor: scanEnabled ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                  color: scanEnabled ? "primary.main" : "#64748b",
+                  width: 48,
+                  height: 48,
+                  border: scanEnabled ? "2px solid" : "none",
+                  borderColor: "primary.main",
+                  "&:hover": { bgcolor: scanEnabled ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                }}
+              >
+                <QrCodeScanner />
+              </IconButton>
+            </Tooltip>
+            <Tooltip title={showBrowse ? t("ops.indexToggleOnHint") : t("ops.indexToggleOffHint")}>
+              <IconButton
+                size="large"
+                onClick={() => setShowBrowse((v) => !v)}
+                aria-pressed={showBrowse}
+                sx={{
+                  bgcolor: showBrowse ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                  color: showBrowse ? "primary.main" : "#64748b",
+                  width: 48,
+                  height: 48,
+                  border: showBrowse ? "2px solid" : "none",
+                  borderColor: "primary.main",
+                  "&:hover": { bgcolor: showBrowse ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                }}
+              >
+                <SortByAlpha />
+              </IconButton>
+            </Tooltip>
           </>
         }
-      />
-
-      <FormControlLabel
-        sx={{ mt: 0.5, display: "flex", alignItems: "center" }}
-        control={<Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />}
-        label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
+        right={
+          <Tooltip title={t("common.refresh")}>
+            <IconButton
+              size="large"
+              onClick={load}
+              sx={{
+                bgcolor: "rgba(219, 234, 254, 0.95)",
+                color: "primary.main",
+                width: 48,
+                height: 48,
+                "&:hover": { bgcolor: "rgba(191, 219, 254, 0.98)" },
+              }}
+            >
+              <Refresh />
+            </IconButton>
+          </Tooltip>
+        }
       />
 
       <OrderScanLookupBar
         variant="embedded"
+        compactEmbedded
+        scanEnabled={scanEnabled}
+        onScanEnabledChange={setScanEnabled}
         storageKey="washpro_scan_lookup_orders"
         batchDate={batchDateScan}
         onPickOrder={onScanPickOrder}
       />
 
       <RushTabCountBar
+        variant="cards"
         value={rushFilter}
         onChange={setRushFilter}
         tabs={[
@@ -386,12 +449,6 @@ function OrdersPage({ user }) {
             });
           }}
         />
-      )}
-
-      {!loading && !showProcessed && !showBrowse && (
-        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: "block", px: 0.25 }}>
-          {t("ops.browseCollapsedHintOrders")}
-        </Typography>
       )}
 
       {loading ? (
@@ -477,7 +534,15 @@ function OrdersPage({ user }) {
                 </Paper>
               );
             })
-          ) : null}
+          ) : (
+            <Stack spacing={1}>
+              {sequentialFolded.length === 0 ? (
+                <Typography sx={{ color: "#64748b", fontSize: 13 }}>{t("ops.emptyOrdersLetter")}</Typography>
+              ) : (
+                sequentialFolded.map((r) => renderOrderCard(r))
+              )}
+            </Stack>
+          )}
         </Stack>
       )}
 
