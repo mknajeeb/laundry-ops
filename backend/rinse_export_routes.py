@@ -16,6 +16,7 @@ from backend.rinse_bag_export_runner import (
     diagnose,
     export_enabled,
     rinse_import_subprocess_extra_env,
+    RINSE_SCRAPE_EXIT_CANCELLED,
     run_bag_export_csv,
     scraper_script,
 )
@@ -195,15 +196,17 @@ def _rinse_import_after_auth(
     tenant_oid: int,
     virtual_name: str,
     scrape_progress=None,
+    should_cancel=None,
 ):
     """
     Scrape → portal CSV → orders_df → commit draft upload batch.
     Caller must have already verified admin + feature flags (no request auth here).
 
     scrape_progress: optional callable(stdout_tail: str, stderr_tail: str) for live job log (import jobs).
+    should_cancel: optional callable() -> bool; checked between major steps and passed to the scraper.
 
     Returns dict with keys: ok (bool), status_code (int), body (dict for JSON),
-    and on scrape failure optionally exit_code, stdout_tail, stderr_tail.
+    cancelled (bool) when user stopped the job, and on scrape failure optionally exit_code, stdout_tail, stderr_tail.
     """
     from backend.app import commit_draft_upload_batch_from_orders_df
     from backend.db import get_db
@@ -217,11 +220,34 @@ def _rinse_import_after_auth(
             path,
             extra_env=rinse_import_subprocess_extra_env(),
             progress_callback=scrape_progress,
+            should_cancel=should_cancel,
         )
     except Exception as e:
         app.logger.exception("rinse import scrape error")
         path.unlink(missing_ok=True)
         return {"ok": False, "status_code": 500, "body": {"error": str(e)}}
+
+    if code == RINSE_SCRAPE_EXIT_CANCELLED:
+        path.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped before or during scrape."},
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
+        }
+
+    if should_cancel and should_cancel():
+        path.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped after scrape (before parsing CSV)."},
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
+        }
 
     if code != 0:
         app.logger.error(
@@ -266,6 +292,17 @@ def _rinse_import_after_auth(
         except Exception:
             pass
 
+    if should_cancel and should_cancel():
+        path.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped before reading scrape output."},
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
+        }
+
     nonempty_lines: list[str] = []
     try:
         with path.open("r", encoding="utf-8-sig", errors="replace") as f:
@@ -275,6 +312,18 @@ def _rinse_import_after_auth(
                     nonempty_lines.append(s)
     except OSError:
         nonempty_lines = []
+
+    if should_cancel and should_cancel():
+        path.unlink(missing_ok=True)
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped after reading CSV (before parse)."},
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
+        }
+
     if len(nonempty_lines) <= 1:
         path.unlink(missing_ok=True)
         return {
@@ -302,6 +351,16 @@ def _rinse_import_after_auth(
     finally:
         path.unlink(missing_ok=True)
 
+    if should_cancel and should_cancel():
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped after parse (no draft changes saved)."},
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
+        }
+
     if orders_df is None or len(orders_df) == 0:
         return {
             "ok": False,
@@ -317,6 +376,16 @@ def _rinse_import_after_auth(
             )
         except Exception:
             pass
+
+    if should_cancel and should_cancel():
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped before saving the draft batch."},
+            "stdout_tail": (stdout or "")[-8000:],
+            "stderr_tail": (stderr or "")[-8000:],
+        }
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -515,6 +584,7 @@ def register_rinse_export_routes(app):
         from backend.db import get_db as db_conn
         from backend.rinse_import_jobs import (
             ensure_rinse_import_jobs_table,
+            fetch_rinse_import_job,
             insert_rinse_import_job,
             update_rinse_import_job,
         )
@@ -574,12 +644,18 @@ def register_rinse_export_routes(app):
                                 ch = conn_h.cursor(dictionary=True)
                                 try:
                                     ensure_rinse_import_jobs_table(ch)
+                                    row_hb = fetch_rinse_import_job(ch, job_id, tenant_oid)
+                                    hb_note = (
+                                        "Stop requested — halting scrape…"
+                                        if row_hb and row_hb.get("cancel_requested_at")
+                                        else "Scraping Rinse (Playwright)…"
+                                    )
                                     update_rinse_import_job(
                                         ch,
                                         job_id,
                                         tenant_oid,
                                         status="running",
-                                        progress_note="Scraping Rinse (Playwright)…",
+                                        progress_note=hb_note,
                                     )
                                     conn_h.commit()
                                 finally:
@@ -624,11 +700,15 @@ def register_rinse_export_routes(app):
                                 cp = conn_p.cursor(dictionary=True)
                                 try:
                                     ensure_rinse_import_jobs_table(cp)
-                                    note = "Scraping Rinse (Playwright)…"
-                                    for ln in (so_tail or "").splitlines():
-                                        t = ln.strip()
-                                        if t:
-                                            note = t[:500]
+                                    row_p = fetch_rinse_import_job(cp, job_id, tenant_oid)
+                                    if row_p and row_p.get("cancel_requested_at"):
+                                        note = "Stop requested — halting scrape…"
+                                    else:
+                                        note = "Scraping Rinse (Playwright)…"
+                                        for ln in (so_tail or "").splitlines():
+                                            t = ln.strip()
+                                            if t:
+                                                note = t[:500]
                                     update_rinse_import_job(
                                         cp,
                                         job_id,
@@ -646,19 +726,47 @@ def register_rinse_export_routes(app):
                         except Exception:
                             app.logger.warning("rinse import progress push failed", exc_info=True)
 
+                    def import_job_cancel_requested() -> bool:
+                        try:
+                            conn_q = db_conn()
+                            try:
+                                cq = conn_q.cursor(dictionary=True)
+                                try:
+                                    ensure_rinse_import_jobs_table(cq)
+                                    row_q = fetch_rinse_import_job(cq, job_id, tenant_oid)
+                                    return bool(row_q and row_q.get("cancel_requested_at"))
+                                finally:
+                                    cq.close()
+                            finally:
+                                conn_q.close()
+                        except Exception:
+                            return False
+
                     res = _rinse_import_after_auth(
                         app,
                         batch_date,
                         tenant_oid,
                         virtual_name,
                         scrape_progress=push_scrape_progress,
+                        should_cancel=import_job_cancel_requested,
                     )
 
                     conn_done = db_conn()
                     try:
                         c3 = conn_done.cursor(dictionary=True)
                         try:
-                            if res.get("ok"):
+                            if res.get("cancelled"):
+                                update_rinse_import_job(
+                                    c3,
+                                    job_id,
+                                    tenant_oid,
+                                    status="cancelled",
+                                    progress_note="Stopped by user",
+                                    http_status=499,
+                                    stdout_tail=res.get("stdout_tail"),
+                                    stderr_tail=res.get("stderr_tail"),
+                                )
+                            elif res.get("ok"):
                                 update_rinse_import_job(
                                     c3,
                                     job_id,
@@ -668,7 +776,7 @@ def register_rinse_export_routes(app):
                                     result_json=res["body"],
                                     http_status=200,
                                 )
-                            else:
+                            elif not res.get("ok"):
                                 body = res.get("body") or {}
                                 err_txt = str(body.get("error") or body)[:4000]
                                 update_rinse_import_job(
@@ -777,4 +885,69 @@ def register_rinse_export_routes(app):
             out["error"] = row.get("error_summary")
             out["http_status"] = row.get("http_status")
             out["exit_code"] = row.get("exit_code")
+        if row.get("cancel_requested_at"):
+            out["cancel_requested"] = True
+        if row["status"] == "cancelled":
+            out["message"] = row.get("progress_note") or "Cancelled"
         return jsonify(out)
+
+    @app.route("/admin/rinse/import-upload-batch/jobs/<job_id>/cancel", methods=["POST"])
+    def rinse_import_upload_batch_job_cancel(job_id: str):
+        from backend.app import get_db, require_admin_or_perm, user_org_id
+        from backend.db import get_db as db_conn
+        from backend.rinse_import_jobs import (
+            ensure_rinse_import_jobs_table,
+            fetch_rinse_import_job,
+            update_rinse_import_job,
+        )
+
+        if not export_enabled():
+            return _json_rinse_export_disabled(bag_export=False)
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err, code = require_admin_or_perm(conn, cursor, "upload.create")
+            if err is not None:
+                return err, code
+            tenant_oid = user_org_id(me)
+        finally:
+            cursor.close()
+            conn.close()
+
+        conn2 = db_conn()
+        try:
+            c = conn2.cursor(dictionary=True)
+            try:
+                ensure_rinse_import_jobs_table(c)
+                row = fetch_rinse_import_job(c, job_id, tenant_oid)
+                if not row:
+                    return jsonify({"error": "Job not found."}), 404
+                st = row.get("status") or ""
+                if st not in ("queued", "running"):
+                    return (
+                        jsonify(
+                            {
+                                "error": "Job is not running.",
+                                "status": st,
+                            }
+                        ),
+                        409,
+                    )
+                if row.get("cancel_requested_at"):
+                    return jsonify({"ok": True, "status": st, "already": True})
+                stamp = datetime.now(timezone.utc).replace(tzinfo=None)
+                update_rinse_import_job(
+                    c,
+                    job_id,
+                    tenant_oid,
+                    cancel_requested_at=stamp,
+                    progress_note="Stop requested — halting scrape…",
+                )
+                conn2.commit()
+            finally:
+                c.close()
+        finally:
+            conn2.close()
+
+        return jsonify({"ok": True, "status": "running"})

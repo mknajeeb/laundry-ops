@@ -401,16 +401,37 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
     return True, ""
 
 
+def _emit_scrape_prep_progress(
+    progress_callback: Callable[[str, str], None] | None,
+    message: str,
+) -> None:
+    """Synthetic stdout line while npm / Playwright prep runs (no subprocess pipe yet)."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(f"[prep] {message}\n", "")
+    except Exception:
+        pass
+
+
+# Returned when optional should_cancel() is true (Rinse import job stop button).
+RINSE_SCRAPE_EXIT_CANCELLED = -130
+
+
 def run_bag_export_csv(
     output_path: Path,
     extra_env: dict[str, str] | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> tuple[int, str, str]:
     """
     Run scrape.mjs with OUTPUT_CSV set to output_path (absolute).
     Optional extra_env merged into the subprocess environment (e.g. RINSE_CSV_LAYOUT=portal).
     If progress_callback is set, stdout/stderr are streamed and the callback receives
     cumulative tails (throttled ~1.25s) so a UI can show live scrape progress.
+    Prep steps (npm install, Playwright browser check) also emit [prep] lines via the callback.
+    If should_cancel is set, it is polled during prep and the subprocess loop; the process is
+    killed and exit code RINSE_SCRAPE_EXIT_CANCELLED is returned.
 
     Returns (exit_code, stdout, stderr).
     """
@@ -419,10 +440,31 @@ def run_bag_export_csv(
     if not script.is_file():
         return -1, "", f"Missing scraper: {script}"
 
+    _emit_scrape_prep_progress(
+        progress_callback,
+        "Checking scraper npm dependencies (install can take several minutes after deploy or on a cold /home volume).",
+    )
+    if should_cancel and should_cancel():
+        return (
+            RINSE_SCRAPE_EXIT_CANCELLED,
+            "",
+            "[import] cancelled before npm / scrape prep finished.\n",
+        )
     ok, prep_err = _ensure_rinse_scraper_node_modules()
     if not ok:
         return -1, "", prep_err
 
+    if should_cancel and should_cancel():
+        return (
+            RINSE_SCRAPE_EXIT_CANCELLED,
+            "",
+            "[import] cancelled after npm prep.\n",
+        )
+
+    _emit_scrape_prep_progress(
+        progress_callback,
+        "Checking Playwright Chromium (download or install-deps can take several minutes on first use).",
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     out_abs = str(output_path.resolve())
 
@@ -440,6 +482,17 @@ def run_bag_export_csv(
     if not bok:
         return -1, "", berr
 
+    if should_cancel and should_cancel():
+        return (
+            RINSE_SCRAPE_EXIT_CANCELLED,
+            "",
+            "[import] cancelled after Playwright Chromium check.\n",
+        )
+
+    _emit_scrape_prep_progress(
+        progress_callback,
+        "Starting scrape.mjs — browser launch and first navigation can take 30–120s on a busy host.",
+    )
     cmd = [node, str(script)]
     timeout = scrape_timeout_sec()
 
@@ -514,6 +567,21 @@ def run_bag_export_csv(
             if code is not None:
                 break
             now = time.monotonic()
+            if should_cancel and should_cancel():
+                proc.kill()
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass
+                t_out.join(timeout=5.0)
+                t_err.join(timeout=5.0)
+                full_out = "".join(stdout_d)
+                full_err = ("".join(stderr_d)) + "\n[import] scrape subprocess killed (stop requested).\n"
+                try:
+                    progress_callback(full_out[-600_000:], full_err[-32_000:])
+                except Exception:
+                    pass
+                return (RINSE_SCRAPE_EXIT_CANCELLED, full_out, full_err)
             if now >= deadline:
                 proc.kill()
                 try:

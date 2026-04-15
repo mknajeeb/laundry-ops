@@ -342,6 +342,14 @@ export const getRinseImportUploadBatchJob = (jobId) =>
     timeout: 120000,
   });
 
+/** Admin: request cancellation of a running / queued Rinse import job (Playwright scrape). */
+export const cancelRinseImportUploadBatchJob = (jobId) =>
+  axios.post(
+    `${API_BASE}/admin/rinse/import-upload-batch/jobs/${encodeURIComponent(jobId)}/cancel`,
+    {},
+    { timeout: 60000 }
+  );
+
 export const getUploadConflicts = (batch_id = null, status = "PENDING") =>
   axios.get(`${API_BASE}/upload_conflicts`, {
     timeout: 30000,

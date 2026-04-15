@@ -25,10 +25,29 @@ def ensure_rinse_import_jobs_table(cursor) -> None:
             exit_code INT NULL,
             stdout_tail MEDIUMTEXT NULL,
             stderr_tail MEDIUMTEXT NULL,
+            cancel_requested_at DATETIME NULL,
             INDEX idx_rinse_job_org_created (organization_id, created_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    _ensure_rinse_import_jobs_cancel_column(cursor)
+
+
+def _ensure_rinse_import_jobs_cancel_column(cursor) -> None:
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'rinse_import_jobs'
+          AND COLUMN_NAME = 'cancel_requested_at'
+        """
+    )
+    row = cursor.fetchone()
+    n = int(row["c"] if isinstance(row, dict) else row[0])
+    if n == 0:
+        cursor.execute(
+            "ALTER TABLE rinse_import_jobs ADD COLUMN cancel_requested_at DATETIME NULL"
+        )
 
 
 def _utcnow() -> datetime:
@@ -72,6 +91,7 @@ def update_rinse_import_job(
     exit_code: int | None = None,
     stdout_tail: str | None = None,
     stderr_tail: str | None = None,
+    cancel_requested_at: datetime | None = None,
 ) -> None:
     parts: list[str] = ["updated_at=%s"]
     vals: list[Any] = [_utcnow()]
@@ -112,7 +132,7 @@ def fetch_rinse_import_job(cursor, job_id: str, organization_id: int) -> dict[st
         """
         SELECT id, organization_id, user_id, batch_date, status, created_at, updated_at,
                progress_note, result_json, error_summary, http_status, exit_code,
-               stdout_tail, stderr_tail
+               stdout_tail, stderr_tail, cancel_requested_at
         FROM rinse_import_jobs
         WHERE id=%s AND organization_id=%s
         LIMIT 1
@@ -137,7 +157,7 @@ def fetch_rinse_import_job(cursor, job_id: str, organization_id: int) -> dict[st
     else:
         out["result"] = None
     out.pop("result_json", None)
-    for k in ("batch_date", "created_at", "updated_at"):
+    for k in ("batch_date", "created_at", "updated_at", "cancel_requested_at"):
         v = out.get(k)
         if hasattr(v, "isoformat"):
             out[k] = v.isoformat()

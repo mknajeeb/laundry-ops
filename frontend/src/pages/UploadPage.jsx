@@ -33,6 +33,7 @@ import {
   getCurrentUploadBatch,
   getUploadBatchRows,
   getRinseImportUploadBatchJob,
+  cancelRinseImportUploadBatchJob,
   overrideUploadBatchRow,
   postRinseBagExport,
   startRinseImportUploadBatchJob,
@@ -76,6 +77,8 @@ function UploadPage({ user }) {
   const [message, setMessage] = useState({ type: "info", text: "" });
 
   const [rinseExportLoading, setRinseExportLoading] = useState(false);
+  const [rinseImportJobId, setRinseImportJobId] = useState(null);
+  const [rinseImportStopBusy, setRinseImportStopBusy] = useState(false);
   const [rinseExportHint, setRinseExportHint] = useState("");
   const [portalScrapeLog, setPortalScrapeLog] = useState("");
   const portalLogRef = useRef(null);
@@ -502,6 +505,7 @@ function UploadPage({ user }) {
         setMessage({ type: "error", text: "Server did not return a job id for Rinse import." });
         return;
       }
+      setRinseImportJobId(jobId);
 
       const deadline = Date.now() + 55 * 60 * 1000;
       /** If API never marks the job failed, stop spinning when MySQL updated_at stops moving. */
@@ -547,6 +551,14 @@ function UploadPage({ user }) {
         } else {
           lastUpdatedAt = null;
           runningQuietSince = null;
+        }
+
+        if (status === "cancelled") {
+          setMessage({
+            type: "info",
+            text: row.message || row.progress_note || "Rinse import was stopped. No new rows were committed after the stop point.",
+          });
+          return;
         }
 
         if (status === "succeeded") {
@@ -617,7 +629,29 @@ function UploadPage({ user }) {
       }
       setMessage({ type: "error", text });
     } finally {
+      setRinseImportJobId(null);
       setRinseExportLoading(false);
+    }
+  };
+
+  const stopRinsePortalImport = async () => {
+    if (!rinseImportJobId || rinseImportStopBusy) return;
+    try {
+      setRinseImportStopBusy(true);
+      await cancelRinseImportUploadBatchJob(rinseImportJobId);
+      setMessage({
+        type: "info",
+        text: "Stop requested — the server will kill Playwright as soon as it sees this (usually within a few seconds).",
+      });
+    } catch (error) {
+      console.error(error);
+      const d = error?.response?.data;
+      setMessage({
+        type: "error",
+        text: d?.error || error?.message || "Could not request stop for this import job.",
+      });
+    } finally {
+      setRinseImportStopBusy(false);
     }
   };
 
@@ -785,14 +819,25 @@ function UploadPage({ user }) {
               </Typography>
               . {rinseExportHint ? rinseExportHint : ""}
             </Typography>
-            <Button
-              variant="contained"
-              onClick={runRinseImportToBatch}
-              disabled={rinseExportLoading || loading}
-              sx={{ mb: 2 }}
-            >
-              {rinseExportLoading ? "Scrape / import running…" : "Run portal scrape & load draft batch"}
-            </Button>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} sx={{ mb: 2 }} alignItems="stretch">
+              <Button
+                variant="contained"
+                onClick={runRinseImportToBatch}
+                disabled={rinseExportLoading || loading}
+              >
+                {rinseExportLoading ? "Scrape / import running…" : "Run portal scrape & load draft batch"}
+              </Button>
+              <Button
+                variant="outlined"
+                color="warning"
+                onClick={stopRinsePortalImport}
+                disabled={
+                  !rinseImportJobId || !rinseExportLoading || rinseImportStopBusy || loading
+                }
+              >
+                {rinseImportStopBusy ? "Sending stop…" : "Stop scrape / import"}
+              </Button>
+            </Stack>
           </>
         )}
 

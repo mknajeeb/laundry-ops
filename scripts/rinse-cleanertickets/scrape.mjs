@@ -1503,9 +1503,9 @@ async function scrapePage(page, pageLabel, layout) {
     }
 
     recordIndex += 1;
-    progressLine(
-      `  ticket ${recordIndex} (${j + 1}/${rowCount}): ${trimmed.replace(/\s+/g, " ").slice(0, 72)}…`,
-    );
+    /* Single progress line per ticket; rowCount can grow as expanded detail <tr> siblings are inserted. */
+    const rowHint = `${j + 1}/${rowCount}`;
+    const preview = trimmed.replace(/\s+/g, " ").slice(0, 72);
     const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
       page,
       cand,
@@ -1528,14 +1528,18 @@ async function scrapePage(page, pageLabel, layout) {
       out.push(base);
     }
 
+    const pn = (portal && portal.customer_name) || customer || "";
+    const bits =
+      layout === "portal" && portal
+        ? ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)}`
+        : "";
     if (bagId) {
-      const pn = (portal && portal.customer_name) || customer || "";
-      const bits =
-        layout === "portal" && portal
-          ? ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)}`
-          : "";
       progressLine(
-        `  ticket ${recordIndex}: ${bagId}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}${bits}`,
+        `  ticket ${recordIndex} (list tr ${rowHint}): ${bagId}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}${bits}`,
+      );
+    } else {
+      progressLine(
+        `  ticket ${recordIndex} (list tr ${rowHint}): ${preview}… — no bag id (row may need session or UI changed)`,
       );
     }
 
@@ -1598,6 +1602,9 @@ async function main() {
     );
   }
 
+  progressLine(
+    "Launching Chromium (headless) — first process start can take 30–120s while the browser binary loads.",
+  );
   const browser = await chromium.launch({
     headless: !headed,
     slowMo: headed ? 80 : 0,
