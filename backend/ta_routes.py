@@ -383,17 +383,36 @@ def user_has_perm(conn, user_id: int, perm_key: str) -> bool:
     return c.fetchone() is not None
 
 
-def user_has_perm_for_washpro_user_id(conn, washpro_user_id: int, perm_key: str) -> bool:
+def effective_washpro_permission_keys(conn, washpro_user_id: int) -> set[str]:
     """
-    Same permission resolution as /ta/bootstrap for a Washpro users.id (auth_sessions.user_id).
+    Permission keys exactly as GET /ta/bootstrap returns in `permissions`
+    (same SQL + extend_permissions_* for unified payroll mode).
 
-    When payroll_profiles is off, /ta/bootstrap lists perms via ta_users.role_id, keyed by
-    ta_users.id — not by Washpro users.id. Routes that only called user_has_perm_washpro would
-    wrongly 403 those users (e.g. upload.create for Rinse import).
+    `washpro_user_id` is always Washpro `users.id` (auth_sessions.user_id), even when the
+    legacy TA path resolves roles via `ta_users.id`.
     """
     uid = int(washpro_user_id)
     if payroll_profiles_active(conn):
-        return user_has_perm_washpro(conn, uid, perm_key)
+        c = conn.cursor(dictionary=True)
+        try:
+            c.execute(
+                """
+                SELECT DISTINCT p.perm_key
+                FROM user_roles ur
+                JOIN role_permissions rp ON rp.role_id = ur.role_id
+                JOIN permissions p ON p.id = rp.permission_id
+                WHERE ur.user_id = %s
+                ORDER BY p.perm_key
+                """,
+                (uid,),
+            )
+            perms = [r["perm_key"] for r in c.fetchall()]
+        finally:
+            c.close()
+        extend_permissions_for_platform_operator(conn, uid, perms)
+        extend_permissions_for_tenant_admin(conn, uid, perms)
+        return set(perms)
+
     c = conn.cursor(dictionary=True)
     try:
         c.execute(
@@ -401,12 +420,22 @@ def user_has_perm_for_washpro_user_id(conn, washpro_user_id: int, perm_key: str)
             (uid,),
         )
         row = c.fetchone()
-        if row and row.get("id") is not None:
-            if user_has_perm(conn, int(row["id"]), perm_key):
-                return True
+        if not row or row.get("id") is None:
+            return set()
+        ta_id = int(row["id"])
+        c.execute(
+            """
+            SELECT p.perm_key
+            FROM ta_users u
+            JOIN role_permissions rp ON rp.role_id = u.role_id
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE u.id=%s
+            """,
+            (ta_id,),
+        )
+        return {r["perm_key"] for r in c.fetchall()}
     finally:
         c.close()
-    return user_has_perm_washpro(conn, uid, perm_key)
 
 
 def fetch_user_row(conn, user_id: int):

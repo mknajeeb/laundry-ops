@@ -51,8 +51,8 @@ from backend.rinse_export_routes import register_rinse_export_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
     _sanitize_role_code,
+    effective_washpro_permission_keys,
     register_ta_routes,
-    user_has_perm_for_washpro_user_id,
     write_audit,
 )
 from backend.daily_reset_scheduler import start_daily_reset_scheduler
@@ -1007,10 +1007,14 @@ def require_admin(cursor):
     return me, None, None
 
 
-def require_admin_or_perm(cursor, perm_key: str):
+def require_admin_or_perm(conn, cursor, perm_key: str):
     """
     Tenant ADMIN / SUPER_ADMIN / PLATFORM_ADMIN, OR a Washpro role permission
     (e.g. upload.create for Rinse portal scrape → draft).
+
+    Pass the same MySQL `conn` used for `cursor` — do not rely on `cursor.connection`
+    (unset on some mysql.connector cursor types → false 403).
+    Permission keys match GET /ta/bootstrap `permissions` (see effective_washpro_permission_keys).
     """
     me = current_user_from_token(cursor)
     if not me:
@@ -1020,7 +1024,6 @@ def require_admin_or_perm(cursor, perm_key: str):
     if "ADMIN" in rs or (rs & {"SUPER_ADMIN", "PLATFORM_ADMIN"}):
         me["roles"] = roles
         return me, None, None
-    conn = getattr(cursor, "connection", None)
     if conn is None:
         return None, jsonify({"error": "Forbidden"}), 403
     try:
@@ -1028,7 +1031,7 @@ def require_admin_or_perm(cursor, perm_key: str):
     except (TypeError, ValueError):
         return None, jsonify({"error": "Forbidden"}), 403
 
-    if user_has_perm_for_washpro_user_id(conn, uid, perm_key):
+    if perm_key in effective_washpro_permission_keys(conn, uid):
         me["roles"] = roles
         return me, None, None
     return None, jsonify({"error": "Forbidden"}), 403

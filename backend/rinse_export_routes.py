@@ -353,7 +353,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin_or_perm(cursor, "upload.create")
+            me, err, code = require_admin_or_perm(conn, cursor, "upload.create")
             if err is not None:
                 return err, code
             d = diagnose()
@@ -482,7 +482,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin_or_perm(cursor, "upload.create")
+            me, err, code = require_admin_or_perm(conn, cursor, "upload.create")
             if err is not None:
                 return err, code
             tenant_oid = user_org_id(me)
@@ -525,7 +525,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin_or_perm(cursor, "upload.create")
+            me, err, code = require_admin_or_perm(conn, cursor, "upload.create")
             if err is not None:
                 return err, code
             tenant_oid = user_org_id(me)
@@ -743,7 +743,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin_or_perm(cursor, "upload.create")
+            me, err, code = require_admin_or_perm(conn, cursor, "upload.create")
             if err is not None:
                 return err, code
             tenant_oid = user_org_id(me)
