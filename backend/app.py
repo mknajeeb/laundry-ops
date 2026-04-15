@@ -66,6 +66,15 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET_KEY", "dev-only-change-for-production")
 
 
+def _cors_max_age_sec() -> int:
+    """Cache CORS preflight in browsers (cuts OPTIONS+XHR pairs for repeated API polls)."""
+    try:
+        n = int((os.getenv("CORS_MAX_AGE_SEC") or "600").strip())
+    except ValueError:
+        n = 600
+    return max(0, min(86400, n))
+
+
 def _cors_origins_config():
     """
     Comma-separated list in CORS_ALLOWED_ORIGINS (or CORS_ORIGINS), e.g.
@@ -84,6 +93,7 @@ CORS(
     resources={r"/*": {"origins": _cors_origins_config()}},
     allow_headers=["Content-Type", "Authorization"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    max_age=_cors_max_age_sec(),
 )
 
 register_ta_routes(app)

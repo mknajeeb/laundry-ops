@@ -587,7 +587,9 @@ function UploadPage({ user }) {
           return;
         }
 
-        await sleep(2000);
+        /* Queued: pick up "running" quickly. Running: poll slower to halve OPTIONS+XHR load on the API. */
+        const pollMs = status === "queued" ? 1200 : status === "running" ? 4500 : 2000;
+        await sleep(pollMs);
       }
 
       setMessage({
