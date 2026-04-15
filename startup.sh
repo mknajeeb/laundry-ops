@@ -127,9 +127,25 @@ elif [ -f "$RINSE_DIR/package.json" ] && [ -n "${NODE_BIN:-}" ] && [ -x "$NODE_B
     fi
   fi
   SYSDEPS_MARK="/home/site/.rinse_playwright_sysdeps_ok"
-  # Marker lives on persistent /home; new workers may lack /usr packages — recheck libglib.
-  GLIB_LIB="/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0"
-  if [ -f "$PW_CLI" ] && { [ ! -f "$SYSDEPS_MARK" ] || [ ! -f "$GLIB_LIB" ]; }; then
+  # Marker lives on persistent /home; workers/images differ — Chromium needs glib + NSS (libnspr4),
+  # not only glib (Playwright otherwise fails with "libnspr4.so: cannot open shared object file").
+  _rinse_sysdeps_ok() {
+    _glib_ok=0
+    for _g in /usr/lib/x86_64-linux-gnu/libglib-2.0.so.0 /lib/x86_64-linux-gnu/libglib-2.0.so.0 \
+              /usr/lib/aarch64-linux-gnu/libglib-2.0.so.0; do
+      [ -f "$_g" ] && _glib_ok=1 && break
+    done
+    _nspr_ok=0
+    for _d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
+      if ls "$_d"/libnspr4.so* >/dev/null 2>&1; then _nspr_ok=1; break; fi
+    done
+    _nss_ok=0
+    for _d in /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /lib/aarch64-linux-gnu; do
+      if ls "$_d"/libnss3.so* >/dev/null 2>&1; then _nss_ok=1; break; fi
+    done
+    [ "$_glib_ok" = 1 ] && [ "$_nspr_ok" = 1 ] && [ "$_nss_ok" = 1 ]
+  }
+  if [ -f "$PW_CLI" ] && { [ ! -f "$SYSDEPS_MARK" ] || ! _rinse_sysdeps_ok; }; then
     _ideps_to="${RINSE_PLAYWRIGHT_INSTALL_DEPS_TIMEOUT_SEC:-900}"
     echo "startup.sh: Playwright system dependencies (apt), max wait ${_ideps_to}s"
     if command -v timeout >/dev/null 2>&1 && [ "${_ideps_to:-0}" -gt 0 ] 2>/dev/null; then

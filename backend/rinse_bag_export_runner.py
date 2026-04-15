@@ -282,17 +282,40 @@ def _ensure_rinse_scraper_node_modules() -> tuple[bool, str]:
 _SYSDEPS_MARKER = Path("/home/site/.rinse_playwright_sysdeps_ok")
 
 
+def _linux_lib_present(lib_dir: Path, basename: str) -> bool:
+    """True if basename or basename* exists (e.g. libnss3.so vs libnss3.so)."""
+    if not lib_dir.is_dir():
+        return False
+    direct = lib_dir / basename
+    if direct.is_file():
+        return True
+    try:
+        for p in lib_dir.glob(f"{basename}*"):
+            if p.is_file():
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _chromium_os_libs_likely_present() -> bool:
     """
-    /home/site markers persist across App Service worker swaps; apt packages under /usr may not.
-    Re-run install-deps when glib is missing even if the marker file exists.
+    Headless Chromium needs glib + NSS (libnspr4 / libnss3), not only glib.
+
+    Azure images sometimes ship glib but omit NSPR — then Playwright launches fail with
+    "error while loading shared libraries: libnspr4.so". We must re-run install-deps in that case.
     """
-    candidates = (
-        Path("/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0"),
-        Path("/lib/x86_64-linux-gnu/libglib-2.0.so.0"),
-        Path("/usr/lib/aarch64-linux-gnu/libglib-2.0.so.0"),
+    lib_dirs = (
+        Path("/usr/lib/x86_64-linux-gnu"),
+        Path("/lib/x86_64-linux-gnu"),
+        Path("/usr/lib/aarch64-linux-gnu"),
+        Path("/lib/aarch64-linux-gnu"),
     )
-    return any(p.is_file() for p in candidates)
+    need = ("libglib-2.0.so.0", "libnspr4.so", "libnss3.so")
+    for d in lib_dirs:
+        if all(_linux_lib_present(d, name) for name in need):
+            return True
+    return False
 
 
 def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool, str]:
@@ -331,7 +354,14 @@ def _ensure_playwright_chromium(sdir: Path, node: str, env: dict) -> tuple[bool,
         if not _playwright_chromium_cached(Path(browsers)):
             return False, "Chromium still missing after playwright install (check PLAYWRIGHT_BROWSERS_PATH and disk space)."
 
-    # Headless shell still needs libglib etc. on Debian/Ubuntu (Azure App Service Linux).
+    # Stale marker from older checks (glib-only): force re-run install-deps if NSS stack is missing.
+    if Path("/home/site").is_dir() and _SYSDEPS_MARKER.is_file() and not _chromium_os_libs_likely_present():
+        try:
+            _SYSDEPS_MARKER.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Headless shell still needs glib + NSS on Debian/Ubuntu (Azure App Service Linux).
     # Skip on macOS / hosts without /home/site — `install-deps` is apt-oriented and breaks local Darwin.
     if Path("/home/site").is_dir() and (not _SYSDEPS_MARKER.is_file() or not _chromium_os_libs_likely_present()):
         try:
