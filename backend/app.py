@@ -1006,6 +1006,34 @@ def require_admin(cursor):
     return me, None, None
 
 
+def require_admin_or_perm(cursor, perm_key: str):
+    """
+    Tenant ADMIN / SUPER_ADMIN / PLATFORM_ADMIN, OR a Washpro role permission
+    (e.g. upload.create for Rinse portal scrape → draft).
+    """
+    me = current_user_from_token(cursor)
+    if not me:
+        return None, jsonify({"error": "Unauthorized"}), 401
+    roles = fetch_user_roles(cursor, me["user_id"])
+    rs = {str(r).upper() for r in roles}
+    if "ADMIN" in rs or (rs & {"SUPER_ADMIN", "PLATFORM_ADMIN"}):
+        me["roles"] = roles
+        return me, None, None
+    conn = getattr(cursor, "connection", None)
+    if conn is None:
+        return None, jsonify({"error": "Forbidden"}), 403
+    try:
+        uid = int(me["user_id"])
+    except (TypeError, ValueError):
+        return None, jsonify({"error": "Forbidden"}), 403
+    from backend.payroll_identity import user_has_perm_washpro
+
+    if user_has_perm_washpro(conn, uid, perm_key):
+        me["roles"] = roles
+        return me, None, None
+    return None, jsonify({"error": "Forbidden"}), 403
+
+
 TENANT_MODULE_KEYS = frozenset(
     (
         "home",

@@ -348,12 +348,12 @@ def _rinse_import_after_auth(
 def register_rinse_export_routes(app):
     @app.route("/admin/rinse/bag-export/config", methods=["GET"])
     def rinse_bag_export_config():
-        from backend.app import get_db, require_admin
+        from backend.app import get_db, require_admin_or_perm
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin(cursor)
+            me, err, code = require_admin_or_perm(cursor, "upload.create")
             if err is not None:
                 return err, code
             d = diagnose()
@@ -474,7 +474,7 @@ def register_rinse_export_routes(app):
         """
         Synchronous import (can exceed HTTP proxy timeouts). Prefer POST …/jobs + poll for production.
         """
-        from backend.app import get_db, parse_date_value, require_admin, user_org_id
+        from backend.app import get_db, parse_date_value, require_admin_or_perm, user_org_id
 
         if not export_enabled():
             return _json_rinse_export_disabled(bag_export=False)
@@ -482,7 +482,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin(cursor)
+            me, err, code = require_admin_or_perm(cursor, "upload.create")
             if err is not None:
                 return err, code
             tenant_oid = user_org_id(me)
@@ -511,7 +511,7 @@ def register_rinse_export_routes(app):
         Start import in a background thread; poll GET …/jobs/<id> until succeeded or failed.
         Avoids browser/proxy timeouts while Playwright runs (can be many minutes).
         """
-        from backend.app import get_db, parse_date_value, require_admin, user_org_id
+        from backend.app import get_db, parse_date_value, require_admin_or_perm, user_org_id
         from backend.db import get_db as db_conn
         from backend.rinse_import_jobs import (
             ensure_rinse_import_jobs_table,
@@ -525,7 +525,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin(cursor)
+            me, err, code = require_admin_or_perm(cursor, "upload.create")
             if err is not None:
                 return err, code
             tenant_oid = user_org_id(me)
@@ -734,7 +734,7 @@ def register_rinse_export_routes(app):
 
     @app.route("/admin/rinse/import-upload-batch/jobs/<job_id>", methods=["GET"])
     def rinse_import_upload_batch_job_status(job_id: str):
-        from backend.app import get_db, require_admin, user_org_id
+        from backend.app import get_db, require_admin_or_perm, user_org_id
         from backend.rinse_import_jobs import ensure_rinse_import_jobs_table, fetch_rinse_import_job
 
         if not export_enabled():
@@ -743,7 +743,7 @@ def register_rinse_export_routes(app):
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
-            me, err, code = require_admin(cursor)
+            me, err, code = require_admin_or_perm(cursor, "upload.create")
             if err is not None:
                 return err, code
             tenant_oid = user_org_id(me)
