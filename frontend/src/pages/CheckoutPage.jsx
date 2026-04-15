@@ -13,6 +13,7 @@ import {
   Stack,
   Switch,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import {
   Bolt,
@@ -59,6 +60,7 @@ function normalizeCode(value) {
 
 function CheckoutPage() {
   const { t } = useI18n();
+  const isMobile = useMediaQuery("(max-width:900px)");
   const { logout } = useAuth();
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
   const scanDisabled = checkoutBlocked;
@@ -319,7 +321,7 @@ function CheckoutPage() {
         <>
           <TaOperationalBanner message={bannerMessage} />
           <StandardScreenHeader
-            title="Checkout"
+            title={isMobile ? undefined : "Checkout"}
             dateLabel={formatSystemDateLong()}
             dense
             onLogout={logout}
@@ -336,6 +338,19 @@ function CheckoutPage() {
             }
           />
 
+          <FormControlLabel
+            sx={{ mt: 0.5, display: "flex", alignItems: "center" }}
+            control={<Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />}
+            label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
+          />
+
+          <OrderScanLookupBar
+            storageKey="washpro_scan_lookup_checkout"
+            batchDate={lookupBatchDate}
+            disabled={scanDisabled}
+            onPickOrder={(o) => onSelectForCheckout(o)}
+          />
+
           <RushTabCountBar
             fullWidth
             value={rushTab}
@@ -349,25 +364,6 @@ function CheckoutPage() {
               { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
             ]}
           />
-
-          <OrderScanLookupBar
-            storageKey="washpro_scan_lookup_checkout"
-            batchDate={lookupBatchDate}
-            disabled={scanDisabled}
-            onPickOrder={(o) => onSelectForCheckout(o)}
-          />
-
-          <Stack spacing={0.5} sx={{ mt: 0.75 }}>
-            <FormControlLabel
-              control={
-                <Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />
-              }
-              label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
-            />
-            <Typography variant="body2" color="text.secondary" sx={{ pl: 0.25 }}>
-              {t("ops.browseHint")}
-            </Typography>
-          </Stack>
 
           {showBrowse && (
             <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
@@ -387,9 +383,9 @@ function CheckoutPage() {
           )}
 
           {!showBrowse && (
-            <Alert severity="info" sx={{ mt: 1 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: "block", px: 0.25 }}>
               {t("ops.browseCollapsedHint")}
-            </Alert>
+            </Typography>
           )}
         </>
       )}

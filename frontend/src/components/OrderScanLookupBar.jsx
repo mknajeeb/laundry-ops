@@ -7,6 +7,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Link,
   List,
   ListItemButton,
   MenuItem,
@@ -16,6 +17,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import { PhotoCamera, QrCodeScanner } from "@mui/icons-material";
 import { Html5Qrcode } from "html5-qrcode";
@@ -234,32 +236,39 @@ function buildLookupBodiesForQr(qrText, batchStr) {
 
 const dialogTabKey = (storageKey) => `${storageKey}_dialog_tab`;
 
-export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate }) {
+export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, batchDate, variant = "dialog" }) {
   const { t } = useI18n();
+  const isEmbedded = variant === "embedded";
+  const fullScreenDialog = useMediaQuery("(max-width:600px)");
   const readerId = `order-scan-qr-${storageKey.replace(/[^a-z0-9_-]/gi, "-")}`;
   const [enabled, setEnabled] = useState(() => localStorage.getItem(storageKey) !== "0");
   const [open, setOpen] = useState(false);
+  const [ocrDialogOpen, setOcrDialogOpen] = useState(false);
   const [dialogTab, setDialogTab] = useState(() => localStorage.getItem(dialogTabKey(storageKey)) || "qr");
   const [nameHint, setNameHint] = useState("");
   const [serviceHint, setServiceHint] = useState("");
   const [qrPaste, setQrPaste] = useState("");
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
+  const [scanStatus, setScanStatus] = useState("");
+  const [qrRemount, setQrRemount] = useState(0);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const workerRef = useRef(null);
   const scannerRef = useRef(null);
   const qrDecodeLockRef = useRef(false);
+  const lastQrPayloadRef = useRef({ text: "", at: 0 });
+  const hadPickListRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(storageKey, enabled ? "1" : "0");
   }, [enabled, storageKey]);
 
   useEffect(() => {
-    if (open) {
+    if (open || ocrDialogOpen) {
       localStorage.setItem(dialogTabKey(storageKey), dialogTab);
     }
-  }, [dialogTab, open, storageKey]);
+  }, [dialogTab, open, ocrDialogOpen, storageKey]);
 
   const terminateWorker = useCallback(async () => {
     const w = workerRef.current;
@@ -309,7 +318,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
     async (bodies) => {
       if (!bodies.length) {
         window.alert(t("ops.scanAlertNeedInput"));
-        return false;
+        return "resume";
       }
       let lastErr = null;
       for (const body of bodies) {
@@ -317,13 +326,16 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
           const res = await lookupOrdersByScan(body);
           const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
           if (matches.length === 1) {
-            setOpen(false);
+            if (!isEmbedded) {
+              setOpen(false);
+            }
+            setOcrDialogOpen(false);
             onPickOrder(matches[0]);
-            return true;
+            return "single";
           }
           if (matches.length > 1) {
             setPickList(matches);
-            return true;
+            return "pick";
           }
         } catch (e) {
           lastErr = e;
@@ -331,13 +343,13 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       }
       if (lastErr) {
         window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
-        return false;
+        return "resume";
       }
       const usedQr = bodies.some((b) => String(b.qr_text || "").trim());
       window.alert(usedQr ? t("ops.scanAlertNoMatchQr") : t("ops.scanAlertNoMatch"));
-      return false;
+      return "resume";
     },
-    [onPickOrder, t]
+    [isEmbedded, onPickOrder, t]
   );
 
   const runOrderLookup = useCallback(
@@ -350,18 +362,23 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
 
   const onPasteQrLookup = useCallback(async () => {
     setBusy(true);
+    setScanStatus(t("ops.scanStatusLooking"));
     try {
       await runBodies(buildLookupBodiesForQr(qrPaste, batchDate));
     } finally {
       setBusy(false);
+      setScanStatus("");
     }
-  }, [batchDate, qrPaste, runBodies]);
+  }, [batchDate, qrPaste, runBodies, t]);
+
+  const ocrCameraActive =
+    (ocrDialogOpen && dialogTab === "ocr") || (!isEmbedded && open && dialogTab === "ocr");
 
   useEffect(() => {
-    if (!open || dialogTab !== "ocr") {
+    if (!ocrCameraActive) {
       stopCamera();
       void terminateWorker();
-      if (!open) {
+      if (!ocrDialogOpen && !open) {
         setNameHint("");
         setServiceHint("");
         setQrPaste("");
@@ -393,15 +410,58 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       cancelled = true;
       stopCamera();
     };
-  }, [open, dialogTab, stopCamera]);
+  }, [ocrCameraActive, ocrDialogOpen, open, stopCamera]);
+
+  const qrActiveEmbedded = isEmbedded && enabled && !disabled && dialogTab === "qr" && !ocrDialogOpen;
+  const qrActiveDialog = !isEmbedded && open && dialogTab === "qr";
 
   useEffect(() => {
-    if (!open || dialogTab !== "qr") {
+    if (!qrActiveEmbedded && !qrActiveDialog) {
       void stopQrScanner();
       return undefined;
     }
     let cancelled = false;
     qrDecodeLockRef.current = false;
+
+    const onDecoded = async (decodedText) => {
+      if (disabled || qrDecodeLockRef.current) return;
+      const raw = String(decodedText || "").trim();
+      if (!raw) return;
+      const now = Date.now();
+      if (lastQrPayloadRef.current.text === raw && now - lastQrPayloadRef.current.at < 4000) {
+        return;
+      }
+      lastQrPayloadRef.current = { text: raw, at: now };
+
+      const html5 = scannerRef.current;
+      qrDecodeLockRef.current = true;
+      try {
+        if (html5) {
+          try {
+            html5.pause(true);
+          } catch {
+            /* */
+          }
+        }
+        setScanStatus(t("ops.scanStatusLooking"));
+        const outcome = await runBodies(buildLookupBodiesForQr(raw, batchDate));
+        setScanStatus("");
+        if (outcome === "resume") {
+          const h = scannerRef.current;
+          if (h) {
+            try {
+              h.resume();
+            } catch {
+              setQrRemount((n) => n + 1);
+            }
+          }
+        } else if (outcome === "single") {
+          await stopQrScanner();
+        }
+      } finally {
+        qrDecodeLockRef.current = false;
+      }
+    };
 
     const run = async () => {
       await stopQrScanner();
@@ -413,18 +473,15 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       try {
         await html5.start(
           { facingMode: "environment" },
-          { fps: 8, qrbox: { width: 260, height: 260 } },
-          async (text) => {
-            if (qrDecodeLockRef.current) return;
-            const raw = String(text || "").trim();
-            if (!raw) return;
-            qrDecodeLockRef.current = true;
-            try {
-              await runBodies(buildLookupBodiesForQr(raw, batchDate));
-            } finally {
-              qrDecodeLockRef.current = false;
-            }
+          {
+            fps: 6,
+            qrbox: (vw, vh) => {
+              const w = Number(vw) || 300;
+              const h = Number(vh) || 300;
+              return { width: Math.min(280, Math.floor(w * 0.82)), height: Math.min(280, Math.floor(h * 0.5)) };
+            },
           },
+          onDecoded,
           () => {}
         );
       } catch {
@@ -436,7 +493,34 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
       cancelled = true;
       void stopQrScanner();
     };
-  }, [open, dialogTab, readerId, batchDate, runBodies, stopQrScanner]);
+  }, [
+    qrActiveEmbedded,
+    qrActiveDialog,
+    readerId,
+    batchDate,
+    runBodies,
+    stopQrScanner,
+    disabled,
+    t,
+    qrRemount,
+  ]);
+
+  useEffect(() => {
+    if (pickList?.length) {
+      hadPickListRef.current = true;
+      return;
+    }
+    if (!hadPickListRef.current) return;
+    hadPickListRef.current = false;
+    const h = scannerRef.current;
+    if (!h) return;
+    if (!(qrActiveEmbedded || qrActiveDialog)) return;
+    try {
+      h.resume();
+    } catch {
+      setQrRemount((n) => n + 1);
+    }
+  }, [pickList, qrActiveEmbedded, qrActiveDialog]);
 
   const captureAndOcr = useCallback(async () => {
     const video = videoRef.current;
@@ -534,10 +618,169 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
   const primaryOcrLabel =
     nameHint.trim() && serviceHint.trim() ? t("ops.tagFindOrder") : t("ops.tagReadButton");
 
-  const handleDialogClose = () => {
+  const closeMainDialog = async () => {
     if (busy) return;
+    await stopQrScanner();
     setOpen(false);
   };
+
+  const closeOcrDialog = async () => {
+    if (busy) return;
+    stopCamera();
+    await terminateWorker();
+    setOcrDialogOpen(false);
+  };
+
+  const openTagReader = () => {
+    setDialogTab("ocr");
+    if (isEmbedded) {
+      setOcrDialogOpen(true);
+    }
+  };
+
+  const scanSurface = (
+    <Stack spacing={1} sx={{ width: "100%" }}>
+      <Box
+        sx={{
+          borderRadius: 2,
+          overflow: "hidden",
+          bgcolor: "#0f172a",
+          minHeight: { xs: "38vh", sm: 260 },
+          maxHeight: { xs: "48vh", sm: 360 },
+          position: "relative",
+        }}
+      >
+        <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={{ width: "100%", height: "100%", minHeight: { xs: "38vh", sm: 260 } }} />
+      </Box>
+      <Typography variant="body2" color="text.secondary" sx={{ minHeight: 22 }}>
+        {scanStatus || (isEmbedded ? t("ops.scanStatusIdle") : "")}
+      </Typography>
+      <TextField
+        label={t("ops.scanPasteBagCode")}
+        value={qrPaste}
+        onChange={(e) => setQrPaste(e.target.value)}
+        size="small"
+        fullWidth
+        autoComplete="off"
+      />
+      <Button
+        variant="contained"
+        size="large"
+        onClick={onPasteQrLookup}
+        disabled={busy || disabled || !qrPaste.trim()}
+        sx={{ py: 1.25, fontWeight: 700 }}
+      >
+        {busy ? <CircularProgress size={22} color="inherit" /> : t("ops.scanLookUp")}
+      </Button>
+      <Link component="button" type="button" variant="body2" onClick={openTagReader} sx={{ alignSelf: "flex-start", cursor: "pointer" }}>
+        {t("ops.scanOpenTagOcr")}
+      </Link>
+    </Stack>
+  );
+
+  if (isEmbedded) {
+    return (
+      <Box sx={{ mt: 0.5 }}>
+        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
+          <Switch checked={enabled} onChange={(_, v) => setEnabled(v)} disabled={disabled} color="primary" size="medium" />
+          <Typography sx={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>{t("ops.scanToggleLabel")}</Typography>
+        </Stack>
+        {enabled && !disabled ? scanSurface : null}
+
+        <Dialog open={ocrDialogOpen} onClose={closeOcrDialog} fullWidth maxWidth="sm" fullScreen={fullScreenDialog}>
+          <DialogTitle sx={{ fontWeight: 700, py: 1 }}>{t("ops.tagDialogTitle")}</DialogTitle>
+          <DialogContent sx={{ px: 2, pt: 0, pb: 2 }}>
+            <Stack spacing={1.25}>
+              <Box
+                sx={{
+                  borderRadius: 2,
+                  overflow: "hidden",
+                  bgcolor: "#0f172a",
+                  minHeight: 220,
+                  maxHeight: "40vh",
+                }}
+              >
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{ width: "100%", height: "100%", minHeight: 220, objectFit: "cover", display: "block" }}
+                />
+              </Box>
+              <TextField label={t("ops.scanNameLabel")} value={nameHint} onChange={(e) => setNameHint(e.target.value)} size="small" fullWidth autoComplete="off" />
+              <TextField
+                select
+                label={t("ops.scanServiceLabel")}
+                value={serviceHint}
+                onChange={(e) => setServiceHint(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+                SelectProps={{
+                  displayEmpty: true,
+                  renderValue: (selected) => {
+                    if (!selected) return "—";
+                    const labels = {
+                      "Wash & fold": t("ops.svcWashFold"),
+                      "Wash and fold": t("ops.svcWashAndFold"),
+                      "Hang dry": t("ops.svcHangDry"),
+                      WF: "WF",
+                      HD: "HD",
+                    };
+                    return labels[selected] || selected;
+                  },
+                }}
+                size="small"
+                fullWidth
+              >
+                <MenuItem value="">—</MenuItem>
+                <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
+                <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
+                <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
+                <MenuItem value="WF">WF</MenuItem>
+                <MenuItem value="HD">HD</MenuItem>
+              </TextField>
+              <Button variant="contained" size="large" startIcon={<PhotoCamera />} onClick={onPrimaryOcr} disabled={busy || disabled} sx={{ py: 1.25, fontWeight: 700 }}>
+                {busy ? <CircularProgress size={22} color="inherit" /> : primaryOcrLabel}
+              </Button>
+            </Stack>
+          </DialogContent>
+          <DialogActions sx={{ px: 2, pb: 2 }}>
+            <Button onClick={closeOcrDialog} disabled={busy}>
+              {t("ops.scanClose")}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog open={Boolean(pickList?.length)} onClose={() => setPickList(null)} fullWidth maxWidth="sm">
+          <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanPickOrder")}</DialogTitle>
+          <DialogContent dividers>
+            <List dense>
+              {pickList?.map((m) => (
+                <ListItemButton
+                  key={m.id}
+                  onClick={() => {
+                    setPickList(null);
+                    setOcrDialogOpen(false);
+                    onPickOrder(m);
+                  }}
+                >
+                  <Stack>
+                    <Typography fontWeight={700}>{displayCustomerName(m.name_clean)}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {m.ticket_id ? `${t("ops.bagIdShort")} ${m.ticket_id} • ` : ""}#{m.id} • {String(m.date_clean || "").slice(0, 10)} • {m.service_type} • {m.weight_num}
+                    </Typography>
+                  </Stack>
+                </ListItemButton>
+              ))}
+            </List>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setPickList(null)}>{t("common.cancel")}</Button>
+          </DialogActions>
+        </Dialog>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ mt: 0.75 }}>
@@ -567,133 +810,71 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
         )}
       </Stack>
 
-      <Dialog open={open} onClose={handleDialogClose} fullWidth maxWidth="sm" aria-labelledby="order-scan-title">
-        <DialogTitle id="order-scan-title" sx={{ fontWeight: 700, py: 1.5, px: 2 }}>
-          {t("ops.scanDialogTitle")}
+      <Dialog
+        open={open}
+        onClose={closeMainDialog}
+        fullWidth
+        maxWidth="sm"
+        fullScreen={fullScreenDialog}
+        aria-labelledby="order-scan-title"
+      >
+        <DialogTitle id="order-scan-title" sx={{ fontWeight: 700, py: 1, px: 2 }}>
+          {t("ops.scanBagButton")}
         </DialogTitle>
-        <DialogContent sx={{ px: 2, pt: 0, pb: 2 }}>
-          <Stack spacing={1.5}>
-            <ToggleButtonGroup
-              exclusive
-              fullWidth
-              size="small"
-              value={dialogTab}
-              onChange={(_, v) => v && setDialogTab(v)}
-              sx={{ mb: 0.5 }}
-            >
-              <ToggleButton value="qr">{t("ops.scanModeBagQr")}</ToggleButton>
-              <ToggleButton value="ocr">{t("ops.scanModeTagOcr")}</ToggleButton>
-            </ToggleButtonGroup>
+        <DialogContent sx={{ px: 2, pt: 0, pb: 1, display: "flex", flexDirection: "column", gap: 1 }}>
+          <ToggleButtonGroup exclusive fullWidth size="small" value={dialogTab} onChange={(_, v) => v && setDialogTab(v)}>
+            <ToggleButton value="qr">{t("ops.scanModeBagQr")}</ToggleButton>
+            <ToggleButton value="ocr">{t("ops.scanModeTagOcr")}</ToggleButton>
+          </ToggleButtonGroup>
 
-            {dialogTab === "qr" && (
-              <Stack spacing={1.25}>
-                <Typography variant="body2" color="text.secondary">
-                  {t("ops.scanBagQrHint")}
-                </Typography>
-                <Box
-                  sx={{
-                    borderRadius: 2,
-                    overflow: "hidden",
-                    bgcolor: "#0f172a",
-                    minHeight: 280,
-                    position: "relative",
-                  }}
-                >
-                  <Box id={readerId} sx={{ width: "100%", minHeight: 280 }} />
-                </Box>
-                <TextField
-                  label={t("ops.scanPasteBagCode")}
-                  value={qrPaste}
-                  onChange={(e) => setQrPaste(e.target.value)}
-                  size="small"
-                  fullWidth
-                  autoComplete="off"
-                />
-                <Button
-                  variant="contained"
-                  size="large"
-                  onClick={onPasteQrLookup}
-                  disabled={busy || disabled || !qrPaste.trim()}
-                  sx={{ py: 1.5, fontWeight: 700 }}
-                >
-                  {busy ? <CircularProgress size={22} color="inherit" /> : t("ops.scanLookUp")}
-                </Button>
-              </Stack>
-            )}
-
-            {dialogTab === "ocr" && (
-              <Stack spacing={1.5}>
-                <Box
-                  sx={{
-                    borderRadius: 2,
-                    overflow: "hidden",
-                    bgcolor: "#0f172a",
-                    minHeight: 280,
-                    position: "relative",
-                  }}
-                >
-                  <video
-                    ref={videoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    style={{ width: "100%", height: 280, objectFit: "cover", display: "block" }}
-                  />
-                </Box>
-                <TextField
-                  label={t("ops.scanNameLabel")}
-                  value={nameHint}
-                  onChange={(e) => setNameHint(e.target.value)}
-                  size="small"
-                  fullWidth
-                  autoComplete="off"
-                />
-                <TextField
-                  select
-                  label={t("ops.scanServiceLabel")}
-                  value={serviceHint}
-                  onChange={(e) => setServiceHint(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                  SelectProps={{
-                    displayEmpty: true,
-                    renderValue: (selected) => {
-                      if (!selected) return "—";
-                      const labels = {
-                        "Wash & fold": t("ops.svcWashFold"),
-                        "Wash and fold": t("ops.svcWashAndFold"),
-                        "Hang dry": t("ops.svcHangDry"),
-                        WF: "WF",
-                        HD: "HD",
-                      };
-                      return labels[selected] || selected;
-                    },
-                  }}
-                  size="small"
-                  fullWidth
-                >
-                  <MenuItem value="">—</MenuItem>
-                  <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
-                  <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
-                  <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
-                  <MenuItem value="WF">WF</MenuItem>
-                  <MenuItem value="HD">HD</MenuItem>
-                </TextField>
-                <Button
-                  variant="contained"
-                  size="large"
-                  startIcon={<PhotoCamera />}
-                  onClick={onPrimaryOcr}
-                  disabled={busy || disabled}
-                  sx={{ py: 1.5, fontWeight: 700 }}
-                >
-                  {busy ? <CircularProgress size={22} color="inherit" /> : primaryOcrLabel}
-                </Button>
-              </Stack>
-            )}
-          </Stack>
+          {dialogTab === "qr" ? (
+            <Stack spacing={1} sx={{ flex: 1, minHeight: 0 }}>
+              {scanSurface}
+            </Stack>
+          ) : (
+            <Stack spacing={1.25}>
+              <Box sx={{ borderRadius: 2, overflow: "hidden", bgcolor: "#0f172a", minHeight: "36vh", maxHeight: "44vh" }}>
+                <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", height: "100%", minHeight: 200, objectFit: "cover", display: "block" }} />
+              </Box>
+              <TextField label={t("ops.scanNameLabel")} value={nameHint} onChange={(e) => setNameHint(e.target.value)} size="small" fullWidth autoComplete="off" />
+              <TextField
+                select
+                label={t("ops.scanServiceLabel")}
+                value={serviceHint}
+                onChange={(e) => setServiceHint(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+                SelectProps={{
+                  displayEmpty: true,
+                  renderValue: (selected) => {
+                    if (!selected) return "—";
+                    const labels = {
+                      "Wash & fold": t("ops.svcWashFold"),
+                      "Wash and fold": t("ops.svcWashAndFold"),
+                      "Hang dry": t("ops.svcHangDry"),
+                      WF: "WF",
+                      HD: "HD",
+                    };
+                    return labels[selected] || selected;
+                  },
+                }}
+                size="small"
+                fullWidth
+              >
+                <MenuItem value="">—</MenuItem>
+                <MenuItem value="Wash & fold">{t("ops.svcWashFold")}</MenuItem>
+                <MenuItem value="Wash and fold">{t("ops.svcWashAndFold")}</MenuItem>
+                <MenuItem value="Hang dry">{t("ops.svcHangDry")}</MenuItem>
+                <MenuItem value="WF">WF</MenuItem>
+                <MenuItem value="HD">HD</MenuItem>
+              </TextField>
+              <Button variant="contained" size="large" startIcon={<PhotoCamera />} onClick={onPrimaryOcr} disabled={busy || disabled} sx={{ py: 1.25, fontWeight: 700 }}>
+                {busy ? <CircularProgress size={22} color="inherit" /> : primaryOcrLabel}
+              </Button>
+            </Stack>
+          )}
         </DialogContent>
         <DialogActions sx={{ px: 2, pb: 2 }}>
-          <Button onClick={handleDialogClose} disabled={busy}>
+          <Button onClick={closeMainDialog} disabled={busy}>
             {t("ops.scanClose")}
           </Button>
         </DialogActions>
@@ -715,8 +896,7 @@ export default function OrderScanLookupBar({ storageKey, onPickOrder, disabled, 
                 <Stack>
                   <Typography fontWeight={700}>{displayCustomerName(m.name_clean)}</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    {m.ticket_id ? `${t("ops.bagIdShort")} ${m.ticket_id} • ` : ""}#{m.id} • {String(m.date_clean || "").slice(0, 10)} •{" "}
-                    {m.service_type} • {m.weight_num}
+                    {m.ticket_id ? `${t("ops.bagIdShort")} ${m.ticket_id} • ` : ""}#{m.id} • {String(m.date_clean || "").slice(0, 10)} • {m.service_type} • {m.weight_num}
                   </Typography>
                 </Stack>
               </ListItemButton>

@@ -62,25 +62,29 @@ export default function StandardScreenHeader({
             <HomeRounded />
           </IconButton>
         </Stack>
-        <Typography
-          component="div"
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            textAlign: "center",
-            fontWeight: 700,
-            fontSize: { xs: "1.12rem", sm: "1.28rem" },
-            letterSpacing: 0.15,
-            color: "#0f172a",
-            lineHeight: 1.25,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            px: 0.5,
-          }}
-        >
-          {title || "\u00a0"}
-        </Typography>
+        {title ? (
+          <Typography
+            component="div"
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              textAlign: "center",
+              fontWeight: 700,
+              fontSize: { xs: "1.12rem", sm: "1.28rem" },
+              letterSpacing: 0.15,
+              color: "#0f172a",
+              lineHeight: 1.25,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              px: 0.5,
+            }}
+          >
+            {title}
+          </Typography>
+        ) : (
+          <Box sx={{ flex: 1, minWidth: 0 }} />
+        )}
         <Box sx={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 0.5, flexWrap: "nowrap" }}>
           {right}
           {typeof onLogout === "function" ? (

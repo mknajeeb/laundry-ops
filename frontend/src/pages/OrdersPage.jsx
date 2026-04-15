@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, useDeferredValue, useRef } from "react";
 import {
-  Alert,
   Box,
   Button,
   CircularProgress,
@@ -13,6 +12,7 @@ import {
   Stack,
   Switch,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
 import { Bolt, CheckCircle, ExpandLess, ExpandMore, Inventory2, Refresh } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
@@ -54,6 +54,7 @@ function OrdersPage({ user }) {
   const { t } = useI18n();
   const { logout } = useAuth();
   const navigate = useNavigate();
+  const isMobile = useMediaQuery("(max-width:900px)");
   const alphaRefs = useRef({});
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -329,7 +330,7 @@ function OrdersPage({ user }) {
       }}
     >
       <StandardScreenHeader
-        title="Rinse orders"
+        title={isMobile ? undefined : "Rinse orders"}
         dateLabel={headerDateLine}
         dense
         onLogout={logout}
@@ -347,6 +348,19 @@ function OrdersPage({ user }) {
         }
       />
 
+      <FormControlLabel
+        sx={{ mt: 0.5, display: "flex", alignItems: "center" }}
+        control={<Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />}
+        label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
+      />
+
+      <OrderScanLookupBar
+        variant="embedded"
+        storageKey="washpro_scan_lookup_orders"
+        batchDate={batchDateScan}
+        onPickOrder={onScanPickOrder}
+      />
+
       <RushTabCountBar
         value={rushFilter}
         onChange={setRushFilter}
@@ -356,24 +370,6 @@ function OrdersPage({ user }) {
           { key: "NON-RUSH", label: "Non-Rush", count: counts.nonRush, Icon: CheckCircle, accent: "#0f766e" },
         ]}
       />
-
-      <OrderScanLookupBar
-        storageKey="washpro_scan_lookup_orders"
-        batchDate={batchDateScan}
-        onPickOrder={onScanPickOrder}
-      />
-
-      <Stack spacing={0.5} sx={{ mt: 0.75 }}>
-        <FormControlLabel
-          control={
-            <Switch checked={showBrowse} onChange={(_, v) => setShowBrowse(v)} color="primary" />
-          }
-          label={<Typography sx={{ fontWeight: 700, fontSize: 15 }}>{t("ops.browseList")}</Typography>}
-        />
-        <Typography variant="body2" color="text.secondary" sx={{ pl: 0.25 }}>
-          {t("ops.browseHint")}
-        </Typography>
-      </Stack>
 
       {(showProcessed || (!showProcessed && showBrowse)) && (
         <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
@@ -393,9 +389,9 @@ function OrdersPage({ user }) {
       )}
 
       {!loading && !showProcessed && !showBrowse && (
-        <Alert severity="info" sx={{ mt: 1 }}>
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.75, display: "block", px: 0.25 }}>
           {t("ops.browseCollapsedHintOrders")}
-        </Alert>
+        </Typography>
       )}
 
       {loading ? (

@@ -156,6 +156,7 @@ function TenantOnlyRoute({ user, children }) {
 function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const isMobile = useMediaQuery("(max-width: 900px)");
   const [updateReady, setUpdateReady] = useState(false);
   const [activeBatch, setActiveBatch] = useState(null);
@@ -363,10 +364,56 @@ function AppShell() {
                   borderBottom: "1px solid #e2e8f0",
                 }}
               >
-                <Toolbar sx={{ minHeight: "46px !important", px: 0.75 }}>
+                <Toolbar sx={{ minHeight: "46px !important", px: 0.75, gap: 0.75 }}>
                   <IconButton size="medium" onClick={() => setMobileNavOpen(true)} aria-label="Menu" sx={{ color: "#0f172a" }}>
                     <Menu sx={{ fontSize: 26 }} />
                   </IconButton>
+                  {pathname === "/orders" ? (
+                    <Typography
+                      component="span"
+                      sx={{
+                        fontWeight: 800,
+                        fontSize: "1.02rem",
+                        color: "#0f172a",
+                        letterSpacing: 0.02,
+                        flex: 1,
+                        minWidth: 0,
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {t("ops.mobileBarOrdersTitle")}
+                    </Typography>
+                  ) : pathname.startsWith("/orders/") && pathname.includes("dryer-flow") ? (
+                    <Typography
+                      component="span"
+                      sx={{
+                        fontWeight: 800,
+                        fontSize: "1.02rem",
+                        color: "#0f172a",
+                        flex: 1,
+                        minWidth: 0,
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {t("ops.dryerFlowTitle")}
+                    </Typography>
+                  ) : pathname === "/checkout" ? (
+                    <Typography
+                      component="span"
+                      sx={{
+                        fontWeight: 800,
+                        fontSize: "1.02rem",
+                        color: "#0f172a",
+                        flex: 1,
+                        minWidth: 0,
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      {t("ops.mobileBarCheckoutTitle")}
+                    </Typography>
+                  ) : (
+                    <Box sx={{ flex: 1 }} />
+                  )}
                 </Toolbar>
               </AppBar>
             ) : (
