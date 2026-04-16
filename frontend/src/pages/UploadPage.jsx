@@ -541,8 +541,9 @@ function UploadPage({ user }) {
       setRinseImportJobId(jobId);
 
       const deadline = Date.now() + 55 * 60 * 1000;
-      /** If API never marks the job failed, stop spinning when MySQL updated_at stops moving. */
-      const STUCK_RUNNING_MS = 3 * 60 * 1000;
+      /** If API never marks the job failed, stop spinning when MySQL updated_at stops moving.
+       * Large imports: after the last list page, parse + draft commit can take many minutes without a new "ticket N" line. */
+      const STUCK_RUNNING_MS = 12 * 60 * 1000;
       let lastUpdatedAt = null;
       let runningQuietSince = null;
 

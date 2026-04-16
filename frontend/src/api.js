@@ -336,10 +336,12 @@ export const postRinseImportToUploadBatch = (body = {}) =>
 export const startRinseImportUploadBatchJob = (body = {}) =>
   axios.post(`${API_BASE}/admin/rinse/import-upload-batch/jobs`, body, { timeout: 120000 });
 
-/** Admin: poll async Rinse import job until succeeded or failed. */
+/** Admin: poll async Rinse import job until succeeded or failed.
+ * Use a long timeout per request — after a large scrape the API can be busy parsing CSV / DB commit
+ * for several minutes; a 120s cap caused false "timeout" while the job was still running. */
 export const getRinseImportUploadBatchJob = (jobId) =>
   axios.get(`${API_BASE}/admin/rinse/import-upload-batch/jobs/${encodeURIComponent(jobId)}`, {
-    timeout: 120000,
+    timeout: 900000,
   });
 
 /** Admin: request cancellation of a running / queued Rinse import job (Playwright scrape). */

@@ -415,7 +415,13 @@ async function hideBagDetailsIfVisible(rowLocator, page) {
 }
 
 async function ensureRowCollapsedAfterTicket(rowLocator, page) {
-  /* Default OFF: collapsing between tickets often stalls (wrong control / DOM). Set RINSE_SKIP_ROW_COLLAPSE=0 to try. */
+  /* Default OFF for full row collapse: that path often stalls (wrong control / DOM).
+   * Still always try to hide "bag details" so heavy detail DOM does not stack for every
+   * prior ticket (otherwise Playwright slows sharply after ~10–20 rows on long lists). */
+  await hideBagDetailsIfVisible(rowLocator, page);
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.waitForTimeout(90);
+
   const v = (process.env.RINSE_SKIP_ROW_COLLAPSE ?? "1").trim().toLowerCase();
   if (v !== "0" && v !== "false" && v !== "off") {
     return;
