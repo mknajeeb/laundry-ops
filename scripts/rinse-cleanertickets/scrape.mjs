@@ -559,7 +559,7 @@ async function ensureShowBagDetailsForTicketRow(rowLocator) {
   const pollMs = Math.max(40, Math.min(500, parseInt(process.env.RINSE_BAG_DETAILS_POLL_MS || "75", 10) || 75));
   const deadline =
     Date.now() +
-    Math.max(1500, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "3200", 10) || 3200);
+    Math.max(1000, parseInt(process.env.RINSE_SHOW_BAG_WAIT_MS || "3200", 10) || 3200);
   const clickT = rowActionTimeoutMs();
 
   await rowLocator.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});

@@ -747,7 +747,7 @@ def register_rinse_export_routes(app):
                                         for ln in (so_tail or "").splitlines():
                                             t = ln.strip()
                                             if t:
-                                                note = t[:500]
+                                                note = t[:120]
                                     now = time.monotonic()
                                     write_tails = _stdout_db_sec <= 0 or (
                                         now - _last_stdout_db_at[0] >= _stdout_db_sec

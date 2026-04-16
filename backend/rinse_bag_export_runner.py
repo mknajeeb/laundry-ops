@@ -108,7 +108,7 @@ def rinse_import_subprocess_extra_env() -> dict[str, str]:
     Env merged only for POST /admin/rinse/import-upload-batch.
 
     Draft import: page cap is RINSE_IMPORT_MAX_PAGES if set, else RINSE_MAX_PAGES, else 10.
-    Slightly shorter page settle when RINSE_PAGE_SETTLE_MS is unset (see rinse_export_routes).
+    When unset on the host, applies faster defaults for page/row/bag waits (override per env).
     """
     out: dict[str, str] = {"RINSE_CSV_LAYOUT": "portal"}
     imp = (os.getenv("RINSE_IMPORT_MAX_PAGES") or "").strip()
@@ -121,8 +121,19 @@ def rinse_import_subprocess_extra_env() -> dict[str, str]:
     except ValueError:
         n = 10
     out["RINSE_MAX_PAGES"] = str(max(1, min(500, n)))
-    if not (os.getenv("RINSE_PAGE_SETTLE_MS") or "").strip():
-        out["RINSE_PAGE_SETTLE_MS"] = "2200"
+
+    def _imp(key: str, val: str) -> None:
+        if not (os.getenv(key) or "").strip():
+            out[key] = val
+
+    # Defaults only for server import path — override any via API app settings.
+    _imp("RINSE_PAGE_SETTLE_MS", "1300")
+    _imp("RINSE_EXPAND_SETTLE_MS", "260")
+    _imp("RINSE_BAG_DETAILS_SETTLE_MS", "200")
+    _imp("RINSE_SHOW_BAG_WAIT_MS", "1400")
+    _imp("RINSE_ROW_GAP_MS", "12")
+    _imp("RINSE_TABLE_WAIT_MS", "320")
+    _imp("RINSE_TABLE_AFTER_MS", "100")
     return out
 
 
