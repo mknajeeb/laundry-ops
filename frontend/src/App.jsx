@@ -54,6 +54,10 @@ import { formatSystemDateLong } from "./utils/formatDateLocal";
 function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const navigate = useNavigate();
   const { locale, setLocale, t } = useI18n();
+  const [orgLogoFailed, setOrgLogoFailed] = useState(false);
+  useEffect(() => {
+    setOrgLogoFailed(false);
+  }, [user?.organization_logo_url]);
   const canGoBack = pathname !== "/";
   return (
     <AppBar
@@ -84,11 +88,12 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
             overflow: "hidden",
           }}
         >
-          {user?.organization_logo_url ? (
+          {user?.organization_logo_url && !orgLogoFailed ? (
             <Box
               component="img"
               src={resolveOrgLogoUrl(user.organization_logo_url)}
               alt=""
+              onError={() => setOrgLogoFailed(true)}
               sx={{
                 height: 24,
                 maxHeight: 24,

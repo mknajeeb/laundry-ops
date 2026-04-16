@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response
 from flask_cors import CORS
 import mysql.connector
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -5661,15 +5661,29 @@ def auth_organization_logo_upload():
 
 @app.route("/media/org-logos/<int:org_id>/<path:filename>", methods=["GET"])
 def serve_local_org_logo(org_id, filename):
-    """Public read for logos saved under instance/org_logos (no Azure)."""
+    """Public read: local instance/org_logos, or same path in Azure Blob if disk was wiped (deploy)."""
     safe = os.path.basename(filename)
     if not _ORG_LOGO_FILENAME_RE.match(safe):
         return jsonify({"error": "Not found"}), 404
     root = os.path.join(_local_org_logo_root(), str(int(org_id)))
     fp = os.path.join(root, safe)
-    if not os.path.isfile(fp):
-        return jsonify({"error": "Not found"}), 404
-    return send_from_directory(root, safe, max_age=86400)
+    if os.path.isfile(fp):
+        return send_from_directory(root, safe, max_age=86400)
+    cc = _ensure_blob_container()
+    if cc is not None:
+        blob_name = f"org-logos/{int(org_id)}/{safe}"
+        try:
+            bc = cc.get_blob_client(blob_name)
+            data = bc.download_blob().readall()
+            ct = _infer_content_type(safe)
+            return Response(
+                data,
+                mimetype=ct,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+        except Exception:
+            pass
+    return jsonify({"error": "Not found"}), 404
 
 
 @app.route("/auth/platform/organizations", methods=["GET"])

@@ -11,6 +11,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
   const { loading: authLoading, hasPerm } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
+  const [orgLogoFailed, setOrgLogoFailed] = useState(false);
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
 
   useEffect(() => {
@@ -44,11 +45,12 @@ function Sidebar({ activeBatch, user, onLogout }) {
       }}
     >
       <Box sx={{ mb: 1, minHeight: 44, flexShrink: 0, display: "flex", alignItems: "center" }}>
-        {user?.organization_logo_url ? (
+        {user?.organization_logo_url && !orgLogoFailed ? (
           <Box
             component="img"
             src={resolveOrgLogoUrl(user.organization_logo_url)}
             alt=""
+            onError={() => setOrgLogoFailed(true)}
             sx={{ maxHeight: 44, maxWidth: "100%", objectFit: "contain" }}
           />
         ) : (
