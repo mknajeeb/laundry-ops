@@ -1521,10 +1521,24 @@ def _blob_container_name():
 
 
 def _blob_service_client():
-    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    """
+    Return a BlobServiceClient or None. Malformed connection strings (e.g. missing
+    AccountName=) must not raise — otherwise every org-logo GET returns 500.
+    """
+    conn_str = (os.getenv("AZURE_STORAGE_CONNECTION_STRING") or "").strip()
     if not conn_str or BlobServiceClient is None:
         return None
-    return BlobServiceClient.from_connection_string(conn_str)
+    try:
+        return BlobServiceClient.from_connection_string(conn_str)
+    except Exception as e:
+        try:
+            app.logger.warning(
+                "AZURE_STORAGE_CONNECTION_STRING is set but invalid (org logos / tickets will skip blob): %s",
+                e,
+            )
+        except Exception:
+            pass
+        return None
 
 
 def _ensure_blob_container():
