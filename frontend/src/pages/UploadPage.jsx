@@ -4,12 +4,14 @@ import {
   Box,
   Button,
   Chip,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   MenuItem,
+  FormControlLabel,
   Paper,
   Stack,
   Tab,
@@ -82,6 +84,13 @@ function UploadPage({ user }) {
   const [rinseExportHint, setRinseExportHint] = useState("");
   const [portalScrapeLog, setPortalScrapeLog] = useState("");
   const [rinseImportProgressNote, setRinseImportProgressNote] = useState("");
+  /** Optional: narrow one job to a slice of Rinse list pages (see Azure / per-page jobs). */
+  const [rinseImportPageStart, setRinseImportPageStart] = useState("");
+  const [rinseImportMaxPages, setRinseImportMaxPages] = useState("");
+  /** One Playwright run per N list pages, then merge — sequential, single job, one draft commit. */
+  const [rinseImportSequential, setRinseImportSequential] = useState(false);
+  const [rinseImportSeqChunkPages, setRinseImportSeqChunkPages] = useState("1");
+  const [rinseImportMaxSeqChunks, setRinseImportMaxSeqChunks] = useState("");
   const [showFullPortalScrapeLog, setShowFullPortalScrapeLog] = useState(false);
   const portalLogRef = useRef(null);
 
@@ -504,7 +513,26 @@ function UploadPage({ user }) {
       setRinseImportProgressNote("");
       setShowFullPortalScrapeLog(false);
       setMessage({ type: "info", text: "Rinse • starting…" });
-      const startRes = await startRinseImportUploadBatchJob({ batch_date: batchDate });
+      const jobBody = { batch_date: batchDate };
+      const ps = String(rinseImportPageStart || "").trim();
+      const mp = String(rinseImportMaxPages || "").trim();
+      if (ps !== "") {
+        const n = parseInt(ps, 10);
+        if (!Number.isNaN(n)) jobBody.page_start = n;
+      }
+      if (rinseImportSequential) {
+        const c = parseInt(String(rinseImportSeqChunkPages || "1").trim(), 10);
+        if (!Number.isNaN(c) && c >= 1) jobBody.sequential_chunk_pages = c;
+        const mxc = String(rinseImportMaxSeqChunks || "").trim();
+        if (mxc !== "") {
+          const n = parseInt(mxc, 10);
+          if (!Number.isNaN(n) && n >= 1) jobBody.max_sequential_chunks = n;
+        }
+      } else if (mp !== "") {
+        const n = parseInt(mp, 10);
+        if (!Number.isNaN(n)) jobBody.max_pages = n;
+      }
+      const startRes = await startRinseImportUploadBatchJob(jobBody);
       const jobId = startRes.data?.job_id;
       if (!jobId) {
         setMessage({ type: "error", text: "Server did not return a job id for Rinse import." });
@@ -724,6 +752,68 @@ function UploadPage({ user }) {
           />
           {canRunPortalScrape && (
             <>
+              <TextField
+                type="number"
+                size="small"
+                label="Rinse page start"
+                placeholder="optional"
+                inputProps={{ min: 1, max: 500 }}
+                value={rinseImportPageStart}
+                onChange={(e) => setRinseImportPageStart(e.target.value)}
+                sx={{ width: { xs: "100%", sm: 130 } }}
+                title="First Rinse list page for this job only. Blank = from env default (usually 1)."
+              />
+              <TextField
+                type="number"
+                size="small"
+                label="Max pages"
+                placeholder="optional"
+                inputProps={{ min: 1, max: 500 }}
+                value={rinseImportMaxPages}
+                onChange={(e) => setRinseImportMaxPages(e.target.value)}
+                sx={{ width: { xs: "100%", sm: 120 } }}
+                disabled={rinseImportSequential}
+                title={
+                  rinseImportSequential
+                    ? "Not used in sequential mode (use pages/chunk and max chunks instead)."
+                    : "How many list pages in one browser run. Blank = Azure/env default."
+                }
+              />
+              <FormControlLabel
+                sx={{ ml: 0, mr: 0 }}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={rinseImportSequential}
+                    onChange={(e) => setRinseImportSequential(e.target.checked)}
+                  />
+                }
+                label="Sequential pages"
+                title="Run list pages one chunk after another (same job), merge, then one draft save. ~25 orders per list page; easier on small Azure SKUs than one huge scrape."
+              />
+              <TextField
+                type="number"
+                size="small"
+                label="Pages/chunk"
+                inputProps={{ min: 1, max: 50 }}
+                value={rinseImportSeqChunkPages}
+                onChange={(e) => setRinseImportSeqChunkPages(e.target.value)}
+                sx={{ width: { xs: "100%", sm: 100 } }}
+                disabled={!rinseImportSequential}
+                title="List pages per browser run. Use 1 to match one Rinse page (~25 orders) per subprocess."
+              />
+              <TextField
+                type="number"
+                size="small"
+                label="Max chunks"
+                placeholder="opt"
+                inputProps={{ min: 1, max: 500 }}
+                value={rinseImportMaxSeqChunks}
+                onChange={(e) => setRinseImportMaxSeqChunks(e.target.value)}
+                sx={{ width: { xs: "100%", sm: 110 } }}
+                disabled={!rinseImportSequential}
+                title="Cap subprocess count (default 500). Omit to walk until an empty page."
+              />
               <Button
                 variant="contained"
                 onClick={runRinseImportToBatch}

@@ -191,26 +191,62 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
     return row2 or row
 
 
-def _rinse_import_after_auth(
+def _parse_rinse_import_job_page_options(data: dict) -> dict[str, str]:
+    """Optional JSON keys page_start / max_pages → RINSE_PAGE_START / RINSE_MAX_PAGES for one job only."""
+    out: dict[str, str] = {}
+    ps = data.get("page_start")
+    if ps is not None and str(ps).strip() != "":
+        try:
+            out["RINSE_PAGE_START"] = str(max(1, min(500, int(ps))))
+        except (TypeError, ValueError):
+            pass
+    mp = data.get("max_pages")
+    if mp is not None and str(mp).strip() != "":
+        try:
+            out["RINSE_MAX_PAGES"] = str(max(1, min(500, int(mp))))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _parse_rinse_import_job_options(data: dict) -> tuple[dict[str, str], int | None, int]:
+    """
+    Optional sequential mode: JSON sequential_chunk_pages (list pages per Node run, usually 1).
+    When set, body max_pages is ignored for chunk sizing (each subprocess gets RINSE_MAX_PAGES=chunk).
+    max_sequential_chunks caps how many subprocesses (default 500).
+    """
+    seq: int | None = None
+    raw = data.get("sequential_chunk_pages")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            v = int(raw)
+            if v >= 1:
+                seq = min(50, max(1, v))
+        except (TypeError, ValueError):
+            pass
+    max_seq = 500
+    mc = data.get("max_sequential_chunks")
+    if mc is not None and str(mc).strip() != "":
+        try:
+            max_seq = max(1, min(500, int(mc)))
+        except (TypeError, ValueError):
+            max_seq = 500
+    env = _parse_rinse_import_job_page_options(data)
+    if seq is not None:
+        env.pop("RINSE_MAX_PAGES", None)
+    return env, seq, max_seq
+
+
+def _rinse_import_run_single_scrape(
     app,
-    batch_date: date,
-    tenant_oid: int,
-    virtual_name: str,
-    scrape_progress=None,
-    should_cancel=None,
+    merged_env: dict[str, str],
+    scrape_progress,
+    should_cancel,
 ):
     """
-    Scrape → portal CSV → orders_df → commit draft upload batch.
-    Caller must have already verified admin + feature flags (no request auth here).
-
-    scrape_progress: optional callable(stdout_tail: str, stderr_tail: str) for live job log (import jobs).
-    should_cancel: optional callable() -> bool; checked between major steps and passed to the scraper.
-
-    Returns dict with keys: ok (bool), status_code (int), body (dict for JSON),
-    cancelled (bool) when user stopped the job, and on scrape failure optionally exit_code, stdout_tail, stderr_tail.
+    One Node scrape with merged_env → parse portal CSV to orders_df.
+    Returns dict with kind: cancelled | error | no_data | ok.
     """
-    from backend.app import commit_draft_upload_batch_from_orders_df
-    from backend.db import get_db
     from backend.rinse_portal_csv import portal_csv_to_orders_df
 
     fd, tmp_path = tempfile.mkstemp(suffix=".csv", prefix="rinse-portal-")
@@ -219,90 +255,66 @@ def _rinse_import_after_auth(
     try:
         code, stdout, stderr = run_bag_export_csv(
             path,
-            extra_env=rinse_import_subprocess_extra_env(),
+            extra_env=merged_env,
             progress_callback=scrape_progress,
             should_cancel=should_cancel,
         )
     except Exception as e:
         app.logger.exception("rinse import scrape error")
         path.unlink(missing_ok=True)
-        return {"ok": False, "status_code": 500, "body": {"error": str(e)}}
+        return {"kind": "error", "body": {"error": str(e)}}
+
+    stout = stdout or ""
+    sterr = stderr or ""
 
     if code == RINSE_SCRAPE_EXIT_CANCELLED:
         path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "cancelled": True,
-            "status_code": 200,
-            "body": {"cancelled": True, "message": "Rinse import stopped before or during scrape."},
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
-        }
+        return {"kind": "cancelled", "stdout": stout, "stderr": sterr}
 
     if should_cancel and should_cancel():
         path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "cancelled": True,
-            "status_code": 200,
-            "body": {"cancelled": True, "message": "Rinse import stopped after scrape (before parsing CSV)."},
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
-        }
+        return {"kind": "cancelled", "stdout": stout, "stderr": sterr}
 
     if code != 0:
+        path.unlink(missing_ok=True)
+        if int(code) == 2:
+            return {"kind": "no_data", "exit_code": 2, "stdout": stout, "stderr": sterr}
         app.logger.error(
             "rinse import scrape failed code=%s stderr=%s",
             code,
-            (stderr or "")[:4000],
+            (sterr or "")[:4000],
         )
-        path.unlink(missing_ok=True)
         body = {
             "error": "Rinse scrape failed.",
             "exit_code": code,
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
+            "stdout_tail": stout[-8000:],
+            "stderr_tail": sterr[-8000:],
         }
         return {
-            "ok": False,
-            "status_code": 500,
+            "kind": "error",
             "body": body,
             "exit_code": code,
-            "stdout_tail": body["stdout_tail"],
-            "stderr_tail": body["stderr_tail"],
+            "http_status": 500,
+            "stdout": stout,
+            "stderr": sterr,
         }
 
     if not path.is_file() or path.stat().st_size < 1:
         path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "status_code": 500,
-            "body": {
-                "error": "Scrape finished but CSV was not written.",
-                "stdout_tail": (stdout or "")[-8000:],
-                "stderr_tail": (stderr or "")[-8000:],
-            },
-        }
+        return {"kind": "no_data", "exit_code": int(code), "stdout": stout, "stderr": sterr}
 
     if scrape_progress:
         try:
             scrape_progress(
-                (stdout or "") + "\n→ Parsing portal CSV and building order rows…\n",
-                stderr or "",
+                stout + "\n→ Parsing portal CSV and building order rows…\n",
+                sterr,
             )
         except Exception:
             pass
 
     if should_cancel and should_cancel():
         path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "cancelled": True,
-            "status_code": 200,
-            "body": {"cancelled": True, "message": "Rinse import stopped before reading scrape output."},
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
-        }
+        return {"kind": "cancelled", "stdout": stout, "stderr": sterr}
 
     nonempty_lines: list[str] = []
     try:
@@ -316,64 +328,193 @@ def _rinse_import_after_auth(
 
     if should_cancel and should_cancel():
         path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "cancelled": True,
-            "status_code": 200,
-            "body": {"cancelled": True, "message": "Rinse import stopped after reading CSV (before parse)."},
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
-        }
+        return {"kind": "cancelled", "stdout": stout, "stderr": sterr}
 
     if len(nonempty_lines) <= 1:
         path.unlink(missing_ok=True)
-        return {
-            "ok": False,
-            "status_code": 500,
-            "body": {
-                "error": (
-                    "Rinse import returned no data rows (header only). "
-                    "Refresh rinse-auth.json, RINSE_STORAGE_STATE, and RINSE_TICKETS_URL; "
-                    "ensure the scraper can expand rows and click Show bag details."
-                ),
-                "stdout_tail": (stdout or "")[-8000:],
-                "stderr_tail": (stderr or "")[-8000:],
-            },
-        }
+        return {"kind": "no_data", "exit_code": 0, "stdout": stout, "stderr": sterr}
 
     orders_df = None
     try:
         orders_df = portal_csv_to_orders_df(str(path))
     except ValueError as ve:
-        return {"ok": False, "status_code": 400, "body": {"error": str(ve)}}
+        return {
+            "kind": "error",
+            "body": {"error": str(ve)},
+            "http_status": 400,
+            "stdout": stout,
+            "stderr": sterr,
+        }
     except Exception as e:
         app.logger.exception("rinse portal csv parse")
-        return {"ok": False, "status_code": 500, "body": {"error": str(e)}}
+        return {
+            "kind": "error",
+            "body": {"error": str(e)},
+            "http_status": 500,
+            "stdout": stout,
+            "stderr": sterr,
+        }
     finally:
         path.unlink(missing_ok=True)
 
     if should_cancel and should_cancel():
-        return {
-            "ok": False,
-            "cancelled": True,
-            "status_code": 200,
-            "body": {"cancelled": True, "message": "Rinse import stopped after parse (no draft changes saved)."},
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
-        }
+        return {"kind": "cancelled", "stdout": stout, "stderr": sterr}
 
     if orders_df is None or len(orders_df) == 0:
+        return {"kind": "no_data", "exit_code": 0, "stdout": stout, "stderr": sterr}
+
+    return {"kind": "ok", "orders_df": orders_df, "stdout": stout, "stderr": sterr}
+
+
+def _rinse_import_after_auth(
+    app,
+    batch_date: date,
+    tenant_oid: int,
+    virtual_name: str,
+    scrape_progress=None,
+    should_cancel=None,
+    extra_scrape_env: dict | None = None,
+    sequential_chunk_pages: int | None = None,
+    max_sequential_chunks: int = 500,
+):
+    """
+    Scrape → portal CSV → orders_df → commit draft upload batch.
+    Caller must have already verified admin + feature flags (no request auth here).
+
+    scrape_progress: optional callable(stdout_tail: str, stderr_tail: str) for live job log (import jobs).
+    should_cancel: optional callable() -> bool; checked between major steps and passed to the scraper.
+
+    If sequential_chunk_pages is set, runs that many list pages per subprocess, one subprocess after
+    another (same job), merges DataFrames, then one draft commit — avoids losing rows to per-chunk commits.
+
+    Returns dict with keys: ok (bool), status_code (int), body (dict for JSON),
+    cancelled (bool) when user stopped the job, and on scrape failure optionally exit_code, stdout_tail, stderr_tail.
+    """
+    from backend.app import commit_draft_upload_batch_from_orders_df
+    from backend.db import get_db
+
+    merged_base = rinse_import_subprocess_extra_env()
+    if extra_scrape_env:
+        for _k, _v in extra_scrape_env.items():
+            if _v is not None and str(_v).strip() != "":
+                merged_base[str(_k)] = str(_v).strip()
+
+    if sequential_chunk_pages is None:
+        one = _rinse_import_run_single_scrape(
+            app,
+            merged_base,
+            scrape_progress,
+            should_cancel,
+        )
+        return _rinse_import_finish_from_one_round(
+            app,
+            batch_date,
+            tenant_oid,
+            virtual_name,
+            scrape_progress,
+            should_cancel,
+            one,
+        )
+
+    merged_base.pop("RINSE_MAX_PAGES", None)
+    try:
+        current = int(merged_base.get("RINSE_PAGE_START", "1"))
+    except ValueError:
+        current = 1
+    current = max(1, min(500, current))
+
+    import pandas as pd
+
+    dfs: list = []
+    chunks_run = 0
+    last_stdout, last_stderr = "", ""
+    while chunks_run < max_sequential_chunks:
+        if should_cancel and should_cancel():
+            return {
+                "ok": False,
+                "cancelled": True,
+                "status_code": 200,
+                "body": {"cancelled": True, "message": "Rinse import stopped between sequential chunks."},
+                "stdout_tail": last_stdout[-8000:],
+                "stderr_tail": last_stderr[-8000:],
+            }
+
+        merged = dict(merged_base)
+        merged["RINSE_PAGE_START"] = str(current)
+        merged["RINSE_MAX_PAGES"] = str(sequential_chunk_pages)
+
+        if scrape_progress:
+            try:
+                scrape_progress(
+                    last_stdout
+                    + f"\n→ Sequential chunk {chunks_run + 1}/{max_sequential_chunks}: "
+                    f"list pages starting at {current}, up to {sequential_chunk_pages} page(s) this run…\n",
+                    last_stderr,
+                )
+            except Exception:
+                pass
+
+        one = _rinse_import_run_single_scrape(app, merged, scrape_progress, should_cancel)
+        last_stdout = one.get("stdout") or last_stdout
+        last_stderr = one.get("stderr") or last_stderr
+
+        if one["kind"] == "cancelled":
+            return {
+                "ok": False,
+                "cancelled": True,
+                "status_code": 200,
+                "body": {"cancelled": True, "message": "Rinse import stopped before or during scrape."},
+                "stdout_tail": (last_stdout or "")[-8000:],
+                "stderr_tail": (last_stderr or "")[-8000:],
+            }
+        if one["kind"] == "error":
+            body = one.get("body") or {"error": "Rinse import failed."}
+            hs = int(one.get("http_status") or 500)
+            return {
+                "ok": False,
+                "status_code": hs,
+                "body": body,
+                "exit_code": one.get("exit_code"),
+                "stdout_tail": (last_stdout or "")[-8000:],
+                "stderr_tail": (last_stderr or "")[-8000:],
+            }
+        if one["kind"] == "no_data":
+            if chunks_run == 0:
+                return {
+                    "ok": False,
+                    "status_code": 500,
+                    "body": {
+                        "error": (
+                            "Rinse import returned no data rows on the first sequential chunk. "
+                            "Refresh rinse-auth.json, RINSE_STORAGE_STATE, and RINSE_TICKETS_URL; "
+                            "ensure the scraper can expand rows and click Show bag details."
+                        ),
+                        "stdout_tail": (last_stdout or "")[-8000:],
+                        "stderr_tail": (last_stderr or "")[-8000:],
+                    },
+                }
+            break
+        if one["kind"] == "ok":
+            dfs.append(one["orders_df"])
+            current += sequential_chunk_pages
+            chunks_run += 1
+            continue
+
+    if not dfs:
         return {
             "ok": False,
-            "status_code": 400,
-            "body": {"error": "No orders parsed from Rinse portal CSV."},
+            "status_code": 500,
+            "body": {"error": "Sequential Rinse import produced no order rows."},
         }
+
+    orders_df = pd.concat(dfs, ignore_index=True)
 
     if scrape_progress:
         try:
             scrape_progress(
-                (stdout or "") + "\n→ Saving to upload draft batch…\n",
-                stderr or "",
+                (last_stdout or "")
+                + f"\n→ Merged {chunks_run} sequential chunk(s) → {len(orders_df)} row(s). Saving to upload draft batch…\n",
+                last_stderr or "",
             )
         except Exception:
             pass
@@ -384,8 +525,111 @@ def _rinse_import_after_auth(
             "cancelled": True,
             "status_code": 200,
             "body": {"cancelled": True, "message": "Rinse import stopped before saving the draft batch."},
-            "stdout_tail": (stdout or "")[-8000:],
-            "stderr_tail": (stderr or "")[-8000:],
+            "stdout_tail": (last_stdout or "")[-8000:],
+            "stderr_tail": (last_stderr or "")[-8000:],
+        }
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        try:
+            payload = commit_draft_upload_batch_from_orders_df(
+                conn,
+                cursor,
+                tenant_oid,
+                batch_date,
+                orders_df,
+                virtual_name,
+            )
+        except Exception as e:
+            conn.rollback()
+            app.logger.exception("rinse import commit")
+            return {"ok": False, "status_code": 500, "body": {"error": str(e)}}
+    finally:
+        cursor.close()
+        conn.close()
+
+    return {
+        "ok": True,
+        "status_code": 200,
+        "body": {
+            **payload,
+            "summary_rows": len(orders_df),
+            "source": "rinse_portal",
+            "sequential_chunks": chunks_run,
+            "sequential_chunk_pages": sequential_chunk_pages,
+        },
+    }
+
+
+def _rinse_import_finish_from_one_round(
+    app,
+    batch_date: date,
+    tenant_oid: int,
+    virtual_name: str,
+    scrape_progress,
+    should_cancel,
+    one: dict,
+):
+    """Shared tail: commit draft from a single _rinse_import_run_single_scrape result."""
+    from backend.app import commit_draft_upload_batch_from_orders_df
+    from backend.db import get_db
+
+    if one["kind"] == "cancelled":
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped before or during scrape."},
+            "stdout_tail": (one.get("stdout") or "")[-8000:],
+            "stderr_tail": (one.get("stderr") or "")[-8000:],
+        }
+    if one["kind"] == "error":
+        body = one.get("body") or {"error": "Rinse import failed."}
+        hs = int(one.get("http_status") or 500)
+        return {
+            "ok": False,
+            "status_code": hs,
+            "body": body if isinstance(body, dict) else {"error": str(body)},
+            "exit_code": one.get("exit_code"),
+            "stdout_tail": (one.get("stdout") or "")[-8000:],
+            "stderr_tail": (one.get("stderr") or "")[-8000:],
+        }
+    if one["kind"] == "no_data":
+        ec = int(one.get("exit_code") or 0)
+        return {
+            "ok": False,
+            "status_code": 500,
+            "body": {
+                "error": (
+                    "Rinse import returned no data rows (header only). "
+                    "Refresh rinse-auth.json, RINSE_STORAGE_STATE, and RINSE_TICKETS_URL; "
+                    "ensure the scraper can expand rows and click Show bag details."
+                ),
+                "exit_code": ec,
+                "stdout_tail": (one.get("stdout") or "")[-8000:],
+                "stderr_tail": (one.get("stderr") or "")[-8000:],
+            },
+        }
+
+    orders_df = one["orders_df"]
+    if scrape_progress:
+        try:
+            scrape_progress(
+                (one.get("stdout") or "") + "\n→ Saving to upload draft batch…\n",
+                one.get("stderr") or "",
+            )
+        except Exception:
+            pass
+
+    if should_cancel and should_cancel():
+        return {
+            "ok": False,
+            "cancelled": True,
+            "status_code": 200,
+            "body": {"cancelled": True, "message": "Rinse import stopped before saving the draft batch."},
+            "stdout_tail": (one.get("stdout") or "")[-8000:],
+            "stderr_tail": (one.get("stderr") or "")[-8000:],
         }
 
     conn = get_db()
@@ -572,7 +816,16 @@ def register_rinse_export_routes(app):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         virtual_name = f"rinse-portal-import-{stamp}.csv"
 
-        res = _rinse_import_after_auth(app, batch_date, tenant_oid, virtual_name)
+        page_opts, seq_pages, max_seq = _parse_rinse_import_job_options(data)
+        res = _rinse_import_after_auth(
+            app,
+            batch_date,
+            tenant_oid,
+            virtual_name,
+            extra_scrape_env=page_opts or None,
+            sequential_chunk_pages=seq_pages,
+            max_sequential_chunks=max_seq,
+        )
         return jsonify(res["body"]), res["status_code"]
 
     @app.route("/admin/rinse/import-upload-batch/jobs", methods=["POST"])
@@ -614,6 +867,7 @@ def register_rinse_export_routes(app):
         data = request.get_json(silent=True) or {}
         batch_raw = data.get("batch_date")
         batch_date = parse_date_value(batch_raw) if batch_raw else date.today()
+        job_page_env, job_seq_pages, job_max_seq = _parse_rinse_import_job_options(data)
 
         job_id = str(uuid.uuid4())
         virtual_name = f"rinse-portal-import-{job_id}.csv"
@@ -788,6 +1042,9 @@ def register_rinse_export_routes(app):
                         virtual_name,
                         scrape_progress=push_scrape_progress,
                         should_cancel=import_job_cancel_requested,
+                        extra_scrape_env=job_page_env or None,
+                        sequential_chunk_pages=job_seq_pages,
+                        max_sequential_chunks=job_max_seq,
                     )
 
                     conn_done = db_conn()
