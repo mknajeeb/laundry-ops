@@ -704,31 +704,7 @@ function UploadPage({ user }) {
         </Button>
       </Stack>
 
-      {batch && (
-        <Stack direction="row" spacing={1} sx={{ mt: 0.8, flexWrap: "wrap" }}>
-          <Chip
-            label={formatBatchLabel(batch)}
-            color="primary"
-            variant="outlined"
-          />
-          <Chip
-            label={(batch.state || "DRAFT").toUpperCase()}
-            color={isConfirmed ? "success" : "warning"}
-          />
-        </Stack>
-      )}
-
-      {(message.text || (isDraft && !rinseExportLoading)) && (
-        <Alert
-          severity={message.type === "error" ? "error" : message.type === "warning" ? "warning" : "success"}
-          sx={{ mt: 1, borderRadius: 2, py: 0.5 }}
-        >
-          {message.text ||
-            (isDraft && !rinseExportLoading ? "Draft — confirm batch when ready." : "Ready.")}
-        </Alert>
-      )}
-
-      <Paper sx={{ mt: 1.2, p: 1.25, borderRadius: 2 }}>
+      <Paper sx={{ mt: 1, p: 1.25, borderRadius: 2 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} flexWrap="wrap">
           <TextField
             type="date"
@@ -772,6 +748,30 @@ function UploadPage({ user }) {
           )}
         </Stack>
       </Paper>
+
+      {batch && (
+        <Stack direction="row" spacing={1} sx={{ mt: 0.8, flexWrap: "wrap" }}>
+          <Chip
+            label={formatBatchLabel(batch)}
+            color="primary"
+            variant="outlined"
+          />
+          <Chip
+            label={(batch.state || "DRAFT").toUpperCase()}
+            color={isConfirmed ? "success" : "warning"}
+          />
+        </Stack>
+      )}
+
+      {(message.text || (isDraft && !rinseExportLoading)) && (
+        <Alert
+          severity={message.type === "error" ? "error" : message.type === "warning" ? "warning" : "success"}
+          sx={{ mt: 1, borderRadius: 2, py: 0.5 }}
+        >
+          {message.text ||
+            (isDraft && !rinseExportLoading ? "Draft — confirm batch when ready." : "Ready.")}
+        </Alert>
+      )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
         <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 1 }}>Excel</Typography>
