@@ -637,18 +637,25 @@ function UploadPage({ user }) {
   };
 
   const stopRinsePortalImport = async () => {
-    if (!rinseImportJobId || rinseImportStopBusy) return;
+    const jid = rinseImportJobId;
+    if (!jid || rinseImportStopBusy) return;
     try {
       setRinseImportStopBusy(true);
-      await cancelRinseImportUploadBatchJob(rinseImportJobId);
-      setMessage({ type: "info", text: "Rinse • stopping…" });
+      const res = await cancelRinseImportUploadBatchJob(jid);
+      const already = res?.data?.already;
+      setMessage({
+        type: "info",
+        text: already ? "Rinse • stop already sent" : "Rinse • stopping…",
+      });
     } catch (error) {
       console.error(error);
+      const st = error?.response?.status;
       const d = error?.response?.data;
-      setMessage({
-        type: "error",
-        text: d?.error || error?.message || "Could not request stop for this import job.",
-      });
+      const msg =
+        st === 409
+          ? "Stop: job already finished."
+          : d?.error || error?.message || "Stop request failed (check network / login).";
+      setMessage({ type: "error", text: msg });
     } finally {
       setRinseImportStopBusy(false);
     }
@@ -726,12 +733,16 @@ function UploadPage({ user }) {
                 {rinseExportLoading && rinseImportJobId ? "Running…" : "Scrape Rinse → draft"}
               </Button>
               <Button
+                type="button"
                 variant="outlined"
                 size="small"
                 color="warning"
-                onClick={stopRinsePortalImport}
+                onClick={(e) => {
+                  e.preventDefault();
+                  stopRinsePortalImport();
+                }}
                 disabled={
-                  !rinseImportJobId || !rinseExportLoading || rinseImportStopBusy || loading
+                  !rinseImportJobId || !rinseExportLoading || rinseImportStopBusy
                 }
               >
                 {rinseImportStopBusy ? "…" : "Stop"}

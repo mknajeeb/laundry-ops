@@ -696,9 +696,10 @@ def register_rinse_export_routes(app):
 
                     # Cancel must be DB-backed (other Gunicorn workers handle POST /cancel), but a full
                     # fetch on every scrape poll (~5/s) starves MySQL and slows Playwright badly — cache it.
+                    # Default 0.55s: fast enough that Stop feels responsive; still << scrape poll frequency.
                     _cancel_poll_s = max(
                         0.35,
-                        min(5.0, float(os.getenv("RINSE_IMPORT_CANCEL_POLL_SEC", "1.2"))),
+                        min(5.0, float(os.getenv("RINSE_IMPORT_CANCEL_POLL_SEC", "0.55"))),
                     )
                     _cancel_cache: dict[str, float | bool] = {"t": -1e9, "v": False}
 
