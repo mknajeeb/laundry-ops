@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Run Playwright on YOUR machine, then either upload the CSV on Upload Orders (portal CSV path)
-# or use "Run portal scrape & load draft batch" on the server (no local file).
+# Run Playwright on YOUR machine → portal CSV → upload in Washpro (Rinse / CSV).
+# Full instructions for Mac/Windows users: USER_LOCAL_SCRAPE.md in this folder.
 #
 # One-time: cd here, npm install, npx playwright install chromium, cp .env.example .env,
 #           edit .env, npm run save-session → rinse-auth.json
 #
 # Usage:
-#   bash run-local-portal-csv.sh           # uses RINSE_MAX_PAGES from .env (default 500 cap; stops when a page repeats an earlier one)
-#   bash run-local-portal-csv.sh 3         # cap at 3 list pages for a quick test
+#   bash run-local-portal-csv.sh           # uses RINSE_MAX_PAGES from .env
+#   bash run-local-portal-csv.sh 3         # cap at 3 list pages (quick test)
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"

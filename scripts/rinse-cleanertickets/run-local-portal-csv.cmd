@@ -3,6 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 echo Rinse portal CSV scrape (local Windows)
+echo See USER_LOCAL_SCRAPE.md in this folder for setup.
 echo ========================================
 
 if not exist ".env" (
