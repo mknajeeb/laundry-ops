@@ -40,6 +40,7 @@ import { deleteOrder, getCurrentUploadBatch, getOrders, updateOrder } from "../a
 import { displayCustomerName } from "../utils/displayCustomerName";
 import { useAuth } from "../context/AuthContext";
 import { toDateInputValue } from "../utils/datetimeFormat";
+import { scanBrowseDefaultsFromOpsUi } from "../utils/opsScanBrowseDefaults";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WF_BG = "#141922";
@@ -78,8 +79,8 @@ function OrdersPage({ user }) {
 
   const [rushFilter, setRushFilter] = useState("ALL"); // ALL | RUSH | NON-RUSH
   const [showProcessed, setShowProcessed] = useState(false);
-  const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_ORDERS) === "1");
-  const [scanEnabled, setScanEnabled] = useState(() => localStorage.getItem(SCAN_STORAGE_ORDERS) !== "0");
+  const [showBrowse, setShowBrowse] = useState(() => scanBrowseDefaultsFromOpsUi(opsUi).browse);
+  const [scanEnabled, setScanEnabled] = useState(() => scanBrowseDefaultsFromOpsUi(opsUi).scan);
   const [openAlpha, setOpenAlpha] = useState(null);
 
   const [notice, setNotice] = useState("");
@@ -92,12 +93,10 @@ function OrdersPage({ user }) {
   const canDeleteOrders = hasPerm("orders.delete");
 
   useEffect(() => {
-    if (!masterScan) setScanEnabled(false);
-  }, [masterScan]);
-
-  useEffect(() => {
-    if (!masterBrowse) setShowBrowse(false);
-  }, [masterBrowse]);
+    const d = scanBrowseDefaultsFromOpsUi(opsUi);
+    setScanEnabled(d.scan);
+    setShowBrowse(d.browse);
+  }, [opsUi?.scan_lookup_enabled, opsUi?.browse_list_enabled]);
 
   const effectiveShowBrowse = masterBrowse && showBrowse;
   const effectiveScanEnabled = masterScan && scanEnabled;
@@ -136,6 +135,10 @@ function OrdersPage({ user }) {
   useEffect(() => {
     localStorage.setItem(BROWSE_STORAGE_ORDERS, showBrowse ? "1" : "0");
   }, [showBrowse]);
+
+  useEffect(() => {
+    localStorage.setItem(SCAN_STORAGE_ORDERS, scanEnabled ? "1" : "0");
+  }, [scanEnabled]);
 
   const normalizeLogistics = (r) => {
     const v = normalizeCode(r?.logistics_status);

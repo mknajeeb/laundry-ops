@@ -539,6 +539,7 @@ function MaintenancePage() {
         <Typography sx={{ fontWeight: 700, mb: 0.5 }}>Checkout and orders devices</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.2 }}>
           When a switch is off, that feature is hidden or disabled for everyone in this business (admins should use Maintenance to turn it back on).
+          When scan or browse is on, Checkout and Orders open with that mode enabled by default; if both are on, scan is the default until someone changes the toolbar toggles.
         </Typography>
         <FormControlLabel
           control={

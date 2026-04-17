@@ -42,6 +42,7 @@ import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 import { displayCustomerName } from "../utils/displayCustomerName";
 import { useAuth } from "../context/AuthContext";
+import { scanBrowseDefaultsFromOpsUi } from "../utils/opsScanBrowseDefaults";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const BROWSE_STORAGE_CHECKOUT = "washpro_ops_browse_checkout";
@@ -81,12 +82,8 @@ function CheckoutPage() {
   const deferredSearch = useDeferredValue(search);
   const [rushTab, setRushTab] = useState("ALL");
   const [openAlpha, setOpenAlpha] = useState(null);
-  const [showBrowse, setShowBrowse] = useState(() => localStorage.getItem(BROWSE_STORAGE_CHECKOUT) === "1");
-  const [scanEnabled, setScanEnabled] = useState(() => {
-    const v = localStorage.getItem(SCAN_STORAGE_CHECKOUT);
-    if (v === "0") return false;
-    return true;
-  });
+  const [showBrowse, setShowBrowse] = useState(() => scanBrowseDefaultsFromOpsUi(opsUi).browse);
+  const [scanEnabled, setScanEnabled] = useState(() => scanBrowseDefaultsFromOpsUi(opsUi).scan);
   const [sentDrawerOpen, setSentDrawerOpen] = useState(false);
   const [activeRow, setActiveRow] = useState(null);
   const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
@@ -133,12 +130,10 @@ function CheckoutPage() {
   }, [scanEnabled]);
 
   useEffect(() => {
-    if (!masterScan) setScanEnabled(false);
-  }, [masterScan]);
-
-  useEffect(() => {
-    if (!masterBrowse) setShowBrowse(false);
-  }, [masterBrowse]);
+    const d = scanBrowseDefaultsFromOpsUi(opsUi);
+    setScanEnabled(d.scan);
+    setShowBrowse(d.browse);
+  }, [opsUi?.scan_lookup_enabled, opsUi?.browse_list_enabled]);
 
   const effectiveShowBrowse = masterBrowse && showBrowse;
   const effectiveScanEnabled = masterScan && scanEnabled;
