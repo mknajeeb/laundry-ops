@@ -32,11 +32,17 @@ A browser window opens: log in to Rinse (and MFA if asked), then return to the t
 
 ---
 
-## Mac (Terminal)
+## Mac
+
+**Double‑click:** use **`run-local-portal-csv.command`** — macOS opens **Terminal** and runs the scrape.  
+(If you double‑click **`run-local-portal-csv.sh`**, it usually opens as **text** in TextEdit — that is normal; use the **`.command`** file or Terminal below.)
+
+First time macOS may say the file can’t be opened: **right‑click → Open** once, then confirm.
+
+**From Terminal** (same as double‑click):
 
 ```bash
 cd /path/to/rinse-cleanertickets
-chmod +x run-local-portal-csv.sh    # optional, first time only
 bash run-local-portal-csv.sh
 ```
 
@@ -79,5 +85,6 @@ You can also **double‑click** `run-local-portal-csv.cmd` after setup (the wind
 - **“node is not recognized”** — install Node LTS and open a **new** terminal.  
 - **Login errors** — run `npm run save-session` again and refresh `rinse-auth.json`.  
 - **Slow after many rows** — normal on large queues; use a small page cap (`3`) to test first.
+- **Scrape never stops / jumps back to page 1** — pagination “next” detection used to treat unrelated buttons (or evaluation errors) as “has another page.” The script now only trusts real `?page=N` links by default. If your list **stops after page 1** but Rinse still has more pages, set in `.env`: `RINSE_PAGINATION_LOOSE=1` (restores the old, looser checks).
 
 Use only if allowed by Rinse’s terms and your company policy.

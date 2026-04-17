@@ -192,11 +192,64 @@ function urlForPage(baseUrl, pageNum) {
   }
 }
 
-/** Whether pagination UI shows there is another page after `currentPageNum`. */
+/**
+ * Whether pagination UI shows there is another page after `currentPageNum`.
+ *
+ * Prefer real `page=` links (avoids false positives from any control whose text is "2" or "3").
+ * Legacy loose matching (old behavior) is opt-in: RINSE_PAGINATION_LOOSE=1
+ */
 async function hasNextPageInUi(page, currentPageNum) {
+  const loose =
+    String(process.env.RINSE_PAGINATION_LOOSE || "").trim() === "1" ||
+    String(process.env.RINSE_PAGINATION_LOOSE || "").toLowerCase() === "true";
+
   return page
-    .evaluate((n) => {
-      const hasEnabledNextControl = (() => {
+    .evaluate(
+      ({ n, loose: looseMode }) => {
+        const want = n + 1;
+        const here = window.location.href;
+
+        const looksDisabled = (el) => {
+          if (!el) return true;
+          const ar = String(el.getAttribute("aria-disabled") || "").toLowerCase();
+          if (ar === "true") return true;
+          const cls = String(el.className || "").toLowerCase();
+          if (cls.includes("disabled")) return true;
+          return false;
+        };
+
+        const hrefPageNum = (a) => {
+          if (!(a instanceof HTMLAnchorElement) || !a.getAttribute("href")) return null;
+          try {
+            const u = new URL(a.href, here);
+            const raw = u.searchParams.get("page");
+            const p = parseInt(raw || "", 10);
+            return Number.isFinite(p) && p > 0 ? p : null;
+          } catch {
+            return null;
+          }
+        };
+
+        /** Strong signal: any non-disabled link with page=want */
+        const pageLinks = Array.from(document.querySelectorAll('a[href*="page="]'));
+        for (const a of pageLinks) {
+          if (looksDisabled(a)) continue;
+          const pn = hrefPageNum(a);
+          if (pn === want) return true;
+        }
+
+        /** rel=next — only trust if href resolves to the next page index */
+        for (const a of document.querySelectorAll('a[rel="next"], a[rel~="next"], link[rel="next"]')) {
+          if (looksDisabled(a)) continue;
+          const pn = hrefPageNum(a);
+          if (pn === want) return true;
+        }
+
+        if (!looseMode) {
+          return false;
+        }
+
+        /* --- Legacy (loose) fallbacks — can false-positive on last page; opt-in only --- */
         const nextLike = Array.from(
           document.querySelectorAll(
             "a[rel='next'], button[rel='next'], [aria-label*='next' i], .next a, .pagination-next a",
@@ -210,21 +263,20 @@ async function hasNextPageInUi(page, currentPageNum) {
           if (el instanceof HTMLAnchorElement && !el.href) continue;
           return true;
         }
-        return false;
-      })();
-      if (hasEnabledNextControl) return true;
-      const byPageNumber = Array.from(document.querySelectorAll("a[href], button, [role='button']")).some(
-        (el) => {
+        const scope =
+          document.querySelector(".pagination, [class*='pagination'], nav[aria-label*='page' i]") ||
+          document.body;
+        return Array.from(scope.querySelectorAll("a[href], button, [role='button']")).some((el) => {
           const txt = (el.textContent || "").trim();
-          if (txt !== String(n + 1)) return false;
+          if (txt !== String(want)) return false;
           const cls = String(el.className || "").toLowerCase();
           if (cls.includes("disabled")) return false;
           return true;
-        },
-      );
-      return byPageNumber;
-    }, currentPageNum)
-    .catch(() => true);
+        });
+      },
+      { n: currentPageNum, loose },
+    )
+    .catch(() => false);
 }
 
 function pageNumFromUrl(u) {
