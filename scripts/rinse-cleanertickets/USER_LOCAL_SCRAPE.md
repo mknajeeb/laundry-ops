@@ -86,5 +86,6 @@ You can also **double‑click** `run-local-portal-csv.cmd` after setup (the wind
 - **Login errors** — run `npm run save-session` again and refresh `rinse-auth.json`.  
 - **Slow after many rows** — normal on large queues; use a small page cap (`3`) to test first.
 - **Scrape never stops / jumps back to page 1** — pagination “next” detection used to treat unrelated buttons (or evaluation errors) as “has another page.” The script now only trusts real `?page=N` links by default. If your list **stops after page 1** but Rinse still has more pages, set in `.env`: `RINSE_PAGINATION_LOOSE=1` (restores the old, looser checks).
+- **Window flashes / `npm run scrape` prints nothing after `node scrape.mjs`** — Save `scrape.mjs` from the **raw** GitHub URL only: the first line must be `/**` or `import` (not `Source URL:` or HTML from a save-as page). Use **Node.js 18+** LTS. Run from **this folder** (`cd` to `rinse-cleanertickets` where `package.json` lives). You should see `[rinse-scrape] scrape.mjs loaded` on the first line; if not, the wrong file is running or the script text is corrupted.
 
 Use only if allowed by Rinse’s terms and your company policy.

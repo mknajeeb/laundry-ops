@@ -41,6 +41,9 @@ function loadLocalEnvFile() {
 }
 loadLocalEnvFile();
 
+/** First thing on stderr so Windows CMD / double-click runs never look “silent” if something fails early. */
+console.error("[rinse-scrape] scrape.mjs loaded — starting…");
+
 /**
  * Write one log line to fd 1 so piped subprocess output updates promptly for server-side UI monitors.
  */
@@ -1634,6 +1637,7 @@ async function scrapePage(page, pageLabel, layout) {
 }
 
 async function main() {
+  console.error("[rinse-scrape] entering main() — Node", process.version);
   const baseUrl =
     process.env.RINSE_TICKETS_URL?.trim() ||
     "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
