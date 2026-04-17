@@ -20,6 +20,22 @@ if errorlevel 1 (
   goto :fail
 )
 
+if not exist "scrape.mjs" (
+  echo ERROR: Missing scrape.mjs in this folder.
+  echo   Run download-scrape-from-github.cmd once, or copy the full file from the repo ^(~65 KB^).
+  goto :fail
+)
+
+setlocal EnableDelayedExpansion
+for %%I in ("scrape.mjs") do set "SCRAPE_BYTES=%%~zI"
+if !SCRAPE_BYTES! LSS 20000 (
+  echo ERROR: scrape.mjs is too small ^(!SCRAPE_BYTES! bytes^). The real script is about 65000+ bytes.
+  echo   Double-click download-scrape-from-github.cmd in this folder, then try again.
+  endlocal
+  goto :fail
+)
+endlocal
+
 if not exist "node_modules\" (
   echo Installing npm dependencies...
   call npm install

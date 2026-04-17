@@ -59,7 +59,8 @@ bash run-local-portal-csv.sh 3
 1. Open **Command Prompt** (not PowerShell required).
 2. `cd` to this folder, e.g.  
    `cd C:\Users\You\Desktop\rinse-cleanertickets`
-3. Run:
+3. **If `scrape.mjs` is only 1–2 KB** (wrong copy): double‑click **`download-scrape-from-github.cmd`** once — it downloads the full **~65 KB** script. Then confirm **Properties → Size** is tens of KB, not 1 KB.
+4. Run:
 
 ```cmd
 run-local-portal-csv.cmd
