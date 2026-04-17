@@ -410,6 +410,10 @@ export const getDailyOperationalResetSettings = () =>
 export const putDailyOperationalResetSettings = (body) =>
   axios.put(`${API_BASE}/maintenance/daily-operational-reset`, body);
 
+export const getOpsUiFlags = () => axios.get(`${API_BASE}/maintenance/ops-ui-flags`);
+
+export const putOpsUiFlags = (body) => axios.put(`${API_BASE}/maintenance/ops-ui-flags`, body);
+
 export const listCheckoutHistorySnapshots = () =>
   axios.get(`${API_BASE}/checkout_history/snapshots`);
 

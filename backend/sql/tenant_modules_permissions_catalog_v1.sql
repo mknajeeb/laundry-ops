@@ -26,6 +26,8 @@ INSERT IGNORE INTO permissions (perm_key, description) VALUES
 ('upload.view', 'View upload & staging'),
 ('upload.create', 'Upload batches / files'),
 ('upload.delete', 'Remove uploads'),
+('upload.rows.edit', 'Edit draft upload batch rows (before confirm)'),
+('upload.rows.delete', 'Delete draft upload batch rows (before confirm)'),
 ('discrepancies.view', 'View discrepancies'),
 ('discrepancies.update', 'Resolve discrepancies'),
 ('discrepancies.delete', 'Delete discrepancy records'),
@@ -114,6 +116,15 @@ UPDATE permissions SET
   route_key = 'upload', route_label = 'Upload', section_key = 'main', section_label = 'Module access',
   resource_key = '', resource_label = '', action_key = 'delete', sort_order = 1320
 WHERE perm_key = 'upload.delete';
+
+UPDATE permissions SET
+  route_key = 'upload', route_label = 'Upload', section_key = 'draft_rows', section_label = 'Draft batch rows',
+  resource_key = '', resource_label = '', action_key = 'update', sort_order = 1325
+WHERE perm_key = 'upload.rows.edit';
+UPDATE permissions SET
+  route_key = 'upload', route_label = 'Upload', section_key = 'draft_rows', section_label = 'Draft batch rows',
+  resource_key = '', resource_label = '', action_key = 'delete', sort_order = 1326
+WHERE perm_key = 'upload.rows.delete';
 
 UPDATE permissions SET
   route_key = 'discrepancies', route_label = 'Discrepancies', section_key = 'main', section_label = 'Module access',
@@ -236,5 +247,12 @@ FROM roles r
 CROSS JOIN permissions p
 WHERE UPPER(TRIM(r.code)) IN ('ADMIN', 'SUPER_ADMIN', 'PLATFORM_ADMIN')
   AND p.perm_key REGEXP '^(home|dashboard|orders|checkout|upload|discrepancies|inventory|clock|issues|production|scoreboard|maintenance|payroll|organization|permissions)\\.[a-z]+';
+
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
+FROM roles r
+CROSS JOIN permissions p
+WHERE UPPER(TRIM(r.code)) IN ('ADMIN', 'SUPER_ADMIN', 'PLATFORM_ADMIN')
+  AND p.perm_key IN ('upload.rows.edit', 'upload.rows.delete');
 
 SELECT 'tenant_modules_permissions_catalog_v1 complete.' AS note;

@@ -4,10 +4,8 @@ import {
   Box,
   Button,
   CircularProgress,
-  FormControlLabel,
   Paper,
   Stack,
-  Switch,
   TextField,
   Typography,
 } from "@mui/material";
@@ -24,9 +22,9 @@ import {
   startOrderGamingSession,
 } from "../api";
 import { displayCustomerName } from "../utils/displayCustomerName";
+import { useAuth } from "../context/AuthContext";
 
 const READER_ID = "dryer-qr-reader";
-const DRYER_MAINT_KEY = "washpro_dryer_scan_maintenance";
 
 const DRYER_QR_SHELL_SX = {
   borderRadius: 2,
@@ -88,6 +86,8 @@ export default function OrderDryerFlowPage({ user }) {
   const { orderId } = useParams();
   const navigate = useNavigate();
   const { t } = useI18n();
+  const { opsUi } = useAuth();
+  const allowDryerQr = opsUi?.dryer_qr_scan_enabled !== false;
   const oid = Number(orderId);
   const uid = Number(user?.user_id || 0);
 
@@ -101,7 +101,6 @@ export default function OrderDryerFlowPage({ user }) {
   const [busy, setBusy] = useState(false);
   const [manualCode, setManualCode] = useState("");
   const [sessionOrder, setSessionOrder] = useState(null);
-  const [dryerMaintenanceOn, setDryerMaintenanceOn] = useState(() => localStorage.getItem(DRYER_MAINT_KEY) !== "0");
   const [isSimpleSession, setIsSimpleSession] = useState(false);
   const [pendingTicketB64, setPendingTicketB64] = useState("");
   const [pendingTicketFname, setPendingTicketFname] = useState("ticket.jpg");
@@ -140,10 +139,6 @@ export default function OrderDryerFlowPage({ user }) {
       ro.disconnect();
     };
   }, [dryerCamOn]);
-
-  useEffect(() => {
-    localStorage.setItem(DRYER_MAINT_KEY, dryerMaintenanceOn ? "1" : "0");
-  }, [dryerMaintenanceOn]);
 
   const stopScanner = useCallback(async () => {
     const h = scannerRef.current;
@@ -259,7 +254,7 @@ export default function OrderDryerFlowPage({ user }) {
   }, [step, sessionOrder]);
 
   useEffect(() => {
-    if (step !== 2 || !lockToken) return undefined;
+    if (!allowDryerQr || step !== 2 || !lockToken) return undefined;
     let cancelled = false;
     startedRef.current = false;
 
@@ -321,7 +316,7 @@ export default function OrderDryerFlowPage({ user }) {
       cancelled = true;
       stopScanner();
     };
-  }, [step, lockToken, stopScanner, onScanDryer, dryerReaderPx.w, dryerReaderPx.h]);
+  }, [allowDryerQr, step, lockToken, stopScanner, onScanDryer, dryerReaderPx.w, dryerReaderPx.h]);
 
   const onNextFromCount = async () => {
     setBusy(true);
@@ -491,8 +486,6 @@ export default function OrderDryerFlowPage({ user }) {
     );
   }
 
-  const maintToggleDisabled = Boolean(lockToken);
-
   return (
     <Box
       sx={{
@@ -518,34 +511,11 @@ export default function OrderDryerFlowPage({ user }) {
 
         {step === 1 && (
           <Stack spacing={2} sx={{ flex: 1, px: 1, py: 1, maxWidth: 420, mx: "auto", width: "100%" }}>
-            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, bgcolor: "#fafafa", borderColor: "#c4b5fd" }}>
-              <Typography sx={{ fontWeight: 800, fontSize: "0.95rem", color: "#5b21b6", mb: 1.25 }}>
-                Dryer maintenance
-              </Typography>
-              <FormControlLabel
-                sx={{ alignItems: "center", mx: 0, display: "flex" }}
-                control={
-                  <Switch
-                    checked={dryerMaintenanceOn}
-                    disabled={maintToggleDisabled}
-                    onChange={(_, v) => setDryerMaintenanceOn(v)}
-                    color="primary"
-                  />
-                }
-                label={
-                  <Box>
-                    <Typography sx={{ fontWeight: 700, fontSize: 15 }}>
-                      Dryer QR scan {dryerMaintenanceOn ? "on" : "off"}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.35 }}>
-                      Off skips dryer count and scanning — ticket photo, then mark complete, then weight.
-                    </Typography>
-                  </Box>
-                }
-              />
-            </Paper>
-            {!dryerMaintenanceOn ? (
+            {!allowDryerQr ? (
               <>
+                <Alert severity="info" sx={{ borderRadius: 2 }}>
+                  Dryer QR scan is turned off in Maintenance for this business. You can still finish with the ticket photo flow.
+                </Alert>
                 <Typography color="text.secondary">
                   Continue to capture the ticket, confirm complete, then enter weight to finish.
                 </Typography>

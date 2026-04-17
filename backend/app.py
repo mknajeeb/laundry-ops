@@ -56,6 +56,7 @@ from backend.ta_routes import (
     write_audit,
 )
 from backend.daily_reset_scheduler import start_daily_reset_scheduler
+from backend.ops_ui_flags import get_ops_ui_flags, put_ops_ui_flags
 
 
 # ---------------------------------------------------
@@ -2357,6 +2358,33 @@ def daily_operational_reset_maintenance():
         conn.close()
 
 
+@app.route("/maintenance/ops-ui-flags", methods=["GET", "PUT"])
+def maintenance_ops_ui_flags():
+    """Tenant: master switches for bag QR scan, browse list, and dryer QR on orders/checkout."""
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        if request.method == "GET":
+            return jsonify(get_ops_ui_flags(cursor, tenant_oid))
+        _, err_a, code_a = require_admin(cursor)
+        if err_a:
+            return err_a, code_a
+        data = request.json or {}
+        put_ops_ui_flags(cursor, tenant_oid, data)
+        conn.commit()
+        return jsonify(get_ops_ui_flags(cursor, tenant_oid))
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/checkout_history/snapshots", methods=["GET"])
 def checkout_history_snapshots_list():
     conn = get_db()
@@ -2597,7 +2625,7 @@ def update_order(order_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
-        me, err_resp, err_code = require_admin(cursor)
+        me, err_resp, err_code = require_admin_or_perm(conn, cursor, "orders.update")
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
@@ -2716,7 +2744,7 @@ def delete_order(order_id):
     cursor = conn.cursor()
 
     try:
-        me, err_resp, err_code = require_admin(cursor)
+        me, err_resp, err_code = require_admin_or_perm(conn, cursor, "orders.delete")
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
@@ -8933,7 +8961,7 @@ def delete_upload_batch(batch_id):
         batch_pk = get_upload_batches_pk(cursor)
         has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
         bdel = f"""
-            SELECT {batch_pk} AS id, state
+            SELECT {batch_pk} AS id, state, batch_date
             FROM upload_batches
             WHERE {batch_pk} = %s
         """
@@ -8974,38 +9002,65 @@ def delete_upload_batch(batch_id):
 
             staging_ids = []
             if table_exists(cursor, "orders_staging"):
-                for row in identity_rows:
-                    sel_st = """
-                        SELECT id
-                        FROM orders_staging
-                        WHERE UPPER(TRIM(name_clean)) = UPPER(TRIM(%s))
-                          AND service_type = %s
-                          AND ((weight_num IS NULL AND %s IS NULL) OR weight_num = %s)
-                          AND date_clean = %s
-                    """
-                    st_args = [
-                        row.get("name_clean"),
-                        row.get("service_type"),
-                        row.get("weight_num"),
-                        row.get("weight_num"),
-                        row.get("date_clean"),
-                    ]
+                has_staging_batch_date = table_has_column(cursor, "orders_staging", "batch_date")
+                batch_day = batch.get("batch_date")
+                if has_staging_batch_date and batch_day is not None:
+                    sid_sql = "SELECT id FROM orders_staging WHERE batch_date = %s"
+                    sid_args = [batch_day]
                     if table_has_column(cursor, "orders_staging", "organization_id"):
-                        sel_st += " AND organization_id = %s"
-                        st_args.append(tenant_oid)
-                    cursor.execute(sel_st, tuple(st_args))
-                    staging_ids.extend([r["id"] for r in cursor.fetchall()])
+                        sid_sql += " AND organization_id = %s"
+                        sid_args.append(tenant_oid)
+                    cursor.execute(sid_sql, tuple(sid_args))
+                    staging_ids = [int(r["id"]) for r in (cursor.fetchall() or [])]
 
-                cascade_deleted["orders_staging"] = delete_identity_rows(
-                    cursor,
-                    "orders_staging",
-                    identity_rows,
-                    "name_clean",
-                    "weight_num",
-                    "service_type",
-                    "date_clean",
-                    tenant_oid,
-                )
+                    if staging_ids and table_exists(cursor, "order_processing"):
+                        placeholders = ", ".join(["%s"] * len(staging_ids))
+                        cursor.execute(
+                            f"DELETE FROM order_processing WHERE order_id IN ({placeholders})",
+                            tuple(staging_ids),
+                        )
+                        cascade_deleted["order_processing"] = cursor.rowcount or 0
+
+                    del_st = "DELETE FROM orders_staging WHERE batch_date = %s"
+                    del_args = [batch_day]
+                    if table_has_column(cursor, "orders_staging", "organization_id"):
+                        del_st += " AND organization_id = %s"
+                        del_args.append(tenant_oid)
+                    cursor.execute(del_st, tuple(del_args))
+                    cascade_deleted["orders_staging"] = cursor.rowcount or 0
+                else:
+                    for row in identity_rows:
+                        sel_st = """
+                            SELECT id
+                            FROM orders_staging
+                            WHERE UPPER(TRIM(name_clean)) = UPPER(TRIM(%s))
+                              AND service_type = %s
+                              AND ((weight_num IS NULL AND %s IS NULL) OR weight_num = %s)
+                              AND date_clean = %s
+                        """
+                        st_args = [
+                            row.get("name_clean"),
+                            row.get("service_type"),
+                            row.get("weight_num"),
+                            row.get("weight_num"),
+                            row.get("date_clean"),
+                        ]
+                        if table_has_column(cursor, "orders_staging", "organization_id"):
+                            sel_st += " AND organization_id = %s"
+                            st_args.append(tenant_oid)
+                        cursor.execute(sel_st, tuple(st_args))
+                        staging_ids.extend([r["id"] for r in cursor.fetchall()])
+
+                    cascade_deleted["orders_staging"] = delete_identity_rows(
+                        cursor,
+                        "orders_staging",
+                        identity_rows,
+                        "name_clean",
+                        "weight_num",
+                        "service_type",
+                        "date_clean",
+                        tenant_oid,
+                    )
 
             if table_exists(cursor, "orders_final"):
                 has_date_clean_final = table_has_column(cursor, "orders_final", "date_clean")
@@ -9038,13 +9093,21 @@ def delete_upload_batch(batch_id):
                     ))
                     cascade_deleted["checkout_log"] += cursor.rowcount or 0
 
-            if staging_ids and table_exists(cursor, "order_processing"):
+            if (
+                staging_ids
+                and table_exists(cursor, "order_processing")
+                and not (
+                    table_exists(cursor, "orders_staging")
+                    and table_has_column(cursor, "orders_staging", "batch_date")
+                    and batch.get("batch_date") is not None
+                )
+            ):
                 placeholders = ", ".join(["%s"] * len(staging_ids))
                 cursor.execute(
                     f"DELETE FROM order_processing WHERE order_id IN ({placeholders})",
                     tuple(staging_ids),
                 )
-                cascade_deleted["order_processing"] = cursor.rowcount or 0
+                cascade_deleted["order_processing"] += cursor.rowcount or 0
 
         cursor.execute("""
             DELETE FROM upload_batch_rows
@@ -9143,7 +9206,7 @@ def override_upload_batch_row(batch_id, row_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
-        me, err_resp, err_code = require_user(cursor)
+        me, err_resp, err_code = require_admin_or_perm(conn, cursor, "upload.rows.edit")
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
@@ -9252,7 +9315,7 @@ def delete_upload_batch_row(batch_id, row_id):
     cursor = conn.cursor(dictionary=True)
 
     try:
-        me, err_resp, err_code = require_user(cursor)
+        me, err_resp, err_code = require_admin_or_perm(conn, cursor, "upload.rows.delete")
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)

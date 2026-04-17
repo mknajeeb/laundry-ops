@@ -13,12 +13,19 @@ import { clearOneSignalUser, syncOneSignalUser } from "../onesignalUser";
 
 const AuthContext = createContext(null);
 
+const DEFAULT_OPS_UI = {
+  scan_lookup_enabled: true,
+  browse_list_enabled: true,
+  dryer_qr_scan_enabled: true,
+};
+
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(
     () => localStorage.getItem("ta_token") || localStorage.getItem("washpro_token") || ""
   );
   const [user, setUser] = useState(null);
   const [permissions, setPermissions] = useState([]);
+  const [opsUi, setOpsUi] = useState(() => ({ ...DEFAULT_OPS_UI }));
   const [loading, setLoading] = useState(
     !!(localStorage.getItem("ta_token") || localStorage.getItem("washpro_token"))
   );
@@ -30,6 +37,7 @@ export function AuthProvider({ children }) {
     if (!t) {
       setUser(null);
       setPermissions([]);
+      setOpsUi({ ...DEFAULT_OPS_UI });
       setLoading(false);
       return;
     }
@@ -38,11 +46,20 @@ export function AuthProvider({ children }) {
       const res = await getTaBootstrap();
       setUser(res.data.user);
       setPermissions(res.data.permissions || []);
+      const ou = res.data.ops_ui || {};
+      setOpsUi({
+        ...DEFAULT_OPS_UI,
+        ...ou,
+        scan_lookup_enabled: ou.scan_lookup_enabled !== false,
+        browse_list_enabled: ou.browse_list_enabled !== false,
+        dryer_qr_scan_enabled: ou.dryer_qr_scan_enabled !== false,
+      });
     } catch {
       localStorage.removeItem("ta_token");
       setToken(localStorage.getItem("washpro_token") || "");
       setUser(null);
       setPermissions([]);
+      setOpsUi({ ...DEFAULT_OPS_UI });
     } finally {
       setLoading(false);
     }
@@ -61,6 +78,7 @@ export function AuthProvider({ children }) {
     if (!token) {
       setUser(null);
       setPermissions([]);
+      setOpsUi({ ...DEFAULT_OPS_UI });
       setLoading(false);
       return;
     }
@@ -101,6 +119,7 @@ export function AuthProvider({ children }) {
     setToken("");
     setUser(null);
     setPermissions([]);
+    setOpsUi({ ...DEFAULT_OPS_UI });
   }, []);
 
   const hasPerm = useCallback(
@@ -113,13 +132,14 @@ export function AuthProvider({ children }) {
       token,
       user,
       permissions,
+      opsUi,
       loading,
       login,
       logout,
       refreshMe,
       hasPerm,
     }),
-    [token, user, permissions, loading, login, logout, refreshMe, hasPerm]
+    [token, user, permissions, opsUi, loading, login, logout, refreshMe, hasPerm]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

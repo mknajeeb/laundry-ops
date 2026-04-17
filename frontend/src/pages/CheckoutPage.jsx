@@ -41,6 +41,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
 import { displayCustomerName } from "../utils/displayCustomerName";
+import { useAuth } from "../context/AuthContext";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const BROWSE_STORAGE_CHECKOUT = "washpro_ops_browse_checkout";
@@ -64,6 +65,9 @@ function normalizeCode(value) {
 
 function CheckoutPage() {
   const { t } = useI18n();
+  const { opsUi } = useAuth();
+  const masterScan = opsUi?.scan_lookup_enabled !== false;
+  const masterBrowse = opsUi?.browse_list_enabled !== false;
   const isMobile = useMediaQuery("(max-width:900px)");
   const { checkoutBlocked, assertCanCheckout, bannerMessage } = useTaOperationalGate();
   const scanDisabled = checkoutBlocked;
@@ -127,6 +131,17 @@ function CheckoutPage() {
   useEffect(() => {
     localStorage.setItem(SCAN_STORAGE_CHECKOUT, scanEnabled ? "1" : "0");
   }, [scanEnabled]);
+
+  useEffect(() => {
+    if (!masterScan) setScanEnabled(false);
+  }, [masterScan]);
+
+  useEffect(() => {
+    if (!masterBrowse) setShowBrowse(false);
+  }, [masterBrowse]);
+
+  const effectiveShowBrowse = masterBrowse && showBrowse;
+  const effectiveScanEnabled = masterScan && scanEnabled;
 
   const rushOf = (r) => {
     const raw = String(r?.rush_type ?? "").trim();
@@ -438,38 +453,55 @@ function CheckoutPage() {
                     <Send />
                   </IconButton>
                 </Tooltip>
-                <Tooltip title={scanEnabled ? t("ops.scanToggleOnHint") : t("ops.scanToggleOffHint")}>
+                <Tooltip
+                  title={
+                    !masterScan
+                      ? "Scan lookup is turned off in Maintenance for this business."
+                      : scanEnabled
+                        ? t("ops.scanToggleOnHint")
+                        : t("ops.scanToggleOffHint")
+                  }
+                >
                   <IconButton
                     size="large"
                     onClick={() => setScanEnabled((v) => !v)}
-                    aria-pressed={scanEnabled}
-                    disabled={scanDisabled}
+                    aria-pressed={effectiveScanEnabled}
+                    disabled={scanDisabled || !masterScan}
                     sx={{
-                      bgcolor: scanEnabled ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
-                      color: scanEnabled ? "primary.main" : "#64748b",
+                      bgcolor: effectiveScanEnabled ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                      color: effectiveScanEnabled ? "primary.main" : "#64748b",
                       width: 48,
                       height: 48,
-                      border: scanEnabled ? "2px solid" : "none",
+                      border: effectiveScanEnabled ? "2px solid" : "none",
                       borderColor: "primary.main",
-                      "&:hover": { bgcolor: scanEnabled ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                      "&:hover": { bgcolor: effectiveScanEnabled ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
                     }}
                   >
                     <QrCodeScanner />
                   </IconButton>
                 </Tooltip>
-                <Tooltip title={showBrowse ? t("ops.indexToggleOnHint") : t("ops.indexToggleOffHint")}>
+                <Tooltip
+                  title={
+                    !masterBrowse
+                      ? "Browse list is turned off in Maintenance for this business."
+                      : showBrowse
+                        ? t("ops.indexToggleOnHint")
+                        : t("ops.indexToggleOffHint")
+                  }
+                >
                   <IconButton
                     size="large"
                     onClick={() => setShowBrowse((v) => !v)}
-                    aria-pressed={showBrowse}
+                    aria-pressed={effectiveShowBrowse}
+                    disabled={!masterBrowse}
                     sx={{
-                      bgcolor: showBrowse ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
-                      color: showBrowse ? "primary.main" : "#64748b",
+                      bgcolor: effectiveShowBrowse ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                      color: effectiveShowBrowse ? "primary.main" : "#64748b",
                       width: 48,
                       height: 48,
-                      border: showBrowse ? "2px solid" : "none",
+                      border: effectiveShowBrowse ? "2px solid" : "none",
                       borderColor: "primary.main",
-                      "&:hover": { bgcolor: showBrowse ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                      "&:hover": { bgcolor: effectiveShowBrowse ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
                     }}
                   >
                     <SortByAlpha />
@@ -499,11 +531,13 @@ function CheckoutPage() {
           <OrderScanLookupBar
             variant="embedded"
             compactEmbedded
-            scanEnabled={scanEnabled}
-            onScanEnabledChange={setScanEnabled}
+            scanEnabled={effectiveScanEnabled}
+            onScanEnabledChange={(v) => {
+              if (masterScan) setScanEnabled(v);
+            }}
             storageKey="washpro_scan_lookup_checkout"
             batchDate={lookupBatchDate}
-            disabled={scanDisabled}
+            disabled={scanDisabled || !masterScan}
             onPickOrder={(o) => onSelectForCheckout(o)}
           />
 
@@ -522,11 +556,11 @@ function CheckoutPage() {
             ]}
           />
 
-          {showBrowse && (
+          {effectiveShowBrowse && (
             <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
           )}
 
-          {showBrowse && (
+          {effectiveShowBrowse && (
             <OpsAlphaJumpRail
               letters={groupedQueue.keys}
               ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
@@ -542,7 +576,7 @@ function CheckoutPage() {
         </>
       )}
 
-      {!sentDrawerOpen && showBrowse && (
+      {!sentDrawerOpen && effectiveShowBrowse && (
       <Box sx={{ mt: 1.2 }}>
         {groupedQueue.keys.map((alpha) => {
           const list = groupedQueue.groups[alpha] || [];
@@ -617,7 +651,7 @@ function CheckoutPage() {
       </Box>
       )}
 
-      {!sentDrawerOpen && !showBrowse && (
+      {!sentDrawerOpen && !effectiveShowBrowse && (
         <Box sx={{ mt: 1.2 }}>
           {sequentialCheckoutRows.length === 0 ? (
             <Typography sx={{ color: "#64748b", fontSize: 13, px: 0.25 }}>{t("ops.emptyBagsLetter")}</Typography>

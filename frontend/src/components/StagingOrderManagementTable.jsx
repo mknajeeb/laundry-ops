@@ -29,6 +29,7 @@ import {
   uploadOrderTicket,
 } from "../api";
 import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
+import { useAuth } from "../context/AuthContext";
 
 function normalizeCode(value) {
   return String(value || "").trim().toUpperCase();
@@ -74,6 +75,7 @@ function inferMimeType(fileName) {
  * After a batch is confirmed: ticket photo (auto-submits pending), view/replace/delete ticket, edit/delete for live staging orders on that batch date.
  */
 export default function StagingOrderManagementTable({ batchDate, user, onOrdersChanged }) {
+  const { hasPerm } = useAuth();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,8 +84,8 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
   const [editRow, setEditRow] = useState(null);
   const [notice, setNotice] = useState("");
 
-  const roleCodes = (user?.roles || []).map((r) => String(r).toUpperCase());
-  const isAdmin = roleCodes.includes("ADMIN");
+  const canEditOrders = hasPerm("orders.update");
+  const canDeleteOrders = hasPerm("orders.delete");
   const userId = Number(user?.user_id || 0);
 
   const bd = toDateInputValue(batchDate);
@@ -312,8 +314,9 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
                           )}
                         </>
                       )}
-                      {isAdmin && (
+                      {(canEditOrders || canDeleteOrders) && (
                         <>
+                          {canEditOrders ? (
                           <Button
                             size="small"
                             variant="outlined"
@@ -329,6 +332,8 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
                           >
                             Edit
                           </Button>
+                          ) : null}
+                          {canDeleteOrders ? (
                           <Button
                             size="small"
                             color="error"
@@ -347,6 +352,7 @@ export default function StagingOrderManagementTable({ batchDate, user, onOrdersC
                           >
                             Delete
                           </Button>
+                          ) : null}
                         </>
                       )}
                     </Stack>

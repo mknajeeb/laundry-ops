@@ -8,8 +8,10 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  MenuItem,
   Paper,
   Stack,
+  TextField,
   Tooltip,
   Typography,
   useMediaQuery,
@@ -34,8 +36,10 @@ import OrderScanLookupBar from "../components/OrderScanLookupBar";
 import { useI18n } from "../i18n/I18nContext";
 import { formatSystemDateLong } from "../utils/formatDateLocal";
 import { getOpsAlphaPaletteForLetter, opsAlphaEmptySectionSx } from "../utils/opsAlphaIndex";
-import { getCurrentUploadBatch, getOrders } from "../api";
+import { deleteOrder, getCurrentUploadBatch, getOrders, updateOrder } from "../api";
 import { displayCustomerName } from "../utils/displayCustomerName";
+import { useAuth } from "../context/AuthContext";
+import { toDateInputValue } from "../utils/datetimeFormat";
 
 const ALPHAS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const WF_BG = "#141922";
@@ -61,6 +65,9 @@ function normalizeCode(value) {
 
 function OrdersPage({ user }) {
   const { t } = useI18n();
+  const { opsUi, hasPerm } = useAuth();
+  const masterScan = opsUi?.scan_lookup_enabled !== false;
+  const masterBrowse = opsUi?.browse_list_enabled !== false;
   const navigate = useNavigate();
   const isMobile = useMediaQuery("(max-width:900px)");
   const alphaRefs = useRef({});
@@ -77,8 +84,23 @@ function OrdersPage({ user }) {
 
   const [notice, setNotice] = useState("");
   const [batchInfo, setBatchInfo] = useState(null);
+  const [editRow, setEditRow] = useState(null);
+  const [editBusy, setEditBusy] = useState(false);
 
   const userId = Number(user?.user_id || 0);
+  const canEditOrders = hasPerm("orders.update");
+  const canDeleteOrders = hasPerm("orders.delete");
+
+  useEffect(() => {
+    if (!masterScan) setScanEnabled(false);
+  }, [masterScan]);
+
+  useEffect(() => {
+    if (!masterBrowse) setShowBrowse(false);
+  }, [masterBrowse]);
+
+  const effectiveShowBrowse = masterBrowse && showBrowse;
+  const effectiveScanEnabled = masterScan && scanEnabled;
 
   const load = async () => {
     try {
@@ -269,6 +291,7 @@ function OrdersPage({ user }) {
     const cardCursor = showProcessed || !pending || gameDone || lockedOther ? "default" : "pointer";
     const showName = displayCustomerName(r.name_clean);
     const nameSize = 38 > String(showName || "").length ? 20 : 18;
+    const showOrderActions = (canEditOrders || canDeleteOrders) && normalizeLogistics(r) === "AT_WASHPRO";
     return (
       <Paper
         key={r.id}
@@ -328,6 +351,56 @@ function OrdersPage({ user }) {
             </Typography>
           </Stack>
         </Box>
+        {showOrderActions ? (
+          <Stack
+            direction="row"
+            spacing={0.6}
+            sx={{ px: 1, pb: 1, pt: 0.25 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {canEditOrders ? (
+              <Button
+                size="small"
+                variant="outlined"
+                sx={{ color: "#fff", borderColor: "rgba(255,255,255,0.55)" }}
+                onClick={() =>
+                  setEditRow({
+                    id: r.id,
+                    date_clean: toDateInputValue(r.date_clean),
+                    name_clean: r.name_clean || "",
+                    weight_num: r.weight_num ?? "",
+                    service_type: r.service_type || "WF",
+                  })
+                }
+              >
+                Edit
+              </Button>
+            ) : null}
+            {canDeleteOrders ? (
+              <Button
+                size="small"
+                color="error"
+                variant="outlined"
+                sx={{ borderColor: "rgba(252,165,165,0.9)", color: "#fecaca" }}
+                onClick={async () => {
+                  if (!window.confirm(`Delete staging order #${r.id}?`)) return;
+                  try {
+                    setEditBusy(true);
+                    await deleteOrder(r.id);
+                    await load();
+                  } catch (error) {
+                    console.error(error);
+                    setNotice(error?.response?.data?.error || "Delete failed.");
+                  } finally {
+                    setEditBusy(false);
+                  }
+                }}
+              >
+                Delete
+              </Button>
+            ) : null}
+          </Stack>
+        ) : null}
       </Paper>
     );
   };
@@ -370,37 +443,55 @@ function OrdersPage({ user }) {
                 <Inventory2 />
               </IconButton>
             </Tooltip>
-            <Tooltip title={scanEnabled ? t("ops.scanToggleOnHint") : t("ops.scanToggleOffHint")}>
+            <Tooltip
+              title={
+                !masterScan
+                  ? "Scan lookup is turned off in Maintenance for this business."
+                  : scanEnabled
+                    ? t("ops.scanToggleOnHint")
+                    : t("ops.scanToggleOffHint")
+              }
+            >
               <IconButton
                 size="large"
                 onClick={() => setScanEnabled((v) => !v)}
-                aria-pressed={scanEnabled}
+                aria-pressed={effectiveScanEnabled}
+                disabled={!masterScan}
                 sx={{
-                  bgcolor: scanEnabled ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
-                  color: scanEnabled ? "primary.main" : "#64748b",
+                  bgcolor: effectiveScanEnabled ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                  color: effectiveScanEnabled ? "primary.main" : "#64748b",
                   width: 48,
                   height: 48,
-                  border: scanEnabled ? "2px solid" : "none",
+                  border: effectiveScanEnabled ? "2px solid" : "none",
                   borderColor: "primary.main",
-                  "&:hover": { bgcolor: scanEnabled ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                  "&:hover": { bgcolor: effectiveScanEnabled ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
                 }}
               >
                 <QrCodeScanner />
               </IconButton>
             </Tooltip>
-            <Tooltip title={showBrowse ? t("ops.indexToggleOnHint") : t("ops.indexToggleOffHint")}>
+            <Tooltip
+              title={
+                !masterBrowse
+                  ? "Browse list is turned off in Maintenance for this business."
+                  : showBrowse
+                    ? t("ops.indexToggleOnHint")
+                    : t("ops.indexToggleOffHint")
+              }
+            >
               <IconButton
                 size="large"
                 onClick={() => setShowBrowse((v) => !v)}
-                aria-pressed={showBrowse}
+                aria-pressed={effectiveShowBrowse}
+                disabled={!masterBrowse}
                 sx={{
-                  bgcolor: showBrowse ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
-                  color: showBrowse ? "primary.main" : "#64748b",
+                  bgcolor: effectiveShowBrowse ? "rgba(219, 234, 254, 0.98)" : "rgba(226, 232, 240, 0.95)",
+                  color: effectiveShowBrowse ? "primary.main" : "#64748b",
                   width: 48,
                   height: 48,
-                  border: showBrowse ? "2px solid" : "none",
+                  border: effectiveShowBrowse ? "2px solid" : "none",
                   borderColor: "primary.main",
-                  "&:hover": { bgcolor: showBrowse ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
+                  "&:hover": { bgcolor: effectiveShowBrowse ? "rgba(191, 219, 254, 0.98)" : "rgba(203, 213, 225, 0.95)" },
                 }}
               >
                 <SortByAlpha />
@@ -430,10 +521,13 @@ function OrdersPage({ user }) {
       <OrderScanLookupBar
         variant="embedded"
         compactEmbedded
-        scanEnabled={scanEnabled}
-        onScanEnabledChange={setScanEnabled}
+        scanEnabled={effectiveScanEnabled}
+        onScanEnabledChange={(v) => {
+          if (masterScan) setScanEnabled(v);
+        }}
         storageKey="washpro_scan_lookup_orders"
         batchDate={batchDateScan}
+        disabled={!masterScan}
         onPickOrder={onScanPickOrder}
       />
 
@@ -448,11 +542,11 @@ function OrdersPage({ user }) {
         ]}
       />
 
-      {(showProcessed || (!showProcessed && showBrowse)) && (
+      {(showProcessed || (!showProcessed && effectiveShowBrowse)) && (
         <OpsSearchBar value={search} onChange={setSearch} placeholder={t("ops.searchNameHint")} />
       )}
 
-      {!loading && !showProcessed && showBrowse && (
+      {!loading && !showProcessed && effectiveShowBrowse && (
         <OpsAlphaJumpRail
           letters={ALPHAS}
           ariaLabelFor={(letter) => t("ops.jumpLetter").replace("{l}", letter)}
@@ -478,7 +572,7 @@ function OrdersPage({ user }) {
             ) : (
               <Stack spacing={1}>{sequentialFolded.map((r) => renderOrderCard(r))}</Stack>
             )
-          ) : showBrowse ? (
+          ) : effectiveShowBrowse ? (
             ALPHAS.map((alpha) => {
               const list = grouped[alpha] || [];
               if (searchActive && list.length === 0) return null;
@@ -559,6 +653,62 @@ function OrdersPage({ user }) {
           )}
         </Stack>
       )}
+
+      <Dialog open={Boolean(editRow)} onClose={() => setEditRow(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Edit order</DialogTitle>
+        <DialogContent dividers>
+          {editRow && (
+            <Stack spacing={1.1}>
+              <TextField
+                label="Date"
+                type="date"
+                value={editRow.date_clean}
+                InputLabelProps={{ shrink: true }}
+                onChange={(e) => setEditRow((p) => ({ ...p, date_clean: e.target.value }))}
+              />
+              <TextField label="Name" value={editRow.name_clean} onChange={(e) => setEditRow((p) => ({ ...p, name_clean: e.target.value }))} />
+              <TextField
+                label="Weight / Count"
+                type="number"
+                value={editRow.weight_num}
+                onChange={(e) => setEditRow((p) => ({ ...p, weight_num: e.target.value }))}
+              />
+              <TextField select label="Service" value={editRow.service_type} onChange={(e) => setEditRow((p) => ({ ...p, service_type: e.target.value }))}>
+                <MenuItem value="WF">WF</MenuItem>
+                <MenuItem value="HD">HD</MenuItem>
+              </TextField>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditRow(null)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={editBusy}
+            onClick={async () => {
+              if (!editRow) return;
+              setEditBusy(true);
+              try {
+                await updateOrder(editRow.id, {
+                  date_clean: editRow.date_clean,
+                  name_clean: editRow.name_clean,
+                  weight_num: Number(editRow.weight_num),
+                  service_type: editRow.service_type,
+                });
+                setEditRow(null);
+                await load();
+              } catch (error) {
+                console.error(error);
+                setNotice(error?.response?.data?.error || "Update failed.");
+              } finally {
+                setEditBusy(false);
+              }
+            }}
+          >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={Boolean(notice)} onClose={() => setNotice("")} fullWidth maxWidth="xs">
         <DialogTitle sx={{ fontWeight: 400 }}>Confirmation</DialogTitle>

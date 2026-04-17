@@ -71,6 +71,7 @@ from backend.ta_helpers import (
     table_has_column,
     verify_password,
 )
+from backend.ops_ui_flags import get_ops_ui_flags
 
 ta_bp = Blueprint("ta_api", __name__)
 
@@ -1237,12 +1238,14 @@ def ta_bootstrap():
             session_state = _build_sessions_current_payload(conn, g.ta_user, tid, lat, lng)
         else:
             conn.commit()
+        ops_ui = get_ops_ui_flags(c, tid)
         return jsonify(
             {
                 "user": json_safe(u),
                 "permissions": perms,
                 "clock_payroll_ui": ui,
                 "session_state": session_state,
+                "ops_ui": ops_ui,
             }
         )
     finally:

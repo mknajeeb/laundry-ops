@@ -38,12 +38,14 @@ import {
   getMaintenanceLogs,
   getMaintenanceTasks,
   putDailyOperationalResetSettings,
+  putOpsUiFlags,
   saveGeofenceConfig,
   updateMaintenanceAssignment,
   updateMaintenanceLog,
   updateMaintenanceTask,
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
+import { useAuth } from "../context/AuthContext";
 
 const emptyTaskForm = { task_code: "", task_name: "", category: "CLEANING", active: true };
 const emptyAssignForm = {
@@ -78,6 +80,7 @@ const emptyLogForm = {
 
 function MaintenancePage() {
   const { t } = useI18n();
+  const { opsUi, refreshMe } = useAuth();
   const [tab, setTab] = useState("ASSIGNED");
   const [tasks, setTasks] = useState([]);
   const [assignments, setAssignments] = useState([]);
@@ -531,6 +534,93 @@ function MaintenancePage() {
           </Typography>
         </Paper>
       )}
+
+      <Paper sx={{ mt: 1.2, p: 1.5, borderRadius: 2, border: "1px solid #e2e8f0" }}>
+        <Typography sx={{ fontWeight: 700, mb: 0.5 }}>Checkout and orders devices</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.2 }}>
+          When a switch is off, that feature is hidden or disabled for everyone in this business (admins should use Maintenance to turn it back on).
+        </Typography>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={!!opsUi?.scan_lookup_enabled}
+              disabled={saving}
+              onChange={async (e) => {
+                const v = e.target.checked;
+                try {
+                  setSaving(true);
+                  await putOpsUiFlags({ scan_lookup_enabled: v });
+                  await refreshMe();
+                  setMessage({ type: "success", text: "Scan lookup setting saved." });
+                } catch (err) {
+                  console.error(err);
+                  setMessage({
+                    type: "error",
+                    text: err?.response?.data?.error || "Could not save scan setting (admin only).",
+                  });
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+          }
+          label="Bag QR scan / scan lookup (Checkout & Orders)"
+        />
+        <FormControlLabel
+          sx={{ display: "block", mt: 0.5 }}
+          control={
+            <Switch
+              checked={!!opsUi?.browse_list_enabled}
+              disabled={saving}
+              onChange={async (e) => {
+                const v = e.target.checked;
+                try {
+                  setSaving(true);
+                  await putOpsUiFlags({ browse_list_enabled: v });
+                  await refreshMe();
+                  setMessage({ type: "success", text: "Browse list setting saved." });
+                } catch (err) {
+                  console.error(err);
+                  setMessage({
+                    type: "error",
+                    text: err?.response?.data?.error || "Could not save browse list setting (admin only).",
+                  });
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+          }
+          label="Browse list and A–Z index (Checkout and Orders)"
+        />
+        <FormControlLabel
+          sx={{ display: "block", mt: 0.5 }}
+          control={
+            <Switch
+              checked={!!opsUi?.dryer_qr_scan_enabled}
+              disabled={saving}
+              onChange={async (e) => {
+                const v = e.target.checked;
+                try {
+                  setSaving(true);
+                  await putOpsUiFlags({ dryer_qr_scan_enabled: v });
+                  await refreshMe();
+                  setMessage({ type: "success", text: "Dryer QR setting saved." });
+                } catch (err) {
+                  console.error(err);
+                  setMessage({
+                    type: "error",
+                    text: err?.response?.data?.error || "Could not save dryer QR setting (admin only).",
+                  });
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+          }
+          label="Dryer QR scan (Orders → dryer flow)"
+        />
+      </Paper>
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>
         <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto">
