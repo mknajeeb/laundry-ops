@@ -21,7 +21,14 @@ export const TENANT_NAV_ITEMS = [
     permissionsAnyOf: ["dashboard.view", "dashboard.update"],
     moduleKey: "dashboard",
   },
-  { to: "/orders", labelKey: "nav.orders", roles: OPS, moduleKey: "orders" },
+  {
+    to: "/orders",
+    labelKey: "nav.orders",
+    roles: OPS,
+    /** Custom TA roles (e.g. view-only) may have orders.* without OPS / ADMIN role codes. */
+    permissionsAnyOf: ["orders.view", "orders.create", "orders.update", "orders.delete"],
+    moduleKey: "orders",
+  },
   { to: "/checkout", labelKey: "nav.checkout", roles: PORTAL, moduleKey: "checkout" },
   { to: "/checkout-history", labelKey: "nav.checkoutHistory", roles: OPS, moduleKey: "checkout" },
   {
