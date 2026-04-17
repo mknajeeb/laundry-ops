@@ -1657,6 +1657,8 @@ async function main() {
   );
   const outCsv =
     (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) || defaultOutputPath();
+  const outCsvAbsolute = path.resolve(outCsv);
+  console.error("[rinse-scrape] OUTPUT_CSV (absolute):", outCsvAbsolute);
   const layout = csvLayout();
   if (layout === "portal") {
     progressLine(
@@ -1832,12 +1834,13 @@ async function main() {
       );
     }
 
-    const dir = path.dirname(path.resolve(outCsv));
+    const dir = path.dirname(outCsvAbsolute);
     if (dir && !fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(path.resolve(outCsv), header + lines.join(""), "utf8");
-    progressLine(`\nWrote ${allRows.length} row records → ${path.resolve(outCsv)}`);
+    fs.writeFileSync(outCsvAbsolute, header + lines.join(""), "utf8");
+    console.error("[rinse-scrape] wrote CSV:", outCsvAbsolute, `(${allRows.length} rows)`);
+    progressLine(`\nWrote ${allRows.length} row records → ${outCsvAbsolute}`);
   } finally {
     await browser.close();
   }
