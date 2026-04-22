@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run Playwright on YOUR machine → portal CSV → upload in Washpro (Rinse / CSV).
-# Full instructions for Mac/Windows users: USER_LOCAL_SCRAPE.md in this folder.
+# Full instructions: USER_LOCAL_SCRAPE.md. On Mac, double-click run-local-portal-csv.command
+# (this .sh file opens as text if double-clicked — that is normal).
 #
 # One-time: cd here, npm install, npx playwright install chromium, cp .env.example .env,
 #           edit .env, npm run save-session → rinse-auth.json
