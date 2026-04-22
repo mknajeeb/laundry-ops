@@ -292,6 +292,8 @@ export default function OrderScanLookupBar({
   const scannerRef = useRef(null);
   const qrDecodeLockRef = useRef(false);
   const lastQrPayloadRef = useRef({ text: "", at: 0 });
+  /** Same bag QR with no server match — don't repeat window.alert every time the camera re-decodes after dismiss. */
+  const lastNoMatchBagQrRef = useRef({ text: "", at: 0 });
   const hadPickListRef = useRef(false);
   const qrShellRef = useRef(null);
   const [readerPx, setReaderPx] = useState(() => ({
@@ -386,7 +388,26 @@ export default function OrderScanLookupBar({
         return "resume";
       }
       const usedQr = bodies.some((b) => String(b.qr_text || "").trim());
-      window.alert(usedQr ? t("ops.scanAlertNoMatchQr") : t("ops.scanAlertNoMatch"));
+      if (usedQr) {
+        const qrKey = String(
+          bodies.find((b) => String(b.qr_text || "").trim())?.qr_text || "",
+        ).trim();
+        const now = Date.now();
+        const coolMs = 60000;
+        if (
+          qrKey &&
+          lastNoMatchBagQrRef.current.text === qrKey &&
+          now - lastNoMatchBagQrRef.current.at < coolMs
+        ) {
+          return "resume";
+        }
+        if (qrKey) {
+          lastNoMatchBagQrRef.current = { text: qrKey, at: now };
+        }
+        window.alert(t("ops.scanAlertNoMatchQr"));
+        return "resume";
+      }
+      window.alert(t("ops.scanAlertNoMatch"));
       return "resume";
     },
     [isEmbedded, onPickOrder, t]
@@ -534,7 +555,8 @@ export default function OrderScanLookupBar({
       const raw = String(decodedText || "").trim();
       if (!raw) return;
       const now = Date.now();
-      if (lastQrPayloadRef.current.text === raw && now - lastQrPayloadRef.current.at < 4000) {
+      /* Camera keeps decoding the same QR every ~200ms after resume; keep lookup from re-firing too soon. */
+      if (lastQrPayloadRef.current.text === raw && now - lastQrPayloadRef.current.at < 7500) {
         return;
       }
       lastQrPayloadRef.current = { text: raw, at: now };
@@ -595,12 +617,13 @@ export default function OrderScanLookupBar({
         await html5.start(
           { facingMode: "environment" },
           {
-            fps: 10,
+            fps: 12,
+            /* Tighter central crop helps decode small bag tags vs noisy background (was 0.9). */
             qrbox: (vw, vh) => {
               const w = Number(vw) || 320;
               const h = Number(vh) || 320;
-              const side = Math.floor(Math.min(w, h) * 0.9);
-              return { width: Math.max(200, side), height: Math.max(200, side) };
+              const side = Math.floor(Math.min(w, h) * 0.68);
+              return { width: Math.max(168, side), height: Math.max(168, side) };
             },
           },
           onDecoded,
