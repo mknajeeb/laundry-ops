@@ -294,7 +294,8 @@ export default function OrderScanLookupBar({
   const lastQrPayloadRef = useRef({ text: "", at: 0 });
   /** Same bag QR with no server match — don't repeat window.alert every time the camera re-decodes after dismiss. */
   const lastNoMatchBagQrRef = useRef({ text: "", at: 0 });
-  const hadPickListRef = useRef(false);
+  /** While disambiguation dialog is open — ignore fresh scans (avoid stacking lookups). Mirrors pickList synchronously below. */
+  const pickListBlockingRef = useRef(false);
   const qrShellRef = useRef(null);
   const [readerPx, setReaderPx] = useState(() => ({
     w: typeof window !== "undefined" ? Math.min(440, Math.max(300, Math.floor(window.innerWidth - 32))) : 360,
@@ -311,6 +312,10 @@ export default function OrderScanLookupBar({
       localStorage.setItem(dialogTabKey(storageKey), dialogTab);
     }
   }, [dialogTab, open, ocrDialogOpen, storageKey]);
+
+  useEffect(() => {
+    pickListBlockingRef.current = Boolean(pickList?.length);
+  }, [pickList]);
 
   const terminateWorker = useCallback(async () => {
     const w = workerRef.current;
@@ -376,6 +381,7 @@ export default function OrderScanLookupBar({
             return "single";
           }
           if (matches.length > 1) {
+            pickListBlockingRef.current = true;
             setPickList(matches);
             return "pick";
           }
@@ -552,6 +558,7 @@ export default function OrderScanLookupBar({
 
     const onDecoded = async (decodedText) => {
       if (disabled || qrDecodeLockRef.current) return;
+      if (pickListBlockingRef.current) return;
       const raw = String(decodedText || "").trim();
       if (!raw) return;
       const now = Date.now();
@@ -561,30 +568,22 @@ export default function OrderScanLookupBar({
       }
       lastQrPayloadRef.current = { text: raw, at: now };
 
-      const html5 = scannerRef.current;
       qrDecodeLockRef.current = true;
       try {
-        if (html5) {
-          try {
-            html5.pause(true);
-          } catch {
-            /* */
-          }
-        }
+        /*
+         * Do NOT call html5.pause()/resume(): on many mobile browsers resume() stays frozen after window.alert,
+         * so the preview looks "paused" after every lookup / not-found. qrDecodeLockRef prevents re-entrancy.
+         */
         setScanStatus(t("ops.scanStatusLooking"));
         const outcome = await runBodies(buildLookupBodiesForQr(raw, batchDate));
         setScanStatus("");
-        if (outcome === "resume") {
-          const h = scannerRef.current;
-          if (h) {
-            try {
-              h.resume();
-            } catch {
-              setQrRemount((n) => n + 1);
-            }
-          }
-        } else if (outcome === "single") {
+        /* Dialog flow: tear down camera when closing full-screen scanner. Embedded checkout: keep camera running for next bag. */
+        if (!isEmbedded && outcome === "single") {
           await stopQrScanner();
+        }
+        if (outcome === "resume" || outcome === "single") {
+          window.requestAnimationFrame(() => fixQrVideoSurface(readerId));
+          window.setTimeout(() => fixQrVideoSurface(readerId), 160);
         }
       } finally {
         qrDecodeLockRef.current = false;
@@ -644,6 +643,7 @@ export default function OrderScanLookupBar({
   }, [
     qrActiveEmbedded,
     qrActiveDialog,
+    isEmbedded,
     readerId,
     batchDate,
     runBodies,
@@ -655,23 +655,6 @@ export default function OrderScanLookupBar({
     readerPx.h,
     fixQrVideoSurface,
   ]);
-
-  useEffect(() => {
-    if (pickList?.length) {
-      hadPickListRef.current = true;
-      return;
-    }
-    if (!hadPickListRef.current) return;
-    hadPickListRef.current = false;
-    const h = scannerRef.current;
-    if (!h) return;
-    if (!(qrActiveEmbedded || qrActiveDialog)) return;
-    try {
-      h.resume();
-    } catch {
-      setQrRemount((n) => n + 1);
-    }
-  }, [pickList, qrActiveEmbedded, qrActiveDialog]);
 
   const captureAndOcr = useCallback(async () => {
     const video = videoRef.current;
