@@ -32,9 +32,13 @@ const QR_SHELL_SX = {
   overflow: "hidden",
   bgcolor: "#0b1220",
   width: "100%",
-  minWidth: 280,
-  minHeight: 280,
-  maxHeight: { xs: "50vh", sm: 440 },
+  maxWidth: "100%",
+  boxSizing: "border-box",
+  /* Portrait phones: never set minHeight > maxHeight (old 280 vs 50vh broke scanning; landscape looked “fine”). */
+  minWidth: { xs: 0, sm: 280 },
+  aspectRatio: { xs: "3 / 4", sm: "auto" },
+  minHeight: { xs: 200, sm: 280 },
+  maxHeight: { xs: "min(58vh, 460px)", sm: 440 },
   position: "relative",
   border: "1px solid rgba(148,163,184,0.35)",
 };
@@ -474,9 +478,17 @@ export default function OrderScanLookupBar({
     if (!shell) return undefined;
     let debounceId;
     const applySize = () => {
-      const w = Math.floor(shell.clientWidth);
-      if (w < 80) return;
-      const h = Math.min(500, Math.max(260, Math.round(w * 0.72)));
+      let w = Math.floor(shell.clientWidth);
+      /* First paint / safe-area / flex quirks can briefly report 0 — derive from viewport instead of skipping. */
+      if (w < 80) {
+        w = Math.floor(Math.min(Math.max(window.innerWidth - 24, 240), 520));
+      }
+      const rect = shell.getBoundingClientRect();
+      let h = Math.floor(rect.height);
+      if (h < 120) {
+        h = Math.min(500, Math.max(260, Math.round(w * 0.75)));
+      }
+      h = Math.min(500, Math.max(220, h));
       setReaderPx((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
     };
     applySize();
@@ -486,9 +498,26 @@ export default function OrderScanLookupBar({
     };
     const ro = new ResizeObserver(() => schedule());
     ro.observe(shell);
+    window.addEventListener("orientationchange", schedule);
     return () => {
+      window.removeEventListener("orientationchange", schedule);
       window.clearTimeout(debounceId);
       ro.disconnect();
+    };
+  }, [qrCameraOn]);
+
+  /** html5-qrcode often leaves a stale canvas until remount — rotating fixes it for users; force remount after orientation change. */
+  useEffect(() => {
+    if (!qrCameraOn) return undefined;
+    let t;
+    const onOrient = () => {
+      window.clearTimeout(t);
+      t = window.setTimeout(() => setQrRemount((n) => n + 1), 450);
+    };
+    window.addEventListener("orientationchange", onOrient);
+    return () => {
+      window.removeEventListener("orientationchange", onOrient);
+      window.clearTimeout(t);
     };
   }, [qrCameraOn]);
 
@@ -759,7 +788,7 @@ export default function OrderScanLookupBar({
     </Stack>
   ) : (
     <Stack spacing={1} sx={{ width: "100%" }}>
-      <Box ref={qrShellRef} sx={{ ...QR_SHELL_SX, minHeight: "min(48vh, 300px)", maxHeight: { xs: "48vh", sm: 440 } }}>
+      <Box ref={qrShellRef} sx={{ ...QR_SHELL_SX, maxHeight: { xs: "min(58vh, 460px)", sm: 440 } }}>
         <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={readerInnerSx} />
       </Box>
       <Typography variant="body2" color="text.secondary" sx={{ minHeight: 22 }}>
