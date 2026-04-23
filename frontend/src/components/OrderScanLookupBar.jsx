@@ -643,19 +643,29 @@ export default function OrderScanLookupBar({
       const html5 = new Html5Qrcode(readerId, {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        /* Chrome/Android: native detector often reads tilted codes better than JS-only path. */
+        useBarCodeDetectorIfSupported: true,
       });
       scannerRef.current = html5;
       try {
         await html5.start(
-          { facingMode: "environment" },
           {
-            fps: 15,
-            /* Central crop balances speed vs readability across phones; slightly larger helps cheap cameras. */
+            facingMode: { ideal: "environment" },
+            /* More sensor pixels → sharper modules when the tag is tilted or farther away. */
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          {
+            fps: 20,
+            /*
+             * Larger central crop than before: at an angle the QR skews and drifts off-center —
+             * a tight box misses corners; ~85% keeps the full symbol inside the decode region more often.
+             */
             qrbox: (vw, vh) => {
               const w = Number(vw) || 320;
               const h = Number(vh) || 320;
-              const side = Math.floor(Math.min(w, h) * 0.72);
-              return { width: Math.max(168, side), height: Math.max(168, side) };
+              const side = Math.floor(Math.min(w, h) * 0.85);
+              return { width: Math.max(200, side), height: Math.max(200, side) };
             },
           },
           onDecoded,
