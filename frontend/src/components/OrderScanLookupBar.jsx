@@ -35,14 +35,48 @@ const QR_SHELL_SX = {
   width: "100%",
   maxWidth: "100%",
   boxSizing: "border-box",
-  /* Portrait phones: never set minHeight > maxHeight (old 280 vs 50vh broke scanning; landscape looked “fine”). */
+  /* Portrait phones: never set minHeight > maxHeight; dvh tracks mobile browser chrome (iOS/Android). */
   minWidth: { xs: 0, sm: 280 },
   aspectRatio: { xs: "3 / 4", sm: "auto" },
-  minHeight: { xs: 200, sm: 280 },
-  maxHeight: { xs: "min(58vh, 460px)", sm: 440 },
+  minHeight: { xs: "min(200px, 42dvh)", sm: 280 },
+  maxHeight: { xs: "min(54dvh, 480px)", sm: 440 },
   position: "relative",
   border: "1px solid rgba(148,163,184,0.35)",
+  touchAction: "manipulation",
 };
+
+function isIosBrowser() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  if (/iPad|iPhone|iPod/i.test(ua)) return true;
+  return navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
+}
+
+/** Crop fraction vs decoded video min dimension — tuned for handheld tilt + narrow vs large phones. */
+function mobileQrBoxFraction(videoMinPx) {
+  const m = Number(videoMinPx) || 320;
+  if (m < 340) return 0.88;
+  if (m < 420) return 0.85;
+  if (m < 640) return 0.82;
+  return 0.8;
+}
+
+/** Primary stream ask: iOS Safari negotiates oddly with aggressive mins — use ideal-only + fallback in start(). */
+function primaryQrCameraConstraints() {
+  const rear = { facingMode: { ideal: "environment" } };
+  if (isIosBrowser()) {
+    return {
+      ...rear,
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    };
+  }
+  return {
+    ...rear,
+    width: { ideal: 1920 },
+    height: { ideal: 1080 },
+  };
+}
 
 function cropCanvasFraction(src, y0Frac, y1Frac) {
   const y0 = Math.max(0, Math.floor(src.height * y0Frac));
@@ -269,6 +303,8 @@ export default function OrderScanLookupBar({
   const { t } = useI18n();
   const isEmbedded = variant === "embedded";
   const fullScreenDialog = useMediaQuery("(max-width:600px)");
+  /** Bag scanning is intended for handheld devices — drives fps / crop heuristics vs occasional desktop dialog use. */
+  const isMobileScanUx = useMediaQuery("(max-width:900px)");
   const readerId = `order-scan-qr-${storageKey.replace(/[^a-z0-9_-]/gi, "-")}`;
   const scanIsControlled = typeof scanEnabledProp === "boolean" && typeof onScanEnabledChange === "function";
   const [internalScanEnabled, setInternalScanEnabled] = useState(() => localStorage.getItem(storageKey) !== "0");
@@ -448,6 +484,7 @@ export default function OrderScanLookupBar({
     v.muted = true;
     v.playsInline = true;
     v.setAttribute("playsinline", "true");
+    v.setAttribute("webkit-playsinline", "true");
     v.setAttribute("muted", "true");
     v.style.width = "100%";
     v.style.height = "100%";
@@ -543,7 +580,8 @@ export default function OrderScanLookupBar({
       let w = Math.floor(shell.clientWidth);
       /* First paint / safe-area / flex quirks can briefly report 0 — derive from viewport instead of skipping. */
       if (w < 80) {
-        w = Math.floor(Math.min(Math.max(window.innerWidth - 24, 240), 520));
+        const vw = window.visualViewport?.width ?? window.innerWidth;
+        w = Math.floor(Math.min(Math.max(vw - 24, 240), 520));
       }
       const rect = shell.getBoundingClientRect();
       let h = Math.floor(rect.height);
@@ -561,8 +599,17 @@ export default function OrderScanLookupBar({
     const ro = new ResizeObserver(() => schedule());
     ro.observe(shell);
     window.addEventListener("orientationchange", schedule);
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (vv) {
+      vv.addEventListener("resize", schedule);
+      vv.addEventListener("scroll", schedule);
+    }
     return () => {
       window.removeEventListener("orientationchange", schedule);
+      if (vv) {
+        vv.removeEventListener("resize", schedule);
+        vv.removeEventListener("scroll", schedule);
+      }
       window.clearTimeout(debounceId);
       ro.disconnect();
     };
@@ -643,40 +690,38 @@ export default function OrderScanLookupBar({
       const html5 = new Html5Qrcode(readerId, {
         verbose: false,
         formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-        /* Chrome/Android: native detector often reads tilted codes better than JS-only path. */
+        /* Chrome/Android: native detector often reads tilted codes better than JS-only path (inert on iOS). */
         useBarCodeDetectorIfSupported: true,
       });
       scannerRef.current = html5;
+
+      const scanFps = isMobileScanUx ? 18 : 14;
+      const scanConfig = {
+        fps: scanFps,
+        qrbox: (vw, vh) => {
+          const w = Number(vw) || 320;
+          const h = Number(vh) || 320;
+          const minDim = Math.min(w, h);
+          const frac = mobileQrBoxFraction(minDim);
+          const side = Math.floor(minDim * frac);
+          const floorPx = minDim < 400 ? 176 : 200;
+          return { width: Math.max(floorPx, side), height: Math.max(floorPx, side) };
+        },
+      };
+
+      const fallbackConstraints = { facingMode: { ideal: "environment" } };
       try {
-        await html5.start(
-          {
-            facingMode: { ideal: "environment" },
-            /* More sensor pixels → sharper modules when the tag is tilted or farther away. */
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-          {
-            fps: 20,
-            /*
-             * Larger central crop than before: at an angle the QR skews and drifts off-center —
-             * a tight box misses corners; ~85% keeps the full symbol inside the decode region more often.
-             */
-            qrbox: (vw, vh) => {
-              const w = Number(vw) || 320;
-              const h = Number(vh) || 320;
-              const side = Math.floor(Math.min(w, h) * 0.85);
-              return { width: Math.max(200, side), height: Math.max(200, side) };
-            },
-          },
-          onDecoded,
-          () => {}
-        );
-        fixQrVideoSurface(readerId);
-        window.setTimeout(() => fixQrVideoSurface(readerId), 120);
-        window.setTimeout(() => fixQrVideoSurface(readerId), 450);
+        await html5.start(primaryQrCameraConstraints(), scanConfig, onDecoded, () => {});
       } catch {
-        /* camera blocked */
+        try {
+          await html5.start(fallbackConstraints, scanConfig, onDecoded, () => {});
+        } catch {
+          /* permission denied or no camera */
+        }
       }
+      fixQrVideoSurface(readerId);
+      window.setTimeout(() => fixQrVideoSurface(readerId), 120);
+      window.setTimeout(() => fixQrVideoSurface(readerId), 450);
     };
     run();
     return () => {
@@ -699,6 +744,7 @@ export default function OrderScanLookupBar({
     fixQrVideoSurface,
     kickQrPreview,
     clearScanFeedback,
+    isMobileScanUx,
   ]);
 
   const captureAndOcr = useCallback(async () => {
@@ -844,14 +890,14 @@ export default function OrderScanLookupBar({
   const readerInnerSx = {
     display: "block",
     width: "100%",
-    minWidth: 280,
+    minWidth: { xs: 0, sm: 280 },
     height: readerPx.h,
     minHeight: readerPx.h,
     boxSizing: "border-box",
   };
 
   const scanSurface = compactEmbedded ? (
-    <Stack spacing={0.5} sx={{ width: "100%" }}>
+    <Stack spacing={0.5} sx={{ width: "100%", pb: { xs: "max(4px, env(safe-area-inset-bottom))", sm: 0 } }}>
       <Box ref={qrShellRef} sx={QR_SHELL_SX}>
         <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={readerInnerSx} />
       </Box>
@@ -864,7 +910,7 @@ export default function OrderScanLookupBar({
     </Stack>
   ) : (
     <Stack spacing={1} sx={{ width: "100%" }}>
-      <Box ref={qrShellRef} sx={{ ...QR_SHELL_SX, maxHeight: { xs: "min(58vh, 460px)", sm: 440 } }}>
+      <Box ref={qrShellRef} sx={{ ...QR_SHELL_SX, maxHeight: { xs: "min(54dvh, 480px)", sm: 440 } }}>
         <Box key={`${readerId}-${qrRemount}`} id={readerId} sx={readerInnerSx} />
       </Box>
       <Typography variant="body2" color="text.secondary" sx={{ minHeight: 22 }}>
