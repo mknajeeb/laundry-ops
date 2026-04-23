@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  Alert,
   Box,
   Button,
   CircularProgress,
@@ -11,6 +12,7 @@ import {
   List,
   ListItemButton,
   MenuItem,
+  Snackbar,
   Stack,
   Switch,
   TextField,
@@ -285,6 +287,8 @@ export default function OrderScanLookupBar({
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
   const [scanStatus, setScanStatus] = useState("");
+  /** Non-blocking feedback — avoid window.alert (mobile preview freezes until OK). */
+  const [scanFeedback, setScanFeedback] = useState(null);
   const [qrRemount, setQrRemount] = useState(0);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -292,7 +296,7 @@ export default function OrderScanLookupBar({
   const scannerRef = useRef(null);
   const qrDecodeLockRef = useRef(false);
   const lastQrPayloadRef = useRef({ text: "", at: 0 });
-  /** Same bag QR with no server match — don't repeat window.alert every time the camera re-decodes after dismiss. */
+  /** Same bag QR with no server match — don't repeat toast every time the camera re-decodes after dismiss. */
   const lastNoMatchBagQrRef = useRef({ text: "", at: 0 });
   /** While disambiguation dialog is open — ignore fresh scans (avoid stacking lookups). Mirrors pickList synchronously below. */
   const pickListBlockingRef = useRef(false);
@@ -364,7 +368,7 @@ export default function OrderScanLookupBar({
   const runBodies = useCallback(
     async (bodies) => {
       if (!bodies.length) {
-        window.alert(t("ops.scanAlertNeedInput"));
+        setScanFeedback({ severity: "warning", message: t("ops.scanAlertNeedInput") });
         return "resume";
       }
       let lastErr = null;
@@ -390,7 +394,10 @@ export default function OrderScanLookupBar({
         }
       }
       if (lastErr) {
-        window.alert(lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"));
+        setScanFeedback({
+          severity: "error",
+          message: lastErr?.response?.data?.error || t("ops.scanAlertLookupFailed"),
+        });
         return "resume";
       }
       const usedQr = bodies.some((b) => String(b.qr_text || "").trim());
@@ -410,10 +417,10 @@ export default function OrderScanLookupBar({
         if (qrKey) {
           lastNoMatchBagQrRef.current = { text: qrKey, at: now };
         }
-        window.alert(t("ops.scanAlertNoMatchQr"));
+        setScanFeedback({ severity: "warning", message: t("ops.scanAlertNoMatchQr") });
         return "resume";
       }
-      window.alert(t("ops.scanAlertNoMatch"));
+      setScanFeedback({ severity: "warning", message: t("ops.scanAlertNoMatch") });
       return "resume";
     },
     [isEmbedded, onPickOrder, t]
@@ -435,8 +442,9 @@ export default function OrderScanLookupBar({
     } finally {
       setBusy(false);
       setScanStatus("");
+      queueMicrotask(() => kickQrPreview());
     }
-  }, [batchDate, qrPaste, runBodies, t]);
+  }, [batchDate, qrPaste, runBodies, kickQrPreview, t]);
 
   const ocrCameraActive =
     (ocrDialogOpen && dialogTab === "ocr") || (!isEmbedded && open && dialogTab === "ocr");
@@ -498,6 +506,26 @@ export default function OrderScanLookupBar({
     v.style.display = "block";
     v.style.minHeight = "220px";
   }, []);
+
+  /** Keep preview decoding after lookups — mobile Safari often stalls video until play() after async work. */
+  const kickQrPreview = useCallback(() => {
+    fixQrVideoSurface(readerId);
+    window.requestAnimationFrame(() => {
+      fixQrVideoSurface(readerId);
+      const host = document.getElementById(readerId);
+      const vid = host?.querySelector?.("video");
+      if (vid && typeof vid.play === "function") {
+        void vid.play().catch(() => {});
+      }
+    });
+    window.setTimeout(() => fixQrVideoSurface(readerId), 160);
+    window.setTimeout(() => fixQrVideoSurface(readerId), 420);
+  }, [readerId, fixQrVideoSurface]);
+
+  const dismissScanFeedback = useCallback(() => {
+    setScanFeedback(null);
+    queueMicrotask(() => kickQrPreview());
+  }, [kickQrPreview]);
 
   useLayoutEffect(() => {
     if (!qrCameraOn) return undefined;
@@ -571,8 +599,8 @@ export default function OrderScanLookupBar({
       qrDecodeLockRef.current = true;
       try {
         /*
-         * Do NOT call html5.pause()/resume(): on many mobile browsers resume() stays frozen after window.alert,
-         * so the preview looks "paused" after every lookup / not-found. qrDecodeLockRef prevents re-entrancy.
+         * Do NOT call html5.pause()/resume(): mobile browsers often freeze resume(); qrDecodeLockRef prevents re-entrancy.
+         * Avoid window.alert for the same reason — use Snackbar + kickQrPreview after each outcome.
          */
         setScanStatus(t("ops.scanStatusLooking"));
         const outcome = await runBodies(buildLookupBodiesForQr(raw, batchDate));
@@ -581,12 +609,9 @@ export default function OrderScanLookupBar({
         if (!isEmbedded && outcome === "single") {
           await stopQrScanner();
         }
-        if (outcome === "resume" || outcome === "single") {
-          window.requestAnimationFrame(() => fixQrVideoSurface(readerId));
-          window.setTimeout(() => fixQrVideoSurface(readerId), 160);
-        }
       } finally {
         qrDecodeLockRef.current = false;
+        queueMicrotask(() => kickQrPreview());
       }
     };
 
@@ -616,12 +641,12 @@ export default function OrderScanLookupBar({
         await html5.start(
           { facingMode: "environment" },
           {
-            fps: 12,
-            /* Tighter central crop helps decode small bag tags vs noisy background (was 0.9). */
+            fps: 15,
+            /* Central crop balances speed vs readability across phones; slightly larger helps cheap cameras. */
             qrbox: (vw, vh) => {
               const w = Number(vw) || 320;
               const h = Number(vh) || 320;
-              const side = Math.floor(Math.min(w, h) * 0.68);
+              const side = Math.floor(Math.min(w, h) * 0.72);
               return { width: Math.max(168, side), height: Math.max(168, side) };
             },
           },
@@ -654,6 +679,7 @@ export default function OrderScanLookupBar({
     readerPx.w,
     readerPx.h,
     fixQrVideoSurface,
+    kickQrPreview,
   ]);
 
   const captureAndOcr = useCallback(async () => {
@@ -713,7 +739,7 @@ export default function OrderScanLookupBar({
       if (!hasBoth) {
         const parsed = await captureAndOcr();
         if (parsed.noVideo) {
-          window.alert(t("ops.tagNoVideo"));
+          setScanFeedback({ severity: "warning", message: t("ops.tagNoVideo") });
           return;
         }
         const nNext = (parsed.name || nameHint).trim();
@@ -729,17 +755,37 @@ export default function OrderScanLookupBar({
           return;
         }
         if (!nNext) {
-          window.alert(t("ops.tagOcrNoName"));
+          setScanFeedback({ severity: "warning", message: t("ops.tagOcrNoName") });
           return;
         }
-        window.alert(t("ops.tagOcrNoService"));
+        setScanFeedback({ severity: "warning", message: t("ops.tagOcrNoService") });
         return;
       }
       await runOrderLookup(nameHint.trim(), serviceHint.trim());
     } finally {
       setBusy(false);
+      queueMicrotask(() => kickQrPreview());
     }
-  }, [captureAndOcr, nameHint, serviceHint, runOrderLookup, t]);
+  }, [captureAndOcr, kickQrPreview, nameHint, serviceHint, runOrderLookup, t]);
+
+  const scanFeedbackUi = (
+    <Snackbar
+      open={Boolean(scanFeedback)}
+      autoHideDuration={6500}
+      onClose={dismissScanFeedback}
+      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      sx={{ zIndex: (theme) => theme.zIndex.modal + 2 }}
+    >
+      <Alert onClose={dismissScanFeedback} severity={scanFeedback?.severity || "info"} variant="filled" sx={{ width: "100%" }}>
+        {scanFeedback?.message || ""}
+      </Alert>
+    </Snackbar>
+  );
+
+  const closePickList = useCallback(() => {
+    setPickList(null);
+    queueMicrotask(() => kickQrPreview());
+  }, [kickQrPreview]);
 
   useEffect(() => {
     return () => {
@@ -898,7 +944,7 @@ export default function OrderScanLookupBar({
           </DialogActions>
         </Dialog>
 
-        <Dialog open={Boolean(pickList?.length)} onClose={() => setPickList(null)} fullWidth maxWidth="sm">
+        <Dialog open={Boolean(pickList?.length)} onClose={closePickList} fullWidth maxWidth="sm">
           <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanPickOrder")}</DialogTitle>
           <DialogContent dividers>
             <List dense>
@@ -906,7 +952,7 @@ export default function OrderScanLookupBar({
                 <ListItemButton
                   key={m.id}
                   onClick={() => {
-                    setPickList(null);
+                    closePickList();
                     setOcrDialogOpen(false);
                     onPickOrder(m);
                   }}
@@ -922,9 +968,10 @@ export default function OrderScanLookupBar({
             </List>
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => setPickList(null)}>{t("common.cancel")}</Button>
+            <Button onClick={closePickList}>{t("common.cancel")}</Button>
           </DialogActions>
         </Dialog>
+        {scanFeedbackUi}
       </Box>
     );
   }
@@ -1027,7 +1074,7 @@ export default function OrderScanLookupBar({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(pickList?.length)} onClose={() => setPickList(null)} fullWidth maxWidth="sm">
+      <Dialog open={Boolean(pickList?.length)} onClose={closePickList} fullWidth maxWidth="sm">
         <DialogTitle sx={{ fontWeight: 700 }}>{t("ops.scanPickOrder")}</DialogTitle>
         <DialogContent dividers>
           <List dense>
@@ -1035,7 +1082,7 @@ export default function OrderScanLookupBar({
               <ListItemButton
                 key={m.id}
                 onClick={() => {
-                  setPickList(null);
+                  closePickList();
                   setOpen(false);
                   onPickOrder(m);
                 }}
@@ -1051,9 +1098,10 @@ export default function OrderScanLookupBar({
           </List>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setPickList(null)}>{t("common.cancel")}</Button>
+          <Button onClick={closePickList}>{t("common.cancel")}</Button>
         </DialogActions>
       </Dialog>
+      {scanFeedbackUi}
     </Box>
   );
 }
