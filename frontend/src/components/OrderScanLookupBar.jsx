@@ -434,6 +434,42 @@ export default function OrderScanLookupBar({
     [batchDate, runBodies]
   );
 
+  const fixQrVideoSurface = useCallback((id) => {
+    const host = document.getElementById(id);
+    if (!host) return;
+    const v = host.querySelector("video");
+    if (!v) return;
+    v.muted = true;
+    v.playsInline = true;
+    v.setAttribute("playsinline", "true");
+    v.setAttribute("muted", "true");
+    v.style.width = "100%";
+    v.style.height = "100%";
+    v.style.objectFit = "cover";
+    v.style.display = "block";
+    v.style.minHeight = "220px";
+  }, []);
+
+  /** Keep preview decoding after lookups — mobile Safari often stalls video until play() after async work. */
+  const kickQrPreview = useCallback(() => {
+    fixQrVideoSurface(readerId);
+    window.requestAnimationFrame(() => {
+      fixQrVideoSurface(readerId);
+      const host = document.getElementById(readerId);
+      const vid = host?.querySelector?.("video");
+      if (vid && typeof vid.play === "function") {
+        void vid.play().catch(() => {});
+      }
+    });
+    window.setTimeout(() => fixQrVideoSurface(readerId), 160);
+    window.setTimeout(() => fixQrVideoSurface(readerId), 420);
+  }, [readerId, fixQrVideoSurface]);
+
+  const dismissScanFeedback = useCallback(() => {
+    setScanFeedback(null);
+    queueMicrotask(() => kickQrPreview());
+  }, [kickQrPreview]);
+
   const onPasteQrLookup = useCallback(async () => {
     setBusy(true);
     setScanStatus(t("ops.scanStatusLooking"));
@@ -490,42 +526,6 @@ export default function OrderScanLookupBar({
   const qrActiveEmbedded = isEmbedded && enabled && !disabled && dialogTab === "qr" && !ocrDialogOpen;
   const qrActiveDialog = !isEmbedded && open && dialogTab === "qr";
   const qrCameraOn = qrActiveEmbedded || qrActiveDialog;
-
-  const fixQrVideoSurface = useCallback((id) => {
-    const host = document.getElementById(id);
-    if (!host) return;
-    const v = host.querySelector("video");
-    if (!v) return;
-    v.muted = true;
-    v.playsInline = true;
-    v.setAttribute("playsinline", "true");
-    v.setAttribute("muted", "true");
-    v.style.width = "100%";
-    v.style.height = "100%";
-    v.style.objectFit = "cover";
-    v.style.display = "block";
-    v.style.minHeight = "220px";
-  }, []);
-
-  /** Keep preview decoding after lookups — mobile Safari often stalls video until play() after async work. */
-  const kickQrPreview = useCallback(() => {
-    fixQrVideoSurface(readerId);
-    window.requestAnimationFrame(() => {
-      fixQrVideoSurface(readerId);
-      const host = document.getElementById(readerId);
-      const vid = host?.querySelector?.("video");
-      if (vid && typeof vid.play === "function") {
-        void vid.play().catch(() => {});
-      }
-    });
-    window.setTimeout(() => fixQrVideoSurface(readerId), 160);
-    window.setTimeout(() => fixQrVideoSurface(readerId), 420);
-  }, [readerId, fixQrVideoSurface]);
-
-  const dismissScanFeedback = useCallback(() => {
-    setScanFeedback(null);
-    queueMicrotask(() => kickQrPreview());
-  }, [kickQrPreview]);
 
   useLayoutEffect(() => {
     if (!qrCameraOn) return undefined;
