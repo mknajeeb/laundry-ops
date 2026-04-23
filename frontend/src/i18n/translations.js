@@ -97,6 +97,8 @@ export const TRANSLATIONS = {
     "ops.mobileBarCheckoutTitle": "Checkout",
     "ops.scanStatusIdle": "Aim at the bag QR — result shows here.",
     "ops.scanStatusLooking": "Looking up…",
+    "ops.scanCameraStartFailed":
+      "Could not start the camera. Allow camera access for this site, then pull down to refresh or toggle bag scan off and on.",
     "ops.scanOpenTagOcr": "Tag (camera)",
     "ops.svcWashFold": "Wash & fold",
     "ops.svcWashAndFold": "Wash and fold",
@@ -1093,6 +1095,8 @@ export const TRANSLATIONS = {
     "ops.mobileBarCheckoutTitle": "Caja",
     "ops.scanStatusIdle": "Enfoque el QR de la bolsa — el resultado aparece aquí.",
     "ops.scanStatusLooking": "Buscando…",
+    "ops.scanCameraStartFailed":
+      "No se pudo iniciar la cámara. Permita el acceso a la cámara para este sitio y actualice la página o desactive y vuelva a activar el escaneo de bolsa.",
     "ops.scanOpenTagOcr": "Etiqueta (cámara)",
     "ops.svcWashFold": "Lavado y doblado",
     "ops.svcWashAndFold": "Lavado y doblado",

@@ -38,7 +38,7 @@ const QR_SHELL_SX = {
   /* Portrait phones: never set minHeight > maxHeight; dvh tracks mobile browser chrome (iOS/Android). */
   minWidth: { xs: 0, sm: 280 },
   aspectRatio: { xs: "3 / 4", sm: "auto" },
-  minHeight: { xs: "min(200px, 42dvh)", sm: 280 },
+  minHeight: { xs: 200, sm: 280 },
   maxHeight: { xs: "min(54dvh, 480px)", sm: 440 },
   position: "relative",
   border: "1px solid rgba(148,163,184,0.35)",
@@ -61,21 +61,28 @@ function mobileQrBoxFraction(videoMinPx) {
   return 0.8;
 }
 
-/** Primary stream ask: iOS Safari negotiates oddly with aggressive mins — use ideal-only + fallback in start(). */
-function primaryQrCameraConstraints() {
-  const rear = { facingMode: { ideal: "environment" } };
+/**
+ * Order matters: Safari often rejects width/height + facing bundled together — start with plain rear camera.
+ * HD attempts come after so iOS/Android still get sharper streams when the device accepts them.
+ */
+function qrCameraConstraintAttempts() {
+  const attempts = [];
+  attempts.push({ facingMode: "environment" });
+  attempts.push({ facingMode: { ideal: "environment" } });
   if (isIosBrowser()) {
-    return {
-      ...rear,
+    attempts.push({
+      facingMode: { ideal: "environment" },
       width: { ideal: 1280 },
       height: { ideal: 720 },
-    };
+    });
+  } else {
+    attempts.push({
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+    });
   }
-  return {
-    ...rear,
-    width: { ideal: 1920 },
-    height: { ideal: 1080 },
-  };
+  return attempts;
 }
 
 function cropCanvasFraction(src, y0Frac, y1Frac) {
@@ -709,15 +716,28 @@ export default function OrderScanLookupBar({
         },
       };
 
-      const fallbackConstraints = { facingMode: { ideal: "environment" } };
-      try {
-        await html5.start(primaryQrCameraConstraints(), scanConfig, onDecoded, () => {});
-      } catch {
+      let cameraStarted = false;
+      let lastCamErr = null;
+      for (const constraints of qrCameraConstraintAttempts()) {
         try {
-          await html5.start(fallbackConstraints, scanConfig, onDecoded, () => {});
-        } catch {
-          /* permission denied or no camera */
+          await html5.start(constraints, scanConfig, onDecoded, () => {});
+          cameraStarted = true;
+          break;
+        } catch (err) {
+          lastCamErr = err;
+          try {
+            html5.clear();
+          } catch {
+            /* ignore */
+          }
         }
+      }
+      if (!cameraStarted) {
+        console.warn("Bag QR camera failed to start", lastCamErr);
+        setScanFeedback({
+          severity: "warning",
+          message: t("ops.scanCameraStartFailed"),
+        });
       }
       fixQrVideoSurface(readerId);
       window.setTimeout(() => fixQrVideoSurface(readerId), 120);
