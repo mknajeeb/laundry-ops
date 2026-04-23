@@ -12,7 +12,6 @@ import {
   List,
   ListItemButton,
   MenuItem,
-  Snackbar,
   Stack,
   Switch,
   TextField,
@@ -287,7 +286,10 @@ export default function OrderScanLookupBar({
   const [busy, setBusy] = useState(false);
   const [pickList, setPickList] = useState(null);
   const [scanStatus, setScanStatus] = useState("");
-  /** Non-blocking feedback — avoid window.alert (mobile preview freezes until OK). */
+  /**
+   * Inline scan result — persisted until the next lookup attempt (no Snackbar auto-hide).
+   * Avoids window.alert (mobile camera freeze).
+   */
   const [scanFeedback, setScanFeedback] = useState(null);
   const [qrRemount, setQrRemount] = useState(0);
   const videoRef = useRef(null);
@@ -377,6 +379,7 @@ export default function OrderScanLookupBar({
           const res = await lookupOrdersByScan(body);
           const matches = Array.isArray(res.data?.matches) ? res.data.matches : [];
           if (matches.length === 1) {
+            setScanFeedback(null);
             if (!isEmbedded) {
               setOpen(false);
             }
@@ -385,6 +388,7 @@ export default function OrderScanLookupBar({
             return "single";
           }
           if (matches.length > 1) {
+            setScanFeedback(null);
             pickListBlockingRef.current = true;
             setPickList(matches);
             return "pick";
@@ -412,6 +416,8 @@ export default function OrderScanLookupBar({
           lastNoMatchBagQrRef.current.text === qrKey &&
           now - lastNoMatchBagQrRef.current.at < coolMs
         ) {
+          /* Keep the orange bar visible — same QR can re-decode continuously; never leave feedback empty. */
+          setScanFeedback({ severity: "warning", message: t("ops.scanAlertNoMatchQr") });
           return "resume";
         }
         if (qrKey) {
@@ -465,12 +471,13 @@ export default function OrderScanLookupBar({
     window.setTimeout(() => fixQrVideoSurface(readerId), 420);
   }, [readerId, fixQrVideoSurface]);
 
-  const dismissScanFeedback = useCallback(() => {
+  /** Clears sticky messages when starting a new scan / lookup — call from every entry path. */
+  const clearScanFeedback = useCallback(() => {
     setScanFeedback(null);
-    queueMicrotask(() => kickQrPreview());
-  }, [kickQrPreview]);
+  }, []);
 
   const onPasteQrLookup = useCallback(async () => {
+    clearScanFeedback();
     setBusy(true);
     setScanStatus(t("ops.scanStatusLooking"));
     try {
@@ -480,7 +487,7 @@ export default function OrderScanLookupBar({
       setScanStatus("");
       queueMicrotask(() => kickQrPreview());
     }
-  }, [batchDate, qrPaste, runBodies, kickQrPreview, t]);
+  }, [batchDate, clearScanFeedback, qrPaste, runBodies, kickQrPreview, t]);
 
   const ocrCameraActive =
     (ocrDialogOpen && dialogTab === "ocr") || (!isEmbedded && open && dialogTab === "ocr");
@@ -600,8 +607,9 @@ export default function OrderScanLookupBar({
       try {
         /*
          * Do NOT call html5.pause()/resume(): mobile browsers often freeze resume(); qrDecodeLockRef prevents re-entrancy.
-         * Avoid window.alert for the same reason — use Snackbar + kickQrPreview after each outcome.
+         * Sticky error UI clears here so each new decode attempt replaces the previous message.
          */
+        clearScanFeedback();
         setScanStatus(t("ops.scanStatusLooking"));
         const outcome = await runBodies(buildLookupBodiesForQr(raw, batchDate));
         setScanStatus("");
@@ -680,6 +688,7 @@ export default function OrderScanLookupBar({
     readerPx.h,
     fixQrVideoSurface,
     kickQrPreview,
+    clearScanFeedback,
   ]);
 
   const captureAndOcr = useCallback(async () => {
@@ -733,6 +742,7 @@ export default function OrderScanLookupBar({
   }, []);
 
   const onPrimaryOcr = useCallback(async () => {
+    clearScanFeedback();
     setBusy(true);
     try {
       const hasBoth = nameHint.trim() && serviceHint.trim();
@@ -766,21 +776,24 @@ export default function OrderScanLookupBar({
       setBusy(false);
       queueMicrotask(() => kickQrPreview());
     }
-  }, [captureAndOcr, kickQrPreview, nameHint, serviceHint, runOrderLookup, t]);
+  }, [captureAndOcr, clearScanFeedback, kickQrPreview, nameHint, serviceHint, runOrderLookup, t]);
 
-  const scanFeedbackUi = (
-    <Snackbar
-      open={Boolean(scanFeedback)}
-      autoHideDuration={6500}
-      onClose={dismissScanFeedback}
-      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      sx={{ zIndex: (theme) => theme.zIndex.modal + 2 }}
-    >
-      <Alert onClose={dismissScanFeedback} severity={scanFeedback?.severity || "info"} variant="filled" sx={{ width: "100%" }}>
-        {scanFeedback?.message || ""}
+  /** Filled warning = consistent orange for not-found; error = API/lookup failures (red). No auto-hide. */
+  const scanFeedbackBanner =
+    scanFeedback ? (
+      <Alert
+        severity={scanFeedback.severity === "error" ? "error" : "warning"}
+        variant="filled"
+        sx={{
+          width: "100%",
+          py: 1,
+          alignItems: "center",
+          "& .MuiAlert-message": { width: "100%", fontWeight: 600, fontSize: "0.875rem" },
+        }}
+      >
+        {scanFeedback.message}
       </Alert>
-    </Snackbar>
-  );
+    ) : null;
 
   const closePickList = useCallback(() => {
     setPickList(null);
@@ -837,6 +850,7 @@ export default function OrderScanLookupBar({
           {scanStatus}
         </Typography>
       ) : null}
+      {scanFeedbackBanner}
     </Stack>
   ) : (
     <Stack spacing={1} sx={{ width: "100%" }}>
@@ -846,6 +860,7 @@ export default function OrderScanLookupBar({
       <Typography variant="body2" color="text.secondary" sx={{ minHeight: 22 }}>
         {scanStatus || (isEmbedded ? t("ops.scanStatusIdle") : "")}
       </Typography>
+      {scanFeedbackBanner}
       <TextField
         label={t("ops.scanPasteBagCode")}
         value={qrPaste}
@@ -971,7 +986,6 @@ export default function OrderScanLookupBar({
             <Button onClick={closePickList}>{t("common.cancel")}</Button>
           </DialogActions>
         </Dialog>
-        {scanFeedbackUi}
       </Box>
     );
   }
@@ -1101,7 +1115,6 @@ export default function OrderScanLookupBar({
           <Button onClick={closePickList}>{t("common.cancel")}</Button>
         </DialogActions>
       </Dialog>
-      {scanFeedbackUi}
     </Box>
   );
 }
