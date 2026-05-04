@@ -112,6 +112,10 @@ export const TRANSLATIONS = {
       "How many bags did you bring for personal laundry today? (First clock-in of the day only.)",
     "clock.loading": "Loading…",
 
+    "home.displayFallback": "User",
+    "home.workStatusIn": "At work",
+    "home.workStatusOut": "Not at work",
+
     "ops.scanStatusLooking": "Looking up…",
     "ops.scanCameraStartFailed":
       "Could not start the camera. Allow camera access for this site, then pull down to refresh or toggle bag scan off and on.",
@@ -1125,6 +1129,10 @@ export const TRANSLATIONS = {
     "clock.personalLaundryHelp":
       "¿Cuántas bolsas trajo para lavandería personal hoy? (Solo en la primera entrada del día.)",
     "clock.loading": "Cargando…",
+
+    "home.displayFallback": "Usuario",
+    "home.workStatusIn": "En el trabajo",
+    "home.workStatusOut": "No en el trabajo",
 
     "ops.scanStatusLooking": "Buscando…",
     "ops.scanCameraStartFailed":
