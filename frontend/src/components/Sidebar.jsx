@@ -5,13 +5,11 @@ import { getClockPayrollUiSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
-import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
   const { loading: authLoading, hasPerm } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
-  const [orgLogoFailed, setOrgLogoFailed] = useState(false);
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
 
   useEffect(() => {
@@ -45,40 +43,23 @@ function Sidebar({ activeBatch, user, onLogout }) {
       }}
     >
       <Box sx={{ mb: 1, minHeight: 44, flexShrink: 0, display: "flex", alignItems: "center" }}>
-        {user?.organization_logo_url && !orgLogoFailed ? (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
           <Box
             component="img"
-            src={resolveOrgLogoUrl(user.organization_logo_url)}
+            src="/washpro-mark.png"
             alt=""
-            onError={() => setOrgLogoFailed(true)}
             sx={{
-              maxHeight: 44,
-              maxWidth: "100%",
-              width: "auto",
+              width: 40,
+              height: 40,
+              flexShrink: 0,
               objectFit: "contain",
-              objectPosition: "left center",
+              display: "block",
             }}
           />
-        ) : (
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
-            <Box
-              component="img"
-              src="/washpro-mark.png"
-              alt=""
-              sx={{
-                width: 40,
-                height: 40,
-                flexShrink: 0,
-                objectFit: "cover",
-                borderRadius: 1,
-                display: "block",
-              }}
-            />
-            <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
-              {user?.organization_name || "Washpro"}
-            </Typography>
-          </Box>
-        )}
+          <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
+            {user?.organization_name || "Washpro"}
+          </Typography>
+        </Box>
       </Box>
       <Typography sx={{ fontSize: 13, color: "#94a3b8", flexShrink: 0 }}>
         {user?.display_name || user?.username}

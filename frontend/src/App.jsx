@@ -48,16 +48,11 @@ import PayrollFormsHubPage from "./pages/PayrollFormsHubPage";
 import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
 import { authLogout, authMe, clearAuthSession, getClockPayrollUiSettings, getCurrentUploadBatch, getSavedUser } from "./api";
 import { useAuth } from "./context/AuthContext";
-import { resolveOrgLogoUrl } from "./utils/resolveOrgLogoUrl";
 import { formatSystemDateLong } from "./utils/formatDateLocal";
 
 function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const navigate = useNavigate();
   const { locale, setLocale, t } = useI18n();
-  const [orgLogoFailed, setOrgLogoFailed] = useState(false);
-  useEffect(() => {
-    setOrgLogoFailed(false);
-  }, [user?.organization_logo_url]);
   const canGoBack = pathname !== "/";
   return (
     <AppBar
@@ -88,42 +83,23 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
             overflow: "hidden",
           }}
         >
-          {user?.organization_logo_url && !orgLogoFailed ? (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
             <Box
               component="img"
-              src={resolveOrgLogoUrl(user.organization_logo_url)}
+              src="/washpro-mark.png"
               alt=""
-              onError={() => setOrgLogoFailed(true)}
               sx={{
+                width: 28,
                 height: 28,
-                maxHeight: 28,
-                width: "auto",
-                maxWidth: 160,
+                flexShrink: 0,
                 objectFit: "contain",
-                objectPosition: "left center",
                 display: "block",
               }}
             />
-          ) : (
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
-              <Box
-                component="img"
-                src="/washpro-mark.png"
-                alt=""
-                sx={{
-                  width: 28,
-                  height: 28,
-                  flexShrink: 0,
-                  objectFit: "cover",
-                  borderRadius: 0.75,
-                  display: "block",
-                }}
-              />
-              <Typography component="span" noWrap sx={{ fontSize: 18, fontWeight: 700 }}>
-                {user?.organization_name || "Washpro"}
-              </Typography>
-            </Box>
-          )}
+            <Typography component="span" noWrap sx={{ fontSize: 18, fontWeight: 700 }}>
+              {user?.organization_name || "Washpro"}
+            </Typography>
+          </Box>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: 0.5 }}>
           <Button size="small" variant={locale === "en" ? "contained" : "text"} onClick={() => setLocale("en")} sx={{ minWidth: 40 }}>EN</Button>
