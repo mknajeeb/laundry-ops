@@ -21,6 +21,7 @@ export const DEFAULT_CLOCK_PAYROLL_UI = {
     show_outside_geofence_on_clock: true,
     show_outside_geofence_on_summary: true,
     ask_personal_laundry_bags: false,
+    est_midnight_force_clock_out: true,
     clock_in_gate_enabled: true,
     clock_in_gate_strict: false,
     dim_app_until_clocked_in: false,
@@ -201,7 +202,21 @@ export default function ClockPayrollUiSettingsPanel() {
               }
             />
           }
-          label="Ask for personal laundry bag count before clock out"
+          label="Ask personal laundry bag count on first clock-in each day (Eastern; not asked on later same-day clock-ins)"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={clockPayrollUi.clock.est_midnight_force_clock_out !== false}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, est_midnight_force_clock_out: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="Auto clock-out at Eastern midnight if still clocked in (disable to override for special cases)"
         />
         <FormControlLabel
           control={

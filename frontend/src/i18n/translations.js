@@ -96,6 +96,20 @@ export const TRANSLATIONS = {
     "ops.mobileBarOrdersTitle": "Rinse orders",
     "ops.mobileBarCheckoutTitle": "Checkout",
     "ops.scanStatusIdle": "Aim at the bag QR — result shows here.",
+    "clock.title": "Clock",
+    "clock.notAtWork": "Not At Work",
+    "clock.atWork": "{name} At Work",
+    "clock.clockIn": "Clock in",
+    "clock.clockOut": "Check out",
+    "clock.confirmClockOutTitle": "Check out?",
+    "clock.confirmClockOutBody": "Tap confirm only when you are leaving for the day.",
+    "clock.confirm": "Confirm",
+    "clock.cancel": "Cancel",
+    "clock.personalLaundryTitle": "Personal laundry bags",
+    "clock.personalLaundryHelp":
+      "How many bags did you bring for personal laundry today? (First clock-in of the day only.)",
+    "clock.loading": "Loading…",
+
     "ops.scanStatusLooking": "Looking up…",
     "ops.scanCameraStartFailed":
       "Could not start the camera. Allow camera access for this site, then pull down to refresh or toggle bag scan off and on.",
@@ -1094,6 +1108,20 @@ export const TRANSLATIONS = {
     "ops.mobileBarOrdersTitle": "Pedidos Rinse",
     "ops.mobileBarCheckoutTitle": "Caja",
     "ops.scanStatusIdle": "Enfoque el QR de la bolsa — el resultado aparece aquí.",
+    "clock.title": "Reloj",
+    "clock.notAtWork": "Fuera del trabajo",
+    "clock.atWork": "{name} — En el trabajo",
+    "clock.clockIn": "Entrar",
+    "clock.clockOut": "Salir",
+    "clock.confirmClockOutTitle": "¿Salir?",
+    "clock.confirmClockOutBody": "Confirme solo cuando termine su jornada.",
+    "clock.confirm": "Confirmar",
+    "clock.cancel": "Cancelar",
+    "clock.personalLaundryTitle": "Bolsas de lavandería personal",
+    "clock.personalLaundryHelp":
+      "¿Cuántas bolsas trajo para lavandería personal hoy? (Solo en la primera entrada del día.)",
+    "clock.loading": "Cargando…",
+
     "ops.scanStatusLooking": "Buscando…",
     "ops.scanCameraStartFailed":
       "No se pudo iniciar la cámara. Permita el acceso a la cámara para este sitio y actualice la página o desactive y vuelva a activar el escaneo de bolsa.",

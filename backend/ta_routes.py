@@ -135,6 +135,7 @@ def _default_clock_ui_dict() -> dict:
         "show_outside_geofence_on_clock": True,
         "show_outside_geofence_on_summary": True,
         "ask_personal_laundry_bags": False,
+        "est_midnight_force_clock_out": True,
         "clock_in_gate_enabled": True,
         "clock_in_gate_strict": False,
         "dim_app_until_clocked_in": False,
@@ -1013,6 +1014,72 @@ def maybe_auto_close_shift(conn, sess: dict, user_id: int, organization_id: int)
     return fetch_session(conn, sess["id"])
 
 
+def _today_est_midnight_bounds():
+    """Start [start, end) in naive Eastern wall time for the current Eastern calendar day."""
+    now = eastern_now_naive()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def count_shift_sessions_starting_today_est(conn, user_id: int) -> int:
+    """Clock-ins whose clock_in_at falls on today's Eastern date (any completed status)."""
+    start, end = _today_est_midnight_bounds()
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT COUNT(*) FROM shift_sessions
+        WHERE user_id=%s AND clock_in_at >= %s AND clock_in_at < %s
+        """,
+        (user_id, start, end),
+    )
+    row = c.fetchone()
+    return int(row[0]) if row else 0
+
+
+def maybe_force_clock_out_est_midnight(conn, sess: dict, user_id: int, organization_id: int):
+    """
+    If an active session's clock-in date (EST) is before today's EST date, force clock-out.
+    Suppressed when maintenance disables est_midnight_force_clock_out for the org.
+    """
+    ui = load_clock_payroll_ui(conn, organization_id)
+    clock_cfg = ui.get("clock") or {}
+    if not as_bool(clock_cfg.get("est_midnight_force_clock_out"), True):
+        return None
+    clock_in = _parse_mysql_dt(sess.get("clock_in_at"))
+    if not clock_in:
+        return None
+    now = eastern_now_naive()
+    if clock_in.date() == now.date():
+        return None
+
+    br = sum_break_seconds(conn, sess["id"])
+    elapsed = int((now - clock_in).total_seconds())
+    net = max(0, elapsed - br)
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE shift_sessions
+        SET clock_out_at=%s, clock_out_lat=NULL, clock_out_lng=NULL,
+            status='auto_closed', total_break_seconds=%s, net_work_seconds=%s
+        WHERE id=%s
+        """,
+        (now, br, net, sess["id"]),
+    )
+    c.execute(
+        """
+        INSERT INTO shift_exceptions (shift_session_id, user_id, exception_type, message, severity)
+        VALUES (%s,%s,'est_midnight_auto_clock_out',%s,'warning')
+        """,
+        (
+            sess["id"],
+            user_id,
+            "Still clocked in after Eastern midnight — session closed automatically.",
+        ),
+    )
+    return fetch_session(conn, sess["id"])
+
+
 def fetch_session(conn, sid: int):
     c = conn.cursor(dictionary=True)
     c.execute("SELECT * FROM shift_sessions WHERE id=%s", (sid,))
@@ -1429,6 +1496,12 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             conn.commit()
             sess = None
         else:
+            closed_md = maybe_force_clock_out_est_midnight(conn, sess, ta_user["id"], tenant_id)
+            if closed_md:
+                conn.commit()
+                sess = None
+
+        if sess:
             sess = fetch_session(conn, sess["id"])
             ob = get_open_break(conn, sess["id"])
             sess["open_break"] = json_safe(ob) if ob else None
@@ -1523,6 +1596,15 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             )
         maybe_clock_in_geofence_reminder(conn, ta_user, tenant_id, inside)
 
+    n_today = count_shift_sessions_starting_today_est(conn, ta_user["id"])
+    ui_ck = load_clock_payroll_ui(conn, tenant_id)
+    cc_k = ui_ck.get("clock") or {}
+    clock_hints = {
+        "first_clock_in_est_today": n_today == 0,
+        "ask_personal_laundry_bags": as_bool(cc_k.get("ask_personal_laundry_bags"), False),
+        "est_midnight_force_clock_out": as_bool(cc_k.get("est_midnight_force_clock_out"), True),
+    }
+
     op = get_operational_state(
         conn,
         ta_user["id"],
@@ -1532,7 +1614,11 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
         assigned_geofences_cached=gfs if sess else _MISSING_OP_STATE,
     )
     conn.commit()
-    return {"session": json_safe(sess), "operational": op}
+    return {
+        "session": json_safe(sess),
+        "operational": op,
+        "clock_hints": clock_hints,
+    }
 
 
 @ta_bp.route("/sessions/current", methods=["GET"])
@@ -1696,25 +1782,65 @@ def clock_in():
         now = eastern_now_naive()
         pc_id = get_or_create_payroll_cycle(conn, now, _tenant_id())
 
+        chk_ci = conn.cursor()
+        has_plb_ci = table_has_column(chk_ci, "shift_sessions", "personal_laundry_bags")
+        started_today_ct = count_shift_sessions_starting_today_est(conn, g.ta_user["id"])
+        ui_ci = load_clock_payroll_ui(conn, _tenant_id())
+        ask_bags_ci = as_bool(ui_ci.get("clock", {}).get("ask_personal_laundry_bags"), False)
+        plb_val = None
+        if has_plb_ci:
+            if started_today_ct == 0 and ask_bags_ci:
+                raw_plb = data.get("personal_laundry_bags")
+                try:
+                    if raw_plb is None or raw_plb == "":
+                        plb_val = 0
+                    else:
+                        plb_val = max(0, int(raw_plb))
+                except (TypeError, ValueError):
+                    plb_val = 0
+            else:
+                plb_val = 0
+
         c2 = conn.cursor()
-        c2.execute(
-            """
-            INSERT INTO shift_sessions (
-              user_id, organization_id, payroll_cycle_id, geofence_id, employment_category_id,
-              clock_in_at, clock_in_lat, clock_in_lng, status
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active')
-            """,
-            (
-                g.ta_user["id"],
-                _tenant_id(),
-                pc_id,
-                geofence_id_for_session,
-                employment_category_id,
-                now,
-                float(lat),
-                float(lng),
-            ),
-        )
+        if has_plb_ci:
+            c2.execute(
+                """
+                INSERT INTO shift_sessions (
+                  user_id, organization_id, payroll_cycle_id, geofence_id, employment_category_id,
+                  clock_in_at, clock_in_lat, clock_in_lng, status, personal_laundry_bags
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active',%s)
+                """,
+                (
+                    g.ta_user["id"],
+                    _tenant_id(),
+                    pc_id,
+                    geofence_id_for_session,
+                    employment_category_id,
+                    now,
+                    float(lat),
+                    float(lng),
+                    plb_val,
+                ),
+            )
+        else:
+            c2.execute(
+                """
+                INSERT INTO shift_sessions (
+                  user_id, organization_id, payroll_cycle_id, geofence_id, employment_category_id,
+                  clock_in_at, clock_in_lat, clock_in_lng, status
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'active')
+                """,
+                (
+                    g.ta_user["id"],
+                    _tenant_id(),
+                    pc_id,
+                    geofence_id_for_session,
+                    employment_category_id,
+                    now,
+                    float(lat),
+                    float(lng),
+                ),
+            )
         sid = c2.lastrowid
         write_audit(
             conn,
