@@ -29,13 +29,6 @@ const DEFAULT_CLOCK_UI = {
   sign_out_after_clock_out: false,
 };
 
-function apiErrorMessage(error, fallback) {
-  const d = error?.response?.data;
-  if (d?.detail && String(d.detail).trim()) return String(d.detail).trim();
-  if (d?.error && String(d.error).trim()) return String(d.error).trim();
-  return fallback;
-}
-
 function normalizeClockUi(raw) {
   const d = { ...DEFAULT_CLOCK_UI, ...(raw && typeof raw === "object" ? raw : {}) };
   return {
@@ -56,6 +49,7 @@ function ClockPage({ user: washproUser }) {
   const [sessionRes, setSessionRes] = useState(null);
   const [clockUi, setClockUi] = useState(DEFAULT_CLOCK_UI);
 
+  const [checkInConfirmOpen, setCheckInConfirmOpen] = useState(false);
   const [bagsDialogOpen, setBagsDialogOpen] = useState(false);
   const [personalBags, setPersonalBags] = useState(0);
   const [checkoutConfirmOpen, setCheckoutConfirmOpen] = useState(false);
@@ -207,6 +201,12 @@ function ClockPage({ user: washproUser }) {
     asBool(clockUi.ask_personal_laundry_bags) && asBool(clockHints?.first_clock_in_est_today);
 
   const startClockInFlow = () => {
+    setCheckInConfirmOpen(true);
+  };
+
+  /** After user confirms clock-in: optional laundry bags step, then API. */
+  const proceedAfterClockInConfirm = () => {
+    setCheckInConfirmOpen(false);
     if (askBagsOnThisClockIn) {
       setPersonalBags(0);
       setBagsDialogOpen(true);
@@ -341,6 +341,21 @@ function ClockPage({ user: washproUser }) {
           </Stack>
         )}
       </Paper>
+
+      <Dialog open={checkInConfirmOpen} onClose={() => !busy && setCheckInConfirmOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle sx={{ fontWeight: 800 }}>{t("clock.confirmClockInTitle")}</DialogTitle>
+        <DialogContent>
+          <Typography>{t("clock.confirmClockInBody")}</Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button onClick={() => setCheckInConfirmOpen(false)} disabled={busy}>
+            {t("clock.cancel")}
+          </Button>
+          <Button variant="contained" onClick={proceedAfterClockInConfirm} disabled={busy} size="large">
+            {busy ? <CircularProgress size={22} color="inherit" /> : t("clock.confirm")}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={bagsDialogOpen} onClose={() => !busy && setBagsDialogOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle sx={{ fontWeight: 800 }}>{t("clock.personalLaundryTitle")}</DialogTitle>
