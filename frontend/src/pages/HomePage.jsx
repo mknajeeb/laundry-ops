@@ -180,7 +180,7 @@ function HomePage({ user }) {
   const employeeTiles = [
     {
       path: "/clock",
-      label: "Clock In / Clock Out",
+      label: "Attendance",
       icon: <AccessTime />,
       sx: { ...TILE_BASE, bgcolor: "#0f766e", color: "#ffffff", "&:hover": { bgcolor: "#0d5f59" } },
     },
@@ -218,29 +218,24 @@ function HomePage({ user }) {
       <Stack
         direction="row"
         justifyContent="space-between"
-        alignItems="flex-start"
+        alignItems="center"
         spacing={2}
         sx={{ mb: 1.5 }}
       >
-        <Stack spacing={1.2} sx={{ minWidth: 0, flex: 1 }}>
-          <Typography sx={{ fontSize: { xs: 26, sm: 32 }, fontWeight: 500, lineHeight: 1.05 }}>
-            Laundry Ops
-          </Typography>
-          <Typography sx={{ color: "#6b7280", fontWeight: 500 }}>
-            Choose a module to continue.
-          </Typography>
-        </Stack>
+        <Typography sx={{ fontSize: { xs: 26, sm: 32 }, fontWeight: 500, lineHeight: 1.05, minWidth: 0, flex: 1 }}>
+          Laundry Ops
+        </Typography>
         <Stack
           alignItems="flex-end"
-          spacing={0.25}
-          sx={{ flexShrink: 0, maxWidth: "48%", minWidth: 0 }}
+          spacing={0.5}
+          sx={{ flexShrink: 0, maxWidth: "52%", minWidth: 0 }}
         >
           <Typography
             noWrap
             title={displayName}
             sx={{
-              fontWeight: 600,
-              fontSize: 15,
+              fontWeight: 700,
+              fontSize: { xs: 17, sm: 19 },
               lineHeight: 1.2,
               textAlign: "right",
               maxWidth: "100%",
@@ -251,7 +246,7 @@ function HomePage({ user }) {
           {canSeeClock && clockLoaded ? (
             <Typography
               sx={{
-                fontSize: 12,
+                fontSize: { xs: 14, sm: 15 },
                 fontWeight: 600,
                 color: (theme) =>
                   isClockedIn ? theme.palette.primary.main : theme.palette.text.secondary,
@@ -270,15 +265,15 @@ function HomePage({ user }) {
               RINSE FLOW
             </Typography>
             <Stack spacing={1}>
-              {visibleRinse.map((t) => (
+              {visibleRinse.map((tile) => (
                 <Button
-                  key={t.path}
+                  key={tile.path}
                   fullWidth
-                  startIcon={t.icon}
-                  sx={t.sx}
-                  onClick={() => navigate(t.path)}
+                  startIcon={tile.icon}
+                  sx={tile.sx}
+                  onClick={() => navigate(tile.path)}
                 >
-                  {t.label}
+                  {tile.label}
                 </Button>
               ))}
             </Stack>
@@ -287,19 +282,16 @@ function HomePage({ user }) {
 
         {visibleEmployee.length > 0 ? (
           <Paper sx={SECTION_CARD}>
-            <Typography sx={{ mb: 1, fontWeight: 500, fontSize: 14, letterSpacing: 0.3 }}>
-              EMPLOYEE FLOW
-            </Typography>
             <Stack spacing={1}>
-              {visibleEmployee.map((t) => (
+              {visibleEmployee.map((tile) => (
                 <Button
-                  key={t.path}
+                  key={tile.path}
                   fullWidth
-                  startIcon={t.icon}
-                  sx={t.sx}
-                  onClick={() => navigate(t.path)}
+                  startIcon={tile.icon}
+                  sx={tile.sx}
+                  onClick={() => navigate(tile.path)}
                 >
-                  {t.label}
+                  {tile.path === "/clock" ? t("home.attendance") : tile.label}
                 </Button>
               ))}
             </Stack>

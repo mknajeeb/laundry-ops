@@ -364,9 +364,14 @@ function ClockPage({ user: washproUser }) {
       <Dialog open={bagsDialogOpen} onClose={() => !busy && setBagsDialogOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle sx={{ fontWeight: 800 }}>{t("clock.personalLaundryTitle")}</DialogTitle>
         <DialogContent>
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            {t("clock.personalLaundryHelp")}
-          </Typography>
+          <Stack spacing={0.75} sx={{ mb: 3 }}>
+            <Typography variant="body1" color="text.secondary">
+              {t("clock.personalLaundryHelpLead")}
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
+              {t("clock.personalLaundryHelpNote")}
+            </Typography>
+          </Stack>
           <Stack direction="row" alignItems="center" justifyContent="center" spacing={2}>
             <Button
               variant="outlined"

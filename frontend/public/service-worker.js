@@ -1,12 +1,13 @@
 // Bump when fetch strategy changes so clients pick up new worker.
-const CACHE_NAME = "laundry-ops-shell-v3";
+const CACHE_NAME = "laundry-ops-shell-v4";
 const APP_SHELL = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
   "/icon-192.png",
   "/icon-512.png",
-  "/apple-touch-icon.png"
+  "/apple-touch-icon.png",
+  "/washpro-mark.svg"
 ];
 
 self.addEventListener("install", (event) => {

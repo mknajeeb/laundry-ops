@@ -51,12 +51,26 @@ function Sidebar({ activeBatch, user, onLogout }) {
             src={resolveOrgLogoUrl(user.organization_logo_url)}
             alt=""
             onError={() => setOrgLogoFailed(true)}
-            sx={{ maxHeight: 44, maxWidth: "100%", objectFit: "contain" }}
+            sx={{
+              maxHeight: 44,
+              maxWidth: "100%",
+              width: "auto",
+              objectFit: "contain",
+              objectPosition: "left center",
+            }}
           />
         ) : (
-          <Typography sx={{ fontSize: 28, lineHeight: 1.1, color: "#ffffff", fontWeight: 700 }}>
-            {user?.organization_name || "Laundry Ops"}
-          </Typography>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
+            <Box
+              component="img"
+              src="/washpro-mark.svg"
+              alt=""
+              sx={{ width: 40, height: 40, flexShrink: 0, objectFit: "contain", display: "block" }}
+            />
+            <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
+              {user?.organization_name || "Washpro"}
+            </Typography>
+          </Box>
         )}
       </Box>
       <Typography sx={{ fontSize: 13, color: "#94a3b8", flexShrink: 0 }}>

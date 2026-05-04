@@ -11,10 +11,12 @@
 -- =============================================================================
 
 -- @org_id  = organizations.id (tenant) — required if shift_sessions has organization_id
--- @user_id = ta_users.id (same as time-clock user_id on shift_sessions)
+-- @user_id = payroll subject id on shift_sessions — usually Washpro `users.id` after
+--            payroll unification; legacy DBs may still use `ta_users.id` (see
+--            scripts/delete_shift_sessions_for_user_testing.sql).
 
 SET @org_id  = 1;     -- <<< change
-SET @user_id = NULL;  -- <<< set to a specific ta_users.id, or NULL to clear whole org
+SET @user_id = NULL;  -- <<< users.id (Washpro) or ta_users.id per your schema
 
 -- Optional: preview what would be removed
 -- SELECT id, user_id, status, clock_in_at, clock_out_at, personal_laundry_bags

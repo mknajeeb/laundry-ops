@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Brand mark only: centered W on dark tile (no text). Padding for maskable icons. -->
+  <rect width="512" height="512" rx="108" fill="#111827"/>
+  <path
+    fill="#ffffff"
+    d="M130 352 L175 152 L255 268 L335 152 L382 352 L318 352 L282 228 L255 262 L228 228 L192 352 Z"
+  />
+</svg>

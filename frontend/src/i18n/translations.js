@@ -108,11 +108,12 @@ export const TRANSLATIONS = {
     "clock.confirm": "Confirm",
     "clock.cancel": "Cancel",
     "clock.personalLaundryTitle": "Personal laundry bags",
-    "clock.personalLaundryHelp":
-      "How many bags did you bring for personal laundry today? (First clock-in of the day only.)",
+    "clock.personalLaundryHelpLead": "How many bags did you bring for personal laundry today?",
+    "clock.personalLaundryHelpNote": "(First clock-in of the day only.)",
     "clock.loading": "Loading…",
 
     "home.displayFallback": "User",
+    "home.attendance": "Attendance",
     "home.workStatusIn": "At work",
     "home.workStatusOut": "Not at work",
 
@@ -1126,11 +1127,12 @@ export const TRANSLATIONS = {
     "clock.confirm": "Confirmar",
     "clock.cancel": "Cancelar",
     "clock.personalLaundryTitle": "Bolsas de lavandería personal",
-    "clock.personalLaundryHelp":
-      "¿Cuántas bolsas trajo para lavandería personal hoy? (Solo en la primera entrada del día.)",
+    "clock.personalLaundryHelpLead": "¿Cuántas bolsas trajo para lavandería personal hoy?",
+    "clock.personalLaundryHelpNote": "(Solo en la primera entrada del día.)",
     "clock.loading": "Cargando…",
 
     "home.displayFallback": "Usuario",
+    "home.attendance": "Asistencia",
     "home.workStatusIn": "En el trabajo",
     "home.workStatusOut": "No en el trabajo",
 

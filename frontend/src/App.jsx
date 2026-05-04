@@ -95,17 +95,33 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
               alt=""
               onError={() => setOrgLogoFailed(true)}
               sx={{
-                height: 24,
-                maxHeight: 24,
+                height: 28,
+                maxHeight: 28,
                 width: "auto",
-                maxWidth: 150,
+                maxWidth: 160,
                 objectFit: "contain",
                 objectPosition: "left center",
                 display: "block",
               }}
             />
           ) : (
-            <Typography sx={{ fontSize: 18, flex: 1 }}>{user?.organization_name || "Laundry Ops"}</Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
+              <Box
+                component="img"
+                src="/washpro-mark.svg"
+                alt=""
+                sx={{
+                  width: 28,
+                  height: 28,
+                  flexShrink: 0,
+                  objectFit: "contain",
+                  display: "block",
+                }}
+              />
+              <Typography component="span" noWrap sx={{ fontSize: 18, fontWeight: 700 }}>
+                {user?.organization_name || "Washpro"}
+              </Typography>
+            </Box>
           )}
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: 0.5 }}>
