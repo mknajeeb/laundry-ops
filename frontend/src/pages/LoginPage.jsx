@@ -50,6 +50,7 @@ function LoginPage({ onLoggedIn }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [branding, setBranding] = useState(null);
+  const [loginLogoFailed, setLoginLogoFailed] = useState(false);
 
   const [changeOpen, setChangeOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -105,6 +106,10 @@ function LoginPage({ onLoggedIn }) {
       window.clearTimeout(t);
     };
   }, [organizationSlug]);
+
+  useEffect(() => {
+    setLoginLogoFailed(false);
+  }, [branding?.logo_url]);
 
   useEffect(() => {
     if (changeOpen) {
@@ -286,18 +291,39 @@ function LoginPage({ onLoggedIn }) {
         }}
       >
         <Stack spacing={2}>
-          <Box sx={{ minHeight: 36, display: "flex", alignItems: "center" }}>
-            {branding?.logo_url ? (
+          <Box sx={{ minHeight: 44, display: "flex", alignItems: "center", gap: 1.25 }}>
+            {branding?.logo_url && !loginLogoFailed ? (
               <Box
                 component="img"
                 src={resolveOrgLogoUrl(branding.logo_url)}
                 alt=""
-                sx={{ maxHeight: 36, maxWidth: "100%", objectFit: "contain" }}
+                onError={() => setLoginLogoFailed(true)}
+                sx={{
+                  maxHeight: 40,
+                  maxWidth: "100%",
+                  objectFit: "contain",
+                  objectPosition: "left center",
+                }}
               />
             ) : (
-              <Typography sx={{ fontSize: 22, fontWeight: 700, color: "text.primary" }}>
-                {branding?.display_name || "Laundry Ops"}
-              </Typography>
+              <>
+                <Box
+                  component="img"
+                  src="/washpro-mark.png"
+                  alt=""
+                  sx={{
+                    width: 40,
+                    height: 40,
+                    flexShrink: 0,
+                    objectFit: "cover",
+                    borderRadius: 1,
+                    display: "block",
+                  }}
+                />
+                <Typography sx={{ fontSize: 22, fontWeight: 700, color: "text.primary" }}>
+                  {branding?.display_name || "Washpro"}
+                </Typography>
+              </>
             )}
           </Box>
 

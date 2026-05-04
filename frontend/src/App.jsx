@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   AppBar,
@@ -61,10 +61,10 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
   const canGoBack = pathname !== "/";
   return (
     <AppBar
-      position="sticky"
+      position="static"
       elevation={0}
       sx={{
-        top: 0,
+        flexShrink: 0,
         pt: "env(safe-area-inset-top, 0px)",
         background: "#ffffff",
         color: "#0f172a",
@@ -108,13 +108,14 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
             <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
               <Box
                 component="img"
-                src="/washpro-mark.svg"
+                src="/washpro-mark.png"
                 alt=""
                 sx={{
                   width: 28,
                   height: 28,
                   flexShrink: 0,
-                  objectFit: "contain",
+                  objectFit: "cover",
+                  borderRadius: 0.75,
                   display: "block",
                 }}
               />
@@ -188,8 +189,19 @@ function AppShell() {
   const [authLoading, setAuthLoading] = useState(true);
   /** Avoid calling GET /auth/me on every client-side navigation (was a major local slowness). */
   const washproSessionSyncedRef = useRef(false);
+  const mainScrollRef = useRef(null);
 
   const pathname = location.pathname || "/";
+
+  /** iOS PWA: keep main content in its own scroller; reset on navigation (fixes mid-page load + header overlap). */
+  useLayoutEffect(() => {
+    const el = mainScrollRef.current;
+    if (el) {
+      el.scrollTop = 0;
+      el.scrollLeft = 0;
+    }
+    window.scrollTo(0, 0);
+  }, [pathname]);
 
   const doLogout = async () => {
     try { await authLogout(); } catch { /* ignore */ }
@@ -307,25 +319,42 @@ function AppShell() {
   );
 
   if (authLoading && !isLoginRoute(pathname)) {
-    return <Box sx={{ minHeight: "100vh", display: "grid", placeItems: "center" }}><Typography>Loading...</Typography></Box>;
+    return (
+      <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
+        <Typography>Loading...</Typography>
+      </Box>
+    );
   }
 
   if (!user && !isLoginRoute(pathname)) return <Navigate to="/login" replace />;
 
   if (user && isPlatformOnlyUser(user) && !isLoginRoute(pathname)) {
     return (
-      <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
+      <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "flex", background: shellBackground }}>
         {!isMobile && <PlatformSidebar user={user} onLogout={doLogout} />}
-        <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
           {isMobile && (
-            <AppBar position="sticky" elevation={0} sx={{ borderBottom: "1px solid #e2e8f0", bgcolor: "#fff", color: "#1e1b4b" }}>
+            <AppBar position="static" elevation={0} sx={{ flexShrink: 0, borderBottom: "1px solid #e2e8f0", bgcolor: "#fff", color: "#1e1b4b" }}>
               <Toolbar sx={{ minHeight: 48 }}>
                 <Typography sx={{ flex: 1, fontWeight: 700 }}>Platform</Typography>
                 <Button size="small" onClick={doLogout}>Logout</Button>
               </Toolbar>
             </AppBar>
           )}
-          <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0 }}>
+          <Box
+            ref={mainScrollRef}
+            className="app-main-scroll"
+            sx={{
+              p: { xs: 0, md: 1 },
+              flex: 1,
+              minWidth: 0,
+              minHeight: 0,
+              overflowY: "auto",
+              overflowX: "hidden",
+              WebkitOverflowScrolling: "touch",
+              overscrollBehaviorY: "contain",
+            }}
+          >
             <Routes>
               <Route
                 path="/platform"
@@ -358,7 +387,7 @@ function AppShell() {
   }
 
   return (
-    <Box sx={{ minHeight: "100vh", display: "flex", background: shellBackground }}>
+    <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "flex", background: shellBackground }}>
       {!isMobile && user && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
         <PlatformSidebar user={user} onLogout={doLogout} showTenantEntry />
       ) : (
@@ -377,10 +406,10 @@ function AppShell() {
             />
             {hideOpsMobileTopBar(pathname) ? (
               <AppBar
-                position="sticky"
+                position="static"
                 elevation={0}
                 sx={{
-                  top: 0,
+                  flexShrink: 0,
                   pt: "env(safe-area-inset-top, 0px)",
                   background: "#ffffff",
                   borderBottom: "1px solid #e2e8f0",
@@ -477,7 +506,21 @@ function AppShell() {
             )}
           </>
         )}
-        <Box sx={{ p: { xs: 0, md: 1 }, flex: 1, minWidth: 0, pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 } }}>
+        <Box
+          ref={mainScrollRef}
+          className="app-main-scroll"
+          sx={{
+            p: { xs: 0, md: 1 },
+            flex: 1,
+            minWidth: 0,
+            minHeight: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+            WebkitOverflowScrolling: "touch",
+            overscrollBehaviorY: "contain",
+            pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 },
+          }}
+        >
           <ClockInGate user={user}>
           <TenantNavAccessBoundary user={user} payrollNavVisible={payrollNavVisible}>
           <Routes>
@@ -653,7 +696,9 @@ function AppShell() {
 function App() {
   return (
     <BrowserRouter>
-      <AppShell />
+      <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", width: "100%" }}>
+        <AppShell />
+      </Box>
     </BrowserRouter>
   );
 }

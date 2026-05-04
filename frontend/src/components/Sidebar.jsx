@@ -63,9 +63,16 @@ function Sidebar({ activeBatch, user, onLogout }) {
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
             <Box
               component="img"
-              src="/washpro-mark.svg"
+              src="/washpro-mark.png"
               alt=""
-              sx={{ width: 40, height: 40, flexShrink: 0, objectFit: "contain", display: "block" }}
+              sx={{
+                width: 40,
+                height: 40,
+                flexShrink: 0,
+                objectFit: "cover",
+                borderRadius: 1,
+                display: "block",
+              }}
             />
             <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
               {user?.organization_name || "Washpro"}
