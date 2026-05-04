@@ -244,16 +244,32 @@ function HomePage({ user }) {
             {displayName}
           </Typography>
           {canSeeClock && clockLoaded ? (
-            <Typography
+            <Box
+              component="span"
               sx={{
-                fontSize: { xs: 14, sm: 15 },
-                fontWeight: 600,
-                color: (theme) =>
-                  isClockedIn ? theme.palette.primary.main : theme.palette.text.secondary,
+                alignSelf: "flex-end",
+                display: "inline-flex",
+                alignItems: "center",
+                px: 1.5,
+                py: 0.45,
+                borderRadius: 999,
+                fontSize: { xs: 11.5, sm: 12.5 },
+                fontWeight: 700,
+                letterSpacing: 0.02,
+                lineHeight: 1.2,
+                ...(isClockedIn
+                  ? {
+                      bgcolor: "primary.main",
+                      color: "#ffffff",
+                    }
+                  : {
+                      bgcolor: "error.main",
+                      color: "#ffffff",
+                    }),
               }}
             >
               {isClockedIn ? t("home.workStatusIn") : t("home.workStatusOut")}
-            </Typography>
+            </Box>
           ) : null}
         </Stack>
       </Stack>
