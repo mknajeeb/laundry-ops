@@ -39,6 +39,23 @@ function normalizeClockUi(raw) {
   };
 }
 
+/**
+ * There is no web standard to "minimize" a PWA. window.close() only works for windows
+ * opened via script; some Android standalone PWAs still dismiss — iOS Safari usually ignores it.
+ */
+function tryCloseOrMinimizePwa() {
+  if (typeof window === "undefined") return;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      try {
+        window.close();
+      } catch {
+        /* */
+      }
+    });
+  });
+}
+
 /** Minimal clock: Not at work / At work, optional first clock-in laundry bags (EST), checkout confirmation. */
 function ClockPage({ user: washproUser }) {
   const navigate = useNavigate();
@@ -215,6 +232,7 @@ function ClockPage({ user: washproUser }) {
     runWithPosition(async (lat, lng) => {
       await taClockIn({ latitude: lat, longitude: lng });
       await refreshAfterAction();
+      tryCloseOrMinimizePwa();
     });
   };
 
@@ -227,6 +245,7 @@ function ClockPage({ user: washproUser }) {
         personal_laundry_bags: Math.max(0, Math.floor(Number(personalBags) || 0)),
       });
       await refreshAfterAction();
+      tryCloseOrMinimizePwa();
     });
   };
 
@@ -239,6 +258,7 @@ function ClockPage({ user: washproUser }) {
         clearAuthSession();
         navigate("/login", { replace: true });
       }
+      tryCloseOrMinimizePwa();
     });
   };
 
