@@ -103,7 +103,7 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
           <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
             <TenantLogo logoUrl={user?.organization_logo_url} size={28} />
             <Typography component="span" noWrap sx={{ fontSize: 18, fontWeight: 700 }}>
-              {user?.organization_name || "Washpro"}
+              {user?.organization_name || t("common.appName")}
             </Typography>
           </Box>
         </Box>

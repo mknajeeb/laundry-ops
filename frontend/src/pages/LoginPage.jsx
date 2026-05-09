@@ -76,6 +76,50 @@ function LoginPage({ onLoggedIn }) {
     }
   }, [slugFromRoute]);
 
+  /** Bookmark URL `/login/:slug` — tenant logo + name without debounce. */
+  useEffect(() => {
+    if (!slugFromRoute) return undefined;
+    if (slugFromRoute === "platform") {
+      setBranding({ display_name: "Platform", logo_url: null, slug: "platform" });
+      return undefined;
+    }
+    let cancelled = false;
+    getPublicOrgBranding(slugFromRoute)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.status === 200 && res.data && !res.data.error) setBranding(res.data);
+        else setBranding(null);
+      })
+      .catch(() => {
+        if (!cancelled) setBranding(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slugFromRoute]);
+
+  /** Plain `/login` — show last-used tenant branding immediately when slug is in storage. */
+  useEffect(() => {
+    if (slugFromRoute) return undefined;
+    let slug = "";
+    try {
+      slug = (localStorage.getItem("washpro_org_slug") || "").trim().toLowerCase();
+    } catch {
+      slug = "";
+    }
+    if (!slug || slug === "platform") return undefined;
+    let cancelled = false;
+    getPublicOrgBranding(slug)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.status === 200 && res.data && !res.data.error) setBranding(res.data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [slugFromRoute]);
+
   useEffect(() => {
     const slug = organizationSlug.trim().toLowerCase();
     if (!slug) {
@@ -288,7 +332,7 @@ function LoginPage({ onLoggedIn }) {
           <Box sx={{ minHeight: 44, display: "flex", alignItems: "center", gap: 1.25 }}>
             <TenantLogo logoUrl={branding?.logo_url} size={40} />
             <Typography sx={{ fontSize: 22, fontWeight: 700, color: "text.primary" }}>
-              {branding?.display_name || "Washpro"}
+              {branding?.display_name || t("common.appName")}
             </Typography>
           </Box>
 
@@ -315,7 +359,7 @@ function LoginPage({ onLoggedIn }) {
           {showOrgField ? (
             <TextField
               label={t("profile.organization")}
-              placeholder="washpro"
+              placeholder={t("login.orgSlugPlaceholder")}
               value={organizationSlug}
               onChange={(e) => setOrganizationSlug(e.target.value)}
               autoComplete="organization"

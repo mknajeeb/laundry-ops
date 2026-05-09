@@ -102,9 +102,9 @@ function PeoplePage({ user }) {
       setWpRoles(Array.isArray(rRes.data) ? rRes.data : []);
     } catch (e) {
       console.error(e);
-      setError(e?.response?.data?.error || "Failed to load Washpro users.");
+      setError(e?.response?.data?.error || t("people.errLoadAccounts"));
     }
-  }, [isAdmin]);
+  }, [isAdmin, t]);
 
   const loadTa = useCallback(async () => {
     if (!canTaView) return;
@@ -835,7 +835,7 @@ function PeoplePage({ user }) {
       </Menu>
 
       <Dialog open={wpDialog === "create"} onClose={() => setWpDialog(null)} fullWidth maxWidth="sm">
-        <DialogTitle>New Washpro login</DialogTitle>
+        <DialogTitle>{t("people.dialogNewLaundryOpsLogin")}</DialogTitle>
         <DialogContent>
           <Stack spacing={1.2} sx={{ mt: 0.8 }}>
             <TextField
@@ -886,7 +886,7 @@ function PeoplePage({ user }) {
       </Dialog>
 
       <Dialog open={wpDialog === "edit"} onClose={() => setWpDialog(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Edit Washpro login</DialogTitle>
+        <DialogTitle>{t("people.dialogEditLaundryOpsLogin")}</DialogTitle>
         <DialogContent>
           <Stack spacing={1.2} sx={{ mt: 0.8 }}>
             <TextField
@@ -939,7 +939,7 @@ function PeoplePage({ user }) {
       </Dialog>
 
       <Dialog open={!!deleteWpId} onClose={() => setDeleteWpId(null)}>
-        <DialogTitle>Delete Washpro login?</DialogTitle>
+        <DialogTitle>{t("people.dialogDeleteLaundryOpsLogin")}</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
             This removes the login and unlinks any payroll profile. Sessions for that user end.

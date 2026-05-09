@@ -15,6 +15,7 @@ import { useAuth } from "../context/AuthContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 import { getTaSessionCurrent } from "../api";
 import { useI18n } from "../i18n/I18nContext";
+import TenantLogo from "../components/TenantLogo";
 
 const SECTION_CARD = {
   borderRadius: 3,
@@ -222,9 +223,26 @@ function HomePage({ user }) {
         spacing={2}
         sx={{ mb: 1.5 }}
       >
-        <Typography sx={{ fontSize: { xs: 26, sm: 32 }, fontWeight: 500, lineHeight: 1.05, minWidth: 0, flex: 1 }}>
-          Laundry Ops
-        </Typography>
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={1.25}
+          sx={{ minWidth: 0, flex: 1 }}
+        >
+          <TenantLogo logoUrl={user?.organization_logo_url} size={44} sx={{ flexShrink: 0 }} />
+          <Typography
+            sx={{
+              fontSize: { xs: 22, sm: 28 },
+              fontWeight: 600,
+              lineHeight: 1.1,
+              minWidth: 0,
+            }}
+            noWrap
+            title={user?.organization_name || t("common.appName")}
+          >
+            {user?.organization_name || t("common.appName")}
+          </Typography>
+        </Stack>
         <Stack
           alignItems="flex-end"
           spacing={0.5}

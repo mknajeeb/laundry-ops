@@ -47,7 +47,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
           <TenantLogo logoUrl={user?.organization_logo_url} size={40} />
           <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
-            {user?.organization_name || "Washpro"}
+            {user?.organization_name || t("common.appName")}
           </Typography>
         </Box>
       </Box>
