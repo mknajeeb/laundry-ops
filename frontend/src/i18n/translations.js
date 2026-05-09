@@ -114,6 +114,16 @@ export const TRANSLATIONS = {
     "clock.locationRequired":
       "Location access is required to clock in or out on this device. Enable GPS/location for the browser, or ask an admin to turn on “Shared tablet / PC attendance” for your organization.",
 
+    "kiosk.subtitle": "Enter your attendance PIN to unlock this tablet.",
+    "kiosk.pinLabel": "Attendance PIN",
+    "kiosk.unlock": "Unlock",
+    "kiosk.invalidPin": "Invalid PIN.",
+    "kiosk.unlockFailed": "Could not unlock. Try again or use full login.",
+    "kiosk.pinTooShort": "Enter at least 4 digits.",
+    "kiosk.useFullLogin": "Use username & password instead",
+    "kiosk.backToLogin": "Back to login",
+    "kiosk.invalidOrg": "Missing organization in the link.",
+
     "home.displayFallback": "User",
     "home.attendance": "Attendance",
     "home.workStatusIn": "At work",
@@ -660,6 +670,13 @@ export const TRANSLATIONS = {
     "profile.payrollPasswordHint": "Payroll / time-clock password",
     "profile.payrollPasswordEdit": "Leave blank to keep the current payroll password.",
     "profile.payrollPasswordCreate": "Required when creating a new payroll profile.",
+    "profile.attendancePinLabel": "Attendance PIN (shared tablet)",
+    "profile.attendancePinHint":
+      "Optional. Used only when your organization enables shared-tablet attendance: after clock in/out, staff unlock with their PIN. Leave blank to keep unchanged; check below to remove.",
+    "profile.attendancePinHintAdmin":
+      "Optional for employees. Tenant admins use full login on shared devices; this PIN is not used for admin accounts.",
+    "profile.attendancePinClear": "Remove attendance PIN",
+    "profile.errAttendancePinDigits": "Attendance PIN must be 4–10 digits.",
     "profile.noPayrollYet": "No payroll profile yet. Fill payroll fields and save to create one (requires users.add).",
     "profile.payrollCreateIncomplete": "To create payroll: first name, last name, email, role, and payroll password are required.",
     "profile.hireDate": "Hire date",
@@ -1134,6 +1151,16 @@ export const TRANSLATIONS = {
     "clock.loading": "Cargando…",
     "clock.locationRequired":
       "Se requiere ubicación para fichar en este dispositivo. Active el GPS o pida al administrador que active “Asistencia en tableta / PC compartida” para su organización.",
+
+    "kiosk.subtitle": "Ingrese su PIN de asistencia para desbloquear esta tableta.",
+    "kiosk.pinLabel": "PIN de asistencia",
+    "kiosk.unlock": "Desbloquear",
+    "kiosk.invalidPin": "PIN no válido.",
+    "kiosk.unlockFailed": "No se pudo desbloquear. Intente de nuevo o use el inicio de sesión completo.",
+    "kiosk.pinTooShort": "Ingrese al menos 4 dígitos.",
+    "kiosk.useFullLogin": "Usar usuario y contraseña",
+    "kiosk.backToLogin": "Volver al inicio de sesión",
+    "kiosk.invalidOrg": "Falta la organización en el enlace.",
 
     "home.displayFallback": "Usuario",
     "home.attendance": "Asistencia",
@@ -1683,6 +1710,13 @@ export const TRANSLATIONS = {
     "profile.payrollPasswordHint": "Contraseña de nómina / fichaje",
     "profile.payrollPasswordEdit": "Deje en blanco para mantener la contraseña de nómina actual.",
     "profile.payrollPasswordCreate": "Obligatorio al crear un perfil de nómina nuevo.",
+    "profile.attendancePinLabel": "PIN de asistencia (tableta compartida)",
+    "profile.attendancePinHint":
+      "Opcional. Solo si su organización usa asistencia en tableta compartida: tras fichar, el personal desbloquea con su PIN. Deje en blanco para no cambiar; marque abajo para quitar.",
+    "profile.attendancePinHintAdmin":
+      "Opcional para empleados. Los administradores del inquilino usan el inicio de sesión completo en tabletas compartidas; este PIN no aplica a cuentas de administrador.",
+    "profile.attendancePinClear": "Quitar PIN de asistencia",
+    "profile.errAttendancePinDigits": "El PIN de asistencia debe tener entre 4 y 10 dígitos.",
     "profile.noPayrollYet":
       "Aún no hay perfil de nómina. Rellene los campos y guarde para crearlo (requiere users.add).",
     "profile.payrollCreateIncomplete":

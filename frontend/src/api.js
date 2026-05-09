@@ -89,6 +89,17 @@ export const authLogin = (username, password, organization_slug) =>
     { timeout: AUTH_LOGIN_TIMEOUT_MS },
   );
 
+/** Shared tablet lock screen: unlock session with tenant slug + payroll attendance PIN. */
+export const authAttendancePinUnlock = (organization_slug, pin) =>
+  axios.post(
+    `${API_BASE}/auth/attendance-pin-unlock`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      pin: String(pin || "").trim(),
+    },
+    { timeout: AUTH_LOGIN_TIMEOUT_MS },
+  );
+
 /** Not logged in: change password with current password. */
 export const postPublicChangePassword = (body) =>
   axios.post(`${API_BASE}/auth/public/change-password`, body);

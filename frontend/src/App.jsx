@@ -44,6 +44,7 @@ import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
+import KioskUnlockPage from "./pages/KioskUnlockPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollManagementPage from "./pages/PayrollManagementPage";
@@ -123,6 +124,12 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
 function isLoginRoute(path) {
   const p = path || "";
   return p === "/login" || p.startsWith("/login/");
+}
+
+/** Shared-tablet PIN lock: /kiosk/:orgSlug (no session until PIN succeeds). */
+function isKioskRoute(path) {
+  const p = path || "";
+  return p === "/kiosk" || p.startsWith("/kiosk/");
 }
 
 /** Same rules as LoginPage — kept in sync for tenant bookmark URLs. */
@@ -250,7 +257,7 @@ function AppShell() {
 
   useEffect(() => {
     async function bootstrap() {
-      if (isLoginRoute(pathname)) {
+      if (isLoginRoute(pathname) || isKioskRoute(pathname)) {
         setAuthLoading(false);
         return;
       }
@@ -352,7 +359,7 @@ function AppShell() {
     []
   );
 
-  if (authLoading && !isLoginRoute(pathname)) {
+  if (authLoading && !isLoginRoute(pathname) && !isKioskRoute(pathname)) {
     return (
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
@@ -360,7 +367,9 @@ function AppShell() {
     );
   }
 
-  if (!user && !isLoginRoute(pathname)) return <Navigate to="/login" replace />;
+  if (!user && !isLoginRoute(pathname) && !isKioskRoute(pathname)) {
+    return <Navigate to="/login" replace />;
+  }
 
   if (user && isPlatformOnlyUser(user) && !isLoginRoute(pathname)) {
     return (
@@ -559,6 +568,10 @@ function AppShell() {
           <TenantNavAccessBoundary user={user} payrollNavVisible={payrollNavVisible}>
           <Routes>
             <Route path="/login/:orgSlug" element={<LoginWithOrgSlugRoute user={user} setUser={setUser} />} />
+            <Route
+              path="/kiosk/:orgSlug"
+              element={<KioskUnlockPage onLoggedIn={setUser} />}
+            />
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />

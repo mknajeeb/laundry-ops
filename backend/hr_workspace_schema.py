@@ -12,9 +12,13 @@ WORKSPACE_PAYROLL_EXTRA = [
     ("laundry_experience", "TINYINT(1) NULL"),
     ("clock_geofence_exempt", "TINYINT(1) NOT NULL DEFAULT 0"),
     ("clock_in_gate_exempt", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ("attendance_pin_hash", "VARCHAR(255) NULL COMMENT 'Werkzeug hash; shared-device PIN unlock'"),
 ]
 
-WORKSPACE_PAYROLL_EXTRA_KEYS = tuple(x[0] for x in WORKSPACE_PAYROLL_EXTRA)
+# Excludes attendance_pin_hash — set only via plaintext `attendance_pin` in API (hashed server-side).
+WORKSPACE_PAYROLL_EXTRA_KEYS = tuple(
+    x[0] for x in WORKSPACE_PAYROLL_EXTRA if x[0] != "attendance_pin_hash"
+)
 
 
 def ensure_people_workspace_schema(cursor) -> None:

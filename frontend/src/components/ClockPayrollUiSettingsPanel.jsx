@@ -287,7 +287,7 @@ export default function ClockPayrollUiSettingsPanel() {
               }
             />
           }
-          label="Shared tablet / PC attendance: allow clock in/out without GPS; after each clock in or out, sign out and return to the tenant login so the next employee enters their username and password"
+          label="Shared tablet / PC attendance: allow clock in/out without GPS; after each clock in or out, lock the app with the PIN lock screen so the next employee unlocks with their payroll attendance PIN (tenant admins stay signed in)"
         />
         <FormControlLabel
           control={

@@ -196,7 +196,7 @@ def _tenant_id():
 
 
 # Bump when WORKSPACE_PAYROLL_EXTRA / seed lists change so each org re-runs ensure once per process.
-_PEOPLE_WORKSPACE_ENSURE_VERSION = 3
+_PEOPLE_WORKSPACE_ENSURE_VERSION = 4
 _people_workspace_ensured_version_by_org: dict[int, int] = {}
 
 
@@ -2221,6 +2221,7 @@ def users_get(user_id):
             if int(u.get("organization_id") or 1) != _tenant_id():
                 return jsonify({"error": "Not found"}), 404
             u.pop("password_hash", None)
+            u.pop("attendance_pin_hash", None)
             mask_tax_id_for_api_response(u)
             pid = u.get("rehire_parent_user_id")
             if pid:
@@ -2565,6 +2566,34 @@ def users_update(user_id):
             if data.get("password"):
                 fields.append("password_hash=%s")
                 vals.append(hash_password(data["password"]))
+
+            if "attendance_pin" in data and table_has_column(chk, "payroll_profiles", "attendance_pin_hash"):
+                ap_raw = data.get("attendance_pin")
+                if ap_raw in (None, ""):
+                    fields.append("attendance_pin_hash=%s")
+                    vals.append(None)
+                else:
+                    ps = str(ap_raw).strip()
+                    if not ps.isdigit() or len(ps) < 4 or len(ps) > 10:
+                        return jsonify({"error": "Attendance PIN must be 4–10 digits"}), 400
+                    c_chk = conn.cursor(dictionary=True)
+                    c_chk.execute(
+                        """
+                        SELECT pp.user_id, pp.attendance_pin_hash
+                        FROM payroll_profiles pp
+                        JOIN users u ON u.id = pp.user_id
+                        WHERE u.organization_id = %s AND pp.user_id != %s AND pp.attendance_pin_hash IS NOT NULL
+                        """,
+                        (_tenant_id(), user_id),
+                    )
+                    for ow in c_chk.fetchall() or []:
+                        h = ow.get("attendance_pin_hash")
+                        if h and verify_password(str(h), ps):
+                            return jsonify(
+                                {"error": "That PIN is already assigned to another employee in this organization"}
+                            ), 400
+                    fields.append("attendance_pin_hash=%s")
+                    vals.append(hash_password(ps))
 
             if fields:
                 vals.append(user_id)

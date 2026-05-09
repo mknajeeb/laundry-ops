@@ -45,7 +45,7 @@ from backend.payroll_identity import (
     fetch_payroll_profile_row,
     payroll_profiles_active,
 )
-from backend.ta_helpers import hash_password, json_safe
+from backend.ta_helpers import hash_password, json_safe, verify_password
 from backend.notification_routes import register_notification_routes
 from backend.rinse_export_routes import register_rinse_export_routes
 from backend.ta_routes import (
@@ -4727,6 +4727,121 @@ def get_geofence_config():
 # ---------------------------------------------------
 # Auth / RBAC APIs
 # ---------------------------------------------------
+
+@app.route("/auth/attendance-pin-unlock", methods=["POST"])
+def attendance_pin_unlock():
+    """Shared-tablet lock screen: unlock with org slug + employee payroll PIN (non-admin users only)."""
+    data = request.json or {}
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    pin_raw = data.get("pin")
+    pin = str(pin_raw).strip() if pin_raw is not None else ""
+
+    if not org_slug or not pin:
+        return jsonify({"error": "organization_slug and pin are required"}), 400
+    if not pin.isdigit() or len(pin) < 4 or len(pin) > 10:
+        return jsonify({"error": "Invalid PIN"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db()
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "PIN unlock is not available"}), 503
+        cursor = conn.cursor(dictionary=True)
+        if not table_has_column(cursor, "payroll_profiles", "attendance_pin_hash"):
+            return jsonify({"error": "PIN unlock is not available"}), 503
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"error": "PIN unlock is not available"}), 503
+
+        has_u_org = table_has_column(cursor, "users", "organization_id")
+        logo_sql = _org_logo_select_sql(cursor)
+        cursor.execute(
+            f"""
+            SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                   o.slug AS organization_slug, o.display_name AS organization_name,
+                   {logo_sql},
+                   pp.attendance_pin_hash
+            FROM payroll_profiles pp
+            INNER JOIN users u ON u.id = pp.user_id
+            INNER JOIN organizations o ON o.id = u.organization_id AND o.active = 1
+            WHERE LOWER(o.slug) = %s
+              AND u.active = 1
+              AND pp.attendance_pin_hash IS NOT NULL
+            """,
+            (org_slug,),
+        )
+        rows = cursor.fetchall() or []
+
+        matched = None
+        matched_roles = None
+        for row in rows:
+            h = row.get("attendance_pin_hash")
+            if not h or not verify_password(str(h), pin):
+                continue
+            roles = fetch_user_roles(cursor, row["id"])
+            rs = {str(r).upper() for r in roles}
+            if rs & {"ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}:
+                continue
+            matched = row
+            matched_roles = roles
+            break
+
+        if not matched:
+            return jsonify({"error": "Invalid PIN"}), 401
+
+        if matched.get("organization_logo_url"):
+            matched["organization_logo_url"] = rewrite_org_logo_url_for_client(
+                matched.get("organization_logo_url")
+            )
+
+        token = uuid.uuid4().hex
+        expires_at = datetime.utcnow() + timedelta(hours=12)
+        cursor.execute(
+            """
+            INSERT INTO auth_sessions
+            (user_id, token, expires_at, revoked, created_at, last_seen_at)
+            VALUES (%s, %s, %s, FALSE, NOW(), NOW())
+            """,
+            (matched["id"], token, expires_at),
+        )
+
+        conn.commit()
+
+        payload_user = {
+            "id": matched["id"],
+            "username": matched["username"],
+            "display_name": matched.get("display_name") or matched["username"],
+            "roles": matched_roles or [],
+        }
+        if has_u_org and matched.get("organization_id") is not None:
+            payload_user["organization_id"] = int(matched["organization_id"])
+            if matched.get("organization_slug"):
+                payload_user["organization_slug"] = matched["organization_slug"]
+            if matched.get("organization_name"):
+                payload_user["organization_name"] = matched["organization_name"]
+            if matched.get("organization_logo_url"):
+                payload_user["organization_logo_url"] = matched["organization_logo_url"]
+
+        return jsonify({"token": token, "user": payload_user})
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 @app.route("/auth/login", methods=["POST"])
 def auth_login():

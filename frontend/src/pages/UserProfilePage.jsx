@@ -455,6 +455,9 @@ export default function UserProfilePage({ user: sessionUser }) {
   const [clockInGateExempt, setClockInGateExempt] = useState(false);
   const [roleId, setRoleId] = useState("");
   const [payrollPassword, setPayrollPassword] = useState("");
+  /** Shared tablet unlock; never loaded from API (hash-only server-side). */
+  const [attendancePin, setAttendancePin] = useState("");
+  const [clearAttendancePin, setClearAttendancePin] = useState(false);
   const [rehireParentId, setRehireParentId] = useState("");
   const [priorEmployeeId, setPriorEmployeeId] = useState("");
 
@@ -1115,6 +1118,16 @@ export default function UserProfilePage({ user: sessionUser }) {
         if (laundryExperience !== "") taPayload.laundry_experience = laundryExperience === "1";
         taPayload.clock_geofence_exempt = clockGeofenceExempt;
         taPayload.clock_in_gate_exempt = clockInGateExempt;
+        if (clearAttendancePin) {
+          taPayload.attendance_pin = "";
+        } else if (attendancePin.trim()) {
+          const ap = attendancePin.replace(/\D/g, "");
+          if (ap.length < 4 || ap.length > 10) {
+            setError(t("profile.errAttendancePinDigits"));
+            return;
+          }
+          taPayload.attendance_pin = ap;
+        }
         const geoCat =
           canEditPayrollRecords
             ? [
@@ -1216,6 +1229,8 @@ export default function UserProfilePage({ user: sessionUser }) {
         ]);
       }
 
+      setAttendancePin("");
+      setClearAttendancePin(false);
       await load({ skipHeavyCatalogs: true });
 
       if (
@@ -1799,6 +1814,36 @@ export default function UserProfilePage({ user: sessionUser }) {
               disabled={!canEditHrExtras}
               helperText={hasPayroll ? t("profile.payrollPasswordEdit") : t("profile.payrollPasswordCreate")}
             />
+            {hasPayroll ? (
+              <>
+                <TextField
+                  label={t("profile.attendancePinLabel")}
+                  type="password"
+                  inputMode="numeric"
+                  value={attendancePin}
+                  onChange={(e) => setAttendancePin(e.target.value.replace(/\D/g, "").slice(0, 10))}
+                  size="small"
+                  disabled={!canEditHrExtras || clearAttendancePin}
+                  helperText={
+                    normalizedRoles(sessionUser).some((r) =>
+                      ["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"].includes(r),
+                    )
+                      ? t("profile.attendancePinHintAdmin")
+                      : t("profile.attendancePinHint")
+                  }
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={clearAttendancePin}
+                      onChange={(e) => setClearAttendancePin(e.target.checked)}
+                      disabled={!canEditHrExtras}
+                    />
+                  }
+                  label={t("profile.attendancePinClear")}
+                />
+              </>
+            ) : null}
             <TextField
               label={t("profile.employeeId")}
               value={employeeId}

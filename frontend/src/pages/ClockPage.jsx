@@ -183,7 +183,19 @@ function ClockPage({ user: washproUser }) {
 
   const sharedDevice = asBool(clockUi.shared_device_attendance);
 
-  const redirectSharedDeviceLogin = useCallback(async () => {
+  const pinLockExcludedAdmin = useMemo(() => {
+    const roles = Array.isArray(washproUser?.roles)
+      ? washproUser.roles.map((r) => String(r).toUpperCase())
+      : [];
+    return (
+      roles.includes("ADMIN") ||
+      roles.includes("SUPER_ADMIN") ||
+      roles.includes("PLATFORM_ADMIN")
+    );
+  }, [washproUser?.roles]);
+
+  /** Clear session and show PIN lock (tenant admins keep the normal in-app session). */
+  const lockSharedDeviceScreen = useCallback(async () => {
     try {
       await authLogout();
     } catch {
@@ -200,10 +212,8 @@ function ClockPage({ user: washproUser }) {
         localStorage.getItem("washpro_org_slug")) ||
       washproUser?.organization_slug ||
       "";
-    const path = slug
-      ? `/login/${encodeURIComponent(String(slug).toLowerCase())}`
-      : "/login";
-    window.location.assign(path);
+    const s = String(slug).trim().toLowerCase();
+    window.location.assign(s ? `/kiosk/${encodeURIComponent(s)}` : "/login");
   }, [washproUser?.organization_slug]);
 
   const runWithPosition = (fn) => {
@@ -287,8 +297,8 @@ function ClockPage({ user: washproUser }) {
     runWithPosition(async (lat, lng) => {
       await taClockIn({ latitude: lat, longitude: lng });
       await refreshAfterAction();
-      if (asBool(clockUi.shared_device_attendance)) {
-        await redirectSharedDeviceLogin();
+      if (asBool(clockUi.shared_device_attendance) && !pinLockExcludedAdmin) {
+        await lockSharedDeviceScreen();
         return;
       }
       navigate("/", { replace: true });
@@ -304,8 +314,8 @@ function ClockPage({ user: washproUser }) {
         personal_laundry_bags: Math.max(0, Math.floor(Number(personalBags) || 0)),
       });
       await refreshAfterAction();
-      if (asBool(clockUi.shared_device_attendance)) {
-        await redirectSharedDeviceLogin();
+      if (asBool(clockUi.shared_device_attendance) && !pinLockExcludedAdmin) {
+        await lockSharedDeviceScreen();
         return;
       }
       navigate("/", { replace: true });
@@ -317,8 +327,8 @@ function ClockPage({ user: washproUser }) {
     runWithPosition(async (lat, lng) => {
       await taClockOut({ latitude: lat, longitude: lng });
       await refreshAfterAction();
-      if (asBool(clockUi.shared_device_attendance)) {
-        await redirectSharedDeviceLogin();
+      if (asBool(clockUi.shared_device_attendance) && !pinLockExcludedAdmin) {
+        await lockSharedDeviceScreen();
         return;
       }
       if (asBool(clockUi.sign_out_after_clock_out)) {
