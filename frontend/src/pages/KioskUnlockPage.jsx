@@ -92,19 +92,6 @@ export default function KioskUnlockPage({ onLoggedIn }) {
 
   useEffect(() => {
     if (!slug) return undefined;
-    try {
-      const u = getSavedUser();
-      if (u?.id && String(u.organization_slug || "").toLowerCase() === slug) {
-        navigate("/", { replace: true });
-      }
-    } catch {
-      /* ignore */
-    }
-    return undefined;
-  }, [slug, navigate]);
-
-  useEffect(() => {
-    if (!slug) return undefined;
     let cancelled = false;
     getPublicOrgBranding(slug)
       .then((res) => {

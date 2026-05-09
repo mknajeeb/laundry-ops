@@ -255,6 +255,25 @@ function AppShell() {
     if (!user) washproSessionSyncedRef.current = false;
   }, [user]);
 
+  /** Kiosk is anonymous: drop any stale Washpro/TA session once when entering /kiosk so the next PIN unlock applies cleanly. */
+  const kioskStripRef = useRef(false);
+  useEffect(() => {
+    if (!isKioskRoute(pathname)) {
+      kioskStripRef.current = false;
+      return;
+    }
+    if (kioskStripRef.current) return;
+    kioskStripRef.current = true;
+    clearAuthSession();
+    try {
+      localStorage.removeItem("ta_token");
+    } catch {
+      /* ignore */
+    }
+    setUser(null);
+    washproSessionSyncedRef.current = false;
+  }, [pathname]);
+
   useEffect(() => {
     async function bootstrap() {
       if (isLoginRoute(pathname) || isKioskRoute(pathname)) {
@@ -364,6 +383,16 @@ function AppShell() {
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
       </Box>
+    );
+  }
+
+  /** Full-screen lock screen: never wrap with sidebar / gates / previous user's session. */
+  if (isKioskRoute(pathname)) {
+    return (
+      <Routes>
+        <Route path="/kiosk/:orgSlug" element={<KioskUnlockPage onLoggedIn={setUser} />} />
+        <Route path="/kiosk" element={<Navigate to="/login" replace />} />
+      </Routes>
     );
   }
 
@@ -568,10 +597,6 @@ function AppShell() {
           <TenantNavAccessBoundary user={user} payrollNavVisible={payrollNavVisible}>
           <Routes>
             <Route path="/login/:orgSlug" element={<LoginWithOrgSlugRoute user={user} setUser={setUser} />} />
-            <Route
-              path="/kiosk/:orgSlug"
-              element={<KioskUnlockPage onLoggedIn={setUser} />}
-            />
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />

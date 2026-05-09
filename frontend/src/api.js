@@ -55,6 +55,10 @@ export const getSavedUser = () => {
 
 axios.interceptors.request.use((config) => {
   const url = String(config.url || "");
+  /** Public PIN unlock — never send another user's Bearer token. */
+  if (url.includes("/auth/attendance-pin-unlock")) {
+    return config;
+  }
   const isTa = url.includes("/api/ta/");
   config.headers = config.headers || {};
   const ta = localStorage.getItem("ta_token");
