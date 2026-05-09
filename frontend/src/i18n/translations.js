@@ -134,6 +134,9 @@ export const TRANSLATIONS = {
     "kiosk.useFullLogin": "Use username & password instead",
     "kiosk.backToLogin": "Back to login",
     "kiosk.invalidOrg": "Missing organization in the link.",
+    "kiosk.clearPin": "Clear",
+    "kiosk.scrollTeamUp": "Scroll team list up",
+    "kiosk.scrollTeamDown": "Scroll team list down",
 
     "home.displayFallback": "User",
     "home.attendance": "Attendance",
@@ -1187,6 +1190,9 @@ export const TRANSLATIONS = {
     "kiosk.useFullLogin": "Usar usuario y contraseña",
     "kiosk.backToLogin": "Volver al inicio de sesión",
     "kiosk.invalidOrg": "Falta la organización en el enlace.",
+    "kiosk.clearPin": "Borrar",
+    "kiosk.scrollTeamUp": "Subir lista del equipo",
+    "kiosk.scrollTeamDown": "Bajar lista del equipo",
 
     "home.displayFallback": "Usuario",
     "home.attendance": "Asistencia",

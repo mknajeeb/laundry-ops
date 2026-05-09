@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
@@ -7,13 +7,13 @@ import {
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   Paper,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
-import { Groups } from "@mui/icons-material";
+import { Backspace, Groups, KeyboardArrowDown, KeyboardArrowUp } from "@mui/icons-material";
 import {
   authAttendancePinUnlock,
   getPublicActiveClockIns,
@@ -24,6 +24,8 @@ import {
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
+
+const MAX_PIN_LEN = 10;
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -61,8 +63,30 @@ export default function KioskUnlockPage({ onLoggedIn }) {
   const [branding, setBranding] = useState(null);
   const [teamPeople, setTeamPeople] = useState([]);
   const [teamLoading, setTeamLoading] = useState(true);
+  const teamScrollRef = useRef(null);
+  const [teamCanScrollUp, setTeamCanScrollUp] = useState(false);
+  const [teamCanScrollDown, setTeamCanScrollDown] = useState(false);
 
   const localeTag = locale === "es" ? "es-US" : "en-US";
+
+  const updateTeamScrollArrows = useCallback(() => {
+    const el = teamScrollRef.current;
+    if (!el) return;
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    setTeamCanScrollUp(scrollTop > 2);
+    setTeamCanScrollDown(scrollTop + clientHeight < scrollHeight - 2);
+  }, []);
+
+  const scrollTeamList = useCallback(
+    (dir) => {
+      const el = teamScrollRef.current;
+      if (!el) return;
+      const step = Math.max(88, Math.round(el.clientHeight * 0.72));
+      el.scrollBy({ top: dir === "up" ? -step : step, behavior: "smooth" });
+      window.setTimeout(updateTeamScrollArrows, 400);
+    },
+    [updateTeamScrollArrows],
+  );
 
   const formatClockIn = useCallback(
     (iso) => {
@@ -127,6 +151,36 @@ export default function KioskUnlockPage({ onLoggedIn }) {
     return () => window.clearInterval(id);
   }, [slug, loadTeam]);
 
+  useLayoutEffect(() => {
+    if (teamLoading || teamPeople.length === 0) return;
+    const id = window.requestAnimationFrame(() => updateTeamScrollArrows());
+    return () => window.cancelAnimationFrame(id);
+  }, [teamPeople, teamLoading, updateTeamScrollArrows]);
+
+  useEffect(() => {
+    const el = teamScrollRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => updateTeamScrollArrows());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [teamPeople.length, teamLoading, updateTeamScrollArrows]);
+
+  const pinDigits = String(pin).replace(/\D/g, "");
+  const appendDigit = (n) => {
+    const ch = String(n).replace(/\D/g, "").slice(0, 1);
+    if (!ch) return;
+    setPin((p) => `${String(p).replace(/\D/g, "")}${ch}`.slice(0, MAX_PIN_LEN));
+    setError("");
+  };
+  const pinBackspace = () => {
+    setPin((p) => String(p).slice(0, -1));
+    setError("");
+  };
+  const pinClear = () => {
+    setPin("");
+    setError("");
+  };
+
   if (!slug) {
     return (
       <Box sx={{ p: 3, maxWidth: 420, mx: "auto" }}>
@@ -139,7 +193,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
   }
 
   const submit = async () => {
-    const digits = String(pin || "").replace(/\D/g, "");
+    const digits = pinDigits;
     setError("");
     if (digits.length < 4) {
       setError(t("kiosk.pinTooShort"));
@@ -255,25 +309,104 @@ export default function KioskUnlockPage({ onLoggedIn }) {
             >
               {t("kiosk.unlockSection")}
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2, mt: 0.75, lineHeight: 1.45 }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, mt: 0.75, lineHeight: 1.45 }}>
               {t("kiosk.pinCardHint")}
             </Typography>
-            <TextField
-              label={t("kiosk.pinLabel")}
-              type="password"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              fullWidth
-              value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 10))}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-              }}
-              disabled={loading}
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1, fontWeight: 600 }}>
+              {t("kiosk.pinLabel")}
+            </Typography>
+            <Box
               sx={{
-                "& .MuiOutlinedInput-root": { borderRadius: 2 },
+                display: "flex",
+                justifyContent: "center",
+                gap: 1.25,
+                minHeight: 44,
+                alignItems: "center",
+                mb: 2,
+                flexWrap: "wrap",
               }}
-            />
+              aria-live="polite"
+              aria-label={t("kiosk.pinLabel")}
+            >
+              {Array.from({
+                length: Math.min(MAX_PIN_LEN, Math.max(4, pinDigits.length || 4)),
+              }).map((_, i) => (
+                <Box
+                  key={i}
+                  sx={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: "50%",
+                    bgcolor: i < pinDigits.length ? "primary.main" : "action.disabledBackground",
+                    opacity: i < pinDigits.length ? 1 : 0.45,
+                  }}
+                />
+              ))}
+            </Box>
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, 1fr)",
+                gap: 1,
+                width: "100%",
+                maxWidth: 300,
+                mx: "auto",
+              }}
+            >
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                <Button
+                  key={num}
+                  variant="outlined"
+                  disabled={loading}
+                  onClick={() => appendDigit(num)}
+                  sx={{
+                    minHeight: 54,
+                    fontSize: "1.4rem",
+                    fontWeight: 700,
+                    borderRadius: 2,
+                    borderWidth: 2,
+                  }}
+                >
+                  {num}
+                </Button>
+              ))}
+              <IconButton
+                aria-label="Backspace"
+                disabled={loading || !pinDigits.length}
+                onClick={pinBackspace}
+                sx={{
+                  minHeight: 54,
+                  borderRadius: 2,
+                  border: "2px solid",
+                  borderColor: "divider",
+                }}
+              >
+                <Backspace sx={{ fontSize: 28 }} />
+              </IconButton>
+              <Button
+                variant="outlined"
+                disabled={loading}
+                onClick={() => appendDigit(0)}
+                sx={{
+                  minHeight: 54,
+                  fontSize: "1.4rem",
+                  fontWeight: 700,
+                  borderRadius: 2,
+                  borderWidth: 2,
+                }}
+              >
+                0
+              </Button>
+              <Button
+                variant="outlined"
+                color="secondary"
+                disabled={loading || !pinDigits.length}
+                onClick={pinClear}
+                sx={{ minHeight: 54, borderRadius: 2, fontWeight: 600, textTransform: "none" }}
+              >
+                {t("kiosk.clearPin")}
+              </Button>
+            </Box>
             {error ? (
               <Alert severity="error" sx={{ mt: 2, width: "100%" }}>
                 {error}
@@ -313,7 +446,9 @@ export default function KioskUnlockPage({ onLoggedIn }) {
             sx={{
               order: { xs: 2, md: 1 },
               flex: 1,
-              minHeight: { xs: 280, md: 420 },
+              minWidth: 0,
+              minHeight: { xs: 280, md: 360 },
+              maxHeight: { xs: "min(62vh, 520px)", md: "min(72vh, 640px)" },
               p: { xs: 2.25, sm: 3 },
               borderRadius: 4,
               border: "1px solid",
@@ -324,7 +459,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
               flexDirection: "column",
             }}
           >
-            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexShrink: 0 }}>
               <Groups sx={{ color: alpha("#e2e8f0", 0.9), fontSize: 28 }} />
               <Typography
                 variant="h6"
@@ -357,82 +492,130 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                 </Typography>
               </Box>
             ) : (
-              <Stack
-                spacing={1.25}
-                sx={{
-                  flex: 1,
-                  overflowY: "auto",
-                  pr: 0.5,
-                  maxHeight: { xs: 360, md: 520 },
-                }}
-              >
-                {teamPeople.map((p) => (
-                  <Stack
-                    key={String(p.user_id)}
-                    direction="row"
-                    alignItems="center"
-                    spacing={1.5}
+              <>
+                <Box
+                  ref={teamScrollRef}
+                  onScroll={updateTeamScrollArrows}
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: "auto",
+                    overflowX: "hidden",
+                    pr: 0.5,
+                    WebkitOverflowScrolling: "touch",
+                  }}
+                >
+                  <Stack spacing={1.25}>
+                    {teamPeople.map((p) => (
+                      <Stack
+                        key={String(p.user_id)}
+                        direction="row"
+                        alignItems="center"
+                        spacing={1.5}
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 2.5,
+                          bgcolor: alpha("#000000", 0.22),
+                          border: `1px solid ${alpha("#ffffff", 0.08)}`,
+                        }}
+                      >
+                        <Avatar
+                          sx={{
+                            width: 44,
+                            height: 44,
+                            fontWeight: 700,
+                            bgcolor: alpha("#6366f1", 0.85),
+                            color: "#fff",
+                          }}
+                        >
+                          {displayInitials(p.display_name)}
+                        </Avatar>
+                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                          <Typography
+                            sx={{
+                              fontWeight: 700,
+                              color: "#f8fafc",
+                              fontSize: "1rem",
+                              lineHeight: 1.25,
+                            }}
+                            noWrap
+                            title={p.display_name}
+                          >
+                            {p.display_name}
+                          </Typography>
+                          <Typography sx={{ fontSize: 12.5, color: alpha("#94a3b8", 1), mt: 0.25 }}>
+                            {t("kiosk.clockedInAt").replace("{time}", formatClockIn(p.clock_in_at))}
+                          </Typography>
+                        </Box>
+                        {p.on_break ? (
+                          <Chip
+                            label={t("kiosk.onBreakBadge")}
+                            size="small"
+                            sx={{
+                              fontWeight: 700,
+                              bgcolor: alpha("#f59e0b", 0.95),
+                              color: "#0f172a",
+                              flexShrink: 0,
+                            }}
+                          />
+                        ) : (
+                          <Chip
+                            label={t("kiosk.workingBadge")}
+                            size="small"
+                            sx={{
+                              fontWeight: 700,
+                              bgcolor: alpha("#10b981", 0.9),
+                              color: "#fff",
+                              flexShrink: 0,
+                            }}
+                          />
+                        )}
+                      </Stack>
+                    ))}
+                  </Stack>
+                </Box>
+                <Stack
+                  direction="row"
+                  justifyContent="center"
+                  alignItems="center"
+                  spacing={2}
+                  sx={{
+                    pt: 1.5,
+                    mt: "auto",
+                    flexShrink: 0,
+                    borderTop: `1px solid ${alpha("#ffffff", 0.1)}`,
+                  }}
+                >
+                  <IconButton
+                    size="large"
+                    onClick={() => scrollTeamList("up")}
+                    disabled={!teamCanScrollUp}
+                    aria-label={t("kiosk.scrollTeamUp")}
                     sx={{
-                      p: 1.5,
-                      borderRadius: 2.5,
-                      bgcolor: alpha("#000000", 0.22),
-                      border: `1px solid ${alpha("#ffffff", 0.08)}`,
+                      color: "#f8fafc",
+                      bgcolor: alpha("#000000", 0.35),
+                      "&:disabled": { opacity: 0.35 },
+                      "&:hover": { bgcolor: alpha("#000000", 0.5) },
                     }}
                   >
-                    <Avatar
-                      sx={{
-                        width: 44,
-                        height: 44,
-                        fontWeight: 700,
-                        bgcolor: alpha("#6366f1", 0.85),
-                        color: "#fff",
-                      }}
-                    >
-                      {displayInitials(p.display_name)}
-                    </Avatar>
-                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                      <Typography
-                        sx={{
-                          fontWeight: 700,
-                          color: "#f8fafc",
-                          fontSize: "1rem",
-                          lineHeight: 1.25,
-                        }}
-                        noWrap
-                        title={p.display_name}
-                      >
-                        {p.display_name}
-                      </Typography>
-                      <Typography sx={{ fontSize: 12.5, color: alpha("#94a3b8", 1), mt: 0.25 }}>
-                        {t("kiosk.clockedInAt").replace("{time}", formatClockIn(p.clock_in_at))}
-                      </Typography>
-                    </Box>
-                    {p.on_break ? (
-                      <Chip
-                        label={t("kiosk.onBreakBadge")}
-                        size="small"
-                        sx={{
-                          fontWeight: 700,
-                          bgcolor: alpha("#f59e0b", 0.95),
-                          color: "#0f172a",
-                          flexShrink: 0,
-                        }}
-                      />
-                    ) : (
-                      <Chip
-                        label={t("kiosk.workingBadge")}
-                        size="small"
-                        sx={{
-                          fontWeight: 700,
-                          bgcolor: alpha("#10b981", 0.9),
-                          color: "#fff",
-                          flexShrink: 0,
-                        }}
-                      />
-                    )}
-                  </Stack>
-                ))}
-              </Stack>
+                    <KeyboardArrowUp sx={{ fontSize: 32 }} />
+                  </IconButton>
+                  <IconButton
+                    size="large"
+                    onClick={() => scrollTeamList("down")}
+                    disabled={!teamCanScrollDown}
+                    aria-label={t("kiosk.scrollTeamDown")}
+                    sx={{
+                      color: "#f8fafc",
+                      bgcolor: alpha("#000000", 0.35),
+                      "&:disabled": { opacity: 0.35 },
+                      "&:hover": { bgcolor: alpha("#000000", 0.5) },
+                    }}
+                  >
+                    <KeyboardArrowDown sx={{ fontSize: 32 }} />
+                  </IconButton>
+                </Stack>
+              </>
             )}
           </Paper>
         </Stack>
