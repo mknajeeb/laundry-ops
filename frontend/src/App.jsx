@@ -1,4 +1,12 @@
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -46,7 +54,14 @@ import PlatformAdminPage from "./pages/PlatformAdminPage";
 import UserProfilePage from "./pages/UserProfilePage";
 import PayrollFormsHubPage from "./pages/PayrollFormsHubPage";
 import DocumentsEvidencePage from "./pages/DocumentsEvidencePage";
-import { authLogout, authMe, clearAuthSession, getClockPayrollUiSettings, getCurrentUploadBatch, getSavedUser } from "./api";
+import {
+  authLogout,
+  authMe,
+  clearAuthSession,
+  getClockPayrollUiSettings,
+  getCurrentUploadBatch,
+  getSavedUser,
+} from "./api";
 import { useAuth } from "./context/AuthContext";
 import { formatSystemDateLong } from "./utils/formatDateLocal";
 
@@ -118,6 +133,59 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
 function isLoginRoute(path) {
   const p = path || "";
   return p === "/login" || p.startsWith("/login/");
+}
+
+/** Same rules as LoginPage — kept in sync for tenant bookmark URLs. */
+function sanitizeOrgSlugParam(raw) {
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(String(raw))
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "")
+      .slice(0, 64);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Opening /login/other-tenant while still logged into another org used to redirect straight to /
+ * (because `user` was still set from localStorage). Clear session when slug ≠ current tenant.
+ */
+function LoginWithOrgSlugRoute({ user, setUser }) {
+  const { orgSlug: orgSlugParam } = useParams();
+  const slug = useMemo(() => sanitizeOrgSlugParam(orgSlugParam), [orgSlugParam]);
+  const userSlug = String(user?.organization_slug || "").toLowerCase();
+
+  useLayoutEffect(() => {
+    if (!user || !slug) return;
+    if (userSlug !== slug) {
+      try {
+        localStorage.removeItem("ta_token");
+      } catch {
+        /* ignore */
+      }
+      clearAuthSession();
+      setUser(null);
+    }
+  }, [user, slug, userSlug, setUser]);
+
+  if (!slug) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (user) {
+    if (userSlug === slug) {
+      return <Navigate to="/" replace />;
+    }
+    return (
+      <Box sx={{ flex: 1, minHeight: "36vh", width: "100%", display: "grid", placeItems: "center" }}>
+        <CircularProgress size={28} />
+      </Box>
+    );
+  }
+
+  return <LoginPage onLoggedIn={setUser} />;
 }
 
 /** Floor ops screens use StandardScreenHeader only — hide duplicate global bar (menu, locale, refresh). */
@@ -500,10 +568,7 @@ function AppShell() {
           <ClockInGate user={user}>
           <TenantNavAccessBoundary user={user} payrollNavVisible={payrollNavVisible}>
           <Routes>
-            <Route
-              path="/login/:orgSlug"
-              element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />}
-            />
+            <Route path="/login/:orgSlug" element={<LoginWithOrgSlugRoute user={user} setUser={setUser} />} />
             <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
             <Route path="/ta-login" element={<Navigate to="/" replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
