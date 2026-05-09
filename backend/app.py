@@ -804,6 +804,47 @@ def fetch_active_geofence(cursor):
     return cursor.fetchone()
 
 
+def sync_maintenance_geofence_to_ta_geofences(
+    conn, organization_id: int, label: str, latitude: float, longitude: float, radius_m: int, active: bool
+):
+    """
+    Maintenance → Geofence tab writes `geofence_settings` (legacy, single-tenant).
+    Time clock + payroll use `geofences` (per organization_id). Mirror the save so
+    clock-in finds a tenant geofence without a separate Attendance setup step.
+    """
+    c = conn.cursor()
+    if not table_exists(c, "geofences") or not table_has_column(c, "geofences", "organization_id"):
+        return
+    name = (label or "Work site").strip()[:255] or "Work site"
+    oid = int(organization_id)
+    rad = max(1, int(radius_m))
+    act = 1 if active else 0
+    desc = "Synced from Maintenance → Geofence tab."
+    c.execute(
+        "SELECT id FROM geofences WHERE organization_id=%s AND name=%s LIMIT 1",
+        (oid, name),
+    )
+    row = c.fetchone()
+    if row:
+        gid = int(row[0])
+        c.execute(
+            """
+            UPDATE geofences
+            SET latitude=%s, longitude=%s, radius_meters=%s, active=%s, location_description=%s
+            WHERE id=%s AND organization_id=%s
+            """,
+            (latitude, longitude, rad, act, desc, gid, oid),
+        )
+    else:
+        c.execute(
+            """
+            INSERT INTO geofences (organization_id, name, location_description, latitude, longitude, radius_meters, active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (oid, name, desc, latitude, longitude, rad, act),
+        )
+
+
 def get_upload_conflicts_pk(cursor):
     cursor.execute("SHOW COLUMNS FROM upload_conflicts LIKE 'id'")
     has_id = cursor.fetchone()
@@ -7781,6 +7822,24 @@ def save_geofence_config():
         ))
 
         conn.commit()
+
+        cur_u = conn.cursor(dictionary=True)
+        me, err_user, _ = require_user(cur_u)
+        if not err_user and me and me.get("organization_id") is not None:
+            try:
+                sync_maintenance_geofence_to_ta_geofences(
+                    conn,
+                    user_org_id(me),
+                    label,
+                    latitude,
+                    longitude,
+                    radius_m,
+                    active,
+                )
+                conn.commit()
+            except Exception as sync_e:
+                app.logger.exception("sync_maintenance_geofence_to_ta_geofences: %s", sync_e)
+
         return jsonify({"status": "saved"})
 
     except Exception as e:
