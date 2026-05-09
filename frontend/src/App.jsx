@@ -21,6 +21,7 @@ import {
   useMediaQuery,
 } from "@mui/material";
 import { ArrowBack, Logout, Menu, Refresh } from "@mui/icons-material";
+import TenantLogo from "./components/TenantLogo";
 import ClockInGate from "./components/ClockInGate";
 import MobileTenantDrawer from "./components/MobileTenantDrawer";
 import TenantNavAccessBoundary from "./components/TenantNavAccessBoundary";
@@ -99,18 +100,7 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
           }}
         >
           <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, flex: 1 }}>
-            <Box
-              component="img"
-              src="/washpro-mark.png"
-              alt=""
-              sx={{
-                width: 28,
-                height: 28,
-                flexShrink: 0,
-                objectFit: "contain",
-                display: "block",
-              }}
-            />
+            <TenantLogo logoUrl={user?.organization_logo_url} size={28} />
             <Typography component="span" noWrap sx={{ fontSize: 18, fontWeight: 700 }}>
               {user?.organization_name || "Washpro"}
             </Typography>

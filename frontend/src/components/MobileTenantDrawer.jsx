@@ -1,4 +1,5 @@
 import { Box, Button, Chip, Divider, Drawer, List, ListItemButton, ListItemText, Typography } from "@mui/material";
+import TenantLogo from "./TenantLogo";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useI18n } from "../i18n/I18nContext";
 import { useAuth } from "../context/AuthContext";
@@ -47,9 +48,12 @@ export default function MobileTenantDrawer({
           px: 1.5,
         }}
       >
-        <Typography sx={{ fontWeight: 700, fontSize: 18, px: 1, py: 1 }}>
-          {user?.organization_name || "Menu"}
-        </Typography>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, px: 1, py: 1 }}>
+          <TenantLogo logoUrl={user?.organization_logo_url} size={36} />
+          <Typography sx={{ fontWeight: 700, fontSize: 18 }}>
+            {user?.organization_name || "Menu"}
+          </Typography>
+        </Box>
         <Typography sx={{ fontSize: 13, color: "text.secondary", px: 1, pb: 1 }}>
           {user?.display_name || user?.username}
         </Typography>

@@ -24,6 +24,7 @@ import {
   setAuthSession,
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
+import TenantLogo from "../components/TenantLogo";
 function sanitizeSlug(raw) {
   if (!raw) return "";
   try {
@@ -285,18 +286,7 @@ function LoginPage({ onLoggedIn }) {
       >
         <Stack spacing={2}>
           <Box sx={{ minHeight: 44, display: "flex", alignItems: "center", gap: 1.25 }}>
-            <Box
-              component="img"
-              src="/washpro-mark.png"
-              alt=""
-              sx={{
-                width: 40,
-                height: 40,
-                flexShrink: 0,
-                objectFit: "contain",
-                display: "block",
-              }}
-            />
+            <TenantLogo logoUrl={branding?.logo_url} size={40} />
             <Typography sx={{ fontSize: 22, fontWeight: 700, color: "text.primary" }}>
               {branding?.display_name || "Washpro"}
             </Typography>

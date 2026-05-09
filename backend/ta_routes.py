@@ -140,6 +140,7 @@ def _default_clock_ui_dict() -> dict:
         "clock_in_gate_strict": False,
         "dim_app_until_clocked_in": False,
         "sign_out_after_clock_out": False,
+        "shared_device_attendance": False,
         "clock_out_require_inside_geofence": True,
         "geofence_reminder_enabled": True,
         "geofence_reminder_hours": 1.5,
@@ -709,6 +710,34 @@ def list_user_clock_geofences(conn, user_id: int):
     return c.fetchall() or []
 
 
+def effective_clock_geofences(conn, user_id: int, tenant_id: int):
+    """
+    Geofences used for clock-in/out and inside/outside checks.
+
+    Prefer explicit user_geofences assignments. If none, use the tenant's first active
+    geofence (same rule as _tenant_fallback_geofence_id) so orgs like VeeWash work once
+    a work area exists in `geofences`, without requiring HR to assign every employee first.
+    """
+    gfs = list_user_clock_geofences(conn, user_id)
+    if gfs:
+        return gfs
+    fid = _tenant_fallback_geofence_id(conn, int(tenant_id))
+    if not fid:
+        return []
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT g.*, 1 AS is_primary
+        FROM geofences g
+        WHERE g.id=%s AND g.organization_id=%s AND g.active=1
+        LIMIT 1
+        """,
+        (int(fid), int(tenant_id)),
+    )
+    row = c.fetchone()
+    return [row] if row else []
+
+
 def _tenant_fallback_geofence_id(conn, tenant_id: int) -> Optional[int]:
     """First active geofence in org (for shift_sessions.geofence_id when user has no assignment)."""
     c = conn.cursor()
@@ -764,7 +793,11 @@ def user_inside_assigned_geofences(
     True if (lat,lng) lies inside at least one assigned geofence.
     Returns (inside, distance_to_nearest_center, nearest_geofence_row).
     """
-    gfs = list_user_clock_geofences(conn, user_id)
+    cu = conn.cursor(dictionary=True)
+    cu.execute("SELECT organization_id FROM users WHERE id=%s LIMIT 1", (int(user_id),))
+    ur = cu.fetchone()
+    tid = int(ur["organization_id"]) if ur and ur.get("organization_id") is not None else 1
+    gfs = effective_clock_geofences(conn, user_id, tid)
     if not gfs:
         return False, None, None
     nearest_d = None
@@ -1328,7 +1361,7 @@ def my_geofence():
     conn = get_db()
     try:
         exempt = user_clock_geofence_exempt(conn, g.ta_user["id"])
-        gfs = list_user_clock_geofences(conn, g.ta_user["id"])
+        gfs = effective_clock_geofences(conn, g.ta_user["id"], _tenant_id())
         if exempt:
             if gfs:
                 body = dict(gfs[0])
@@ -1519,7 +1552,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
             sess["elapsed_work_seconds"] = max(0, elapsed - break_live)
             exempt = user_clock_geofence_exempt(conn, ta_user["id"])
             sess["clock_geofence_exempt"] = exempt
-            gfs = list_user_clock_geofences(conn, ta_user["id"])
+            gfs = effective_clock_geofences(conn, ta_user["id"], tenant_id)
             gfn = gfs[0] if gfs else None
             inside = None
             if exempt:
@@ -1586,7 +1619,7 @@ def _build_sessions_current_payload(conn, ta_user: dict, tenant_id: int, lat, ln
                 sess["last_geofence_inside"] = 1 if inside else 0
 
     elif lat is not None and lng is not None:
-        _gfs_rem = list_user_clock_geofences(conn, ta_user["id"])
+        _gfs_rem = effective_clock_geofences(conn, ta_user["id"], tenant_id)
         inside = None
         if user_clock_geofence_exempt(conn, ta_user["id"]):
             inside = None
@@ -1664,11 +1697,14 @@ def get_operational_state(
     )
     if ob:
         return {"allowed": False, "reasons": ["on_break"]}
-    gfs = (
-        list_user_clock_geofences(conn, user_id)
-        if assigned_geofences_cached is _MISSING_OP_STATE
-        else assigned_geofences_cached
-    )
+    if assigned_geofences_cached is not _MISSING_OP_STATE:
+        gfs = assigned_geofences_cached
+    else:
+        cu = conn.cursor(dictionary=True)
+        cu.execute("SELECT organization_id FROM users WHERE id=%s LIMIT 1", (int(user_id),))
+        ur = cu.fetchone()
+        tid_g = int(ur["organization_id"]) if ur and ur.get("organization_id") is not None else 1
+        gfs = effective_clock_geofences(conn, user_id, tid_g)
     if not gfs and not geofence_exempt:
         return {"allowed": False, "reasons": ["no_geofence"]}
     if geofence_inside is False and not geofence_exempt:
@@ -1681,12 +1717,18 @@ def get_operational_state(
 @require_perm("ta.clock")
 def clock_in():
     data = request.json or {}
-    lat = data.get("latitude")
-    lng = data.get("longitude")
+    lat_raw = data.get("latitude")
+    lng_raw = data.get("longitude")
     employment_category_id = data.get("employment_category_id")
 
-    if lat is None or lng is None:
-        return jsonify({"error": "latitude and longitude required"}), 400
+    lat_f = None
+    lng_f = None
+    if lat_raw is not None and lng_raw is not None:
+        try:
+            lat_f = float(lat_raw)
+            lng_f = float(lng_raw)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Invalid coordinates"}), 400
 
     conn = get_db()
     try:
@@ -1705,9 +1747,15 @@ def clock_in():
             return jsonify({"error": "Already clocked in"}), 400
 
         exempt = user_clock_geofence_exempt(conn, g.ta_user["id"])
-        gfs = list_user_clock_geofences(conn, g.ta_user["id"])
+        ui_ci = load_clock_payroll_ui(conn, _tenant_id())
+        kiosk = as_bool((ui_ci.get("clock") or {}).get("shared_device_attendance"), False)
+
+        if lat_f is None and not exempt and not kiosk:
+            return jsonify({"error": "latitude and longitude required"}), 400
+
+        gfs = effective_clock_geofences(conn, g.ta_user["id"], _tenant_id())
         geofence_id_for_session = None
-        if exempt:
+        if exempt or (kiosk and lat_f is None):
             if gfs:
                 geofence_id_for_session = int(gfs[0]["id"])
             else:
@@ -1721,10 +1769,12 @@ def clock_in():
                     ), 400
                 geofence_id_for_session = fid
         else:
+            if lat_f is None or lng_f is None:
+                return jsonify({"error": "latitude and longitude required"}), 400
             if not gfs:
                 return jsonify({"error": "Assign at least one geofence before clock-in"}), 400
             inside, dist, matched_gf = user_inside_assigned_geofences(
-                conn, g.ta_user["id"], float(lat), float(lng)
+                conn, g.ta_user["id"], lat_f, lng_f
             )
             if not inside:
                 ref = gfs[0]
@@ -1785,7 +1835,6 @@ def clock_in():
         chk_ci = conn.cursor()
         has_plb_ci = table_has_column(chk_ci, "shift_sessions", "personal_laundry_bags")
         started_today_ct = count_shift_sessions_starting_today_est(conn, g.ta_user["id"])
-        ui_ci = load_clock_payroll_ui(conn, _tenant_id())
         ask_bags_ci = as_bool(ui_ci.get("clock", {}).get("ask_personal_laundry_bags"), False)
         plb_val = None
         if has_plb_ci:
@@ -1817,8 +1866,8 @@ def clock_in():
                     geofence_id_for_session,
                     employment_category_id,
                     now,
-                    float(lat),
-                    float(lng),
+                    lat_f,
+                    lng_f,
                     plb_val,
                 ),
             )
@@ -1837,8 +1886,8 @@ def clock_in():
                     geofence_id_for_session,
                     employment_category_id,
                     now,
-                    float(lat),
-                    float(lng),
+                    lat_f,
+                    lng_f,
                 ),
             )
         sid = c2.lastrowid
@@ -1888,7 +1937,8 @@ def clock_out():
         require_inside_co = as_bool(
             clock_cfg.get("clock_out_require_inside_geofence"), True
         )
-        if require_inside_co and not user_clock_geofence_exempt(conn, g.ta_user["id"]):
+        kiosk_co = as_bool(clock_cfg.get("shared_device_attendance"), False)
+        if require_inside_co and not user_clock_geofence_exempt(conn, g.ta_user["id"]) and not kiosk_co:
             if lat is None or lng is None:
                 return jsonify(
                     {
@@ -1896,7 +1946,7 @@ def clock_out():
                         "detail": "Location is required to clock out so we can verify you are at work.",
                     }
                 ), 400
-            gfs_co = list_user_clock_geofences(conn, g.ta_user["id"])
+            gfs_co = effective_clock_geofences(conn, g.ta_user["id"], _tenant_id())
             if not gfs_co:
                 return jsonify({"error": "No geofence assigned"}), 400
             try:

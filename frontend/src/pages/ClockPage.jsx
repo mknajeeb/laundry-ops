@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  Alert,
   Box,
   Button,
   CircularProgress,
@@ -13,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  authLogout,
   getClockPayrollUiSettings,
   getTaSessionCurrent,
   taBreakEnd,
@@ -27,6 +29,7 @@ import { asBool } from "../utils/bool";
 const DEFAULT_CLOCK_UI = {
   dim_app_until_clocked_in: false,
   sign_out_after_clock_out: false,
+  shared_device_attendance: false,
 };
 
 function normalizeClockUi(raw) {
@@ -36,6 +39,7 @@ function normalizeClockUi(raw) {
     ask_personal_laundry_bags: asBool(d.ask_personal_laundry_bags, false),
     dim_app_until_clocked_in: asBool(d.dim_app_until_clocked_in, false),
     sign_out_after_clock_out: asBool(d.sign_out_after_clock_out, false),
+    shared_device_attendance: asBool(d.shared_device_attendance, false),
   };
 }
 
@@ -53,6 +57,7 @@ function ClockPage({ user: washproUser }) {
   const [bagsDialogOpen, setBagsDialogOpen] = useState(false);
   const [personalBags, setPersonalBags] = useState(0);
   const [checkoutConfirmOpen, setCheckoutConfirmOpen] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   const lastPosRef = useRef({ lat: null, lng: null });
 
@@ -176,22 +181,85 @@ function ClockPage({ user: washproUser }) {
     return () => clearInterval(id);
   }, [authLoading, isClockedIn, refreshAll]);
 
+  const sharedDevice = asBool(clockUi.shared_device_attendance);
+
+  const redirectSharedDeviceLogin = useCallback(async () => {
+    try {
+      await authLogout();
+    } catch {
+      /* ignore */
+    }
+    clearAuthSession();
+    try {
+      localStorage.removeItem("ta_token");
+    } catch {
+      /* ignore */
+    }
+    const slug =
+      (typeof localStorage.getItem("washpro_org_slug") === "string" &&
+        localStorage.getItem("washpro_org_slug")) ||
+      washproUser?.organization_slug ||
+      "";
+    const path = slug
+      ? `/login/${encodeURIComponent(String(slug).toLowerCase())}`
+      : "/login";
+    window.location.assign(path);
+  }, [washproUser?.organization_slug]);
+
   const runWithPosition = (fn) => {
+    const run = async (lat, lng) => {
+      setActionError("");
+      try {
+        await fn(lat, lng);
+      } catch (e) {
+        console.error(e);
+        const msg =
+          e?.response?.data?.error ||
+          e?.response?.data?.detail ||
+          e?.message ||
+          "Clock action failed";
+        setActionError(typeof msg === "string" ? msg : "Clock action failed");
+      }
+    };
+
+    if (sharedDevice) {
+      setBusy(true);
+      navigator.geolocation?.getCurrentPosition(
+        async (position) => {
+          const { latitude, longitude } = position.coords;
+          lastPosRef.current = { lat: latitude, lng: longitude };
+          try {
+            await run(latitude, longitude);
+          } finally {
+            setBusy(false);
+          }
+        },
+        async () => {
+          try {
+            await run(null, null);
+          } finally {
+            setBusy(false);
+          }
+        },
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+      );
+      return;
+    }
+
     setBusy(true);
     navigator.geolocation?.getCurrentPosition(
       async (position) => {
         const { latitude, longitude } = position.coords;
         lastPosRef.current = { lat: latitude, lng: longitude };
         try {
-          await fn(latitude, longitude);
-        } catch (error) {
-          console.error(error);
+          await run(latitude, longitude);
         } finally {
           setBusy(false);
         }
       },
       () => {
         setBusy(false);
+        setActionError(t("clock.locationRequired"));
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
     );
@@ -215,6 +283,10 @@ function ClockPage({ user: washproUser }) {
     runWithPosition(async (lat, lng) => {
       await taClockIn({ latitude: lat, longitude: lng });
       await refreshAfterAction();
+      if (asBool(clockUi.shared_device_attendance)) {
+        await redirectSharedDeviceLogin();
+        return;
+      }
       navigate("/", { replace: true });
     });
   };
@@ -228,6 +300,10 @@ function ClockPage({ user: washproUser }) {
         personal_laundry_bags: Math.max(0, Math.floor(Number(personalBags) || 0)),
       });
       await refreshAfterAction();
+      if (asBool(clockUi.shared_device_attendance)) {
+        await redirectSharedDeviceLogin();
+        return;
+      }
       navigate("/", { replace: true });
     });
   };
@@ -237,6 +313,10 @@ function ClockPage({ user: washproUser }) {
     runWithPosition(async (lat, lng) => {
       await taClockOut({ latitude: lat, longitude: lng });
       await refreshAfterAction();
+      if (asBool(clockUi.shared_device_attendance)) {
+        await redirectSharedDeviceLogin();
+        return;
+      }
       if (asBool(clockUi.sign_out_after_clock_out)) {
         clearAuthSession();
         navigate("/login", { replace: true });
@@ -282,6 +362,11 @@ function ClockPage({ user: washproUser }) {
           textAlign: "center",
         }}
       >
+        {actionError ? (
+          <Alert severity="warning" sx={{ mb: 2, textAlign: "left" }} onClose={() => setActionError("")}>
+            {actionError}
+          </Alert>
+        ) : null}
         {!isClockedIn ? (
           <Stack spacing={3} alignItems="center">
             <Typography

@@ -5,6 +5,7 @@ import { getClockPayrollUiSettings } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
+import TenantLogo from "./TenantLogo";
 
 function Sidebar({ activeBatch, user, onLogout }) {
   const { locale, setLocale, t } = useI18n();
@@ -44,18 +45,7 @@ function Sidebar({ activeBatch, user, onLogout }) {
     >
       <Box sx={{ mb: 1, minHeight: 44, flexShrink: 0, display: "flex", alignItems: "center" }}>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
-          <Box
-            component="img"
-            src="/washpro-mark.png"
-            alt=""
-            sx={{
-              width: 40,
-              height: 40,
-              flexShrink: 0,
-              objectFit: "contain",
-              display: "block",
-            }}
-          />
+          <TenantLogo logoUrl={user?.organization_logo_url} size={40} />
           <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
             {user?.organization_name || "Washpro"}
           </Typography>

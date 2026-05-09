@@ -26,6 +26,7 @@ export const DEFAULT_CLOCK_PAYROLL_UI = {
     clock_in_gate_strict: false,
     dim_app_until_clocked_in: false,
     sign_out_after_clock_out: false,
+    shared_device_attendance: false,
     clock_out_require_inside_geofence: true,
     geofence_reminder_enabled: true,
     geofence_reminder_hours: 1.5,
@@ -273,6 +274,20 @@ export default function ClockPayrollUiSettingsPanel() {
             />
           }
           label="After clock out, sign the user out of the app (return to login)"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={!!clockPayrollUi.clock.shared_device_attendance}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, shared_device_attendance: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="Shared tablet / PC attendance: allow clock in/out without GPS; after each clock in or out, sign out and return to the tenant login so the next employee enters their username and password"
         />
         <FormControlLabel
           control={

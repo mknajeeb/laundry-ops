@@ -111,6 +111,8 @@ export const TRANSLATIONS = {
     "clock.personalLaundryHelpLead": "How many bags did you bring for personal laundry today?",
     "clock.personalLaundryHelpNote": "(First clock-in of the day only.)",
     "clock.loading": "Loading…",
+    "clock.locationRequired":
+      "Location access is required to clock in or out on this device. Enable GPS/location for the browser, or ask an admin to turn on “Shared tablet / PC attendance” for your organization.",
 
     "home.displayFallback": "User",
     "home.attendance": "Attendance",
@@ -1130,6 +1132,8 @@ export const TRANSLATIONS = {
     "clock.personalLaundryHelpLead": "¿Cuántas bolsas trajo para lavandería personal hoy?",
     "clock.personalLaundryHelpNote": "(Solo en la primera entrada del día.)",
     "clock.loading": "Cargando…",
+    "clock.locationRequired":
+      "Se requiere ubicación para fichar en este dispositivo. Active el GPS o pida al administrador que active “Asistencia en tableta / PC compartida” para su organización.",
 
     "home.displayFallback": "Usuario",
     "home.attendance": "Asistencia",
