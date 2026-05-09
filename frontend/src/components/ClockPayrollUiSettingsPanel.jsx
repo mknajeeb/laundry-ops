@@ -27,6 +27,8 @@ export const DEFAULT_CLOCK_PAYROLL_UI = {
     dim_app_until_clocked_in: false,
     sign_out_after_clock_out: false,
     shared_device_attendance: false,
+    kiosk_idle_lock_enabled: true,
+    kiosk_idle_lock_seconds: 30,
     clock_out_require_inside_geofence: true,
     geofence_reminder_enabled: true,
     geofence_reminder_hours: 1.5,
@@ -288,6 +290,40 @@ export default function ClockPayrollUiSettingsPanel() {
             />
           }
           label="Shared tablet / PC attendance: allow clock in/out without GPS; after each clock in or out, lock the app with the PIN lock screen so the next employee unlocks with their payroll attendance PIN (tenant admins stay signed in)"
+        />
+        <FormControlLabel
+          control={
+            <Checkbox
+              checked={clockPayrollUi.clock.kiosk_idle_lock_enabled !== false}
+              onChange={(e) =>
+                setClockPayrollUi((p) => ({
+                  ...p,
+                  clock: { ...p.clock, kiosk_idle_lock_enabled: e.target.checked },
+                }))
+              }
+            />
+          }
+          label="Auto-lock shared tablet after idle (no taps or keys); uses interval below when shared-tablet mode is on"
+        />
+        <TextField
+          label="Idle lock timeout (seconds)"
+          type="number"
+          size="small"
+          inputProps={{ min: 0, max: 3600, step: 5 }}
+          value={Number(clockPayrollUi.clock.kiosk_idle_lock_seconds ?? 30)}
+          onChange={(e) =>
+            setClockPayrollUi((p) => ({
+              ...p,
+              clock: {
+                ...p.clock,
+                kiosk_idle_lock_seconds: Math.max(
+                  0,
+                  Math.min(3600, Math.floor(Number(e.target.value) || 0)),
+                ),
+              },
+            }))
+          }
+          helperText="Default 30. Use 0 to disable auto-lock only (manual Lock button still works when shared-tablet mode is on)."
         />
         <FormControlLabel
           control={

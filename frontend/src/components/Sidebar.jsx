@@ -7,7 +7,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 import TenantLogo from "./TenantLogo";
 
-function Sidebar({ activeBatch, user, onLogout }) {
+function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
   const { locale, setLocale, t } = useI18n();
   const { loading: authLoading, hasPerm } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
@@ -58,6 +58,17 @@ function Sidebar({ activeBatch, user, onLogout }) {
         {roles.map((r) => <Chip key={r} label={r} size="small" sx={{ bgcolor: "#1e293b", color: "#cbd5e1" }} />)}
       </Stack>
 
+      {showKioskLock ? (
+        <Button
+          fullWidth
+          size="small"
+          variant="outlined"
+          sx={{ mb: 1.2, flexShrink: 0, borderColor: "#475569", color: "#e2e8f0", py: 0.75 }}
+          onClick={onKioskLock}
+        >
+          {t("nav.lockTablet")}
+        </Button>
+      ) : null}
       <Typography sx={{ fontSize: 11, color: "#94a3b8", mb: 0.5, flexShrink: 0 }}>{t("lang.label")}</Typography>
       <ToggleButtonGroup
         size="small"

@@ -141,6 +141,8 @@ def _default_clock_ui_dict() -> dict:
         "dim_app_until_clocked_in": False,
         "sign_out_after_clock_out": False,
         "shared_device_attendance": False,
+        "kiosk_idle_lock_enabled": True,
+        "kiosk_idle_lock_seconds": 30,
         "clock_out_require_inside_geofence": True,
         "geofence_reminder_enabled": True,
         "geofence_reminder_hours": 1.5,

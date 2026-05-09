@@ -20,7 +20,7 @@ import {
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { ArrowBack, Logout, Menu, Refresh } from "@mui/icons-material";
+import { ArrowBack, Lock, Logout, Menu, Refresh } from "@mui/icons-material";
 import TenantLogo from "./components/TenantLogo";
 import ClockInGate from "./components/ClockInGate";
 import MobileTenantDrawer from "./components/MobileTenantDrawer";
@@ -66,8 +66,10 @@ import {
 } from "./api";
 import { useAuth } from "./context/AuthContext";
 import { formatSystemDateLong } from "./utils/formatDateLocal";
+import { applyAppIconFromOrganizationLogo } from "./utils/appIcon";
+import { lockSessionToKiosk } from "./utils/kioskLockNavigation";
 
-function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
+function MobileTopBar({ pathname, user, onOpenNav, onLogout, showKioskLock, onKioskLock }) {
   const navigate = useNavigate();
   const { locale, setLocale, t } = useI18n();
   const canGoBack = pathname !== "/";
@@ -108,6 +110,11 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout }) {
           </Box>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mr: 0.5 }}>
+          {showKioskLock ? (
+            <IconButton size="small" onClick={onKioskLock} aria-label={t("nav.lockTablet")} sx={{ mr: 0.25 }}>
+              <Lock sx={{ fontSize: 18 }} />
+            </IconButton>
+          ) : null}
           <Button size="small" variant={locale === "en" ? "contained" : "text"} onClick={() => setLocale("en")} sx={{ minWidth: 40 }}>EN</Button>
           <Button size="small" variant={locale === "es" ? "contained" : "text"} onClick={() => setLocale("es")} sx={{ minWidth: 40 }}>ES</Button>
         </Box>
@@ -226,6 +233,11 @@ function AppShell() {
   const [activeBatch, setActiveBatch] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
+  const [clockKiosk, setClockKiosk] = useState({
+    sharedDevice: false,
+    idleLockEnabled: true,
+    idleLockSeconds: 30,
+  });
   const [user, setUser] = useState(getSavedUser());
   const [authLoading, setAuthLoading] = useState(true);
   /** Avoid calling GET /auth/me on every client-side navigation (was a major local slowness). */
@@ -327,14 +339,78 @@ function AppShell() {
   }, [pathname, user?.id]);
 
   useEffect(() => {
-    if (!user?.id || isPlatformOnlyUser(user)) return;
+    if (!user?.id || isPlatformOnlyUser(user)) return undefined;
+    let cancelled = false;
     getClockPayrollUiSettings()
       .then((res) => {
+        if (cancelled) return;
         const v = res.data?.payroll?.nav_payroll_visible;
         setPayrollNavVisible(v !== false);
+        const c = res.data?.clock || {};
+        const sec = Number(c.kiosk_idle_lock_seconds);
+        setClockKiosk({
+          sharedDevice: !!c.shared_device_attendance,
+          idleLockEnabled: c.kiosk_idle_lock_enabled !== false,
+          idleLockSeconds: Number.isFinite(sec) && sec >= 0 ? sec : 30,
+        });
       })
-      .catch(() => setPayrollNavVisible(true));
+      .catch(() => {
+        if (!cancelled) setPayrollNavVisible(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id]);
+
+  const kioskRoleExcluded = useMemo(() => {
+    const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
+    return roles.some((r) => ["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"].includes(r));
+  }, [user?.roles]);
+
+  const showKioskLock =
+    !!user?.id &&
+    clockKiosk.sharedDevice &&
+    !kioskRoleExcluded &&
+    !isPlatformOnlyUser(user);
+
+  const handleKioskLock = useCallback(() => {
+    lockSessionToKiosk(user?.organization_slug);
+  }, [user?.organization_slug]);
+
+  useEffect(() => {
+    applyAppIconFromOrganizationLogo(user?.organization_logo_url ?? null);
+  }, [user?.organization_logo_url]);
+
+  const idleTimerRef = useRef(null);
+  useEffect(() => {
+    const idleOn =
+      showKioskLock &&
+      clockKiosk.idleLockEnabled &&
+      clockKiosk.idleLockSeconds > 0 &&
+      !isLoginRoute(pathname) &&
+      !isKioskRoute(pathname);
+    if (!idleOn) return undefined;
+    const ms = clockKiosk.idleLockSeconds * 1000;
+    const arm = () => {
+      window.clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = window.setTimeout(() => {
+        lockSessionToKiosk(user?.organization_slug);
+      }, ms);
+    };
+    const events = ["pointerdown", "keydown", "scroll", "touchstart", "click"];
+    events.forEach((e) => window.addEventListener(e, arm, { passive: true }));
+    arm();
+    return () => {
+      window.clearTimeout(idleTimerRef.current);
+      events.forEach((e) => window.removeEventListener(e, arm));
+    };
+  }, [
+    showKioskLock,
+    clockKiosk.idleLockEnabled,
+    clockKiosk.idleLockSeconds,
+    pathname,
+    user?.organization_slug,
+  ]);
 
   const refreshUploadBatchBadge = useCallback(async () => {
     if (!user?.id) return;
@@ -463,7 +539,13 @@ function AppShell() {
       {!isMobile && user && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
         <PlatformSidebar user={user} onLogout={doLogout} showTenantEntry />
       ) : (
-        <Sidebar activeBatch={activeBatch} user={user} onLogout={doLogout} />
+        <Sidebar
+          activeBatch={activeBatch}
+          user={user}
+          onLogout={doLogout}
+          showKioskLock={showKioskLock}
+          onKioskLock={handleKioskLock}
+        />
       ))}
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {isMobile && user && (
@@ -574,7 +656,14 @@ function AppShell() {
                 </Toolbar>
               </AppBar>
             ) : (
-              <MobileTopBar pathname={pathname} user={user} onOpenNav={() => setMobileNavOpen(true)} onLogout={doLogout} />
+              <MobileTopBar
+                pathname={pathname}
+                user={user}
+                onOpenNav={() => setMobileNavOpen(true)}
+                onLogout={doLogout}
+                showKioskLock={showKioskLock}
+                onKioskLock={handleKioskLock}
+              />
             )}
           </>
         )}
