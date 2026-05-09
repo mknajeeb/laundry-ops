@@ -117,10 +117,10 @@ export const TRANSLATIONS = {
     "clock.locationRequired":
       "Location access is required to clock in or out on this device. Enable GPS/location for the browser, or ask an admin to turn on “Shared tablet / PC attendance” for your organization.",
 
-    "kiosk.subtitle": "Enter your attendance PIN to unlock this tablet.",
-    "kiosk.heroSubtitle": "Shared tablet — unlock with your attendance PIN",
+    "kiosk.subtitle": "Enter your PIN.",
+    "kiosk.heroSubtitle": "",
     "kiosk.unlockSection": "Unlock",
-    "kiosk.pinCardHint": "Use the attendance PIN from your employee profile (set by your admin).",
+    "kiosk.pinCardHint": "",
     "kiosk.atWorkNow": "Currently at work",
     "kiosk.noOneClockedIn": "No one is clocked in right now.",
     "kiosk.clockedInAt": "Since {time}",
@@ -1173,10 +1173,10 @@ export const TRANSLATIONS = {
     "clock.locationRequired":
       "Se requiere ubicación para fichar en este dispositivo. Active el GPS o pida al administrador que active “Asistencia en tableta / PC compartida” para su organización.",
 
-    "kiosk.subtitle": "Ingrese su PIN de asistencia para desbloquear esta tableta.",
-    "kiosk.heroSubtitle": "Tableta compartida — desbloquee con su PIN de asistencia",
+    "kiosk.subtitle": "Ingrese su PIN.",
+    "kiosk.heroSubtitle": "",
     "kiosk.unlockSection": "Desbloquear",
-    "kiosk.pinCardHint": "Use el PIN de asistencia de su perfil de empleado (lo configura su administrador).",
+    "kiosk.pinCardHint": "",
     "kiosk.atWorkNow": "En el trabajo ahora",
     "kiosk.noOneClockedIn": "Nadie ha fichado entrada en este momento.",
     "kiosk.clockedInAt": "Desde las {time}",

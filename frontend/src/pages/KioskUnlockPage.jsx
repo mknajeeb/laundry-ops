@@ -27,6 +27,44 @@ import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 
 const MAX_PIN_LEN = 10;
 
+/** Semi-transparent keys over the dark kiosk background */
+function glassKeySx() {
+  return {
+    minHeight: { xs: 44, sm: 42 },
+    fontSize: "1.05rem",
+    fontWeight: 600,
+    borderRadius: 2,
+    color: "#f1f5f9",
+    py: 0.5,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: alpha("#ffffff", 0.22),
+    bgcolor: alpha("#ffffff", 0.07),
+    backdropFilter: "blur(12px)",
+    "&:hover": {
+      borderColor: alpha("#ffffff", 0.4),
+      bgcolor: alpha("#ffffff", 0.12),
+    },
+    "&.Mui-disabled": {
+      borderColor: alpha("#ffffff", 0.1),
+      color: alpha("#ffffff", 0.35),
+    },
+  };
+}
+
+function glassIconKeySx() {
+  return {
+    minHeight: { xs: 44, sm: 42 },
+    borderRadius: 2,
+    color: "#e2e8f0",
+    border: `1px solid ${alpha("#ffffff", 0.22)}`,
+    bgcolor: alpha("#ffffff", 0.07),
+    backdropFilter: "blur(12px)",
+    "&:hover": { bgcolor: alpha("#ffffff", 0.12) },
+    "&.Mui-disabled": { opacity: 0.4 },
+  };
+}
+
 function sanitizeSlug(raw) {
   if (!raw) return "";
   try {
@@ -235,95 +273,92 @@ export default function KioskUnlockPage({ onLoggedIn }) {
   return (
     <Box
       sx={{
-        minHeight: "100%",
-        py: { xs: 2.5, sm: 4 },
-        px: { xs: 1.5, sm: 2.5 },
+        minHeight: "100dvh",
+        display: "flex",
+        flexDirection: "column",
+        py: { xs: 1, sm: 1.25 },
+        px: { xs: 1, sm: 1.5 },
         background: `
-          radial-gradient(ellipse 85% 55% at 15% 5%, ${alpha("#6366f1", 0.35)}, transparent 52%),
-          radial-gradient(ellipse 70% 45% at 92% 88%, ${alpha("#0ea5e9", 0.22)}, transparent 48%),
+          radial-gradient(ellipse 85% 55% at 15% 5%, ${alpha("#6366f1", 0.28)}, transparent 52%),
+          radial-gradient(ellipse 70% 45% at 92% 88%, ${alpha("#0ea5e9", 0.18)}, transparent 48%),
           linear-gradient(168deg, #0b1220 0%, #111827 42%, #0f172a 100%)
         `,
       }}
     >
-      <Box sx={{ maxWidth: 1080, mx: "auto" }}>
+      <Box
+        sx={{
+          maxWidth: 1080,
+          mx: "auto",
+          width: "100%",
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+        }}
+      >
         <Paper
           elevation={0}
           sx={{
-            mb: 2.5,
-            p: { xs: 2, sm: 2.5 },
-            borderRadius: 4,
+            mb: { xs: 1, sm: 1.25 },
+            py: { xs: 1, sm: 1.15 },
+            px: { xs: 1.25, sm: 1.5 },
+            borderRadius: 3,
             border: "1px solid",
-            borderColor: alpha("#ffffff", 0.12),
+            borderColor: alpha("#ffffff", 0.14),
             bgcolor: alpha("#ffffff", 0.06),
             backdropFilter: "blur(14px)",
+            flexShrink: 0,
           }}
         >
-          <Stack direction="row" alignItems="center" spacing={2} sx={{ minWidth: 0 }}>
-            <TenantLogo logoUrl={branding?.logo_url} size={52} sx={{ flexShrink: 0 }} />
-            <Box sx={{ minWidth: 0 }}>
-              <Typography
-                sx={{
-                  fontSize: { xs: "1.35rem", sm: "1.6rem" },
-                  fontWeight: 700,
-                  color: "#f8fafc",
-                  letterSpacing: "-0.02em",
-                  lineHeight: 1.2,
-                }}
-                noWrap
-                title={orgTitle}
-              >
-                {orgTitle}
-              </Typography>
-              <Typography sx={{ color: alpha("#e2e8f0", 0.75), fontSize: 13, mt: 0.35 }}>
-                {t("kiosk.heroSubtitle")}
-              </Typography>
-            </Box>
+          <Stack direction="row" alignItems="center" spacing={1.5} sx={{ minWidth: 0 }}>
+            <TenantLogo logoUrl={branding?.logo_url} size={40} sx={{ flexShrink: 0 }} />
+            <Typography
+              sx={{
+                fontSize: { xs: "1.15rem", sm: "1.25rem" },
+                fontWeight: 700,
+                color: "#f8fafc",
+                letterSpacing: "-0.02em",
+                lineHeight: 1.2,
+              }}
+              noWrap
+              title={orgTitle}
+            >
+              {orgTitle}
+            </Typography>
           </Stack>
         </Paper>
 
         <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2.5}
+          direction={{ xs: "column", sm: "row" }}
+          spacing={{ xs: 1.25, sm: 1.5 }}
           alignItems="stretch"
-          sx={{ justifyContent: "center" }}
+          sx={{ flex: 1, minHeight: 0, justifyContent: "center" }}
         >
-          {/* PIN card — first on mobile */}
+          {/* PIN — compact glass keypad; right column on tablet */}
           <Paper
             elevation={0}
             sx={{
-              order: { xs: 1, md: 2 },
-              width: { xs: "100%", md: 400 },
+              order: { xs: 1, sm: 2 },
+              width: { xs: "100%", sm: 268 },
               flexShrink: 0,
-              p: { xs: 2.25, sm: 3 },
-              borderRadius: 4,
+              alignSelf: { xs: "stretch", sm: "flex-start" },
+              p: { xs: 1.35, sm: 1.5 },
+              borderRadius: 3,
               border: "1px solid",
-              borderColor: alpha("#ffffff", 0.14),
-              bgcolor: alpha("#ffffff", 0.96),
-              backdropFilter: "blur(12px)",
-              boxShadow: `0 24px 48px ${alpha("#000000", 0.35)}`,
+              borderColor: alpha("#ffffff", 0.18),
+              bgcolor: alpha("#ffffff", 0.06),
+              backdropFilter: "blur(16px)",
+              boxShadow: `0 12px 40px ${alpha("#000000", 0.25)}`,
             }}
           >
-            <Typography
-              variant="overline"
-              sx={{ letterSpacing: "0.12em", color: "text.secondary", fontWeight: 700 }}
-            >
-              {t("kiosk.unlockSection")}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5, mt: 0.75, lineHeight: 1.45 }}>
-              {t("kiosk.pinCardHint")}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1, fontWeight: 600 }}>
-              {t("kiosk.pinLabel")}
-            </Typography>
             <Box
               sx={{
                 display: "flex",
                 justifyContent: "center",
-                gap: 1.25,
-                minHeight: 44,
+                gap: 1,
+                minHeight: 32,
                 alignItems: "center",
-                mb: 2,
-                flexWrap: "wrap",
+                mb: 1.25,
               }}
               aria-live="polite"
               aria-label={t("kiosk.pinLabel")}
@@ -334,11 +369,11 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                 <Box
                   key={i}
                   sx={{
-                    width: 12,
-                    height: 12,
+                    width: 10,
+                    height: 10,
                     borderRadius: "50%",
-                    bgcolor: i < pinDigits.length ? "primary.main" : "action.disabledBackground",
-                    opacity: i < pinDigits.length ? 1 : 0.45,
+                    bgcolor: i < pinDigits.length ? alpha("#38bdf8", 0.95) : alpha("#ffffff", 0.18),
+                    boxShadow: i < pinDigits.length ? `0 0 12px ${alpha("#38bdf8", 0.45)}` : "none",
                   }}
                 />
               ))}
@@ -347,9 +382,9 @@ export default function KioskUnlockPage({ onLoggedIn }) {
               sx={{
                 display: "grid",
                 gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 1,
+                gap: 0.65,
                 width: "100%",
-                maxWidth: 300,
+                maxWidth: 244,
                 mx: "auto",
               }}
             >
@@ -357,15 +392,10 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                 <Button
                   key={num}
                   variant="outlined"
+                  disableElevation
                   disabled={loading}
                   onClick={() => appendDigit(num)}
-                  sx={{
-                    minHeight: 54,
-                    fontSize: "1.4rem",
-                    fontWeight: 700,
-                    borderRadius: 2,
-                    borderWidth: 2,
-                  }}
+                  sx={glassKeySx()}
                 >
                   {num}
                 </Button>
@@ -374,58 +404,72 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                 aria-label="Backspace"
                 disabled={loading || !pinDigits.length}
                 onClick={pinBackspace}
-                sx={{
-                  minHeight: 54,
-                  borderRadius: 2,
-                  border: "2px solid",
-                  borderColor: "divider",
-                }}
+                sx={glassIconKeySx()}
               >
-                <Backspace sx={{ fontSize: 28 }} />
+                <Backspace sx={{ fontSize: 22 }} />
               </IconButton>
               <Button
                 variant="outlined"
+                disableElevation
                 disabled={loading}
                 onClick={() => appendDigit(0)}
-                sx={{
-                  minHeight: 54,
-                  fontSize: "1.4rem",
-                  fontWeight: 700,
-                  borderRadius: 2,
-                  borderWidth: 2,
-                }}
+                sx={glassKeySx()}
               >
                 0
               </Button>
               <Button
                 variant="outlined"
-                color="secondary"
+                disableElevation
                 disabled={loading || !pinDigits.length}
                 onClick={pinClear}
-                sx={{ minHeight: 54, borderRadius: 2, fontWeight: 600, textTransform: "none" }}
+                sx={{
+                  ...glassKeySx(),
+                  fontSize: "0.8rem",
+                  textTransform: "none",
+                  fontWeight: 600,
+                }}
               >
                 {t("kiosk.clearPin")}
               </Button>
             </Box>
             {error ? (
-              <Alert severity="error" sx={{ mt: 2, width: "100%" }}>
+              <Alert
+                severity="error"
+                sx={{
+                  mt: 1.25,
+                  width: "100%",
+                  py: 0.25,
+                  "& .MuiAlert-message": { fontSize: 13 },
+                }}
+              >
                 {error}
               </Alert>
             ) : null}
             <Button
-              variant="contained"
               fullWidth
               disabled={loading}
               onClick={submit}
-              size="large"
               sx={{
-                mt: 2,
-                py: 1.35,
+                mt: 1.35,
+                py: 1,
                 borderRadius: 2,
                 fontWeight: 700,
                 textTransform: "none",
-                fontSize: "1rem",
-                boxShadow: "0 8px 24px rgba(37, 99, 235, 0.35)",
+                fontSize: "0.95rem",
+                color: "#fff",
+                border: `1px solid ${alpha("#38bdf8", 0.45)}`,
+                bgcolor: alpha("#0ea5e9", 0.35),
+                backdropFilter: "blur(12px)",
+                boxShadow: `0 6px 20px ${alpha("#0284c7", 0.25)}`,
+                "&:hover": {
+                  bgcolor: alpha("#0ea5e9", 0.5),
+                  borderColor: alpha("#7dd3fc", 0.55),
+                },
+                "&.Mui-disabled": {
+                  color: alpha("#fff", 0.45),
+                  borderColor: alpha("#fff", 0.12),
+                  bgcolor: alpha("#fff", 0.05),
+                },
               }}
             >
               {loading ? <CircularProgress size={22} color="inherit" /> : t("kiosk.unlock")}
@@ -434,44 +478,55 @@ export default function KioskUnlockPage({ onLoggedIn }) {
               component={Link}
               to={`/login/${encodeURIComponent(slug)}`}
               size="small"
-              sx={{ mt: 1.5, textTransform: "none" }}
+              sx={{
+                mt: 1,
+                textTransform: "none",
+                fontSize: 12,
+                color: alpha("#e2e8f0", 0.75),
+                minHeight: 0,
+                py: 0.25,
+              }}
             >
               {t("kiosk.useFullLogin")}
             </Button>
           </Paper>
 
-          {/* Team at work */}
+          {/* Team at work — priority height on tablets */}
           <Paper
             elevation={0}
             sx={{
-              order: { xs: 2, md: 1 },
+              order: { xs: 2, sm: 1 },
               flex: 1,
               minWidth: 0,
-              minHeight: { xs: 280, md: 360 },
-              maxHeight: { xs: "min(62vh, 520px)", md: "min(72vh, 640px)" },
-              p: { xs: 2.25, sm: 3 },
-              borderRadius: 4,
+              minHeight: { xs: "min(42vh, 340px)", sm: 200 },
+              maxHeight: { xs: "min(48vh, 380px)", sm: "none" },
+              p: { xs: 1.35, sm: 1.5 },
+              borderRadius: 3,
               border: "1px solid",
-              borderColor: alpha("#ffffff", 0.12),
-              bgcolor: alpha("#ffffff", 0.07),
+              borderColor: alpha("#ffffff", 0.14),
+              bgcolor: alpha("#ffffff", 0.06),
               backdropFilter: "blur(14px)",
               display: "flex",
               flexDirection: "column",
             }}
           >
-            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2, flexShrink: 0 }}>
-              <Groups sx={{ color: alpha("#e2e8f0", 0.9), fontSize: 28 }} />
+            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1.25, flexShrink: 0 }}>
+              <Groups sx={{ color: alpha("#e2e8f0", 0.88), fontSize: 24 }} />
               <Typography
-                variant="h6"
-                sx={{ fontWeight: 700, color: "#f8fafc", letterSpacing: "-0.02em" }}
+                sx={{
+                  fontWeight: 700,
+                  fontSize: { xs: "1.05rem", sm: "1.1rem" },
+                  color: "#f8fafc",
+                  letterSpacing: "-0.02em",
+                }}
               >
                 {t("kiosk.atWorkNow")}
               </Typography>
             </Stack>
 
             {teamLoading ? (
-              <Box sx={{ flex: 1, display: "grid", placeItems: "center", py: 6 }}>
-                <CircularProgress sx={{ color: alpha("#e2e8f0", 0.8) }} />
+              <Box sx={{ flex: 1, display: "grid", placeItems: "center", py: 4 }}>
+                <CircularProgress size={36} sx={{ color: alpha("#e2e8f0", 0.8) }} />
               </Box>
             ) : teamPeople.length === 0 ? (
               <Box
@@ -480,14 +535,14 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  py: 4,
+                  py: 3,
                   px: 2,
                   borderRadius: 2,
-                  bgcolor: alpha("#000000", 0.2),
-                  border: `1px dashed ${alpha("#ffffff", 0.15)}`,
+                  bgcolor: alpha("#000000", 0.18),
+                  border: `1px dashed ${alpha("#ffffff", 0.12)}`,
                 }}
               >
-                <Typography sx={{ color: alpha("#cbd5e1", 0.95), textAlign: "center" }}>
+                <Typography sx={{ fontSize: 14, color: alpha("#cbd5e1", 0.95), textAlign: "center" }}>
                   {t("kiosk.noOneClockedIn")}
                 </Typography>
               </Box>
@@ -505,26 +560,27 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                     WebkitOverflowScrolling: "touch",
                   }}
                 >
-                  <Stack spacing={1.25}>
+                  <Stack spacing={1}>
                     {teamPeople.map((p) => (
                       <Stack
                         key={String(p.user_id)}
                         direction="row"
                         alignItems="center"
-                        spacing={1.5}
+                        spacing={1.25}
                         sx={{
-                          p: 1.5,
-                          borderRadius: 2.5,
-                          bgcolor: alpha("#000000", 0.22),
+                          p: 1.15,
+                          borderRadius: 2,
+                          bgcolor: alpha("#000000", 0.2),
                           border: `1px solid ${alpha("#ffffff", 0.08)}`,
                         }}
                       >
                         <Avatar
                           sx={{
-                            width: 44,
-                            height: 44,
+                            width: 40,
+                            height: 40,
+                            fontSize: "0.95rem",
                             fontWeight: 700,
-                            bgcolor: alpha("#6366f1", 0.85),
+                            bgcolor: alpha("#6366f1", 0.82),
                             color: "#fff",
                           }}
                         >
@@ -535,7 +591,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                             sx={{
                               fontWeight: 700,
                               color: "#f8fafc",
-                              fontSize: "1rem",
+                              fontSize: "0.92rem",
                               lineHeight: 1.25,
                             }}
                             noWrap
@@ -543,7 +599,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                           >
                             {p.display_name}
                           </Typography>
-                          <Typography sx={{ fontSize: 12.5, color: alpha("#94a3b8", 1), mt: 0.25 }}>
+                          <Typography sx={{ fontSize: 12, color: alpha("#94a3b8", 1), mt: 0.15 }}>
                             {t("kiosk.clockedInAt").replace("{time}", formatClockIn(p.clock_in_at))}
                           </Typography>
                         </Box>
@@ -578,41 +634,43 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                   direction="row"
                   justifyContent="center"
                   alignItems="center"
-                  spacing={2}
+                  spacing={1.5}
                   sx={{
-                    pt: 1.5,
+                    pt: 1,
                     mt: "auto",
                     flexShrink: 0,
                     borderTop: `1px solid ${alpha("#ffffff", 0.1)}`,
                   }}
                 >
                   <IconButton
-                    size="large"
+                    size="medium"
                     onClick={() => scrollTeamList("up")}
                     disabled={!teamCanScrollUp}
                     aria-label={t("kiosk.scrollTeamUp")}
                     sx={{
                       color: "#f8fafc",
-                      bgcolor: alpha("#000000", 0.35),
+                      bgcolor: alpha("#ffffff", 0.08),
+                      border: `1px solid ${alpha("#ffffff", 0.15)}`,
                       "&:disabled": { opacity: 0.35 },
-                      "&:hover": { bgcolor: alpha("#000000", 0.5) },
+                      "&:hover": { bgcolor: alpha("#ffffff", 0.14) },
                     }}
                   >
-                    <KeyboardArrowUp sx={{ fontSize: 32 }} />
+                    <KeyboardArrowUp sx={{ fontSize: 26 }} />
                   </IconButton>
                   <IconButton
-                    size="large"
+                    size="medium"
                     onClick={() => scrollTeamList("down")}
                     disabled={!teamCanScrollDown}
                     aria-label={t("kiosk.scrollTeamDown")}
                     sx={{
                       color: "#f8fafc",
-                      bgcolor: alpha("#000000", 0.35),
+                      bgcolor: alpha("#ffffff", 0.08),
+                      border: `1px solid ${alpha("#ffffff", 0.15)}`,
                       "&:disabled": { opacity: 0.35 },
-                      "&:hover": { bgcolor: alpha("#000000", 0.5) },
+                      "&:hover": { bgcolor: alpha("#ffffff", 0.14) },
                     }}
                   >
-                    <KeyboardArrowDown sx={{ fontSize: 32 }} />
+                    <KeyboardArrowDown sx={{ fontSize: 26 }} />
                   </IconButton>
                 </Stack>
               </>
