@@ -168,6 +168,13 @@ export const getPublicOrgBranding = (slug) =>
     validateStatus: (status) => status === 200 || status === 404 || status === 400,
   });
 
+/** Public kiosk: users currently clocked in for tenant slug */
+export const getPublicActiveClockIns = (slug) =>
+  axios.get(`${API_BASE}/api/public/organization/active-clock-ins`, {
+    params: { slug: String(slug || "").trim().toLowerCase() },
+    validateStatus: (status) => status === 200 || status === 404 || status === 400,
+  });
+
 /** ADMIN: current tenant organization row (slug, display_name, logo_url) */
 export const getOrganization = () =>
   axios.get(`${API_BASE}/auth/organization`);

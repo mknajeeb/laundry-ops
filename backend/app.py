@@ -5678,6 +5678,99 @@ def public_organization_branding():
         conn.close()
 
 
+@app.route("/api/public/organization/active-clock-ins", methods=["GET"])
+def public_organization_active_clock_ins():
+    """Shared kiosk lock screen: who is clocked in now (names only; slug is not secret)."""
+    slug = (request.args.get("slug") or "").strip().lower()
+    if not slug:
+        return jsonify({"error": "slug is required"}), 400
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        if not table_exists(cursor, "organizations"):
+            return jsonify({"people": []})
+        cursor.execute(
+            """
+            SELECT id FROM organizations
+            WHERE LOWER(slug) = %s AND active = 1
+            LIMIT 1
+            """,
+            (slug,),
+        )
+        org = cursor.fetchone()
+        if not org:
+            return jsonify({"error": "Unknown organization"}), 404
+        oid = int(org["id"])
+        if not table_exists(cursor, "shift_sessions") or not table_has_column(
+            cursor, "shift_sessions", "organization_id"
+        ):
+            return jsonify({"people": []})
+
+        open_break_sql = """
+            EXISTS (
+              SELECT 1 FROM shift_breaks b
+              WHERE b.shift_session_id = s.id AND b.break_end_at IS NULL
+            )
+        """
+
+        if payroll_profiles_active(conn):
+            cursor.execute(
+                f"""
+                SELECT s.user_id, s.clock_in_at,
+                  TRIM(CONCAT(COALESCE(pp.first_name,''), ' ', COALESCE(pp.last_name,''))) AS name_parts,
+                  u.display_name, u.username,
+                  ({open_break_sql}) AS on_break
+                FROM shift_sessions s
+                INNER JOIN users u ON u.id = s.user_id
+                LEFT JOIN payroll_profiles pp ON pp.user_id = s.user_id
+                WHERE s.organization_id = %s AND s.status = 'active'
+                ORDER BY s.clock_in_at ASC
+                """,
+                (oid,),
+            )
+        else:
+            ta_join = ""
+            if table_exists(cursor, "ta_users") and table_has_column(cursor, "ta_users", "washpro_user_id"):
+                ta_join = "LEFT JOIN ta_users t ON t.washpro_user_id = u.id"
+                name_expr = (
+                    "TRIM(CONCAT(COALESCE(t.first_name,''), ' ', COALESCE(t.last_name,''))) AS name_parts"
+                )
+            else:
+                name_expr = "'' AS name_parts"
+            cursor.execute(
+                f"""
+                SELECT s.user_id, s.clock_in_at,
+                  {name_expr},
+                  u.display_name, u.username,
+                  ({open_break_sql}) AS on_break
+                FROM shift_sessions s
+                INNER JOIN users u ON u.id = s.user_id
+                {ta_join}
+                WHERE s.organization_id = %s AND s.status = 'active'
+                ORDER BY s.clock_in_at ASC
+                """,
+                (oid,),
+            )
+
+        rows = cursor.fetchall() or []
+        people = []
+        for r in rows:
+            raw = (r.get("name_parts") or "").strip()
+            disp = raw if raw else (r.get("display_name") or r.get("username") or "User")
+            people.append(
+                {
+                    "user_id": int(r["user_id"]),
+                    "display_name": disp.strip() or "User",
+                    "clock_in_at": json_safe(r.get("clock_in_at")),
+                    "on_break": bool(r.get("on_break")),
+                }
+            )
+        return jsonify({"people": people})
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/auth/organization", methods=["GET"])
 def auth_organization_get():
     """Tenant administrator: profile for own organization only (not super-admin shell)."""
