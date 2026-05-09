@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./api";
+import { getSavedUser } from "./api";
+import { applyAppIconFromOrganizationLogo } from "./utils/appIcon";
 import App from "./App.jsx";
 import ErrorBoundary from "./ErrorBoundary.jsx";
 import "./index.css";
@@ -64,6 +66,18 @@ const appTree = (
 ReactDOM.createRoot(document.getElementById("root")).render(
   import.meta.env.PROD ? <React.StrictMode>{appTree}</React.StrictMode> : appTree
 );
+
+/** Tab / home-screen icon: tenant logo when logged in, else LO defaults (also updated on login/kiosk branding). */
+function syncAppIconFromSavedSession() {
+  try {
+    const u = getSavedUser();
+    applyAppIconFromOrganizationLogo(u?.organization_logo_url);
+  } catch {
+    applyAppIconFromOrganizationLogo(null);
+  }
+}
+syncAppIconFromSavedSession();
+window.addEventListener("washpro-session-changed", syncAppIconFromSavedSession);
 
 // PWA shell updates: register SW when not using OneSignal (OneSignal.init registers /service-worker.js).
 if ("serviceWorker" in navigator && import.meta.env.PROD && !ONESIGNAL_APP_ID) {

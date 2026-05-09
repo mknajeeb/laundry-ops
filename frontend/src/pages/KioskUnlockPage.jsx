@@ -23,6 +23,7 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 
 function sanitizeSlug(raw) {
   if (!raw) return "";
@@ -118,6 +119,18 @@ export default function KioskUnlockPage({ onLoggedIn }) {
       cancelled = true;
     };
   }, [slug]);
+
+  useEffect(() => {
+    applyAppIconFromOrganizationLogo(branding?.logo_url ?? null);
+    return () => {
+      try {
+        const u = getSavedUser();
+        applyAppIconFromOrganizationLogo(u?.organization_logo_url ?? null);
+      } catch {
+        applyAppIconFromOrganizationLogo(null);
+      }
+    };
+  }, [branding?.logo_url]);
 
   useEffect(() => {
     if (!slug) return undefined;

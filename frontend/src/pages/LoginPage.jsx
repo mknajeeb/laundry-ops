@@ -17,6 +17,7 @@ import {
 import {
   authLogin,
   getPublicOrgBranding,
+  getSavedUser,
   getWashproApiBase,
   postPasswordResetComplete,
   postPasswordResetRequest,
@@ -25,6 +26,7 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 function sanitizeSlug(raw) {
   if (!raw) return "";
   try {
@@ -119,6 +121,19 @@ function LoginPage({ onLoggedIn }) {
       cancelled = true;
     };
   }, [slugFromRoute]);
+
+  /** Browser tab icon: tenant logo from branding while on this screen; restore from session on leave. */
+  useEffect(() => {
+    applyAppIconFromOrganizationLogo(branding?.logo_url ?? null);
+    return () => {
+      try {
+        const u = getSavedUser();
+        applyAppIconFromOrganizationLogo(u?.organization_logo_url ?? null);
+      } catch {
+        applyAppIconFromOrganizationLogo(null);
+      }
+    };
+  }, [branding?.logo_url]);
 
   useEffect(() => {
     const slug = organizationSlug.trim().toLowerCase();
