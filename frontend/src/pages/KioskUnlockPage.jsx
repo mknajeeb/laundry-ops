@@ -25,43 +25,78 @@ import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 
-const MAX_PIN_LEN = 10;
+const PIN_LEN = 4;
 
-/** Semi-transparent keys over the dark kiosk background */
-function glassKeySx() {
+/** Bright cyan/teal digit keys */
+function digitKeySx() {
   return {
     minHeight: { xs: 44, sm: 42 },
     fontSize: "1.05rem",
     fontWeight: 600,
     borderRadius: 2,
-    color: "#f1f5f9",
+    color: "#ecfeff",
     py: 0.5,
     borderWidth: 1,
     borderStyle: "solid",
-    borderColor: alpha("#ffffff", 0.22),
-    bgcolor: alpha("#ffffff", 0.07),
+    borderColor: alpha("#22d3ee", 0.58),
+    bgcolor: alpha("#0891b2", 0.32),
     backdropFilter: "blur(12px)",
     "&:hover": {
-      borderColor: alpha("#ffffff", 0.4),
-      bgcolor: alpha("#ffffff", 0.12),
+      borderColor: alpha("#67e8f9", 0.85),
+      bgcolor: alpha("#06b6d4", 0.48),
     },
     "&.Mui-disabled": {
-      borderColor: alpha("#ffffff", 0.1),
-      color: alpha("#ffffff", 0.35),
+      borderColor: alpha("#22d3ee", 0.18),
+      color: alpha("#ecfeff", 0.35),
+      bgcolor: alpha("#0891b2", 0.1),
     },
   };
 }
 
-function glassIconKeySx() {
+/** Violet accent for backspace / clear */
+function utilityKeySx() {
+  return {
+    minHeight: { xs: 44, sm: 42 },
+    fontSize: "0.8rem",
+    fontWeight: 600,
+    borderRadius: 2,
+    color: "#f5f3ff",
+    py: 0.5,
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: alpha("#a78bfa", 0.58),
+    bgcolor: alpha("#7c3aed", 0.32),
+    backdropFilter: "blur(12px)",
+    textTransform: "none",
+    "&:hover": {
+      borderColor: alpha("#c4b5fd", 0.82),
+      bgcolor: alpha("#6d28d9", 0.46),
+    },
+    "&.Mui-disabled": {
+      borderColor: alpha("#a78bfa", 0.18),
+      color: alpha("#f5f3ff", 0.35),
+      bgcolor: alpha("#7c3aed", 0.1),
+    },
+  };
+}
+
+function utilityIconSx() {
   return {
     minHeight: { xs: 44, sm: 42 },
     borderRadius: 2,
-    color: "#e2e8f0",
-    border: `1px solid ${alpha("#ffffff", 0.22)}`,
-    bgcolor: alpha("#ffffff", 0.07),
+    color: "#ede9fe",
+    border: `1px solid ${alpha("#a78bfa", 0.58)}`,
+    bgcolor: alpha("#7c3aed", 0.32),
     backdropFilter: "blur(12px)",
-    "&:hover": { bgcolor: alpha("#ffffff", 0.12) },
-    "&.Mui-disabled": { opacity: 0.4 },
+    "&:hover": {
+      borderColor: alpha("#c4b5fd", 0.82),
+      bgcolor: alpha("#6d28d9", 0.46),
+    },
+    "&.Mui-disabled": {
+      opacity: 0.45,
+      borderColor: alpha("#a78bfa", 0.15),
+      bgcolor: alpha("#7c3aed", 0.08),
+    },
   };
 }
 
@@ -102,6 +137,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
   const [teamPeople, setTeamPeople] = useState([]);
   const [teamLoading, setTeamLoading] = useState(true);
   const teamScrollRef = useRef(null);
+  const prevPinLenRef = useRef(0);
   const [teamCanScrollUp, setTeamCanScrollUp] = useState(false);
   const [teamCanScrollDown, setTeamCanScrollDown] = useState(false);
 
@@ -207,7 +243,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
   const appendDigit = (n) => {
     const ch = String(n).replace(/\D/g, "").slice(0, 1);
     if (!ch) return;
-    setPin((p) => `${String(p).replace(/\D/g, "")}${ch}`.slice(0, MAX_PIN_LEN));
+    setPin((p) => `${String(p).replace(/\D/g, "")}${ch}`.slice(0, PIN_LEN));
     setError("");
   };
   const pinBackspace = () => {
@@ -219,6 +255,59 @@ export default function KioskUnlockPage({ onLoggedIn }) {
     setError("");
   };
 
+  const performUnlock = useCallback(
+    async (digits) => {
+      if (!slug || String(digits || "").replace(/\D/g, "").length !== PIN_LEN) return;
+      const clean = String(digits).replace(/\D/g, "");
+      setError("");
+      try {
+        setLoading(true);
+        const res = await authAttendancePinUnlock(slug, clean);
+        const payload = res?.data || {};
+        if (!payload?.token || !payload?.user) {
+          throw new Error("Invalid unlock response.");
+        }
+        try {
+          localStorage.setItem("washpro_org_slug", slug);
+        } catch {
+          /* ignore */
+        }
+        setAuthSession(payload);
+        onLoggedIn?.(payload.user);
+        navigate("/", { replace: true });
+      } catch (e) {
+        console.error(e);
+        const data = e?.response?.data;
+        let msg =
+          (data && typeof data === "object" && (data.error || data.message)) ||
+          (typeof data === "string" ? data : null);
+        if (!msg && e?.response?.status === 401) {
+          msg = t("kiosk.invalidPin");
+        }
+        if (!msg) msg = e?.message || t("kiosk.unlockFailed");
+        setError(typeof msg === "string" ? msg : t("kiosk.unlockFailed"));
+        setPin("");
+        prevPinLenRef.current = 0;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [slug, navigate, onLoggedIn, t],
+  );
+
+  useEffect(() => {
+    if (!slug) return;
+    const len = pinDigits.length;
+    if (len < PIN_LEN) {
+      prevPinLenRef.current = len;
+      return;
+    }
+    if (len === PIN_LEN && prevPinLenRef.current < PIN_LEN) {
+      prevPinLenRef.current = PIN_LEN;
+      void performUnlock(pinDigits);
+    }
+  }, [slug, pinDigits, performUnlock]);
+
   if (!slug) {
     return (
       <Box sx={{ p: 3, maxWidth: 420, mx: "auto" }}>
@@ -229,44 +318,6 @@ export default function KioskUnlockPage({ onLoggedIn }) {
       </Box>
     );
   }
-
-  const submit = async () => {
-    const digits = pinDigits;
-    setError("");
-    if (digits.length < 4) {
-      setError(t("kiosk.pinTooShort"));
-      return;
-    }
-    try {
-      setLoading(true);
-      const res = await authAttendancePinUnlock(slug, digits);
-      const payload = res?.data || {};
-      if (!payload?.token || !payload?.user) {
-        throw new Error("Invalid unlock response.");
-      }
-      try {
-        localStorage.setItem("washpro_org_slug", slug);
-      } catch {
-        /* ignore */
-      }
-      setAuthSession(payload);
-      onLoggedIn?.(payload.user);
-      navigate("/", { replace: true });
-    } catch (e) {
-      console.error(e);
-      const data = e?.response?.data;
-      let msg =
-        (data && typeof data === "object" && (data.error || data.message)) ||
-        (typeof data === "string" ? data : null);
-      if (!msg && e?.response?.status === 401) {
-        msg = t("kiosk.invalidPin");
-      }
-      if (!msg) msg = e?.message || t("kiosk.unlockFailed");
-      setError(typeof msg === "string" ? msg : t("kiosk.unlockFailed"));
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const orgTitle = branding?.display_name || slug;
 
@@ -351,86 +402,101 @@ export default function KioskUnlockPage({ onLoggedIn }) {
               boxShadow: `0 12px 40px ${alpha("#000000", 0.25)}`,
             }}
           >
-            <Box
-              sx={{
-                display: "flex",
-                justifyContent: "center",
-                gap: 1,
-                minHeight: 32,
-                alignItems: "center",
-                mb: 1.25,
-              }}
-              aria-live="polite"
-              aria-label={t("kiosk.pinLabel")}
-            >
-              {Array.from({
-                length: Math.min(MAX_PIN_LEN, Math.max(4, pinDigits.length || 4)),
-              }).map((_, i) => (
+            <Box sx={{ position: "relative" }}>
+              {loading ? (
                 <Box
-                  key={i}
                   sx={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    bgcolor: i < pinDigits.length ? alpha("#38bdf8", 0.95) : alpha("#ffffff", 0.18),
-                    boxShadow: i < pinDigits.length ? `0 0 12px ${alpha("#38bdf8", 0.45)}` : "none",
+                    position: "absolute",
+                    inset: 0,
+                    zIndex: 2,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    borderRadius: 2,
+                    bgcolor: alpha("#0f172a", 0.72),
+                    backdropFilter: "blur(6px)",
                   }}
-                />
-              ))}
-            </Box>
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 0.65,
-                width: "100%",
-                maxWidth: 244,
-                mx: "auto",
-              }}
-            >
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                <Button
-                  key={num}
-                  variant="outlined"
-                  disableElevation
-                  disabled={loading}
-                  onClick={() => appendDigit(num)}
-                  sx={glassKeySx()}
                 >
-                  {num}
-                </Button>
-              ))}
-              <IconButton
-                aria-label="Backspace"
-                disabled={loading || !pinDigits.length}
-                onClick={pinBackspace}
-                sx={glassIconKeySx()}
-              >
-                <Backspace sx={{ fontSize: 22 }} />
-              </IconButton>
-              <Button
-                variant="outlined"
-                disableElevation
-                disabled={loading}
-                onClick={() => appendDigit(0)}
-                sx={glassKeySx()}
-              >
-                0
-              </Button>
-              <Button
-                variant="outlined"
-                disableElevation
-                disabled={loading || !pinDigits.length}
-                onClick={pinClear}
-                sx={{
-                  ...glassKeySx(),
-                  fontSize: "0.8rem",
-                  textTransform: "none",
-                  fontWeight: 600,
-                }}
-              >
-                {t("kiosk.clearPin")}
-              </Button>
+                  <CircularProgress sx={{ color: alpha("#22d3ee", 0.95) }} />
+                </Box>
+              ) : null}
+              <Box sx={{ pointerEvents: loading ? "none" : "auto" }}>
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    gap: 1,
+                    minHeight: 32,
+                    alignItems: "center",
+                    mb: 1.25,
+                  }}
+                  aria-live="polite"
+                  aria-label={t("kiosk.pinLabel")}
+                >
+                  {Array.from({ length: PIN_LEN }).map((_, i) => (
+                    <Box
+                      key={i}
+                      sx={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        bgcolor: i < pinDigits.length ? alpha("#22d3ee", 0.95) : alpha("#ffffff", 0.14),
+                        boxShadow:
+                          i < pinDigits.length ? `0 0 12px ${alpha("#22d3ee", 0.5)}` : "none",
+                      }}
+                    />
+                  ))}
+                </Box>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: 0.65,
+                    width: "100%",
+                    maxWidth: 244,
+                    mx: "auto",
+                  }}
+                >
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                    <Button
+                      key={num}
+                      variant="outlined"
+                      disableElevation
+                      disabled={loading}
+                      onClick={() => appendDigit(num)}
+                      sx={digitKeySx()}
+                    >
+                      {num}
+                    </Button>
+                  ))}
+                  <IconButton
+                    aria-label="Backspace"
+                    disabled={loading || !pinDigits.length}
+                    onClick={pinBackspace}
+                    sx={utilityIconSx()}
+                  >
+                    <Backspace sx={{ fontSize: 22 }} />
+                  </IconButton>
+                  <Button
+                    variant="outlined"
+                    disableElevation
+                    disabled={loading}
+                    onClick={() => appendDigit(0)}
+                    sx={digitKeySx()}
+                  >
+                    0
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    disableElevation
+                    disabled={loading || !pinDigits.length}
+                    onClick={pinClear}
+                    sx={utilityKeySx()}
+                  >
+                    {t("kiosk.clearPin")}
+                  </Button>
+                </Box>
+              </Box>
             </Box>
             {error ? (
               <Alert
@@ -445,35 +511,6 @@ export default function KioskUnlockPage({ onLoggedIn }) {
                 {error}
               </Alert>
             ) : null}
-            <Button
-              fullWidth
-              disabled={loading}
-              onClick={submit}
-              sx={{
-                mt: 1.35,
-                py: 1,
-                borderRadius: 2,
-                fontWeight: 700,
-                textTransform: "none",
-                fontSize: "0.95rem",
-                color: "#fff",
-                border: `1px solid ${alpha("#38bdf8", 0.45)}`,
-                bgcolor: alpha("#0ea5e9", 0.35),
-                backdropFilter: "blur(12px)",
-                boxShadow: `0 6px 20px ${alpha("#0284c7", 0.25)}`,
-                "&:hover": {
-                  bgcolor: alpha("#0ea5e9", 0.5),
-                  borderColor: alpha("#7dd3fc", 0.55),
-                },
-                "&.Mui-disabled": {
-                  color: alpha("#fff", 0.45),
-                  borderColor: alpha("#fff", 0.12),
-                  bgcolor: alpha("#fff", 0.05),
-                },
-              }}
-            >
-              {loading ? <CircularProgress size={22} color="inherit" /> : t("kiosk.unlock")}
-            </Button>
             <Button
               component={Link}
               to={`/login/${encodeURIComponent(slug)}`}
