@@ -213,9 +213,13 @@ function ClockPage({ user: washproUser }) {
         await fn(lat, lng);
       } catch (e) {
         console.error(e);
+        const d = e?.response?.data;
+        const parts = [
+          typeof d?.error === "string" ? d.error.trim() : "",
+          typeof d?.detail === "string" ? d.detail.trim() : "",
+        ].filter(Boolean);
         const msg =
-          e?.response?.data?.error ||
-          e?.response?.data?.detail ||
+          parts.join(" — ") ||
           e?.message ||
           "Clock action failed";
         setActionError(typeof msg === "string" ? msg : "Clock action failed");

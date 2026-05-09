@@ -1763,8 +1763,9 @@ def clock_in():
                 if not fid:
                     return jsonify(
                         {
-                            "error": "No geofence available",
-                            "detail": "Add a geofence for this org or assign one to this user so shifts can be recorded.",
+                            "error": "No active geofence for this organization",
+                            "detail": "Add at least one active geofence for this tenant (Payroll / attendance geofence setup — latitude, longitude, radius). "
+                            "Until then, clock-in cannot create a shift. If this employee is marked geofence-exempt, a tenant geofence record is still required for reporting.",
                         }
                     ), 400
                 geofence_id_for_session = fid
