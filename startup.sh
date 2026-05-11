@@ -10,6 +10,7 @@
 set -e
 cd "$(dirname "$0")"
 export PYTHONUNBUFFERED=1
+echo "startup.sh: revision 20260511b (venv stale-interpreter guard; ok if you see this after deploy)"
 echo "startup.sh: begin $(date -u +%Y-%m-%dT%H:%M:%SZ) cwd=$(pwd)"
 
 SCRAPE="scripts/rinse-cleanertickets/scrape.mjs"
@@ -40,7 +41,9 @@ if [ -f requirements.txt ]; then
   fi
   # Azure may swap the runtime image; a persisted venv under /home still has shebangs pointing at an old
   # interpreter → "bad interpreter: No such file or directory" for gunicorn. Force rebuild if unusable.
+  # Note: `set -e` must not apply while probing binaries — a missing interpreter can abort the script early.
   if [ "$_reuse" = "1" ]; then
+    set +e
     _venv_ok=1
     if [ ! -x "$VENV/bin/python" ]; then
       _venv_ok=0
@@ -55,6 +58,7 @@ if [ -f requirements.txt ]; then
       rm -f "$REQ_HASH_FILE"
       _reuse=0
     fi
+    set -e
   fi
   if [ "$_reuse" = "1" ]; then
     printf 'startup.sh: using persistent venv %s; requirements unchanged\n' "$VENV"
