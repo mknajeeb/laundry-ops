@@ -38,6 +38,24 @@ if [ -f requirements.txt ]; then
   if [ -n "$_hash" ] && [ -x "$VENV/bin/gunicorn" ] && [ -f "$REQ_HASH_FILE" ] && [ "$(cat "$REQ_HASH_FILE")" = "$_hash" ]; then
     _reuse=1
   fi
+  # Azure may swap the runtime image; a persisted venv under /home still has shebangs pointing at an old
+  # interpreter → "bad interpreter: No such file or directory" for gunicorn. Force rebuild if unusable.
+  if [ "$_reuse" = "1" ]; then
+    _venv_ok=1
+    if [ ! -x "$VENV/bin/python" ]; then
+      _venv_ok=0
+    elif ! "$VENV/bin/python" -c "import sys" 2>/dev/null; then
+      _venv_ok=0
+    elif ! "$VENV/bin/gunicorn" --version >/dev/null 2>&1; then
+      _venv_ok=0
+    fi
+    if [ "$_venv_ok" != "1" ]; then
+      printf 'startup.sh: persistent venv at %s is broken (stale interpreter); removing and rebuilding\n' "$VENV"
+      rm -rf "$VENV"
+      rm -f "$REQ_HASH_FILE"
+      _reuse=0
+    fi
+  fi
   if [ "$_reuse" = "1" ]; then
     printf 'startup.sh: using persistent venv %s; requirements unchanged\n' "$VENV"
   else
