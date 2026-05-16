@@ -621,6 +621,38 @@ function MaintenancePage() {
           }
           label="Dryer QR scan (Orders → dryer flow)"
         />
+        <FormControlLabel
+          sx={{ display: "block", mt: 0.5 }}
+          control={
+            <Switch
+              checked={opsUi?.upload_batch_require_both_csv !== false}
+              disabled={saving}
+              onChange={async (e) => {
+                const v = e.target.checked;
+                try {
+                  setSaving(true);
+                  await putOpsUiFlags({ upload_batch_require_both_csv: v });
+                  await refreshMe();
+                  setMessage({
+                    type: "success",
+                    text: v
+                      ? "Upload batch now requires portal order CSV and scan-events CSV before confirm."
+                      : "Upload batch may be confirmed with only the portal CSV or only scan-events (override).",
+                  });
+                } catch (err) {
+                  console.error(err);
+                  setMessage({
+                    type: "error",
+                    text: err?.response?.data?.error || "Could not save upload batch setting (admin only).",
+                  });
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+          }
+          label="Require portal order CSV and Rinse scan-events CSV before confirming upload batch"
+        />
       </Paper>
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>

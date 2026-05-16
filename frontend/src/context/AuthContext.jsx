@@ -17,6 +17,7 @@ const DEFAULT_OPS_UI = {
   scan_lookup_enabled: true,
   browse_list_enabled: true,
   dryer_qr_scan_enabled: true,
+  upload_batch_require_both_csv: true,
 };
 
 export function AuthProvider({ children }) {
@@ -53,6 +54,7 @@ export function AuthProvider({ children }) {
         scan_lookup_enabled: ou.scan_lookup_enabled !== false,
         browse_list_enabled: ou.browse_list_enabled !== false,
         dryer_qr_scan_enabled: ou.dryer_qr_scan_enabled !== false,
+        upload_batch_require_both_csv: ou.upload_batch_require_both_csv !== false,
       });
     } catch {
       localStorage.removeItem("ta_token");

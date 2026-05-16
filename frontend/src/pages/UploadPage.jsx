@@ -62,7 +62,7 @@ function rowStatusOrReason(row) {
 }
 
 function UploadPage({ user }) {
-  const { hasPerm } = useAuth();
+  const { hasPerm, opsUi } = useAuth();
   const canEditBatchRows = hasPerm("upload.rows.edit");
   const canDeleteBatchRows = hasPerm("upload.rows.delete");
   const [file, setFile] = useState(null);
@@ -98,6 +98,26 @@ function UploadPage({ user }) {
 
   const isConfirmed = (batch?.state || "").toUpperCase() === "CONFIRMED";
   const isDraft = (batch?.state || "").toUpperCase() === "DRAFT";
+
+  const requireBothCsv = opsUi?.upload_batch_require_both_csv !== false;
+  const uploadFiles = batch?.upload_files || null;
+  const hasOrderRows = uploadFiles?.has_order_rows ?? rows.some(
+    (r) => !["DELETED"].includes(String(r.row_status || "").toUpperCase()),
+  );
+  const hasScanEvents = (uploadFiles?.has_scan_events ?? scanEventsCount > 0) === true;
+  const canConfirmBatch = requireBothCsv
+    ? hasOrderRows && hasScanEvents
+    : hasOrderRows || hasScanEvents;
+  const dualCsvBlockHint = useMemo(() => {
+    if (!isDraft || !batch?.id || canConfirmBatch) return "";
+    if (requireBothCsv) {
+      const missing = [];
+      if (!hasOrderRows) missing.push("portal order CSV (order rows in the batch)");
+      if (!hasScanEvents) missing.push("Rinse scan-events CSV");
+      return `Before confirming: upload ${missing.join(" and ")}.`;
+    }
+    return "Before confirming: upload at least a portal order CSV or a scan-events CSV.";
+  }, [requireBothCsv, isDraft, batch?.id, hasOrderRows, hasScanEvents, canConfirmBatch]);
 
   const formatBatchLabel = (row) => {
     if (!row) return "No active batch";
@@ -161,7 +181,8 @@ function UploadPage({ user }) {
       const res = await getCurrentUploadBatch();
       const current = res?.data || null;
       setBatch(current);
-      setScanEventsCount(Number(current?.scan_events_count) || 0);
+      const uf = current?.upload_files;
+      setScanEventsCount(Number(uf?.scan_events_count ?? current?.scan_events_count) || 0);
 
       if (batchDateUnlocked && current?.batch_date) {
         const d = toDateInputValue(current.batch_date);
@@ -424,6 +445,13 @@ function UploadPage({ user }) {
 
   const handleConfirm = async () => {
     if (!batch?.id) return;
+    if (!canConfirmBatch) {
+      setMessage({
+        type: "warning",
+        text: dualCsvBlockHint || "Upload required files before confirming this batch.",
+      });
+      return;
+    }
 
     try {
       setLoading(true);
@@ -436,7 +464,12 @@ function UploadPage({ user }) {
       const status = error?.response?.status;
       const data = error?.response?.data || {};
 
-      if (status === 409 && data.attention_count) {
+      if (status === 409 && data.missing?.length) {
+        setMessage({
+          type: "error",
+          text: data.error || "Upload portal order CSV and scan-events CSV before confirming.",
+        });
+      } else if (status === 409 && data.attention_count) {
         const ok = window.confirm(
           `${data.attention_count} rows still need attention. Confirm anyway?`
         );
@@ -631,13 +664,32 @@ function UploadPage({ user }) {
         </Stack>
       )}
 
-      {(message.text || isDraft) && (
+      {(message.text || isDraft || dualCsvBlockHint) && (
         <Alert
           severity={message.type === "error" ? "error" : message.type === "warning" ? "warning" : "success"}
           sx={{ mt: 1, borderRadius: 2, py: 0.5 }}
         >
-          {message.text || (isDraft ? "Draft — confirm batch when ready." : "Ready.")}
+          {message.text ||
+            (dualCsvBlockHint ||
+              (isDraft ? "Draft — confirm batch when ready." : "Ready."))}
         </Alert>
+      )}
+
+      {requireBothCsv && isDraft && batch?.id && (
+        <Stack direction="row" spacing={1} sx={{ mt: 0.8, flexWrap: "wrap" }}>
+          <Chip
+            size="small"
+            label={hasOrderRows ? "Order CSV: uploaded" : "Order CSV: missing"}
+            color={hasOrderRows ? "success" : "warning"}
+            variant={hasOrderRows ? "filled" : "outlined"}
+          />
+          <Chip
+            size="small"
+            label={hasScanEvents ? "Scan-events CSV: uploaded" : "Scan-events CSV: missing"}
+            color={hasScanEvents ? "success" : "warning"}
+            variant={hasScanEvents ? "filled" : "outlined"}
+          />
+        </Stack>
       )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
@@ -753,7 +805,12 @@ function UploadPage({ user }) {
               <Button variant="outlined" onClick={() => setAddOpen(true)} disabled={isConfirmed || loading}>
                 Add Row
               </Button>
-              <Button variant="contained" onClick={handleConfirm} disabled={isConfirmed || loading}>
+              <Button
+                variant="contained"
+                onClick={handleConfirm}
+                disabled={isConfirmed || loading || !canConfirmBatch}
+                title={!canConfirmBatch ? dualCsvBlockHint : ""}
+              >
                 {isConfirmed ? "Confirmed" : "Confirm Batch"}
               </Button>
             </Stack>

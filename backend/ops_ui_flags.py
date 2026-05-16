@@ -10,6 +10,7 @@ from backend.ta_helpers import table_exists
 KEY_SCAN = "ops_scan_lookup_enabled"
 KEY_BROWSE = "ops_browse_list_enabled"
 KEY_DRYER = "ops_dryer_qr_scan_enabled"
+KEY_UPLOAD_BOTH_CSV = "upload_batch_require_portal_and_scan_events"
 
 
 def _truthy(raw: Any, default: bool = True) -> bool:
@@ -58,6 +59,9 @@ def get_ops_ui_flags(cursor, organization_id: int) -> dict[str, bool]:
         "scan_lookup_enabled": _truthy(_get_setting(cursor, organization_id, KEY_SCAN), True),
         "browse_list_enabled": _truthy(_get_setting(cursor, organization_id, KEY_BROWSE), True),
         "dryer_qr_scan_enabled": _truthy(_get_setting(cursor, organization_id, KEY_DRYER), True),
+        "upload_batch_require_both_csv": _truthy(
+            _get_setting(cursor, organization_id, KEY_UPLOAD_BOTH_CSV), True
+        ),
     }
 
 
@@ -83,5 +87,12 @@ def put_ops_ui_flags(cursor, organization_id: int, payload: Mapping[str, Any]) -
             organization_id,
             KEY_DRYER,
             "1" if _truthy(payload.get("dryer_qr_scan_enabled"), True) else "0",
+        )
+    if "upload_batch_require_both_csv" in payload:
+        _set_setting(
+            cursor,
+            organization_id,
+            KEY_UPLOAD_BOTH_CSV,
+            "1" if _truthy(payload.get("upload_batch_require_both_csv"), True) else "0",
         )
     return get_ops_ui_flags(cursor, organization_id)

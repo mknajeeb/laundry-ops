@@ -9023,13 +9023,13 @@ def get_current_upload_batch():
         summary = summarize_batch_rows(cursor, row["id"], row_pk)
         row["summary"] = summary
         try:
-            from backend.rinse_scan_events_upload import count_scan_events_for_batch
+            from backend.upload_batch_requirements import batch_upload_files_status
 
-            row["scan_events_count"] = count_scan_events_for_batch(
-                cursor, row["id"], tenant_oid
-            )
+            row["upload_files"] = batch_upload_files_status(cursor, row["id"], tenant_oid)
+            row["scan_events_count"] = row["upload_files"].get("scan_events_count", 0)
         except Exception:
             row["scan_events_count"] = 0
+            row["upload_files"] = None
         return jsonify(row)
     finally:
         cursor.close()
@@ -9855,6 +9855,12 @@ def confirm_upload_batch(batch_id):
         if (batch.get("state") or "").upper() == "CONFIRMED":
             return jsonify({"status": "already_confirmed"}), 200
 
+        from backend.upload_batch_requirements import validate_batch_confirm_dual_csv
+
+        dual_block = validate_batch_confirm_dual_csv(cursor, batch_id, tenant_oid)
+        if dual_block:
+            return jsonify(dual_block), 409
+
         cursor.execute(f"""
             SELECT COUNT(*) AS attention_count
             FROM upload_batch_rows
@@ -9886,10 +9892,16 @@ def confirm_upload_batch(batch_id):
 
         # Safety guard: do not let a fully rejected draft mutate live staging/final.
         if len(accepted_rows) == 0:
-            return jsonify({
-                "error": "Batch has no ACCEPTED/OVERRIDDEN rows. Nothing to apply.",
-                "accepted_count": 0
-            }), 409
+            from backend.upload_batch_requirements import batch_upload_files_status
+
+            ufs = batch_upload_files_status(cursor, batch_id, tenant_oid)
+            if ufs.get("has_scan_events") and not ufs.get("require_both_csv"):
+                pass  # override: scan-events-only batch (no order rows to apply)
+            else:
+                return jsonify({
+                    "error": "Batch has no ACCEPTED/OVERRIDDEN rows. Nothing to apply.",
+                    "accepted_count": 0
+                }), 409
 
         uploaded_identity_keys = set()
         for row in accepted_rows:
