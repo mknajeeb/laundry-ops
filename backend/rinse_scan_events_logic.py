@@ -69,7 +69,9 @@ def load_scan_events_csv(path: str) -> pd.DataFrame:
             + ", ".join(sorted(missing))
             + "). Use *-events.csv from scrape-scan-events.mjs."
         )
-    df["Bag ID"] = df["Bag ID"].astype(str).str.strip().str.upper()
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    df["Bag ID"] = df["Bag ID"].map(normalize_bag_id)
     return df
 
 

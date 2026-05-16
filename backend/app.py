@@ -3857,26 +3857,41 @@ def commit_draft_upload_batch_from_orders_df(
         row_status = "ACCEPTED"
         reason = "OK"
 
-        if row_date < batch_date:
-            row_status = "NEEDS_ATTENTION"
-            reason = "OLDER_THAN_BATCH_DATE"
-            needs_attention += 1
-        elif identity_key in final_identity_keys:
-            row_status = "REJECTED_DUPLICATE"
-            reason = "ALREADY_IN_FINAL"
-            rejected += 1
-        elif identity_key in existing_identity_reasons:
-            row_status = "REJECTED_DUPLICATE"
-            reason = existing_identity_reasons[identity_key]
-            rejected += 1
-        else:
-            inserted += 1
-
         ticket_id = None
         if include_tid:
             tv = row.get("ticket_id")
             if tv is not None and not (isinstance(tv, float) and pd.isna(tv)):
-                ts = str(tv).strip().upper()
+                from backend.rinse_bag_completion import normalize_bag_id
+                from backend.rinse_bag_registry import is_bag_already_completed
+
+                ts = normalize_bag_id(tv)
+                ticket_id = ts if ts else None
+                if ticket_id and is_bag_already_completed(cursor, tenant_oid, ticket_id):
+                    row_status = "REJECTED_DUPLICATE"
+                    reason = "ALREADY_COMPLETED"
+                    rejected += 1
+
+        if row_status == "ACCEPTED" and row_date < batch_date:
+            row_status = "NEEDS_ATTENTION"
+            reason = "OLDER_THAN_BATCH_DATE"
+            needs_attention += 1
+        elif row_status == "ACCEPTED" and identity_key in final_identity_keys:
+            row_status = "REJECTED_DUPLICATE"
+            reason = "ALREADY_IN_FINAL"
+            rejected += 1
+        elif row_status == "ACCEPTED" and identity_key in existing_identity_reasons:
+            row_status = "REJECTED_DUPLICATE"
+            reason = existing_identity_reasons[identity_key]
+            rejected += 1
+        elif row_status == "ACCEPTED":
+            inserted += 1
+
+        if include_tid and ticket_id is None:
+            tv = row.get("ticket_id")
+            if tv is not None and not (isinstance(tv, float) and pd.isna(tv)):
+                from backend.rinse_bag_completion import normalize_bag_id
+
+                ts = normalize_bag_id(tv)
                 ticket_id = ts if ts else None
 
         if include_tid:
@@ -4127,6 +4142,85 @@ def upload_orders_portal_csv():
                 pass
 
 
+@app.route("/rinse/bags", methods=["GET"])
+def list_rinse_bags():
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        status = (request.args.get("status") or "").strip().upper() or None
+        try:
+            limit = int(request.args.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = int(request.args.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+        from backend.rinse_bag_registry import list_registry_rows
+
+        rows = list_registry_rows(
+            cursor, tenant_oid, status=status, limit=limit, offset=offset
+        )
+        return jsonify(rows)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/rinse/bags/<bag_id>", methods=["GET"])
+def get_rinse_bag(bag_id: str):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        from backend.rinse_bag_completion import normalize_bag_id
+        from backend.rinse_bag_registry import get_registry_row
+
+        bid = normalize_bag_id(bag_id)
+        if not bid:
+            return jsonify({"error": "Invalid bag id"}), 400
+        row = get_registry_row(cursor, tenant_oid, bid)
+        if not row:
+            return jsonify({"error": "Bag not found"}), 404
+        return jsonify(row)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/rinse/bags/<bag_id>/scan-events", methods=["GET"])
+def list_rinse_bag_scan_events(bag_id: str):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        from backend.rinse_bag_completion import normalize_bag_id
+        from backend.rinse_bag_registry import list_scan_events_for_bag
+
+        bid = normalize_bag_id(bag_id)
+        if not bid:
+            return jsonify({"error": "Invalid bag id"}), 400
+        try:
+            limit = int(request.args.get("limit", 500))
+        except (TypeError, ValueError):
+            limit = 500
+        rows = list_scan_events_for_bag(cursor, tenant_oid, bid, limit=limit)
+        return jsonify(rows)
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/upload_batches/<int:batch_id>/rinse-scan-events", methods=["POST"])
 def upload_batch_rinse_scan_events(batch_id: int):
     """
@@ -4187,13 +4281,31 @@ def upload_batch_rinse_scan_events(batch_id: int):
                     }
                 ), 409
 
-        payload = commit_scan_events_for_batch(
+        batch_payload = commit_scan_events_for_batch(
             cursor,
             tenant_oid,
             batch_id,
             events_df,
             orig_name,
             replace_existing=True,
+        )
+
+        from backend.rinse_bag_registry import (
+            merge_scan_events_from_upload,
+            recompute_completion_for_bags,
+        )
+
+        merge_payload = merge_scan_events_from_upload(
+            cursor,
+            tenant_oid,
+            batch_id,
+            events_df,
+            orig_name,
+        )
+        completion_payload = recompute_completion_for_bags(
+            cursor,
+            tenant_oid,
+            merge_payload.get("bag_ids") or [],
         )
         conn.commit()
 
@@ -4203,7 +4315,9 @@ def upload_batch_rinse_scan_events(batch_id: int):
                 "upload_batch_id": batch_id,
                 "source": "upload_rinse_scan_events_csv",
                 "warnings": warnings,
-                **payload,
+                **batch_payload,
+                "persistent_merge": merge_payload,
+                "completion": completion_payload,
             }
         )
 

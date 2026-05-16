@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_scan_events_logic import EVENTS_REQUIRED, SCAN_EVENT_COLUMNS, _parse_scanned_at
 
 SCAN_EVENTS_CSV_COLUMNS = ["Bag ID", *SCAN_EVENT_COLUMNS]
@@ -28,8 +29,8 @@ def validate_scan_events_columns(df: pd.DataFrame) -> None:
         )
 
 
-def normalize_bag_id(value: Any) -> str:
-    return str(value or "").strip().upper()
+def normalize_scan_bag_id(value: Any) -> str:
+    return normalize_bag_id(value)
 
 
 def normalize_scan_event_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -37,7 +38,7 @@ def normalize_scan_event_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
     out = df.copy()
     warnings: list[str] = []
 
-    out["Bag ID"] = out["Bag ID"].map(normalize_bag_id)
+    out["Bag ID"] = out["Bag ID"].map(normalize_scan_bag_id)
     empty_bag = out["Bag ID"].eq("")
     if empty_bag.any():
         n = int(empty_bag.sum())
@@ -129,7 +130,7 @@ def _row_to_db_tuple(
     return (
         int(organization_id),
         int(upload_batch_id),
-        normalize_bag_id(row.get("Bag ID")),
+        normalize_scan_bag_id(row.get("Bag ID")),
         scan_index,
         str(row.get("Rack", "") or "")[:64] or None,
         str(row.get("Time Scanned", "") or "")[:255] or None,

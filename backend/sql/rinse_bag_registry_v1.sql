@@ -1,0 +1,25 @@
+-- Persistent Rinse bag completion registry (survives daily operational reset).
+CREATE TABLE IF NOT EXISTS rinse_bag_registry (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  organization_id INT NOT NULL,
+  bag_id VARCHAR(64) NOT NULL,
+  completion_status VARCHAR(24) NOT NULL DEFAULT 'INCOMPLETE',
+  completed_at DATETIME NULL,
+  completion_reason VARCHAR(64) NULL,
+  first_clean_scan_at DATETIME NULL,
+  first_clean_scan_event_id INT NULL,
+  trigger_scan_at DATETIME NULL,
+  trigger_scan_event_id INT NULL,
+  trigger_kind VARCHAR(32) NULL,
+  name_clean VARCHAR(255) NULL,
+  weight_num DECIMAL(8,2) NULL,
+  service_type VARCHAR(10) NULL,
+  date_clean DATE NULL,
+  last_upload_batch_id INT NULL,
+  last_staging_order_id INT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_rinse_bag_org_bag (organization_id, bag_id),
+  KEY idx_rinse_bag_org_status (organization_id, completion_status),
+  KEY idx_rinse_bag_completed_at (organization_id, completed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

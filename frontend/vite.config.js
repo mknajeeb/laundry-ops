@@ -20,6 +20,7 @@ const API_PREFIXES = [
   'upload_orders_portal_csv',
   'upload_conflicts',
   'upload_batches',
+  'rinse',
   'employees',
   'issues',
   'order_processing',

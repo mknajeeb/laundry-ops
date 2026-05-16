@@ -25,14 +25,11 @@ PORTAL_REQUIRED = {"Date", "Customer", "Weight", "Notes", "Bag ID"}
 
 
 def _ticket_id_from_bag(bag: str | None) -> str | None:
-    """Strip `CODE (Wash & Fold) (…)` down to the alphanumeric bag / ticket id."""
-    if bag is None:
-        return None
-    s = str(bag).strip()
-    if not s:
-        return None
-    m = re.match(r"^([A-Z0-9]{4,})", s, re.I)
-    return m.group(1).upper() if m else None
+    """Strip portal Bag ID to canonical ticket_id (shared with scan-events bag_id)."""
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    bid = normalize_bag_id(bag)
+    return bid if bid else None
 
 
 def _cell(row: pd.Series, key: str):

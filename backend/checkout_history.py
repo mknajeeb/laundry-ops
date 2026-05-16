@@ -146,7 +146,11 @@ def _logistics_checked_sql(cap: dict) -> str:
 
 
 def _purge_operational_tables(cursor, tenant_oid: int) -> dict:
-    """Clear rinse-flow ops for tenant. Does not touch orders_final."""
+    """Clear rinse-flow ops for tenant. Does not touch orders_final.
+
+    Never deletes rinse_bag_registry or rinse_bag_scan_events — persistent
+    completion and scan history survive daily operational reset.
+    """
     out = {
         "orders_staging": 0,
         "checkout_log": 0,
