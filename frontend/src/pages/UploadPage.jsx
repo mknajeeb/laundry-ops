@@ -39,6 +39,7 @@ import {
   postRinseBagExport,
   uploadOrders,
   uploadPortalOrdersCsv,
+  uploadRinseDualCsv,
   uploadRinseScanEventsCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
@@ -119,6 +120,9 @@ function UploadPage({ user }) {
     }
     return "Before confirming: upload at least a portal order CSV or a scan-events CSV.";
   }, [requireBothCsv, isDraft, batch?.id, hasOrderRows, hasScanEvents, canConfirmBatch]);
+
+  const halfDraftWithoutEvents = requireBothCsv && isDraft && batch?.id && hasOrderRows && !hasScanEvents;
+  const dualUploadReady = Boolean(portalCsvFile && scanEventsCsvFile);
 
   const formatBatchLabel = (row) => {
     if (!row) return "No active batch";
@@ -355,6 +359,43 @@ function UploadPage({ user }) {
         error?.response?.data?.error ||
         error?.message ||
         "Portal CSV upload failed";
+      setMessage({ type: "error", text: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const uploadDualCsv = async () => {
+    if (!portalCsvFile || !scanEventsCsvFile) {
+      setMessage({
+        type: "warning",
+        text: "Select both portal order CSV and Rinse scan-events CSV.",
+      });
+      return;
+    }
+    const formData = new FormData();
+    formData.append("portal_csv", portalCsvFile);
+    formData.append("scan_events_csv", scanEventsCsvFile);
+    formData.append("batch_date", batchDate);
+    try {
+      setLoading(true);
+      const res = await uploadRinseDualCsv(formData);
+      const d = res.data || {};
+      const warn = Array.isArray(d.warnings) && d.warnings.length ? ` (${d.warnings.join(" ")})` : "";
+      setScanEventsCount(d.upload_files?.scan_events_count ?? d.scan_events_batch?.rows_inserted ?? 0);
+      setMessage({
+        type: "success",
+        text: `Draft created from both files. Accepted: ${d.rows_inserted}, Rejected: ${d.rejected_rows}, Needs Attention: ${d.needs_attention_rows}.${warn}`,
+      });
+      await loadCurrentBatch("ALL");
+      await loadBatchHistory();
+    } catch (error) {
+      console.error(error);
+      const msg =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        "Combined upload failed";
       setMessage({ type: "error", text: msg });
     } finally {
       setLoading(false);
@@ -693,60 +734,111 @@ function UploadPage({ user }) {
         </Stack>
       )}
 
-      <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
-        <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 1 }}>Portal CSV (primary)</Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
-          <Stack spacing={0.6}>
-            <Typography sx={{ fontWeight: 500, fontSize: 13 }}>CSV file</Typography>
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => setPortalCsvFile(e.target.files?.[0] || null)}
-            />
-          </Stack>
-          <Button variant="contained" color="secondary" onClick={uploadPortalCsv} disabled={loading}>
-            {loading ? "…" : "Upload CSV draft"}
-          </Button>
-        </Stack>
-      </Paper>
+      {halfDraftWithoutEvents && (
+        <Alert severity="warning" sx={{ mt: 1, borderRadius: 2 }}>
+          This draft was started without scan-events. Reset draft and use Upload both.
+        </Alert>
+      )}
 
-      <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
-        <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 0.5 }}>
-          Optional: Rinse scan-events CSV
-        </Typography>
-        <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
-          Bag scan history only (Bag ID + scan columns). Does not replace the portal order CSV.
-          Events will be linked to orders later using Bag ID.
-        </Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
-          <Stack spacing={0.6}>
-            <Typography sx={{ fontWeight: 500, fontSize: 13 }}>Events CSV</Typography>
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => setScanEventsCsvFile(e.target.files?.[0] || null)}
-            />
+      {requireBothCsv ? (
+        <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+          <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 0.5 }}>
+            Portal + scan-events (required)
+          </Typography>
+          <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+            Both CSV files are required to create a draft. Scan-events are applied before order rows
+            are classified.
+          </Typography>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="flex-end" flexWrap="wrap">
+            <Stack spacing={0.6}>
+              <Typography sx={{ fontWeight: 500, fontSize: 13 }}>Portal order CSV</Typography>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => setPortalCsvFile(e.target.files?.[0] || null)}
+              />
+            </Stack>
+            <Stack spacing={0.6}>
+              <Typography sx={{ fontWeight: 500, fontSize: 13 }}>Scan-events CSV</Typography>
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => setScanEventsCsvFile(e.target.files?.[0] || null)}
+              />
+            </Stack>
+            <Button
+              variant="contained"
+              color="secondary"
+              onClick={uploadDualCsv}
+              disabled={loading || !dualUploadReady}
+            >
+              {loading ? "…" : "Upload both / create draft"}
+            </Button>
           </Stack>
-          <Button
-            variant="outlined"
-            color="secondary"
-            onClick={uploadScanEventsCsv}
-            disabled={loading || isConfirmed || !batch?.id}
-          >
-            {loading ? "…" : "Upload scan-events CSV"}
-          </Button>
-        </Stack>
-        {batch?.id && scanEventsCount > 0 && (
-          <Typography sx={{ mt: 1, fontSize: 13, color: "text.secondary" }}>
-            This draft batch has {scanEventsCount} stored scan-event row(s).
-          </Typography>
-        )}
-        {!batch?.id && (
-          <Typography sx={{ mt: 1, fontSize: 13, color: "warning.main" }}>
-            Upload the portal order CSV first to create a draft batch.
-          </Typography>
-        )}
-      </Paper>
+          {batch?.id && scanEventsCount > 0 && (
+            <Typography sx={{ mt: 1, fontSize: 13, color: "text.secondary" }}>
+              This draft batch has {scanEventsCount} stored scan-event row(s).
+            </Typography>
+          )}
+        </Paper>
+      ) : (
+        <>
+          <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+            <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 1 }}>Portal CSV (primary)</Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
+              <Stack spacing={0.6}>
+                <Typography sx={{ fontWeight: 500, fontSize: 13 }}>CSV file</Typography>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(e) => setPortalCsvFile(e.target.files?.[0] || null)}
+                />
+              </Stack>
+              <Button variant="contained" color="secondary" onClick={uploadPortalCsv} disabled={loading}>
+                {loading ? "…" : "Upload CSV draft"}
+              </Button>
+            </Stack>
+          </Paper>
+
+          <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+            <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 0.5 }}>
+              Optional: Rinse scan-events CSV
+            </Typography>
+            <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+              Bag scan history only (Bag ID + scan columns). Does not replace the portal order CSV.
+              Events will be linked to orders later using Bag ID.
+            </Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
+              <Stack spacing={0.6}>
+                <Typography sx={{ fontWeight: 500, fontSize: 13 }}>Events CSV</Typography>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(e) => setScanEventsCsvFile(e.target.files?.[0] || null)}
+                />
+              </Stack>
+              <Button
+                variant="outlined"
+                color="secondary"
+                onClick={uploadScanEventsCsv}
+                disabled={loading || isConfirmed || !batch?.id}
+              >
+                {loading ? "…" : "Upload scan-events CSV"}
+              </Button>
+            </Stack>
+            {batch?.id && scanEventsCount > 0 && (
+              <Typography sx={{ mt: 1, fontSize: 13, color: "text.secondary" }}>
+                This draft batch has {scanEventsCount} stored scan-event row(s).
+              </Typography>
+            )}
+            {!batch?.id && (
+              <Typography sx={{ mt: 1, fontSize: 13, color: "warning.main" }}>
+                Upload the portal order CSV first to create a draft batch.
+              </Typography>
+            )}
+          </Paper>
+        </>
+      )}
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
         <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 1 }}>

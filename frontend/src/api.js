@@ -335,6 +335,13 @@ export const uploadPortalOrdersCsv = (formData) =>
     headers: { "Content-Type": "multipart/form-data" },
   });
 
+/** Portal + scan-events CSV in one request (required when upload_batch_require_both_csv is on). */
+export const uploadRinseDualCsv = (formData) =>
+  axios.post(`${API_BASE}/upload_orders_rinse_dual_csv`, formData, {
+    timeout: 120000,
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
 /** Optional Rinse scan-events CSV (Bag ID + scans only) for an existing draft upload batch. */
 export const uploadRinseScanEventsCsv = (batchId, formData) =>
   axios.post(`${API_BASE}/upload_batches/${batchId}/rinse-scan-events`, formData, {

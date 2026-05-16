@@ -18,6 +18,7 @@ const API_PREFIXES = [
   'checkout_undo',
   'upload_orders',
   'upload_orders_portal_csv',
+  'upload_orders_rinse_dual_csv',
   'upload_conflicts',
   'upload_batches',
   'rinse',
