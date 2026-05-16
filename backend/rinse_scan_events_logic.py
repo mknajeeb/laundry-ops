@@ -75,18 +75,14 @@ def apply_scan_event_logic(df: pd.DataFrame) -> pd.DataFrame:
     out["is_move_bag"] = out["purpose_norm"].eq("move-bag")
     out["is_weight_entry"] = out["purpose_norm"].eq("weight-entry")
 
-    def _last_in_group(g: pd.DataFrame) -> pd.Series:
-        if g.empty:
-            return pd.Series(dtype=bool)
-        idx = g["scanned_at_parsed"].idxmax()
-        if pd.isna(idx):
-            idx = g.index[-1]
-        return g.index == idx
-
     out["is_latest_scan_in_ticket"] = False
     for _, g in out.groupby(group_keys, sort=False):
-        mask = _last_in_group(g)
-        out.loc[mask, "is_latest_scan_in_ticket"] = True
+        if g.empty:
+            continue
+        idx = g["scanned_at_parsed"].idxmax()
+        if pd.isna(idx) or idx not in g.index:
+            idx = g.index[-1]
+        out.loc[idx, "is_latest_scan_in_ticket"] = True
 
     out["flag_last_location_csv"] = out.get("is_last_location", pd.Series([""] * len(out))).astype(str).str.upper().eq("Y")
     out["flag_last_scan_csv"] = out.get("is_last_scan", pd.Series([""] * len(out))).astype(str).str.upper().eq("Y")
