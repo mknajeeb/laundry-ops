@@ -342,6 +342,14 @@ export const uploadRinseScanEventsCsv = (batchId, formData) =>
     headers: { "Content-Type": "multipart/form-data" },
   });
 
+export const getRinseBagDetail = (bagId) =>
+  axios.get(`${API_BASE}/rinse/bags/${encodeURIComponent(bagId)}/detail`, { timeout: 30000 });
+
+export const postRinseBagRecomputeCompletion = (bagId) =>
+  axios.post(`${API_BASE}/rinse/bags/${encodeURIComponent(bagId)}/recompute-completion`, {}, {
+    timeout: 30000,
+  });
+
 /** Admin: GET whether Rinse bag CSV export can run on the server (Node + scraper + env). */
 export const getRinseBagExportConfig = () =>
   axios.get(`${API_BASE}/admin/rinse/bag-export/config`, { timeout: 15000 });

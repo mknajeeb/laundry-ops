@@ -27,6 +27,54 @@ TRIGGER_RACK_NOT_CLEAN = "RACK_NOT_CLEAN"
 TRIGGER_USER_NOT_INTERNAL = "USER_NOT_INTERNAL"
 TRIGGER_BOTH = "BOTH"
 
+REASON_ALREADY_COMPLETED = "ALREADY_COMPLETED"
+REASON_ALREADY_COMPLETED_AT_CONFIRM = "ALREADY_COMPLETED_AT_CONFIRM"
+REASON_UPDATED_EXISTING_BAG = "UPDATED_EXISTING_BAG"
+REASON_OK = "OK"
+ROW_ACCEPTED = "ACCEPTED"
+ROW_REJECTED = "REJECTED_DUPLICATE"
+
+
+def classify_portal_upload_row(
+    *,
+    ticket_id: str | None,
+    is_completed: bool,
+    has_active_staging: bool,
+    row_date_before_batch: bool,
+) -> tuple[str, str]:
+    """Draft upload row_status + reason when ticket_id controls identity."""
+    tid = normalize_bag_id(ticket_id)
+    if not tid:
+        raise ValueError("classify_portal_upload_row requires ticket_id")
+
+    if is_completed:
+        return ROW_REJECTED, REASON_ALREADY_COMPLETED
+
+    if row_date_before_batch:
+        return "NEEDS_ATTENTION", "OLDER_THAN_BATCH_DATE"
+
+    if has_active_staging:
+        return ROW_ACCEPTED, REASON_UPDATED_EXISTING_BAG
+
+    return ROW_ACCEPTED, REASON_OK
+
+
+def confirm_staging_action(
+    *,
+    ticket_id: str | None,
+    is_completed: bool,
+    has_active_staging: bool,
+) -> str:
+    """Returns: BLOCK | UPDATE_STAGING | INSERT_STAGING | USE_IDENTITY_PATH"""
+    tid = normalize_bag_id(ticket_id)
+    if not tid:
+        return "USE_IDENTITY_PATH"
+    if is_completed:
+        return "BLOCK"
+    if has_active_staging:
+        return "UPDATE_STAGING"
+    return "INSERT_STAGING"
+
 
 def normalize_bag_id(value: Any) -> str:
     """

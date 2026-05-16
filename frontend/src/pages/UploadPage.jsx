@@ -22,6 +22,7 @@ import {
   TableRow,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { Refresh } from "@mui/icons-material";
@@ -848,6 +849,7 @@ function UploadPage({ user }) {
                   <TableCell>Name</TableCell>
                   <TableCell>Weight/Count</TableCell>
                   <TableCell>Bag ID</TableCell>
+                  <TableCell>Registry</TableCell>
                   <TableCell>Service</TableCell>
                   <TableCell>Rush</TableCell>
                   <TableCell>Status / reason</TableCell>
@@ -869,6 +871,32 @@ function UploadPage({ user }) {
                     </TableCell>
                     <TableCell sx={{ fontFamily: "monospace", fontSize: 13 }}>
                       {row.ticket_id ? String(row.ticket_id) : "—"}
+                    </TableCell>
+                    <TableCell>
+                      {!row.ticket_id ? (
+                        "—"
+                      ) : row.registry_not_found ? (
+                        <Chip size="small" label="No registry" variant="outlined" />
+                      ) : (
+                        <Tooltip
+                          title={
+                            row.registry_status === "COMPLETED"
+                              ? `Completed${row.completion_reason ? `: ${row.completion_reason}` : ""}${
+                                  row.completed_at ? ` @ ${row.completed_at}` : ""
+                                }`
+                              : row.registry_status === "INCOMPLETE"
+                                ? "Incomplete — scan-events may still be pending"
+                                : ""
+                          }
+                        >
+                          <Chip
+                            size="small"
+                            label={row.registry_status || "—"}
+                            color={row.registry_status === "COMPLETED" ? "success" : "warning"}
+                            variant={row.registry_status === "COMPLETED" ? "filled" : "outlined"}
+                          />
+                        </Tooltip>
+                      )}
                     </TableCell>
                     <TableCell>{row.service_type}</TableCell>
                     <TableCell>{row.rush_type}</TableCell>

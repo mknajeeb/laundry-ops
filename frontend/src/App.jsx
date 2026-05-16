@@ -34,6 +34,7 @@ import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import MaintenancePage from "./pages/MaintenancePage";
+import RinseBagLookupPage from "./pages/RinseBagLookupPage";
 import IssuePage from "./pages/IssuePage";
 import PeoplePage from "./pages/PeoplePage";
 import ClockPage from "./pages/ClockPage";
@@ -723,6 +724,16 @@ function AppShell() {
                     permissionAnyOf={["upload.view", "upload.create"]}
                   >
                     <UploadPage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/bag-lookup"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <RinseBagLookupPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

@@ -3854,45 +3854,88 @@ def commit_draft_upload_batch_from_orders_df(
         rush_type = "RUSH" if (str(rush_type_raw).upper() == "RUSH" or is_batch_date_rush) else "NON-RUSH"
 
         identity_key = build_identity_key(name_clean, weight_num, service_type, row_date)
-        row_status = "ACCEPTED"
-        reason = "OK"
 
         ticket_id = None
+        rinse_bag_row = False
         if include_tid:
             tv = row.get("ticket_id")
             if tv is not None and not (isinstance(tv, float) and pd.isna(tv)):
                 from backend.rinse_bag_completion import normalize_bag_id
                 from backend.rinse_bag_registry import is_bag_already_completed
+                from backend.rinse_bag_completion import classify_portal_upload_row
+                from backend.rinse_bag_upload import (
+                    find_active_staging_by_ticket_id,
+                    upsert_registry_from_portal_row,
+                )
 
                 ts = normalize_bag_id(tv)
                 ticket_id = ts if ts else None
-                if ticket_id and is_bag_already_completed(cursor, tenant_oid, ticket_id):
-                    row_status = "REJECTED_DUPLICATE"
-                    reason = "ALREADY_COMPLETED"
-                    rejected += 1
+                if ticket_id:
+                    rinse_bag_row = True
+                    active_where = where_not_sent_or_forced_sql(cap)
+                    has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+                    staging_hit = find_active_staging_by_ticket_id(
+                        cursor,
+                        tenant_oid,
+                        ticket_id,
+                        active_where,
+                        has_staging_org=has_staging_org,
+                        has_ticket_id_col=cap.get("has_ticket_id", False),
+                    )
+                    completed = is_bag_already_completed(cursor, tenant_oid, ticket_id)
+                    row_status, reason = classify_portal_upload_row(
+                        ticket_id=ticket_id,
+                        is_completed=completed,
+                        has_active_staging=staging_hit is not None,
+                        row_date_before_batch=row_date < batch_date,
+                    )
+                    if row_status == "REJECTED_DUPLICATE":
+                        rejected += 1
+                    elif row_status == "NEEDS_ATTENTION":
+                        needs_attention += 1
+                    elif row_status == "ACCEPTED":
+                        inserted += 1
 
-        if row_status == "ACCEPTED" and row_date < batch_date:
-            row_status = "NEEDS_ATTENTION"
-            reason = "OLDER_THAN_BATCH_DATE"
-            needs_attention += 1
-        elif row_status == "ACCEPTED" and identity_key in final_identity_keys:
-            row_status = "REJECTED_DUPLICATE"
-            reason = "ALREADY_IN_FINAL"
-            rejected += 1
-        elif row_status == "ACCEPTED" and identity_key in existing_identity_reasons:
-            row_status = "REJECTED_DUPLICATE"
-            reason = existing_identity_reasons[identity_key]
-            rejected += 1
-        elif row_status == "ACCEPTED":
-            inserted += 1
+                    upsert_registry_from_portal_row(
+                        cursor,
+                        tenant_oid,
+                        upload_batch_id,
+                        ticket_id=ticket_id,
+                        name_clean=name_clean,
+                        weight_num=weight_num,
+                        service_type=service_type,
+                        date_clean=row_date,
+                        rush_type=rush_type,
+                        is_completed=completed,
+                    )
 
-        if include_tid and ticket_id is None:
-            tv = row.get("ticket_id")
-            if tv is not None and not (isinstance(tv, float) and pd.isna(tv)):
-                from backend.rinse_bag_completion import normalize_bag_id
+        if not rinse_bag_row:
+            row_status = "ACCEPTED"
+            reason = "OK"
+            if row_date < batch_date:
+                row_status = "NEEDS_ATTENTION"
+                reason = "OLDER_THAN_BATCH_DATE"
+                needs_attention += 1
+            elif identity_key in final_identity_keys:
+                row_status = "REJECTED_DUPLICATE"
+                reason = "ALREADY_IN_FINAL"
+                rejected += 1
+            elif identity_key in existing_identity_reasons:
+                row_status = "REJECTED_DUPLICATE"
+                reason = existing_identity_reasons[identity_key]
+                rejected += 1
+            else:
+                row_status = "ACCEPTED"
+                reason = "OK"
+                inserted += 1
 
-                ts = normalize_bag_id(tv)
-                ticket_id = ts if ts else None
+            if include_tid and ticket_id is None:
+                tv = row.get("ticket_id")
+                if tv is not None and not (isinstance(tv, float) and pd.isna(tv)):
+                    from backend.rinse_bag_completion import normalize_bag_id
+
+                    ts = normalize_bag_id(tv)
+                    ticket_id = ts if ts else None
 
         if include_tid:
             cursor.execute(
@@ -4190,6 +4233,75 @@ def get_rinse_bag(bag_id: str):
         if not row:
             return jsonify({"error": "Bag not found"}), 404
         return jsonify(row)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/rinse/bags/<bag_id>/recompute-completion", methods=["POST"])
+def recompute_rinse_bag_completion(bag_id: str):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        _, err_a, code_a = require_admin(cursor)
+        if err_a:
+            return err_a, code_a
+        tenant_oid = user_org_id(me)
+        from backend.rinse_bag_completion import normalize_bag_id
+        from backend.rinse_bag_upload import recompute_bag_completion_with_audit
+
+        bid = normalize_bag_id(bag_id)
+        if not bid:
+            return jsonify({"error": "Invalid bag id"}), 400
+        from backend.rinse_bag_registry import get_registry_row
+
+        if not get_registry_row(cursor, tenant_oid, bid):
+            return jsonify({"error": "Bag not found"}), 404
+        payload = recompute_bag_completion_with_audit(cursor, tenant_oid, bid)
+        conn.commit()
+        return jsonify(payload)
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/rinse/bags/<bag_id>/detail", methods=["GET"])
+def get_rinse_bag_detail(bag_id: str):
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        _, err_a, code_a = require_admin(cursor)
+        if err_a:
+            return err_a, code_a
+        tenant_oid = user_org_id(me)
+        from backend.rinse_bag_completion import normalize_bag_id
+        from backend.rinse_bag_upload import get_bag_admin_detail
+
+        bid = normalize_bag_id(bag_id)
+        if not bid:
+            return jsonify({"error": "Invalid bag id"}), 400
+        cap = orders_status_capabilities(cursor)
+        detail = get_bag_admin_detail(
+            cursor,
+            tenant_oid,
+            bid,
+            active_where_sql=where_not_sent_or_forced_sql(cap),
+            has_staging_org=table_has_column(cursor, "orders_staging", "organization_id"),
+            has_ticket_id_col=cap.get("has_ticket_id", False),
+            upload_batch_row_pk=get_upload_batch_rows_pk(cursor),
+        )
+        if not detail:
+            return jsonify({"error": "Bag not found"}), 404
+        return jsonify(detail)
     finally:
         cursor.close()
         conn.close()
@@ -9683,7 +9795,11 @@ def get_upload_batch_rows(batch_id):
                 ORDER BY {row_pk} ASC
             """, (batch_id,))
 
-        return jsonify(cursor.fetchall())
+        rows = cursor.fetchall() or []
+        from backend.rinse_bag_upload import enrich_upload_batch_rows_with_registry
+
+        rows = enrich_upload_batch_rows_with_registry(cursor, tenant_oid, rows)
+        return jsonify(rows)
     finally:
         cursor.close()
         conn.close()
@@ -10002,7 +10118,55 @@ def confirm_upload_batch(batch_id):
             WHERE upload_batch_id = %s
             AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
         """, (batch_id,))
-        accepted_rows = cursor.fetchall()
+        accepted_rows = list(cursor.fetchall() or [])
+
+        from backend.rinse_bag_completion import normalize_bag_id
+        from backend.rinse_bag_registry import is_bag_already_completed
+        from backend.rinse_bag_upload import (
+            find_active_staging_by_ticket_id,
+            update_staging_from_upload_row,
+        )
+
+        active_where = where_not_sent_or_forced_sql(cap)
+        blocked_at_confirm = 0
+        blocked_bag_ids: list[str] = []
+
+        for row in accepted_rows:
+            tid = normalize_bag_id(row.get("ticket_id")) if row.get("ticket_id") else ""
+            if not tid:
+                continue
+            if is_bag_already_completed(cursor, tenant_oid, tid):
+                cursor.execute(
+                    f"""
+                    UPDATE upload_batch_rows
+                    SET row_status = 'REJECTED_DUPLICATE',
+                        reason = 'ALREADY_COMPLETED_AT_CONFIRM',
+                        updated_at = NOW()
+                    WHERE upload_batch_id = %s AND {row_pk} = %s
+                    """,
+                    (batch_id, row["id"]),
+                )
+                blocked_at_confirm += 1
+                blocked_bag_ids.append(tid)
+
+        if blocked_at_confirm:
+            cursor.execute(
+                f"""
+                SELECT
+                    {row_pk} AS id,
+                    date_clean,
+                    name_clean,
+                    weight_num,
+                    service_type,
+                    rush_type
+                    {ubr_tid_sel}
+                FROM upload_batch_rows
+                WHERE upload_batch_id = %s
+                AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
+                """,
+                (batch_id,),
+            )
+            accepted_rows = list(cursor.fetchall() or [])
 
         # Safety guard: do not let a fully rejected draft mutate live staging/final.
         if len(accepted_rows) == 0:
@@ -10153,7 +10317,47 @@ def confirm_upload_batch(batch_id):
         )
 
         inserted = 0
+        staging_updated = 0
         for row in accepted_rows:
+            tid = normalize_bag_id(row.get("ticket_id")) if row.get("ticket_id") else ""
+            if tid and cap.get("has_ticket_id"):
+                existing_staging = find_active_staging_by_ticket_id(
+                    cursor,
+                    tenant_oid,
+                    tid,
+                    active_where,
+                    has_staging_org=has_staging_org,
+                    has_ticket_id_col=True,
+                )
+                if existing_staging:
+                    update_staging_from_upload_row(
+                        cursor,
+                        int(existing_staging["id"]),
+                        row,
+                        batch["batch_date"],
+                        cap,
+                        organization_id=tenant_oid,
+                        has_staging_org=has_staging_org,
+                    )
+                    staging_updated += 1
+                    cursor.execute(
+                        """
+                        UPDATE rinse_bag_registry
+                        SET last_staging_order_id = %s, updated_at = NOW()
+                        WHERE organization_id = %s AND bag_id = %s
+                        """,
+                        (int(existing_staging["id"]), tenant_oid, tid),
+                    )
+                    uploaded_identity_keys.add(
+                        build_identity_key(
+                            row["name_clean"],
+                            row["weight_num"],
+                            row["service_type"],
+                            row["date_clean"],
+                        )
+                    )
+                    continue
+
             identity_key = build_identity_key(row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"])
             if identity_key in existing_identity_before_insert:
                 continue
@@ -10189,24 +10393,34 @@ def confirm_upload_batch(batch_id):
                 cols.append("processing_status")
                 vals.append("%s")
                 args.append("PENDING")
-            if cap["has_status"]:
+            if cap.get("has_status"):
                 cols.append("status")
                 vals.append("%s")
                 args.append("PENDING")
 
-            if cap.get("has_ticket_id") and table_has_column(cursor, "upload_batch_rows", "ticket_id"):
-                tid = (row.get("ticket_id") or "").strip() if row.get("ticket_id") is not None else ""
-                if tid:
-                    cols.append("ticket_id")
-                    vals.append("%s")
-                    args.append(tid[:120])
+            if cap.get("has_ticket_id") and tid:
+                cols.append("ticket_id")
+                vals.append("%s")
+                args.append(tid[:120])
 
             cursor.execute(f"""
                 INSERT INTO orders_staging
                 ({", ".join(cols)})
                 VALUES ({", ".join(vals)})
             """, tuple(args))
+            new_staging_id = cursor.lastrowid
             inserted += 1
+            if tid:
+                cursor.execute(
+                    """
+                    UPDATE rinse_bag_registry
+                    SET last_staging_order_id = %s, updated_at = NOW()
+                    WHERE organization_id = %s AND bag_id = %s
+                    """,
+                    (int(new_staging_id), tenant_oid, tid),
+                )
+            uploaded_identity_keys.add(identity_key)
+            existing_identity_before_insert.add(identity_key)
 
         set_parts = ["state = 'CONFIRMED'"] if table_has_column(cursor, "upload_batches", "state") else []
         if table_has_column(cursor, "upload_batches", "confirmed_at"):
@@ -10228,6 +10442,9 @@ def confirm_upload_batch(batch_id):
             "status": "batch_confirmed",
             "batch_id": batch_id,
             "inserted_to_staging": inserted,
+            "staging_updated_by_bag_id": staging_updated,
+            "blocked_at_confirm_count": blocked_at_confirm,
+            "blocked_bag_ids": blocked_bag_ids,
             "forced_checkout_pending": forced_pending,
             "moved_to_final": moved_to_final
         })
