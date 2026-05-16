@@ -10,7 +10,15 @@ mkdir -p "$STAGE/mac/rinse-cleanertickets" "$STAGE/win/rinse-cleanertickets"
 
 copy_common() {
   local dest="$1"
-  cp "$ROOT/scrape.mjs" "$ROOT/save-session.mjs" "$ROOT/package.json" "$ROOT/package-lock.json" "$ROOT/CLIENT_README.txt" "$dest/"
+  cp \
+    "$ROOT/scrape.mjs" \
+    "$ROOT/scrape-scan-events.mjs" \
+    "$ROOT/rinse-playwright-lib.mjs" \
+    "$ROOT/save-session.mjs" \
+    "$ROOT/package.json" \
+    "$ROOT/package-lock.json" \
+    "$ROOT/CLIENT_README.txt" \
+    "$dest/"
   cp "$ROOT/.env.example" "$dest/"
   mkdir -p "$dest/tenants/washpro/TODAY" "$dest/tenants/washpro/ARCHIVE"
   mkdir -p "$dest/tenants/veewash/TODAY" "$dest/tenants/veewash/ARCHIVE"
@@ -26,6 +34,8 @@ cp \
   "$ROOT/save-veewash-session.command" \
   "$ROOT/run-washpro-portal-csv.command" \
   "$ROOT/run-veewash-portal-csv.command" \
+  "$ROOT/run-washpro-scan-events.command" \
+  "$ROOT/run-veewash-scan-events.command" \
   "$STAGE/mac/rinse-cleanertickets/"
 chmod +x "$STAGE/mac/rinse-cleanertickets"/*.command
 
@@ -35,6 +45,8 @@ cp \
   "$ROOT/save-veewash-session.cmd" \
   "$ROOT/run-washpro-portal-csv.cmd" \
   "$ROOT/run-veewash-portal-csv.cmd" \
+  "$ROOT/run-washpro-scan-events.cmd" \
+  "$ROOT/run-veewash-scan-events.cmd" \
   "$STAGE/win/rinse-cleanertickets/"
 
 mkdir -p "$OUT"

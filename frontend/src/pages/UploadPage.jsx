@@ -38,6 +38,7 @@ import {
   postRinseBagExport,
   uploadOrders,
   uploadPortalOrdersCsv,
+  uploadRinseScanEventsCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
 import { useAuth } from "../context/AuthContext";
@@ -66,6 +67,8 @@ function UploadPage({ user }) {
   const canDeleteBatchRows = hasPerm("upload.rows.delete");
   const [file, setFile] = useState(null);
   const [portalCsvFile, setPortalCsvFile] = useState(null);
+  const [scanEventsCsvFile, setScanEventsCsvFile] = useState(null);
+  const [scanEventsCount, setScanEventsCount] = useState(0);
   const [batchDate, setBatchDate] = useState(() => getTodayYmdEastern());
   const [batchDateUnlocked, setBatchDateUnlocked] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -158,6 +161,7 @@ function UploadPage({ user }) {
       const res = await getCurrentUploadBatch();
       const current = res?.data || null;
       setBatch(current);
+      setScanEventsCount(Number(current?.scan_events_count) || 0);
 
       if (batchDateUnlocked && current?.batch_date) {
         const d = toDateInputValue(current.batch_date);
@@ -255,6 +259,50 @@ function UploadPage({ user }) {
         error?.response?.data?.error ||
         error?.message ||
         "Upload failed";
+      setMessage({ type: "error", text: msg });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const uploadScanEventsCsv = async () => {
+    if (!scanEventsCsvFile) {
+      setMessage({ type: "warning", text: "Choose a scan-events CSV (.csv) first." });
+      return;
+    }
+    if (!batch?.id) {
+      setMessage({
+        type: "warning",
+        text: "Upload the regular portal order CSV first to create a draft batch, then add scan-events.",
+      });
+      return;
+    }
+    if (isConfirmed) {
+      setMessage({ type: "warning", text: "Cannot add scan-events to a confirmed batch." });
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", scanEventsCsvFile);
+
+    try {
+      setLoading(true);
+      const res = await uploadRinseScanEventsCsv(batch.id, formData);
+      const d = res.data || {};
+      const warn = Array.isArray(d.warnings) && d.warnings.length ? ` (${d.warnings.join(" ")})` : "";
+      setScanEventsCount(d.rows_inserted ?? 0);
+      setMessage({
+        type: "success",
+        text: `Scan-events uploaded: ${d.rows_inserted ?? 0} row(s), ${d.bags_with_events ?? 0} bag(s).${warn}`,
+      });
+      await loadCurrentBatch("ALL");
+    } catch (error) {
+      console.error(error);
+      const msg =
+        error?.response?.data?.message ||
+        error?.response?.data?.error ||
+        error?.message ||
+        "Scan-events upload failed";
       setMessage({ type: "error", text: msg });
     } finally {
       setLoading(false);
@@ -607,6 +655,44 @@ function UploadPage({ user }) {
             {loading ? "…" : "Upload CSV draft"}
           </Button>
         </Stack>
+      </Paper>
+
+      <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
+        <Typography sx={{ fontWeight: 600, fontSize: 15, mb: 0.5 }}>
+          Optional: Rinse scan-events CSV
+        </Typography>
+        <Typography color="text.secondary" sx={{ fontSize: 13, mb: 1 }}>
+          Bag scan history only (Bag ID + scan columns). Does not replace the portal order CSV.
+          Events will be linked to orders later using Bag ID.
+        </Typography>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.2} alignItems="flex-end">
+          <Stack spacing={0.6}>
+            <Typography sx={{ fontWeight: 500, fontSize: 13 }}>Events CSV</Typography>
+            <input
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => setScanEventsCsvFile(e.target.files?.[0] || null)}
+            />
+          </Stack>
+          <Button
+            variant="outlined"
+            color="secondary"
+            onClick={uploadScanEventsCsv}
+            disabled={loading || isConfirmed || !batch?.id}
+          >
+            {loading ? "…" : "Upload scan-events CSV"}
+          </Button>
+        </Stack>
+        {batch?.id && scanEventsCount > 0 && (
+          <Typography sx={{ mt: 1, fontSize: 13, color: "text.secondary" }}>
+            This draft batch has {scanEventsCount} stored scan-event row(s).
+          </Typography>
+        )}
+        {!batch?.id && (
+          <Typography sx={{ mt: 1, fontSize: 13, color: "warning.main" }}>
+            Upload the portal order CSV first to create a draft batch.
+          </Typography>
+        )}
       </Paper>
 
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>

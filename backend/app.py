@@ -4127,6 +4127,109 @@ def upload_orders_portal_csv():
                 pass
 
 
+@app.route("/upload_batches/<int:batch_id>/rinse-scan-events", methods=["POST"])
+def upload_batch_rinse_scan_events(batch_id: int):
+    """
+    Optional: upload Rinse scan-events CSV (Bag ID + scan columns only).
+    Does not modify upload_batch_rows or create orders.
+    """
+    conn = None
+    cursor = None
+    filepath = None
+    try:
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No file selected"}), 400
+
+        orig_name = (file.filename or "").strip()
+        if not orig_name.lower().endswith(".csv"):
+            return jsonify({"error": "Expected a .csv file (Rinse scan-events export)."}), 400
+
+        os.makedirs("uploads", exist_ok=True)
+        safe_name = f"{uuid.uuid4().hex}_{orig_name}"
+        filepath = os.path.join("uploads", safe_name)
+        file.save(filepath)
+
+        from backend.rinse_scan_events_upload import (
+            commit_scan_events_for_batch,
+            parse_scan_events_csv,
+        )
+
+        events_df, warnings = parse_scan_events_csv(filepath)
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+
+        if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
+            return jsonify({"error": "Upload batch not found for your organization."}), 404
+
+        if table_has_column(cursor, "upload_batches", "state"):
+            pk = get_upload_batches_pk(cursor)
+            cursor.execute(
+                f"SELECT state FROM upload_batches WHERE {pk} = %s LIMIT 1",
+                (batch_id,),
+            )
+            batch_row = cursor.fetchone()
+            batch_state = (batch_row or {}).get("state", "DRAFT")
+            if str(batch_state or "").upper() not in ("DRAFT",):
+                return jsonify(
+                    {
+                        "error": "Scan-events can only be uploaded to a draft batch.",
+                        "batch_state": batch_state,
+                    }
+                ), 409
+
+        payload = commit_scan_events_for_batch(
+            cursor,
+            tenant_oid,
+            batch_id,
+            events_df,
+            orig_name,
+            replace_existing=True,
+        )
+        conn.commit()
+
+        return jsonify(
+            {
+                "status": "ok",
+                "upload_batch_id": batch_id,
+                "source": "upload_rinse_scan_events_csv",
+                "warnings": warnings,
+                **payload,
+            }
+        )
+
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print("UPLOAD RINSE SCAN EVENTS ERROR:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+        if filepath:
+            try:
+                os.unlink(filepath)
+            except OSError:
+                pass
+
+
 # ---------------------------------------------------
 # Create Manual Order
 # ---------------------------------------------------
@@ -8919,6 +9022,14 @@ def get_current_upload_batch():
         row_pk = get_upload_batch_rows_pk(cursor)
         summary = summarize_batch_rows(cursor, row["id"], row_pk)
         row["summary"] = summary
+        try:
+            from backend.rinse_scan_events_upload import count_scan_events_for_batch
+
+            row["scan_events_count"] = count_scan_events_for_batch(
+                cursor, row["id"], tenant_oid
+            )
+        except Exception:
+            row["scan_events_count"] = 0
         return jsonify(row)
     finally:
         cursor.close()

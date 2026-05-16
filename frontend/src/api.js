@@ -335,6 +335,13 @@ export const uploadPortalOrdersCsv = (formData) =>
     headers: { "Content-Type": "multipart/form-data" },
   });
 
+/** Optional Rinse scan-events CSV (Bag ID + scans only) for an existing draft upload batch. */
+export const uploadRinseScanEventsCsv = (batchId, formData) =>
+  axios.post(`${API_BASE}/upload_batches/${batchId}/rinse-scan-events`, formData, {
+    timeout: 120000,
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
 /** Admin: GET whether Rinse bag CSV export can run on the server (Node + scraper + env). */
 export const getRinseBagExportConfig = () =>
   axios.get(`${API_BASE}/admin/rinse/bag-export/config`, { timeout: 15000 });

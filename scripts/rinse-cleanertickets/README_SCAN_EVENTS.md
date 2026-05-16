@@ -1,81 +1,54 @@
 # Rinse scan events export (extension — not production scrape)
 
-This is a **separate** Playwright script from **`scrape.mjs`** (bag IDs / portal daily upload CSV).  
-**Do not change `scrape.mjs`** for this feature; production bag export and import stay as they are.
+Separate from **`scrape.mjs`**. Production bag import is unchanged.
 
-## What it does
+## Output (two files, no redundant portal data on events)
 
-For each cleaner-ticket row on the Rinse list (same pagination / session as the bag scraper):
+| File | Contents |
+|------|----------|
+| **`scan-events-YYYY-MM-DD-tickets.csv`** | Same 16 columns as production portal scrape (one row per bag) |
+| **`scan-events-YYYY-MM-DD-events.csv`** | **`Bag ID`** (unique alphanumeric code) + scan columns only |
 
-1. Expands the ticket.
-2. Reads the **Scans** table: **Rack**, **Time Scanned**, **User**, **Purpose** (plus **Last Location** / **Last Scan** badges when present).
-3. Writes one CSV row **per scan event**, with ticket context (`bag_id`, customer snippet, list page URL).
+Join: events `Bag ID` = prefix of tickets `Bag ID` column (e.g. `9D498298XU` ↔ `9D498298XU (Hang Dry)`).
 
-## One-time setup
-
-Same as the bag scraper (shared `.env` and `rinse-auth.json`):
-
-```bash
-cd scripts/rinse-cleanertickets
-npm install
-npx playwright install chromium
-cp .env.example .env
-npm run save-session
+```env
+OUTPUT_SCAN_TICKETS_CSV=/path/to/tickets.csv
+OUTPUT_SCAN_EVENTS_CSV=/path/to/events.csv
 ```
 
 ## Run locally
 
 ```bash
 bash run-local-scan-events.sh
-bash run-local-scan-events.sh 3          # first 3 list pages only
-bash run-local-scan-events.sh 3 --apply  # scrape + Python enrich
+bash run-local-scan-events.sh 3
+bash run-local-scan-events.sh 3 --apply
 ```
 
-Windows: `run-local-scan-events.cmd`  
-Mac double-click: copy `run-local-scan-events.sh` to `run-local-scan-events.command` (same pattern as portal CSV).
+## Compare to production scrape (same pages)
 
-Output default: **`scan-events-YYYY-MM-DD.csv`** in this folder, or set:
-
-```env
-OUTPUT_SCAN_EVENTS_CSV=/absolute/path/scan-events.csv
-```
-
-Optional:
-
-```env
-RINSE_SCAN_TABLE_SETTLE_MS=600
-RINSE_SCAN_INCLUDE_EMPTY_TICKETS=1
-HEADED=1
-```
-
-## Apply logic (Python, local)
-
-From **repo root**:
+Use the **same** `RINSE_MAX_PAGES` on both runs, then diff tickets files:
 
 ```bash
-python3 -m backend.rinse_scan_events_cli apply --csv scripts/rinse-cleanertickets/scan-events-2026-05-11.csv
-python3 -m backend.rinse_scan_events_cli summary --csv path/to/scan-events.csv
+cd scripts/rinse-cleanertickets
+bash run-local-production-scrape.sh 1
+bash run-local-scan-events.sh 1
+diff -u bag-ids-production-compare-$(date +%Y-%m-%d).csv scan-events-$(date +%Y-%m-%d)-tickets.csv
 ```
 
-`backend/rinse_scan_events_logic.py` adds parsed timestamps, normalized purpose, and flags (`is_latest_scan_in_ticket`, `is_cleaning_start`, etc.). **Extend that file** for new rules — not `scrape.mjs`.
-
-## Files
-
-| File | Role |
-|------|------|
-| `scrape.mjs` | **Production** — bag / portal CSV (unchanged) |
-| `scrape-scan-events.mjs` | **New** — scan events CSV |
-| `rinse-playwright-lib.mjs` | Shared helpers for scan-events only |
-| `backend/rinse_scan_events_logic.py` | Post-process rules |
-| `backend/rinse_scan_events_cli.py` | Local CLI |
-
-## npm scripts
+Or npm:
 
 ```bash
-npm run scrape:scan-events
-npm run scrape:scan-events:headed
+RINSE_MAX_PAGES=1 OUTPUT_CSV=./bag-ids-production-compare.csv npm run scrape:portal
+RINSE_MAX_PAGES=1 npm run scrape:scan-events
+diff -u bag-ids-production-compare.csv scan-events-$(date +%Y-%m-%d)-tickets.csv
 ```
 
-## Terms
+## Python (repo root)
 
-Use only if allowed by Rinse’s terms and your vendor agreement.
+```bash
+python3 -m backend.rinse_scan_events_cli apply --csv scripts/rinse-cleanertickets/scan-events-2026-05-16-events.csv
+python3 -m backend.rinse_scan_events_cli portal-orders --tickets scripts/rinse-cleanertickets/scan-events-2026-05-16-tickets.csv
+```
+
+- **Tickets** → `portal_csv_to_orders_df` (production upload massage)
+- **Events** → `apply_scan_event_logic` (scan rules only)

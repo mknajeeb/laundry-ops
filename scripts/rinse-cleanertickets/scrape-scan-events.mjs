@@ -1,72 +1,126 @@
 /**
- * Rinse cleaner-tickets — export per-ticket "Scans" event table (Rack, Time Scanned, User, Purpose).
- * Separate from production scrape.mjs (bag / portal CSV). Run locally; apply logic via Python after export.
+ * Rinse cleaner-tickets — two CSVs:
+ *   *-tickets.csv  — BYTE-FOR-BYTE same format as production scrape.mjs (RINSE_CSV_LAYOUT=portal)
+ *   *-events.csv   — separate file: Bag ID + Scans columns only (not used by production import)
  *
+ * Ticket rows use imported portalHeaderRow / portalDataRow / parsePortalFields from scrape.mjs.
  * See README_SCAN_EVENTS.md
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import {
+  bodyRowsSelector,
+  ticketTableBodyRows,
+  readTicketRowTextSnapshot,
+  readTicketRowDirectCells,
+  portalListRowPeekOk,
+  isProbablySingleCellDetailRow,
+  isLikelyExpandedDetailSubRow,
+  isMainListTicketRow,
+  expandRowAndReadBag,
+  ensureRowCollapsedAfterTicket,
+  parsePortalFields,
+  portalHeaderRow,
+  portalDataRow,
+  csvEscape,
+} from "./scrape.mjs";
 import {
   __rinseDir,
   loadLocalEnvFile,
   progressLine,
-  csvEscape,
   navTimeoutMs,
   urlForPage,
   pageNumFromUrl,
   defaultScanEventsOutputPath,
-  bodyRowsSelector,
-  ticketTableBodyRows,
-  isLikelyExpandedDetailSubRow,
-  isMainListTicketRow,
-  portalListRowPeekOk,
-  readTicketRowTextSnapshot,
-  readTicketRowDirectCells,
-  isProbablySingleCellDetailRow,
-  ensureRowExpandedForTicket,
-  ensureRowCollapsedAfterTicket,
+  defaultScanTicketsOutputPath,
+  ticketIdFromBag,
   extractScansFromExpandedTicket,
-  ticketContextFromCollapsedText,
   isLikelyLoginPage,
   tryLogin,
   hasNextPageInUi,
 } from "./rinse-playwright-lib.mjs";
 
 loadLocalEnvFile();
-console.error("[rinse-scan-events] loaded — starting…");
+console.error("[rinse-scan-events] loaded (split tickets + events CSVs)…");
 
-const SCAN_EVENTS_HEADER = [
-  "page",
-  "ticket_row_index",
-  "customer_snippet",
-  "bag_id",
-  "date_line",
-  "scan_index",
-  "rack",
-  "time_scanned",
-  "user",
-  "purpose",
-  "is_last_location",
-  "is_last_scan",
-].join(",");
+const SCAN_EVENT_COLUMNS = [
+  "Scan Index",
+  "Rack",
+  "Time Scanned",
+  "User",
+  "Purpose",
+  "Last Location",
+  "Last Scan",
+];
 
-async function scrapeScanEventsOnPage(page, pageLabel) {
+const EVENTS_HEADER = ["Bag ID", ...SCAN_EVENT_COLUMNS];
+
+function isEventsOnlyLayout() {
+  const v = String(
+    process.env.RINSE_SCAN_OUTPUT_LAYOUT || process.env.RINSE_SCAN_EVENTS_LAYOUT || "",
+  )
+    .trim()
+    .toLowerCase();
+  return v === "events_only" || v === "events-only";
+}
+
+function rowToCsvLine(values) {
+  return values.map(csvEscape).join(",");
+}
+
+function eventDataRow(bagIdCode, event) {
+  const ev = event || {};
+  return [
+    bagIdCode,
+    ev.scan_index ?? "",
+    ev.rack ?? "",
+    ev.time_scanned ?? "",
+    ev.user ?? "",
+    ev.purpose ?? "",
+    ev.is_last_location ?? "",
+    ev.is_last_scan ?? "",
+  ];
+}
+
+/** Same ticket walk as production scrapePage — plus Scans table capture. */
+async function scrapeScanEventsOnPage(page) {
   const sel = bodyRowsSelector();
   const tableWait = Math.max(250, Math.min(8000, parseInt(process.env.RINSE_TABLE_WAIT_MS || "450", 10) || 450));
+  const tableAfter = Math.max(0, Math.min(5000, parseInt(process.env.RINSE_TABLE_AFTER_MS || "180", 10) || 180));
   await page.waitForTimeout(tableWait);
   await page.locator(sel).first().waitFor({ state: "visible", timeout: 25000 }).catch(() => {});
+  await page.waitForTimeout(tableAfter);
 
   let rowsAll = ticketTableBodyRows(page);
   let ticketTableCount = await rowsAll.count();
   if (ticketTableCount === 0) {
     rowsAll = page.locator(sel);
     ticketTableCount = await rowsAll.count();
+    console.warn(
+      `Scoped ticket table matched 0 <tr>; falling back to broad selector (count=${ticketTableCount}).`,
+    );
+  }
+  const initialRowCount = ticketTableCount;
+  if (initialRowCount > 0) {
+    progressLine(`  Ticket table rows: ${initialRowCount}.`);
   }
 
+  const wheelSteps = Math.max(
+    0,
+    Math.min(80, parseInt(process.env.RINSE_TABLE_WHEEL_STEPS || "7", 10) || 7),
+  );
+  for (let w = 0; w < wheelSteps; w++) {
+    await page.mouse.wheel(0, 240);
+    await page.waitForTimeout(22);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+  await page.waitForTimeout(100);
+
   const out = [];
-  let ticketIndex = 0;
+  let recordIndex = 0;
   const minListTd = Math.max(2, Math.min(12, parseInt(process.env.RINSE_MIN_LIST_TD || "2", 10) || 2));
 
   let j = 0;
@@ -76,15 +130,20 @@ async function scrapeScanEventsOnPage(page, pageLabel) {
 
     const cand = rowsAll.nth(j);
     await cand.scrollIntoViewIfNeeded({ timeout: 8000 }).catch(() => {});
-    await page.waitForTimeout(Math.max(0, parseInt(process.env.RINSE_ROW_GAP_MS || "25", 10) || 25));
+    const rowGap = Math.max(0, Math.min(400, parseInt(process.env.RINSE_ROW_GAP_MS || "25", 10) || 25));
+    await page.waitForTimeout(rowGap);
 
     const tdCount = await cand.locator("td").count().catch(() => 0);
-    if ((await cand.locator("th").count().catch(() => 0)) > 0 && tdCount === 0) {
+    const thOnly = (await cand.locator("th").count().catch(() => 0)) > 0 && tdCount === 0;
+    if (thOnly) {
       j += 1;
       continue;
     }
+
     const directTd = await cand.locator(":scope > td").count().catch(() => 0);
-    if (directTd < minListTd) {
+    const directGrid = await cand.locator(":scope > [role='gridcell']").count().catch(() => 0);
+    const nListCells = Math.max(directTd, directGrid);
+    if (nListCells < minListTd) {
       j += 1;
       continue;
     }
@@ -92,6 +151,8 @@ async function scrapeScanEventsOnPage(page, pageLabel) {
     const tdTexts = await readTicketRowDirectCells(cand);
     const rt = await readTicketRowTextSnapshot(cand);
     const trimmed = rt.trim();
+    const fromTdsPeek = portalListRowPeekOk(tdTexts, trimmed);
+
     if (trimmed.length < 6 || /^(scans|rack|time scanned)/i.test(trimmed)) {
       j += 1;
       continue;
@@ -104,79 +165,120 @@ async function scrapeScanEventsOnPage(page, pageLabel) {
       j += 1;
       continue;
     }
-    if (!isMainListTicketRow(trimmed) && !portalListRowPeekOk(tdTexts, trimmed)) {
+    if (!isMainListTicketRow(trimmed) && !fromTdsPeek) {
       j += 1;
       continue;
     }
 
-    ticketIndex += 1;
-    const ctx = ticketContextFromCollapsedText(trimmed);
-    await ensureRowExpandedForTicket(cand, page);
+    recordIndex += 1;
+    const rowHint = `${j + 1}/${rowCount}`;
+    const preview = trimmed.replace(/\s+/g, " ").slice(0, 72);
+
+    const { bagId, bagDisplay, customer, fullText, collapsed } = await expandRowAndReadBag(
+      page,
+      cand,
+      rt,
+    );
+    const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId);
     const scans = await extractScansFromExpandedTicket(cand);
+    const bd = bagDisplay || bagId;
+    const bagIdCode = ticketIdFromBag(bagId, bd);
+
+    const pn = portal.customer_name || customer || "";
+    const bits = ` | ${String(portal.date_display || "").slice(0, 32)} | svc:${String(portal.service_type || "").slice(0, 22)} | sub:${String(portal.sub_service || "").slice(0, 14)} | lbs:${String(portal.weight_display || "").slice(0, 18)} | #HD:${String(portal.hd_count ?? "").slice(0, 8)}`;
+
+    const ticketRec = { portal, bag_id: bagId, bag_display: bd, bag_id_code: bagIdCode };
 
     if (scans.length === 0) {
       progressLine(
-        `  ticket ${ticketIndex} (tr ${j + 1}/${rowCount}): ${ctx.customer_snippet || trimmed.slice(0, 48)} — 0 scan rows`,
+        `  ticket ${recordIndex} (tr ${rowHint}): ${bagIdCode || "no-bag"} — 0 scan rows — ${preview}…`,
       );
-      out.push({
-        page: pageLabel,
-        ticket_row_index: ticketIndex,
-        customer_snippet: ctx.customer_snippet,
-        bag_id: ctx.bag_id,
-        date_line: ctx.date_line,
-        scan_index: 0,
-        rack: "",
-        time_scanned: "",
-        user: "",
-        purpose: "",
-        is_last_location: "",
-        is_last_scan: "",
-        _empty: true,
-      });
-    } else {
-      scans.forEach((ev, idx) => {
+      if (String(process.env.RINSE_SCAN_INCLUDE_EMPTY_TICKETS || "0").trim() === "1") {
         out.push({
-          page: pageLabel,
-          ticket_row_index: ticketIndex,
-          customer_snippet: ctx.customer_snippet,
-          bag_id: ctx.bag_id,
-          date_line: ctx.date_line,
-          scan_index: idx + 1,
-          rack: ev.rack,
-          time_scanned: ev.time_scanned,
-          user: ev.user,
-          purpose: ev.purpose,
-          is_last_location: ev.is_last_location ? "Y" : "",
-          is_last_scan: ev.is_last_scan ? "Y" : "",
+          ...ticketRec,
+          events: [
+            {
+              scan_index: "",
+              rack: "",
+              time_scanned: "",
+              user: "",
+              purpose: "",
+              is_last_location: "",
+              is_last_scan: "",
+            },
+          ],
         });
-      });
-      progressLine(
-        `  ticket ${ticketIndex}: ${ctx.bag_id || "no-bag"} — ${scans.length} scan event(s) — ${ctx.customer_snippet || ""}`,
-      );
+      } else {
+        out.push({ ...ticketRec, events: [] });
+      }
+    } else {
+      const events = scans.map((ev, idx) => ({
+        scan_index: idx + 1,
+        rack: ev.rack,
+        time_scanned: ev.time_scanned,
+        user: ev.user,
+        purpose: ev.purpose,
+        is_last_location: ev.is_last_location ? "Y" : "",
+        is_last_scan: ev.is_last_scan ? "Y" : "",
+      }));
+      out.push({ ...ticketRec, events });
+      if (bagIdCode) {
+        progressLine(
+          `  ticket ${recordIndex} (tr ${rowHint}): ${bagIdCode}${pn ? ` — ${String(pn).slice(0, 48)}` : ""}${bits} — ${scans.length} scan event(s)`,
+        );
+      } else {
+        progressLine(
+          `  ticket ${recordIndex} (tr ${rowHint}): ${preview}… — no bag id — ${scans.length} scan event(s)`,
+        );
+      }
     }
 
     await ensureRowCollapsedAfterTicket(cand, page);
+    await page
+      .evaluate(() => {
+        window.scrollBy(0, Math.min(420, Math.floor(window.innerHeight * 0.4)));
+      })
+      .catch(() => {});
+
     j += 1;
   }
 
-  return { events: out, tableRowCount: ticketTableCount };
+  if (initialRowCount > 0 && out.length > 0) {
+    const eventRows = out.reduce((n, t) => n + t.events.length, 0);
+    progressLine(
+      `  Captured ${out.length} ticket(s), ${eventRows} scan row(s) (${initialRowCount} list <tr> before).`,
+    );
+  }
+
+  return { tickets: out, tableRowCount: initialRowCount };
 }
 
-function rowToCsvLine(r) {
-  return [
-    csvEscape(r.page),
-    r.ticket_row_index,
-    csvEscape(r.customer_snippet),
-    csvEscape(r.bag_id),
-    csvEscape(r.date_line),
-    r.scan_index,
-    csvEscape(r.rack),
-    csvEscape(r.time_scanned),
-    csvEscape(r.user),
-    csvEscape(r.purpose),
-    csvEscape(r.is_last_location),
-    csvEscape(r.is_last_scan),
-  ].join(",");
+/** Same CSV lines as production scrape.mjs (portal layout, one row per scraped ticket, no dedupe). */
+function writeTicketsCsv(ticketRecords, outPath) {
+  if (ticketRecords.length === 0) return 0;
+  const header = portalHeaderRow().map(csvEscape).join(",") + "\n";
+  const lines = ticketRecords.map((t) =>
+    rowToCsvLine(portalDataRow(t.portal, t.bag_display || t.bag_id)),
+  );
+  fs.writeFileSync(outPath, header + lines.map((l) => l + "\n").join(""), "utf8");
+  return lines.length;
+}
+
+function writeEventsCsv(ticketRecords, outPath) {
+  const lines = [];
+  for (const t of ticketRecords) {
+    if (!t.bag_id_code) continue;
+    for (const ev of t.events) {
+      if (!ev.scan_index && String(process.env.RINSE_SCAN_INCLUDE_EMPTY_TICKETS || "0").trim() !== "1") {
+        continue;
+      }
+      lines.push(rowToCsvLine(eventDataRow(t.bag_id_code, ev)));
+    }
+  }
+  if (lines.length === 0) return 0;
+  const header = EVENTS_HEADER.map(csvEscape).join(",") + "\n";
+  fs.writeFileSync(outPath, header + lines.map((l) => l + "\n").join(""), "utf8");
+  return lines.length;
 }
 
 async function main() {
@@ -196,16 +298,33 @@ async function main() {
     400,
     Math.min(30000, parseInt(process.env.RINSE_PAGE_SETTLE_MS || "1100", 10) || 1100),
   );
-  const outCsv =
+
+  const eventsOnly = isEventsOnlyLayout();
+  const eventsPath = path.resolve(
     (process.env.OUTPUT_SCAN_EVENTS_CSV && String(process.env.OUTPUT_SCAN_EVENTS_CSV).trim()) ||
-    defaultScanEventsOutputPath();
-  const outCsvAbsolute = path.resolve(outCsv);
-  console.error("[rinse-scan-events] OUTPUT_SCAN_EVENTS_CSV (absolute):", outCsvAbsolute);
+      (process.env.OUTPUT_CSV && String(process.env.OUTPUT_CSV).trim()) ||
+      defaultScanEventsOutputPath(),
+  );
+  const ticketsPath = eventsOnly
+    ? ""
+    : path.resolve(
+        (process.env.OUTPUT_SCAN_TICKETS_CSV && String(process.env.OUTPUT_SCAN_TICKETS_CSV).trim()) ||
+          defaultScanTicketsOutputPath(),
+      );
 
-  const includeEmptyTickets =
-    String(process.env.RINSE_SCAN_INCLUDE_EMPTY_TICKETS || "0").trim() === "1";
+  if (eventsOnly) {
+    console.error("[rinse-scan-events] events-only mode (Bag ID + scans)");
+    console.error("[rinse-scan-events] events CSV:", eventsPath);
+  } else {
+    console.error("[rinse-scan-events] tickets CSV:", ticketsPath);
+    console.error("[rinse-scan-events] events CSV:", eventsPath);
+  }
 
-  progressLine("Launching Chromium for scan-events export…");
+  progressLine(
+    eventsOnly
+      ? "Launching Chromium (events-only CSV: Bag ID + scans)…"
+      : "Launching Chromium (tickets file = production portal; events file = Bag ID + scans)…",
+  );
   const browser = await chromium.launch({
     headless: !headed,
     slowMo: headed ? 80 : 0,
@@ -222,8 +341,9 @@ async function main() {
       await tryLogin(page, baseUrl);
     }
 
-    const allEvents = [];
+    const allTickets = [];
     const seenFingerprints = new Set();
+    const seenBagSigs = new Set();
 
     for (let p = pageStart; p < pageStart + maxPages; p++) {
       const url = urlForPage(baseUrl, p);
@@ -244,7 +364,7 @@ async function main() {
         process.exit(3);
       }
 
-      const { events, tableRowCount } = await scrapeScanEventsOnPage(page, url);
+      const { tickets, tableRowCount } = await scrapeScanEventsOnPage(page);
       if (tableRowCount === 0) {
         progressLine(`Stopping: no table rows on page ${p}.`);
         break;
@@ -256,8 +376,8 @@ async function main() {
             tr.querySelector("td"),
           );
           return trs
-            .slice(0, 80)
-            .map((tr) => (tr.innerText || "").trim().replace(/\s+/g, " ").slice(0, 120))
+            .slice(0, 120)
+            .map((tr) => (tr.innerText || "").trim().replace(/\s+/g, " ").slice(0, 140))
             .join("\u241e");
         })
         .catch(() => "");
@@ -267,42 +387,94 @@ async function main() {
       }
       if (fp.length > 24) seenFingerprints.add(fp);
 
-      allEvents.push(...events);
+      if (p > pageStart && tickets.length === 0) {
+        progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
+        break;
+      }
+
+      const pageBagSig = [
+        ...new Set(
+          tickets.map((t) => String(t.bag_id || t.bag_id_code || "").trim().toUpperCase()).filter(Boolean),
+        ),
+      ]
+        .sort()
+        .join("\u241e");
+
+      if (pageBagSig.length > 0 && seenBagSigs.has(pageBagSig)) {
+        progressLine(
+          `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets).`,
+        );
+        break;
+      }
+      if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
+
+      allTickets.push(...tickets);
+
       if (!(await hasNextPageInUi(page, p))) {
-        progressLine(`Stopping: no next page after ${p}.`);
+        progressLine(`Stopping: pagination UI shows no next page after ${p}.`);
         break;
       }
     }
 
-    const rows = includeEmptyTickets
-      ? allEvents.filter((r) => !r._empty || r.scan_index === 0)
-      : allEvents.filter((r) => !r._empty && r.scan_index > 0);
-
-    if (rows.length === 0) {
-      console.error("\nNo scan events exported. Expand a ticket in HEADED=1 and confirm the Scans table headers.");
+    if (allTickets.length === 0) {
+      console.error(
+        "\nNo tickets exported. Use HEADED=1, confirm RINSE_TICKETS_URL, refresh rinse-auth.json.",
+      );
       await browser.close();
       process.exit(2);
     }
 
-    const dir = path.dirname(outCsvAbsolute);
+    const dir = path.dirname(eventsPath);
     if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-    const lines = rows.map((r) => rowToCsvLine(r) + "\n");
-    fs.writeFileSync(outCsvAbsolute, SCAN_EVENTS_HEADER + "\n" + lines.join(""), "utf8");
-    const ticketCount = new Set(rows.map((r) => `${r.page}\u241e${r.ticket_row_index}`)).size;
-    console.error(
-      `[rinse-scan-events] wrote ${rows.length} event row(s) for ${ticketCount} ticket(s) → ${outCsvAbsolute}`,
-    );
-    progressLine(`\nWrote ${rows.length} scan event row(s) → ${outCsvAbsolute}`);
-    progressLine(
-      "Next: python -m backend.rinse_scan_events_cli apply --csv " + outCsvAbsolute,
-    );
+    let nTickets = 0;
+    if (!eventsOnly && ticketsPath) {
+      nTickets = writeTicketsCsv(allTickets, ticketsPath);
+    }
+    const nEvents = writeEventsCsv(allTickets, eventsPath);
+
+    if (nEvents === 0) {
+      console.warn(
+        eventsOnly
+          ? "\nNo scan events exported. Use HEADED=1 and confirm tickets expand to show Scans table."
+          : "\nNo scan events in events file; tickets file still written (matches production ticket export).",
+      );
+    }
+
+    if (!eventsOnly && ticketsPath) {
+      console.error(`[rinse-scan-events] wrote ${nTickets} ticket row(s) → ${ticketsPath}`);
+    }
+    console.error(`[rinse-scan-events] wrote ${nEvents} event row(s) → ${eventsPath}`);
+    if (!eventsOnly && ticketsPath) {
+      progressLine(`\nTickets (production portal CSV): ${ticketsPath}`);
+    }
+    progressLine(`Events (Bag ID + scans only): ${eventsPath}`);
+    if (!eventsOnly) {
+      progressLine(
+        "Join on Bag ID (alphanumeric code) in events ↔ ticket_id prefix in tickets Bag ID column.",
+      );
+    }
+    if (eventsOnly) {
+      console.log(eventsPath);
+    }
   } finally {
     await browser.close();
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+function isCliEntry() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return path.resolve(fileURLToPath(import.meta.url)) === path.resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntry()) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

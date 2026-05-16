@@ -68,6 +68,25 @@ USE OXIC, Use Hypo, USE FAB, Low DRY, NO SCEN, Extra Scen, Service Type,
 Sub-Service, Bag ID
 
 
+OPTIONAL: RINSE SCAN-EVENTS EXPORT
+----------------------------------
+This is separate from the regular order CSV. Use it only if you want bag scan
+history stored in Laundry Ops (linked to orders later by Bag ID).
+
+Mac:
+  run-washpro-scan-events.command   OR   run-veewash-scan-events.command
+
+Windows:
+  run-washpro-scan-events.cmd       OR   run-veewash-scan-events.cmd
+
+Steps:
+1. Run the matching scan-events script (same vendor as your order CSV).
+2. CSV is saved in tenants/<vendor>/TODAY/ (e.g. washpro-scan-events-YYYY-MM-DD-HHMM.csv).
+3. In Laundry Ops: Upload Orders → upload portal order CSV first (draft batch).
+4. Then use "Upload scan-events CSV" on the same screen (optional).
+5. This does NOT replace the regular portal order CSV.
+
+
 TROUBLESHOOTING
 ---------------
 - "Session not found" → run the matching save-*-session script again.
