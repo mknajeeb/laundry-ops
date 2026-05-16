@@ -38,16 +38,21 @@ ROW_REJECTED = "REJECTED_DUPLICATE"
 def classify_portal_upload_row(
     *,
     ticket_id: str | None,
-    is_completed: bool,
+    was_completed_before_upload: bool,
     has_active_staging: bool,
     row_date_before_batch: bool,
 ) -> tuple[str, str]:
-    """Draft upload row_status + reason when ticket_id controls identity."""
+    """
+    Draft upload row_status + reason when ticket_id controls identity.
+
+    was_completed_before_upload: registry was COMPLETED before this upload began
+    (not completion inferred from scan-events merged in the same upload).
+    """
     tid = normalize_bag_id(ticket_id)
     if not tid:
         raise ValueError("classify_portal_upload_row requires ticket_id")
 
-    if is_completed:
+    if was_completed_before_upload:
         return ROW_REJECTED, REASON_ALREADY_COMPLETED
 
     if row_date_before_batch:
@@ -62,14 +67,14 @@ def classify_portal_upload_row(
 def confirm_staging_action(
     *,
     ticket_id: str | None,
-    is_completed: bool,
+    was_completed_before_upload: bool,
     has_active_staging: bool,
 ) -> str:
     """Returns: BLOCK | UPDATE_STAGING | INSERT_STAGING | USE_IDENTITY_PATH"""
     tid = normalize_bag_id(ticket_id)
     if not tid:
         return "USE_IDENTITY_PATH"
-    if is_completed:
+    if was_completed_before_upload:
         return "BLOCK"
     if has_active_staging:
         return "UPDATE_STAGING"
@@ -174,8 +179,8 @@ def evaluate_bag_completion(
     events: Iterable[Mapping[str, Any]],
 ) -> CompletionResult:
     """
-    OR rule after first Clean rack scan:
-    COMPLETED if any later scan has rack not containing Clean OR user not internal.
+    After first Clean rack scan, mark COMPLETED only if a later scan has BOTH:
+    rack does not contain Clean AND user is not internal/training staff.
     """
     ordered = sorted(events_from_records(list(events)), key=_scan_sort_key)
     if not ordered:
@@ -224,12 +229,8 @@ def evaluate_bag_completion(
         user = ev.get("user")
         rack_not_clean = not rack_contains_clean(rack)
         user_not_internal = not user_is_internal(user)
-        if rack_not_clean or user_not_internal:
+        if rack_not_clean and user_not_internal:
             trigger_kind = TRIGGER_BOTH
-            if rack_not_clean and not user_not_internal:
-                trigger_kind = TRIGGER_RACK_NOT_CLEAN
-            elif user_not_internal and not rack_not_clean:
-                trigger_kind = TRIGGER_USER_NOT_INTERNAL
 
             tr_at = ev.get("scanned_at_parsed")
             trigger_at = tr_at if isinstance(tr_at, datetime) else None

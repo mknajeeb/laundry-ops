@@ -82,6 +82,34 @@ def ensure_rinse_bag_tables(cursor) -> None:
     ensure_rinse_bag_scan_events_table(cursor)
 
 
+def fetch_pre_existing_completed_bag_ids(
+    cursor, organization_id: int, bag_ids: list[str]
+) -> set[str]:
+    """Bag IDs already COMPLETED in registry before the current upload begins."""
+    ensure_rinse_bag_registry_table(cursor)
+    normalized = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not normalized:
+        return set()
+    placeholders = ", ".join(["%s"] * len(normalized))
+    cursor.execute(
+        f"""
+        SELECT bag_id FROM rinse_bag_registry
+        WHERE organization_id = %s
+          AND bag_id IN ({placeholders})
+          AND completion_status = %s
+        """,
+        [int(organization_id), *normalized, COMPLETION_COMPLETED],
+    )
+    rows = cursor.fetchall()
+    out: set[str] = set()
+    for r in rows:
+        bid = r.get("bag_id") if isinstance(r, dict) else r[0]
+        nb = normalize_bag_id(bid)
+        if nb:
+            out.add(nb)
+    return out
+
+
 def is_bag_already_completed(cursor, organization_id: int, bag_id: str) -> bool:
     bid = normalize_bag_id(bag_id)
     if not bid:

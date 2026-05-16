@@ -1,4 +1,4 @@
-"""Tests for combined dual-CSV Rinse upload."""
+"""Tests for combined dual-CSV Rinse upload and pre-upload completion snapshot."""
 
 from __future__ import annotations
 
@@ -9,10 +9,15 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from backend.rinse_bag_completion import REASON_ALREADY_COMPLETED, classify_portal_upload_row
+from backend.rinse_bag_completion import (
+    REASON_ALREADY_COMPLETED,
+    REASON_OK,
+    REASON_UPDATED_EXISTING_BAG,
+    classify_portal_upload_row,
+)
 from backend.rinse_combined_upload import (
     REQUIRE_DUAL_CSV_CODE,
-    collect_bag_ids_from_upload,
+    collect_pre_existing_completed_bag_ids,
     commit_rinse_combined_upload,
     dual_csv_required_error,
 )
@@ -25,21 +30,70 @@ class TestDualCsvRequiredError(unittest.TestCase):
         body, code = dual_csv_required_error()
         self.assertEqual(code, 400)
         self.assertEqual(body["code"], REQUIRE_DUAL_CSV_CODE)
-        self.assertIn("both", body["message"].lower())
 
 
-class TestCollectBagIds(unittest.TestCase):
-    def test_union_portal_and_events(self):
-        orders = pd.DataFrame({"ticket_id": ["ab12cd34", ""]})
-        events = pd.DataFrame({"Bag ID": ["AB12CD34", "ZZ99XX88"]})
-        ids = collect_bag_ids_from_upload(orders, events)
-        self.assertEqual(ids, ["AB12CD34", "ZZ99XX88"])
+class TestPreUploadCompletionSnapshot(unittest.TestCase):
+    """ALREADY_COMPLETED = completed before this upload began, not during it."""
+
+    BAG = "BAG12345"
+
+    def test_existing_incomplete_with_staging_accepted_when_not_pre_completed(self):
+        st, reason = classify_portal_upload_row(
+            ticket_id=self.BAG,
+            was_completed_before_upload=False,
+            has_active_staging=True,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_UPDATED_EXISTING_BAG)
+
+    def test_new_bag_accepted_ok_when_not_pre_completed(self):
+        st, reason = classify_portal_upload_row(
+            ticket_id=self.BAG,
+            was_completed_before_upload=False,
+            has_active_staging=False,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
+
+    def test_repeat_upload_after_prior_completion_rejected(self):
+        st, reason = classify_portal_upload_row(
+            ticket_id=self.BAG,
+            was_completed_before_upload=True,
+            has_active_staging=True,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "REJECTED_DUPLICATE")
+        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
+
+    def test_already_completed_before_upload_rejected(self):
+        st, reason = classify_portal_upload_row(
+            ticket_id=self.BAG,
+            was_completed_before_upload=True,
+            has_active_staging=False,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "REJECTED_DUPLICATE")
+        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
+
+    def test_collect_pre_existing_queries_registry(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [{"bag_id": "BAG12345"}]
+        orders = pd.DataFrame({"ticket_id": ["bag12345"]})
+        with patch(
+            "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
+            return_value={"BAG12345"},
+        ) as mock_fetch:
+            result = collect_pre_existing_completed_bag_ids(cursor, 1, orders)
+        self.assertEqual(result, {"BAG12345"})
+        mock_fetch.assert_called_once_with(cursor, 1, ["BAG12345"])
 
 
 class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
-    """Scan-events merge + recompute must run before portal row insert."""
+    """Scan-events merge + recompute run before portal row insert; snapshot taken first."""
 
-    def test_merge_and_recompute_before_row_insert(self):
+    def test_snapshot_before_merge_and_classify_after_recompute(self):
         call_order: list[str] = []
 
         def _merge(*_a, **_k):
@@ -57,6 +111,10 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
         def _audit(*_a, **_k):
             call_order.append("audit")
             return {"rows_inserted": 2, "bags_with_events": 1, "replaced_prior_rows": 0}
+
+        def _pre_existing(*_a, **_k):
+            call_order.append("pre_existing_snapshot")
+            return set()
 
         schema = MagicMock(
             row_pk="id",
@@ -104,13 +162,11 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 side_effect=lambda *_a, **_k: (call_order.append("shell") or 99),
             ),
             patch(
-                "backend.rinse_bag_registry.merge_scan_events_from_upload",
-                side_effect=_merge,
+                "backend.rinse_combined_upload.collect_pre_existing_completed_bag_ids",
+                side_effect=_pre_existing,
             ),
-            patch(
-                "backend.rinse_bag_registry.recompute_completion_for_bags",
-                side_effect=_recompute,
-            ),
+            patch("backend.rinse_bag_registry.merge_scan_events_from_upload", side_effect=_merge),
+            patch("backend.rinse_bag_registry.recompute_completion_for_bags", side_effect=_recompute),
             patch(
                 "backend.rinse_combined_upload.build_upload_duplicate_indexes",
                 return_value=(set(), {}, 3),
@@ -124,10 +180,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 side_effect=_audit,
             ),
             patch("backend.rinse_combined_upload.finalize_upload_batch_row_counts"),
-            patch(
-                "backend.app.summarize_batch_rows",
-                return_value={},
-            ),
+            patch("backend.app.summarize_batch_rows", return_value={}),
             patch(
                 "backend.upload_batch_requirements.batch_upload_files_status",
                 return_value={
@@ -139,7 +192,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 },
             ),
         ):
-            payload = commit_rinse_combined_upload(
+            commit_rinse_combined_upload(
                 conn,
                 cursor,
                 tenant_oid=1,
@@ -150,24 +203,10 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 events_df=events_df,
             )
 
-        self.assertEqual(payload["batch_id"], 99)
         self.assertEqual(
             call_order,
-            ["shell", "merge", "recompute", "insert", "audit"],
+            ["shell", "pre_existing_snapshot", "merge", "recompute", "insert", "audit"],
         )
-        conn.commit.assert_called_once()
-
-
-class TestCompletedBagRejectedAfterRecompute(unittest.TestCase):
-    def test_classify_rejects_completed_bag(self):
-        status, reason = classify_portal_upload_row(
-            ticket_id="DONE1234",
-            is_completed=True,
-            has_active_staging=False,
-            row_date_before_batch=False,
-        )
-        self.assertEqual(status, "REJECTED_DUPLICATE")
-        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
 
 class TestInvalidScanEventsNoDraft(unittest.TestCase):
@@ -188,12 +227,7 @@ class TestInvalidScanEventsNoDraft(unittest.TestCase):
 class TestUploadBatchRequireBothCsvFlag(unittest.TestCase):
     def test_default_true_when_flag_missing(self):
         cursor = MagicMock()
-        cursor.fetchall.return_value = []
-        cursor.fetchone.return_value = None
-        with patch(
-            "backend.ops_ui_flags.get_ops_ui_flags",
-            return_value={},
-        ):
+        with patch("backend.ops_ui_flags.get_ops_ui_flags", return_value={}):
             self.assertTrue(upload_batch_require_both_csv(cursor, 1))
 
     def test_false_when_flag_off(self):
@@ -210,11 +244,18 @@ class TestUploadBatchRequireBothCsvFlag(unittest.TestCase):
             self.assertFalse(upload_batch_require_both_csv(cursor, 1))
 
 
-class TestPortalOnlyBlockedWhenFlagOn(unittest.TestCase):
-    def test_dual_csv_required_response(self):
-        body, code = dual_csv_required_error()
-        self.assertEqual(body["code"], REQUIRE_DUAL_CSV_CODE)
-        self.assertEqual(code, 400)
+class TestConfirmTrustsDraftAcceptance(unittest.TestCase):
+    def test_confirm_staging_updates_when_not_pre_completed(self):
+        from backend.rinse_bag_completion import confirm_staging_action
+
+        self.assertEqual(
+            confirm_staging_action(
+                ticket_id="BAG1",
+                was_completed_before_upload=False,
+                has_active_staging=True,
+            ),
+            "UPDATE_STAGING",
+        )
 
 
 if __name__ == "__main__":

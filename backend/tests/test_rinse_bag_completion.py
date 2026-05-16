@@ -11,6 +11,7 @@ from backend.rinse_bag_completion import (
     REASON_NO_CLEAN_SCAN,
     REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK,
     REASON_POST_CLEAN_RACK_OR_USER,
+    TRIGGER_BOTH,
     TRIGGER_RACK_NOT_CLEAN,
     TRIGGER_USER_NOT_INTERNAL,
     evaluate_bag_completion,
@@ -69,26 +70,36 @@ class TestEvaluateBagCompletion(unittest.TestCase):
         self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
         self.assertEqual(r.completion_reason, REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK)
 
-    def test_clean_then_out_rack(self):
+    def test_clean_then_out_rack_internal_only_not_complete(self):
+        """Rack not clean but user still internal — AND rule requires both."""
         r = evaluate_bag_completion(
             [
                 _ev("Washpro Clean", "Washpro", datetime(2026, 5, 16, 10, 0), 1, 1),
                 _ev("Out Rack", "Washpro", datetime(2026, 5, 16, 10, 30), 2, 2),
             ]
         )
-        self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
-        self.assertEqual(r.completion_reason, REASON_POST_CLEAN_RACK_OR_USER)
-        self.assertEqual(r.trigger_kind, TRIGGER_RACK_NOT_CLEAN)
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
 
-    def test_clean_then_external_user_on_clean_rack(self):
+    def test_clean_then_external_user_on_clean_rack_not_complete(self):
+        """External user on clean rack — AND rule requires non-clean rack too."""
         r = evaluate_bag_completion(
             [
                 _ev("VeeWash Clean", "VeeWash", datetime(2026, 5, 16, 10, 0), 1, 1),
                 _ev("VeeWash Clean", "Customer Driver", datetime(2026, 5, 16, 10, 15), 2, 2),
             ]
         )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+
+    def test_clean_then_non_internal_on_non_clean_rack(self):
+        r = evaluate_bag_completion(
+            [
+                _ev("Washpro Clean", "Washpro", datetime(2026, 5, 16, 10, 0), 1, 1),
+                _ev("Out Rack", "Customer Driver", datetime(2026, 5, 16, 10, 30), 2, 2),
+            ]
+        )
         self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
-        self.assertEqual(r.trigger_kind, TRIGGER_USER_NOT_INTERNAL)
+        self.assertEqual(r.completion_reason, REASON_POST_CLEAN_RACK_OR_USER)
+        self.assertEqual(r.trigger_kind, TRIGGER_BOTH)
 
     def test_clean_then_internal_on_clean_rack(self):
         r = evaluate_bag_completion(
@@ -99,15 +110,14 @@ class TestEvaluateBagCompletion(unittest.TestCase):
         )
         self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
 
-    def test_clean_then_folding_internal(self):
+    def test_clean_then_folding_internal_not_complete(self):
         r = evaluate_bag_completion(
             [
                 _ev("Washpro Clean", "Washpro", datetime(2026, 5, 16, 10, 0), 1, 1),
                 _ev("Folding", "Washpro", datetime(2026, 5, 16, 10, 20), 2, 2),
             ]
         )
-        self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
-        self.assertEqual(r.trigger_kind, TRIGGER_RACK_NOT_CLEAN)
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
 
     def test_first_clean_anchors_later_only(self):
         r = evaluate_bag_completion(
@@ -118,6 +128,7 @@ class TestEvaluateBagCompletion(unittest.TestCase):
             ]
         )
         self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
+        self.assertEqual(r.trigger_kind, TRIGGER_BOTH)
 
 
 if __name__ == "__main__":

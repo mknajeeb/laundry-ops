@@ -15,10 +15,31 @@ from backend.rinse_bag_completion import (
 
 
 class TestClassifyPortalUploadRow(unittest.TestCase):
+    def test_completed_during_same_upload_not_rejected(self):
+        """Registry may be COMPLETED after scan-events in this upload; row still accepted."""
+        st, reason = classify_portal_upload_row(
+            ticket_id="ABCD1234",
+            was_completed_before_upload=False,
+            has_active_staging=True,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_UPDATED_EXISTING_BAG)
+
+    def test_new_bag_completed_during_same_upload_ok(self):
+        st, reason = classify_portal_upload_row(
+            ticket_id="NEWBAG99",
+            was_completed_before_upload=False,
+            has_active_staging=False,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
+
     def test_completed_bag_rejected(self):
         st, reason = classify_portal_upload_row(
             ticket_id="ABCD1234",
-            is_completed=True,
+            was_completed_before_upload=True,
             has_active_staging=False,
             row_date_before_batch=False,
         )
@@ -28,7 +49,7 @@ class TestClassifyPortalUploadRow(unittest.TestCase):
     def test_incomplete_with_staging_accepted_updated(self):
         st, reason = classify_portal_upload_row(
             ticket_id="ABCD1234",
-            is_completed=False,
+            was_completed_before_upload=False,
             has_active_staging=True,
             row_date_before_batch=False,
         )
@@ -38,7 +59,7 @@ class TestClassifyPortalUploadRow(unittest.TestCase):
     def test_new_bag_ok(self):
         st, reason = classify_portal_upload_row(
             ticket_id="NEWBAG01",
-            is_completed=False,
+            was_completed_before_upload=False,
             has_active_staging=False,
             row_date_before_batch=False,
         )
@@ -52,7 +73,9 @@ class TestConfirmStagingAction(unittest.TestCase):
     def test_completed_blocks(self):
         self.assertEqual(
             confirm_staging_action(
-                ticket_id=self.BAG, is_completed=True, has_active_staging=True
+                ticket_id=self.BAG,
+                was_completed_before_upload=True,
+                has_active_staging=True,
             ),
             "BLOCK",
         )
@@ -60,7 +83,9 @@ class TestConfirmStagingAction(unittest.TestCase):
     def test_incomplete_updates_existing_staging(self):
         self.assertEqual(
             confirm_staging_action(
-                ticket_id=self.BAG, is_completed=False, has_active_staging=True
+                ticket_id=self.BAG,
+                was_completed_before_upload=False,
+                has_active_staging=True,
             ),
             "UPDATE_STAGING",
         )
@@ -68,7 +93,9 @@ class TestConfirmStagingAction(unittest.TestCase):
     def test_new_bag_inserts(self):
         self.assertEqual(
             confirm_staging_action(
-                ticket_id=self.BAG, is_completed=False, has_active_staging=False
+                ticket_id=self.BAG,
+                was_completed_before_upload=False,
+                has_active_staging=False,
             ),
             "INSERT_STAGING",
         )
@@ -76,7 +103,9 @@ class TestConfirmStagingAction(unittest.TestCase):
     def test_no_ticket_id_uses_identity_path(self):
         self.assertEqual(
             confirm_staging_action(
-                ticket_id=None, is_completed=False, has_active_staging=False
+                ticket_id=None,
+                was_completed_before_upload=False,
+                has_active_staging=False,
             ),
             "USE_IDENTITY_PATH",
         )
@@ -87,7 +116,11 @@ class TestLegacyDuplicateSkippedForTicketId(unittest.TestCase):
 
     def test_confirm_action_distinct_from_identity(self):
         self.assertEqual(
-            confirm_staging_action(ticket_id="ABCD1234", is_completed=False, has_active_staging=False),
+            confirm_staging_action(
+                ticket_id="ABCD1234",
+                was_completed_before_upload=False,
+                has_active_staging=False,
+            ),
             "INSERT_STAGING",
         )
 

@@ -9849,52 +9849,12 @@ def confirm_upload_batch(batch_id):
         accepted_rows = list(cursor.fetchall() or [])
 
         from backend.rinse_bag_completion import normalize_bag_id
-        from backend.rinse_bag_registry import is_bag_already_completed
         from backend.rinse_bag_upload import (
             find_active_staging_by_ticket_id,
             update_staging_from_upload_row,
         )
 
         active_where = where_not_sent_or_forced_sql(cap)
-        blocked_at_confirm = 0
-        blocked_bag_ids: list[str] = []
-
-        for row in accepted_rows:
-            tid = normalize_bag_id(row.get("ticket_id")) if row.get("ticket_id") else ""
-            if not tid:
-                continue
-            if is_bag_already_completed(cursor, tenant_oid, tid):
-                cursor.execute(
-                    f"""
-                    UPDATE upload_batch_rows
-                    SET row_status = 'REJECTED_DUPLICATE',
-                        reason = 'ALREADY_COMPLETED_AT_CONFIRM',
-                        updated_at = NOW()
-                    WHERE upload_batch_id = %s AND {row_pk} = %s
-                    """,
-                    (batch_id, row["id"]),
-                )
-                blocked_at_confirm += 1
-                blocked_bag_ids.append(tid)
-
-        if blocked_at_confirm:
-            cursor.execute(
-                f"""
-                SELECT
-                    {row_pk} AS id,
-                    date_clean,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type
-                    {ubr_tid_sel}
-                FROM upload_batch_rows
-                WHERE upload_batch_id = %s
-                AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
-                """,
-                (batch_id,),
-            )
-            accepted_rows = list(cursor.fetchall() or [])
 
         # Safety guard: do not let a fully rejected draft mutate live staging/final.
         if len(accepted_rows) == 0:

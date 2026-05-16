@@ -253,6 +253,23 @@ def build_upload_duplicate_indexes(
     return final_identity_keys, existing_identity_reasons, duplicate_lookback_days
 
 
+def collect_pre_existing_completed_bag_ids(
+    cursor, tenant_oid: int, orders_df: pd.DataFrame
+) -> set[str]:
+    """Portal ticket_ids that were COMPLETED before this upload (snapshot before merge/recompute)."""
+    from backend.rinse_bag_completion import normalize_bag_id
+    from backend.rinse_bag_registry import fetch_pre_existing_completed_bag_ids
+
+    if "ticket_id" not in orders_df.columns:
+        return set()
+    portal_ids: list[str] = []
+    for v in orders_df["ticket_id"]:
+        bid = normalize_bag_id(v)
+        if bid:
+            portal_ids.append(bid)
+    return fetch_pre_existing_completed_bag_ids(cursor, tenant_oid, portal_ids)
+
+
 def collect_bag_ids_from_upload(orders_df: pd.DataFrame, events_df: pd.DataFrame) -> list[str]:
     from backend.rinse_bag_completion import normalize_bag_id
 
@@ -279,6 +296,7 @@ def insert_upload_batch_rows_from_orders_df(
     schema: UploadBatchSchema,
     final_identity_keys: set,
     existing_identity_reasons: dict,
+    pre_existing_completed_bag_ids: set[str] | None = None,
 ) -> dict[str, int]:
     from backend.app import (
         build_identity_key,
@@ -289,6 +307,11 @@ def insert_upload_batch_rows_from_orders_df(
     from backend.rinse_bag_completion import classify_portal_upload_row, normalize_bag_id
     from backend.rinse_bag_registry import is_bag_already_completed
     from backend.rinse_bag_upload import find_active_staging_by_ticket_id, upsert_registry_from_portal_row
+
+    if pre_existing_completed_bag_ids is None:
+        pre_existing_completed_bag_ids = collect_pre_existing_completed_bag_ids(
+            cursor, tenant_oid, orders_df
+        )
 
     cap = schema.cap
     inserted = 0
@@ -341,10 +364,13 @@ def insert_upload_batch_rows_from_orders_df(
                         has_staging_org=has_staging_org,
                         has_ticket_id_col=cap.get("has_ticket_id", False),
                     )
-                    completed = is_bag_already_completed(cursor, tenant_oid, ticket_id)
+                    was_completed_before = ticket_id in pre_existing_completed_bag_ids
+                    registry_completed_now = is_bag_already_completed(
+                        cursor, tenant_oid, ticket_id
+                    )
                     row_status, reason = classify_portal_upload_row(
                         ticket_id=ticket_id,
-                        is_completed=completed,
+                        was_completed_before_upload=was_completed_before,
                         has_active_staging=staging_hit is not None,
                         row_date_before_batch=row_date < batch_date,
                     )
@@ -365,7 +391,7 @@ def insert_upload_batch_rows_from_orders_df(
                         service_type=service_type,
                         date_clean=row_date,
                         rush_type=rush_type,
-                        is_completed=completed,
+                        is_completed=registry_completed_now,
                     )
 
         if not rinse_bag_row:
@@ -510,6 +536,9 @@ def commit_draft_upload_batch_from_orders_df(
     upload_batch_id = create_draft_upload_batch_shell(
         cursor, tenant_oid, batch_date, file_name, schema
     )
+    pre_existing_completed = collect_pre_existing_completed_bag_ids(
+        cursor, tenant_oid, orders_df
+    )
     final_keys, existing_reasons, lookback = build_upload_duplicate_indexes(
         cursor, tenant_oid, schema
     )
@@ -522,6 +551,7 @@ def commit_draft_upload_batch_from_orders_df(
         schema,
         final_keys,
         existing_reasons,
+        pre_existing_completed_bag_ids=pre_existing_completed,
     )
     finalize_upload_batch_row_counts(
         cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
@@ -567,6 +597,10 @@ def commit_rinse_combined_upload(
         cursor, tenant_oid, batch_date, combined_name, schema
     )
 
+    pre_existing_completed = collect_pre_existing_completed_bag_ids(
+        cursor, tenant_oid, orders_df
+    )
+
     merge_payload = merge_scan_events_from_upload(
         cursor,
         tenant_oid,
@@ -591,6 +625,7 @@ def commit_rinse_combined_upload(
         schema,
         final_keys,
         existing_reasons,
+        pre_existing_completed_bag_ids=pre_existing_completed,
     )
 
     batch_events_payload = commit_scan_events_for_batch(
