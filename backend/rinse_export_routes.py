@@ -191,6 +191,51 @@ def _fail_stale_rinse_job_if_needed(job_id: str, tenant_oid: int, row: dict) -> 
     return row2 or row
 
 
+def _org_slug_name(tenant_oid: int) -> tuple[str | None, str | None]:
+    from backend.app import get_db
+
+    conn = get_db()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT slug, display_name FROM organizations WHERE id = %s LIMIT 1",
+            (int(tenant_oid),),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        conn.close()
+    if not row:
+        return None, None
+    return row.get("slug"), row.get("display_name")
+
+
+def _apply_rinse_vendor_env(
+    tenant_oid: int,
+    merged: dict[str, str],
+    rinse_vendor_override: str | None = None,
+) -> tuple[str, dict[str, str]]:
+    from backend.rinse_bag_export_runner import scraper_dir
+    from backend.rinse_vendor_config import rinse_scrape_env_for_organization
+
+    slug, name = _org_slug_name(tenant_oid)
+    vendor, venv = rinse_scrape_env_for_organization(
+        int(tenant_oid),
+        organization_slug=slug,
+        organization_name=name,
+        override_vendor=rinse_vendor_override,
+        scraper_dir=scraper_dir(),
+    )
+    out = dict(merged)
+    out.update(venv)
+    storage = out.get("RINSE_STORAGE_STATE", "")
+    if not storage:
+        raise ValueError(
+            f"No RINSE_{vendor.upper()}_STORAGE_STATE (or legacy RINSE_STORAGE_STATE) configured on the API."
+        )
+    return vendor, out
+
+
 def _parse_rinse_import_job_page_options(data: dict) -> dict[str, str]:
     """Optional JSON keys page_start / max_pages → RINSE_PAGE_START / RINSE_MAX_PAGES for one job only."""
     out: dict[str, str] = {}
@@ -376,6 +421,7 @@ def _rinse_import_after_auth(
     extra_scrape_env: dict | None = None,
     sequential_chunk_pages: int | None = None,
     max_sequential_chunks: int = 500,
+    rinse_vendor_override: str | None = None,
 ):
     """
     Scrape → portal CSV → orders_df → commit draft upload batch.
@@ -399,6 +445,22 @@ def _rinse_import_after_auth(
             if _v is not None and str(_v).strip() != "":
                 merged_base[str(_k)] = str(_v).strip()
 
+    try:
+        rinse_vendor, merged_base = _apply_rinse_vendor_env(
+            tenant_oid, merged_base, rinse_vendor_override
+        )
+    except ValueError as ve:
+        return {"ok": False, "status_code": 400, "body": {"error": str(ve)}}
+
+    if scrape_progress:
+        try:
+            scrape_progress(
+                f"\n→ Rinse vendor account: {rinse_vendor} (org {tenant_oid})\n",
+                "",
+            )
+        except Exception:
+            pass
+
     if sequential_chunk_pages is None:
         one = _rinse_import_run_single_scrape(
             app,
@@ -414,6 +476,7 @@ def _rinse_import_after_auth(
             scrape_progress,
             should_cancel,
             one,
+            rinse_vendor,
         )
 
     merged_base.pop("RINSE_MAX_PAGES", None)
@@ -556,6 +619,7 @@ def _rinse_import_after_auth(
             **payload,
             "summary_rows": len(orders_df),
             "source": "rinse_portal",
+            "rinse_vendor": rinse_vendor,
             "sequential_chunks": chunks_run,
             "sequential_chunk_pages": sequential_chunk_pages,
         },
@@ -570,6 +634,7 @@ def _rinse_import_finish_from_one_round(
     scrape_progress,
     should_cancel,
     one: dict,
+    rinse_vendor: str = "washpro",
 ):
     """Shared tail: commit draft from a single _rinse_import_run_single_scrape result."""
     from backend.app import commit_draft_upload_batch_from_orders_df
@@ -655,14 +720,25 @@ def _rinse_import_finish_from_one_round(
     return {
         "ok": True,
         "status_code": 200,
-        "body": {**payload, "summary_rows": len(orders_df), "source": "rinse_portal"},
+        "body": {
+            **payload,
+            "summary_rows": len(orders_df),
+            "source": "rinse_portal",
+            "rinse_vendor": rinse_vendor,
+        },
     }
 
 
 def register_rinse_export_routes(app):
     @app.route("/admin/rinse/bag-export/config", methods=["GET"])
     def rinse_bag_export_config():
-        from backend.app import get_db, require_admin_or_perm
+        from backend.app import get_db, require_admin_or_perm, user_org_id
+        from backend.rinse_bag_export_runner import scraper_dir
+        from backend.rinse_vendor_config import (
+            diagnose_vendors,
+            resolve_rinse_vendor,
+            rinse_scrape_env_for_organization,
+        )
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -670,9 +746,16 @@ def register_rinse_export_routes(app):
             me, err, code = require_admin_or_perm(conn, cursor, "upload.create")
             if err is not None:
                 return err, code
+            tenant_oid = user_org_id(me)
+            slug, name = _org_slug_name(tenant_oid)
+            rinse_vendor = resolve_rinse_vendor(
+                tenant_oid, organization_slug=slug, organization_name=name
+            )
             d = diagnose()
+            vendors = diagnose_vendors(scraper_dir())
+            storage_ok = vendors.get(rinse_vendor, {}).get("storage_exists", False)
             ready = bool(
-                d["enabled"] and d["scraper_script_exists"] and d["node_found"]
+                d["enabled"] and d["scraper_script_exists"] and d["node_found"] and storage_ok
             )
             msg = []
             if not d["enabled"]:
@@ -681,10 +764,17 @@ def register_rinse_export_routes(app):
                 msg.append("Deploy the repo including scripts/rinse-cleanertickets/scrape.mjs.")
             if not d["node_found"]:
                 msg.append("Install Node.js on the API host or set NODE_BIN.")
+            if not storage_ok:
+                msg.append(
+                    f"Upload session for {rinse_vendor}: set RINSE_{rinse_vendor.upper()}_STORAGE_STATE "
+                    f"(see rinse_vendor_config / .env.example)."
+                )
             return jsonify(
                 {
                     "ready": ready,
                     **d,
+                    "rinse_vendor": rinse_vendor,
+                    "rinse_vendors": vendors,
                     "hint": " ".join(msg) if msg else "Ready to run export.",
                 }
             )
@@ -694,7 +784,7 @@ def register_rinse_export_routes(app):
 
     @app.route("/admin/rinse/bag-export", methods=["POST"])
     def rinse_bag_export_run():
-        from backend.app import get_db, require_admin
+        from backend.app import get_db, require_admin, user_org_id
 
         if not export_enabled():
             return _json_rinse_export_disabled(bag_export=True)
@@ -705,6 +795,7 @@ def register_rinse_export_routes(app):
             me, err, code = require_admin(cursor)
             if err is not None:
                 return err, code
+            tenant_oid = user_org_id(me)
         finally:
             cursor.close()
             conn.close()
@@ -715,14 +806,20 @@ def register_rinse_export_routes(app):
         if not d["node_found"]:
             return jsonify({"error": "Node.js not found on server (set NODE_BIN)."}), 503
 
+        merged = rinse_import_subprocess_extra_env()
+        try:
+            rinse_vendor, merged = _apply_rinse_vendor_env(tenant_oid, merged, None)
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+
         export_dir = _RINSE_EXPORT_ROOT / "uploads" / "rinse_exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        out_name = f"rinse-bag-export-{stamp}.csv"
+        out_name = f"rinse-bag-export-{rinse_vendor}-{stamp}.csv"
         out_path = export_dir / out_name
 
         try:
-            code, stdout, stderr = run_bag_export_csv(out_path)
+            code, stdout, stderr = run_bag_export_csv(out_path, extra_env=merged)
         except Exception as e:
             app.logger.exception("rinse bag export subprocess error")
             return jsonify({"error": str(e)}), 500
@@ -817,6 +914,7 @@ def register_rinse_export_routes(app):
         virtual_name = f"rinse-portal-import-{stamp}.csv"
 
         page_opts, seq_pages, max_seq = _parse_rinse_import_job_options(data)
+        vendor_override = (data.get("rinse_vendor") or "").strip() or None
         res = _rinse_import_after_auth(
             app,
             batch_date,
@@ -825,6 +923,7 @@ def register_rinse_export_routes(app):
             extra_scrape_env=page_opts or None,
             sequential_chunk_pages=seq_pages,
             max_sequential_chunks=max_seq,
+            rinse_vendor_override=vendor_override,
         )
         return jsonify(res["body"]), res["status_code"]
 
@@ -1035,6 +1134,7 @@ def register_rinse_export_routes(app):
                         except Exception:
                             app.logger.warning("rinse import progress push failed", exc_info=True)
 
+                    job_vendor_override = (data.get("rinse_vendor") or "").strip() or None
                     res = _rinse_import_after_auth(
                         app,
                         batch_date,
@@ -1045,6 +1145,7 @@ def register_rinse_export_routes(app):
                         extra_scrape_env=job_page_env or None,
                         sequential_chunk_pages=job_seq_pages,
                         max_sequential_chunks=job_max_seq,
+                        rinse_vendor_override=job_vendor_override,
                     )
 
                     conn_done = db_conn()

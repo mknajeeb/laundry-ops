@@ -15,7 +15,10 @@ import readline from "node:readline";
 import { chromium } from "playwright";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const outFile = path.join(__dirname, "rinse-auth.json");
+const storageRel = (process.env.RINSE_STORAGE_STATE || "./rinse-auth.json").trim();
+const outFile = path.isAbsolute(storageRel)
+  ? storageRel
+  : path.resolve(__dirname, storageRel);
 
 const RINSE_LOGIN = "https://www.rinse.com/accounts/login/";
 
@@ -45,8 +48,8 @@ async function main() {
   console.log("Opening:", startUrl);
   await page.goto(startUrl, { waitUntil: "domcontentloaded" });
 
-  console.log("\n1. Log in to Rinse in the browser window (MFA if needed).");
-  console.log("2. Navigate once to Cleaner tickets so you know the session works.");
+  console.log("\n1. Log in at Rinse (https://www.rinse.com/vendors/ or the login page — email + password, MFA if needed).");
+  console.log("2. Open your cleaner-ticket LIST (same URL as RINSE_TICKETS_URL in .env) and confirm the table loads.");
   console.log("3. Come back here and press Enter to save session →", outFile, "\n");
 
   await new Promise((resolve) => {
@@ -57,6 +60,10 @@ async function main() {
     });
   });
 
+  const outDir = path.dirname(outFile);
+  if (outDir && !fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir, { recursive: true });
+  }
   await context.storageState({ path: outFile });
   await browser.close();
   console.log("Saved. Add to .env: RINSE_STORAGE_STATE=./rinse-auth.json");

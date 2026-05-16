@@ -41,9 +41,6 @@ function loadLocalEnvFile() {
 }
 loadLocalEnvFile();
 
-/** First thing on stderr so Windows CMD / double-click runs never look “silent” if something fails early. */
-console.error("[rinse-scrape] scrape.mjs loaded — starting…");
-
 /**
  * Write one log line to fd 1 so piped subprocess output updates promptly for server-side UI monitors.
  */
@@ -1846,7 +1843,40 @@ async function main() {
   }
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+function isCliEntry() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return fileURLToPath(import.meta.url) === path.resolve(entry);
+  } catch {
+    return false;
+  }
+}
+
+/** Shared with scrape-scan-events.mjs — same expand/bag/row/portal CSV; do not duplicate. */
+export {
+  bodyRowsSelector,
+  ticketTableBodyRows,
+  readTicketRowTextSnapshot,
+  readTicketRowDirectCells,
+  portalListRowPeekOk,
+  isProbablySingleCellDetailRow,
+  isLikelyExpandedDetailSubRow,
+  isMainListTicketRow,
+  expandRowAndReadBag,
+  ensureRowCollapsedAfterTicket,
+  pickPortalListLine,
+  parsePortalFields,
+  portalHeaderRow,
+  portalDataRow,
+  csvEscape,
+  PORTAL_TICKET_DATE_LINE_RE,
+};
+
+if (isCliEntry()) {
+  console.error("[rinse-scrape] scrape.mjs loaded — starting…");
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}

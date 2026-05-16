@@ -28,6 +28,7 @@ node_modules/
 # build
 dist/
 build/
+dist-rinse-client/
 
 # logs
 *.log
