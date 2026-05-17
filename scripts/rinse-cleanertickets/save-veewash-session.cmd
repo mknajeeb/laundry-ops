@@ -27,7 +27,9 @@ call npx playwright install chromium
 if errorlevel 1 goto :fail
 
 set "RINSE_STORAGE_STATE=%cd%\tenants\veewash\rinse-auth.json"
-set "RINSE_TICKETS_URL=https://www.rinse.com/cleanertickets/?q=^&status=at_vendor^&page=1"
+set "RINSE_TICKETS_URL=https://www.rinse.com/cleanertickets/?page=1"
+
+echo RINSE_TICKETS_URL=%RINSE_TICKETS_URL%
 
 node save-session.mjs
 if errorlevel 1 goto :fail

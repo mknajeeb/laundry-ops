@@ -176,10 +176,11 @@ function csvEscape(s) {
   return `"${t}"`;
 }
 
-/** Build cleanertickets URL with a given page= (preserves other query params). */
+/** Build cleanertickets URL with a given page= (preserves other query params on Mac; page-only bases stay page-only). */
 function urlForPage(baseUrl, pageNum) {
+  const pageOnlyFallback = `https://www.rinse.com/cleanertickets/?page=${pageNum}`;
   const u = String(baseUrl || "").trim();
-  if (!u) return `https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=${pageNum}`;
+  if (!u) return pageOnlyFallback;
   try {
     const parsed = new URL(u);
     parsed.searchParams.set("page", String(pageNum));
@@ -1635,9 +1636,11 @@ async function scrapePage(page, pageLabel, layout) {
 
 async function main() {
   console.error("[rinse-scrape] entering main() — Node", process.version);
+  console.error("[rinse-scrape] process.env.RINSE_TICKETS_URL:", process.env.RINSE_TICKETS_URL ?? "<unset>");
   const baseUrl =
     process.env.RINSE_TICKETS_URL?.trim() ||
-    "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
+    "https://www.rinse.com/cleanertickets/?page=1";
+  console.error("[rinse-scrape] baseUrl:", baseUrl);
   const headed = process.env.HEADED === "1" || process.env.HEADED === "true";
   const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
   const storageState =
@@ -1696,6 +1699,7 @@ async function main() {
 
     for (let p = pageStart; p < pageStart + maxPages; p++) {
       const url = urlForPage(baseUrl, p);
+      console.error("[rinse-scrape] page URL:", url);
       progressLine(`\nPage ${p}: ${url}`);
       // "networkidle" often never settles on SPAs; domcontentloaded + fixed wait is more reliable on Azure.
       await page.goto(url, {

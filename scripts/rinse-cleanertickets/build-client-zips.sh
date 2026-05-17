@@ -40,18 +40,16 @@ cp \
 chmod +x "$STAGE/mac/rinse-cleanertickets"/*.command
 
 copy_common "$STAGE/win/rinse-cleanertickets"
-cp \
-  "$ROOT/save-washpro-session.cmd" \
-  "$ROOT/save-veewash-session.cmd" \
-  "$ROOT/run-washpro-portal-csv.cmd" \
-  "$ROOT/run-veewash-portal-csv.cmd" \
-  "$ROOT/run-washpro-scan-events.cmd" \
-  "$ROOT/run-veewash-scan-events.cmd" \
-  "$STAGE/win/rinse-cleanertickets/"
+cp "$ROOT"/*.cmd "$STAGE/win/rinse-cleanertickets/" 2>/dev/null || true
+cp "$ROOT/pick-rinse-vendor.mjs" "$STAGE/win/rinse-cleanertickets/" 2>/dev/null || true
 
 mkdir -p "$OUT"
 ( cd "$STAGE/mac" && zip -r "$OUT/rinse-cleanertickets-mac-client.zip" rinse-cleanertickets -x "*.DS_Store" -x "__MACOSX/*" )
 ( cd "$STAGE/win" && zip -r "$OUT/rinse-cleanertickets-windows-client.zip" rinse-cleanertickets -x "*.DS_Store" -x "__MACOSX/*" )
+
+rm -rf "$OUT/windows/rinse-cleanertickets"
+mkdir -p "$OUT/windows"
+cp -R "$STAGE/win/rinse-cleanertickets" "$OUT/windows/rinse-cleanertickets"
 
 rm -rf "$STAGE"
 echo "Built:"

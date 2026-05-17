@@ -1,68 +1,79 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
-echo Rinse portal CSV scrape (local Windows)
-echo See USER_LOCAL_SCRAPE.md in this folder for setup.
-echo ========================================
-
-if not exist ".env" (
-  echo ERROR: Missing .env in this folder.
-  echo   Copy .env.example to .env, edit RINSE_TICKETS_URL and RINSE_STORAGE_STATE.
-  echo   One-time: run "npm run save-session" to create rinse-auth.json
-  goto :fail
-)
-
-where node >nul 2>&1
-if errorlevel 1 (
-  echo ERROR: Node.js is not installed or not on PATH.
-  echo   Install the LTS build from https://nodejs.org/ then open a new Command Prompt.
-  goto :fail
-)
+echo Rinse portal CSV scrape (Windows)
+echo ==================================
 
 if not exist "scrape.mjs" (
-  echo ERROR: Missing scrape.mjs in this folder.
-  echo   Run download-scrape-from-github.cmd once, or copy the full file from the repo ^(~65 KB^).
+  echo ERROR: Missing scrape.mjs
   goto :fail
 )
 
-setlocal EnableDelayedExpansion
-for %%I in ("scrape.mjs") do set "SCRAPE_BYTES=%%~zI"
-if !SCRAPE_BYTES! LSS 20000 (
-  echo ERROR: scrape.mjs is too small ^(!SCRAPE_BYTES! bytes^). The real script is about 65000+ bytes.
-  echo   Double-click download-scrape-from-github.cmd in this folder, then try again.
-  endlocal
+for /f "delims=" %%v in ('call pick-rinse-vendor.cmd') do set "RINSE_VENDOR=%%v"
+if errorlevel 1 goto :fail
+
+if not exist "tenants\%RINSE_VENDOR%\.env" (
+  echo ERROR: Missing tenants\%RINSE_VENDOR%\.env
+  echo   copy tenants\%RINSE_VENDOR%\.env.example tenants\%RINSE_VENDOR%\.env
+  echo   Run save-session.cmd for %RINSE_VENDOR% first.
   goto :fail
 )
-endlocal
+
+set "RINSE_STORAGE_STATE=%CD%\tenants\%RINSE_VENDOR%\rinse-auth.json"
+if not exist "%RINSE_STORAGE_STATE%" (
+  echo ERROR: No session for %RINSE_VENDOR%. Run save-session.cmd first.
+  goto :fail
+)
+
+if not exist "tenants\%RINSE_VENDOR%\TODAY" mkdir "tenants\%RINSE_VENDOR%\TODAY"
+if not exist "tenants\%RINSE_VENDOR%\ARCHIVE" mkdir "tenants\%RINSE_VENDOR%\ARCHIVE"
+
+REM Load shared .env then per-vendor .env via bash helper on Git Bash only.
+REM Windows CMD: set vars from vendor .env manually or use Git Bash run-local-portal-csv.sh
+
+for /f "usebackq tokens=1,* delims==" %%a in ("tenants\%RINSE_VENDOR%\.env") do (
+  set "line=%%a"
+  if not "!line:~0,1!"=="#" (
+    if "%%a"=="RINSE_TICKETS_URL" set "RINSE_TICKETS_URL=%%b"
+    if "%%a"=="RINSE_EMAIL" set "RINSE_EMAIL=%%b"
+    if "%%a"=="RINSE_PASSWORD" set "RINSE_PASSWORD=%%b"
+  )
+)
+
+if exist ".env" for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+  if "%%a"=="RINSE_TICKETS_URL" if not defined RINSE_TICKETS_URL set "RINSE_TICKETS_URL=%%b"
+)
+
+REM Windows CMD: always use page-only list URL (avoid ^ / %%5E escaping from .env filters).
+set "RINSE_TICKETS_URL=https://www.rinse.com/cleanertickets/?page=1"
+echo RINSE_TICKETS_URL=%RINSE_TICKETS_URL%
 
 if not exist "node_modules\" (
-  echo Installing npm dependencies...
   call npm install
   if errorlevel 1 goto :fail
 )
-
-echo Ensuring Playwright Chromium...
 call npx playwright install chromium
-if errorlevel 1 goto :fail
 
 set "RINSE_CSV_LAYOUT=portal"
+if not "%~1"=="" set "RINSE_MAX_PAGES=%~1"
 
-if not "%~1"=="" (
-  set "RINSE_MAX_PAGES=%~1"
-  echo RINSE_MAX_PAGES=%RINSE_MAX_PAGES% ^(from argument^)
-)
+for /f %%d in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd"') do set "TODAY=%%d"
+set "OUTPUT_CSV=%CD%\tenants\%RINSE_VENDOR%\TODAY\Rinse-%TODAY%-run.csv"
 
-echo Running scrape...
+echo.
+echo Vendor: %RINSE_VENDOR%
+echo Output: %OUTPUT_CSV%
+echo.
+
 call npm run scrape
 if errorlevel 1 goto :fail
 
 echo.
-echo Done. Upload the CSV on Upload Orders ^(portal CSV to draft^), or use server import.
+echo Done. CSV: %OUTPUT_CSV%
 goto :ok
 
 :fail
-echo.
 echo Finished with errors.
 pause
 exit /b 1
