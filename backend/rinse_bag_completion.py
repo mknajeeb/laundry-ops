@@ -1,5 +1,5 @@
 """
-Rinse bag completion from scan-events (progressive timeline: workflow then CLEAN).
+Rinse bag completion from scan-events (progressive timeline: exit CLEAN rack).
 """
 
 from __future__ import annotations
@@ -20,17 +20,19 @@ COMPLETION_INCOMPLETE = "INCOMPLETE"
 COMPLETION_COMPLETED = "COMPLETED"
 
 REASON_NO_CLEAN_SCAN = "NO_CLEAN_SCAN"
-REASON_WORKFLOW_THEN_CLEAN = "WORKFLOW_THEN_CLEAN"
-REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW = "CLEAN_WITHOUT_PRIOR_WORKFLOW"
+REASON_POST_CLEAN_RACK_AND_USER = "POST_CLEAN_RACK_AND_USER"
+REASON_CLEAN_WITHOUT_QUALIFYING_LATER = "CLEAN_WITHOUT_QUALIFYING_LATER_SCAN"
 
 # Legacy aliases (older registry rows / docs)
-REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK = REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW
-REASON_POST_CLEAN_RACK_OR_USER = REASON_WORKFLOW_THEN_CLEAN
+REASON_WORKFLOW_THEN_CLEAN = REASON_POST_CLEAN_RACK_AND_USER
+REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW = REASON_CLEAN_WITHOUT_QUALIFYING_LATER
+REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK = REASON_CLEAN_WITHOUT_QUALIFYING_LATER
+REASON_POST_CLEAN_RACK_OR_USER = REASON_POST_CLEAN_RACK_AND_USER
 
-TRIGGER_PRIOR_WORKFLOW_BEFORE_CLEAN = "PRIOR_WORKFLOW_BEFORE_CLEAN"
 TRIGGER_RACK_NOT_CLEAN = "RACK_NOT_CLEAN"
 TRIGGER_USER_NOT_INTERNAL = "USER_NOT_INTERNAL"
 TRIGGER_BOTH = "BOTH"
+TRIGGER_PRIOR_WORKFLOW_BEFORE_CLEAN = "PRIOR_WORKFLOW_BEFORE_CLEAN"
 
 REASON_ALREADY_COMPLETED = "ALREADY_COMPLETED"
 REASON_ALREADY_COMPLETED_AT_CONFIRM = "ALREADY_COMPLETED_AT_CONFIRM"
@@ -140,8 +142,8 @@ def _progressive_timeline_sort_key(ev: Mapping[str, Any]) -> tuple:
     return (_parsed_scan_datetime(ev), _scan_index_num(ev))
 
 
-def prior_workflow_scan_before_clean(rack: Any, user: Any) -> bool:
-    """Meaningful non-internal activity on a non-Clean rack before reaching CLEAN."""
+def qualifying_post_clean_scan(rack: Any, user: Any) -> bool:
+    """After CLEAN: non-Clean rack AND non-internal user (both required)."""
     return not rack_contains_clean(rack) and not user_is_internal(user)
 
 
@@ -193,8 +195,9 @@ def evaluate_bag_completion(
     """
     Progressive timeline (scanned_at_parsed ASC; scan_index tie-break only).
 
-    COMPLETED when the bag reaches a CLEAN rack scan and at least one earlier scan
-    has a non-Clean rack and a non-internal user (real workflow before CLEAN).
+    Find the first CLEAN rack scan, then look at later scans only.
+    COMPLETED when a later scan has a non-Clean rack AND a non-internal user.
+    completed_at / trigger point at that qualifying later scan.
     """
     ordered = sorted(events_from_records(list(events)), key=_progressive_timeline_sort_key)
     if not ordered:
@@ -236,21 +239,33 @@ def evaluate_bag_completion(
     except (TypeError, ValueError):
         fc_event_id_int = None
 
-    for ev in ordered[:first_clean_idx]:
-        if prior_workflow_scan_before_clean(ev.get("rack"), ev.get("user")):
-            return CompletionResult(
-                completion_status=COMPLETION_COMPLETED,
-                completion_reason=REASON_WORKFLOW_THEN_CLEAN,
-                first_clean_scan_at=first_clean_at,
-                first_clean_scan_event_id=fc_event_id_int,
-                trigger_scan_at=first_clean_at,
-                trigger_scan_event_id=fc_event_id_int,
-                trigger_kind=TRIGGER_PRIOR_WORKFLOW_BEFORE_CLEAN,
-            )
+    for ev in ordered[first_clean_idx + 1 :]:
+        rack = ev.get("rack")
+        user = ev.get("user")
+        if not qualifying_post_clean_scan(rack, user):
+            continue
+
+        trigger_at = _parsed_scan_datetime(ev)
+        if trigger_at == datetime.min:
+            trigger_at = None
+        try:
+            trigger_id = int(ev.get("id")) if ev.get("id") is not None else None
+        except (TypeError, ValueError):
+            trigger_id = None
+
+        return CompletionResult(
+            completion_status=COMPLETION_COMPLETED,
+            completion_reason=REASON_POST_CLEAN_RACK_AND_USER,
+            first_clean_scan_at=first_clean_at,
+            first_clean_scan_event_id=fc_event_id_int,
+            trigger_scan_at=trigger_at,
+            trigger_scan_event_id=trigger_id,
+            trigger_kind=TRIGGER_BOTH,
+        )
 
     return CompletionResult(
         completion_status=COMPLETION_INCOMPLETE,
-        completion_reason=REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW,
+        completion_reason=REASON_CLEAN_WITHOUT_QUALIFYING_LATER,
         first_clean_scan_at=first_clean_at,
         first_clean_scan_event_id=fc_event_id_int,
         trigger_scan_at=None,
