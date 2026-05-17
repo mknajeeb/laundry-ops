@@ -9,13 +9,16 @@ from flask import jsonify, request
 from backend.db import get_db
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_folding_registry import (
+    aggregate_folding_leaderboard,
     apply_folding_performance_for_bag,
     apply_performance_override,
     aggregate_user_folding_stats,
     get_folding_performance_row,
+    list_folding_performance_overrides,
     list_folding_performance_rows,
     recompute_folding_performance_for_bags,
     recompute_folding_performance_for_date_range,
+    summarize_recompute_results,
 )
 from backend.rinse_folding_settings import get_rinse_folding_benchmarks, put_rinse_folding_benchmarks
 
@@ -109,11 +112,18 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 return jsonify({"error": "Performance row not found"}), 404
             from backend.rinse_bag_registry import get_registry_row, list_scan_events_for_bag
 
+            registry = get_registry_row(cursor, tenant_oid, bid)
+            perf = dict(row)
+            if registry:
+                perf["name_clean"] = registry.get("name_clean")
             return jsonify(
                 {
-                    "performance": row,
-                    "registry": get_registry_row(cursor, tenant_oid, bid),
+                    "performance": perf,
+                    "registry": registry,
                     "scan_events": list_scan_events_for_bag(cursor, tenant_oid, bid),
+                    "override_history": list_folding_performance_overrides(
+                        cursor, tenant_oid, bid
+                    ),
                 }
             )
         finally:
@@ -140,6 +150,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             )
             if payload.get("reason") == "no_registry_row":
                 return jsonify({"error": "Bag not found"}), 404
+            payload["summary"] = summarize_recompute_results([payload])
             conn.commit()
             return jsonify(payload)
         except Exception as e:
@@ -242,6 +253,32 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/leaderboard", methods=["GET"])
+    def rinse_folding_leaderboard():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            period_raw = (request.args.get("period") or "today").strip().lower()
+            period = "week" if period_raw == "week" else "today"
+            date_raw = request.args.get("date")
+            if date_raw:
+                anchor = parse_date_value(date_raw)
+            else:
+                anchor = date.today()
+            if not isinstance(anchor, date):
+                return jsonify({"error": "Invalid date"}), 400
+            payload = aggregate_folding_leaderboard(
+                cursor, tenant_oid, period=period, anchor=anchor
+            )
+            return jsonify(payload)
         finally:
             cursor.close()
             conn.close()

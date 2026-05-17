@@ -357,6 +357,41 @@ export const postRinseBagRecomputeCompletion = (bagId) =>
     timeout: 30000,
   });
 
+/** Folding performance list (completed bags only). */
+export const listFoldingPerformance = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/folding/performance`, { params, timeout: 30000 });
+
+export const listFoldingExceptions = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/folding/exceptions`, { params, timeout: 30000 });
+
+export const getFoldingPerformanceDetail = (bagId) =>
+  axios.get(`${API_BASE}/rinse/folding/performance/${encodeURIComponent(bagId)}`, {
+    timeout: 30000,
+  });
+
+export const recomputeFoldingPerformance = (body) =>
+  axios.post(`${API_BASE}/rinse/folding/recompute`, body, { timeout: 120000 });
+
+export const overrideFoldingPerformance = (bagId, body) =>
+  axios.post(`${API_BASE}/rinse/folding/performance/${encodeURIComponent(bagId)}/override`, body, {
+    timeout: 30000,
+  });
+
+export const getFoldingBenchmarks = () =>
+  axios.get(`${API_BASE}/rinse/folding/benchmarks`, { timeout: 15000 });
+
+export const updateFoldingBenchmarks = (body) =>
+  axios.put(`${API_BASE}/rinse/folding/benchmarks`, body, { timeout: 15000 });
+
+export const getFoldingDailyStats = (params) =>
+  axios.get(`${API_BASE}/rinse/folding/stats/daily`, { params, timeout: 30000 });
+
+export const getFoldingWeeklyStats = (params) =>
+  axios.get(`${API_BASE}/rinse/folding/stats/weekly`, { params, timeout: 30000 });
+
+export const getFoldingLeaderboard = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/folding/leaderboard`, { params, timeout: 30000 });
+
 /** Admin: GET whether Rinse bag CSV export can run on the server (Node + scraper + env). */
 export const getRinseBagExportConfig = () =>
   axios.get(`${API_BASE}/admin/rinse/bag-export/config`, { timeout: 15000 });

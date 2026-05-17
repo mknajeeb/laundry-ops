@@ -33,6 +33,8 @@ import { hasPlatformAdminRole, isPlatformOnlyUser, userSatisfiesRoleGate } from 
 import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
+import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
+import RinseFoldingTvPage from "./pages/RinseFoldingTvPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import RinseBagLookupPage from "./pages/RinseBagLookupPage";
 import IssuePage from "./pages/IssuePage";
@@ -537,7 +539,7 @@ function AppShell() {
 
   return (
     <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "flex", background: shellBackground }}>
-      {!isMobile && user && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
+      {!isMobile && user && !hideTenantSidebar(pathname) && (pathname.startsWith("/platform") && hasPlatformAdminRole(user) ? (
         <PlatformSidebar user={user} onLogout={doLogout} showTenantEntry />
       ) : (
         <Sidebar
@@ -549,7 +551,7 @@ function AppShell() {
         />
       ))}
       <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {isMobile && user && (
+        {isMobile && user && !hideTenantSidebar(pathname) && (
           <>
             <MobileTenantDrawer
               open={mobileNavOpen}
@@ -773,6 +775,26 @@ function AppShell() {
             <Route path="/issues" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><IssuePage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/production" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ProductionPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/scoreboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ScoreboardPage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/rinse/folding-dashboard"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <RinseFoldingDashboardPage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/folding-tv"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user}>
+                    <RinseFoldingTvPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route path="/maintenance" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><MaintenancePage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/inventory" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/discrepancies" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute></TenantOnlyRoute>} />

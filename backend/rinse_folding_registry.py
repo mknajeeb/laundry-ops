@@ -4,8 +4,8 @@ Folding performance persistence, recompute, overrides, and aggregates.
 
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Any, Sequence
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Literal, Sequence
 
 from backend.rinse_bag_completion import COMPLETION_COMPLETED, normalize_bag_id
 from backend.rinse_bag_folding import (
@@ -14,6 +14,7 @@ from backend.rinse_bag_folding import (
     EXCEPTION_MISSING_ASSIGNED_USER,
     EXCEPTION_MISSING_CLEAN,
     EXCEPTION_MISSING_FOLDING,
+    FOLDING_WARNING_CODES,
     SOURCE_MANUAL,
     STATUS_CALCULATED,
     STATUS_EXCEPTION,
@@ -294,12 +295,43 @@ def recompute_folding_performance_for_bags(
             skipped += 1
         else:
             processed += 1
-    return {
+    payload = {
         "bags_requested": len(bag_ids),
         "bags_processed": processed,
         "bags_skipped": skipped,
         "bags": results,
     }
+    payload["summary"] = summarize_recompute_results(results)
+    return payload
+
+
+def summarize_recompute_results(bags: Sequence[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "processed": 0,
+        "skipped_not_completed": 0,
+        "calculated": 0,
+        "exceptions": 0,
+        "warnings": 0,
+        "errors": 0,
+    }
+    for b in bags:
+        if b.get("skipped"):
+            reason = str(b.get("reason") or "")
+            if reason == "not_completed":
+                summary["skipped_not_completed"] += 1
+            else:
+                summary["errors"] += 1
+            continue
+        summary["processed"] += 1
+        st = str(b.get("status") or "").upper()
+        if st == STATUS_EXCEPTION:
+            summary["exceptions"] += 1
+        elif st == STATUS_CALCULATED:
+            summary["calculated"] += 1
+            code = str(b.get("exception_code") or "").upper()
+            if code in FOLDING_WARNING_CODES:
+                summary["warnings"] += 1
+    return summary
 
 
 def fetch_completed_bag_ids_for_date_range(
@@ -375,7 +407,10 @@ def list_folding_performance_rows(
     ensure_rinse_folding_tables(cursor)
     org = int(organization_id)
     sql = """
-        SELECT p.*, r.completion_status AS registry_completion_status_live
+        SELECT p.*,
+               r.completion_status AS registry_completion_status_live,
+               r.name_clean,
+               r.weight_num AS registry_weight_num
         FROM rinse_folding_performance p
         INNER JOIN rinse_bag_registry r
           ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
@@ -664,4 +699,231 @@ def aggregate_user_folding_stats(
                 else None
             ),
         },
+    }
+
+
+def list_folding_performance_overrides(
+    cursor, organization_id: int, bag_id: str
+) -> list[dict[str, Any]]:
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return []
+    ensure_rinse_folding_tables(cursor)
+    cursor.execute(
+        """
+        SELECT id, organization_id, performance_id, bag_id, field_name,
+               old_value, new_value, actor_user_id, notes, created_at
+        FROM rinse_folding_performance_overrides
+        WHERE organization_id = %s AND bag_id = %s
+        ORDER BY created_at DESC, id DESC
+        """,
+        (int(organization_id), bid),
+    )
+    return list(cursor.fetchall() or [])
+
+
+def folding_period_bounds(
+    period: Literal["today", "week"], anchor: date
+) -> tuple[date, date]:
+    if period == "week":
+        week_start = anchor - timedelta(days=anchor.weekday())
+        return week_start, week_start + timedelta(days=6)
+    return anchor, anchor
+
+
+def prior_week_bounds(period_start: date) -> tuple[date, date]:
+    """Calendar week immediately before the week containing period_start."""
+    week_start = period_start - timedelta(days=period_start.weekday())
+    prev_end = week_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=6)
+    return prev_start, prev_end
+
+
+def list_folding_users_in_period(
+    cursor,
+    organization_id: int,
+    period_start: date,
+    period_end: date,
+) -> list[str]:
+    ensure_rinse_folding_tables(cursor)
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT DISTINCT p.assigned_user_name
+        FROM rinse_folding_performance p
+        INNER JOIN rinse_bag_registry r
+          ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
+        WHERE p.organization_id = %s
+          AND p.status = %s
+          AND p.excluded_from_performance = 0
+          AND r.completion_status = %s
+          AND p.work_date >= %s
+          AND p.work_date <= %s
+          AND p.assigned_user_name IS NOT NULL
+          AND TRIM(p.assigned_user_name) != ''
+        ORDER BY p.assigned_user_name
+        """,
+        (
+            org,
+            STATUS_CALCULATED,
+            COMPLETION_COMPLETED,
+            period_start,
+            period_end,
+        ),
+    )
+    names: list[str] = []
+    for r in cursor.fetchall() or []:
+        n = str(r.get("assigned_user_name") if isinstance(r, dict) else r[0] or "").strip()
+        if n:
+            names.append(n)
+    return names
+
+
+def _target_status_for_rates(
+    bags_per_hour: float | None,
+    lbs_per_hour: float | None,
+    benchmarks: dict[str, Any],
+) -> str:
+    if bags_per_hour is None and lbs_per_hour is None:
+        return "n/a"
+    bags_tgt = float(benchmarks.get("bags_per_hour_target") or 0)
+    lbs_tgt = float(benchmarks.get("lbs_per_hour_target") or 0)
+    bags_ok = bags_per_hour is not None and bags_per_hour >= bags_tgt
+    lbs_ok = lbs_per_hour is not None and lbs_per_hour >= lbs_tgt
+    if bags_ok and lbs_ok:
+        return "above"
+    if bags_per_hour is not None and lbs_per_hour is not None and not bags_ok and not lbs_ok:
+        return "below"
+    if bags_ok or lbs_ok:
+        return "mixed"
+    return "n/a"
+
+
+def _rank_leaderboard_users(users: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def sort_key(u: dict[str, Any]) -> tuple:
+        lbs_h = u.get("lbs_per_hour")
+        bags_h = u.get("bags_per_hour")
+        return (
+            -(lbs_h if lbs_h is not None else -1),
+            -(bags_h if bags_h is not None else -1),
+            -(float(u.get("total_lbs") or 0)),
+            -(int(u.get("bag_count") or 0)),
+            str(u.get("user_name") or "").lower(),
+        )
+
+    ranked = sorted(users, key=sort_key)
+    for i, u in enumerate(ranked, start=1):
+        u["rank"] = i
+    return ranked
+
+
+def _aggregate_team_from_users(users: list[dict[str, Any]]) -> dict[str, Any]:
+    total_seconds = sum(int(u.get("total_folding_seconds") or 0) for u in users)
+    total_lbs = sum(float(u.get("total_lbs") or 0) for u in users)
+    bag_count = sum(int(u.get("bag_count") or 0) for u in users)
+    hours = total_seconds / 3600.0 if total_seconds > 0 else 0.0
+    bags_per_hour = (bag_count / hours) if hours > 0 else None
+    lbs_per_hour = (total_lbs / hours) if hours > 0 else None
+    return {
+        "bag_count": bag_count,
+        "total_lbs": round(total_lbs, 2),
+        "total_folding_seconds": total_seconds,
+        "bags_per_hour": round(bags_per_hour, 4) if bags_per_hour is not None else None,
+        "lbs_per_hour": round(lbs_per_hour, 4) if lbs_per_hour is not None else None,
+    }
+
+
+def aggregate_folding_leaderboard(
+    cursor,
+    organization_id: int,
+    *,
+    period: Literal["today", "week"] = "today",
+    anchor: date | None = None,
+    include_prior_period_winner: bool = True,
+) -> dict[str, Any]:
+    org = int(organization_id)
+    anchor_day = anchor or date.today()
+    period_start, period_end = folding_period_bounds(period, anchor_day)
+    benchmarks = get_rinse_folding_benchmarks(cursor, org)
+
+    user_names = list_folding_users_in_period(cursor, org, period_start, period_end)
+    users: list[dict[str, Any]] = []
+    for uname in user_names:
+        stats = aggregate_user_folding_stats(cursor, org, uname, period_start, period_end)
+        bags_h = stats.get("bags_per_hour")
+        lbs_h = stats.get("lbs_per_hour")
+        users.append(
+            {
+                "user_name": uname,
+                "bag_count": stats.get("bag_count", 0),
+                "total_lbs": stats.get("total_lbs", 0),
+                "total_folding_seconds": stats.get("total_folding_seconds", 0),
+                "bags_per_hour": bags_h,
+                "lbs_per_hour": lbs_h,
+                "gap_seconds_total": stats.get("gap_seconds_total", 0),
+                "target_status": _target_status_for_rates(bags_h, lbs_h, benchmarks),
+                "vs_target": stats.get("vs_target"),
+            }
+        )
+
+    users = _rank_leaderboard_users(users)
+    team = _aggregate_team_from_users(users)
+
+    prior_winner: dict[str, Any] = {
+        "available": False,
+        "period": "week",
+        "period_start": None,
+        "period_end": None,
+        "user_name": None,
+        "bag_count": 0,
+        "bags_per_hour": None,
+        "lbs_per_hour": None,
+        "total_lbs": None,
+        "message": "Not enough data yet",
+    }
+    if include_prior_period_winner:
+        pw_start, pw_end = prior_week_bounds(period_start)
+        prior_winner["period_start"] = pw_start.isoformat()
+        prior_winner["period_end"] = pw_end.isoformat()
+        prior_users = list_folding_users_in_period(cursor, org, pw_start, pw_end)
+        prior_stats_list: list[dict[str, Any]] = []
+        for uname in prior_users:
+            ps = aggregate_user_folding_stats(cursor, org, uname, pw_start, pw_end)
+            prior_stats_list.append(
+                {
+                    "user_name": uname,
+                    "bag_count": ps.get("bag_count", 0),
+                    "total_lbs": ps.get("total_lbs", 0),
+                    "bags_per_hour": ps.get("bags_per_hour"),
+                    "lbs_per_hour": ps.get("lbs_per_hour"),
+                }
+            )
+        prior_ranked = _rank_leaderboard_users(prior_stats_list)
+        if prior_ranked and int(prior_ranked[0].get("bag_count") or 0) > 0:
+            top = prior_ranked[0]
+            if top.get("lbs_per_hour") is not None:
+                prior_winner = {
+                    "available": True,
+                    "period": "week",
+                    "period_start": pw_start.isoformat(),
+                    "period_end": pw_end.isoformat(),
+                    "user_name": top.get("user_name"),
+                    "bag_count": top.get("bag_count", 0),
+                    "bags_per_hour": top.get("bags_per_hour"),
+                    "lbs_per_hour": top.get("lbs_per_hour"),
+                    "total_lbs": top.get("total_lbs"),
+                    "message": None,
+                }
+
+    generated_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+    return {
+        "generated_at": generated_at,
+        "period": period,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "anchor_date": anchor_day.isoformat(),
+        "benchmarks": benchmarks,
+        "team": team,
+        "users": users,
+        "prior_period_winner": prior_winner,
     }

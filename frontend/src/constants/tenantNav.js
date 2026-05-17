@@ -50,6 +50,13 @@ export const TENANT_NAV_ITEMS = [
   { to: "/issues", labelKey: "nav.issues", roles: OPS, moduleKey: "issues" },
   { to: "/production", labelKey: "nav.production", roles: OPS, moduleKey: "production" },
   { to: "/scoreboard", labelKey: "nav.scoreboard", roles: OPS, moduleKey: "scoreboard" },
+  {
+    to: "/rinse/folding-dashboard",
+    labelKey: "nav.foldingDashboard",
+    roles: ["ADMIN", "OPS"],
+    moduleKey: "scoreboard",
+  },
+  { to: "/rinse/folding-tv", labelKey: "nav.foldingTv", roles: OPS, moduleKey: "scoreboard" },
   { to: "/maintenance", labelKey: "nav.maintenance", roles: OPS, moduleKey: "maintenance" },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/documents", labelKey: "nav.documents", roles: ["ADMIN"], moduleKey: "people" },

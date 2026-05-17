@@ -11,8 +11,11 @@ import pandas as pd
 from backend.rinse_bag_completion import COMPLETION_COMPLETED, COMPLETION_INCOMPLETE
 from backend.rinse_bag_folding import STATUS_CALCULATED, STATUS_EXCEPTION
 from backend.rinse_folding_registry import (
+    _rank_leaderboard_users,
+    aggregate_folding_leaderboard,
     apply_folding_performance_for_bag,
     recompute_folding_performance_for_bags,
+    summarize_recompute_results,
 )
 from backend.rinse_folding_settings import (
     DEFAULT_BAGS_PER_HOUR,
@@ -133,6 +136,59 @@ class TestAggregateStats(unittest.TestCase):
             )
         self.assertEqual(stats["bag_count"], 1)
         self.assertEqual(stats["bags_per_hour"], 1.0)
+
+
+class TestRecomputeSummary(unittest.TestCase):
+    def test_summarize_counts(self):
+        bags = [
+            {"skipped": True, "reason": "not_completed"},
+            {"skipped": True, "reason": "no_registry_row"},
+            {"skipped": False, "status": STATUS_CALCULATED},
+            {
+                "skipped": False,
+                "status": STATUS_CALCULATED,
+                "exception_code": "MULTIPLE_FOLDING_SCANS",
+            },
+            {"skipped": False, "status": STATUS_EXCEPTION},
+        ]
+        s = summarize_recompute_results(bags)
+        self.assertEqual(s["skipped_not_completed"], 1)
+        self.assertEqual(s["errors"], 1)
+        self.assertEqual(s["processed"], 3)
+        self.assertEqual(s["calculated"], 2)
+        self.assertEqual(s["warnings"], 1)
+        self.assertEqual(s["exceptions"], 1)
+
+
+class TestLeaderboardRanking(unittest.TestCase):
+    def test_ranks_by_lbs_per_hour(self):
+        users = [
+            {"user_name": "A", "lbs_per_hour": 30, "bags_per_hour": 2, "total_lbs": 50, "bag_count": 5},
+            {"user_name": "B", "lbs_per_hour": 50, "bags_per_hour": 1, "total_lbs": 80, "bag_count": 4},
+            {"user_name": "C", "lbs_per_hour": 50, "bags_per_hour": 3, "total_lbs": 60, "bag_count": 6},
+        ]
+        ranked = _rank_leaderboard_users(users)
+        self.assertEqual(ranked[0]["user_name"], "C")
+        self.assertEqual(ranked[1]["user_name"], "B")
+        self.assertEqual(ranked[0]["rank"], 1)
+
+    def test_leaderboard_empty_prior_winner(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        with (
+            patch("backend.rinse_folding_registry.ensure_rinse_folding_tables"),
+            patch(
+                "backend.rinse_folding_registry.get_rinse_folding_benchmarks",
+                return_value={"bags_per_hour_target": 2.5, "lbs_per_hour_target": 40.0},
+            ),
+            patch("backend.rinse_folding_registry.list_folding_users_in_period", return_value=[]),
+        ):
+            out = aggregate_folding_leaderboard(
+                cursor, 1, period="today", anchor=date(2026, 5, 16)
+            )
+        self.assertEqual(out["users"], [])
+        self.assertFalse(out["prior_period_winner"]["available"])
+        self.assertEqual(out["prior_period_winner"]["message"], "Not enough data yet")
 
 
 if __name__ == "__main__":
