@@ -40,22 +40,9 @@ def _cell(row: pd.Series, key: str) -> str:
 
 
 def _parse_scanned_at(text: str) -> pd.Timestamp | pd.NaT:
-    s = (text or "").strip()
-    if not s:
-        return pd.NaT
-    for fmt in (
-        "%A, %B %d, %Y %I:%M %p",
-        "%A, %B %d, %Y %H:%M",
-        "%Y-%m-%d %H:%M:%S",
-    ):
-        try:
-            return pd.Timestamp(datetime.strptime(s, fmt))
-        except ValueError:
-            continue
-    try:
-        return pd.to_datetime(s, errors="coerce")
-    except Exception:
-        return pd.NaT
+    from backend.rinse_scan_time import parse_rinse_scanned_at_pandas
+
+    return parse_rinse_scanned_at_pandas(text)
 
 
 def load_scan_events_csv(path: str) -> pd.DataFrame:

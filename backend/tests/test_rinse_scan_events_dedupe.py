@@ -20,35 +20,57 @@ from backend.rinse_scan_event_identity import compute_scan_event_dedupe_key
 class TestScanEventDedupeKey(unittest.TestCase):
     def test_same_identity_same_key(self):
         at = datetime(2026, 5, 16, 23, 10)
+        raw = "Saturday, May 16, 2026 11:10 PM"
         k1 = compute_scan_event_dedupe_key(
+            organization_id=1,
+            bag_id="BAG",
             scan_index=2,
             rack="FOLDING",
             user_name="Sarah Kamran",
             purpose="",
+            time_scanned_raw=raw,
             scanned_at_parsed=at,
         )
         k2 = compute_scan_event_dedupe_key(
+            organization_id=1,
+            bag_id="BAG",
             scan_index=2,
             rack="FOLDING",
             user_name="Sarah Kamran",
             purpose=None,
+            time_scanned_raw=raw,
             scanned_at_parsed=at,
         )
         self.assertEqual(k1, k2)
 
     def test_different_scan_index_different_key(self):
         at = datetime(2026, 5, 16, 23, 10)
+        raw = "Saturday, May 16, 2026 11:10 PM"
         k1 = compute_scan_event_dedupe_key(
-            scan_index=1, rack="FOLDING", user_name="U", purpose="", scanned_at_parsed=at
+            organization_id=1,
+            bag_id="BAG",
+            scan_index=1,
+            rack="FOLDING",
+            user_name="U",
+            purpose="",
+            time_scanned_raw=raw,
+            scanned_at_parsed=at,
         )
         k2 = compute_scan_event_dedupe_key(
-            scan_index=2, rack="FOLDING", user_name="U", purpose="", scanned_at_parsed=at
+            organization_id=1,
+            bag_id="BAG",
+            scan_index=2,
+            rack="FOLDING",
+            user_name="U",
+            purpose="",
+            time_scanned_raw=raw,
+            scanned_at_parsed=at,
         )
         self.assertNotEqual(k1, k2)
 
 
 class InMemoryScanEventStore:
-    """Minimal store mimicking upsert by (org, bag, dedupe_key)."""
+    """Minimal store mimicking immutable upsert by (org, bag, dedupe_key)."""
 
     def __init__(self):
         self.rows: list[dict] = []
@@ -61,8 +83,8 @@ class InMemoryScanEventStore:
                 and existing["bag_id"] == row["bag_id"]
                 and existing["dedupe_key"] == row["dedupe_key"]
             ):
-                existing.update(row)
-                return "updated"
+                existing["source_upload_batch_id"] = row.get("source_upload_batch_id")
+                return "metadata_updated"
         row = dict(row)
         row["id"] = self._next_id
         self._next_id += 1
@@ -158,7 +180,7 @@ class TestMergeScanEventsIdempotent(unittest.TestCase):
         self.assertEqual(f1.duration_seconds, f2.duration_seconds)
         self.assertEqual(f1.assigned_user_name, f2.assigned_user_name)
 
-    def test_fetch_persistent_uses_deduped_query(self):
+    def test_fetch_persistent_returns_full_timeline(self):
         cursor = MagicMock()
         with (
             patch("backend.rinse_bag_registry.ensure_rinse_bag_scan_events_dedupe_schema"),
@@ -166,8 +188,8 @@ class TestMergeScanEventsIdempotent(unittest.TestCase):
         ):
             fetch_persistent_scan_events_for_bag(cursor, 1, "BAG1")
         sql = cursor.execute.call_args[0][0]
-        self.assertIn("GROUP BY dedupe_key", sql)
-        self.assertIn("MIN(id)", sql)
+        self.assertNotIn("GROUP BY dedupe_key", sql.upper())
+        self.assertIn("ORDER BY scanned_at_parsed ASC", sql)
 
 
 if __name__ == "__main__":
