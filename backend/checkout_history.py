@@ -157,20 +157,10 @@ def _purge_operational_tables(cursor, tenant_oid: int) -> dict:
         "order_processing": 0,
         "upload_batches": 0,
         "upload_batch_rows": 0,
+        "upload_batch_scan_events": 0,
     }
     has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
     has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
-
-    def batch_pk():
-        cursor.execute("SHOW COLUMNS FROM upload_batches LIKE 'id'")
-        if cursor.fetchone():
-            return "id"
-        cursor.execute("SHOW COLUMNS FROM upload_batches LIKE 'batch_id'")
-        if cursor.fetchone():
-            return "batch_id"
-        return "id"
-
-    bpk = batch_pk()
 
     if has_staging_org:
         if table_exists(cursor, "order_process_submissions") and table_has_column(
@@ -227,24 +217,21 @@ def _purge_operational_tables(cursor, tenant_oid: int) -> dict:
                 cursor.execute(f"DELETE FROM {t}")
                 out[t] = cursor.rowcount or 0
 
+    from backend.upload_batch_cleanup import (
+        delete_all_upload_batches_global,
+        delete_upload_batches_for_organization,
+    )
+
     if has_ub_org:
-        cursor.execute(
-            f"""
-            DELETE FROM upload_batch_rows
-            WHERE upload_batch_id IN (SELECT {bpk} FROM upload_batches WHERE organization_id=%s)
-            """,
-            (tenant_oid,),
-        )
-        out["upload_batch_rows"] = cursor.rowcount or 0
-        cursor.execute(f"DELETE FROM upload_batches WHERE organization_id=%s", (tenant_oid,))
-        out["upload_batches"] = cursor.rowcount or 0
+        ub_counts = delete_upload_batches_for_organization(cursor, tenant_oid)
+        out["upload_batch_rows"] = ub_counts.get("upload_batch_rows", 0)
+        out["upload_batch_scan_events"] = ub_counts.get("upload_batch_scan_events", 0)
+        out["upload_batches"] = ub_counts.get("upload_batches", 0)
     else:
-        if table_exists(cursor, "upload_batch_rows"):
-            cursor.execute("DELETE FROM upload_batch_rows")
-            out["upload_batch_rows"] = cursor.rowcount or 0
-        if table_exists(cursor, "upload_batches"):
-            cursor.execute("DELETE FROM upload_batches")
-            out["upload_batches"] = cursor.rowcount or 0
+        ub_counts = delete_all_upload_batches_global(cursor)
+        out["upload_batch_rows"] = ub_counts.get("upload_batch_rows", 0)
+        out["upload_batch_scan_events"] = ub_counts.get("upload_batch_scan_events", 0)
+        out["upload_batches"] = ub_counts.get("upload_batches", 0)
 
     if table_exists(cursor, "upload_conflicts") and table_has_column(
         cursor, "upload_conflicts", "organization_id"
