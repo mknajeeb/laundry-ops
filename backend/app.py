@@ -4148,6 +4148,13 @@ def upload_batch_rinse_scan_events(batch_id: int):
             tenant_oid,
             merge_payload.get("bag_ids") or [],
         )
+        from backend.rinse_folding_registry import recompute_folding_after_upload
+
+        folding_payload = recompute_folding_after_upload(
+            cursor,
+            tenant_oid,
+            merge_payload.get("bag_ids") or [],
+        )
         conn.commit()
 
         return jsonify(
@@ -4159,6 +4166,7 @@ def upload_batch_rinse_scan_events(batch_id: int):
                 **batch_payload,
                 "persistent_merge": merge_payload,
                 "completion": completion_payload,
+                "folding": folding_payload,
             }
         )
 

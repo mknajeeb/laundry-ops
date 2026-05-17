@@ -39,6 +39,15 @@ export function formatDateTime(val) {
   });
 }
 
+export function formatPeriodRange(start, end) {
+  if (!start || !end) return "—";
+  const fmt = (iso) => {
+    const d = new Date(`${iso}T12:00:00`);
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  };
+  return `${fmt(start)} – ${fmt(end)}`;
+}
+
 export function isoDateInput(d = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -52,4 +61,22 @@ export function targetStatusChipColor(status) {
   if (s === "below") return "error";
   if (s === "mixed") return "warning";
   return "default";
+}
+
+export function comparisonArrow(direction) {
+  const d = String(direction || "flat").toLowerCase();
+  if (d === "up") return "↑";
+  if (d === "down") return "↓";
+  return "→";
+}
+
+export function formatComparison(comp, { suffix = "", invert = false } = {}) {
+  if (!comp?.available || comp.delta == null) return "—";
+  let dir = comp.direction;
+  if (invert) {
+    if (dir === "up") dir = "down";
+    else if (dir === "down") dir = "up";
+  }
+  const sign = Number(comp.delta) > 0 ? "+" : "";
+  return `${comparisonArrow(dir)} ${sign}${formatRate(comp.delta)}${suffix}`;
 }

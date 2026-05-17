@@ -400,6 +400,8 @@ def list_folding_performance_rows(
     status: str | None = None,
     exception_only: bool = False,
     work_date: date | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
     user_name: str | None = None,
     limit: int = 100,
     offset: int = 0,
@@ -427,6 +429,9 @@ def list_folding_performance_rows(
     if work_date:
         sql += " AND p.work_date = %s"
         args.append(work_date)
+    elif period_start and period_end:
+        sql += " AND p.work_date >= %s AND p.work_date <= %s"
+        args.extend([period_start, period_end])
     if user_name:
         sql += " AND p.assigned_user_name = %s"
         args.append(str(user_name).strip())
@@ -674,6 +679,10 @@ def aggregate_user_folding_stats(
     gap_total = sum(g["gap_seconds"] for g in gaps)
 
     benchmarks = get_rinse_folding_benchmarks(cursor, org)
+    issue = compute_folding_issue_metrics(cursor, org, period_start, period_end, user_name=uname)
+    avg_minutes = (
+        round((total_seconds / bag_count) / 60.0, 2) if bag_count > 0 else None
+    )
     return {
         "user_name": uname,
         "period_start": period_start.isoformat(),
@@ -683,9 +692,13 @@ def aggregate_user_folding_stats(
         "total_lbs": round(total_lbs, 2),
         "bags_per_hour": round(bags_per_hour, 4) if bags_per_hour is not None else None,
         "lbs_per_hour": round(lbs_per_hour, 4) if lbs_per_hour is not None else None,
+        "avg_minutes_per_bag": avg_minutes,
         "gap_seconds_total": gap_total,
         "gap_count": len(gaps),
         "gaps": gaps,
+        "issue_count": issue.get("issue_count"),
+        "issue_free_percent": issue.get("issue_free_percent"),
+        "issue_metric_available": issue.get("issue_metric_available"),
         "benchmarks": benchmarks,
         "vs_target": {
             "bags_per_hour_delta": (
@@ -696,6 +709,11 @@ def aggregate_user_folding_stats(
             "lbs_per_hour_delta": (
                 round(lbs_per_hour - benchmarks["lbs_per_hour_target"], 4)
                 if lbs_per_hour is not None
+                else None
+            ),
+            "issue_free_percent_delta": (
+                round(issue["issue_free_percent"] - benchmarks["issue_free_percent_target"], 2)
+                if issue.get("issue_free_percent") is not None
                 else None
             ),
         },
@@ -722,21 +740,235 @@ def list_folding_performance_overrides(
     return list(cursor.fetchall() or [])
 
 
+WEEKDAY_TO_INT = {
+    "MONDAY": 0,
+    "TUESDAY": 1,
+    "WEDNESDAY": 2,
+    "THURSDAY": 3,
+    "FRIDAY": 4,
+    "SATURDAY": 5,
+    "SUNDAY": 6,
+}
+
+DATA_SOURCE_NOTE = "Updated after nightly upload"
+
+
+def _week_start_offset(anchor: date, week_start_day: str) -> int:
+    target = WEEKDAY_TO_INT.get(str(week_start_day or "MONDAY").upper(), 0)
+    return (anchor.weekday() - target) % 7
+
+
 def folding_period_bounds(
-    period: Literal["today", "week"], anchor: date
+    period: Literal["today", "week", "month"],
+    anchor: date,
+    *,
+    week_start_day: str = "MONDAY",
 ) -> tuple[date, date]:
+    if period == "month":
+        month_start = anchor.replace(day=1)
+        if anchor.month == 12:
+            next_month = date(anchor.year + 1, 1, 1)
+        else:
+            next_month = date(anchor.year, anchor.month + 1, 1)
+        return month_start, next_month - timedelta(days=1)
     if period == "week":
-        week_start = anchor - timedelta(days=anchor.weekday())
+        offset = _week_start_offset(anchor, week_start_day)
+        week_start = anchor - timedelta(days=offset)
         return week_start, week_start + timedelta(days=6)
     return anchor, anchor
 
 
-def prior_week_bounds(period_start: date) -> tuple[date, date]:
-    """Calendar week immediately before the week containing period_start."""
-    week_start = period_start - timedelta(days=period_start.weekday())
-    prev_end = week_start - timedelta(days=1)
-    prev_start = prev_end - timedelta(days=6)
-    return prev_start, prev_end
+def previous_period_bounds(
+    period: Literal["week", "month"],
+    period_start: date,
+    period_end: date,
+) -> tuple[date, date]:
+    if period == "month":
+        prev_end = period_start - timedelta(days=1)
+        return prev_end.replace(day=1), prev_end
+    prev_end = period_start - timedelta(days=1)
+    return prev_end - timedelta(days=6), prev_end
+
+
+def resolve_analysis_period(
+    period: str,
+    anchor: date,
+    *,
+    week_start_day: str = "MONDAY",
+    custom_start: date | None = None,
+    custom_end: date | None = None,
+) -> tuple[date, date, str]:
+    p = str(period or "week").strip().lower()
+    if p == "custom":
+        if not isinstance(custom_start, date) or not isinstance(custom_end, date):
+            raise ValueError("custom period requires start_date and end_date")
+        return custom_start, custom_end, "custom"
+    if p == "month":
+        start, end = folding_period_bounds("month", anchor, week_start_day=week_start_day)
+        return start, end, "month"
+    if p == "today":
+        return anchor, anchor, "today"
+    start, end = folding_period_bounds("week", anchor, week_start_day=week_start_day)
+    return start, end, "week"
+
+
+def compute_folding_issue_metrics(
+    cursor,
+    organization_id: int,
+    period_start: date,
+    period_end: date,
+    *,
+    user_name: str | None = None,
+) -> dict[str, Any]:
+    ensure_rinse_folding_tables(cursor)
+    org = int(organization_id)
+    sql = """
+        SELECT p.status, COUNT(*) AS cnt
+        FROM rinse_folding_performance p
+        INNER JOIN rinse_bag_registry r
+          ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
+        WHERE p.organization_id = %s
+          AND r.completion_status = %s
+          AND p.excluded_from_performance = 0
+          AND p.status IN (%s, %s)
+          AND p.work_date >= %s
+          AND p.work_date <= %s
+    """
+    args: list[Any] = [
+        org,
+        COMPLETION_COMPLETED,
+        STATUS_CALCULATED,
+        STATUS_EXCEPTION,
+        period_start,
+        period_end,
+    ]
+    if user_name:
+        sql += " AND p.assigned_user_name = %s"
+        args.append(str(user_name).strip())
+    sql += " GROUP BY p.status"
+    cursor.execute(sql, tuple(args))
+    rows = list(cursor.fetchall() or [])
+    calculated = 0
+    issues = 0
+    for r in rows:
+        st = str(r.get("status") or "").upper()
+        cnt = int(r.get("cnt") or 0)
+        if st == STATUS_CALCULATED:
+            calculated = cnt
+        elif st == STATUS_EXCEPTION:
+            issues = cnt
+    denom = calculated + issues
+    issue_free = round(100.0 * (1.0 - issues / denom), 2) if denom > 0 else None
+    return {
+        "issue_count": issues,
+        "calculated_count": calculated,
+        "denominator": denom,
+        "issue_free_percent": issue_free,
+        "issue_metric_available": denom > 0,
+        "issue_metric_source": "folding_performance",
+    }
+
+
+def aggregate_team_folding_stats(
+    cursor,
+    organization_id: int,
+    period_start: date,
+    period_end: date,
+) -> dict[str, Any]:
+    ensure_rinse_folding_tables(cursor)
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT
+            p.bag_id,
+            p.duration_seconds,
+            p.weight_lbs
+        FROM rinse_folding_performance p
+        INNER JOIN rinse_bag_registry r
+          ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
+        WHERE p.organization_id = %s
+          AND p.status = %s
+          AND p.excluded_from_performance = 0
+          AND r.completion_status = %s
+          AND p.work_date >= %s
+          AND p.work_date <= %s
+        """,
+        (
+            org,
+            STATUS_CALCULATED,
+            COMPLETION_COMPLETED,
+            period_start,
+            period_end,
+        ),
+    )
+    rows = list(cursor.fetchall() or [])
+    total_seconds = 0
+    total_lbs = 0.0
+    bag_count = 0
+    for r in rows:
+        dur = int(r.get("duration_seconds") or 0)
+        if dur <= 0:
+            continue
+        bag_count += 1
+        total_seconds += dur
+        w = r.get("weight_lbs")
+        if w is not None:
+            try:
+                total_lbs += float(w)
+            except (TypeError, ValueError):
+                pass
+    hours = total_seconds / 3600.0 if total_seconds > 0 else 0.0
+    bags_per_hour = (bag_count / hours) if hours > 0 else None
+    lbs_per_hour = (total_lbs / hours) if hours > 0 else None
+    issue = compute_folding_issue_metrics(cursor, org, period_start, period_end)
+    return {
+        "bag_count": bag_count,
+        "total_lbs": round(total_lbs, 2),
+        "total_folding_seconds": total_seconds,
+        "bags_per_hour": round(bags_per_hour, 4) if bags_per_hour is not None else None,
+        "lbs_per_hour": round(lbs_per_hour, 4) if lbs_per_hour is not None else None,
+        "avg_minutes_per_bag": (
+            round((total_seconds / bag_count) / 60.0, 2) if bag_count > 0 else None
+        ),
+        "issue_count": issue.get("issue_count"),
+        "issue_free_percent": issue.get("issue_free_percent"),
+        "issue_metric_available": issue.get("issue_metric_available"),
+        "issue_metric_source": issue.get("issue_metric_source"),
+    }
+
+
+def _comparison_metric(
+    current: dict[str, Any] | None,
+    previous: dict[str, Any] | None,
+    key: str,
+) -> dict[str, Any]:
+    cur = (current or {}).get(key)
+    prev = (previous or {}).get(key)
+    if cur is None or prev is None:
+        return {"delta": None, "direction": "flat", "available": False}
+    try:
+        delta = round(float(cur) - float(prev), 4)
+    except (TypeError, ValueError):
+        return {"delta": None, "direction": "flat", "available": False}
+    if delta > 0:
+        direction = "up"
+    elif delta < 0:
+        direction = "down"
+    else:
+        direction = "flat"
+    return {"delta": delta, "direction": direction, "available": True}
+
+
+def _team_comparison(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "bag_count",
+        "total_lbs",
+        "bags_per_hour",
+        "lbs_per_hour",
+        "issue_free_percent",
+        "avg_minutes_per_bag",
+    )
+    return {k: _comparison_metric(current, previous, k) for k in keys}
 
 
 def list_folding_users_in_period(
@@ -837,21 +1069,42 @@ def aggregate_folding_leaderboard(
     cursor,
     organization_id: int,
     *,
-    period: Literal["today", "week"] = "today",
+    period: Literal["today", "week", "month"] = "week",
     anchor: date | None = None,
-    include_prior_period_winner: bool = True,
 ) -> dict[str, Any]:
     org = int(organization_id)
     anchor_day = anchor or date.today()
-    period_start, period_end = folding_period_bounds(period, anchor_day)
     benchmarks = get_rinse_folding_benchmarks(cursor, org)
+    week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
+
+    if period == "today":
+        period_start, period_end = folding_period_bounds("today", anchor_day)
+        prev_start, prev_end = period_start - timedelta(days=1), period_end - timedelta(days=1)
+        period_label = "today"
+    elif period == "month":
+        period_start, period_end = folding_period_bounds(
+            "month", anchor_day, week_start_day=week_start_day
+        )
+        prev_start, prev_end = previous_period_bounds("month", period_start, period_end)
+        period_label = "month"
+    else:
+        period_start, period_end = folding_period_bounds(
+            "week", anchor_day, week_start_day=week_start_day
+        )
+        prev_start, prev_end = previous_period_bounds("week", period_start, period_end)
+        period_label = "week"
 
     user_names = list_folding_users_in_period(cursor, org, period_start, period_end)
+    prev_user_names = list_folding_users_in_period(cursor, org, prev_start, prev_end)
+    all_names = sorted(set(user_names) | set(prev_user_names))
+
     users: list[dict[str, Any]] = []
     for uname in user_names:
         stats = aggregate_user_folding_stats(cursor, org, uname, period_start, period_end)
+        prev_stats = aggregate_user_folding_stats(cursor, org, uname, prev_start, prev_end)
         bags_h = stats.get("bags_per_hour")
         lbs_h = stats.get("lbs_per_hour")
+        prev_available = int(prev_stats.get("bag_count") or 0) > 0
         users.append(
             {
                 "user_name": uname,
@@ -860,70 +1113,202 @@ def aggregate_folding_leaderboard(
                 "total_folding_seconds": stats.get("total_folding_seconds", 0),
                 "bags_per_hour": bags_h,
                 "lbs_per_hour": lbs_h,
+                "avg_minutes_per_bag": stats.get("avg_minutes_per_bag"),
                 "gap_seconds_total": stats.get("gap_seconds_total", 0),
+                "issue_count": stats.get("issue_count"),
+                "issue_free_percent": stats.get("issue_free_percent"),
                 "target_status": _target_status_for_rates(bags_h, lbs_h, benchmarks),
                 "vs_target": stats.get("vs_target"),
+                "previous_period": {
+                    "available": prev_available,
+                    "period_start": prev_start.isoformat(),
+                    "period_end": prev_end.isoformat(),
+                    "bag_count": prev_stats.get("bag_count", 0),
+                    "total_lbs": prev_stats.get("total_lbs", 0),
+                    "bags_per_hour": prev_stats.get("bags_per_hour"),
+                    "lbs_per_hour": prev_stats.get("lbs_per_hour"),
+                    "issue_free_percent": prev_stats.get("issue_free_percent"),
+                },
+                "comparison": {
+                    "lbs_per_hour": _comparison_metric(stats, prev_stats, "lbs_per_hour"),
+                    "bags_per_hour": _comparison_metric(stats, prev_stats, "bags_per_hour"),
+                    "bag_count": _comparison_metric(stats, prev_stats, "bag_count"),
+                    "issue_free_percent": _comparison_metric(
+                        stats, prev_stats, "issue_free_percent"
+                    ),
+                },
             }
         )
 
     users = _rank_leaderboard_users(users)
-    team = _aggregate_team_from_users(users)
-
-    prior_winner: dict[str, Any] = {
-        "available": False,
-        "period": "week",
-        "period_start": None,
-        "period_end": None,
-        "user_name": None,
-        "bag_count": 0,
-        "bags_per_hour": None,
-        "lbs_per_hour": None,
-        "total_lbs": None,
-        "message": "Not enough data yet",
-    }
-    if include_prior_period_winner:
-        pw_start, pw_end = prior_week_bounds(period_start)
-        prior_winner["period_start"] = pw_start.isoformat()
-        prior_winner["period_end"] = pw_end.isoformat()
-        prior_users = list_folding_users_in_period(cursor, org, pw_start, pw_end)
-        prior_stats_list: list[dict[str, Any]] = []
-        for uname in prior_users:
-            ps = aggregate_user_folding_stats(cursor, org, uname, pw_start, pw_end)
-            prior_stats_list.append(
-                {
-                    "user_name": uname,
-                    "bag_count": ps.get("bag_count", 0),
-                    "total_lbs": ps.get("total_lbs", 0),
-                    "bags_per_hour": ps.get("bags_per_hour"),
-                    "lbs_per_hour": ps.get("lbs_per_hour"),
-                }
-            )
-        prior_ranked = _rank_leaderboard_users(prior_stats_list)
-        if prior_ranked and int(prior_ranked[0].get("bag_count") or 0) > 0:
-            top = prior_ranked[0]
-            if top.get("lbs_per_hour") is not None:
-                prior_winner = {
-                    "available": True,
-                    "period": "week",
-                    "period_start": pw_start.isoformat(),
-                    "period_end": pw_end.isoformat(),
-                    "user_name": top.get("user_name"),
-                    "bag_count": top.get("bag_count", 0),
-                    "bags_per_hour": top.get("bags_per_hour"),
-                    "lbs_per_hour": top.get("lbs_per_hour"),
-                    "total_lbs": top.get("total_lbs"),
-                    "message": None,
-                }
+    team = aggregate_team_folding_stats(cursor, org, period_start, period_end)
+    previous_team = aggregate_team_folding_stats(cursor, org, prev_start, prev_end)
+    prev_team_available = int(previous_team.get("bag_count") or 0) > 0
 
     generated_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
     return {
         "generated_at": generated_at,
-        "period": period,
+        "data_source_note": DATA_SOURCE_NOTE,
+        "period": period_label,
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
+        "previous_period_start": prev_start.isoformat(),
+        "previous_period_end": prev_end.isoformat(),
         "anchor_date": anchor_day.isoformat(),
         "benchmarks": benchmarks,
         "team": team,
+        "previous_team": {
+            **previous_team,
+            "available": prev_team_available,
+            "message": None if prev_team_available else "Not enough data yet",
+        },
+        "team_comparison": _team_comparison(team, previous_team if prev_team_available else {}),
         "users": users,
-        "prior_period_winner": prior_winner,
+        "operational_issues": {
+            "available": False,
+            "issue_count": None,
+            "message": "Issue tracking not linked yet",
+        },
     }
+
+
+def aggregate_folding_employee_analysis(
+    cursor,
+    organization_id: int,
+    *,
+    period: str = "week",
+    anchor: date | None = None,
+    custom_start: date | None = None,
+    custom_end: date | None = None,
+    user_name: str | None = None,
+) -> dict[str, Any]:
+    org = int(organization_id)
+    anchor_day = anchor or date.today()
+    benchmarks = get_rinse_folding_benchmarks(cursor, org)
+    week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
+    period_start, period_end, period_label = resolve_analysis_period(
+        period,
+        anchor_day,
+        week_start_day=week_start_day,
+        custom_start=custom_start,
+        custom_end=custom_end,
+    )
+
+    if period_label == "custom":
+        prev_start = prev_end = None
+    elif period_label == "month":
+        prev_start, prev_end = previous_period_bounds("month", period_start, period_end)
+    else:
+        prev_start, prev_end = previous_period_bounds("week", period_start, period_end)
+
+    def _user_block(uname: str) -> dict[str, Any]:
+        stats = aggregate_user_folding_stats(cursor, org, uname, period_start, period_end)
+        block: dict[str, Any] = {
+            "user_name": uname,
+            **stats,
+            "target_status": _target_status_for_rates(
+                stats.get("bags_per_hour"), stats.get("lbs_per_hour"), benchmarks
+            ),
+        }
+        if prev_start and prev_end:
+            prev_stats = aggregate_user_folding_stats(cursor, org, uname, prev_start, prev_end)
+            prev_available = int(prev_stats.get("bag_count") or 0) > 0
+            block["previous_period"] = {
+                "available": prev_available,
+                "period_start": prev_start.isoformat(),
+                "period_end": prev_end.isoformat(),
+                **prev_stats,
+            }
+            block["comparison"] = {
+                "lbs_per_hour": _comparison_metric(stats, prev_stats, "lbs_per_hour"),
+                "bags_per_hour": _comparison_metric(stats, prev_stats, "bags_per_hour"),
+                "bag_count": _comparison_metric(stats, prev_stats, "bag_count"),
+                "issue_free_percent": _comparison_metric(
+                    stats, prev_stats, "issue_free_percent"
+                ),
+            }
+        return block
+
+    if user_name:
+        uname = str(user_name).strip()
+        employee = _user_block(uname)
+        bags = list_folding_performance_rows(
+            cursor,
+            org,
+            user_name=uname,
+            period_start=period_start,
+            period_end=period_end,
+            limit=500,
+        )
+        return {
+            "period": period_label,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "benchmarks": benchmarks,
+            "employee": employee,
+            "bags": bags,
+            "operational_issues": {
+                "available": False,
+                "issue_count": None,
+                "message": "Issue tracking not linked yet",
+            },
+        }
+
+    names = list_folding_users_in_period(cursor, org, period_start, period_end)
+    employees = [_user_block(n) for n in names]
+    employees = _rank_leaderboard_users(employees)
+    team = aggregate_team_folding_stats(cursor, org, period_start, period_end)
+    return {
+        "period": period_label,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "benchmarks": benchmarks,
+        "team": team,
+        "employees": employees,
+        "operational_issues": {
+            "available": False,
+            "issue_count": None,
+            "message": "Issue tracking not linked yet",
+        },
+    }
+
+
+def recompute_folding_after_upload(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Non-blocking folding recompute for upload-affected bags."""
+    try:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for raw in bag_ids:
+            bid = normalize_bag_id(raw)
+            if bid and bid not in seen:
+                seen.add(bid)
+                unique.append(bid)
+        if not unique:
+            return {
+                "ok": True,
+                "bags_requested": 0,
+                "bags_processed": 0,
+                "bags_skipped": 0,
+                "summary": summarize_recompute_results([]),
+                "bags": [],
+            }
+        payload = recompute_folding_performance_for_bags(
+            cursor,
+            int(organization_id),
+            unique,
+            source_recompute_kind="upload",
+        )
+        payload["ok"] = True
+        return payload
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "bags_requested": len(bag_ids),
+            "summary": None,
+            "bags": [],
+        }

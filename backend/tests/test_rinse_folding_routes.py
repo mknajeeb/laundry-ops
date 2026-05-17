@@ -16,6 +16,7 @@ class TestFoldingRoutesRegistered(unittest.TestCase):
         self.assertIn("/rinse/folding/stats/daily", rules)
         self.assertIn("/rinse/folding/benchmarks", rules)
         self.assertIn("/rinse/folding/leaderboard", rules)
+        self.assertIn("/rinse/folding/employee-analysis", rules)
 
 
 if __name__ == "__main__":

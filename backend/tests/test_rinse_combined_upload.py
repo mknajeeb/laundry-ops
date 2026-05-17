@@ -202,6 +202,10 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 side_effect=_audit,
             ),
             patch("backend.rinse_combined_upload.finalize_upload_batch_row_counts"),
+            patch(
+                "backend.rinse_folding_registry.recompute_folding_after_upload",
+                side_effect=lambda *_a, **_k: (call_order.append("folding") or {"ok": True, "summary": {}}),
+            ),
             patch("backend.app.summarize_batch_rows", return_value={}),
             patch(
                 "backend.upload_batch_requirements.batch_upload_files_status",
@@ -227,7 +231,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
 
         self.assertEqual(
             call_order,
-            ["pre_upload_snapshot", "shell", "merge", "recompute", "insert", "audit"],
+            ["pre_upload_snapshot", "shell", "merge", "recompute", "insert", "audit", "folding"],
         )
 
 

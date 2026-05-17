@@ -667,6 +667,10 @@ def commit_rinse_combined_upload(
         cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
     )
 
+    from backend.rinse_folding_registry import recompute_folding_after_upload
+
+    folding_payload = recompute_folding_after_upload(cursor, tenant_oid, bag_ids)
+
     conn.commit()
     summary = summarize_batch_rows(cursor, upload_batch_id, schema.row_pk)
     upload_files = batch_upload_files_status(cursor, upload_batch_id, tenant_oid)
@@ -687,4 +691,5 @@ def commit_rinse_combined_upload(
         "persistent_merge": merge_payload,
         "completion": completion_payload,
         "scan_events_batch": batch_events_payload,
+        "folding": folding_payload,
     }
