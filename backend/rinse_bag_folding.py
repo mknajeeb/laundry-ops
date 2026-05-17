@@ -51,32 +51,113 @@ def _user_from_event(ev: Mapping[str, Any]) -> str:
     return str(ev.get("user") or "").strip()
 
 
-def _resolve_work_date(
-    registry_row: Mapping[str, Any] | None,
-    folding_start_at: datetime | None,
-) -> date | None:
-    if registry_row:
-        dc = registry_row.get("date_clean")
-        if isinstance(dc, date) and not isinstance(dc, datetime):
-            return dc
-        if isinstance(dc, datetime):
-            return dc.date()
-        if dc is not None:
-            try:
-                import pandas as pd
+def _timestamp_valid(ts: datetime | None) -> bool:
+    return ts is not None and ts != datetime.min
 
-                p = pd.Timestamp(dc)
-                if not pd.isna(p):
-                    return p.date()
-            except Exception:
-                pass
-    if folding_start_at and folding_start_at != datetime.min:
-        return folding_start_at.date()
+
+def _date_from_scan_ts(ts: datetime | None) -> date | None:
+    if _timestamp_valid(ts):
+        return ts.date()
     return None
 
 
-def _timestamp_valid(ts: datetime) -> bool:
-    return ts is not None and ts != datetime.min
+def _datetime_from_registry_field(registry_row: Mapping[str, Any] | None, key: str) -> datetime | None:
+    if not registry_row:
+        return None
+    val = registry_row.get(key)
+    if isinstance(val, datetime):
+        return val if _timestamp_valid(val) else None
+    if val is not None and str(val) not in ("", "NaT", "None"):
+        try:
+            import pandas as pd
+
+            p = pd.Timestamp(val)
+            if not pd.isna(p):
+                dt = p.to_pydatetime()
+                return dt if _timestamp_valid(dt) else None
+        except Exception:
+            pass
+    return None
+
+
+def _registry_completed_at(registry_row: Mapping[str, Any] | None) -> datetime | None:
+    for key in ("completed_at", "trigger_scan_at", "first_clean_scan_at"):
+        dt = _datetime_from_registry_field(registry_row, key)
+        if dt:
+            return dt
+    return None
+
+
+def _best_timeline_scan_date(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    registry_row: Mapping[str, Any] | None = None,
+) -> date | None:
+    """Best available calendar date from scan timestamps (never portal date_clean)."""
+    best: datetime | None = None
+    for ev in timeline:
+        ts = _parsed_scan_datetime(ev)
+        if _timestamp_valid(ts) and (best is None or ts > best):
+            best = ts
+    if best:
+        return best.date()
+    reg = _registry_completed_at(registry_row)
+    return _date_from_scan_ts(reg)
+
+
+def _first_clean_scan_at_in_timeline(
+    timeline: Sequence[Mapping[str, Any]],
+    clean_indices: Sequence[int],
+) -> datetime | None:
+    for ci in clean_indices:
+        ts = _parsed_scan_datetime(timeline[ci])
+        if _timestamp_valid(ts):
+            return ts
+    return None
+
+
+def _resolve_work_date_calculated(folding_end_at: datetime | None) -> date | None:
+    """CALCULATED: work_date = DATE(folding_end_at) where end is the CLEAN scan."""
+    return _date_from_scan_ts(folding_end_at)
+
+
+def _resolve_work_date_exception(
+    code: str,
+    *,
+    folding_start_at: datetime | None = None,
+    folding_end_at: datetime | None = None,
+    clean_scan_at: datetime | None = None,
+    timeline: Sequence[Mapping[str, Any]] | None = None,
+    registry_row: Mapping[str, Any] | None = None,
+) -> date | None:
+    tl = list(timeline or [])
+
+    if code == EXCEPTION_MISSING_CLEAN:
+        return _date_from_scan_ts(folding_start_at)
+
+    if code == EXCEPTION_MISSING_FOLDING:
+        d = _date_from_scan_ts(clean_scan_at)
+        if d:
+            return d
+        return _date_from_scan_ts(_registry_completed_at(registry_row))
+
+    if code == EXCEPTION_CLEAN_BEFORE_FOLDING:
+        d = _date_from_scan_ts(clean_scan_at) or _date_from_scan_ts(folding_start_at)
+        if d:
+            return d
+        return _best_timeline_scan_date(tl, registry_row=registry_row)
+
+    if code == EXCEPTION_INVALID_TIMESTAMPS:
+        for ts in (folding_end_at, folding_start_at, clean_scan_at):
+            d = _date_from_scan_ts(ts)
+            if d:
+                return d
+        return _best_timeline_scan_date(tl, registry_row=registry_row)
+
+    if code == EXCEPTION_MISSING_ASSIGNED_USER:
+        return _date_from_scan_ts(folding_end_at) or _date_from_scan_ts(folding_start_at)
+
+    return _best_timeline_scan_date(tl, registry_row=registry_row)
 
 
 @dataclass(frozen=True)
@@ -122,12 +203,16 @@ def _exception_result(
     registry_row: Mapping[str, Any] | None,
     folding_scan_count: int = 0,
     clean_scan_count: int = 0,
+    folding_start_at: datetime | None = None,
+    folding_end_at: datetime | None = None,
+    clean_scan_at: datetime | None = None,
+    timeline: Sequence[Mapping[str, Any]] | None = None,
 ) -> FoldingResult:
     return FoldingResult(
         status=STATUS_EXCEPTION,
         exception_code=code,
-        folding_start_at=None,
-        folding_end_at=None,
+        folding_start_at=folding_start_at,
+        folding_end_at=folding_end_at,
         duration_seconds=None,
         folding_start_event_id=None,
         folding_end_event_id=None,
@@ -137,7 +222,14 @@ def _exception_result(
         assigned_user_name_source=None,
         folding_scan_count=folding_scan_count,
         clean_scan_count=clean_scan_count,
-        work_date=_resolve_work_date(registry_row, None),
+        work_date=_resolve_work_date_exception(
+            code,
+            folding_start_at=folding_start_at,
+            folding_end_at=folding_end_at,
+            clean_scan_at=clean_scan_at,
+            timeline=timeline,
+            registry_row=registry_row,
+        ),
     )
 
 
@@ -149,7 +241,7 @@ def evaluate_folding_performance_for_bag(
     """
     Compute FOLDING → CLEAN interval for one bag.
 
-    registry_row should be COMPLETED; used for work_date and weight snapshot upstream.
+    registry_row is used for weight snapshot upstream only — never for work_date.
     """
     normalized = events_from_records(events)
     if not normalized:
@@ -170,6 +262,8 @@ def evaluate_folding_performance_for_bag(
             EXCEPTION_MISSING_FOLDING,
             registry_row=registry_row,
             clean_scan_count=len(clean_indices),
+            clean_scan_at=_first_clean_scan_at_in_timeline(timeline, clean_indices),
+            timeline=timeline,
         )
 
     first_folding_i = folding_indices[0]
@@ -182,6 +276,8 @@ def evaluate_folding_performance_for_bag(
             registry_row=registry_row,
             folding_scan_count=len(folding_indices),
             clean_scan_count=len(clean_indices),
+            folding_start_at=folding_at if _timestamp_valid(folding_at) else None,
+            timeline=timeline,
         )
 
     for ci in clean_indices:
@@ -191,6 +287,9 @@ def evaluate_folding_performance_for_bag(
                 registry_row=registry_row,
                 folding_scan_count=len(folding_indices),
                 clean_scan_count=len(clean_indices),
+                folding_start_at=folding_at,
+                clean_scan_at=_parsed_scan_datetime(timeline[ci]),
+                timeline=timeline,
             )
         clean_at_check = _parsed_scan_datetime(timeline[ci])
         if _timestamp_valid(clean_at_check) and clean_at_check < folding_at:
@@ -199,6 +298,9 @@ def evaluate_folding_performance_for_bag(
                 registry_row=registry_row,
                 folding_scan_count=len(folding_indices),
                 clean_scan_count=len(clean_indices),
+                folding_start_at=folding_at,
+                clean_scan_at=clean_at_check,
+                timeline=timeline,
             )
 
     end_clean_ev = None
@@ -224,6 +326,8 @@ def evaluate_folding_performance_for_bag(
             registry_row=registry_row,
             folding_scan_count=len(folding_indices),
             clean_scan_count=len(clean_indices),
+            folding_start_at=folding_at,
+            timeline=timeline,
         )
 
     clean_at = _parsed_scan_datetime(end_clean_ev)
@@ -233,6 +337,9 @@ def evaluate_folding_performance_for_bag(
             registry_row=registry_row,
             folding_scan_count=len(folding_indices),
             clean_scan_count=len(clean_indices),
+            folding_start_at=folding_at,
+            folding_end_at=clean_at if _timestamp_valid(clean_at) else None,
+            timeline=timeline,
         )
 
     duration = int((clean_at - folding_at).total_seconds())
@@ -242,6 +349,9 @@ def evaluate_folding_performance_for_bag(
             registry_row=registry_row,
             folding_scan_count=len(folding_indices),
             clean_scan_count=len(clean_indices),
+            folding_start_at=folding_at,
+            folding_end_at=clean_at,
+            timeline=timeline,
         )
 
     folding_user = _user_from_event(folding_ev)
@@ -269,7 +379,7 @@ def evaluate_folding_performance_for_bag(
             assigned_user_name_source=None,
             folding_scan_count=len(folding_indices),
             clean_scan_count=clean_after_count,
-            work_date=_resolve_work_date(registry_row, folding_at),
+            work_date=_resolve_work_date_calculated(clean_at),
         )
 
     warning: str | None = None
@@ -294,7 +404,7 @@ def evaluate_folding_performance_for_bag(
         assigned_user_name_source=source,
         folding_scan_count=len(folding_indices),
         clean_scan_count=clean_after_count,
-        work_date=_resolve_work_date(registry_row, folding_at),
+        work_date=_resolve_work_date_calculated(clean_at),
     )
 
 

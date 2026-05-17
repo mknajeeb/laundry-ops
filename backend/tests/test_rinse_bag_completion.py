@@ -12,8 +12,11 @@ from backend.rinse_bag_completion import (
     REASON_NO_CLEAN_SCAN,
     REASON_POST_CLEAN_RACK_AND_USER,
     TRIGGER_BOTH,
+    completion_result_references_persisted_events,
     evaluate_bag_completion,
     normalize_bag_id,
+    order_events_for_completion,
+    _event_id_num,
     rack_contains_clean,
     user_is_internal,
 )
@@ -174,6 +177,122 @@ class TestEvaluateBagCompletion(unittest.TestCase):
         self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
         self.assertEqual(r.trigger_scan_at, first_trigger)
         self.assertEqual(r.trigger_scan_event_id, 2)
+
+
+class TestCompletionRegressionGuards(unittest.TestCase):
+    """Strict post-clean timeline: Clean row cannot be its own trigger."""
+
+    def test_clean_only_no_later_row(self):
+        r = evaluate_bag_completion(
+            [_ev("VeeWash Clean", "Veewash Training Account", datetime(2026, 5, 17, 16, 18), 1, 1)]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+        self.assertEqual(r.completion_reason, REASON_CLEAN_WITHOUT_QUALIFYING_LATER)
+
+    def test_clean_is_last_row(self):
+        r = evaluate_bag_completion(
+            [
+                _ev("003-NY-WF", "Customer", datetime(2026, 5, 16, 23, 4), 1, 1),
+                _ev("FOLDING", "Sarah Kamran", datetime(2026, 5, 16, 23, 10), 2, 2),
+                _ev("VeeWash Clean", "Veewash Training Account", datetime(2026, 5, 17, 14, 57), 3, 3),
+            ]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+
+    def test_same_timestamp_same_event_id_duplicate_rows_incomplete(self):
+        ts = datetime(2026, 5, 17, 16, 18)
+        events = [
+            _ev("VeeWash Clean", "External User", ts, 1, 42),
+            _ev("VeeWash Clean", "External User", ts, 2, 42),
+        ]
+        r = evaluate_bag_completion(events)
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+        self.assertNotEqual(r.completion_reason, REASON_POST_CLEAN_RACK_AND_USER)
+
+    def test_clean_then_external_non_clean_user_completed(self):
+        ts_clean = datetime(2026, 5, 17, 14, 0)
+        ts_trigger = datetime(2026, 5, 17, 15, 0)
+        r = evaluate_bag_completion(
+            [
+                _ev("VeeWash Clean", "Train", ts_clean, 1, 10),
+                _ev("003-NY-WF", "Jake Strauss", ts_trigger, 2, 11),
+            ]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
+        self.assertEqual(r.trigger_scan_event_id, 11)
+        self.assertNotEqual(r.first_clean_scan_event_id, r.trigger_scan_event_id)
+
+    def test_clean_then_internal_veewash_dirty_incomplete(self):
+        r = evaluate_bag_completion(
+            [
+                _ev("VeeWash Clean", "Train", datetime(2026, 5, 17, 14, 0), 1, 10),
+                _ev("VeeWash Dirty", "Jennifer (VeeWash)", datetime(2026, 5, 17, 15, 0), 2, 11),
+            ]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+
+    def test_workflow_before_clean_only_without_later_qualifying(self):
+        r = evaluate_bag_completion(
+            [
+                _ev("003-NY-WF", "Mahmoudou Nduwayo", datetime(2026, 5, 16, 23, 4), 1, 1),
+                _ev("FOLDING", "Sarah Kamran", datetime(2026, 5, 16, 23, 10), 2, 2),
+                _ev("VeeWash Clean", "Veewash Training Account", datetime(2026, 5, 17, 14, 57), 3, 3),
+            ]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+
+    def test_never_complete_when_trigger_same_id_as_clean(self):
+        ts = datetime(2026, 5, 17, 16, 18)
+        events = [
+            _ev("VeeWash Clean", "Jake Strauss", ts, 1, 99),
+            _ev("003-NY-WF", "Jake Strauss", ts, 2, 99),
+        ]
+        r = evaluate_bag_completion(events)
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+
+    def test_bag_5y4hkemef1_pattern_clean_last(self):
+        """If latest scan is VeeWash Clean only, bag stays incomplete."""
+        r = evaluate_bag_completion(
+            [
+                _ev("003-NY-WF", "Driver", datetime(2026, 5, 16, 14, 0), 1, 1),
+                _ev("FOLDING", "Folder", datetime(2026, 5, 16, 14, 30), 2, 2),
+                _ev("VeeWash Clean", "Veewash Training Account", datetime(2026, 5, 17, 16, 18), 3, 3),
+            ]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+        self.assertEqual(r.completion_reason, REASON_CLEAN_WITHOUT_QUALIFYING_LATER)
+
+    def test_timeline_sort_uses_id_after_scan_index(self):
+        ts = datetime(2026, 5, 17, 16, 18)
+        events = [
+            _ev("003-NY-WF", "Jake Strauss", ts, 5, 20),
+            _ev("VeeWash Clean", "Train", ts, 5, 10),
+        ]
+        ordered = order_events_for_completion(events)
+        self.assertEqual(_event_id_num(ordered[0]), 10)
+        self.assertEqual(_event_id_num(ordered[1]), 20)
+        r = evaluate_bag_completion(events)
+        self.assertEqual(r.completion_status, COMPLETION_COMPLETED)
+        self.assertEqual(r.first_clean_scan_event_id, 10)
+        self.assertEqual(r.trigger_scan_event_id, 20)
+
+    def test_persisted_events_guard_rejects_phantom_trigger(self):
+        ts = datetime(2026, 5, 17, 16, 18)
+        persisted = [
+            _ev("VeeWash Clean", "Train", ts, 1, 10),
+        ]
+        from backend.rinse_bag_completion import CompletionResult
+
+        bogus = CompletionResult(
+            completion_status=COMPLETION_COMPLETED,
+            completion_reason=REASON_POST_CLEAN_RACK_AND_USER,
+            first_clean_scan_at=ts,
+            first_clean_scan_event_id=10,
+            trigger_scan_at=ts,
+            trigger_scan_event_id=999,
+            trigger_kind=TRIGGER_BOTH,
+        )
+        self.assertFalse(completion_result_references_persisted_events(bogus, persisted))
 
 
 if __name__ == "__main__":

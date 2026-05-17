@@ -35,16 +35,24 @@ class TestApplyFoldingPerformance(unittest.TestCase):
 
     def test_skips_incomplete_registry(self):
         cursor = MagicMock()
-        with patch(
-            "backend.rinse_folding_registry.get_registry_row",
-            return_value={
-                "bag_id": self.BAG,
-                "completion_status": COMPLETION_INCOMPLETE,
-            },
+        with (
+            patch(
+                "backend.rinse_folding_registry.get_registry_row",
+                return_value={
+                    "bag_id": self.BAG,
+                    "completion_status": COMPLETION_INCOMPLETE,
+                },
+            ),
+            patch(
+                "backend.rinse_folding_registry.delete_folding_performance_for_bag",
+                return_value=True,
+            ) as mock_delete,
         ):
             out = apply_folding_performance_for_bag(cursor, 1, self.BAG)
         self.assertTrue(out.get("skipped"))
         self.assertEqual(out.get("reason"), "not_completed")
+        self.assertTrue(out.get("folding_performance_deleted"))
+        mock_delete.assert_called_once_with(cursor, 1, self.BAG)
 
     def test_processes_completed_registry(self):
         cursor = MagicMock()

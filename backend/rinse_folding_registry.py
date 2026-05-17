@@ -94,6 +94,27 @@ def ensure_rinse_folding_tables(cursor) -> None:
     ensure_rinse_folding_performance_overrides_table(cursor)
 
 
+def delete_folding_performance_for_bag(
+    cursor, organization_id: int, bag_id: str
+) -> bool:
+    """
+    Remove stale folding performance when registry is no longer COMPLETED.
+    Dashboard/TV must not show CALCULATED rows for incomplete bags.
+    """
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return False
+    ensure_rinse_folding_tables(cursor)
+    cursor.execute(
+        """
+        DELETE FROM rinse_folding_performance
+        WHERE organization_id = %s AND bag_id = %s
+        """,
+        (int(organization_id), bid),
+    )
+    return int(cursor.rowcount or 0) > 0
+
+
 def get_folding_performance_row(
     cursor, organization_id: int, bag_id: str
 ) -> dict[str, Any] | None:
@@ -231,11 +252,13 @@ def apply_folding_performance_for_bag(
     if not reg:
         return {"bag_id": bid, "skipped": True, "reason": "no_registry_row"}
     if not registry_is_completed(reg):
+        folding_deleted = delete_folding_performance_for_bag(cursor, org, bid)
         return {
             "bag_id": bid,
             "skipped": True,
             "reason": "not_completed",
             "completion_status": reg.get("completion_status"),
+            "folding_performance_deleted": folding_deleted,
         }
 
     events = fetch_persistent_scan_events_for_bag(cursor, org, bid)
@@ -347,19 +370,33 @@ def fetch_completed_bag_ids_for_date_range(
     from backend.rinse_bag_registry import ensure_rinse_bag_registry_table
 
     ensure_rinse_bag_registry_table(cursor)
-    col = "date_clean" if date_field != "completed_at" else "completed_at"
-    cursor.execute(
-        f"""
-        SELECT bag_id FROM rinse_bag_registry
-        WHERE organization_id = %s
-          AND completion_status = %s
-          AND {col} IS NOT NULL
-          AND {col} >= %s
-          AND {col} <= %s
-        ORDER BY bag_id
-        """,
-        (org, COMPLETION_COMPLETED, start_date, end_date),
-    )
+
+    if date_field == "work_date":
+        cursor.execute(
+            """
+            SELECT DISTINCT bag_id FROM rinse_folding_performance
+            WHERE organization_id = %s
+              AND work_date IS NOT NULL
+              AND work_date >= %s
+              AND work_date <= %s
+            ORDER BY bag_id
+            """,
+            (org, start_date, end_date),
+        )
+    else:
+        col = "date_clean" if date_field != "completed_at" else "completed_at"
+        cursor.execute(
+            f"""
+            SELECT bag_id FROM rinse_bag_registry
+            WHERE organization_id = %s
+              AND completion_status = %s
+              AND {col} IS NOT NULL
+              AND {col} >= %s
+              AND {col} <= %s
+            ORDER BY bag_id
+            """,
+            (org, COMPLETION_COMPLETED, start_date, end_date),
+        )
     rows = cursor.fetchall() or []
     out: list[str] = []
     for r in rows:

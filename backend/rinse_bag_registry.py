@@ -11,6 +11,10 @@ import pandas as pd
 
 from backend.rinse_bag_completion import (
     COMPLETION_COMPLETED,
+    COMPLETION_INCOMPLETE,
+    REASON_CLEAN_WITHOUT_QUALIFYING_LATER,
+    CompletionResult,
+    completion_result_references_persisted_events,
     evaluate_bag_completion,
     normalize_bag_id,
 )
@@ -464,6 +468,18 @@ def apply_completion_to_registry(
     bid = normalize_bag_id(bag_id)
     events = fetch_persistent_scan_events_for_bag(cursor, organization_id, bid)
     result = evaluate_bag_completion(events)
+    if result.completion_status == COMPLETION_COMPLETED and not completion_result_references_persisted_events(
+        result, events
+    ):
+        result = CompletionResult(
+            completion_status=COMPLETION_INCOMPLETE,
+            completion_reason=REASON_CLEAN_WITHOUT_QUALIFYING_LATER,
+            first_clean_scan_at=result.first_clean_scan_at,
+            first_clean_scan_event_id=result.first_clean_scan_event_id,
+            trigger_scan_at=None,
+            trigger_scan_event_id=None,
+            trigger_kind=None,
+        )
     fields = result.to_registry_update()
 
     ensure_rinse_bag_registry_table(cursor)
@@ -495,7 +511,13 @@ def apply_completion_to_registry(
             bid,
         ),
     )
-    return {"bag_id": bid, **fields}
+    out = {"bag_id": bid, **fields}
+    if fields.get("completion_status") != COMPLETION_COMPLETED:
+        from backend.rinse_folding_registry import delete_folding_performance_for_bag
+
+        if delete_folding_performance_for_bag(cursor, organization_id, bid):
+            out["folding_performance_deleted"] = True
+    return out
 
 
 def recompute_completion_for_bags(
