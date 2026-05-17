@@ -200,7 +200,12 @@ function hideOpsMobileTopBar(pathname) {
   const p = pathname || "";
   if (p === "/checkout" || p.startsWith("/checkout/")) return true;
   if (p === "/orders" || p.startsWith("/orders/")) return true;
+  if (p === "/rinse/folding-tv") return true;
   return false;
+}
+
+function hideTenantSidebar(pathname) {
+  return (pathname || "") === "/rinse/folding-tv";
 }
 
 function GuardedRoute({ user, roles, permissionAnyOf, children }) {
