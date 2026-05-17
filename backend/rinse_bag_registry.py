@@ -15,6 +15,7 @@ from backend.rinse_bag_completion import (
     normalize_bag_id,
 )
 from backend.rinse_scan_events_logic import _parse_scanned_at
+from backend.rinse_scan_event_identity import compute_scan_event_dedupe_key, dedupe_key_from_row
 
 
 def ensure_rinse_bag_registry_table(cursor) -> None:
@@ -48,13 +49,63 @@ def ensure_rinse_bag_registry_table(cursor) -> None:
     )
 
 
+def _scan_events_table_has_column(cursor, col_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'rinse_bag_scan_events'
+          AND COLUMN_NAME = %s
+        """,
+        (col_name,),
+    )
+    row = cursor.fetchone()
+    n = int(row["c"] if isinstance(row, dict) else row[0])
+    return n > 0
+
+
+def _scan_events_table_has_index(cursor, index_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS c FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'rinse_bag_scan_events'
+          AND INDEX_NAME = %s
+        """,
+        (index_name,),
+    )
+    row = cursor.fetchone()
+    n = int(row["c"] if isinstance(row, dict) else row[0])
+    return n > 0
+
+
+def ensure_rinse_bag_scan_events_dedupe_schema(cursor) -> None:
+    """Add dedupe_key column + unique (org, bag, dedupe_key) when missing."""
+    ensure_rinse_bag_scan_events_table(cursor)
+    if not _scan_events_table_has_column(cursor, "dedupe_key"):
+        cursor.execute(
+            "ALTER TABLE rinse_bag_scan_events ADD COLUMN dedupe_key VARCHAR(64) NULL AFTER bag_id"
+        )
+    if not _scan_events_table_has_index(cursor, "uq_rbse_org_bag_dedupe"):
+        backfill_scan_event_dedupe_keys(cursor)
+        delete_duplicate_scan_events(cursor)
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX uq_rbse_org_bag_dedupe
+            ON rinse_bag_scan_events (organization_id, bag_id, dedupe_key)
+            """
+        )
+
+
 def ensure_rinse_bag_scan_events_table(cursor) -> None:
+    """Create base table (without calling dedupe migration — avoids recursion)."""
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS rinse_bag_scan_events (
             id INT AUTO_INCREMENT PRIMARY KEY,
             organization_id INT NOT NULL,
             bag_id VARCHAR(64) NOT NULL,
+            dedupe_key VARCHAR(64) NULL,
             scan_index INT NULL,
             rack VARCHAR(128) NULL,
             time_scanned_raw VARCHAR(255) NULL,
@@ -80,6 +131,7 @@ def ensure_rinse_bag_scan_events_table(cursor) -> None:
 def ensure_rinse_bag_tables(cursor) -> None:
     ensure_rinse_bag_registry_table(cursor)
     ensure_rinse_bag_scan_events_table(cursor)
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
 
 
 def fetch_pre_existing_completed_bag_ids(
@@ -155,22 +207,119 @@ def _scan_index_int(val: Any) -> int | None:
         return None
 
 
-def _event_dedupe_key(
+def _scan_events_deduped_list_sql(*, full_row: bool, limit: int | None = None) -> str:
+    cols = "*" if full_row else "e.id, e.rack, e.user_name, e.scanned_at_parsed, e.scan_index"
+    lim = f" LIMIT {int(limit)}" if limit is not None else ""
+    return f"""
+        SELECT {cols}
+        FROM rinse_bag_scan_events e
+        INNER JOIN (
+            SELECT MIN(id) AS keep_id
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND bag_id = %s
+            GROUP BY dedupe_key
+        ) k ON e.id = k.keep_id
+        WHERE e.organization_id = %s AND e.bag_id = %s
+        ORDER BY e.scanned_at_parsed ASC, e.scan_index ASC, e.id ASC
+        {lim}
+    """
+
+
+def upsert_scan_event_row(
+    cursor,
+    *,
     organization_id: int,
     bag_id: str,
+    dedupe_key: str,
     scan_index: int | None,
-    time_scanned_raw: str,
-    rack: str,
-    user_name: str,
-) -> tuple:
-    return (
-        int(organization_id),
-        bag_id,
-        scan_index,
-        (time_scanned_raw or "")[:255],
-        (rack or "")[:128],
-        (user_name or "")[:255],
+    rack: str | None,
+    time_scanned_raw: str | None,
+    scanned_at_parsed,
+    user_name: str | None,
+    purpose: str | None,
+    last_location: str | None,
+    last_scan: str | None,
+    source_upload_batch_id: int,
+    source_filename: str | None,
+    raw_json: str | None,
+) -> str:
+    """
+    Insert or update one persistent scan row by (org, bag, dedupe_key).
+    Returns 'inserted' or 'updated'.
+    """
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    cursor.execute(
+        """
+        SELECT id FROM rinse_bag_scan_events
+        WHERE organization_id = %s AND bag_id = %s AND dedupe_key = %s
+        LIMIT 1
+        """,
+        (int(organization_id), bag_id, dedupe_key),
     )
+    existing = cursor.fetchone()
+    if existing:
+        row_id = existing["id"] if isinstance(existing, dict) else existing[0]
+        cursor.execute(
+            """
+            UPDATE rinse_bag_scan_events
+            SET
+                scan_index = %s,
+                rack = %s,
+                time_scanned_raw = %s,
+                scanned_at_parsed = %s,
+                user_name = %s,
+                purpose = %s,
+                last_location = %s,
+                last_scan = %s,
+                source_upload_batch_id = %s,
+                source_filename = %s,
+                raw_json = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            (
+                scan_index,
+                rack,
+                time_scanned_raw,
+                scanned_at_parsed,
+                user_name,
+                purpose,
+                last_location,
+                last_scan,
+                int(source_upload_batch_id),
+                source_filename,
+                raw_json,
+                int(row_id),
+            ),
+        )
+        return "updated"
+
+    cursor.execute(
+        """
+        INSERT INTO rinse_bag_scan_events (
+            organization_id, bag_id, dedupe_key, scan_index, rack,
+            time_scanned_raw, scanned_at_parsed, user_name, purpose,
+            last_location, last_scan, source_upload_batch_id, source_filename, raw_json
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            int(organization_id),
+            bag_id,
+            dedupe_key,
+            scan_index,
+            rack,
+            time_scanned_raw,
+            scanned_at_parsed,
+            user_name,
+            purpose,
+            last_location,
+            last_scan,
+            int(source_upload_batch_id),
+            source_filename,
+            raw_json,
+        ),
+    )
+    return "inserted"
 
 
 def merge_scan_events_from_upload(
@@ -181,11 +330,14 @@ def merge_scan_events_from_upload(
     source_filename: str = "",
 ) -> dict[str, Any]:
     """
-    Copy scan-events into rinse_bag_scan_events.
-    Replaces rows from this batch for each bag in the file, then inserts CSV rows.
+    Copy scan-events into rinse_bag_scan_events (idempotent per logical scan).
+
+    Upserts by (organization_id, bag_id, dedupe_key) so re-uploading the same CSV
+  across new upload batches does not accumulate duplicate rows.
     Ensures registry row exists per bag.
     """
     ensure_rinse_bag_tables(cursor)
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
     org = int(organization_id)
     batch_id = int(upload_batch_id)
 
@@ -201,16 +353,9 @@ def merge_scan_events_from_upload(
 
     bag_ids = sorted(df["Bag ID"].unique().tolist())
     inserted = 0
+    updated = 0
 
     for bag_id in bag_ids:
-        cursor.execute(
-            """
-            DELETE FROM rinse_bag_scan_events
-            WHERE organization_id = %s AND bag_id = %s AND source_upload_batch_id = %s
-            """,
-            (org, bag_id, batch_id),
-        )
-
         bag_rows = df.loc[df["Bag ID"] == bag_id]
         for _, row in bag_rows.iterrows():
             scan_index = _scan_index_int(row.get("Scan Index"))
@@ -231,32 +376,34 @@ def merge_scan_events_from_upload(
                 k: ("" if pd.isna(row.get(k)) else str(row.get(k)))
                 for k in row.index
             }
-
-            cursor.execute(
-                """
-                INSERT INTO rinse_bag_scan_events (
-                    organization_id, bag_id, scan_index, rack,
-                    time_scanned_raw, scanned_at_parsed, user_name, purpose,
-                    last_location, last_scan, source_upload_batch_id, source_filename, raw_json
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    org,
-                    bag_id,
-                    scan_index,
-                    rack,
-                    time_raw,
-                    scanned_db,
-                    user_name,
-                    purpose,
-                    last_loc,
-                    last_scan,
-                    batch_id,
-                    (source_filename or "")[:512] or None,
-                    json.dumps(raw),
-                ),
+            dedupe_key = compute_scan_event_dedupe_key(
+                scan_index=scan_index,
+                rack=rack,
+                user_name=user_name,
+                purpose=purpose,
+                scanned_at_parsed=scanned_db,
             )
-            inserted += 1
+            action = upsert_scan_event_row(
+                cursor,
+                organization_id=org,
+                bag_id=bag_id,
+                dedupe_key=dedupe_key,
+                scan_index=scan_index,
+                rack=rack,
+                time_scanned_raw=time_raw,
+                scanned_at_parsed=scanned_db,
+                user_name=user_name,
+                purpose=purpose,
+                last_location=last_loc,
+                last_scan=last_scan,
+                source_upload_batch_id=batch_id,
+                source_filename=(source_filename or "")[:512] or None,
+                raw_json=json.dumps(raw),
+            )
+            if action == "updated":
+                updated += 1
+            else:
+                inserted += 1
 
         cursor.execute(
             """
@@ -269,7 +416,12 @@ def merge_scan_events_from_upload(
             (org, bag_id, batch_id),
         )
 
-    return {"bags_merged": len(bag_ids), "events_inserted": inserted, "bag_ids": bag_ids}
+    return {
+        "bags_merged": len(bag_ids),
+        "events_inserted": inserted,
+        "events_updated": updated,
+        "bag_ids": bag_ids,
+    }
 
 
 def fetch_persistent_scan_events_for_bag(
@@ -278,15 +430,11 @@ def fetch_persistent_scan_events_for_bag(
     bid = normalize_bag_id(bag_id)
     if not bid:
         return []
-    ensure_rinse_bag_scan_events_table(cursor)
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    org = int(organization_id)
     cursor.execute(
-        """
-        SELECT id, rack, user_name, scanned_at_parsed, scan_index
-        FROM rinse_bag_scan_events
-        WHERE organization_id = %s AND bag_id = %s
-        ORDER BY scanned_at_parsed ASC, scan_index ASC, id ASC
-        """,
-        (int(organization_id), bid),
+        _scan_events_deduped_list_sql(full_row=False),
+        (org, bid, org, bid),
     )
     rows = cursor.fetchall() or []
     out = []
@@ -394,15 +542,67 @@ def list_scan_events_for_bag(
     bid = normalize_bag_id(bag_id)
     if not bid:
         return []
-    ensure_rinse_bag_scan_events_table(cursor)
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    org = int(organization_id)
     lim = max(1, min(int(limit), 2000))
     cursor.execute(
-        """
-        SELECT * FROM rinse_bag_scan_events
-        WHERE organization_id = %s AND bag_id = %s
-        ORDER BY scanned_at_parsed ASC, scan_index ASC, id ASC
-        LIMIT %s
-        """,
-        (int(organization_id), bid, lim),
+        _scan_events_deduped_list_sql(full_row=True, limit=lim),
+        (org, bid, org, bid),
     )
     return list(cursor.fetchall() or [])
+
+
+def backfill_scan_event_dedupe_keys(cursor, organization_id: int | None = None) -> int:
+    """Set dedupe_key on rows where it is null/empty. Returns rows updated."""
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    sql = """
+        SELECT id, organization_id, bag_id, scan_index, rack, user_name, purpose, scanned_at_parsed
+        FROM rinse_bag_scan_events
+        WHERE dedupe_key IS NULL OR dedupe_key = ''
+    """
+    args: list[Any] = []
+    if organization_id is not None:
+        sql += " AND organization_id = %s"
+        args.append(int(organization_id))
+    cursor.execute(sql, tuple(args))
+    rows = cursor.fetchall() or []
+    n = 0
+    for r in rows:
+        dk = dedupe_key_from_row(r if isinstance(r, dict) else {})
+        if not isinstance(r, dict):
+            continue
+        cursor.execute(
+            "UPDATE rinse_bag_scan_events SET dedupe_key = %s WHERE id = %s",
+            (dk, int(r["id"])),
+        )
+        n += 1
+    return n
+
+
+def delete_duplicate_scan_events(cursor, organization_id: int | None = None) -> int:
+    """
+    Delete exact duplicate scan rows (same org, bag, dedupe_key), keeping MIN(id).
+    Does not touch rinse_bag_registry.
+    """
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    backfill_scan_event_dedupe_keys(cursor, organization_id)
+    org_filter = ""
+    args: list[Any] = []
+    if organization_id is not None:
+        org_filter = " AND e.organization_id = %s"
+        args.append(int(organization_id))
+    cursor.execute(
+        f"""
+        DELETE e FROM rinse_bag_scan_events e
+        INNER JOIN rinse_bag_scan_events e2
+          ON e.organization_id = e2.organization_id
+          AND e.bag_id = e2.bag_id
+          AND e.dedupe_key = e2.dedupe_key
+          AND e.dedupe_key IS NOT NULL
+          AND e.dedupe_key != ''
+          AND e.id > e2.id
+        WHERE 1=1{org_filter}
+        """,
+        tuple(args),
+    )
+    return int(cursor.rowcount or 0)
