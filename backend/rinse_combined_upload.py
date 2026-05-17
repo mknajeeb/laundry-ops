@@ -272,26 +272,22 @@ def snapshot_pre_upload_completed_bag_ids(
     cursor, tenant_oid: int, orders_df: pd.DataFrame
 ) -> set[str]:
     """
-    Portal bag IDs already COMPLETED before this upload begins.
+    Portal bag IDs already COMPLETED in rinse_bag_registry before this upload begins.
 
-    Recomputes registry from persistent scan-events (AND rule) before snapshotting so
-    stale COMPLETED rows from the legacy OR rule are not treated as pre-existing.
+    Reads registry only — no merge, no recompute, no scan-event writes in this transaction.
+    Completion discovered during the same upload must not appear in this set.
     """
-    from backend.rinse_bag_registry import (
-        fetch_pre_existing_completed_bag_ids,
-        recompute_completion_for_bags,
-    )
+    from backend.rinse_bag_registry import fetch_pre_existing_completed_bag_ids
 
-    portal_ids = collect_portal_ticket_ids(orders_df)
-    if portal_ids:
-        recompute_completion_for_bags(cursor, tenant_oid, portal_ids)
-    return fetch_pre_existing_completed_bag_ids(cursor, tenant_oid, portal_ids)
+    return fetch_pre_existing_completed_bag_ids(
+        cursor, tenant_oid, collect_portal_ticket_ids(orders_df)
+    )
 
 
 def collect_pre_existing_completed_bag_ids(
     cursor, tenant_oid: int, orders_df: pd.DataFrame
 ) -> set[str]:
-    """Alias: always recomputes persistent events before snapshot (portal-only or combined)."""
+    """Alias for snapshot_pre_upload_completed_bag_ids."""
     return snapshot_pre_upload_completed_bag_ids(cursor, tenant_oid, orders_df)
 
 
@@ -390,14 +386,14 @@ def insert_upload_batch_rows_from_orders_df(
                         has_ticket_id_col=cap.get("has_ticket_id", False),
                     )
                     was_completed_before = ticket_id in pre_existing_completed_bag_ids
-                    registry_completed_now = is_bag_already_completed(
-                        cursor, tenant_oid, ticket_id
-                    )
                     row_status, reason = classify_portal_upload_row(
                         ticket_id=ticket_id,
                         was_completed_before_upload=was_completed_before,
                         has_active_staging=staging_hit is not None,
                         row_date_before_batch=row_date < batch_date,
+                    )
+                    registry_completed_now = is_bag_already_completed(
+                        cursor, tenant_oid, ticket_id
                     )
                     if row_status == "REJECTED_DUPLICATE":
                         rejected += 1
@@ -558,11 +554,11 @@ def commit_draft_upload_batch_from_orders_df(
 
     schema = get_upload_batch_schema(cursor)
     orders_df = prepare_orders_df(orders_df)
+    pre_existing_completed = snapshot_pre_upload_completed_bag_ids(
+        cursor, tenant_oid, orders_df
+    )
     upload_batch_id = create_draft_upload_batch_shell(
         cursor, tenant_oid, batch_date, file_name, schema
-    )
-    pre_existing_completed = collect_pre_existing_completed_bag_ids(
-        cursor, tenant_oid, orders_df
     )
     final_keys, existing_reasons, lookback = build_upload_duplicate_indexes(
         cursor, tenant_oid, schema
@@ -617,13 +613,13 @@ def commit_rinse_combined_upload(
     schema = get_upload_batch_schema(cursor)
     orders_df = prepare_orders_df(orders_df)
 
+    pre_existing_completed = snapshot_pre_upload_completed_bag_ids(
+        cursor, tenant_oid, orders_df
+    )
+
     combined_name = f"{portal_filename} + {events_filename}"
     upload_batch_id = create_draft_upload_batch_shell(
         cursor, tenant_oid, batch_date, combined_name, schema
-    )
-
-    pre_existing_completed = snapshot_pre_upload_completed_bag_ids(
-        cursor, tenant_oid, orders_df
     )
 
     merge_payload = merge_scan_events_from_upload(

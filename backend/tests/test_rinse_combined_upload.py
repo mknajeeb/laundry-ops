@@ -78,59 +78,27 @@ class TestPreUploadCompletionSnapshot(unittest.TestCase):
         self.assertEqual(st, "REJECTED_DUPLICATE")
         self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
-    def test_snapshot_recomputes_before_fetch(self):
+    def test_snapshot_reads_registry_without_recompute(self):
         cursor = MagicMock()
         orders = pd.DataFrame({"ticket_id": ["bag12345"]})
         with (
             patch(
-                "backend.rinse_bag_registry.recompute_completion_for_bags"
-            ) as mock_recompute,
-            patch(
                 "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
                 return_value=set(),
             ) as mock_fetch,
+            patch("backend.rinse_bag_registry.recompute_completion_for_bags") as mock_recompute,
         ):
             result = snapshot_pre_upload_completed_bag_ids(cursor, 1, orders)
         self.assertEqual(result, set())
-        mock_recompute.assert_called_once_with(cursor, 1, ["BAG12345"])
         mock_fetch.assert_called_once_with(cursor, 1, ["BAG12345"])
-
-    def test_stale_or_completed_not_in_snapshot_after_recompute(self):
-        """After progressive-timeline recompute marks bag INCOMPLETE, snapshot must be empty."""
-        cursor = MagicMock()
-        orders = pd.DataFrame({"ticket_id": ["STALE01"]})
-
-        def _fetch(_c, _o, ids):
-            self.assertEqual(ids, ["STALE01"])
-            return set()
-
-        with (
-            patch("backend.rinse_bag_registry.recompute_completion_for_bags"),
-            patch(
-                "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
-                side_effect=_fetch,
-            ),
-        ):
-            snap = snapshot_pre_upload_completed_bag_ids(cursor, 1, orders)
-        self.assertNotIn("STALE01", snap)
-        st, reason = classify_portal_upload_row(
-            ticket_id="STALE01",
-            was_completed_before_upload=False,
-            has_active_staging=True,
-            row_date_before_batch=False,
-        )
-        self.assertEqual(st, "ACCEPTED")
-        self.assertEqual(reason, REASON_UPDATED_EXISTING_BAG)
+        mock_recompute.assert_not_called()
 
     def test_truly_completed_in_snapshot_rejects(self):
         cursor = MagicMock()
         orders = pd.DataFrame({"ticket_id": ["DONE1234"]})
-        with (
-            patch("backend.rinse_bag_registry.recompute_completion_for_bags"),
-            patch(
-                "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
-                return_value={"DONE1234"},
-            ),
+        with patch(
+            "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
+            return_value={"DONE1234"},
         ):
             snap = snapshot_pre_upload_completed_bag_ids(cursor, 1, orders)
         self.assertIn("DONE1234", snap)
@@ -166,7 +134,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
             call_order.append("audit")
             return {"rows_inserted": 2, "bags_with_events": 1, "replaced_prior_rows": 0}
 
-        def _pre_existing(*_a, **_k):
+        def _snapshot(*_a, **_k):
             call_order.append("pre_upload_snapshot")
             return set()
 
@@ -217,7 +185,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
             ),
             patch(
                 "backend.rinse_combined_upload.snapshot_pre_upload_completed_bag_ids",
-                side_effect=_pre_existing,
+                side_effect=_snapshot,
             ),
             patch("backend.rinse_bag_registry.merge_scan_events_from_upload", side_effect=_merge),
             patch("backend.rinse_bag_registry.recompute_completion_for_bags", side_effect=_recompute),
@@ -259,7 +227,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
 
         self.assertEqual(
             call_order,
-            ["shell", "pre_upload_snapshot", "merge", "recompute", "insert", "audit"],
+            ["pre_upload_snapshot", "shell", "merge", "recompute", "insert", "audit"],
         )
 
 
