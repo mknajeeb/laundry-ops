@@ -10158,10 +10158,8 @@ def confirm_upload_batch(batch_id):
             "batch_id": batch_id,
             "inserted_to_staging": inserted,
             "staging_updated_by_bag_id": staging_updated,
-            "blocked_at_confirm_count": blocked_at_confirm,
-            "blocked_bag_ids": blocked_bag_ids,
             "forced_checkout_pending": forced_pending,
-            "moved_to_final": moved_to_final
+            "moved_to_final": moved_to_final,
         })
 
     except Exception as e:
