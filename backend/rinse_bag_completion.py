@@ -113,6 +113,10 @@ def user_is_internal(user: Any) -> bool:
     return any(term in u for term in INTERNAL_USER_TERMS)
 
 
+def usable_user_name(user: Any) -> bool:
+    return bool(str(user or "").strip())
+
+
 def _parsed_scan_datetime(ev: Mapping[str, Any]) -> datetime:
     ts = ev.get("scanned_at_parsed")
     if isinstance(ts, datetime):
@@ -202,9 +206,22 @@ def _is_valid_post_clean_trigger(
     return True
 
 
+def _rack_is_meaningful(rack: Any) -> bool:
+    s = str(rack or "").strip().lower()
+    if not s:
+        return False
+    if s in ("none", "(none)", "null", "n/a", "na"):
+        return False
+    return True
+
+
 def qualifying_post_clean_scan(rack: Any, user: Any) -> bool:
-    """After CLEAN: non-Clean rack AND non-internal user (both required)."""
-    return not rack_contains_clean(rack) and not user_is_internal(user)
+    """After CLEAN: meaningful non-Clean rack AND named external user (both required)."""
+    if not _rack_is_meaningful(rack) or rack_contains_clean(rack):
+        return False
+    if not usable_user_name(user) or user_is_internal(user):
+        return False
+    return True
 
 
 def events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

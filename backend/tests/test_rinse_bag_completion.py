@@ -250,6 +250,18 @@ class TestCompletionRegressionGuards(unittest.TestCase):
         r = evaluate_bag_completion(events)
         self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
 
+    def test_placeholder_rack_and_blank_user_after_clean_incomplete(self):
+        """Production bug: (None) rack + null user after Clean must not complete."""
+        ts = datetime(2026, 5, 17, 16, 18)
+        r = evaluate_bag_completion(
+            [
+                _ev("VeeWash Clean", "Train", ts, 1, 3460),
+                {"id": 3461, "rack": "(None)", "user_name": None, "scanned_at_parsed": ts, "scan_index": 2},
+            ]
+        )
+        self.assertEqual(r.completion_status, COMPLETION_INCOMPLETE)
+        self.assertEqual(r.completion_reason, REASON_CLEAN_WITHOUT_QUALIFYING_LATER)
+
     def test_bag_5y4hkemef1_pattern_clean_last(self):
         """If latest scan is VeeWash Clean only, bag stays incomplete."""
         r = evaluate_bag_completion(
