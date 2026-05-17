@@ -247,7 +247,11 @@ def upsert_scan_event_row(
     Insert or update one persistent scan row by (org, bag, dedupe_key).
     Returns 'inserted' or 'updated'.
     """
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    ensure_rinse_bag_scan_events_table(cursor)
+    if not _scan_events_table_has_column(cursor, "dedupe_key"):
+        cursor.execute(
+            "ALTER TABLE rinse_bag_scan_events ADD COLUMN dedupe_key VARCHAR(64) NULL AFTER bag_id"
+        )
     cursor.execute(
         """
         SELECT id FROM rinse_bag_scan_events
@@ -554,7 +558,11 @@ def list_scan_events_for_bag(
 
 def backfill_scan_event_dedupe_keys(cursor, organization_id: int | None = None) -> int:
     """Set dedupe_key on rows where it is null/empty. Returns rows updated."""
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    ensure_rinse_bag_scan_events_table(cursor)
+    if not _scan_events_table_has_column(cursor, "dedupe_key"):
+        cursor.execute(
+            "ALTER TABLE rinse_bag_scan_events ADD COLUMN dedupe_key VARCHAR(64) NULL AFTER bag_id"
+        )
     sql = """
         SELECT id, organization_id, bag_id, scan_index, rack, user_name, purpose, scanned_at_parsed
         FROM rinse_bag_scan_events
@@ -584,7 +592,6 @@ def delete_duplicate_scan_events(cursor, organization_id: int | None = None) -> 
     Delete exact duplicate scan rows (same org, bag, dedupe_key), keeping MIN(id).
     Does not touch rinse_bag_registry.
     """
-    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
     backfill_scan_event_dedupe_keys(cursor, organization_id)
     org_filter = ""
     args: list[Any] = []
