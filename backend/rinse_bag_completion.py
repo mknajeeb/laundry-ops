@@ -1,5 +1,5 @@
 """
-Rinse bag completion from scan-events (OR rule after first Clean rack scan).
+Rinse bag completion from scan-events (progressive timeline: workflow then CLEAN).
 """
 
 from __future__ import annotations
@@ -20,9 +20,14 @@ COMPLETION_INCOMPLETE = "INCOMPLETE"
 COMPLETION_COMPLETED = "COMPLETED"
 
 REASON_NO_CLEAN_SCAN = "NO_CLEAN_SCAN"
-REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK = "POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK"
-REASON_POST_CLEAN_RACK_OR_USER = "POST_CLEAN_RACK_OR_USER"
+REASON_WORKFLOW_THEN_CLEAN = "WORKFLOW_THEN_CLEAN"
+REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW = "CLEAN_WITHOUT_PRIOR_WORKFLOW"
 
+# Legacy aliases (older registry rows / docs)
+REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK = REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW
+REASON_POST_CLEAN_RACK_OR_USER = REASON_WORKFLOW_THEN_CLEAN
+
+TRIGGER_PRIOR_WORKFLOW_BEFORE_CLEAN = "PRIOR_WORKFLOW_BEFORE_CLEAN"
 TRIGGER_RACK_NOT_CLEAN = "RACK_NOT_CLEAN"
 TRIGGER_USER_NOT_INTERNAL = "USER_NOT_INTERNAL"
 TRIGGER_BOTH = "BOTH"
@@ -106,31 +111,38 @@ def user_is_internal(user: Any) -> bool:
     return any(term in u for term in INTERNAL_USER_TERMS)
 
 
-def _scan_sort_key(ev: Mapping[str, Any]) -> tuple:
+def _parsed_scan_datetime(ev: Mapping[str, Any]) -> datetime:
     ts = ev.get("scanned_at_parsed")
     if isinstance(ts, datetime):
-        dt = ts
-    elif ts is not None and str(ts) not in ("", "NaT", "None"):
+        return ts
+    if ts is not None and str(ts) not in ("", "NaT", "None"):
         try:
             import pandas as pd
 
             p = pd.Timestamp(ts)
-            dt = p.to_pydatetime() if not pd.isna(p) else datetime.min
+            if not pd.isna(p):
+                return p.to_pydatetime()
         except Exception:
-            dt = datetime.min
-    else:
-        dt = datetime.min
+            pass
+    return datetime.min
+
+
+def _scan_index_num(ev: Mapping[str, Any]) -> int:
     idx = ev.get("scan_index")
     try:
-        n = int(float(str(idx).strip())) if idx not in (None, "") else 0
+        return int(float(str(idx).strip())) if idx not in (None, "") else 0
     except (TypeError, ValueError):
-        n = 0
-    ev_id = ev.get("id") or 0
-    try:
-        ev_id_n = int(ev_id)
-    except (TypeError, ValueError):
-        ev_id_n = 0
-    return (dt, n, ev_id_n)
+        return 0
+
+
+def _progressive_timeline_sort_key(ev: Mapping[str, Any]) -> tuple:
+    """Oldest → newest by scanned_at_parsed; scan_index only breaks ties."""
+    return (_parsed_scan_datetime(ev), _scan_index_num(ev))
+
+
+def prior_workflow_scan_before_clean(rack: Any, user: Any) -> bool:
+    """Meaningful non-internal activity on a non-Clean rack before reaching CLEAN."""
+    return not rack_contains_clean(rack) and not user_is_internal(user)
 
 
 def events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -179,10 +191,12 @@ def evaluate_bag_completion(
     events: Iterable[Mapping[str, Any]],
 ) -> CompletionResult:
     """
-    After first Clean rack scan, mark COMPLETED only if a later scan has BOTH:
-    rack does not contain Clean AND user is not internal/training staff.
+    Progressive timeline (scanned_at_parsed ASC; scan_index tie-break only).
+
+    COMPLETED when the bag reaches a CLEAN rack scan and at least one earlier scan
+    has a non-Clean rack and a non-internal user (real workflow before CLEAN).
     """
-    ordered = sorted(events_from_records(list(events)), key=_scan_sort_key)
+    ordered = sorted(events_from_records(list(events)), key=_progressive_timeline_sort_key)
     if not ordered:
         return CompletionResult(
             completion_status=COMPLETION_INCOMPLETE,
@@ -212,10 +226,8 @@ def evaluate_bag_completion(
         )
 
     first_clean = ordered[first_clean_idx]
-    fc_at = first_clean.get("scanned_at_parsed")
-    if isinstance(fc_at, datetime):
-        first_clean_at = fc_at
-    else:
+    first_clean_at = _parsed_scan_datetime(first_clean)
+    if first_clean_at == datetime.min:
         first_clean_at = None
 
     fc_event_id = first_clean.get("id")
@@ -224,34 +236,21 @@ def evaluate_bag_completion(
     except (TypeError, ValueError):
         fc_event_id_int = None
 
-    for ev in ordered[first_clean_idx + 1 :]:
-        rack = ev.get("rack")
-        user = ev.get("user")
-        rack_not_clean = not rack_contains_clean(rack)
-        user_not_internal = not user_is_internal(user)
-        if rack_not_clean and user_not_internal:
-            trigger_kind = TRIGGER_BOTH
-
-            tr_at = ev.get("scanned_at_parsed")
-            trigger_at = tr_at if isinstance(tr_at, datetime) else None
-            try:
-                tr_id = int(ev.get("id")) if ev.get("id") is not None else None
-            except (TypeError, ValueError):
-                tr_id = None
-
+    for ev in ordered[:first_clean_idx]:
+        if prior_workflow_scan_before_clean(ev.get("rack"), ev.get("user")):
             return CompletionResult(
                 completion_status=COMPLETION_COMPLETED,
-                completion_reason=REASON_POST_CLEAN_RACK_OR_USER,
+                completion_reason=REASON_WORKFLOW_THEN_CLEAN,
                 first_clean_scan_at=first_clean_at,
                 first_clean_scan_event_id=fc_event_id_int,
-                trigger_scan_at=trigger_at,
-                trigger_scan_event_id=tr_id,
-                trigger_kind=trigger_kind,
+                trigger_scan_at=first_clean_at,
+                trigger_scan_event_id=fc_event_id_int,
+                trigger_kind=TRIGGER_PRIOR_WORKFLOW_BEFORE_CLEAN,
             )
 
     return CompletionResult(
         completion_status=COMPLETION_INCOMPLETE,
-        completion_reason=REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK,
+        completion_reason=REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW,
         first_clean_scan_at=first_clean_at,
         first_clean_scan_event_id=fc_event_id_int,
         trigger_scan_at=None,

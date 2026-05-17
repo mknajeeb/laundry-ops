@@ -96,7 +96,7 @@ class TestPreUploadCompletionSnapshot(unittest.TestCase):
         mock_fetch.assert_called_once_with(cursor, 1, ["BAG12345"])
 
     def test_stale_or_completed_not_in_snapshot_after_recompute(self):
-        """After AND recompute marks bag INCOMPLETE, snapshot must be empty."""
+        """After progressive-timeline recompute marks bag INCOMPLETE, snapshot must be empty."""
         cursor = MagicMock()
         orders = pd.DataFrame({"ticket_id": ["STALE01"]})
 
