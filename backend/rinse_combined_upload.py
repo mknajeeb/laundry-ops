@@ -386,14 +386,19 @@ def insert_upload_batch_rows_from_orders_df(
                         has_ticket_id_col=cap.get("has_ticket_id", False),
                     )
                     was_completed_before = ticket_id in pre_existing_completed_bag_ids
-                    row_status, reason = classify_portal_upload_row(
-                        ticket_id=ticket_id,
-                        was_completed_before_upload=was_completed_before,
-                        has_active_staging=staging_hit is not None,
-                        row_date_before_batch=row_date < batch_date,
-                    )
                     registry_completed_now = is_bag_already_completed(
                         cursor, tenant_oid, ticket_id
+                    )
+                    # Reject only if COMPLETED before this upload and still COMPLETED after
+                    # scan-events merge/recompute (evaluator may demote stale COMPLETED → INCOMPLETE).
+                    reject_as_already_completed = (
+                        was_completed_before and registry_completed_now
+                    )
+                    row_status, reason = classify_portal_upload_row(
+                        ticket_id=ticket_id,
+                        was_completed_before_upload=reject_as_already_completed,
+                        has_active_staging=staging_hit is not None,
+                        row_date_before_batch=row_date < batch_date,
                     )
                     if row_status == "REJECTED_DUPLICATE":
                         rejected += 1

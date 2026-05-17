@@ -287,7 +287,31 @@ class TestEnrichRegistryReasonAlignment(unittest.TestCase):
         ):
             out = enrich_upload_batch_rows_with_registry(cursor, 1, rows)
         self.assertEqual(out[0]["registry_status"], "INCOMPLETE")
+        self.assertEqual(out[0]["row_status"], "ACCEPTED")
         self.assertEqual(out[0]["reason"], REASON_OK)
+
+    def test_rejected_stale_already_completed_shown_as_accepted_ok(self):
+        cursor = MagicMock()
+        rows = [
+            {
+                "ticket_id": "BAG1",
+                "row_status": "REJECTED_DUPLICATE",
+                "reason": REASON_ALREADY_COMPLETED,
+            }
+        ]
+        with patch(
+            "backend.rinse_bag_upload.fetch_registry_map_for_bag_ids",
+            return_value={
+                "BAG1": {
+                    "completion_status": "INCOMPLETE",
+                    "completion_reason": "CLEAN_WITHOUT_QUALIFYING_LATER_SCAN",
+                }
+            },
+        ):
+            out = enrich_upload_batch_rows_with_registry(cursor, 1, rows)
+        self.assertEqual(out[0]["row_status"], "ACCEPTED")
+        self.assertEqual(out[0]["reason"], REASON_OK)
+        self.assertNotEqual(out[0]["reason"], "CLEAN_WITHOUT_QUALIFYING_LATER_SCAN")
 
 
 class TestConfirmTrustsDraftAcceptance(unittest.TestCase):

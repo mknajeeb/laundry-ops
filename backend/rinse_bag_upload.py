@@ -257,10 +257,10 @@ def enrich_upload_batch_rows_with_registry(
             and reg_status
             and reg_status != COMPLETION_COMPLETED
         ):
-            if row_status == "ACCEPTED":
-                row["reason"] = REASON_OK
-            elif tid in reg_map:
-                row["reason"] = str(reg.get("completion_reason") or REASON_OK)
+            # Stale rejection or legacy row: registry INCOMPLETE must not show
+            # completion_reason as upload row reason.
+            row["row_status"] = "ACCEPTED"
+            row["reason"] = REASON_OK
 
         out.append(row)
     return out

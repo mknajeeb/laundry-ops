@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from backend.rinse_bag_completion import (
-    COMPLETION_COMPLETED,
     REASON_ALREADY_COMPLETED,
     REASON_OK,
     REASON_UPDATED_EXISTING_BAG,
@@ -130,6 +129,160 @@ class TestSameUploadCompletionClassification(unittest.TestCase):
         ]
         self.assertEqual(len(insert_calls), 1)
         params = insert_calls[0][0][1]
+        self.assertEqual(params[6], "ACCEPTED")
+        self.assertEqual(params[7], REASON_UPDATED_EXISTING_BAG)
+
+
+def _orders_df_for_bag(bag_id: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Date_Clean": [date.today()],
+            "Name_Clean": ["Test Customer"],
+            "Weight_Num": [10.0],
+            "ServiceType": ["WF"],
+            "RushType": ["NON-RUSH"],
+            "ticket_id": [bag_id],
+        }
+    )
+
+
+def _insert_bag_row(
+    cursor,
+    *,
+    bag_id: str,
+    pre_existing: set[str],
+    registry_completed_now: bool,
+    staging_hit: dict | None,
+) -> tuple[dict, list]:
+    schema = MagicMock(
+        row_pk="id",
+        upload_batches_pk="id",
+        has_ub_org=True,
+        cap={"has_ticket_id": True},
+    )
+    with (
+        patch(
+            "backend.rinse_bag_upload.find_active_staging_by_ticket_id",
+            return_value=staging_hit,
+        ),
+        patch(
+            "backend.rinse_bag_registry.is_bag_already_completed",
+            return_value=registry_completed_now,
+        ),
+        patch("backend.rinse_bag_upload.upsert_registry_from_portal_row"),
+        patch(
+            "backend.rinse_combined_upload.build_upload_duplicate_indexes",
+            return_value=(set(), {}, 3),
+        ),
+        patch("backend.app.table_has_column", return_value=True),
+        patch("backend.app.where_not_sent_or_forced_sql", return_value="1=1"),
+    ):
+        counts = insert_upload_batch_rows_from_orders_df(
+            cursor,
+            1,
+            94,
+            date.today(),
+            _orders_df_for_bag(bag_id),
+            schema,
+            set(),
+            {},
+            pre_existing_completed_bag_ids=pre_existing,
+        )
+    insert_calls = [
+        c
+        for c in cursor.execute.call_args_list
+        if c[0] and "INSERT INTO upload_batch_rows" in str(c[0][0])
+    ]
+    return counts, insert_calls
+
+
+class TestIncompleteRegistryUploadAcceptance(unittest.TestCase):
+    """Registry INCOMPLETE must not reject portal rows; only pre-upload COMPLETED snapshot."""
+
+    BAG = "30WI6KW06G"
+
+    def test_clean_without_qualifying_later_scan_accepted_with_staging(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
+        counts, inserts = _insert_bag_row(
+            cursor,
+            bag_id=self.BAG,
+            pre_existing=set(),
+            registry_completed_now=False,
+            staging_hit={"id": 42},
+        )
+        self.assertEqual(counts["rejected_rows"], 0)
+        self.assertEqual(counts["rows_inserted"], 1)
+        params = inserts[0][0][1]
+        self.assertEqual(params[6], "ACCEPTED")
+        self.assertEqual(params[7], REASON_UPDATED_EXISTING_BAG)
+        self.assertNotEqual(params[7], "CLEAN_WITHOUT_QUALIFYING_LATER_SCAN")
+
+    def test_no_clean_scan_accepted_ok_without_staging(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
+        counts, inserts = _insert_bag_row(
+            cursor,
+            bag_id=self.BAG,
+            pre_existing=set(),
+            registry_completed_now=False,
+            staging_hit=None,
+        )
+        self.assertEqual(counts["rejected_rows"], 0)
+        params = inserts[0][0][1]
+        self.assertEqual(params[6], "ACCEPTED")
+        self.assertEqual(params[7], REASON_OK)
+        self.assertNotEqual(params[7], "NO_CLEAN_SCAN")
+
+    def test_completed_during_same_upload_accepted_not_already_completed(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
+        counts, inserts = _insert_bag_row(
+            cursor,
+            bag_id=self.BAG,
+            pre_existing=set(),
+            registry_completed_now=True,
+            staging_hit={"id": 7},
+        )
+        self.assertEqual(counts["rejected_rows"], 0)
+        params = inserts[0][0][1]
+        self.assertEqual(params[6], "ACCEPTED")
+        self.assertEqual(params[7], REASON_UPDATED_EXISTING_BAG)
+        self.assertNotEqual(params[7], REASON_ALREADY_COMPLETED)
+
+    def test_pre_upload_completed_snapshot_rejects(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
+        counts, inserts = _insert_bag_row(
+            cursor,
+            bag_id=self.BAG,
+            pre_existing={self.BAG},
+            registry_completed_now=True,
+            staging_hit={"id": 7},
+        )
+        self.assertEqual(counts["rejected_rows"], 1)
+        params = inserts[0][0][1]
+        self.assertEqual(params[6], "REJECTED_DUPLICATE")
+        self.assertEqual(params[7], REASON_ALREADY_COMPLETED)
+
+    def test_pre_upload_completed_but_recomputed_incomplete_accepted(self):
+        """Stale COMPLETED in snapshot demoted to INCOMPLETE after recompute → accept."""
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = []
+        counts, inserts = _insert_bag_row(
+            cursor,
+            bag_id=self.BAG,
+            pre_existing={self.BAG},
+            registry_completed_now=False,
+            staging_hit={"id": 7},
+        )
+        self.assertEqual(counts["rejected_rows"], 0)
+        params = inserts[0][0][1]
         self.assertEqual(params[6], "ACCEPTED")
         self.assertEqual(params[7], REASON_UPDATED_EXISTING_BAG)
 
