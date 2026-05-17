@@ -13,6 +13,7 @@ import pandas as pd
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_scan_events_logic import EVENTS_REQUIRED, SCAN_EVENT_COLUMNS, _parse_scanned_at
+from backend.ta_helpers import table_exists
 
 SCAN_EVENTS_CSV_COLUMNS = ["Bag ID", *SCAN_EVENT_COLUMNS]
 
@@ -194,6 +195,55 @@ def commit_scan_events_for_batch(
         "bags_with_events": int(bags),
         "replaced_prior_rows": deleted,
     }
+
+
+def delete_upload_batch_scan_events_for_batch(
+    cursor,
+    upload_batch_id: int,
+    organization_id: int | None = None,
+) -> int:
+    """
+    Remove per-batch scan-event audit rows (upload_batch_scan_events only).
+
+    Does not touch rinse_bag_scan_events or rinse_bag_registry.
+    """
+    if not table_exists(cursor, "upload_batch_scan_events"):
+        return 0
+    if organization_id is not None:
+        cursor.execute(
+            """
+            DELETE FROM upload_batch_scan_events
+            WHERE upload_batch_id = %s AND organization_id = %s
+            """,
+            (int(upload_batch_id), int(organization_id)),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM upload_batch_scan_events WHERE upload_batch_id = %s",
+            (int(upload_batch_id),),
+        )
+    return int(cursor.rowcount or 0)
+
+
+def delete_upload_batch_scan_events_for_organization(
+    cursor, organization_id: int
+) -> int:
+    """Remove all batch-level scan-event audit rows for a tenant."""
+    if not table_exists(cursor, "upload_batch_scan_events"):
+        return 0
+    cursor.execute(
+        "DELETE FROM upload_batch_scan_events WHERE organization_id = %s",
+        (int(organization_id),),
+    )
+    return int(cursor.rowcount or 0)
+
+
+def delete_all_upload_batch_scan_events(cursor) -> int:
+    """Remove all batch-level scan-event audit rows (no org column on batches)."""
+    if not table_exists(cursor, "upload_batch_scan_events"):
+        return 0
+    cursor.execute("DELETE FROM upload_batch_scan_events")
+    return int(cursor.rowcount or 0)
 
 
 def count_scan_events_for_batch(cursor, upload_batch_id: int, organization_id: int | None = None) -> int:

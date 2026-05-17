@@ -9106,6 +9106,13 @@ def reset_current_draft_batch():
         row_pk = get_upload_batch_rows_pk(cursor)
         summary = summarize_batch_rows(cursor, batch_id, row_pk)
 
+        from backend.rinse_scan_events_upload import delete_upload_batch_scan_events_for_batch
+
+        ub_org = tenant_oid if table_has_column(cursor, "upload_batches", "organization_id") else None
+        scan_audit_deleted = delete_upload_batch_scan_events_for_batch(
+            cursor, batch_id, ub_org
+        )
+
         cursor.execute("""
             DELETE FROM upload_batch_rows
             WHERE upload_batch_id = %s
@@ -9120,7 +9127,8 @@ def reset_current_draft_batch():
         return jsonify({
             "status": "draft_reset",
             "batch_id": batch_id,
-            "deleted_row_count": summary.get("total_rows", 0)
+            "deleted_row_count": summary.get("total_rows", 0),
+            "upload_batch_scan_events_deleted": scan_audit_deleted,
         })
     except Exception as e:
         conn.rollback()
@@ -9168,6 +9176,13 @@ def reset_all_upload_batches():
                 (tenant_oid,),
             )
             batches_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+            from backend.rinse_scan_events_upload import (
+                delete_upload_batch_scan_events_for_organization,
+            )
+
+            scan_audit_deleted = delete_upload_batch_scan_events_for_organization(
+                cursor, tenant_oid
+            )
             cursor.execute(
                 f"""
                 DELETE FROM upload_batch_rows
@@ -9186,6 +9201,9 @@ def reset_all_upload_batches():
             rows_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
             cursor.execute(f"SELECT COUNT(*) AS cnt FROM upload_batches")
             batches_before = (cursor.fetchone() or {}).get("cnt", 0) or 0
+            from backend.rinse_scan_events_upload import delete_all_upload_batch_scan_events
+
+            scan_audit_deleted = delete_all_upload_batch_scan_events(cursor)
             cursor.execute("DELETE FROM upload_batch_rows")
             cursor.execute("DELETE FROM upload_batches")
 
@@ -9263,6 +9281,7 @@ def reset_all_upload_batches():
             "status": "reset_complete",
             "deleted_rows": rows_before,
             "deleted_batches": batches_before,
+            "upload_batch_scan_events_deleted": scan_audit_deleted,
             "cascade_data": cascade_data,
             "cascade_deleted": cascade_deleted,
             "row_pk": row_pk,
@@ -9441,6 +9460,13 @@ def delete_upload_batch(batch_id):
                 )
                 cascade_deleted["order_processing"] += cursor.rowcount or 0
 
+        from backend.rinse_scan_events_upload import delete_upload_batch_scan_events_for_batch
+
+        ub_org = tenant_oid if has_ub_org else None
+        scan_audit_deleted = delete_upload_batch_scan_events_for_batch(
+            cursor, batch_id, ub_org
+        )
+
         cursor.execute("""
             DELETE FROM upload_batch_rows
             WHERE upload_batch_id = %s
@@ -9456,6 +9482,7 @@ def delete_upload_batch(batch_id):
             "status": "batch_deleted",
             "batch_id": batch_id,
             "deleted_rows": row_count,
+            "upload_batch_scan_events_deleted": scan_audit_deleted,
             "cascade_data": cascade_data,
             "cascade_deleted": cascade_deleted,
         })
