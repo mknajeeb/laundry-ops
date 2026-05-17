@@ -211,6 +211,12 @@ def update_staging_from_upload_row(
 def enrich_upload_batch_rows_with_registry(
     cursor, organization_id: int, rows: list[dict]
 ) -> list[dict]:
+    from backend.rinse_bag_completion import (
+        COMPLETION_COMPLETED,
+        REASON_ALREADY_COMPLETED,
+        REASON_OK,
+    )
+
     bag_ids = []
     for r in rows:
         tid = normalize_bag_id(r.get("ticket_id"))
@@ -242,6 +248,20 @@ def enrich_upload_batch_rows_with_registry(
             row["completion_reason"] = None
             row["completed_at"] = None
             row["trigger_kind"] = None
+
+        reason = str(row.get("reason") or "")
+        reg_status = str(row.get("registry_status") or "").upper()
+        row_status = str(row.get("row_status") or "").upper()
+        if (
+            reason == REASON_ALREADY_COMPLETED
+            and reg_status
+            and reg_status != COMPLETION_COMPLETED
+        ):
+            if row_status == "ACCEPTED":
+                row["reason"] = REASON_OK
+            elif tid in reg_map:
+                row["reason"] = str(reg.get("completion_reason") or REASON_OK)
+
         out.append(row)
     return out
 

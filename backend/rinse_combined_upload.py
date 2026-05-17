@@ -253,21 +253,46 @@ def build_upload_duplicate_indexes(
     return final_identity_keys, existing_identity_reasons, duplicate_lookback_days
 
 
+def collect_portal_ticket_ids(orders_df: pd.DataFrame) -> list[str]:
+    from backend.rinse_bag_completion import normalize_bag_id
+
+    if "ticket_id" not in orders_df.columns:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in orders_df["ticket_id"]:
+        bid = normalize_bag_id(v)
+        if bid and bid not in seen:
+            seen.add(bid)
+            out.append(bid)
+    return out
+
+
+def snapshot_pre_upload_completed_bag_ids(
+    cursor, tenant_oid: int, orders_df: pd.DataFrame
+) -> set[str]:
+    """
+    Portal bag IDs already COMPLETED before this upload begins.
+
+    Recomputes registry from persistent scan-events (AND rule) before snapshotting so
+    stale COMPLETED rows from the legacy OR rule are not treated as pre-existing.
+    """
+    from backend.rinse_bag_registry import (
+        fetch_pre_existing_completed_bag_ids,
+        recompute_completion_for_bags,
+    )
+
+    portal_ids = collect_portal_ticket_ids(orders_df)
+    if portal_ids:
+        recompute_completion_for_bags(cursor, tenant_oid, portal_ids)
+    return fetch_pre_existing_completed_bag_ids(cursor, tenant_oid, portal_ids)
+
+
 def collect_pre_existing_completed_bag_ids(
     cursor, tenant_oid: int, orders_df: pd.DataFrame
 ) -> set[str]:
-    """Portal ticket_ids that were COMPLETED before this upload (snapshot before merge/recompute)."""
-    from backend.rinse_bag_completion import normalize_bag_id
-    from backend.rinse_bag_registry import fetch_pre_existing_completed_bag_ids
-
-    if "ticket_id" not in orders_df.columns:
-        return set()
-    portal_ids: list[str] = []
-    for v in orders_df["ticket_id"]:
-        bid = normalize_bag_id(v)
-        if bid:
-            portal_ids.append(bid)
-    return fetch_pre_existing_completed_bag_ids(cursor, tenant_oid, portal_ids)
+    """Alias: always recomputes persistent events before snapshot (portal-only or combined)."""
+    return snapshot_pre_upload_completed_bag_ids(cursor, tenant_oid, orders_df)
 
 
 def collect_bag_ids_from_upload(orders_df: pd.DataFrame, events_df: pd.DataFrame) -> list[str]:
@@ -597,7 +622,7 @@ def commit_rinse_combined_upload(
         cursor, tenant_oid, batch_date, combined_name, schema
     )
 
-    pre_existing_completed = collect_pre_existing_completed_bag_ids(
+    pre_existing_completed = snapshot_pre_upload_completed_bag_ids(
         cursor, tenant_oid, orders_df
     )
 

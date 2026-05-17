@@ -17,10 +17,11 @@ from backend.rinse_bag_completion import (
 )
 from backend.rinse_combined_upload import (
     REQUIRE_DUAL_CSV_CODE,
-    collect_pre_existing_completed_bag_ids,
     commit_rinse_combined_upload,
     dual_csv_required_error,
+    snapshot_pre_upload_completed_bag_ids,
 )
+from backend.rinse_bag_upload import enrich_upload_batch_rows_with_registry
 from backend.rinse_scan_events_upload import parse_scan_events_csv
 from backend.upload_batch_requirements import upload_batch_require_both_csv
 
@@ -77,17 +78,70 @@ class TestPreUploadCompletionSnapshot(unittest.TestCase):
         self.assertEqual(st, "REJECTED_DUPLICATE")
         self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
-    def test_collect_pre_existing_queries_registry(self):
+    def test_snapshot_recomputes_before_fetch(self):
         cursor = MagicMock()
-        cursor.fetchall.return_value = [{"bag_id": "BAG12345"}]
         orders = pd.DataFrame({"ticket_id": ["bag12345"]})
-        with patch(
-            "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
-            return_value={"BAG12345"},
-        ) as mock_fetch:
-            result = collect_pre_existing_completed_bag_ids(cursor, 1, orders)
-        self.assertEqual(result, {"BAG12345"})
+        with (
+            patch(
+                "backend.rinse_bag_registry.recompute_completion_for_bags"
+            ) as mock_recompute,
+            patch(
+                "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
+                return_value=set(),
+            ) as mock_fetch,
+        ):
+            result = snapshot_pre_upload_completed_bag_ids(cursor, 1, orders)
+        self.assertEqual(result, set())
+        mock_recompute.assert_called_once_with(cursor, 1, ["BAG12345"])
         mock_fetch.assert_called_once_with(cursor, 1, ["BAG12345"])
+
+    def test_stale_or_completed_not_in_snapshot_after_recompute(self):
+        """After AND recompute marks bag INCOMPLETE, snapshot must be empty."""
+        cursor = MagicMock()
+        orders = pd.DataFrame({"ticket_id": ["STALE01"]})
+
+        def _fetch(_c, _o, ids):
+            self.assertEqual(ids, ["STALE01"])
+            return set()
+
+        with (
+            patch("backend.rinse_bag_registry.recompute_completion_for_bags"),
+            patch(
+                "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
+                side_effect=_fetch,
+            ),
+        ):
+            snap = snapshot_pre_upload_completed_bag_ids(cursor, 1, orders)
+        self.assertNotIn("STALE01", snap)
+        st, reason = classify_portal_upload_row(
+            ticket_id="STALE01",
+            was_completed_before_upload=False,
+            has_active_staging=True,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_UPDATED_EXISTING_BAG)
+
+    def test_truly_completed_in_snapshot_rejects(self):
+        cursor = MagicMock()
+        orders = pd.DataFrame({"ticket_id": ["DONE1234"]})
+        with (
+            patch("backend.rinse_bag_registry.recompute_completion_for_bags"),
+            patch(
+                "backend.rinse_bag_registry.fetch_pre_existing_completed_bag_ids",
+                return_value={"DONE1234"},
+            ),
+        ):
+            snap = snapshot_pre_upload_completed_bag_ids(cursor, 1, orders)
+        self.assertIn("DONE1234", snap)
+        st, reason = classify_portal_upload_row(
+            ticket_id="DONE1234",
+            was_completed_before_upload=True,
+            has_active_staging=True,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "REJECTED_DUPLICATE")
+        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
 
 class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
@@ -113,7 +167,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
             return {"rows_inserted": 2, "bags_with_events": 1, "replaced_prior_rows": 0}
 
         def _pre_existing(*_a, **_k):
-            call_order.append("pre_existing_snapshot")
+            call_order.append("pre_upload_snapshot")
             return set()
 
         schema = MagicMock(
@@ -162,7 +216,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 side_effect=lambda *_a, **_k: (call_order.append("shell") or 99),
             ),
             patch(
-                "backend.rinse_combined_upload.collect_pre_existing_completed_bag_ids",
+                "backend.rinse_combined_upload.snapshot_pre_upload_completed_bag_ids",
                 side_effect=_pre_existing,
             ),
             patch("backend.rinse_bag_registry.merge_scan_events_from_upload", side_effect=_merge),
@@ -205,7 +259,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
 
         self.assertEqual(
             call_order,
-            ["shell", "pre_existing_snapshot", "merge", "recompute", "insert", "audit"],
+            ["shell", "pre_upload_snapshot", "merge", "recompute", "insert", "audit"],
         )
 
 
@@ -242,6 +296,30 @@ class TestUploadBatchRequireBothCsvFlag(unittest.TestCase):
 
         with patch("backend.ops_ui_flags._get_setting", side_effect=_get_setting):
             self.assertFalse(upload_batch_require_both_csv(cursor, 1))
+
+
+class TestEnrichRegistryReasonAlignment(unittest.TestCase):
+    def test_incomplete_registry_hides_already_completed_reason(self):
+        cursor = MagicMock()
+        rows = [
+            {
+                "ticket_id": "BAG1",
+                "row_status": "ACCEPTED",
+                "reason": REASON_ALREADY_COMPLETED,
+            }
+        ]
+        with patch(
+            "backend.rinse_bag_upload.fetch_registry_map_for_bag_ids",
+            return_value={
+                "BAG1": {
+                    "completion_status": "INCOMPLETE",
+                    "completion_reason": "NO_CLEAN_SCAN",
+                }
+            },
+        ):
+            out = enrich_upload_batch_rows_with_registry(cursor, 1, rows)
+        self.assertEqual(out[0]["registry_status"], "INCOMPLETE")
+        self.assertEqual(out[0]["reason"], REASON_OK)
 
 
 class TestConfirmTrustsDraftAcceptance(unittest.TestCase):
