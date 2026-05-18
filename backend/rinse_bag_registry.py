@@ -5,6 +5,7 @@ Persistent Rinse bag registry + scan history (survives daily operational reset).
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -202,6 +203,62 @@ def is_bag_already_completed(cursor, organization_id: int, bag_id: str) -> bool:
         return False
     status = row["completion_status"] if isinstance(row, dict) else row[0]
     return str(status or "").upper() == COMPLETION_COMPLETED
+
+
+def mark_registry_completed_portal_absence(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    upload_batch_id: int,
+    completed_at: datetime | None = None,
+) -> bool:
+    """
+    Mark bag COMPLETED because it was missing from the latest full portal upload.
+    Inserts a registry row when the bag only existed on staging.
+    """
+    from backend.rinse_bag_completion import (
+        COMPLETION_COMPLETED,
+        REASON_MISSING_FROM_LATEST_PORTAL_UPLOAD,
+        TRIGGER_KIND_PORTAL_ABSENCE,
+    )
+
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return False
+    org = int(organization_id)
+    ensure_rinse_bag_registry_table(cursor)
+    existing = get_registry_row(cursor, org, bid)
+    if existing and str(existing.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+        return False
+
+    when = completed_at or datetime.utcnow()
+    batch_id = int(upload_batch_id)
+    cursor.execute(
+        """
+        INSERT INTO rinse_bag_registry (
+            organization_id, bag_id, completion_status, completion_reason,
+            completed_at, trigger_kind, last_upload_batch_id, created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            completion_status = VALUES(completion_status),
+            completion_reason = VALUES(completion_reason),
+            completed_at = VALUES(completed_at),
+            trigger_kind = VALUES(trigger_kind),
+            last_upload_batch_id = VALUES(last_upload_batch_id),
+            updated_at = NOW()
+        """,
+        (
+            org,
+            bid,
+            COMPLETION_COMPLETED,
+            REASON_MISSING_FROM_LATEST_PORTAL_UPLOAD,
+            when,
+            TRIGGER_KIND_PORTAL_ABSENCE,
+            batch_id,
+        ),
+    )
+    return True
 
 
 def get_registry_row(cursor, organization_id: int, bag_id: str) -> dict | None:

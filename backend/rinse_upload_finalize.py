@@ -184,6 +184,13 @@ def finalize_rinse_after_batch_confirm(
     batch_id = int(upload_batch_id)
     accepted = list(accepted_portal_rows or [])
 
+    from backend.rinse_portal_absence_completion import complete_bags_missing_from_latest_portal
+
+    portal_absence = complete_bags_missing_from_latest_portal(
+        cursor, org, batch_id, accepted
+    )
+    absence_bag_ids = list(portal_absence.get("bag_ids") or [])
+
     events_df = load_upload_batch_scan_events_as_dataframe(cursor, org, batch_id)
     merge_payload: dict[str, Any] = {"bags_merged": 0, "events_inserted": 0, "bag_ids": []}
     if not events_df.empty:
@@ -205,6 +212,7 @@ def finalize_rinse_after_batch_confirm(
         if bid:
             bag_ids.add(bid)
     bag_id_list = sorted(bag_ids)
+    folding_bag_ids = sorted(set(bag_id_list) | set(absence_bag_ids))
 
     completion_payload: dict[str, Any] = {"bags": 0}
     if bag_id_list:
@@ -215,15 +223,19 @@ def finalize_rinse_after_batch_confirm(
     )
 
     folding_payload: dict[str, Any] = {"ok": True, "processed": 0}
-    if bag_id_list:
+    if folding_bag_ids:
         from backend.rinse_folding_registry import recompute_folding_after_upload
 
-        folding_payload = recompute_folding_after_upload(cursor, org, bag_id_list)
+        folding_payload = recompute_folding_after_upload(cursor, org, folding_bag_ids)
 
     return {
         "persistent_merge": merge_payload,
+        "portal_absence": portal_absence,
         "completion": completion_payload,
         "registry_rows_updated": registry_rows_updated,
         "folding": folding_payload,
         "bag_ids": bag_id_list,
+        "missing_prior_bags_completed_count": int(portal_absence.get("count") or 0),
+        "missing_prior_bag_ids_completed": absence_bag_ids,
+        "full_snapshot": bool(portal_absence.get("full_snapshot")),
     }

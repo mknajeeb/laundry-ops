@@ -10168,6 +10168,13 @@ def confirm_upload_batch(batch_id):
             "forced_checkout_pending": forced_pending,
             "moved_to_final": moved_to_final,
             "rinse_finalize": rinse_finalize,
+            "missing_prior_bags_completed_count": int(
+                rinse_finalize.get("missing_prior_bags_completed_count") or 0
+            ),
+            "missing_prior_bag_ids_completed": list(
+                rinse_finalize.get("missing_prior_bag_ids_completed") or []
+            ),
+            "full_snapshot": bool(rinse_finalize.get("full_snapshot")),
         })
 
     except Exception as e:

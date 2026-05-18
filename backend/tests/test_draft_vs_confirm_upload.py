@@ -130,6 +130,15 @@ class TestConfirmFinalizes(unittest.TestCase):
         )
         with (
             patch(
+                "backend.rinse_portal_absence_completion.complete_bags_missing_from_latest_portal",
+                return_value={
+                    "full_snapshot": True,
+                    "skipped": False,
+                    "count": 0,
+                    "bag_ids": [],
+                },
+            ),
+            patch(
                 "backend.rinse_upload_finalize.load_upload_batch_scan_events_as_dataframe",
                 return_value=events_df,
             ),
