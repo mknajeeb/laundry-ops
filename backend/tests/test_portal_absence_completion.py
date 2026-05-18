@@ -22,8 +22,16 @@ from backend.rinse_upload_finalize import finalize_rinse_after_batch_confirm
 
 class TestPortalAbsenceCompletion(unittest.TestCase):
     def test_build_current_upload_bag_ids_normalizes(self):
-        rows = [{"ticket_id": "  bag1234 "}, {"ticket_id": ""}, {"ticket_id": "BAG2"}]
-        self.assertEqual(build_current_upload_bag_ids(rows), {"BAG1234", "BAG2"})
+        rows = [
+            {"ticket_id": "  bag1234 "},
+            {"ticket_id": ""},
+            {"ticket_id": "BAG2"},
+            {"ticket_id": "BAG_9999"},
+        ]
+        self.assertEqual(
+            build_current_upload_bag_ids(rows),
+            {"BAG1234", "BAG2", "BAG_9999"},
+        )
 
     def test_incomplete_a_absent_on_confirm_full_snapshot(self):
         cursor = MagicMock()
@@ -205,6 +213,43 @@ class TestPortalAbsenceCompletion(unittest.TestCase):
         self.assertIn("BAGNEW", fold_bags)
         self.assertIn("BAGOLD", fold_bags)
         self.assertEqual(out["missing_prior_bags_completed_count"], 1)
+        self.assertEqual(out["missing_prior_bag_ids_completed"], ["BAGOLD"])
+
+    def test_confirm_response_fields_present(self):
+        cursor = MagicMock()
+        with (
+            patch(
+                "backend.rinse_portal_absence_completion.complete_bags_missing_from_latest_portal",
+                return_value={
+                    "full_snapshot": True,
+                    "skipped": False,
+                    "count": 2,
+                    "bag_ids": ["OLD1", "OLD2"],
+                },
+            ),
+            patch(
+                "backend.rinse_upload_finalize.load_upload_batch_scan_events_as_dataframe",
+                return_value=__import__("pandas").DataFrame(),
+            ),
+            patch(
+                "backend.rinse_upload_finalize.merge_scan_events_from_upload",
+                return_value={"bag_ids": []},
+            ),
+            patch(
+                "backend.rinse_upload_finalize.recompute_completion_for_bags",
+                return_value={"bags": 0},
+            ),
+            patch(
+                "backend.rinse_upload_finalize.apply_registry_from_accepted_portal_rows",
+                return_value=0,
+            ),
+        ):
+            out = finalize_rinse_after_batch_confirm(
+                cursor, 1, 10, accepted_portal_rows=[{"ticket_id": "NEW1"}]
+            )
+        self.assertEqual(out["missing_prior_bags_completed_count"], 2)
+        self.assertEqual(out["missing_prior_bag_ids_completed"], ["OLD1", "OLD2"])
+        self.assertTrue(out["full_snapshot"])
 
     def test_multi_tenant_only_same_org_candidates(self):
         cursor = MagicMock()

@@ -45,6 +45,24 @@ class TestNormalizeBagId(unittest.TestCase):
     def test_uppercase(self):
         self.assertEqual(normalize_bag_id("abcd12"), "ABCD12")
 
+    def test_rinse_alphanumeric_ids_unchanged(self):
+        self.assertEqual(normalize_bag_id("30WI6KW02G"), "30WI6KW02G")
+        self.assertEqual(normalize_bag_id("D6CLWLCPDA"), "D6CLWLCPDA")
+        self.assertEqual(normalize_bag_id("d6clwlcpda"), "D6CLWLCPDA")
+
+    def test_underscore_and_hyphen_ids_preserved(self):
+        self.assertEqual(normalize_bag_id("BAG_1234"), "BAG_1234")
+        self.assertEqual(normalize_bag_id("bag_1234"), "BAG_1234")
+        self.assertEqual(normalize_bag_id("BAG-1234"), "BAG-1234")
+
+    def test_suffix_stripped_after_whitespace_or_paren(self):
+        self.assertEqual(normalize_bag_id("30WI6KW02G extra"), "30WI6KW02G")
+        self.assertEqual(normalize_bag_id("BAG_1234 (notes)"), "BAG_1234")
+
+    def test_trim_and_short_rejected(self):
+        self.assertEqual(normalize_bag_id("  bag1234 "), "BAG1234")
+        self.assertEqual(normalize_bag_id("BAG"), "")
+
 
 class TestRackAndUser(unittest.TestCase):
     def test_clean_substring(self):

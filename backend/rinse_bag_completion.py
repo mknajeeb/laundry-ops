@@ -93,16 +93,24 @@ def confirm_staging_action(
 
 def normalize_bag_id(value: Any) -> str:
     """
-    Canonical Bag ID / ticket_id: leading alphanumeric (4+), uppercased.
-    Matches portal_csv._ticket_id_from_bag and scan-events CSV Bag ID.
+    Canonical Bag ID / ticket_id: trim, uppercase, leading token (min 4 chars).
+
+    Internal underscores and hyphens are preserved (e.g. BAG_1234, BAG-1234).
+    Portal descriptions after whitespace or '(' are stripped (e.g. ABCD12 (Wash & Fold)).
     """
     if value is None:
         return ""
     s = str(value).strip()
     if not s:
         return ""
-    m = re.match(r"^([A-Z0-9]{4,})", s, re.I)
-    return m.group(1).upper() if m else ""
+    head = re.split(r"[\s(]", s, maxsplit=1)[0].strip()
+    if not head:
+        return ""
+    m = re.match(r"^([A-Za-z0-9][A-Za-z0-9_-]{3,})", head, re.I)
+    if not m:
+        return ""
+    token = m.group(1).upper().rstrip("_-")
+    return token if len(token) >= 4 else ""
 
 
 def rack_contains_clean(rack: Any) -> bool:
