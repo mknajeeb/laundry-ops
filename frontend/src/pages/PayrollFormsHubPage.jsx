@@ -35,7 +35,13 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { getFormChecklistLines } from "../constants/hrFormChecklists";
-import I9DetailsForm, { emptyI9, emptyPreparer, emptyWork, emptyEmergency } from "../components/hr/I9DetailsForm";
+import I9DetailsForm, {
+  emptyI9,
+  emptyPreparer,
+  emptyWork,
+  emptyEmergency,
+  sanitizeI9Preparers,
+} from "../components/hr/I9DetailsForm";
 import { hrModule } from "../components/hr/hrModuleStyles";
 import { mergePayrollMailingIntoWork, parseHrWorkJson } from "../utils/mailingMerge";
 
@@ -112,7 +118,34 @@ function documentMetadataObject(row) {
   return {};
 }
 
+function hrDownloadFailureHint(e) {
+  if (e?.response) return "";
+  const msg = String(e?.message || "");
+  if (msg === "Network Error" || e?.code === "ERR_NETWORK") {
+    return " Check that the API is reachable (VITE_API_BASE / CORS) and try again.";
+  }
+  if (e?.code === "ECONNABORTED" || /timeout/i.test(msg)) {
+    return " The request timed out — the API may be cold-starting; try again.";
+  }
+  return "";
+}
+
 async function saveBlobResponse(res, fallbackName) {
+  if (res.status != null && (res.status < 200 || res.status >= 300)) {
+    const blob = res.data;
+    if (blob instanceof Blob) {
+      try {
+        const text = await blob.text();
+        const j = JSON.parse(text);
+        if (typeof j.error === "string" && j.error.trim()) {
+          return { ok: false, error: j.error.trim() };
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+    return { ok: false, error: `Download failed (HTTP ${res.status})` };
+  }
   const blob = res.data;
   if (!(blob instanceof Blob)) return { ok: false, error: "Invalid response" };
   const head = new Uint8Array(await blob.slice(0, 5).arrayBuffer());
@@ -304,7 +337,13 @@ export function PayrollFormsHubCore({
         workMerged = { ...workMerged, address_line1: firstLine, mailing_address_line1: firstLine };
       }
       setWork(workMerged);
-      const baseI9 = { ...emptyI9(), ...(loadedI9 && typeof loadedI9 === "object" ? loadedI9 : {}) };
+      const baseI9 = {
+        ...emptyI9(),
+        ...(loadedI9 && typeof loadedI9 === "object" ? loadedI9 : {}),
+        preparers: sanitizeI9Preparers(
+          (loadedI9 && typeof loadedI9 === "object" ? loadedI9.preparers : null) || [],
+        ),
+      };
       const payEmail = String(pay.email || "").trim();
       setI9({ ...baseI9, employee_email: baseI9.employee_email || payEmail });
       const em = Array.isArray(h.emergency_contacts_json) ? h.emergency_contacts_json : emptyEmergency();
@@ -421,7 +460,8 @@ export function PayrollFormsHubCore({
       } else {
         msg = e?.response?.data?.error || e?.message || msg;
       }
-      setError(typeof msg === "string" ? msg : "Download failed");
+      const hint = hrDownloadFailureHint(e);
+      setError(typeof msg === "string" ? `${msg}${hint}` : "Download failed");
     } finally {
       setDlBusy("");
     }
@@ -476,7 +516,8 @@ export function PayrollFormsHubCore({
           } else {
             msg = e?.response?.data?.error || e?.message || msg;
           }
-          setError(typeof msg === "string" ? msg : "Download failed");
+          const hint = hrDownloadFailureHint(e);
+          setError(typeof msg === "string" ? `${msg}${hint}` : "Download failed");
           return;
         }
         await new Promise((r) => setTimeout(r, 400));

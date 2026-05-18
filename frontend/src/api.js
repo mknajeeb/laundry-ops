@@ -860,11 +860,19 @@ export const putTaUserHrProfile = (userId, body) =>
 export const getTaUserHrFormsInventory = (userId) =>
   axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/inventory`);
 
+const HR_FORM_DOWNLOAD_TIMEOUT_MS = 120000;
+
 /** locale: en | es | bilingual — AcroForm prefill where supported (I-9, W-4, W-9, etc.). */
 export const postTaUserHrForm = (userId, formId, body = {}) =>
   axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, body, {
     responseType: "blob",
-    headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+    timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
+    validateStatus: () => true,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      Pragma: "no-cache",
+    },
   });
 
 export const postTaUserHrFormI9 = (userId, locale = "en") =>
@@ -873,7 +881,13 @@ export const postTaUserHrFormI9 = (userId, locale = "en") =>
     { locale },
     {
       responseType: "blob",
-      headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+      timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
+      validateStatus: () => true,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        Pragma: "no-cache",
+      },
     },
   );
 

@@ -107,10 +107,32 @@ def _deep_merge_w4_block(base: dict, patch: dict) -> dict:
     return out
 
 
+def _preparer_row_has_any_data(p: dict) -> bool:
+    if not isinstance(p, dict):
+        return False
+    for key in ("last_name", "first_name", "middle_initial", "address", "city", "state", "zip"):
+        if str(p.get(key) or "").strip():
+            return True
+    return False
+
+
+def _sanitize_i9_block(i9: Any) -> dict:
+    """Drop empty preparer/translator rows; preparers are optional on I-9."""
+    if not isinstance(i9, dict):
+        return {}
+    out = dict(i9)
+    rows = out.get("preparers")
+    if isinstance(rows, list):
+        out["preparers"] = [p for p in rows if _preparer_row_has_any_data(p)]
+    return out
+
+
 def _deep_merge_work_json(base: Optional[dict], patch: Optional[dict]) -> dict:
     """Deep-merge work_json; w4.compliance uses empty-string-safe merge."""
     out = dict(base or {})
     if not patch:
+        if isinstance(out.get("i9"), dict):
+            out["i9"] = _sanitize_i9_block(out["i9"])
         return out
     for k, v in patch.items():
         if k == "w4":
@@ -127,6 +149,8 @@ def _deep_merge_work_json(base: Optional[dict], patch: Optional[dict]) -> dict:
             out[k] = _deep_merge_json(out[k], v)
         else:
             out[k] = v
+    if isinstance(out.get("i9"), dict):
+        out["i9"] = _sanitize_i9_block(out["i9"])
     return out
 
 

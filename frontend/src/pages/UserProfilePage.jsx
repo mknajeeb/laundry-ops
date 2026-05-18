@@ -45,7 +45,12 @@ import {
   getTaTaxFormYearSettings,
   putTaUserHrProfile,
 } from "../api";
-import I9DetailsForm, { emptyI9, emptyPreparer } from "../components/hr/I9DetailsForm";
+import I9DetailsForm, {
+  emptyI9,
+  emptyPreparer,
+  preparerRowHasAnyData,
+  sanitizeI9Preparers,
+} from "../components/hr/I9DetailsForm";
 import { useStreetAutocomplete } from "../components/GooglePlacesAutocomplete";
 import {
   normalizeTaxIdDigits,
@@ -348,10 +353,10 @@ function validateComplianceForSave({
   if (!String(complianceI9.employer_authorized_representative || "").trim()) {
     return t("profile.errComplianceEmployerRep");
   }
-  const preps = complianceI9.preparers || [];
-  if (!preps.length) return t("profile.errCompliancePreparerMin");
+  const preps = sanitizeI9Preparers(complianceI9.preparers || []);
   for (let i = 0; i < preps.length; i++) {
     const p = { ...emptyPreparer(), ...preps[i] };
+    if (!preparerRowHasAnyData(p)) continue;
     if (!String(p.last_name || "").trim() || !String(p.first_name || "").trim()) {
       return t("profile.errCompliancePreparerName");
     }
@@ -678,10 +683,14 @@ export default function UserProfilePage({ user: sessionUser }) {
     () => {
       const pay9 = normalizeTaxIdDigits(itinSsn);
       const i9Digits = normalizeTaxIdDigits(complianceI9?.ssn || "");
-      const i9ForSave =
+      const i9Base =
         pay9.length === 9 && i9Digits.length !== 9
           ? { ...complianceI9, ssn: pay9 }
           : complianceI9;
+      const i9ForSave = {
+        ...i9Base,
+        preparers: sanitizeI9Preparers(i9Base.preparers || []),
+      };
       const jobTitleLookup =
         jobTitleCode &&
         String(lkJob.find((x) => String(x.code) === String(jobTitleCode))?.label || "").trim();
@@ -780,7 +789,11 @@ export default function UserProfilePage({ user: sessionUser }) {
     setSupervisorName(w.supervisor_name || "");
     setRehireStartDate(w.rehire_start_date ? String(w.rehire_start_date).slice(0, 10) : "");
     const i9raw = w.i9 && typeof w.i9 === "object" ? w.i9 : {};
-    setComplianceI9({ ...emptyI9(), ...i9raw });
+    setComplianceI9({
+      ...emptyI9(),
+      ...i9raw,
+      preparers: sanitizeI9Preparers(i9raw.preparers || []),
+    });
     const i9Stored = normalizeTaxIdDigits(i9raw.ssn || "");
     if (i9Stored.length === 9) {
       setItinSsn(i9Stored);

@@ -64,6 +64,25 @@ export function emptyPreparer() {
   };
 }
 
+/** True when any preparer/translator field is filled (optional on compliance save). */
+export function preparerRowHasAnyData(p) {
+  if (!p || typeof p !== "object") return false;
+  return !!(
+    String(p.last_name || "").trim() ||
+    String(p.first_name || "").trim() ||
+    String(p.middle_initial || "").trim() ||
+    String(p.address || "").trim() ||
+    String(p.city || "").trim() ||
+    String(p.state || "").trim() ||
+    String(p.zip || "").trim()
+  );
+}
+
+export function sanitizeI9Preparers(preparers) {
+  if (!Array.isArray(preparers)) return [];
+  return preparers.filter(preparerRowHasAnyData);
+}
+
 export function emptyI9() {
   return {
     legal_first_name: "",
