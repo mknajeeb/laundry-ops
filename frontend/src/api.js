@@ -879,49 +879,58 @@ export const getTaUserHrFormsInventory = (userId) =>
 
 const HR_FORM_DOWNLOAD_TIMEOUT_MS = 120000;
 
-const hrFormDownloadConfig = {
-  responseType: "blob",
-  timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
-  validateStatus: () => true,
-  headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
-};
+function hrFormBase64ToBlob(b64, contentType) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: contentType || "application/pdf" });
+}
 
-/** locale: en | es | bilingual — AcroForm prefill where supported (I-9, W-4, W-9, etc.). */
-export const getTaUserHrForm = (userId, formId, locale = "en") =>
-  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, {
-    ...hrFormDownloadConfig,
-    params: { locale },
-  });
-
-/** @deprecated Prefer getTaUserHrForm (GET avoids cross-origin POST blob edge cases). */
-export const postTaUserHrForm = (userId, formId, body = {}) =>
-  axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, body, {
-    ...hrFormDownloadConfig,
-    headers: {
-      ...hrFormDownloadConfig.headers,
-      "Content-Type": "application/json",
-    },
-  });
-
-export const getTaUserHrFormI9 = (userId, locale = "en") =>
-  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/i9`, {
-    ...hrFormDownloadConfig,
-    params: { locale },
-  });
-
-/** @deprecated Prefer getTaUserHrFormI9 */
-export const postTaUserHrFormI9 = (userId, locale = "en") =>
-  axios.post(
-    `${API_BASE}/api/ta/users/${userId}/hr-forms/i9`,
-    { locale },
+/**
+ * Download HR form bytes. Uses JSON+base64 (`format=json`) so production CORS matches other API calls.
+ * Returns an axios-shaped `{ status, data: Blob, headers }` for existing save helpers.
+ */
+export async function getTaUserHrForm(userId, formId, locale = "en") {
+  const res = await axios.get(
+    `${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`,
     {
-      ...hrFormDownloadConfig,
-      headers: {
-        ...hrFormDownloadConfig.headers,
-        "Content-Type": "application/json",
-      },
+      params: { locale, format: "json" },
+      timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
+      validateStatus: () => true,
+      headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
     },
   );
+  const body = res.data;
+  if (res.status >= 200 && res.status < 300 && body && typeof body === "object" && body.data_base64) {
+    return {
+      status: res.status,
+      data: hrFormBase64ToBlob(body.data_base64, body.content_type),
+      headers: {
+        ...res.headers,
+        "content-type": body.content_type || "application/pdf",
+        "x-suggested-filename": body.filename || "",
+      },
+    };
+  }
+  const errMsg =
+    body && typeof body === "object" && typeof body.error === "string"
+      ? body.error
+      : `Download failed (HTTP ${res.status})`;
+  return {
+    status: res.status,
+    data: new Blob([JSON.stringify({ error: errMsg })], { type: "application/json" }),
+    headers: res.headers,
+  };
+}
+
+/** @deprecated Use getTaUserHrForm */
+export const postTaUserHrForm = (userId, formId, body = {}) =>
+  getTaUserHrForm(userId, formId, body?.locale || "en");
+
+export const getTaUserHrFormI9 = (userId, locale = "en") => getTaUserHrForm(userId, "i9", locale);
+
+/** @deprecated Use getTaUserHrFormI9 */
+export const postTaUserHrFormI9 = (userId, locale = "en") => getTaUserHrFormI9(userId, locale);
 
 export const getTaUserDocuments = (userId) =>
   axios.get(`${API_BASE}/api/ta/users/${userId}/documents`);

@@ -1,9 +1,11 @@
+import base64
 import json
 import math
 import os
 import re
 import threading
 from io import BytesIO
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from functools import wraps
 from typing import Optional
@@ -3162,6 +3164,27 @@ def documents_org_records_export_zip():
         conn.close()
 
 
+def _hr_form_wants_json_payload() -> bool:
+    return (request.args.get("format") or "").strip().lower() == "json"
+
+
+def _hr_form_file_response(data: bytes, filename: str, mimetype: str = "application/pdf"):
+    """JSON base64 avoids cross-origin blob/CORS issues in the browser; default is raw PDF."""
+    if _hr_form_wants_json_payload():
+        return jsonify(
+            {
+                "filename": filename,
+                "content_type": mimetype,
+                "data_base64": base64.b64encode(data).decode("ascii"),
+            }
+        )
+    return Response(
+        data,
+        mimetype=mimetype,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @ta_bp.route("/users/<int:user_id>/hr-forms/<form_id>", methods=["GET", "POST"])
 @require_auth
 def user_hr_form_deliver(user_id, form_id):
@@ -3239,11 +3262,7 @@ def _user_hr_form_deliver_impl(conn, user_id: int, fid: str, locale: str):
             )
             fn = f"{fid}_{locale}_reference.pdf"
             _record_hub_download(fn)
-            return Response(
-                pdf,
-                mimetype="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
-            )
+            return _hr_form_file_response(pdf, fn)
 
         path = resolve_form_asset_path(fid, locale)
         if not path:
@@ -3281,11 +3300,7 @@ def _user_hr_form_deliver_impl(conn, user_id: int, fid: str, locale: str):
             ln = (u.get("last_name") or "user").replace("/", "-")[:40]
             fn = f"i9-prefill-{locale}-{ln}-{user_id}.pdf"
             _record_hub_download(fn)
-            return Response(
-                pdf,
-                mimetype="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
-            )
+            return _hr_form_file_response(pdf, fn)
 
         if fid in ("irs_w4", "irs_w9", "ny_it2104") and locale in ("en", "es"):
             cur = conn.cursor()
@@ -3310,11 +3325,7 @@ def _user_hr_form_deliver_impl(conn, user_id: int, fid: str, locale: str):
                 return jsonify({"error": f"PDF fill failed: {e}"}), 503
             fn = f"{fid}-prefill-{locale}-{user_id}.pdf"
             _record_hub_download(fn)
-            return Response(
-                pdf,
-                mimetype="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{fn}"'},
-            )
+            return _hr_form_file_response(pdf, fn)
 
         mime = (
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -3322,6 +3333,8 @@ def _user_hr_form_deliver_impl(conn, user_id: int, fid: str, locale: str):
             else "application/pdf"
         )
         _record_hub_download(dl)
+        if _hr_form_wants_json_payload():
+            return _hr_form_file_response(Path(path).read_bytes(), dl, mimetype=mime)
         return send_file(path, mimetype=mime, as_attachment=True, download_name=dl)
     except Exception:
         current_app.logger.exception("hr form deliver impl failed user_id=%s form=%s", user_id, fid)
@@ -3406,11 +3419,7 @@ def user_hr_form_i9(user_id):
             )
         except Exception:
             current_app.logger.exception("upsert generated document record failed")
-        return Response(
-            pdf,
-            mimetype="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{fn}"'},
-        )
+        return _hr_form_file_response(pdf, fn)
     finally:
         conn.close()
 
