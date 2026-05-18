@@ -231,7 +231,7 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
 
         self.assertEqual(
             call_order,
-            ["pre_upload_snapshot", "shell", "merge", "recompute", "insert", "audit", "folding"],
+            ["pre_upload_snapshot", "shell", "insert", "audit"],
         )
 
 

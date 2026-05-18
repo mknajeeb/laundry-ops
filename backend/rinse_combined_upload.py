@@ -326,8 +326,7 @@ def insert_upload_batch_rows_from_orders_df(
         where_not_sent_or_forced_sql,
     )
     from backend.rinse_bag_completion import classify_portal_upload_row, normalize_bag_id
-    from backend.rinse_bag_registry import is_bag_already_completed
-    from backend.rinse_bag_upload import find_active_staging_by_ticket_id, upsert_registry_from_portal_row
+    from backend.rinse_bag_upload import find_active_staging_by_ticket_id
 
     if pre_existing_completed_bag_ids is None:
         pre_existing_completed_bag_ids = collect_pre_existing_completed_bag_ids(
@@ -386,14 +385,8 @@ def insert_upload_batch_rows_from_orders_df(
                         has_ticket_id_col=cap.get("has_ticket_id", False),
                     )
                     was_completed_before = ticket_id in pre_existing_completed_bag_ids
-                    registry_completed_now = is_bag_already_completed(
-                        cursor, tenant_oid, ticket_id
-                    )
-                    # Reject only if COMPLETED before this upload and still COMPLETED after
-                    # scan-events merge/recompute (evaluator may demote stale COMPLETED → INCOMPLETE).
-                    reject_as_already_completed = (
-                        was_completed_before and registry_completed_now
-                    )
+                    # Draft must not mutate registry; reject only if already COMPLETED before upload.
+                    reject_as_already_completed = was_completed_before
                     row_status, reason = classify_portal_upload_row(
                         ticket_id=ticket_id,
                         was_completed_before_upload=reject_as_already_completed,
@@ -406,19 +399,6 @@ def insert_upload_batch_rows_from_orders_df(
                         needs_attention += 1
                     elif row_status == "ACCEPTED":
                         inserted += 1
-
-                    upsert_registry_from_portal_row(
-                        cursor,
-                        tenant_oid,
-                        upload_batch_id,
-                        ticket_id=ticket_id,
-                        name_clean=name_clean,
-                        weight_num=weight_num,
-                        service_type=service_type,
-                        date_clean=row_date,
-                        rush_type=rush_type,
-                        is_completed=registry_completed_now,
-                    )
 
         if not rinse_bag_row:
             row_status = "ACCEPTED"
@@ -611,7 +591,6 @@ def commit_rinse_combined_upload(
     Single transaction; caller must not commit on failure (rollback in route).
     """
     from backend.app import summarize_batch_rows
-    from backend.rinse_bag_registry import merge_scan_events_from_upload, recompute_completion_for_bags
     from backend.rinse_scan_events_upload import commit_scan_events_for_batch
     from backend.upload_batch_requirements import batch_upload_files_status
 
@@ -627,17 +606,7 @@ def commit_rinse_combined_upload(
         cursor, tenant_oid, batch_date, combined_name, schema
     )
 
-    merge_payload = merge_scan_events_from_upload(
-        cursor,
-        tenant_oid,
-        upload_batch_id,
-        events_df,
-        events_filename,
-    )
     bag_ids = collect_bag_ids_from_upload(orders_df, events_df)
-    if not bag_ids and merge_payload.get("bag_ids"):
-        bag_ids = list(merge_payload["bag_ids"])
-    completion_payload = recompute_completion_for_bags(cursor, tenant_oid, bag_ids)
 
     final_keys, existing_reasons, lookback = build_upload_duplicate_indexes(
         cursor, tenant_oid, schema
@@ -667,10 +636,6 @@ def commit_rinse_combined_upload(
         cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
     )
 
-    from backend.rinse_folding_registry import recompute_folding_after_upload
-
-    folding_payload = recompute_folding_after_upload(cursor, tenant_oid, bag_ids)
-
     conn.commit()
     summary = summarize_batch_rows(cursor, upload_batch_id, schema.row_pk)
     upload_files = batch_upload_files_status(cursor, upload_batch_id, tenant_oid)
@@ -688,8 +653,7 @@ def commit_rinse_combined_upload(
         "summary_rows": len(orders_df),
         "require_both_csv": True,
         "upload_files": upload_files,
-        "persistent_merge": merge_payload,
-        "completion": completion_payload,
         "scan_events_batch": batch_events_payload,
-        "folding": folding_payload,
+        "draft_bag_ids": bag_ids,
+        "finalize_on_confirm": True,
     }

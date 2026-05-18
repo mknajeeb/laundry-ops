@@ -4131,30 +4131,6 @@ def upload_batch_rinse_scan_events(batch_id: int):
             replace_existing=True,
         )
 
-        from backend.rinse_bag_registry import (
-            merge_scan_events_from_upload,
-            recompute_completion_for_bags,
-        )
-
-        merge_payload = merge_scan_events_from_upload(
-            cursor,
-            tenant_oid,
-            batch_id,
-            events_df,
-            orig_name,
-        )
-        completion_payload = recompute_completion_for_bags(
-            cursor,
-            tenant_oid,
-            merge_payload.get("bag_ids") or [],
-        )
-        from backend.rinse_folding_registry import recompute_folding_after_upload
-
-        folding_payload = recompute_folding_after_upload(
-            cursor,
-            tenant_oid,
-            merge_payload.get("bag_ids") or [],
-        )
         conn.commit()
 
         return jsonify(
@@ -4163,10 +4139,9 @@ def upload_batch_rinse_scan_events(batch_id: int):
                 "upload_batch_id": batch_id,
                 "source": "upload_rinse_scan_events_csv",
                 "warnings": warnings,
+                "draft_only": True,
+                "finalize_on_confirm": True,
                 **batch_payload,
-                "persistent_merge": merge_payload,
-                "completion": completion_payload,
-                "folding": folding_payload,
             }
         )
 
@@ -9491,6 +9466,15 @@ def get_upload_batch_rows(batch_id):
         tenant_oid = user_org_id(me)
         if not upload_batch_belongs_to_user_org(cursor, batch_id, tenant_oid):
             return jsonify({"error": "Batch not found"}), 404
+        batch_pk = get_upload_batches_pk(cursor)
+        batch_state = "DRAFT"
+        if table_has_column(cursor, "upload_batches", "state"):
+            cursor.execute(
+                f"SELECT state FROM upload_batches WHERE {batch_pk} = %s LIMIT 1",
+                (batch_id,),
+            )
+            br = cursor.fetchone() or {}
+            batch_state = br.get("state") or "DRAFT"
         row_pk = get_upload_batch_rows_pk(cursor)
         ubr_tid_sel = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
         if row_status:
@@ -9536,7 +9520,13 @@ def get_upload_batch_rows(batch_id):
         rows = cursor.fetchall() or []
         from backend.rinse_bag_upload import enrich_upload_batch_rows_with_registry
 
-        rows = enrich_upload_batch_rows_with_registry(cursor, tenant_oid, rows)
+        rows = enrich_upload_batch_rows_with_registry(
+            cursor,
+            tenant_oid,
+            rows,
+            upload_batch_id=batch_id,
+            batch_state=batch_state,
+        )
         return jsonify(rows)
     finally:
         cursor.close()
@@ -10135,6 +10125,30 @@ def confirm_upload_batch(batch_id):
                 WHERE {batch_pk} = %s
             """, (batch_id,))
 
+        ubr_tid = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
+        if ubr_tid:
+            cursor.execute(
+                f"""
+                SELECT date_clean, name_clean, weight_num, service_type, rush_type, ticket_id
+                FROM upload_batch_rows
+                WHERE upload_batch_id = %s AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
+                """,
+                (batch_id,),
+            )
+            finalize_portal_rows = list(cursor.fetchall() or [])
+        else:
+            finalize_portal_rows = list(accepted_rows)
+
+        from backend.rinse_upload_finalize import finalize_rinse_after_batch_confirm
+
+        rinse_finalize = finalize_rinse_after_batch_confirm(
+            cursor,
+            tenant_oid,
+            batch_id,
+            accepted_portal_rows=finalize_portal_rows,
+            source_filename=f"batch_confirm_{batch_id}",
+        )
+
         conn.commit()
         return jsonify({
             "status": "batch_confirmed",
@@ -10143,6 +10157,7 @@ def confirm_upload_batch(batch_id):
             "staging_updated_by_bag_id": staging_updated,
             "forced_checkout_pending": forced_pending,
             "moved_to_final": moved_to_final,
+            "rinse_finalize": rinse_finalize,
         })
 
     except Exception as e:

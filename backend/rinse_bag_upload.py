@@ -209,7 +209,12 @@ def update_staging_from_upload_row(
 
 
 def enrich_upload_batch_rows_with_registry(
-    cursor, organization_id: int, rows: list[dict]
+    cursor,
+    organization_id: int,
+    rows: list[dict],
+    *,
+    upload_batch_id: int | None = None,
+    batch_state: str | None = None,
 ) -> list[dict]:
     from backend.rinse_bag_completion import (
         COMPLETION_COMPLETED,
@@ -233,6 +238,18 @@ def enrich_upload_batch_rows_with_registry(
             row["completion_reason"] = None
             row["completed_at"] = None
             row["trigger_kind"] = None
+        elif is_draft and tid in preview_map:
+            prev = preview_map[tid]
+            row["registry_status"] = prev.get("completion_status")
+            row["registry_not_found"] = False
+            row["completion_reason"] = prev.get("completion_reason")
+            row["completed_at"] = prev.get("trigger_scan_at")
+            row["trigger_kind"] = prev.get("trigger_kind")
+            row["registry_preview"] = True
+            if tid in reg_map:
+                row["persisted_registry_status"] = reg_map[tid].get("completion_status")
+            else:
+                row["persisted_registry_status"] = None
         elif tid in reg_map:
             reg = reg_map[tid]
             row["registry_status"] = reg.get("completion_status")
@@ -242,12 +259,14 @@ def enrich_upload_batch_rows_with_registry(
             if isinstance(row["completed_at"], datetime):
                 row["completed_at"] = row["completed_at"].isoformat()
             row["trigger_kind"] = reg.get("trigger_kind")
+            row["registry_preview"] = False
         else:
             row["registry_status"] = None
             row["registry_not_found"] = True
             row["completion_reason"] = None
             row["completed_at"] = None
             row["trigger_kind"] = None
+            row["registry_preview"] = is_draft and tid in preview_map
 
         reason = str(row.get("reason") or "")
         reg_status = str(row.get("registry_status") or "").upper()

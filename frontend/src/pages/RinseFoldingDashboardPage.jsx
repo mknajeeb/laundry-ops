@@ -40,6 +40,7 @@ import {
 } from "../api";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import {
+  comparisonArrow,
   formatComparison,
   formatDateTime,
   formatFoldingDuration,
@@ -50,6 +51,48 @@ import {
   isoDateInput,
   targetStatusChipColor,
 } from "../utils/foldingFormat";
+
+function exportEmployeesCsv(employees, filename = "folding-employees.csv") {
+  const headers = [
+    "employee",
+    "bags",
+    "total_lbs",
+    "folding_hours",
+    "bags_per_hour",
+    "lbs_per_hour",
+    "minutes_per_bag",
+    "quality_percent",
+    "issue_count",
+    "target_status",
+    "vs_prior_lbs_per_hour",
+  ];
+  const lines = [headers.join(",")];
+  for (const e of employees) {
+    const hours = e.total_folding_seconds ? (e.total_folding_seconds / 3600).toFixed(2) : "";
+    lines.push(
+      [
+        JSON.stringify(e.user_name || ""),
+        e.bag_count ?? "",
+        e.total_lbs ?? "",
+        hours,
+        e.bags_per_hour ?? "",
+        e.lbs_per_hour ?? "",
+        e.avg_minutes_per_bag ?? "",
+        e.issue_free_percent ?? "",
+        e.issue_count ?? "",
+        e.target_status ?? "",
+        e.comparison?.lbs_per_hour?.delta ?? "",
+      ].join(",")
+    );
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function isFoldingAdmin(user) {
   const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
@@ -238,7 +281,7 @@ function RinseFoldingDashboardPage({ user }) {
         <Box>
           <Typography variant="h4" fontWeight={800}>Folding Performance Dashboard</Typography>
           <Typography variant="body2" color="text.secondary">
-            Performance updates automatically after nightly upload. Use backfill only for repair or history.
+            Metrics update when you confirm an upload batch (not on draft upload). Use backfill only for repair or history.
           </Typography>
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center">
@@ -251,12 +294,14 @@ function RinseFoldingDashboardPage({ user }) {
             </>
           )}
           <ToggleButtonGroup size="small" exclusive value={period} onChange={(_, v) => v && setPeriod(v)}>
-            <ToggleButton value="week">Week</ToggleButton>
-            <ToggleButton value="month">Month</ToggleButton>
-            <ToggleButton value="custom">Custom</ToggleButton>
+            <ToggleButton value="week">This week</ToggleButton>
+            <ToggleButton value="month">This month</ToggleButton>
+            <ToggleButton value="custom">Custom range</ToggleButton>
           </ToggleButtonGroup>
           <Button variant="outlined" size="small" onClick={loadAll} disabled={loading}>Refresh</Button>
-          {admin ? <Button variant="outlined" size="small" onClick={() => setBenchmarksOpen(true)}>Benchmarks</Button> : null}
+          <Button variant="outlined" size="small" onClick={() => exportEmployeesCsv(employees, `folding-${period}.csv`)} disabled={!employees.length}>
+            Export CSV
+          </Button>
           {admin ? <Button variant="text" size="small" onClick={() => setBackfillOpen((o) => !o)}>Backfill / Recompute</Button> : null}
         </Stack>
       </Stack>
@@ -309,10 +354,35 @@ function RinseFoldingDashboardPage({ user }) {
           <SummaryCard
             label="Quality %"
             value={team.issue_free_percent != null ? `${formatRate(team.issue_free_percent, 1)}%` : "—"}
-            sub={`Target ${formatRate(bench.issue_free_percent_target, 0)}% · ${formatComparison(comp.issue_free_percent, { suffix: "%" })}`}
+            sub={
+              team.issue_count != null
+                ? `${team.issue_count} issues · target ${formatRate(bench.issue_free_percent_target, 0)}% · ${formatComparison(comp.issue_free_percent, { suffix: "%" })}`
+                : `Target ${formatRate(bench.issue_free_percent_target, 0)}% · ${formatComparison(comp.issue_free_percent, { suffix: "%" })}`
+            }
           />
         </Grid>
       </Grid>
+
+      {admin ? (
+        <Paper sx={{ p: 2, mb: 3, border: "1px solid", borderColor: "primary.light", bgcolor: "rgba(0, 114, 206, 0.06)" }}>
+          <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="flex-start" gap={2}>
+            <Box>
+              <Typography variant="subtitle1" fontWeight={800}>Performance settings (benchmarks)</Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                TV and dashboard read these targets from the API — not hardcoded.
+              </Typography>
+            </Box>
+            <Button variant="contained" size="small" onClick={() => setBenchmarksOpen(true)}>Edit settings</Button>
+          </Stack>
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={6} sm={4} md={2}><Typography variant="caption" color="text.secondary">Bags/hr target</Typography><Typography fontWeight={700}>{formatRate(bench.bags_per_hour_target)}</Typography></Grid>
+            <Grid item xs={6} sm={4} md={2}><Typography variant="caption" color="text.secondary">Lbs/hr target</Typography><Typography fontWeight={700}>{formatRate(bench.lbs_per_hour_target)}</Typography></Grid>
+            <Grid item xs={6} sm={4} md={2}><Typography variant="caption" color="text.secondary">Min/bag target</Typography><Typography fontWeight={700}>{formatRate(bench.minutes_per_bag_target)}</Typography></Grid>
+            <Grid item xs={6} sm={4} md={2}><Typography variant="caption" color="text.secondary">Quality target</Typography><Typography fontWeight={700}>{formatRate(bench.issue_free_percent_target, 0)}%</Typography></Grid>
+            <Grid item xs={6} sm={4} md={2}><Typography variant="caption" color="text.secondary">Week starts</Typography><Typography fontWeight={700}>{bench.week_start_day || "MONDAY"}</Typography></Grid>
+          </Grid>
+        </Paper>
+      ) : null}
 
       <Paper sx={{ p: 2, mb: 3 }}>
         <Typography variant="subtitle1" fontWeight={700} gutterBottom>Staff leaderboard</Typography>
@@ -342,46 +412,90 @@ function RinseFoldingDashboardPage({ user }) {
       </Paper>
 
       <Paper sx={{ p: 2, mb: 3 }}>
-        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
-          <Typography variant="subtitle1" fontWeight={700}>Employee analysis</Typography>
-          {selectedEmployee ? <Button size="small" onClick={() => setSelectedEmployee("")}>Clear filter</Button> : null}
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1} flexWrap="wrap" gap={1}>
+          <Typography variant="subtitle1" fontWeight={700}>Employee performance</Typography>
+          <Stack direction="row" spacing={1}>
+            {selectedEmployee ? <Button size="small" onClick={() => setSelectedEmployee("")}>Clear filter</Button> : null}
+            <Button size="small" variant="outlined" onClick={() => exportEmployeesCsv(employees)} disabled={!employees.length}>Export</Button>
+          </Stack>
         </Stack>
-        {selectedEmployee ? (
-          <Typography variant="body2" color="text.secondary" mb={1}>Drill-down: {selectedEmployee}</Typography>
-        ) : null}
-        <Table size="small">
+        <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
-              <TableCell>Staff</TableCell><TableCell align="right">Bags</TableCell><TableCell align="right">Lbs/hr</TableCell>
-              <TableCell align="right">Min/bag</TableCell><TableCell align="right">Gap</TableCell><TableCell align="right">Quality</TableCell>
+              <TableCell>Employee</TableCell>
+              <TableCell align="right">Bags</TableCell>
+              <TableCell align="right">Lbs</TableCell>
+              <TableCell align="right">Hours</TableCell>
+              <TableCell align="right">Bags/hr</TableCell>
+              <TableCell align="right">Lbs/hr</TableCell>
+              <TableCell align="right">Min/bag</TableCell>
+              <TableCell align="right">Issues</TableCell>
+              <TableCell align="right">Quality %</TableCell>
+              <TableCell>Target</TableCell>
+              <TableCell>vs prior</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {employees.length === 0 ? (
-              <TableRow><TableCell colSpan={6} align="center">No employee data.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={11} align="center">No employee data for this period.</TableCell></TableRow>
             ) : employees.map((e) => (
-              <TableRow key={e.user_name} hover sx={{ cursor: "pointer" }} onClick={() => setSelectedEmployee(e.user_name)} selected={selectedEmployee === e.user_name}>
+              <TableRow
+                key={e.user_name}
+                hover
+                sx={{ cursor: "pointer" }}
+                onClick={() => setSelectedEmployee(e.user_name)}
+                selected={selectedEmployee === e.user_name}
+              >
                 <TableCell>{e.user_name}{e.rank ? ` (#${e.rank})` : ""}</TableCell>
                 <TableCell align="right">{e.bag_count}</TableCell>
+                <TableCell align="right">{formatLbs(e.total_lbs)}</TableCell>
+                <TableCell align="right">{formatFoldingHours(e.total_folding_seconds)}</TableCell>
+                <TableCell align="right">{formatRate(e.bags_per_hour)}</TableCell>
                 <TableCell align="right">{formatRate(e.lbs_per_hour)}</TableCell>
                 <TableCell align="right">{e.avg_minutes_per_bag != null ? formatRate(e.avg_minutes_per_bag) : "—"}</TableCell>
-                <TableCell align="right">{formatFoldingDuration(e.gap_seconds_total)}</TableCell>
+                <TableCell align="right">{e.issue_count ?? "—"}</TableCell>
                 <TableCell align="right">{e.issue_free_percent != null ? `${formatRate(e.issue_free_percent, 1)}%` : "—"}</TableCell>
+                <TableCell><Chip size="small" label={e.target_status} color={targetStatusChipColor(e.target_status)} /></TableCell>
+                <TableCell>
+                  {e.comparison?.lbs_per_hour?.available
+                    ? `${comparisonArrow(e.comparison.lbs_per_hour.direction)} ${formatComparison(e.comparison.lbs_per_hour)}`
+                    : "—"}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
-        {selectedEmployee && employeeBags.length > 0 ? (
-          <Box mt={2}>
-            <Typography variant="subtitle2" fontWeight={700} mb={1}>Bags for {selectedEmployee}</Typography>
+        {selectedEmployee ? (
+          <Box mt={3}>
+            <Typography variant="subtitle2" fontWeight={700} mb={1}>Bags folded by {selectedEmployee}</Typography>
             <Table size="small">
-              <TableHead><TableRow><TableCell>Bag</TableCell><TableCell>Duration</TableCell><TableCell>Status</TableCell></TableRow></TableHead>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Bag ID</TableCell>
+                  <TableCell>Customer</TableCell>
+                  <TableCell align="right">Weight</TableCell>
+                  <TableCell>Folding start</TableCell>
+                  <TableCell>Folding end</TableCell>
+                  <TableCell>Duration</TableCell>
+                  <TableCell>Status</TableCell>
+                  <TableCell>Exception</TableCell>
+                  <TableCell />
+                </TableRow>
+              </TableHead>
               <TableBody>
-                {employeeBags.map((r) => (
-                  <TableRow key={r.bag_id} hover onClick={() => openDrawer(r.bag_id)} sx={{ cursor: "pointer" }}>
+                {employeeBags.length === 0 ? (
+                  <TableRow><TableCell colSpan={9} align="center">No bags in period.</TableCell></TableRow>
+                ) : employeeBags.map((r) => (
+                  <TableRow key={r.bag_id} hover>
                     <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
+                    <TableCell>{r.name_clean || "—"}</TableCell>
+                    <TableCell align="right">{r.weight_lbs != null ? formatLbs(r.weight_lbs) : r.registry_weight_num != null ? formatLbs(r.registry_weight_num) : "—"}</TableCell>
+                    <TableCell>{formatDateTime(r.folding_start_at)}</TableCell>
+                    <TableCell>{formatDateTime(r.folding_end_at)}</TableCell>
                     <TableCell>{formatFoldingDuration(r.duration_seconds)}</TableCell>
-                    <TableCell>{r.status}</TableCell>
+                    <TableCell><Chip size="small" label={r.status} color={r.status === "CALCULATED" ? "success" : "warning"} /></TableCell>
+                    <TableCell>{r.exception_code || "—"}</TableCell>
+                    <TableCell><Button size="small" onClick={() => openDrawer(r.bag_id)}>Timeline</Button></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -465,7 +579,7 @@ function RinseFoldingDashboardPage({ user }) {
       </Dialog>
 
       <Dialog open={benchmarksOpen} onClose={() => setBenchmarksOpen(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Folding benchmarks</DialogTitle>
+        <DialogTitle>Performance settings</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             {["bags_per_hour_target", "lbs_per_hour_target", "minutes_per_bag_target", "issue_free_percent_target"].map((k) => (

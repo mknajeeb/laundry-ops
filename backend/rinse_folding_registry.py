@@ -787,7 +787,7 @@ WEEKDAY_TO_INT = {
     "SUNDAY": 6,
 }
 
-DATA_SOURCE_NOTE = "Updated after nightly upload"
+DATA_SOURCE_NOTE = "Updated after batch confirm"
 
 
 def _week_start_offset(anchor: date, week_start_day: str) -> int:
@@ -958,12 +958,20 @@ def aggregate_team_folding_stats(
     bags_per_hour = (bag_count / hours) if hours > 0 else None
     lbs_per_hour = (total_lbs / hours) if hours > 0 else None
     issue = compute_folding_issue_metrics(cursor, org, period_start, period_end)
+    issue_count = issue.get("issue_count")
+    issue_rate = (
+        round(100.0 * issue_count / issue["denominator"], 2)
+        if issue.get("denominator") and issue_count is not None
+        else None
+    )
     return {
         "bag_count": bag_count,
         "total_lbs": round(total_lbs, 2),
         "total_folding_seconds": total_seconds,
         "bags_per_hour": round(bags_per_hour, 4) if bags_per_hour is not None else None,
         "lbs_per_hour": round(lbs_per_hour, 4) if lbs_per_hour is not None else None,
+        "issue_count": issue_count,
+        "issue_percent": issue_rate,
         "avg_minutes_per_bag": (
             round((total_seconds / bag_count) / 60.0, 2) if bag_count > 0 else None
         ),

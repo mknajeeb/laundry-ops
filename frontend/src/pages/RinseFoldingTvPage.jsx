@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Box, Chip, Grid, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import { getFoldingLeaderboard } from "../api";
 import {
+  comparisonArrow,
   formatComparison,
   formatFoldingHours,
   formatLbs,
@@ -12,52 +13,145 @@ import {
 } from "../utils/foldingFormat";
 
 const REFRESH_MS = 45000;
-const BG = "linear-gradient(160deg, #0b1220 0%, #111827 45%, #1a1f35 100%)";
 
-function KpiCard({ label, value, sub, accent = "#38bdf8" }) {
+const VW = {
+  blue: "#0072CE",
+  blueDeep: "#004C97",
+  aqua: "#00C9B7",
+  aquaLight: "#5CE1D6",
+  white: "#FFFFFF",
+  cream: "#F0FAFF",
+  gold: "#FFB81C",
+  textMuted: "rgba(255,255,255,0.72)",
+};
+
+const BG = `linear-gradient(145deg, ${VW.blueDeep} 0%, ${VW.blue} 38%, #0096D6 62%, ${VW.aqua} 100%)`;
+
+function TrendPill({ label, comp, suffix = "" }) {
+  const dir = comp?.direction || "flat";
+  const color = dir === "up" ? VW.aquaLight : dir === "down" ? "#FCA5A5" : VW.textMuted;
+  return (
+    <Box
+      sx={{
+        px: 2,
+        py: 1.25,
+        borderRadius: 3,
+        bgcolor: "rgba(255,255,255,0.12)",
+        border: "1px solid rgba(255,255,255,0.22)",
+        minWidth: 140,
+      }}
+    >
+      <Typography sx={{ fontSize: 11, fontWeight: 800, letterSpacing: 1.2, color: VW.textMuted, textTransform: "uppercase" }}>
+        {label}
+      </Typography>
+      <Typography sx={{ fontSize: 22, fontWeight: 900, color: VW.white, mt: 0.25 }}>
+        {formatComparison(comp, { suffix })}
+        <Box component="span" sx={{ ml: 0.75, fontSize: 28, color }}>
+          {comparisonArrow(dir)}
+        </Box>
+      </Typography>
+    </Box>
+  );
+}
+
+function HeroKpi({ label, value, sub, accent = VW.white }) {
   return (
     <Paper
-      elevation={0}
+      elevation={8}
       sx={{
         p: 2.5,
         height: "100%",
-        bgcolor: "rgba(255,255,255,0.04)",
-        border: "1px solid rgba(255,255,255,0.08)",
-        borderRadius: 2,
+        borderRadius: 4,
+        background: `linear-gradient(160deg, rgba(255,255,255,0.95) 0%, rgba(240,250,255,0.88) 100%)`,
+        border: `2px solid ${VW.aquaLight}`,
+        boxShadow: "0 12px 40px rgba(0,76,151,0.35)",
       }}
     >
-      <Typography sx={{ color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: 600, mb: 0.5 }}>
+      <Typography sx={{ color: VW.blueDeep, fontSize: 13, fontWeight: 800, letterSpacing: 0.6, textTransform: "uppercase" }}>
         {label}
       </Typography>
-      <Typography sx={{ color: accent, fontSize: 34, fontWeight: 800, lineHeight: 1.1 }}>{value}</Typography>
+      <Typography sx={{ color: accent, fontSize: { xs: 36, md: 48 }, fontWeight: 900, lineHeight: 1.05, mt: 0.5 }}>
+        {value}
+      </Typography>
       {sub ? (
-        <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: 12, mt: 0.5 }}>{sub}</Typography>
+        <Typography sx={{ color: VW.blue, fontSize: 14, fontWeight: 700, mt: 0.75 }}>{sub}</Typography>
       ) : null}
     </Paper>
   );
 }
 
-function CompareStrip({ title, team, comparison, bench }) {
-  const prev = team?.available === false;
+function RankCard({ user, rank, isTop }) {
   return (
-    <Paper sx={{ p: 2, bgcolor: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 2 }}>
-      <Typography sx={{ color: "rgba(255,255,255,0.6)", fontSize: 12, fontWeight: 700, mb: 1 }}>
-        {title}
-      </Typography>
-      {prev ? (
-        <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: 14 }}>Not enough data yet</Typography>
-      ) : (
-        <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-          <Chip label={`Bags ${formatComparison(comparison?.bag_count)}`} sx={{ bgcolor: "rgba(255,255,255,0.08)", color: "#fff" }} />
-          <Chip label={`Lbs/hr ${formatComparison(comparison?.lbs_per_hour)}`} sx={{ bgcolor: "rgba(255,255,255,0.08)", color: "#fff" }} />
-          <Chip label={`Quality ${formatComparison(comparison?.issue_free_percent, { suffix: "%" })}`} sx={{ bgcolor: "rgba(255,255,255,0.08)", color: "#fff" }} />
-        </Stack>
-      )}
-      {bench?.issue_free_percent_target != null ? (
-        <Typography sx={{ color: "rgba(255,255,255,0.35)", fontSize: 11, mt: 1 }}>
-          Target quality {formatRate(bench.issue_free_percent_target, 0)}%
-        </Typography>
-      ) : null}
+    <Paper
+      elevation={isTop ? 12 : 4}
+      sx={{
+        p: { xs: 2, md: 2.5 },
+        borderRadius: 4,
+        background: isTop
+          ? `linear-gradient(135deg, ${VW.gold} 0%, #FFE08A 45%, rgba(255,255,255,0.95) 100%)`
+          : "rgba(255,255,255,0.92)",
+        border: isTop ? `3px solid ${VW.gold}` : "2px solid rgba(255,255,255,0.5)",
+        boxShadow: isTop ? "0 16px 48px rgba(0,0,0,0.25)" : "0 8px 24px rgba(0,76,151,0.2)",
+        transform: isTop ? "scale(1.02)" : "none",
+      }}
+    >
+      <Stack direction="row" spacing={2} alignItems="center">
+        <Box
+          sx={{
+            width: 56,
+            height: 56,
+            borderRadius: "50%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontWeight: 900,
+            fontSize: 26,
+            color: isTop ? VW.blueDeep : VW.white,
+            bgcolor: isTop ? VW.white : VW.blue,
+            border: `3px solid ${isTop ? VW.gold : VW.aqua}`,
+          }}
+        >
+          {rank}
+        </Box>
+        <Box flex={1} minWidth={0}>
+          <Typography
+            sx={{
+              fontSize: { xs: 20, md: 24 },
+              fontWeight: 900,
+              color: VW.blueDeep,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {user.user_name}
+          </Typography>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
+            <Typography sx={{ fontSize: 16, fontWeight: 800, color: VW.blue }}>
+              {formatRate(user.lbs_per_hour)} lbs/hr
+            </Typography>
+            <Typography sx={{ fontSize: 16, fontWeight: 700, color: VW.blueDeep }}>
+              {formatRate(user.bags_per_hour)} bags/hr
+            </Typography>
+            <Typography sx={{ fontSize: 15, color: "rgba(0,76,151,0.75)" }}>
+              {user.bag_count} bags · {formatLbs(user.total_lbs)} lbs
+            </Typography>
+          </Stack>
+          {user.issue_free_percent != null ? (
+            <Typography sx={{ fontSize: 14, fontWeight: 700, color: VW.aqua, mt: 0.5 }}>
+              Quality {formatRate(user.issue_free_percent, 1)}%
+              {user.comparison?.issue_free_percent?.available
+                ? ` ${comparisonArrow(user.comparison.issue_free_percent.direction)} vs prior`
+                : ""}
+            </Typography>
+          ) : null}
+        </Box>
+        <Chip
+          label={user.target_status}
+          color={targetStatusChipColor(user.target_status)}
+          sx={{ fontWeight: 800, fontSize: 13, height: 36, display: { xs: "none", sm: "flex" } }}
+        />
+      </Stack>
     </Paper>
   );
 }
@@ -69,7 +163,7 @@ function RinseFoldingTvPage({ user }) {
   const orgLabel =
     user?.organization_name ||
     (user?.organization_slug ? String(user.organization_slug).replace(/-/g, " ") : "") ||
-    "Folding";
+    "Team";
 
   const load = useCallback(async () => {
     try {
@@ -96,19 +190,40 @@ function RinseFoldingTvPage({ user }) {
     ? new Date(data.generated_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     : "—";
   const empty = (team.bag_count || 0) === 0;
+  const periodTitle = period === "month" ? "This Month" : "This Week";
+  const vsTitle = period === "month" ? "vs Last Month" : "vs Last Week";
 
   return (
-    <Box sx={{ minHeight: "100vh", background: BG, color: "#fff", p: { xs: 2, md: 4 } }}>
-      <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems="flex-start" mb={3} gap={2}>
+    <Box
+      sx={{
+        minHeight: "100vh",
+        background: BG,
+        color: VW.white,
+        p: { xs: 2, md: 4 },
+        boxSizing: "border-box",
+      }}
+    >
+      <Stack direction={{ xs: "column", lg: "row" }} justifyContent="space-between" alignItems="flex-start" mb={3} gap={2}>
         <Box>
-          <Typography sx={{ fontSize: { xs: 28, md: 40 }, fontWeight: 900, letterSpacing: -0.5 }}>
-            {orgLabel} Folding Performance
+          <Typography
+            sx={{
+              fontSize: { xs: 32, md: 52 },
+              fontWeight: 900,
+              letterSpacing: -1,
+              textShadow: "0 4px 24px rgba(0,0,0,0.25)",
+              lineHeight: 1.05,
+            }}
+          >
+            {orgLabel}
           </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: 16, mt: 0.5 }}>
-            {formatPeriodRange(data?.period_start, data?.period_end)}
+          <Typography sx={{ fontSize: { xs: 22, md: 32 }, fontWeight: 800, color: VW.aquaLight, mt: 0.25 }}>
+            Folding Performance
           </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.45)", fontSize: 13, mt: 0.5 }}>
-            Updated {updated} · {data?.data_source_note || "Updated after nightly upload"}
+          <Typography sx={{ color: VW.textMuted, fontSize: 18, mt: 1, fontWeight: 600 }}>
+            {periodTitle} · {formatPeriodRange(data?.period_start, data?.period_end)}
+          </Typography>
+          <Typography sx={{ color: "rgba(255,255,255,0.5)", fontSize: 14, mt: 0.5 }}>
+            Updated {updated} · {data?.data_source_note || "Live scoreboard"}
           </Typography>
         </Box>
         <ToggleButtonGroup
@@ -116,96 +231,122 @@ function RinseFoldingTvPage({ user }) {
           value={period}
           onChange={(_, v) => v && setPeriod(v)}
           sx={{
+            bgcolor: "rgba(255,255,255,0.15)",
+            borderRadius: 3,
+            p: 0.5,
             "& .MuiToggleButton-root": {
-              color: "#fff",
-              borderColor: "rgba(255,255,255,0.2)",
-              fontWeight: 700,
-              px: 3,
-              "&.Mui-selected": { bgcolor: "rgba(56,189,248,0.2)", color: "#38bdf8" },
+              color: VW.white,
+              border: "none",
+              fontWeight: 800,
+              fontSize: 16,
+              px: 4,
+              py: 1.25,
+              borderRadius: "12px !important",
+              "&.Mui-selected": {
+                bgcolor: VW.white,
+                color: VW.blueDeep,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+              },
             },
           }}
         >
-          <ToggleButton value="week">This Week</ToggleButton>
-          <ToggleButton value="month">This Month</ToggleButton>
+          <ToggleButton value="week">Week</ToggleButton>
+          <ToggleButton value="month">Month</ToggleButton>
         </ToggleButtonGroup>
       </Stack>
 
-      {error ? <Typography color="#fca5a5" mb={2}>{error}</Typography> : null}
+      {error ? (
+        <Paper sx={{ p: 2, mb: 2, bgcolor: "rgba(254,226,226,0.95)", color: "#991B1B", borderRadius: 3 }}>
+          {error}
+        </Paper>
+      ) : null}
 
       {empty ? (
-        <Paper sx={{ p: 5, textAlign: "center", bgcolor: "rgba(255,255,255,0.04)", borderRadius: 2 }}>
-          <Typography sx={{ fontSize: 22, fontWeight: 700 }}>
-            No completed folding performance for this {period === "month" ? "month" : "week"} yet.
+        <Paper
+          sx={{
+            p: 6,
+            textAlign: "center",
+            borderRadius: 4,
+            background: "rgba(255,255,255,0.92)",
+            border: `3px dashed ${VW.aqua}`,
+            boxShadow: "0 12px 40px rgba(0,76,151,0.25)",
+          }}
+        >
+          <Typography sx={{ fontSize: 36, fontWeight: 900, color: VW.blueDeep }}>
+            Waiting for confirmed folding data
           </Typography>
-          <Typography sx={{ color: "rgba(255,255,255,0.55)", mt: 1 }}>
-            Data updates after nightly upload.
+          <Typography sx={{ color: VW.blue, fontSize: 20, mt: 2, maxWidth: 560, mx: "auto", fontWeight: 600 }}>
+            No completed bags in this {period === "month" ? "month" : "week"} yet. Performance updates after you confirm an upload batch.
+          </Typography>
+          <Typography sx={{ color: "rgba(0,76,151,0.55)", fontSize: 16, mt: 2 }}>
+            Targets: {formatRate(bench.bags_per_hour_target)} bags/hr · {formatRate(bench.lbs_per_hour_target)} lbs/hr · {formatRate(bench.issue_free_percent_target, 0)}% quality
           </Typography>
         </Paper>
       ) : (
         <>
-          <Grid container spacing={2} mb={2}>
-            <Grid item xs={6} md={2}><KpiCard label="Bags" value={team.bag_count ?? 0} accent="#fbbf24" /></Grid>
-            <Grid item xs={6} md={2}><KpiCard label="Lbs" value={formatLbs(team.total_lbs)} accent="#f472b6" /></Grid>
-            <Grid item xs={6} md={2}><KpiCard label="Hours" value={formatFoldingHours(team.total_folding_seconds)} accent="#a78bfa" /></Grid>
+          <Grid container spacing={2} mb={3}>
             <Grid item xs={6} md={2}>
-              <KpiCard label="Bags/hr" value={formatRate(team.bags_per_hour)} sub={formatComparison(comp.bags_per_hour)} accent="#38bdf8" />
+              <HeroKpi label="Bags Folded" value={team.bag_count ?? 0} accent={VW.blueDeep} />
             </Grid>
             <Grid item xs={6} md={2}>
-              <KpiCard label="Lbs/hr" value={formatRate(team.lbs_per_hour)} sub={formatComparison(comp.lbs_per_hour)} accent="#34d399" />
+              <HeroKpi label="Total Lbs" value={formatLbs(team.total_lbs)} accent={VW.blue} />
             </Grid>
             <Grid item xs={6} md={2}>
-              <KpiCard
+              <HeroKpi label="Folding Hours" value={formatFoldingHours(team.total_folding_seconds)} accent={VW.blueDeep} />
+            </Grid>
+            <Grid item xs={6} md={2}>
+              <HeroKpi
+                label="Bags / Hour"
+                value={formatRate(team.bags_per_hour)}
+                sub={`Target ${formatRate(bench.bags_per_hour_target)}`}
+                accent={VW.aqua}
+              />
+            </Grid>
+            <Grid item xs={6} md={2}>
+              <HeroKpi
+                label="Lbs / Hour"
+                value={formatRate(team.lbs_per_hour)}
+                sub={`Target ${formatRate(bench.lbs_per_hour_target)}`}
+                accent={VW.blue}
+              />
+            </Grid>
+            <Grid item xs={6} md={2}>
+              <HeroKpi
                 label="Quality"
                 value={team.issue_free_percent != null ? `${formatRate(team.issue_free_percent, 1)}%` : "—"}
-                sub={formatComparison(comp.issue_free_percent, { suffix: "%" })}
-                accent="#fde68a"
+                sub={
+                  team.issue_count != null
+                    ? `${team.issue_count} issues · target ${formatRate(bench.issue_free_percent_target, 0)}%`
+                    : `Target ${formatRate(bench.issue_free_percent_target, 0)}%`
+                }
+                accent={VW.blueDeep}
               />
             </Grid>
           </Grid>
 
-          <Grid container spacing={2} mb={3}>
-            <Grid item xs={12} md={6}>
-              <CompareStrip
-                title={period === "month" ? "MONTH VS LAST MONTH" : "WEEK VS LAST WEEK"}
-                team={data?.previous_team}
-                comparison={comp}
-                bench={bench}
-              />
-            </Grid>
-            {top ? (
-              <Grid item xs={12} md={6}>
-                <Paper sx={{ p: 2.5, bgcolor: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 2, height: "100%" }}>
-                  <Typography sx={{ fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.55)" }}>TOP PERFORMER</Typography>
-                  <Typography sx={{ fontSize: 28, fontWeight: 800, mt: 0.5 }}>#{top.rank} {top.user_name}</Typography>
-                  <Stack direction="row" spacing={1} mt={1} flexWrap="wrap" useFlexGap>
-                    <Chip label={`${formatRate(top.lbs_per_hour)} lbs/hr`} sx={{ bgcolor: "#fbbf24", color: "#111", fontWeight: 800 }} />
-                    <Chip label={`${formatRate(top.bags_per_hour)} bags/hr`} sx={{ bgcolor: "#38bdf8", color: "#111", fontWeight: 800 }} />
-                  </Stack>
-                </Paper>
-              </Grid>
-            ) : null}
-          </Grid>
+          <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap mb={3}>
+            <TrendPill label={`Bags ${vsTitle}`} comp={comp.bag_count} />
+            <TrendPill label={`Lbs/hr ${vsTitle}`} comp={comp.lbs_per_hour} />
+            <TrendPill label={`Bags/hr ${vsTitle}`} comp={comp.bags_per_hour} />
+            <TrendPill label={`Quality ${vsTitle}`} comp={comp.issue_free_percent} suffix="%" />
+          </Stack>
 
-          <Grid container spacing={1.5}>
-            {users.map((u) => (
+          {top ? (
+            <Box mb={3}>
+              <Typography sx={{ fontSize: 14, fontWeight: 800, letterSpacing: 2, color: VW.gold, mb: 1.5, textTransform: "uppercase" }}>
+                Top Performer
+              </Typography>
+              <RankCard user={top} rank={top.rank} isTop />
+            </Box>
+          ) : null}
+
+          <Typography sx={{ fontSize: 14, fontWeight: 800, letterSpacing: 2, color: VW.textMuted, mb: 1.5, textTransform: "uppercase" }}>
+            Leaderboard
+          </Typography>
+          <Grid container spacing={2}>
+            {users.slice(top ? 1 : 0).map((u) => (
               <Grid item xs={12} md={6} key={u.user_name}>
-                <Paper sx={{ p: 2, bgcolor: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 2 }}>
-                  <Stack direction="row" alignItems="center" spacing={2}>
-                    <Typography sx={{ fontSize: 32, fontWeight: 900, minWidth: 48 }}>{u.rank}</Typography>
-                    <Box flex={1}>
-                      <Typography sx={{ fontSize: 20, fontWeight: 700 }}>{u.user_name}</Typography>
-                      <Stack direction="row" spacing={2} flexWrap="wrap" mt={0.5}>
-                        <Typography sx={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>{u.bag_count} bags · {formatLbs(u.total_lbs)} lbs</Typography>
-                        <Typography sx={{ fontSize: 14, color: "#fbbf24", fontWeight: 700 }}>{formatRate(u.lbs_per_hour)} lbs/hr</Typography>
-                        <Typography sx={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>{formatRate(u.bags_per_hour)} bags/hr</Typography>
-                        {u.issue_free_percent != null ? (
-                          <Typography sx={{ fontSize: 14, color: "rgba(255,255,255,0.7)" }}>{formatRate(u.issue_free_percent, 1)}% quality</Typography>
-                        ) : null}
-                      </Stack>
-                    </Box>
-                    <Chip size="small" label={u.target_status} color={targetStatusChipColor(u.target_status)} />
-                  </Stack>
-                </Paper>
+                <RankCard user={u} rank={u.rank} isTop={false} />
               </Grid>
             ))}
           </Grid>
