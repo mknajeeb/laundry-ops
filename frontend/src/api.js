@@ -886,41 +886,90 @@ function hrFormBase64ToBlob(b64, contentType) {
   return new Blob([bytes], { type: contentType || "application/pdf" });
 }
 
+function hrFormAuthHeaders() {
+  const ta = localStorage.getItem("ta_token");
+  const wp = getAuthToken();
+  const token = ta || wp || "";
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    Accept: "application/json",
+    "Cache-Control": "no-store",
+  };
+}
+
 /**
  * Download HR form bytes. Uses JSON+base64 (`format=json`) so production CORS matches other API calls.
  * Returns an axios-shaped `{ status, data: Blob, headers }` for existing save helpers.
  */
 export async function getTaUserHrForm(userId, formId, locale = "en") {
-  const res = await axios.get(
-    `${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`,
-    {
-      params: { locale, format: "json" },
-      timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
-      validateStatus: () => true,
-      headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
-    },
-  );
-  const body = res.data;
-  if (res.status >= 200 && res.status < 300 && body && typeof body === "object" && body.data_base64) {
+  const base = getWashproApiBase();
+  const q = new URLSearchParams({ locale: String(locale || "en"), format: "json" });
+  const url = `${base}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}?${q}`;
+  let res;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HR_FORM_DOWNLOAD_TIMEOUT_MS);
+    res = await fetch(url, { method: "GET", headers: hrFormAuthHeaders(), signal: ctrl.signal });
+    clearTimeout(timer);
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    if (e?.name === "AbortError" || /abort/i.test(msg)) {
+      throw new Error("Download timed out. Try again.");
+    }
+    if (msg === "Failed to fetch" || msg === "Network Error") {
+      throw new Error(
+        `Cannot reach the API${base ? ` (${base})` : ""}. Check connection or hard-refresh after deploy.`,
+      );
+    }
+    throw e;
+  }
+
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("application/json")) {
+    const body = await res.json();
+    if (res.ok && body && typeof body === "object" && body.data_base64) {
+      return {
+        status: res.status,
+        data: hrFormBase64ToBlob(body.data_base64, body.content_type),
+        headers: {
+          "content-type": body.content_type || "application/pdf",
+          "x-suggested-filename": body.filename || "",
+        },
+      };
+    }
+    const errMsg =
+      body && typeof body === "object" && typeof body.error === "string"
+        ? body.error
+        : `Download failed (HTTP ${res.status})`;
     return {
       status: res.status,
-      data: hrFormBase64ToBlob(body.data_base64, body.content_type),
-      headers: {
-        ...res.headers,
-        "content-type": body.content_type || "application/pdf",
-        "x-suggested-filename": body.filename || "",
-      },
+      data: new Blob([JSON.stringify({ error: errMsg })], { type: "application/json" }),
+      headers: {},
     };
   }
-  const errMsg =
-    body && typeof body === "object" && typeof body.error === "string"
-      ? body.error
-      : `Download failed (HTTP ${res.status})`;
-  return {
-    status: res.status,
-    data: new Blob([JSON.stringify({ error: errMsg })], { type: "application/json" }),
-    headers: res.headers,
-  };
+
+  const blob = await res.blob();
+  if (!res.ok) {
+    try {
+      const text = await blob.text();
+      const j = JSON.parse(text);
+      const errMsg = typeof j.error === "string" ? j.error : `Download failed (HTTP ${res.status})`;
+      return {
+        status: res.status,
+        data: new Blob([JSON.stringify({ error: errMsg })], { type: "application/json" }),
+        headers: {},
+      };
+    } catch {
+      return {
+        status: res.status,
+        data: new Blob([JSON.stringify({ error: `Download failed (HTTP ${res.status})` })], {
+          type: "application/json",
+        }),
+        headers: {},
+      };
+    }
+  }
+  return { status: res.status, data: blob, headers: { "content-type": ct || "application/pdf" } };
 }
 
 /** @deprecated Use getTaUserHrForm */

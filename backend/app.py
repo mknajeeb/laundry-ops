@@ -9521,14 +9521,23 @@ def get_upload_batch_rows(batch_id):
         rows = cursor.fetchall() or []
         from backend.rinse_bag_upload import enrich_upload_batch_rows_with_registry
 
-        rows = enrich_upload_batch_rows_with_registry(
-            cursor,
-            tenant_oid,
-            rows,
-            upload_batch_id=batch_id,
-            batch_state=batch_state,
-        )
+        try:
+            rows = enrich_upload_batch_rows_with_registry(
+                cursor,
+                tenant_oid,
+                rows,
+                upload_batch_id=batch_id,
+                batch_state=batch_state,
+            )
+        except Exception as e:
+            current_app.logger.exception(
+                "enrich_upload_batch_rows_with_registry failed batch_id=%s", batch_id
+            )
+            return jsonify({"error": f"Failed to load batch rows: {e}"}), 500
         return jsonify(rows)
+    except Exception as e:
+        current_app.logger.exception("get_upload_batch_rows failed batch_id=%s", batch_id)
+        return jsonify({"error": str(e)}), 500
     finally:
         cursor.close()
         conn.close()

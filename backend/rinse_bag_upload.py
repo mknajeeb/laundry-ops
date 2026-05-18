@@ -222,6 +222,18 @@ def enrich_upload_batch_rows_with_registry(
         REASON_OK,
     )
 
+    is_draft = (batch_state or "").strip().upper() == "DRAFT"
+    preview_map: dict[str, dict] = {}
+    if is_draft and upload_batch_id is not None:
+        from backend.rinse_upload_finalize import preview_completion_for_batch
+
+        try:
+            preview_map = preview_completion_for_batch(
+                cursor, int(organization_id), int(upload_batch_id)
+            )
+        except Exception:
+            preview_map = {}
+
     bag_ids = []
     for r in rows:
         tid = normalize_bag_id(r.get("ticket_id"))

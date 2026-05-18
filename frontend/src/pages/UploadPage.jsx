@@ -175,7 +175,13 @@ function UploadPage({ user }) {
     } catch (error) {
       console.error(error);
       setRows([]);
-      setMessage({ type: "error", text: "Failed to load batch rows." });
+      const apiErr =
+        error?.response?.data?.error ||
+        (typeof error?.response?.data === "string" ? error.response.data : "");
+      setMessage({
+        type: "error",
+        text: apiErr ? String(apiErr) : "Failed to load batch rows.",
+      });
     } finally {
       setLoadingRows(false);
     }
