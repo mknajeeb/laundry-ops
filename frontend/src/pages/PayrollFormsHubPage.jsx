@@ -448,7 +448,7 @@ export function PayrollFormsHubCore({
       const out = await saveBlobResponse(res, name);
       if (!out.ok) setError(out.error || "Download failed");
     } catch (e) {
-      let msg = "Download failed";
+      let msg = e?.message || e?.response?.data?.error || "Download failed";
       if (e?.response?.data instanceof Blob) {
         try {
           const text = await e.response.data.text();
@@ -457,8 +457,6 @@ export function PayrollFormsHubCore({
         } catch {
           msg = e?.response?.statusText || msg;
         }
-      } else {
-        msg = e?.response?.data?.error || e?.message || msg;
       }
       const hint = hrDownloadFailureHint(e);
       setError(typeof msg === "string" ? `${msg}${hint}` : "Download failed");

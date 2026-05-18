@@ -3165,7 +3165,13 @@ def documents_org_records_export_zip():
 
 
 def _hr_form_wants_json_payload() -> bool:
-    return (request.args.get("format") or "").strip().lower() == "json"
+    """Browser downloads send Accept: application/json (no format= query — avoids WAF false positives)."""
+    if (request.args.get("format") or "").strip().lower() == "json":
+        return True
+    if (request.headers.get("X-Hr-Form-Format") or "").strip().lower() == "json":
+        return True
+    accept = (request.headers.get("Accept") or "").lower()
+    return "application/json" in accept and "application/pdf" not in accept
 
 
 def _hr_form_file_response(data: bytes, filename: str, mimetype: str = "application/pdf"):

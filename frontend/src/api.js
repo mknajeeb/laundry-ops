@@ -886,48 +886,26 @@ function hrFormBase64ToBlob(b64, contentType) {
   return new Blob([bytes], { type: contentType || "application/pdf" });
 }
 
-function hrFormAuthHeaders() {
-  const ta = localStorage.getItem("ta_token");
-  const wp = getAuthToken();
-  const token = ta || wp || "";
-  return {
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    Accept: "application/json",
-    "Cache-Control": "no-store",
-  };
-}
-
 /**
- * Download HR form bytes. Uses JSON+base64 (`format=json`) so production CORS matches other API calls.
- * Returns an axios-shaped `{ status, data: Blob, headers }` for existing save helpers.
+ * Download HR form bytes via axios (same stack as profile/inventory loads).
+ * Server returns JSON+base64 when Accept is application/json.
  */
 export async function getTaUserHrForm(userId, formId, locale = "en") {
-  const base = getWashproApiBase();
-  const q = new URLSearchParams({ locale: String(locale || "en"), format: "json" });
-  const url = `${base}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}?${q}`;
-  let res;
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), HR_FORM_DOWNLOAD_TIMEOUT_MS);
-    res = await fetch(url, { method: "GET", headers: hrFormAuthHeaders(), signal: ctrl.signal });
-    clearTimeout(timer);
-  } catch (e) {
-    const msg = String(e?.message || e || "");
-    if (e?.name === "AbortError" || /abort/i.test(msg)) {
-      throw new Error("Download timed out. Try again.");
-    }
-    if (msg === "Failed to fetch" || msg === "Network Error") {
-      throw new Error(
-        `Cannot reach the API${base ? ` (${base})` : ""}. Check connection or hard-refresh after deploy.`,
-      );
-    }
-    throw e;
-  }
-
-  const ct = (res.headers.get("content-type") || "").toLowerCase();
-  if (ct.includes("application/json")) {
-    const body = await res.json();
-    if (res.ok && body && typeof body === "object" && body.data_base64) {
+    const res = await axios.get(
+      `${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`,
+      {
+        params: { locale },
+        timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
+        validateStatus: () => true,
+        headers: {
+          Accept: "application/json",
+          "Cache-Control": "no-store",
+        },
+      },
+    );
+    const body = res.data;
+    if (res.status >= 200 && res.status < 300 && body && typeof body === "object" && body.data_base64) {
       return {
         status: res.status,
         data: hrFormBase64ToBlob(body.data_base64, body.content_type),
@@ -937,6 +915,24 @@ export async function getTaUserHrForm(userId, formId, locale = "en") {
         },
       };
     }
+    const ct = String(res.headers?.["content-type"] || "").toLowerCase();
+    if (res.status >= 200 && res.status < 300 && (ct.includes("pdf") || ct.includes("octet-stream"))) {
+      const blobRes = await axios.get(
+        `${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`,
+        {
+          params: { locale },
+          timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
+          responseType: "blob",
+          validateStatus: () => true,
+          headers: { Accept: "application/pdf", "Cache-Control": "no-store" },
+        },
+      );
+      return {
+        status: blobRes.status,
+        data: blobRes.data,
+        headers: blobRes.headers || {},
+      };
+    }
     const errMsg =
       body && typeof body === "object" && typeof body.error === "string"
         ? body.error
@@ -944,32 +940,24 @@ export async function getTaUserHrForm(userId, formId, locale = "en") {
     return {
       status: res.status,
       data: new Blob([JSON.stringify({ error: errMsg })], { type: "application/json" }),
-      headers: {},
+      headers: res.headers || {},
     };
-  }
-
-  const blob = await res.blob();
-  if (!res.ok) {
-    try {
-      const text = await blob.text();
-      const j = JSON.parse(text);
-      const errMsg = typeof j.error === "string" ? j.error : `Download failed (HTTP ${res.status})`;
-      return {
-        status: res.status,
-        data: new Blob([JSON.stringify({ error: errMsg })], { type: "application/json" }),
-        headers: {},
-      };
-    } catch {
-      return {
-        status: res.status,
-        data: new Blob([JSON.stringify({ error: `Download failed (HTTP ${res.status})` })], {
-          type: "application/json",
-        }),
-        headers: {},
-      };
+  } catch (e) {
+    const apiErr = e?.response?.data?.error;
+    if (typeof apiErr === "string" && apiErr.trim()) {
+      throw new Error(apiErr.trim());
     }
+    if (e?.code === "ECONNABORTED" || /timeout/i.test(String(e?.message || ""))) {
+      throw new Error("Download timed out. Try again.");
+    }
+    if (!e?.response) {
+      throw new Error(
+        e?.message ||
+          `Cannot reach the API (${getWashproApiBase() || "unknown host"}). Hard-refresh after deploy.`,
+      );
+    }
+    throw e;
   }
-  return { status: res.status, data: blob, headers: { "content-type": ct || "application/pdf" } };
 }
 
 /** @deprecated Use getTaUserHrForm */
