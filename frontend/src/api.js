@@ -17,15 +17,8 @@ function normalizeApiBase(raw) {
   return b;
 }
 
-/** Azure SWA proxies /api, /auth, … to Flask (see staticwebapp.config.json). */
-function hostedOnStaticWebApp() {
-  if (typeof window === "undefined") return false;
-  return /\.azurestaticapps\.net$/i.test(window.location.hostname);
-}
-
 function resolveApiBase() {
   if (import.meta.env.DEV) return "";
-  if (hostedOnStaticWebApp()) return "";
   const fromEnv = import.meta.env.VITE_API_BASE;
   if (fromEnv != null && String(fromEnv).trim() !== "") {
     return normalizeApiBase(fromEnv);
@@ -35,7 +28,7 @@ function resolveApiBase() {
 
 const API_BASE = resolveApiBase();
 
-/** No trailing slash; empty when same-origin proxy or Vite dev proxy is used. */
+/** No trailing slash; empty in dev when Vite proxy is used. */
 export function getWashproApiBase() {
   return normalizeApiBase(API_BASE);
 }
