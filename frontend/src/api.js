@@ -900,7 +900,6 @@ export async function getTaUserHrForm(userId, formId, locale = "en") {
         validateStatus: () => true,
         headers: {
           Accept: "application/json",
-          "Cache-Control": "no-store",
         },
       },
     );
@@ -924,7 +923,7 @@ export async function getTaUserHrForm(userId, formId, locale = "en") {
           timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
           responseType: "blob",
           validateStatus: () => true,
-          headers: { Accept: "application/pdf", "Cache-Control": "no-store" },
+          headers: { Accept: "application/pdf" },
         },
       );
       return {

@@ -93,7 +93,14 @@ def _cors_origins_config():
 CORS(
     app,
     resources={r"/*": {"origins": _cors_origins_config()}},
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "Cache-Control",
+        "Pragma",
+        "X-Hr-Form-Format",
+    ],
     expose_headers=["Content-Type", "Content-Disposition", "Content-Length"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     max_age=_cors_max_age_sec(),
