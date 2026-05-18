@@ -4,16 +4,40 @@ import axios from "axios";
    API BASE
 ========================================= */
 
-const API_BASE =
-  import.meta.env.VITE_API_BASE != null && import.meta.env.VITE_API_BASE !== ""
-    ? import.meta.env.VITE_API_BASE
-    : import.meta.env.DEV
-      ? ""
-      : "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net";
+const PRODUCTION_API_FALLBACK =
+  "https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net";
 
-/** No trailing slash; empty in dev when Vite proxy is used. */
+function normalizeApiBase(raw) {
+  let b = String(raw || "").trim().replace(/\/+$/, "");
+  if (!b) return "";
+  // HTTPS pages cannot call HTTP APIs (browser blocks as mixed content → "Network Error").
+  if (typeof window !== "undefined" && window.location?.protocol === "https:" && b.startsWith("http://")) {
+    b = `https://${b.slice(7)}`;
+  }
+  return b;
+}
+
+/** Azure SWA proxies /api, /auth, … to Flask (see staticwebapp.config.json). */
+function hostedOnStaticWebApp() {
+  if (typeof window === "undefined") return false;
+  return /\.azurestaticapps\.net$/i.test(window.location.hostname);
+}
+
+function resolveApiBase() {
+  if (import.meta.env.DEV) return "";
+  if (hostedOnStaticWebApp()) return "";
+  const fromEnv = import.meta.env.VITE_API_BASE;
+  if (fromEnv != null && String(fromEnv).trim() !== "") {
+    return normalizeApiBase(fromEnv);
+  }
+  return PRODUCTION_API_FALLBACK;
+}
+
+const API_BASE = resolveApiBase();
+
+/** No trailing slash; empty when same-origin proxy or Vite dev proxy is used. */
 export function getWashproApiBase() {
-  return String(API_BASE || "").trim().replace(/\/+$/, "");
+  return normalizeApiBase(API_BASE);
 }
 
 const AUTH_TOKEN_KEY = "washpro_token";
@@ -862,31 +886,46 @@ export const getTaUserHrFormsInventory = (userId) =>
 
 const HR_FORM_DOWNLOAD_TIMEOUT_MS = 120000;
 
+const hrFormDownloadConfig = {
+  responseType: "blob",
+  timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
+  validateStatus: () => true,
+  headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+};
+
 /** locale: en | es | bilingual — AcroForm prefill where supported (I-9, W-4, W-9, etc.). */
+export const getTaUserHrForm = (userId, formId, locale = "en") =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, {
+    ...hrFormDownloadConfig,
+    params: { locale },
+  });
+
+/** @deprecated Prefer getTaUserHrForm (GET avoids cross-origin POST blob edge cases). */
 export const postTaUserHrForm = (userId, formId, body = {}) =>
   axios.post(`${API_BASE}/api/ta/users/${userId}/hr-forms/${encodeURIComponent(formId)}`, body, {
-    responseType: "blob",
-    timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
-    validateStatus: () => true,
+    ...hrFormDownloadConfig,
     headers: {
+      ...hrFormDownloadConfig.headers,
       "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-      Pragma: "no-cache",
     },
   });
 
+export const getTaUserHrFormI9 = (userId, locale = "en") =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/i9`, {
+    ...hrFormDownloadConfig,
+    params: { locale },
+  });
+
+/** @deprecated Prefer getTaUserHrFormI9 */
 export const postTaUserHrFormI9 = (userId, locale = "en") =>
   axios.post(
     `${API_BASE}/api/ta/users/${userId}/hr-forms/i9`,
     { locale },
     {
-      responseType: "blob",
-      timeout: HR_FORM_DOWNLOAD_TIMEOUT_MS,
-      validateStatus: () => true,
+      ...hrFormDownloadConfig,
       headers: {
+        ...hrFormDownloadConfig.headers,
         "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-        Pragma: "no-cache",
       },
     },
   );

@@ -27,7 +27,7 @@ import {
   getTaUserDocuments,
   getTaUserHrFormsInventory,
   getTaUserHrProfile,
-  postTaUserHrForm,
+  getTaUserHrForm,
   postTaUserDocument,
   putTaUserDocument,
   putTaUserHrProfile,
@@ -122,7 +122,7 @@ function hrDownloadFailureHint(e) {
   if (e?.response) return "";
   const msg = String(e?.message || "");
   if (msg === "Network Error" || e?.code === "ERR_NETWORK") {
-    return " Check that the API is reachable (VITE_API_BASE / CORS) and try again.";
+    return " Check your connection and try again (hard-refresh if this persists after a deploy).";
   }
   if (e?.code === "ECONNABORTED" || /timeout/i.test(msg)) {
     return " The request timed out — the API may be cold-starting; try again.";
@@ -436,7 +436,7 @@ export function PayrollFormsHubCore({
     setDlBusy(key);
     setError("");
     try {
-      const res = await postTaUserHrForm(uid, formId, { locale });
+      const res = await getTaUserHrForm(uid, formId, locale);
       const ct = (res.headers?.["content-type"] || "").toLowerCase();
       const ext =
         isInternalReferenceForm(form) || ct.includes("pdf")
@@ -489,7 +489,7 @@ export function PayrollFormsHubCore({
         const key = `${form.id}-${locale}`;
         setDlBusy(key);
         try {
-          const res = await postTaUserHrForm(uid, form.id, { locale });
+          const res = await getTaUserHrForm(uid, form.id, locale);
           const ct = (res.headers?.["content-type"] || "").toLowerCase();
           const ext =
             isInternalReferenceForm(form) || ct.includes("pdf")

@@ -3162,19 +3162,31 @@ def documents_org_records_export_zip():
         conn.close()
 
 
-@ta_bp.route("/users/<int:user_id>/hr-forms/<form_id>", methods=["POST"])
+@ta_bp.route("/users/<int:user_id>/hr-forms/<form_id>", methods=["GET", "POST"])
 @require_auth
 def user_hr_form_deliver(user_id, form_id):
     """Download one form: AcroForm prefill for I-9, W-4, W-9 (en/es); else serve official/internal file as-is."""
     fid = _hr_form_safe_id(form_id)
     if not fid:
         return jsonify({"error": "Invalid form"}), 400
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True) if request.method == "POST" else {}
+    if not isinstance(body, dict):
+        body = {}
     locale = str(body.get("locale") or request.args.get("locale") or "en").lower()
     if locale not in ("en", "es", "bilingual"):
         return jsonify({"error": "Invalid locale"}), 400
 
     conn = get_db()
+    try:
+        return _user_hr_form_deliver_impl(conn, user_id, fid, locale)
+    except Exception:
+        current_app.logger.exception("hr form deliver failed user_id=%s form=%s", user_id, fid)
+        return jsonify({"error": "Form download failed on the server. Try again or contact support."}), 500
+    finally:
+        conn.close()
+
+
+def _user_hr_form_deliver_impl(conn, user_id: int, fid: str, locale: str):
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "HR forms require unified payroll"}), 503
@@ -3311,15 +3323,18 @@ def user_hr_form_deliver(user_id, form_id):
         )
         _record_hub_download(dl)
         return send_file(path, mimetype=mime, as_attachment=True, download_name=dl)
-    finally:
-        conn.close()
+    except Exception:
+        current_app.logger.exception("hr form deliver impl failed user_id=%s form=%s", user_id, fid)
+        return jsonify({"error": "Form download failed on the server. Try again or contact support."}), 500
 
 
-@ta_bp.route("/users/<int:user_id>/hr-forms/i9", methods=["POST"])
+@ta_bp.route("/users/<int:user_id>/hr-forms/i9", methods=["GET", "POST"])
 @require_auth
 def user_hr_form_i9(user_id):
     """Backward-compatible I-9 download: English and Spanish AcroForm prefill (see build_i9_field_values / _es)."""
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True) if request.method == "POST" else {}
+    if not isinstance(body, dict):
+        body = {}
     locale = str(body.get("locale") or request.args.get("locale") or "en").lower()
     if locale not in ("en", "es"):
         locale = "en"
