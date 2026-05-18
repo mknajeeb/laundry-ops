@@ -62,10 +62,14 @@ function CompareStrip({ title, team, comparison, bench }) {
   );
 }
 
-function RinseFoldingTvPage() {
+function RinseFoldingTvPage({ user }) {
   const [period, setPeriod] = useState("week");
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const orgLabel =
+    user?.organization_name ||
+    (user?.organization_slug ? String(user.organization_slug).replace(/-/g, " ") : "") ||
+    "Folding";
 
   const load = useCallback(async () => {
     try {
@@ -98,7 +102,7 @@ function RinseFoldingTvPage() {
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems="flex-start" mb={3} gap={2}>
         <Box>
           <Typography sx={{ fontSize: { xs: 28, md: 40 }, fontWeight: 900, letterSpacing: -0.5 }}>
-            VeeWash Folding Performance
+            {orgLabel} Folding Performance
           </Typography>
           <Typography sx={{ color: "rgba(255,255,255,0.65)", fontSize: 16, mt: 0.5 }}>
             {formatPeriodRange(data?.period_start, data?.period_end)}

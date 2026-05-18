@@ -3,9 +3,9 @@
 Recompute rinse_folding_performance from persisted scan-events (fixes work_date, etc.).
 
 Usage:
-  python3 scripts/recompute_folding_performance.py --org 3 --bag 5Y4HKEMEF1
-  python3 scripts/recompute_folding_performance.py --org 3 --start 2026-05-11 --end 2026-05-17
-  python3 scripts/recompute_folding_performance.py --org 3 --all-completed
+  python3 scripts/recompute_folding_performance.py --org <organization_id> --bag BAGID
+  python3 scripts/recompute_folding_performance.py --org <organization_id> --start 2026-05-11 --end 2026-05-17
+  python3 scripts/recompute_folding_performance.py --org <organization_id> --all-completed
 """
 
 from __future__ import annotations

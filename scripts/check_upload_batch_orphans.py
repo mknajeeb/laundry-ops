@@ -6,7 +6,7 @@ Orphans: child.upload_batch_id with no matching upload_batches parent.
 
 Usage:
   python scripts/check_upload_batch_orphans.py
-  python scripts/check_upload_batch_orphans.py --organization-id 3
+  python scripts/check_upload_batch_orphans.py --organization-id <organization_id>
   python scripts/check_upload_batch_orphans.py --fix
   python scripts/check_upload_batch_orphans.py --fix --add-fk-cascade
 """

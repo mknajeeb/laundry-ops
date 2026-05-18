@@ -1,8 +1,8 @@
 -- Inspect persisted Rinse scan events for one bag (ET timeline, audit fields).
--- Usage: set @org_id and @bag_id, then run in MySQL.
+-- Repair / debug only: set your tenant organization_id and bag_id, then run in MySQL.
 
-SET @org_id = 3;
-SET @bag_id = '5LCZ5RJ60E';
+SET @org_id = NULL;  -- required: e.g. your organizations.id
+SET @bag_id = NULL;  -- required: e.g. 'BAGID123'
 
 SELECT
     id,

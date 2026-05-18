@@ -3,8 +3,8 @@
 Recompute rinse_bag_registry completion from persistent rinse_bag_scan_events.
 
 Usage:
-  python scripts/recompute_bag_completion.py --org 3 --bag 5Y4HKEMEF1
-  python scripts/recompute_bag_completion.py --org 3 --all-incomplete
+  python scripts/recompute_bag_completion.py --org <organization_id> --bag BAGID
+  python scripts/recompute_bag_completion.py --org <organization_id> --all-incomplete
 """
 
 from __future__ import annotations

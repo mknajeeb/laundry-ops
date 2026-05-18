@@ -795,7 +795,7 @@ function AppShell() {
               element={
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user}>
-                    <RinseFoldingTvPage />
+                    <RinseFoldingTvPage user={user} />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
