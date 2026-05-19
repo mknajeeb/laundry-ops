@@ -191,7 +191,9 @@ class TestPortalAbsenceCompletion(unittest.TestCase):
             ),
             patch(
                 "backend.rinse_upload_finalize.recompute_completion_for_bags",
-                return_value={"bags": 1},
+                return_value={
+                    "bags": [{"bag_id": "BAGNEW", "completion_status": COMPLETION_COMPLETED}]
+                },
             ),
             patch(
                 "backend.rinse_upload_finalize.apply_registry_from_accepted_portal_rows",

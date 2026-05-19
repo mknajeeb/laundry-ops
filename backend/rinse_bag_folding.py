@@ -22,6 +22,7 @@ STATUS_CALCULATED = "CALCULATED"
 STATUS_EXCEPTION = "EXCEPTION"
 STATUS_EXCLUDED = "EXCLUDED"
 
+EXCEPTION_MISSING_SCAN_EVENTS = "MISSING_SCAN_EVENTS"
 EXCEPTION_MISSING_FOLDING = "MISSING_FOLDING"
 EXCEPTION_MISSING_CLEAN = "MISSING_CLEAN"
 EXCEPTION_CLEAN_BEFORE_FOLDING = "CLEAN_BEFORE_FOLDING"
@@ -245,7 +246,7 @@ def evaluate_folding_performance_for_bag(
     """
     normalized = events_from_records(events)
     if not normalized:
-        return _exception_result(EXCEPTION_MISSING_FOLDING, registry_row=registry_row)
+        return _exception_result(EXCEPTION_MISSING_SCAN_EVENTS, registry_row=registry_row)
 
     timeline = sorted(normalized, key=_progressive_timeline_sort_key)
 

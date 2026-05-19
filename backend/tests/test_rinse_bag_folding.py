@@ -11,6 +11,7 @@ from backend.rinse_bag_folding import (
     EXCEPTION_MISSING_ASSIGNED_USER,
     EXCEPTION_MISSING_CLEAN,
     EXCEPTION_MISSING_FOLDING,
+    EXCEPTION_MISSING_SCAN_EVENTS,
     SOURCE_CLEAN_SCAN_FALLBACK,
     SOURCE_FOLDING_SCAN,
     STATUS_CALCULATED,
@@ -90,6 +91,14 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
         )
         self.assertEqual(r.status, STATUS_EXCEPTION)
         self.assertEqual(r.exception_code, EXCEPTION_MISSING_ASSIGNED_USER)
+
+    def test_missing_scan_events_empty_timeline(self):
+        r = evaluate_folding_performance_for_bag(
+            [],
+            registry_row={"date_clean": date(2026, 5, 16)},
+        )
+        self.assertEqual(r.status, STATUS_EXCEPTION)
+        self.assertEqual(r.exception_code, EXCEPTION_MISSING_SCAN_EVENTS)
 
     def test_missing_folding(self):
         r = evaluate_folding_performance_for_bag(

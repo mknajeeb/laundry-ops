@@ -167,6 +167,20 @@ def apply_registry_from_accepted_portal_rows(
     return n
 
 
+def _union_normalized_bag_ids(*groups: Any) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for group in groups:
+        if not group:
+            continue
+        for raw in group:
+            bid = normalize_bag_id(raw)
+            if bid and bid not in seen:
+                seen.add(bid)
+                out.append(bid)
+    return sorted(out)
+
+
 def finalize_rinse_after_batch_confirm(
     cursor,
     organization_id: int,
@@ -177,8 +191,9 @@ def finalize_rinse_after_batch_confirm(
 ) -> dict[str, Any]:
     """
     Merge draft scan-events → persistent, recompute completion + folding, update registry.
-    Call only from confirm_upload_batch (after staging apply is acceptable either order;
-    completion uses persistent scans).
+    Call only from confirm_upload_batch after staging apply.
+
+    Folding recompute runs last, only for registry-COMPLETED bags touched by this confirm.
     """
     org = int(organization_id)
     batch_id = int(upload_batch_id)
@@ -202,31 +217,44 @@ def finalize_rinse_after_batch_confirm(
             source_filename or "batch_confirm",
         )
 
-    bag_ids: set[str] = set()
-    for raw in merge_payload.get("bag_ids") or []:
-        bid = normalize_bag_id(raw)
-        if bid:
-            bag_ids.add(bid)
-    for row in accepted:
-        bid = normalize_bag_id(row.get("ticket_id"))
-        if bid:
-            bag_ids.add(bid)
-    bag_id_list = sorted(bag_ids)
-    folding_bag_ids = sorted(set(bag_id_list) | set(absence_bag_ids))
+    merge_bag_ids = list(merge_payload.get("bag_ids") or [])
+    accepted_bag_ids = [
+        normalize_bag_id(row.get("ticket_id"))
+        for row in accepted
+        if normalize_bag_id(row.get("ticket_id"))
+    ]
 
-    completion_payload: dict[str, Any] = {"bags": 0}
-    if bag_id_list:
-        completion_payload = recompute_completion_for_bags(cursor, org, bag_id_list)
-
+    # Registry portal snapshot before completion so accepted bags have rows to update.
     registry_rows_updated = apply_registry_from_accepted_portal_rows(
         cursor, org, batch_id, accepted
     )
 
-    folding_payload: dict[str, Any] = {"ok": True, "processed": 0}
-    if folding_bag_ids:
-        from backend.rinse_folding_registry import recompute_folding_after_upload
+    completion_candidate_ids = _union_normalized_bag_ids(
+        merge_bag_ids,
+        accepted_bag_ids,
+        absence_bag_ids,
+    )
 
-        folding_payload = recompute_folding_after_upload(cursor, org, folding_bag_ids)
+    completion_payload: dict[str, Any] = {"bags_recomputed": 0, "bags_completed": 0, "bags": []}
+    if completion_candidate_ids:
+        completion_payload = recompute_completion_for_bags(
+            cursor, org, completion_candidate_ids
+        )
+
+    completion_summaries = list(completion_payload.get("bags") or [])
+
+    from backend.rinse_folding_registry import (
+        folding_recompute_summary_for_response,
+        recompute_folding_after_upload,
+    )
+
+    folding_payload: dict[str, Any] = recompute_folding_after_upload(
+        cursor,
+        org,
+        completion_candidate_ids,
+        completion_summaries=completion_summaries,
+    )
+    folding_summary = folding_recompute_summary_for_response(folding_payload)
 
     return {
         "persistent_merge": merge_payload,
@@ -234,8 +262,10 @@ def finalize_rinse_after_batch_confirm(
         "completion": completion_payload,
         "registry_rows_updated": registry_rows_updated,
         "folding": folding_payload,
-        "bag_ids": bag_id_list,
+        "folding_summary": folding_summary,
+        "bag_ids": completion_candidate_ids,
         "missing_prior_bags_completed_count": int(portal_absence.get("count") or 0),
         "missing_prior_bag_ids_completed": absence_bag_ids,
         "full_snapshot": bool(portal_absence.get("full_snapshot")),
+        **folding_summary,
     }

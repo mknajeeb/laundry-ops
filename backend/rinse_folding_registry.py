@@ -5,7 +5,7 @@ Folding performance persistence, recompute, overrides, and aggregates.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from backend.rinse_bag_completion import COMPLETION_COMPLETED, normalize_bag_id
 from backend.rinse_bag_folding import (
@@ -14,6 +14,7 @@ from backend.rinse_bag_folding import (
     EXCEPTION_MISSING_ASSIGNED_USER,
     EXCEPTION_MISSING_CLEAN,
     EXCEPTION_MISSING_FOLDING,
+    EXCEPTION_MISSING_SCAN_EVENTS,
     FOLDING_WARNING_CODES,
     SOURCE_MANUAL,
     STATUS_CALCULATED,
@@ -242,7 +243,14 @@ def apply_folding_performance_for_bag(
     bag_id: str,
     *,
     source_recompute_kind: str = "bag",
+    require_completed_registry: bool = False,
 ) -> dict[str, Any]:
+    """
+    Persist CALCULATED or EXCEPTION for one bag.
+
+    When ``require_completed_registry`` is True (batch confirm / admin completion),
+    never return without writing a performance row for a registry-COMPLETED bag.
+    """
     org = int(organization_id)
     bid = normalize_bag_id(bag_id)
     if not bid:
@@ -250,6 +258,13 @@ def apply_folding_performance_for_bag(
 
     reg = get_registry_row(cursor, org, bid)
     if not reg:
+        if require_completed_registry:
+            return {
+                "bag_id": bid,
+                "skipped": True,
+                "reason": "no_registry_row",
+                "error": True,
+            }
         return {"bag_id": bid, "skipped": True, "reason": "no_registry_row"}
     if not registry_is_completed(reg):
         folding_deleted = delete_folding_performance_for_bag(cursor, org, bid)
@@ -262,10 +277,7 @@ def apply_folding_performance_for_bag(
         }
 
     events = fetch_persistent_scan_events_for_bag(cursor, org, bid)
-    if not events:
-        result = evaluate_folding_performance_for_bag([], registry_row=reg)
-    else:
-        result = evaluate_folding_performance_for_bag(events, registry_row=reg)
+    result = evaluate_folding_performance_for_bag(events, registry_row=reg)
 
     row_fields = result.to_performance_row(
         registry_completion_status=COMPLETION_COMPLETED
@@ -297,6 +309,7 @@ def recompute_folding_performance_for_bags(
     bag_ids: Sequence[str],
     *,
     source_recompute_kind: str = "bag",
+    require_completed_registry: bool = False,
 ) -> dict[str, Any]:
     ensure_rinse_folding_tables(cursor)
     results: list[dict[str, Any]] = []
@@ -306,12 +319,14 @@ def recompute_folding_performance_for_bags(
         bid = normalize_bag_id(raw)
         if not bid:
             skipped += 1
+            results.append({"bag_id": "", "skipped": True, "reason": "invalid_bag_id", "error": True})
             continue
         payload = apply_folding_performance_for_bag(
             cursor,
             organization_id,
             bid,
             source_recompute_kind=source_recompute_kind,
+            require_completed_registry=require_completed_registry,
         )
         results.append(payload)
         if payload.get("skipped"):
@@ -326,6 +341,68 @@ def recompute_folding_performance_for_bags(
     }
     payload["summary"] = summarize_recompute_results(results)
     return payload
+
+
+def collect_completed_bag_ids_for_folding(
+    cursor,
+    organization_id: int,
+    candidate_bag_ids: Sequence[str],
+    *,
+    completion_summaries: Sequence[Mapping[str, Any]] | None = None,
+) -> list[str]:
+    """
+    After batch confirm completion logic, return every candidate bag that is COMPLETED
+    in rinse_bag_registry (union of registry lookup + completion recompute summaries).
+    """
+    org = int(organization_id)
+    seen: set[str] = set()
+    for raw in candidate_bag_ids:
+        bid = normalize_bag_id(raw)
+        if bid:
+            seen.add(bid)
+    for summary in completion_summaries or []:
+        if not isinstance(summary, dict):
+            continue
+        if str(summary.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+            bid = normalize_bag_id(summary.get("bag_id"))
+            if bid:
+                seen.add(bid)
+
+    out: list[str] = []
+    for bid in sorted(seen):
+        reg = get_registry_row(cursor, org, bid)
+        if registry_is_completed(reg):
+            out.append(bid)
+    return out
+
+
+def folding_recompute_summary_for_response(
+    recompute_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Flatten folding recompute results for confirm API + UI."""
+    payload = recompute_payload or {}
+    summary = payload.get("summary") or summarize_recompute_results(payload.get("bags") or [])
+    errors = sum(
+        1
+        for b in payload.get("bags") or []
+        if b.get("error") or (
+            b.get("skipped")
+            and str(b.get("reason") or "") not in ("not_completed",)
+        )
+    )
+    return {
+        "folding_recompute_processed": int(summary.get("processed") or 0),
+        "folding_recompute_calculated": int(summary.get("calculated") or 0),
+        "folding_recompute_exceptions": int(summary.get("exceptions") or 0),
+        "folding_recompute_skipped": int(
+            summary.get("skipped_not_completed") or 0
+        )
+        + int(payload.get("bags_skipped") or 0)
+        - int(summary.get("skipped_not_completed") or 0),
+        "folding_recompute_errors": int(summary.get("errors") or 0) + errors,
+        "folding_recompute_ok": bool(payload.get("ok", True)),
+        "folding_bag_ids": list(payload.get("completed_bag_ids") or []),
+    }
 
 
 def summarize_recompute_results(bags: Sequence[dict[str, Any]]) -> dict[str, int]:
@@ -564,6 +641,7 @@ def apply_performance_override(
             new_row["duration_seconds"] = dur
             if new_row.get("status") == STATUS_EXCEPTION and new_row.get("assigned_user_name"):
                 hard_codes = {
+                    EXCEPTION_MISSING_SCAN_EVENTS,
                     EXCEPTION_MISSING_FOLDING,
                     EXCEPTION_MISSING_CLEAN,
                     EXCEPTION_CLEAN_BEFORE_FOLDING,
@@ -1322,32 +1400,40 @@ def recompute_folding_after_upload(
     cursor,
     organization_id: int,
     bag_ids: Sequence[str],
+    *,
+    completion_summaries: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Non-blocking folding recompute for upload-affected bags."""
+    """
+    Folding recompute after upload batch CONFIRM.
+
+    Only registry-COMPLETED bags are processed; each gets CALCULATED or EXCEPTION persisted.
+    """
     try:
-        unique: list[str] = []
-        seen: set[str] = set()
-        for raw in bag_ids:
-            bid = normalize_bag_id(raw)
-            if bid and bid not in seen:
-                seen.add(bid)
-                unique.append(bid)
-        if not unique:
+        completed_ids = collect_completed_bag_ids_for_folding(
+            cursor,
+            int(organization_id),
+            bag_ids,
+            completion_summaries=completion_summaries,
+        )
+        if not completed_ids:
             return {
                 "ok": True,
                 "bags_requested": 0,
                 "bags_processed": 0,
                 "bags_skipped": 0,
+                "completed_bag_ids": [],
                 "summary": summarize_recompute_results([]),
                 "bags": [],
             }
         payload = recompute_folding_performance_for_bags(
             cursor,
             int(organization_id),
-            unique,
-            source_recompute_kind="upload",
+            completed_ids,
+            source_recompute_kind="upload_confirm",
+            require_completed_registry=True,
         )
         payload["ok"] = True
+        payload["completed_bag_ids"] = completed_ids
         return payload
     except Exception as e:
         return {
@@ -1356,4 +1442,48 @@ def recompute_folding_after_upload(
             "bags_requested": len(bag_ids),
             "summary": None,
             "bags": [],
+            "completed_bag_ids": [],
+        }
+
+
+def recompute_folding_for_completed_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+    *,
+    source_recompute_kind: str = "admin_recompute",
+) -> dict[str, Any]:
+    """Admin/manual path: recompute folding for bags already marked COMPLETED."""
+    try:
+        completed_ids = collect_completed_bag_ids_for_folding(
+            cursor, int(organization_id), bag_ids, completion_summaries=None
+        )
+        if not completed_ids:
+            return {
+                "ok": True,
+                "bags_requested": 0,
+                "bags_processed": 0,
+                "bags_skipped": 0,
+                "completed_bag_ids": [],
+                "summary": summarize_recompute_results([]),
+                "bags": [],
+            }
+        payload = recompute_folding_performance_for_bags(
+            cursor,
+            int(organization_id),
+            completed_ids,
+            source_recompute_kind=source_recompute_kind,
+            require_completed_registry=True,
+        )
+        payload["ok"] = True
+        payload["completed_bag_ids"] = completed_ids
+        return payload
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "bags_requested": len(bag_ids),
+            "summary": None,
+            "bags": [],
+            "completed_bag_ids": [],
         }

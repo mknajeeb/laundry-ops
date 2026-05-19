@@ -348,7 +348,12 @@ def get_bag_admin_detail(
 def recompute_bag_completion_with_audit(
     cursor, organization_id: int, bag_id: str
 ) -> dict[str, Any]:
+    from backend.rinse_bag_completion import COMPLETION_COMPLETED
     from backend.rinse_bag_registry import apply_completion_to_registry
+    from backend.rinse_folding_registry import (
+        folding_recompute_summary_for_response,
+        recompute_folding_for_completed_bags,
+    )
 
     bid = normalize_bag_id(bag_id)
     before_reg = get_registry_row(cursor, organization_id, bid)
@@ -358,4 +363,11 @@ def recompute_bag_completion_with_audit(
         "completed_at": (before_reg or {}).get("completed_at"),
     }
     after_fields = apply_completion_to_registry(cursor, organization_id, bid)
-    return {"bag_id": bid, "before": before, "after": after_fields}
+    out: dict[str, Any] = {"bag_id": bid, "before": before, "after": after_fields}
+    if str(after_fields.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+        folding_payload = recompute_folding_for_completed_bags(
+            cursor, organization_id, [bid], source_recompute_kind="admin_recompute"
+        )
+        out["folding"] = folding_payload
+        out.update(folding_recompute_summary_for_response(folding_payload))
+    return out

@@ -139,19 +139,25 @@ class TestBenchmarks(unittest.TestCase):
 
 
 class TestUploadHook(unittest.TestCase):
-    def test_combined_upload_calls_folding_recompute(self):
+    def test_finalize_calls_folding_recompute(self):
         import inspect
 
-        from backend.rinse_combined_upload import commit_rinse_combined_upload
+        from backend.rinse_upload_finalize import finalize_rinse_after_batch_confirm
 
-        source = inspect.getsource(commit_rinse_combined_upload)
+        source = inspect.getsource(finalize_rinse_after_batch_confirm)
         self.assertIn("recompute_folding_after_upload", source)
 
     def test_recompute_after_upload_never_raises(self):
         cursor = MagicMock()
-        with patch(
-            "backend.rinse_folding_registry.recompute_folding_performance_for_bags",
-            side_effect=RuntimeError("db down"),
+        with (
+            patch(
+                "backend.rinse_folding_registry.collect_completed_bag_ids_for_folding",
+                return_value=["BAG1"],
+            ),
+            patch(
+                "backend.rinse_folding_registry.recompute_folding_performance_for_bags",
+                side_effect=RuntimeError("db down"),
+            ),
         ):
             out = recompute_folding_after_upload(cursor, 1, ["BAG1"])
         self.assertFalse(out["ok"])

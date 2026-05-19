@@ -491,6 +491,13 @@ function UploadPage({ user }) {
     }
   };
 
+  const foldingConfirmMessage = (data) => {
+    const calculated = Number(data?.folding_recompute_calculated ?? 0);
+    const exceptions = Number(data?.folding_recompute_exceptions ?? 0);
+    if (!calculated && !exceptions) return "";
+    return ` Folding updated: ${calculated} calculated, ${exceptions} exceptions.`;
+  };
+
   const handleConfirm = async () => {
     if (!batch?.id) return;
     if (!canConfirmBatch) {
@@ -503,8 +510,12 @@ function UploadPage({ user }) {
 
     try {
       setLoading(true);
-      await confirmUploadBatch(batch.id, false);
-      setMessage({ type: "success", text: "Batch confirmed and applied to staging." });
+      const res = await confirmUploadBatch(batch.id, false);
+      const data = res?.data || {};
+      setMessage({
+        type: "success",
+        text: `Batch confirmed and applied to staging.${foldingConfirmMessage(data)}`,
+      });
       await loadCurrentBatch(rowStatusFilter);
       await loadBatchHistory();
       window.dispatchEvent(new CustomEvent("washpro-upload-batch-changed"));
@@ -522,8 +533,12 @@ function UploadPage({ user }) {
           `${data.attention_count} rows still need attention. Confirm anyway?`
         );
         if (ok) {
-          await confirmUploadBatch(batch.id, true);
-          setMessage({ type: "success", text: "Batch force-confirmed and applied." });
+          const res = await confirmUploadBatch(batch.id, true);
+          const data = res?.data || {};
+          setMessage({
+            type: "success",
+            text: `Batch force-confirmed and applied.${foldingConfirmMessage(data)}`,
+          });
           await loadCurrentBatch(rowStatusFilter);
           await loadBatchHistory();
           window.dispatchEvent(new CustomEvent("washpro-upload-batch-changed"));

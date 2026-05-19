@@ -10182,6 +10182,21 @@ def confirm_upload_batch(batch_id):
                 rinse_finalize.get("missing_prior_bag_ids_completed") or []
             ),
             "full_snapshot": bool(rinse_finalize.get("full_snapshot")),
+            "folding_recompute_processed": int(
+                rinse_finalize.get("folding_recompute_processed") or 0
+            ),
+            "folding_recompute_calculated": int(
+                rinse_finalize.get("folding_recompute_calculated") or 0
+            ),
+            "folding_recompute_exceptions": int(
+                rinse_finalize.get("folding_recompute_exceptions") or 0
+            ),
+            "folding_recompute_skipped": int(
+                rinse_finalize.get("folding_recompute_skipped") or 0
+            ),
+            "folding_recompute_errors": int(
+                rinse_finalize.get("folding_recompute_errors") or 0
+            ),
         })
 
     except Exception as e:

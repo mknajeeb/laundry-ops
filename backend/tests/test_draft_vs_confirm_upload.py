@@ -146,19 +146,22 @@ class TestConfirmFinalizes(unittest.TestCase):
                 "backend.rinse_upload_finalize.merge_scan_events_from_upload"
             ) as mock_merge,
             patch(
-                "backend.rinse_upload_finalize.recompute_completion_for_bags"
-            ) as mock_comp,
-            patch(
                 "backend.rinse_upload_finalize.apply_registry_from_accepted_portal_rows",
                 return_value=1,
-            ),
+            ) as mock_registry,
+            patch(
+                "backend.rinse_upload_finalize.recompute_completion_for_bags"
+            ) as mock_comp,
             patch(
                 "backend.rinse_folding_registry.recompute_folding_after_upload"
             ) as mock_fold,
         ):
             mock_merge.return_value = {"bag_ids": ["BAG1"], "events_inserted": 1}
-            mock_comp.return_value = {"bags": 1}
-            mock_fold.return_value = {"ok": True, "processed": 1}
+            mock_comp.return_value = {"bags": [{"bag_id": "BAG1", "completion_status": "COMPLETED"}]}
+            mock_fold.return_value = {
+                "ok": True,
+                "summary": {"processed": 1, "calculated": 1, "exceptions": 0},
+            }
 
             out = finalize_rinse_after_batch_confirm(
                 cursor,
@@ -168,9 +171,11 @@ class TestConfirmFinalizes(unittest.TestCase):
             )
 
         mock_merge.assert_called_once()
+        mock_registry.assert_called_once()
         mock_comp.assert_called_once()
         mock_fold.assert_called_once()
         self.assertEqual(out["bag_ids"], ["BAG1"])
+        self.assertIn("folding_recompute_processed", out)
 
 
 class TestDraftPreviewNoPersist(unittest.TestCase):
