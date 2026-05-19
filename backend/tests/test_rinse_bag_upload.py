@@ -6,6 +6,7 @@ import unittest
 
 from backend.rinse_bag_completion import (
     REASON_ALREADY_COMPLETED,
+    REASON_COMPLETED_NEEDS_CHECKOUT,
     REASON_OK,
     REASON_UPDATED_EXISTING_BAG,
     ROW_REJECTED,
@@ -36,11 +37,21 @@ class TestClassifyPortalUploadRow(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
-    def test_completed_bag_rejected(self):
+    def test_completed_bag_without_staging_accepted_for_checkout(self):
         st, reason = classify_portal_upload_row(
             ticket_id="ABCD1234",
             was_completed_before_upload=True,
             has_active_staging=False,
+            row_date_before_batch=False,
+        )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_COMPLETED_NEEDS_CHECKOUT)
+
+    def test_completed_bag_with_active_staging_rejected(self):
+        st, reason = classify_portal_upload_row(
+            ticket_id="ABCD1234",
+            was_completed_before_upload=True,
+            has_active_staging=True,
             row_date_before_batch=False,
         )
         self.assertEqual(st, ROW_REJECTED)
@@ -70,7 +81,7 @@ class TestClassifyPortalUploadRow(unittest.TestCase):
 class TestConfirmStagingAction(unittest.TestCase):
     BAG = "ABCD1234"
 
-    def test_completed_blocks(self):
+    def test_completed_with_active_staging_blocks(self):
         self.assertEqual(
             confirm_staging_action(
                 ticket_id=self.BAG,
@@ -78,6 +89,16 @@ class TestConfirmStagingAction(unittest.TestCase):
                 has_active_staging=True,
             ),
             "BLOCK",
+        )
+
+    def test_completed_without_staging_inserts(self):
+        self.assertEqual(
+            confirm_staging_action(
+                ticket_id=self.BAG,
+                was_completed_before_upload=True,
+                has_active_staging=False,
+            ),
+            "INSERT_STAGING",
         )
 
     def test_incomplete_updates_existing_staging(self):

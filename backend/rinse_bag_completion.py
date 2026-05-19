@@ -36,6 +36,7 @@ TRIGGER_PRIOR_WORKFLOW_BEFORE_CLEAN = "PRIOR_WORKFLOW_BEFORE_CLEAN"
 
 REASON_ALREADY_COMPLETED = "ALREADY_COMPLETED"
 REASON_ALREADY_COMPLETED_AT_CONFIRM = "ALREADY_COMPLETED_AT_CONFIRM"
+REASON_COMPLETED_NEEDS_CHECKOUT = "COMPLETED_NEEDS_CHECKOUT"
 REASON_UPDATED_EXISTING_BAG = "UPDATED_EXISTING_BAG"
 REASON_OK = "OK"
 REASON_MISSING_FROM_LATEST_PORTAL_UPLOAD = "MISSING_FROM_LATEST_PORTAL_UPLOAD"
@@ -57,13 +58,19 @@ def classify_portal_upload_row(
 
     was_completed_before_upload: registry was COMPLETED before this upload began
     (not completion inferred from scan-events merged in the same upload).
+
+    Completed bags with no active staging row are accepted so Checkout can receive them
+    (registry may be ahead of orders_staging after scan-event completion).
     """
     tid = normalize_bag_id(ticket_id)
     if not tid:
         raise ValueError("classify_portal_upload_row requires ticket_id")
 
-    if was_completed_before_upload:
+    if was_completed_before_upload and has_active_staging:
         return ROW_REJECTED, REASON_ALREADY_COMPLETED
+
+    if was_completed_before_upload:
+        return ROW_ACCEPTED, REASON_COMPLETED_NEEDS_CHECKOUT
 
     if row_date_before_batch:
         return "NEEDS_ATTENTION", "OLDER_THAN_BATCH_DATE"
@@ -84,7 +91,7 @@ def confirm_staging_action(
     tid = normalize_bag_id(ticket_id)
     if not tid:
         return "USE_IDENTITY_PATH"
-    if was_completed_before_upload:
+    if was_completed_before_upload and has_active_staging:
         return "BLOCK"
     if has_active_staging:
         return "UPDATE_STAGING"

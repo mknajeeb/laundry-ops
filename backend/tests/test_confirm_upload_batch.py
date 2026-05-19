@@ -176,6 +176,14 @@ class TestConfirmUploadBatch(unittest.TestCase):
             ),
             "BLOCK",
         )
+        self.assertEqual(
+            confirm_staging_action(
+                ticket_id="5LCZ5RJ60E",
+                was_completed_before_upload=True,
+                has_active_staging=False,
+            ),
+            "INSERT_STAGING",
+        )
 
 
 if __name__ == "__main__":
