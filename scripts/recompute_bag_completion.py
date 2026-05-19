@@ -5,6 +5,8 @@ Recompute rinse_bag_registry completion from persistent rinse_bag_scan_events.
 Usage:
   python scripts/recompute_bag_completion.py --org <organization_id> --bag BAGID
   python scripts/recompute_bag_completion.py --org <organization_id> --all-incomplete
+  python scripts/recompute_bag_completion.py --org <organization_id> --all-completed
+  python scripts/recompute_bag_completion.py --org <organization_id> --bags BAG1,BAG2
 """
 
 from __future__ import annotations
@@ -36,10 +38,20 @@ def main() -> int:
         action="store_true",
         help="recompute every INCOMPLETE bag for org",
     )
+    parser.add_argument(
+        "--all-completed",
+        action="store_true",
+        help="recompute every COMPLETED bag for org (fixes stale OR-era false completes)",
+    )
+    parser.add_argument(
+        "--bags",
+        type=str,
+        help="comma-separated bag_ids",
+    )
     args = parser.parse_args()
 
-    if not args.bag and not args.all_incomplete:
-        parser.error("Provide --bag or --all-incomplete")
+    if not args.bag and not args.all_incomplete and not args.all_completed and not args.bags:
+        parser.error("Provide --bag, --bags, --all-incomplete, or --all-completed")
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -52,6 +64,17 @@ def main() -> int:
                 print("Invalid bag id", file=sys.stderr)
                 return 1
             bag_ids = [bid]
+        elif args.bags:
+            bag_ids = []
+            for raw in str(args.bags).split(","):
+                bid = normalize_bag_id(raw.strip())
+                if bid:
+                    bag_ids.append(bid)
+        elif args.all_completed:
+            rows = list_registry_rows(
+                cursor, args.org, status="COMPLETED", limit=5000, offset=0
+            )
+            bag_ids = [str(r["bag_id"]) for r in rows if r.get("bag_id")]
         else:
             rows = list_registry_rows(
                 cursor, args.org, status="INCOMPLETE", limit=5000, offset=0
