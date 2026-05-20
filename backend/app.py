@@ -39,6 +39,11 @@ except Exception:
 from etl.transform_orders import transform_orders
 
 from backend.db import get_db
+from backend.attendance_pin_punch import (
+    get_request_ip,
+    list_organizations_for_attendance,
+    perform_pin_punch,
+)
 from backend.org_branding_urls import rewrite_org_logo_url_for_client
 from backend.payroll_identity import (
     ensure_payroll_profile_for_washpro,
@@ -4890,6 +4895,60 @@ def attendance_pin_unlock():
                 conn.close()
             except Exception:
                 pass
+
+
+@app.route("/api/public/attendance/pin-punch", methods=["POST"])
+def public_attendance_pin_punch():
+    """Kiosk clock in/out: org slug + 4-digit PIN. No auth session."""
+    data = request.json or {}
+    org_slug = (data.get("organization_slug") or data.get("organization") or "").strip().lower()
+    pin = data.get("pin")
+    conn = get_db()
+    try:
+        body, status = perform_pin_punch(
+            conn,
+            org_slug,
+            pin,
+            fetch_user_roles,
+            get_request_ip(),
+        )
+        return jsonify(body), status
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({"ok": False, "error": "Invalid PIN. Please try again."}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.route("/api/public/organizations/for-attendance", methods=["GET"])
+def public_organizations_for_attendance():
+    """Active tenants for /attendance tenant picker."""
+    conn = get_db()
+    try:
+        rows = list_organizations_for_attendance(conn)
+        out = []
+        for r in rows:
+            item = {
+                "id": int(r["id"]),
+                "slug": r["slug"],
+                "display_name": r.get("display_name") or r["slug"],
+            }
+            if r.get("logo_url"):
+                item["logo_url"] = rewrite_org_logo_url_for_client(r.get("logo_url"))
+            out.append(item)
+        return jsonify({"organizations": out})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 
 @app.route("/auth/login", methods=["POST"])

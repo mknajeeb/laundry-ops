@@ -72,8 +72,11 @@ export const getSavedUser = () => {
 
 axios.interceptors.request.use((config) => {
   const url = String(config.url || "");
-  /** Public PIN unlock — never send another user's Bearer token. */
-  if (url.includes("/auth/attendance-pin-unlock")) {
+  /** Public PIN unlock / kiosk punch — never send another user's Bearer token. */
+  if (
+    url.includes("/auth/attendance-pin-unlock") ||
+    url.includes("/api/public/attendance/pin-punch")
+  ) {
     return config;
   }
   const isTa = url.includes("/api/ta/");
@@ -194,6 +197,23 @@ export const getPublicActiveClockIns = (slug) =>
   axios.get(`${API_BASE}/api/public/organization/active-clock-ins`, {
     params: { slug: String(slug || "").trim().toLowerCase() },
     validateStatus: (status) => status === 200 || status === 404 || status === 400,
+  });
+
+/** Kiosk attendance: clock in/out with PIN only (no session). */
+export const attendancePinPunch = (organization_slug, pin) =>
+  axios.post(
+    `${API_BASE}/api/public/attendance/pin-punch`,
+    {
+      organization_slug: String(organization_slug || "").trim().toLowerCase(),
+      pin: String(pin || "").trim(),
+    },
+    { timeout: AUTH_LOGIN_TIMEOUT_MS },
+  );
+
+/** Public: active tenants for /attendance picker */
+export const getPublicOrganizationsForAttendance = () =>
+  axios.get(`${API_BASE}/api/public/organizations/for-attendance`, {
+    validateStatus: (status) => status === 200 || status === 503,
   });
 
 /** ADMIN: current tenant organization row (slug, display_name, logo_url) */

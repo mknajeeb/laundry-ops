@@ -48,6 +48,7 @@ import UploadPage from "./pages/UploadPage";
 import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import KioskUnlockPage from "./pages/KioskUnlockPage";
+import AttendancePinPage from "./pages/AttendancePinPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollManagementPage from "./pages/PayrollManagementPage";
@@ -140,6 +141,12 @@ function isLoginRoute(path) {
 function isKioskRoute(path) {
   const p = path || "";
   return p === "/kiosk" || p.startsWith("/kiosk/");
+}
+
+/** Kiosk clock in/out only: /attendance or /attendance/:orgSlug (no app session). */
+function isAttendanceRoute(path) {
+  const p = path || "";
+  return p === "/attendance" || p.startsWith("/attendance/");
 }
 
 /** Same rules as LoginPage — kept in sync for tenant bookmark URLs. */
@@ -462,7 +469,7 @@ function AppShell() {
     []
   );
 
-  if (authLoading && !isLoginRoute(pathname) && !isKioskRoute(pathname)) {
+  if (authLoading && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname)) {
     return (
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
@@ -480,7 +487,17 @@ function AppShell() {
     );
   }
 
-  if (!user && !isLoginRoute(pathname) && !isKioskRoute(pathname)) {
+  /** Kiosk attendance punch: no sidebar, no auth session. */
+  if (isAttendanceRoute(pathname)) {
+    return (
+      <Routes>
+        <Route path="/attendance/:orgSlug" element={<AttendancePinPage />} />
+        <Route path="/attendance" element={<AttendancePinPage />} />
+      </Routes>
+    );
+  }
+
+  if (!user && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname)) {
     return <Navigate to="/login" replace />;
   }
 
