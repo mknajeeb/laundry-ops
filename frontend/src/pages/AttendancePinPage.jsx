@@ -44,6 +44,45 @@ function attendanceLogoSrc(orgSlug, brandingLogoUrl) {
   return trimmed ? resolveOrgLogoUrl(trimmed) : null;
 }
 
+/** Brand wordmark: gold “Vee” + blue “Wash” (matches marketing site). */
+function VeeWashWordmark() {
+  return (
+    <Typography
+      component="div"
+      sx={{
+        fontWeight: 800,
+        fontSize: { xs: "2rem", sm: "2.25rem" },
+        letterSpacing: "-0.03em",
+        lineHeight: 1.1,
+        textAlign: "center",
+      }}
+    >
+      <Box
+        component="span"
+        sx={{
+          background: "linear-gradient(135deg, #fde68a 0%, #d4a84b 45%, #9a7209 100%)",
+          WebkitBackgroundClip: "text",
+          backgroundClip: "text",
+          color: "transparent",
+        }}
+      >
+        Vee
+      </Box>
+      <Box
+        component="span"
+        sx={{
+          background: "linear-gradient(90deg, #2d3d9c 0%, #4865ee 100%)",
+          WebkitBackgroundClip: "text",
+          backgroundClip: "text",
+          color: "transparent",
+        }}
+      >
+        Wash
+      </Box>
+    </Typography>
+  );
+}
+
 /** Map API errors to kiosk-friendly copy. */
 function punchMessageFromResponse(data, status, t) {
   if (!data || typeof data !== "object") return null;
@@ -449,15 +488,16 @@ export default function AttendancePinPage() {
           ) : (
             <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 96, height: 96 }} />
           )}
-          {slug !== "veewash" ? (
+          {sanitizeSlug(slug) === "veewash" ? (
+            <VeeWashWordmark />
+          ) : (
             <Typography variant="h6" fontWeight={700} textAlign="center" color="#152238">
               {tenantTitle}
             </Typography>
-          ) : (
-            <Typography variant="subtitle1" fontWeight={600} textAlign="center" color="#64748b">
-              {t("attendance.enterPin")}
-            </Typography>
           )}
+          <Typography variant="subtitle1" fontWeight={600} textAlign="center" color="#64748b">
+            {t("attendance.enterPin")}
+          </Typography>
 
           {!routeSlug && (
             <Box sx={{ width: "100%" }}>
@@ -491,12 +531,6 @@ export default function AttendancePinPage() {
             </Stack>
           ) : (
             <>
-              {slug !== "veewash" ? (
-                <Typography variant="h6" fontWeight={600} color="#334155" sx={{ mt: 0.5 }}>
-                  {t("attendance.enterPin")}
-                </Typography>
-              ) : null}
-
               <Box
                 sx={{
                   display: "flex",
