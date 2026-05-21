@@ -6,7 +6,7 @@
   "scope": "/attendance/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f3f6fa",
+  "background_color": "#eef2ff",
   "theme_color": "#2d3d9c",
   "icons": [
     {

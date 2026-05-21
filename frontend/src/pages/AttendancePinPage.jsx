@@ -31,8 +31,19 @@ import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 4000;
 const STORAGE_KEY = "washpro_attendance_org_slug";
-/** Bundled mark for VeeWash kiosk (works offline; no API branding required). */
+/** Official V/W mark — transparent PNG (brand/vee-wash-mark). */
 const VEEWASH_ATTENDANCE_LOGO = "/veewash-attendance-logo.png";
+
+const VW = {
+  navy: "#16192b",
+  blue: "#2d3d9c",
+  cobalt: "#4865ee",
+  gold: "#9a7209",
+  goldMid: "#d4a84b",
+  goldLight: "#fde68a",
+  cream: "#faf6e9",
+  mist: "#eef2ff",
+};
 
 function attendanceLogoSrc(orgSlug, brandingLogoUrl) {
   const slug = sanitizeSlug(orgSlug);
@@ -117,7 +128,28 @@ function punchMessageFromAxiosError(err, t) {
   return msg || t("attendance.punchFailed");
 }
 
-function digitKeySx() {
+function digitKeySx(veewash) {
+  if (veewash) {
+    return {
+      minHeight: { xs: 56, sm: 52 },
+      fontSize: "1.4rem",
+      fontWeight: 700,
+      borderRadius: 2.5,
+      color: VW.navy,
+      py: 0.5,
+      borderWidth: 2,
+      borderStyle: "solid",
+      borderColor: alpha(VW.cobalt, 0.35),
+      bgcolor: "#fff",
+      boxShadow: `0 4px 14px -6px ${alpha(VW.blue, 0.28)}`,
+      "&:hover": {
+        borderColor: VW.cobalt,
+        bgcolor: alpha(VW.cobalt, 0.08),
+        boxShadow: `0 8px 20px -6px ${alpha(VW.cobalt, 0.35)}`,
+      },
+      "&.Mui-disabled": { opacity: 0.45 },
+    };
+  }
   return {
     minHeight: { xs: 56, sm: 52 },
     fontSize: "1.35rem",
@@ -133,13 +165,30 @@ function digitKeySx() {
       borderColor: alpha("#4865ee", 0.55),
       bgcolor: alpha("#4865ee", 0.06),
     },
-    "&.Mui-disabled": {
-      opacity: 0.45,
-    },
+    "&.Mui-disabled": { opacity: 0.45 },
   };
 }
 
-function utilityKeySx() {
+function utilityKeySx(veewash) {
+  if (veewash) {
+    return {
+      minHeight: { xs: 56, sm: 52 },
+      fontSize: "0.8rem",
+      fontWeight: 700,
+      borderRadius: 2.5,
+      color: VW.gold,
+      py: 0.5,
+      borderWidth: 2,
+      borderStyle: "solid",
+      borderColor: alpha(VW.goldMid, 0.55),
+      bgcolor: alpha(VW.cream, 0.85),
+      textTransform: "none",
+      "&:hover": {
+        borderColor: VW.goldMid,
+        bgcolor: VW.cream,
+      },
+    };
+  }
   return {
     minHeight: { xs: 56, sm: 52 },
     fontSize: "0.85rem",
@@ -419,6 +468,7 @@ export default function AttendancePinPage() {
 
   const tenantTitle = branding?.display_name || slug || t("attendance.title");
   const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
+  const isVeeWash = sanitizeSlug(slug) === "veewash";
 
   useEffect(() => {
     if (!logoSrc || logoSrc.startsWith("http")) return undefined;
@@ -433,6 +483,7 @@ export default function AttendancePinPage() {
   return (
     <Box
       sx={{
+        position: "relative",
         minHeight: "100dvh",
         width: "100%",
         display: "flex",
@@ -441,61 +492,97 @@ export default function AttendancePinPage() {
         justifyContent: "center",
         px: 2,
         py: 3,
-        background: "linear-gradient(180deg, #fafbfd 0%, #f3f6fa 50%, #eef2f8 100%)",
+        overflow: "hidden",
+        background: isVeeWash
+          ? `linear-gradient(155deg, #ffffff 0%, ${VW.mist} 42%, ${VW.cream} 100%)`
+          : "linear-gradient(180deg, #fafbfd 0%, #f3f6fa 50%, #eef2f8 100%)",
+        "&::before": isVeeWash
+          ? {
+              content: '""',
+              position: "absolute",
+              top: "-12%",
+              right: "-18%",
+              width: "55%",
+              height: "45%",
+              borderRadius: "50%",
+              background: `radial-gradient(circle, ${alpha(VW.cobalt, 0.2)} 0%, transparent 70%)`,
+              pointerEvents: "none",
+            }
+          : undefined,
+        "&::after": isVeeWash
+          ? {
+              content: '""',
+              position: "absolute",
+              bottom: "-8%",
+              left: "-15%",
+              width: "50%",
+              height: "40%",
+              borderRadius: "50%",
+              background: `radial-gradient(circle, ${alpha(VW.goldMid, 0.22)} 0%, transparent 72%)`,
+              pointerEvents: "none",
+            }
+          : undefined,
       }}
     >
       <Paper
         elevation={0}
         sx={{
+          position: "relative",
+          zIndex: 1,
           width: "100%",
           maxWidth: 420,
           p: { xs: 2.5, sm: 3 },
-          borderRadius: 3,
+          borderRadius: 4,
           border: "1px solid",
-          borderColor: alpha("#2d3d9c", 0.12),
-          boxShadow: "0 24px 60px -28px rgba(45, 61, 156, 0.28)",
+          borderColor: isVeeWash ? alpha(VW.cobalt, 0.22) : alpha("#2d3d9c", 0.12),
+          boxShadow: isVeeWash
+            ? `0 28px 64px -24px ${alpha(VW.blue, 0.35)}, 0 0 0 1px ${alpha(VW.goldMid, 0.12)} inset`
+            : "0 24px 60px -28px rgba(45, 61, 156, 0.28)",
+          background: isVeeWash
+            ? "linear-gradient(180deg, rgba(255,255,255,0.97) 0%, rgba(255,255,255,0.92) 100%)"
+            : undefined,
+          backdropFilter: isVeeWash ? "blur(12px)" : undefined,
         }}
       >
-        <Stack spacing={2} alignItems="center" sx={{ width: "100%" }}>
+        <Stack spacing={isVeeWash ? 1.25 : 2} alignItems="center" sx={{ width: "100%" }}>
           {logoSrc ? (
             <Box
+              component="img"
+              src={logoSrc}
+              alt="VeeWash"
               sx={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: "100%",
-                py: 1,
-                px: 1.5,
-                mb: 0.5,
-                borderRadius: 2.5,
-                bgcolor: "#fff",
-                boxShadow: `0 8px 28px -12px ${alpha("#2d3d9c", 0.22)}`,
-                border: `1px solid ${alpha("#2d3d9c", 0.08)}`,
+                width: isVeeWash ? "min(200px, 58vw)" : "min(240px, 78vw)",
+                height: "auto",
+                maxHeight: isVeeWash ? 112 : 100,
+                objectFit: "contain",
+                display: "block",
+                mt: isVeeWash ? 0.5 : 0,
+                filter: isVeeWash
+                  ? `drop-shadow(0 10px 28px ${alpha(VW.blue, 0.22)})`
+                  : "none",
               }}
-            >
-              <Box
-                component="img"
-                src={logoSrc}
-                alt={tenantTitle}
-                sx={{
-                  width: "min(240px, 78vw)",
-                  maxHeight: 100,
-                  objectFit: "contain",
-                  display: "block",
-                }}
-              />
-            </Box>
+            />
           ) : (
             <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 96, height: 96 }} />
           )}
-          {sanitizeSlug(slug) === "veewash" ? (
+          {isVeeWash ? (
             <VeeWashWordmark />
           ) : (
             <Typography variant="h6" fontWeight={700} textAlign="center" color="#152238">
               {tenantTitle}
             </Typography>
           )}
-          <Typography variant="subtitle1" fontWeight={600} textAlign="center" color="#64748b">
+          <Typography
+            variant="subtitle1"
+            fontWeight={600}
+            textAlign="center"
+            sx={{
+              color: isVeeWash ? alpha(VW.blue, 0.75) : "#64748b",
+              letterSpacing: isVeeWash ? "0.06em" : undefined,
+              textTransform: isVeeWash ? "uppercase" : undefined,
+              fontSize: isVeeWash ? "0.72rem" : undefined,
+            }}
+          >
             {t("attendance.enterPin")}
           </Typography>
 
@@ -547,7 +634,14 @@ export default function AttendancePinPage() {
                       width: 14,
                       height: 14,
                       borderRadius: "50%",
-                      bgcolor: i < pinDigits.length ? "#2d3d9c" : alpha("#2d3d9c", 0.15),
+                      bgcolor: i < pinDigits.length
+                        ? isVeeWash
+                          ? VW.cobalt
+                          : "#2d3d9c"
+                        : alpha(isVeeWash ? VW.cobalt : "#2d3d9c", 0.15),
+                      boxShadow: i < pinDigits.length && isVeeWash
+                        ? `0 0 12px ${alpha(VW.cobalt, 0.45)}`
+                        : "none",
                       transition: "background-color 0.15s",
                     }}
                   />
@@ -556,7 +650,11 @@ export default function AttendancePinPage() {
 
               {loading ? (
                 <Stack spacing={0.5} alignItems="center" sx={{ width: "100%", py: 0.5 }}>
-                  <CircularProgress size={36} aria-label={t("attendance.checkingPin")} />
+                  <CircularProgress
+                    size={36}
+                    aria-label={t("attendance.checkingPin")}
+                    sx={isVeeWash ? { color: VW.cobalt } : undefined}
+                  />
                   <Typography variant="body2" color="text.secondary">
                     {t("attendance.checkingPin")}
                   </Typography>
@@ -581,17 +679,26 @@ export default function AttendancePinPage() {
                 }}
               >
                 {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
-                  <Button key={n} variant="outlined" onClick={() => appendDigit(n)} sx={digitKeySx()}>
+                  <Button
+                    key={n}
+                    variant="outlined"
+                    onClick={() => appendDigit(n)}
+                    sx={digitKeySx(isVeeWash)}
+                  >
                     {n}
                   </Button>
                 ))}
-                <Button variant="outlined" onClick={pinClear} sx={utilityKeySx()}>
+                <Button variant="outlined" onClick={pinClear} sx={utilityKeySx(isVeeWash)}>
                   {t("attendance.clearPin")}
                 </Button>
-                <Button variant="outlined" onClick={() => appendDigit(0)} sx={digitKeySx()}>
+                <Button variant="outlined" onClick={() => appendDigit(0)} sx={digitKeySx(isVeeWash)}>
                   0
                 </Button>
-                <IconButton onClick={pinBackspace} sx={utilityKeySx()} aria-label={t("attendance.backspace")}>
+                <IconButton
+                  onClick={pinBackspace}
+                  sx={utilityKeySx(isVeeWash)}
+                  aria-label={t("attendance.backspace")}
+                >
                   <Backspace fontSize="small" />
                 </IconButton>
               </Box>
@@ -607,7 +714,7 @@ export default function AttendancePinPage() {
             to={`/login/${encodeURIComponent(slug)}`}
             size="small"
             color="inherit"
-            sx={{ color: "#64748b" }}
+            sx={{ color: isVeeWash ? alpha(VW.blue, 0.65) : "#64748b" }}
           >
             {t("attendance.adminLogin")}
           </Button>
