@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { applyAttendancePwaManifest } from "../utils/attendancePwaManifest";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
@@ -162,6 +163,11 @@ export default function AttendancePinPage() {
   const punchInFlightRef = useRef(false);
 
   const localeTag = locale === "es" ? "es-US" : "en-US";
+
+  /** Separate PWA manifest so Android “Add to Home screen” opens attendance, not /login. */
+  useLayoutEffect(() => {
+    return applyAttendancePwaManifest(routeSlug || selectedSlug);
+  }, [routeSlug, selectedSlug]);
 
   useEffect(() => {
     if (routeSlug) return;

@@ -3,7 +3,10 @@
     "rewrite": "/index.html",
     "exclude": [
       "/assets/*",
-      "/api/*"
+      "/api/*",
+      "/*.webmanifest",
+      "/attendance.manifest.webmanifest",
+      "/attendance-manifests/*"
     ]
   }
 }

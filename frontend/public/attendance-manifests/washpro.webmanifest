@@ -1,0 +1,19 @@
+{
+  "name": "Washpro Attendance",
+  "short_name": "Attendance",
+  "description": "Clock in and out with your attendance PIN.",
+  "start_url": "/attendance/washpro",
+  "scope": "/attendance/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f3f6fa",
+  "theme_color": "#2d3d9c",
+  "icons": [
+    {
+      "src": "/neutral-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
