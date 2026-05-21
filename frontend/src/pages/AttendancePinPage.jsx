@@ -26,10 +26,23 @@ import {
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
+import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 4000;
 const STORAGE_KEY = "washpro_attendance_org_slug";
+/** Bundled mark for VeeWash kiosk (works offline; no API branding required). */
+const VEEWASH_ATTENDANCE_LOGO = "/veewash-attendance-logo.png";
+
+function attendanceLogoSrc(orgSlug, brandingLogoUrl) {
+  const slug = sanitizeSlug(orgSlug);
+  if (slug === "veewash") return VEEWASH_ATTENDANCE_LOGO;
+  const trimmed =
+    brandingLogoUrl != null && String(brandingLogoUrl).trim()
+      ? String(brandingLogoUrl).trim()
+      : "";
+  return trimmed ? resolveOrgLogoUrl(trimmed) : null;
+}
 
 /** Map API errors to kiosk-friendly copy. */
 function punchMessageFromResponse(data, status, t) {
@@ -366,6 +379,17 @@ export default function AttendancePinPage() {
   };
 
   const tenantTitle = branding?.display_name || slug || t("attendance.title");
+  const logoSrc = attendanceLogoSrc(slug, branding?.logo_url);
+
+  useEffect(() => {
+    if (!logoSrc || logoSrc.startsWith("http")) return undefined;
+    const link = document.createElement("link");
+    link.rel = "preload";
+    link.as = "image";
+    link.href = logoSrc;
+    document.head.appendChild(link);
+    return () => link.remove();
+  }, [logoSrc]);
 
   return (
     <Box
@@ -393,15 +417,32 @@ export default function AttendancePinPage() {
           boxShadow: "0 24px 60px -28px rgba(45, 61, 156, 0.28)",
         }}
       >
-        <Stack spacing={2.5} alignItems="center">
-          <TenantLogo
-            logoUrl={branding?.logo_url}
-            alt={tenantTitle}
-            sx={{ width: 72, height: 72 }}
-          />
-          <Typography variant="h5" fontWeight={700} textAlign="center" color="#152238">
-            {tenantTitle}
-          </Typography>
+        <Stack spacing={2} alignItems="center" sx={{ width: "100%" }}>
+          {logoSrc ? (
+            <Box
+              component="img"
+              src={logoSrc}
+              alt={tenantTitle}
+              sx={{
+                width: "min(280px, 88vw)",
+                maxHeight: 120,
+                objectFit: "contain",
+                display: "block",
+                mb: 0.5,
+              }}
+            />
+          ) : (
+            <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 96, height: 96 }} />
+          )}
+          {slug !== "veewash" ? (
+            <Typography variant="h6" fontWeight={700} textAlign="center" color="#152238">
+              {tenantTitle}
+            </Typography>
+          ) : (
+            <Typography variant="subtitle1" fontWeight={600} textAlign="center" color="#64748b">
+              {t("attendance.enterPin")}
+            </Typography>
+          )}
 
           {!routeSlug && (
             <Box sx={{ width: "100%" }}>
@@ -435,9 +476,11 @@ export default function AttendancePinPage() {
             </Stack>
           ) : (
             <>
-              <Typography variant="h6" fontWeight={600} color="#334155">
-                {t("attendance.enterPin")}
-              </Typography>
+              {slug !== "veewash" ? (
+                <Typography variant="h6" fontWeight={600} color="#334155" sx={{ mt: 0.5 }}>
+                  {t("attendance.enterPin")}
+                </Typography>
+              ) : null}
 
               <Box
                 sx={{

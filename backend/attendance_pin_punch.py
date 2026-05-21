@@ -219,22 +219,6 @@ def resolve_user_by_attendance_pin(
             (int(organization_id), last4),
         )
         rows = c.fetchall() or []
-        if not rows:
-            c.execute(
-                """
-                SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
-                       pp.attendance_pin_hash, pp.first_name, pp.last_name,
-                       pp.termination_date, pp.attendance_pin_last4
-                FROM payroll_profiles pp
-                INNER JOIN users u ON u.id = pp.user_id
-                WHERE u.organization_id = %s
-                  AND u.active = 1
-                  AND pp.attendance_pin_hash IS NOT NULL
-                  AND (pp.attendance_pin_last4 IS NULL OR pp.attendance_pin_last4 = '')
-                """,
-                (int(organization_id),),
-            )
-            rows = c.fetchall() or []
     else:
         c.execute(
             """
@@ -250,6 +234,7 @@ def resolve_user_by_attendance_pin(
             (int(organization_id),),
         )
         rows = c.fetchall() or []
+
     matched = None
     for row in rows:
         h = row.get("attendance_pin_hash")
@@ -264,10 +249,6 @@ def resolve_user_by_attendance_pin(
                 )
             except Exception:
                 logger.debug("backfill attendance_pin_last4 failed user=%s", row["id"])
-        roles = fetch_roles_fn(c, row["id"])
-        rs = {str(r).upper() for r in roles}
-        if rs & ADMIN_ROLE_CODES:
-            continue
         if row.get("termination_date"):
             continue
         if matched is not None:
@@ -279,7 +260,15 @@ def resolve_user_by_attendance_pin(
             )
             return None
         matched = row
-        matched["_roles"] = roles
+
+    if not matched:
+        return None
+
+    roles = fetch_roles_fn(c, matched["id"])
+    rs = {str(r).upper() for r in roles}
+    if rs & ADMIN_ROLE_CODES:
+        return None
+    matched["_roles"] = roles
     return matched
 
 
@@ -296,22 +285,31 @@ def _active_shift(conn, user_id: int) -> Optional[dict]:
     return c.fetchone()
 
 
-def kiosk_clock_in(conn, user_id: int, organization_id: int) -> tuple[Optional[dict], Optional[str], int]:
+def kiosk_clock_in(
+    conn, user_id: int, organization_id: int, matched_user: Optional[dict] = None
+) -> tuple[Optional[dict], Optional[str], int]:
     """Returns (session_row, error_message, http_status)."""
     from backend.ta_routes import (
-        effective_clock_geofences,
-        fetch_user_row,
         get_or_create_payroll_cycle,
         table_has_column,
         write_audit,
         _tenant_fallback_geofence_id,
     )
 
-    u = fetch_user_row(conn, user_id)
-    if not u or not u.get("active"):
-        return None, INVALID_PIN_MESSAGE, 401
-    if u.get("termination_date"):
-        return None, INVALID_PIN_MESSAGE, 401
+    if matched_user:
+        if matched_user.get("termination_date"):
+            return None, INVALID_PIN_MESSAGE, 401
+        if not matched_user.get("active"):
+            return None, INVALID_PIN_MESSAGE, 401
+    else:
+        c0 = conn.cursor(dictionary=True)
+        c0.execute(
+            "SELECT active FROM users WHERE id=%s AND organization_id=%s LIMIT 1",
+            (user_id, organization_id),
+        )
+        ur = c0.fetchone()
+        if not ur or not as_bool(ur.get("active"), False):
+            return None, INVALID_PIN_MESSAGE, 401
 
     c = conn.cursor(dictionary=True)
     c.execute(
@@ -324,16 +322,10 @@ def kiosk_clock_in(conn, user_id: int, organization_id: int) -> tuple[Optional[d
     if clock_in_blocked_by_expired_documents(conn, user_id, organization_id):
         return None, COMPLIANCE_BLOCK_MESSAGE, 403
 
-    gfs = effective_clock_geofences(conn, user_id, organization_id)
-    geofence_id_for_session = None
-    if gfs:
-        geofence_id_for_session = int(gfs[0]["id"])
-    else:
-        fid = _tenant_fallback_geofence_id(conn, organization_id)
-        if not fid:
-            logger.error("pin punch clock-in: no geofence org=%s", organization_id)
-            return None, KIOSK_DISABLED_MESSAGE, 503
-        geofence_id_for_session = fid
+    geofence_id_for_session = _tenant_fallback_geofence_id(conn, organization_id)
+    if not geofence_id_for_session:
+        logger.error("pin punch clock-in: no geofence org=%s", organization_id)
+        return None, KIOSK_DISABLED_MESSAGE, 503
 
     c.execute(
         """
@@ -532,7 +524,7 @@ def perform_pin_punch(
             sess, err, status = kiosk_clock_out(conn, user_id, org_id)
             action = "CLOCK_OUT"
         else:
-            sess, err, status = kiosk_clock_in(conn, user_id, org_id)
+            sess, err, status = kiosk_clock_in(conn, user_id, org_id, matched)
             action = "CLOCK_IN"
 
         if err:
