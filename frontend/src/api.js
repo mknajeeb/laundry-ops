@@ -200,6 +200,8 @@ export const getPublicActiveClockIns = (slug) =>
   });
 
 /** Kiosk attendance: clock in/out with PIN only (no session). */
+export const ATTENDANCE_PIN_PUNCH_TIMEOUT_MS = 25000;
+
 export const attendancePinPunch = (organization_slug, pin) =>
   axios.post(
     `${API_BASE}/api/public/attendance/pin-punch`,
@@ -207,7 +209,11 @@ export const attendancePinPunch = (organization_slug, pin) =>
       organization_slug: String(organization_slug || "").trim().toLowerCase(),
       pin: String(pin || "").trim(),
     },
-    { timeout: AUTH_LOGIN_TIMEOUT_MS },
+    {
+      timeout: ATTENDANCE_PIN_PUNCH_TIMEOUT_MS,
+      /** Handle 401/403/503 in UI instead of throwing before response body is read. */
+      validateStatus: (status) => status >= 200 && status < 600,
+    },
   );
 
 /** Public: active tenants for /attendance picker */

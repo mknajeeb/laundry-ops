@@ -20,6 +20,7 @@ import {
   attendancePinPunch,
   getPublicOrgBranding,
   getPublicOrganizationsForAttendance,
+  getWashproApiBase,
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
@@ -28,6 +29,40 @@ import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 4000;
 const STORAGE_KEY = "washpro_attendance_org_slug";
+
+/** Map API errors to kiosk-friendly copy. */
+function punchMessageFromResponse(data, status, t) {
+  if (!data || typeof data !== "object") return null;
+  const raw = String(data.error || data.message || "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes("invalid pin")) return t("attendance.invalidPin");
+  if (lower.includes("kiosk is not enabled") || lower.includes("not enabled for this company")) {
+    return t("attendance.kioskDisabled");
+  }
+  if (lower.includes("contact manager") || lower.includes("clock-in not allowed")) {
+    return t("attendance.complianceBlocked");
+  }
+  if (lower.includes("end your break")) return t("attendance.endBreakFirst");
+  if (status === 429) return t("attendance.rateLimited");
+  if (status >= 500) return t("attendance.serverError");
+  return raw;
+}
+
+function punchMessageFromAxiosError(err, t) {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+  const mapped = punchMessageFromResponse(data, status, t);
+  if (mapped) return mapped;
+  if (err?.code === "ECONNABORTED" || String(err?.message || "").toLowerCase().includes("timeout")) {
+    return t("attendance.timeout");
+  }
+  if (!err?.response) {
+    return t("attendance.networkError");
+  }
+  const msg = typeof err?.message === "string" ? err.message.trim() : "";
+  return msg || t("attendance.punchFailed");
+}
 
 function digitKeySx() {
   return {
@@ -124,6 +159,7 @@ export default function AttendancePinPage() {
 
   const prevPinLenRef = useRef(0);
   const resetTimerRef = useRef(null);
+  const punchInFlightRef = useRef(false);
 
   const localeTag = locale === "es" ? "es-US" : "en-US";
 
@@ -239,33 +275,59 @@ export default function AttendancePinPage() {
   const performPunch = useCallback(
     async (digits) => {
       if (!slug || String(digits || "").replace(/\D/g, "").length !== PIN_LEN) return;
+      if (punchInFlightRef.current) return;
       const clean = String(digits).replace(/\D/g, "");
+      punchInFlightRef.current = true;
       setError("");
+      setSuccess(null);
+      setLoading(true);
       try {
-        setLoading(true);
         const res = await attendancePinPunch(slug, clean);
-        const data = res?.data || {};
-        if (!data?.ok) {
-          throw new Error(data?.error || t("attendance.invalidPin"));
+        const status = res?.status ?? 0;
+        const data = res?.data;
+        if (typeof data === "string" && data.trim().startsWith("<")) {
+          console.error("[attendance] Non-JSON response from API", {
+            status,
+            apiBase: getWashproApiBase(),
+            slug,
+          });
+          setError(t("attendance.serverError"));
+          return;
         }
-        setSuccess(data);
+        const body = data && typeof data === "object" ? data : {};
+        if (status >= 200 && status < 300 && body.ok) {
+          setSuccess(body);
+          setPin("");
+          prevPinLenRef.current = 0;
+          scheduleReset();
+          return;
+        }
+        const msg =
+          punchMessageFromResponse(body, status, t) || t("attendance.punchFailed");
+        console.error("[attendance] PIN punch rejected", {
+          status,
+          body,
+          apiBase: getWashproApiBase(),
+          slug,
+        });
+        setError(msg);
         setPin("");
         prevPinLenRef.current = 0;
-        scheduleReset();
       } catch (e) {
-        console.error(e);
-        const data = e?.response?.data;
-        let msg =
-          (data && typeof data === "object" && (data.error || data.message)) ||
-          (typeof data === "string" ? data : null);
-        if (!msg && e?.response?.status === 401) {
-          msg = t("attendance.invalidPin");
-        }
-        if (!msg) msg = e?.message || t("attendance.punchFailed");
-        setError(typeof msg === "string" ? msg : t("attendance.punchFailed"));
+        const msg = punchMessageFromAxiosError(e, t);
+        console.error("[attendance] PIN punch failed", {
+          message: e?.message,
+          code: e?.code,
+          status: e?.response?.status,
+          data: e?.response?.data,
+          apiBase: getWashproApiBase(),
+          slug,
+        });
+        setError(msg);
         setPin("");
         prevPinLenRef.current = 0;
       } finally {
+        punchInFlightRef.current = false;
         setLoading(false);
       }
     },
@@ -394,13 +456,20 @@ export default function AttendancePinPage() {
                 ))}
               </Box>
 
+              {loading ? (
+                <Stack spacing={0.5} alignItems="center" sx={{ width: "100%", py: 0.5 }}>
+                  <CircularProgress size={36} aria-label={t("attendance.checkingPin")} />
+                  <Typography variant="body2" color="text.secondary">
+                    {t("attendance.checkingPin")}
+                  </Typography>
+                </Stack>
+              ) : null}
+
               {error ? (
-                <Alert severity="error" sx={{ width: "100%" }}>
+                <Alert severity="error" sx={{ width: "100%" }} onClose={() => setError("")}>
                   {error}
                 </Alert>
               ) : null}
-
-              {loading ? <CircularProgress size={32} /> : null}
 
               <Box
                 sx={{

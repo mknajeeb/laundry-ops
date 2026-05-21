@@ -191,30 +191,79 @@ def shared_device_attendance_enabled(conn, organization_id: int) -> bool:
     return as_bool((ui.get("clock") or {}).get("shared_device_attendance"), False)
 
 
+def _pin_last4(pin: str) -> str:
+    p = str(pin or "").strip()
+    return p[-4:] if len(p) >= 4 else p
+
+
 def resolve_user_by_attendance_pin(
     conn, organization_id: int, pin: str, fetch_roles_fn
 ) -> Optional[dict]:
     """Return matched user row dict or None. Excludes admin roles."""
     c = conn.cursor(dictionary=True)
-    c.execute(
-        """
-        SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
-               pp.attendance_pin_hash, pp.first_name, pp.last_name,
-               pp.termination_date
-        FROM payroll_profiles pp
-        INNER JOIN users u ON u.id = pp.user_id
-        WHERE u.organization_id = %s
-          AND u.active = 1
-          AND pp.attendance_pin_hash IS NOT NULL
-        """,
-        (int(organization_id),),
-    )
-    rows = c.fetchall() or []
+    has_last4 = table_has_column(c, "payroll_profiles", "attendance_pin_last4")
+    last4 = _pin_last4(pin)
+    if has_last4 and len(last4) == 4:
+        c.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                   pp.attendance_pin_hash, pp.first_name, pp.last_name,
+                   pp.termination_date, pp.attendance_pin_last4
+            FROM payroll_profiles pp
+            INNER JOIN users u ON u.id = pp.user_id
+            WHERE u.organization_id = %s
+              AND u.active = 1
+              AND pp.attendance_pin_hash IS NOT NULL
+              AND pp.attendance_pin_last4 = %s
+            """,
+            (int(organization_id), last4),
+        )
+        rows = c.fetchall() or []
+        if not rows:
+            c.execute(
+                """
+                SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                       pp.attendance_pin_hash, pp.first_name, pp.last_name,
+                       pp.termination_date, pp.attendance_pin_last4
+                FROM payroll_profiles pp
+                INNER JOIN users u ON u.id = pp.user_id
+                WHERE u.organization_id = %s
+                  AND u.active = 1
+                  AND pp.attendance_pin_hash IS NOT NULL
+                  AND (pp.attendance_pin_last4 IS NULL OR pp.attendance_pin_last4 = '')
+                """,
+                (int(organization_id),),
+            )
+            rows = c.fetchall() or []
+    else:
+        c.execute(
+            """
+            SELECT u.id, u.username, u.display_name, u.active, u.organization_id,
+                   pp.attendance_pin_hash, pp.first_name, pp.last_name,
+                   pp.termination_date
+            FROM payroll_profiles pp
+            INNER JOIN users u ON u.id = pp.user_id
+            WHERE u.organization_id = %s
+              AND u.active = 1
+              AND pp.attendance_pin_hash IS NOT NULL
+            """,
+            (int(organization_id),),
+        )
+        rows = c.fetchall() or []
     matched = None
     for row in rows:
         h = row.get("attendance_pin_hash")
         if not h or not verify_password(str(h), pin):
             continue
+        if has_last4 and not row.get("attendance_pin_last4"):
+            try:
+                uc = conn.cursor()
+                uc.execute(
+                    "UPDATE payroll_profiles SET attendance_pin_last4=%s WHERE user_id=%s",
+                    (last4, row["id"]),
+                )
+            except Exception:
+                logger.debug("backfill attendance_pin_last4 failed user=%s", row["id"])
         roles = fetch_roles_fn(c, row["id"])
         rs = {str(r).upper() for r in roles}
         if rs & ADMIN_ROLE_CODES:

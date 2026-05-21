@@ -282,10 +282,10 @@ function AppShell() {
     if (!user) washproSessionSyncedRef.current = false;
   }, [user]);
 
-  /** Kiosk is anonymous: drop any stale Washpro/TA session once when entering /kiosk so the next PIN unlock applies cleanly. */
+  /** Kiosk / attendance are anonymous: drop stale session once so PIN flows stay stateless. */
   const kioskStripRef = useRef(false);
   useEffect(() => {
-    if (!isKioskRoute(pathname)) {
+    if (!isKioskRoute(pathname) && !isAttendanceRoute(pathname)) {
       kioskStripRef.current = false;
       return;
     }
@@ -303,7 +303,7 @@ function AppShell() {
 
   useEffect(() => {
     async function bootstrap() {
-      if (isLoginRoute(pathname) || isKioskRoute(pathname)) {
+      if (isLoginRoute(pathname) || isKioskRoute(pathname) || isAttendanceRoute(pathname)) {
         setAuthLoading(false);
         return;
       }

@@ -200,7 +200,7 @@ def _tenant_id():
 
 
 # Bump when WORKSPACE_PAYROLL_EXTRA / seed lists change so each org re-runs ensure once per process.
-_PEOPLE_WORKSPACE_ENSURE_VERSION = 4
+_PEOPLE_WORKSPACE_ENSURE_VERSION = 5
 _people_workspace_ensured_version_by_org: dict[int, int] = {}
 
 
@@ -2573,23 +2573,41 @@ def users_update(user_id):
 
             if "attendance_pin" in data and table_has_column(chk, "payroll_profiles", "attendance_pin_hash"):
                 ap_raw = data.get("attendance_pin")
+                has_pin_last4 = table_has_column(chk, "payroll_profiles", "attendance_pin_last4")
                 if ap_raw in (None, ""):
                     fields.append("attendance_pin_hash=%s")
                     vals.append(None)
+                    if has_pin_last4:
+                        fields.append("attendance_pin_last4=%s")
+                        vals.append(None)
                 else:
                     ps = str(ap_raw).strip()
                     if not ps.isdigit() or len(ps) < 4 or len(ps) > 10:
                         return jsonify({"error": "Attendance PIN must be 4–10 digits"}), 400
+                    pin_last4 = ps[-4:] if len(ps) >= 4 else ps
                     c_chk = conn.cursor(dictionary=True)
-                    c_chk.execute(
-                        """
-                        SELECT pp.user_id, pp.attendance_pin_hash
-                        FROM payroll_profiles pp
-                        JOIN users u ON u.id = pp.user_id
-                        WHERE u.organization_id = %s AND pp.user_id != %s AND pp.attendance_pin_hash IS NOT NULL
-                        """,
-                        (_tenant_id(), user_id),
-                    )
+                    if has_pin_last4 and len(pin_last4) == 4:
+                        c_chk.execute(
+                            """
+                            SELECT pp.user_id, pp.attendance_pin_hash
+                            FROM payroll_profiles pp
+                            JOIN users u ON u.id = pp.user_id
+                            WHERE u.organization_id = %s AND pp.user_id != %s
+                              AND pp.attendance_pin_hash IS NOT NULL
+                              AND pp.attendance_pin_last4 = %s
+                            """,
+                            (_tenant_id(), user_id, pin_last4),
+                        )
+                    else:
+                        c_chk.execute(
+                            """
+                            SELECT pp.user_id, pp.attendance_pin_hash
+                            FROM payroll_profiles pp
+                            JOIN users u ON u.id = pp.user_id
+                            WHERE u.organization_id = %s AND pp.user_id != %s AND pp.attendance_pin_hash IS NOT NULL
+                            """,
+                            (_tenant_id(), user_id),
+                        )
                     for ow in c_chk.fetchall() or []:
                         h = ow.get("attendance_pin_hash")
                         if h and verify_password(str(h), ps):
@@ -2598,6 +2616,9 @@ def users_update(user_id):
                             ), 400
                     fields.append("attendance_pin_hash=%s")
                     vals.append(hash_password(ps))
+                    if has_pin_last4:
+                        fields.append("attendance_pin_last4=%s")
+                        vals.append(pin_last4)
 
             if fields:
                 vals.append(user_id)

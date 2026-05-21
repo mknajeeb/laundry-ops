@@ -13,6 +13,10 @@ WORKSPACE_PAYROLL_EXTRA = [
     ("clock_geofence_exempt", "TINYINT(1) NOT NULL DEFAULT 0"),
     ("clock_in_gate_exempt", "TINYINT(1) NOT NULL DEFAULT 0"),
     ("attendance_pin_hash", "VARCHAR(255) NULL COMMENT 'Werkzeug hash; shared-device PIN unlock'"),
+    (
+        "attendance_pin_last4",
+        "VARCHAR(4) NULL COMMENT 'Plain last-4 for kiosk lookup; verify via attendance_pin_hash'",
+    ),
 ]
 
 # Excludes attendance_pin_hash — set only via plaintext `attendance_pin` in API (hashed server-side).
