@@ -10,9 +10,9 @@
   "theme_color": "#2d3d9c",
   "icons": [
     {
-      "src": "/neutral-app-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/veewash-attendance-logo.png",
+      "sizes": "500x500",
+      "type": "image/png",
       "purpose": "any"
     }
   ]

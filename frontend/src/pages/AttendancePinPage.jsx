@@ -420,17 +420,32 @@ export default function AttendancePinPage() {
         <Stack spacing={2} alignItems="center" sx={{ width: "100%" }}>
           {logoSrc ? (
             <Box
-              component="img"
-              src={logoSrc}
-              alt={tenantTitle}
               sx={{
-                width: "min(280px, 88vw)",
-                maxHeight: 120,
-                objectFit: "contain",
-                display: "block",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "100%",
+                py: 1,
+                px: 1.5,
                 mb: 0.5,
+                borderRadius: 2.5,
+                bgcolor: "#fff",
+                boxShadow: `0 8px 28px -12px ${alpha("#2d3d9c", 0.22)}`,
+                border: `1px solid ${alpha("#2d3d9c", 0.08)}`,
               }}
-            />
+            >
+              <Box
+                component="img"
+                src={logoSrc}
+                alt={tenantTitle}
+                sx={{
+                  width: "min(240px, 78vw)",
+                  maxHeight: 100,
+                  objectFit: "contain",
+                  display: "block",
+                }}
+              />
+            </Box>
           ) : (
             <TenantLogo logoUrl={branding?.logo_url} sx={{ width: 96, height: 96 }} />
           )}
