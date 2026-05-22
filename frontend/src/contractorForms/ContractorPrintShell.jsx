@@ -1,6 +1,5 @@
 import ContractorPrintLogo from "./ContractorPrintLogo";
 import { EMBEDDED_VEEWASH_LOGO } from "./contractorLogo";
-import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 function escapeHtml(s) {
   return String(s)
@@ -11,8 +10,7 @@ function escapeHtml(s) {
 
 /** Repeat header on continuation pages when printing multi-section packets. */
 export function miniHeadHtml(prefill) {
-  const org = resolveOrgLogoUrl(prefill?.organization_logo_url);
-  const logoSrc = org || EMBEDDED_VEEWASH_LOGO;
+  const logoSrc = EMBEDDED_VEEWASH_LOGO;
   const company = escapeHtml(prefill?.company_name || "VeeWash");
   return `<div class="cform-mini-head"><img src="${logoSrc}" alt="" class="cform-logo-mini" onerror="this.onerror=null;this.src='${EMBEDDED_VEEWASH_LOGO}'" /><span class="cform-mini-company">${company}</span></div>`;
 }

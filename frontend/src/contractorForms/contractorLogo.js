@@ -1,10 +1,8 @@
-import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 import embeddedVeeWashLogo from "../assets/veewash-logo.png";
 
-/** Bundled logo — always available in production print/PDF (no broken /assets path). */
+/** White-background VeeWash logo — bundled for print/PDF (always used on contractor forms). */
 export const EMBEDDED_VEEWASH_LOGO = embeddedVeeWashLogo;
 
-export function contractorLogoSrc(prefill) {
-  const org = resolveOrgLogoUrl(prefill?.organization_logo_url);
-  return org || EMBEDDED_VEEWASH_LOGO;
+export function contractorLogoSrc(_prefill) {
+  return EMBEDDED_VEEWASH_LOGO;
 }
