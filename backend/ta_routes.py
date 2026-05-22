@@ -5117,6 +5117,39 @@ def contractors_payment_ytd(user_id):
         conn.close()
 
 
+@ta_bp.route("/contractors/payment-records", methods=["POST"])
+@require_auth
+@require_any_perm("users.edit", "ta.settings")
+def contractors_create_payment_record():
+    """Save invoice/payment receipt (user_id optional for manual temp/one-time)."""
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return jsonify({"error": "JSON body must be an object"}), 400
+        uid = body.get("user_id")
+        if uid is not None and int(uid) > 0:
+            uid = int(uid)
+            if not _ta_user_can_access_payroll_subject(conn, uid):
+                return jsonify({"error": "Not found"}), 404
+        else:
+            uid = None
+            if not (body.get("worker_name") or body.get("worker_name_snapshot")):
+                return jsonify({"error": "worker_name required when no profile selected"}), 400
+        oid = _tenant_id()
+        from backend.contractor_management import create_payment_summary
+
+        row = create_payment_summary(
+            conn, oid, uid, body, created_by=int(g.ta_user["id"])
+        )
+        conn.commit()
+        return jsonify(row), 201
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/contractors/compute-payment", methods=["POST"])
 @require_auth
 @require_any_perm("users.view", "users.edit", "ta.settings")

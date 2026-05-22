@@ -223,6 +223,12 @@ Contractor must:
 6. Use caution around washers, dryers, carts, chemicals, hot surfaces, doors, vehicles, stairs, and wet floors.
 7. Follow any posted safety rules or manager safety instructions while on Company premises.
 
+#### Emergency Equipment / Fire Extinguisher Use
+
+Contractor may use Company fire extinguishers or emergency safety equipment only in an actual emergency and only if Contractor can do so safely. Contractor should not place themselves or others in danger. Contractor must immediately call 911 or notify management for any fire, smoke, burning smell, electrical hazard, gas smell, chemical hazard, injury, or other emergency. Contractor must immediately report any use of a fire extinguisher or emergency equipment to management.
+
+**Contractor Initials:** ___________
+
 ### D. Customer Property Standards
 
 Contractor must:

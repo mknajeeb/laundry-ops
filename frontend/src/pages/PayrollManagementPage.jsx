@@ -445,20 +445,14 @@ function PayrollManagementPage() {
     if (canMaint && p.tab_maintenance !== false) {
       out.push({ key: "maint", label: t("payroll.tabMaintenance") });
     }
-    if (canPeriod && p.tab_period !== false) {
-      out.push({ key: "period", label: t("payroll.tabPeriod") });
-    }
     if (canClockUi && p.tab_clock_ui !== false) {
       out.push({ key: "clockui", label: t("payroll.tabClockUi") });
-    }
-    if (canDocs) {
-      out.push({ key: "docs", label: t("payroll.tabDocCompliance") });
     }
     if (canContractors) {
       out.push({ key: "contractors", label: t("payroll.tabContractors") });
     }
     return out;
-  }, [canMonitor, canMaint, canPeriod, canClockUi, canDocs, canContractors, payrollUi, t]);
+  }, [canMonitor, canMaint, canClockUi, canContractors, payrollUi, t]);
 
   const [tab, setTab] = useState(0);
 
@@ -531,9 +525,7 @@ function PayrollManagementPage() {
           <PayrollMonitorPage embedded columnVisibility={payrollUi || {}} />
         ) : null}
         {active?.key === "maint" ? <AttendanceSetupPage embedded /> : null}
-        {active?.key === "period" ? <PayrollPeriodPanel /> : null}
         {active?.key === "clockui" ? <ClockPayrollUiSettingsPanel /> : null}
-        {active?.key === "docs" ? <DocumentCompliancePanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
       </Box>
     </Box>

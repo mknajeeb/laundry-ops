@@ -14,36 +14,77 @@ from backend.ta_helpers import json_safe, table_exists, table_has_column
 
 
 def ensure_contractor_payment_summaries_table(cursor) -> None:
-    if table_exists(cursor, "contractor_payment_summaries"):
+    if not table_exists(cursor, "contractor_payment_summaries"):
+        cursor.execute(
+            """
+            CREATE TABLE contractor_payment_summaries (
+              id INT AUTO_INCREMENT PRIMARY KEY,
+              organization_id INT NOT NULL,
+              user_id INT NULL,
+              contractor_type VARCHAR(32) NOT NULL DEFAULT 'regular',
+              worker_name_snapshot VARCHAR(255) NULL,
+              worker_phone_snapshot VARCHAR(64) NULL,
+              worker_email_snapshot VARCHAR(255) NULL,
+              work_performed TEXT NULL,
+              pay_period_start DATE NULL,
+              pay_period_end DATE NULL,
+              invoice_date DATE NULL,
+              approved_service_hours DECIMAL(10,2) NOT NULL DEFAULT 0,
+              service_rate DECIMAL(10,2) NOT NULL DEFAULT 0,
+              health_safety_credit_hours DECIMAL(10,2) NOT NULL DEFAULT 0,
+              adjustments DECIMAL(10,2) NOT NULL DEFAULT 0,
+              service_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+              health_safety_credit_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+              total_payment DECIMAL(10,2) NOT NULL DEFAULT 0,
+              total_amount_due DECIMAL(10,2) NULL,
+              amount_paid DECIMAL(10,2) NULL,
+              payment_date DATE NULL,
+              payment_method VARCHAR(64) NULL,
+              payment_reference VARCHAR(255) NULL,
+              status VARCHAR(32) NOT NULL DEFAULT 'paid',
+              notes TEXT NULL,
+              form_snapshot_json JSON NULL,
+              clock_hours_source VARCHAR(32) NOT NULL DEFAULT 'manual',
+              source_type VARCHAR(32) NOT NULL DEFAULT 'manual',
+              source_clock_batch_id INT NULL,
+              signed_document_record_id BIGINT NULL,
+              created_by INT NULL,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_cps_org_user (organization_id, user_id, created_at),
+              INDEX idx_cps_org_year (organization_id, payment_date),
+              CONSTRAINT fk_cps_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB
+            """
+        )
         return
-    cursor.execute(
-        """
-        CREATE TABLE contractor_payment_summaries (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          organization_id INT NOT NULL,
-          user_id INT NOT NULL,
-          pay_period_start DATE NULL,
-          pay_period_end DATE NULL,
-          invoice_date DATE NULL,
-          approved_service_hours DECIMAL(10,2) NOT NULL DEFAULT 0,
-          service_rate DECIMAL(10,2) NOT NULL DEFAULT 0,
-          health_safety_credit_hours DECIMAL(10,2) NOT NULL DEFAULT 0,
-          adjustments DECIMAL(10,2) NOT NULL DEFAULT 0,
-          service_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-          health_safety_credit_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
-          total_payment DECIMAL(10,2) NOT NULL DEFAULT 0,
-          payment_method VARCHAR(64) NULL,
-          payment_reference VARCHAR(255) NULL,
-          notes TEXT NULL,
-          form_snapshot_json JSON NULL,
-          clock_hours_source VARCHAR(32) NOT NULL DEFAULT 'manual',
-          created_by INT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          INDEX idx_cps_org_user (organization_id, user_id, created_at),
-          CONSTRAINT fk_cps_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB
-        """
-    )
+    extras = [
+        ("contractor_type", "VARCHAR(32) NOT NULL DEFAULT 'regular'"),
+        ("worker_name_snapshot", "VARCHAR(255) NULL"),
+        ("worker_phone_snapshot", "VARCHAR(64) NULL"),
+        ("worker_email_snapshot", "VARCHAR(255) NULL"),
+        ("work_performed", "TEXT NULL"),
+        ("total_amount_due", "DECIMAL(10,2) NULL"),
+        ("amount_paid", "DECIMAL(10,2) NULL"),
+        ("payment_date", "DATE NULL"),
+        ("status", "VARCHAR(32) NOT NULL DEFAULT 'paid'"),
+        ("source_type", "VARCHAR(32) NOT NULL DEFAULT 'manual'"),
+        ("source_clock_batch_id", "INT NULL"),
+        ("signed_document_record_id", "BIGINT NULL"),
+        ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    ]
+    for col, typedef in extras:
+        if not table_has_column(cursor, "contractor_payment_summaries", col):
+            cursor.execute(
+                f"ALTER TABLE contractor_payment_summaries ADD COLUMN {col} {typedef}"
+            )
+    if table_has_column(cursor, "contractor_payment_summaries", "user_id"):
+        try:
+            cursor.execute(
+                "ALTER TABLE contractor_payment_summaries MODIFY user_id INT NULL"
+            )
+        except Exception:
+            pass
 
 
 def _user_form_lanes(conn, user_id: int) -> list[str]:
@@ -322,11 +363,12 @@ def sum_payments_ytd(
     c = conn.cursor(dictionary=True)
     c.execute(
         """
-        SELECT COALESCE(SUM(total_payment), 0) AS total_paid,
+        SELECT COALESCE(SUM(COALESCE(amount_paid, total_payment)), 0) AS total_paid,
                COUNT(*) AS payment_count
         FROM contractor_payment_summaries
         WHERE organization_id = %s AND user_id = %s
-          AND YEAR(COALESCE(invoice_date, pay_period_end, DATE(created_at))) = %s
+          AND (status IS NULL OR status IN ('paid', 'finalized'))
+          AND YEAR(COALESCE(payment_date, invoice_date, pay_period_end, DATE(created_at))) = %s
         """,
         (int(organization_id), int(user_id), y),
     )
@@ -363,52 +405,94 @@ def list_payment_summaries(conn, organization_id: int, user_id: int, *, limit: i
 def create_payment_summary(
     conn,
     organization_id: int,
-    user_id: int,
+    user_id: Optional[int],
     body: dict,
     *,
     created_by: Optional[int] = None,
 ) -> dict:
     ensure_contractor_payment_summaries_table(conn.cursor())
+    hours = body.get("approved_hours") or body.get("approved_service_hours")
+    adj = body.get("adjustment_amount") if body.get("adjustment_amount") is not None else body.get("adjustments")
+    hs = body.get("health_safety_credit_hours") or 0
+    if body.get("contractor_type") in ("temp", "one_time"):
+        hs = 0
     amounts = compute_payment_summary_amounts(
-        body.get("approved_service_hours"),
+        hours,
         body.get("service_rate"),
-        body.get("health_safety_credit_hours"),
-        body.get("adjustments"),
+        hs,
+        adj,
     )
+    total_due = body.get("total_amount_due")
+    if total_due is None:
+        total_due = amounts["total_payment"]
+    amount_paid = body.get("amount_paid")
+    if amount_paid is None:
+        amount_paid = total_due
     snapshot = body.get("form_snapshot_json")
+    if not isinstance(snapshot, dict) and user_id:
+        try:
+            snapshot = build_contractor_prefill(conn, int(user_id), organization_id)
+        except ValueError:
+            snapshot = {}
     if not isinstance(snapshot, dict):
-        snapshot = build_contractor_prefill(conn, user_id, organization_id)
-    clock_src = str(body.get("clock_hours_source") or "manual").strip() or "manual"
-    if clock_src not in ("manual", "clock"):
+        snapshot = {}
+    clock_src = str(body.get("clock_hours_source") or body.get("source_type") or "manual").strip() or "manual"
+    if clock_src not in ("manual", "clock", "clock_records"):
         clock_src = "manual"
+    status = str(body.get("status") or "paid").strip() or "paid"
+    if status not in ("draft", "finalized", "paid", "void"):
+        status = "paid"
+    ctype = str(body.get("contractor_type") or "regular").strip() or "regular"
+    if ctype not in ("regular", "temp", "one_time"):
+        ctype = "regular"
+    pay_date = body.get("payment_date") or body.get("invoice_date") or date.today().isoformat()
     c = conn.cursor()
     c.execute(
         """
         INSERT INTO contractor_payment_summaries (
-          organization_id, user_id, pay_period_start, pay_period_end, invoice_date,
+          organization_id, user_id, contractor_type,
+          worker_name_snapshot, worker_phone_snapshot, worker_email_snapshot, work_performed,
+          pay_period_start, pay_period_end, invoice_date, payment_date,
           approved_service_hours, service_rate, health_safety_credit_hours, adjustments,
           service_amount, health_safety_credit_amount, total_payment,
-          payment_method, payment_reference, notes, form_snapshot_json, clock_hours_source, created_by
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          total_amount_due, amount_paid, status,
+          payment_method, payment_reference, notes, form_snapshot_json,
+          clock_hours_source, source_type, source_clock_batch_id,
+          signed_document_record_id, created_by
+        ) VALUES (
+          %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+        )
         """,
         (
             int(organization_id),
-            int(user_id),
-            body.get("pay_period_start") or None,
-            body.get("pay_period_end") or None,
+            int(user_id) if user_id else None,
+            ctype,
+            (body.get("worker_name") or body.get("worker_name_snapshot") or "")[:255] or None,
+            (body.get("worker_phone") or body.get("worker_phone_snapshot") or "")[:64] or None,
+            (body.get("worker_email") or body.get("worker_email_snapshot") or "")[:255] or None,
+            body.get("work_performed"),
+            body.get("work_period_start") or body.get("pay_period_start") or None,
+            body.get("work_period_end") or body.get("pay_period_end") or None,
             body.get("invoice_date") or date.today().isoformat(),
-            float(_money(body.get("approved_service_hours"))),
+            pay_date[:10] if pay_date else None,
+            float(_money(hours)),
             float(_money(body.get("service_rate"))),
-            float(_money(body.get("health_safety_credit_hours"))),
-            float(_money(body.get("adjustments"))),
+            float(_money(hs)),
+            float(_money(adj)),
             amounts["service_amount"],
             amounts["health_safety_credit_amount"],
-            amounts["total_payment"],
+            float(_money(total_due)),
+            float(_money(total_due)),
+            float(_money(amount_paid)),
+            status,
             (body.get("payment_method") or "")[:64] or None,
             (body.get("payment_reference") or "")[:255] or None,
             body.get("notes"),
             json.dumps(snapshot),
             clock_src,
+            str(body.get("source_type") or clock_src)[:32],
+            body.get("source_clock_batch_id"),
+            body.get("signed_document_record_id"),
             created_by,
         ),
     )
@@ -425,10 +509,9 @@ def create_payment_summary(
 
 CONTRACTOR_FORM_CATALOG = [
     {
-        "id": "basic_work_receipt",
-        "title": "Basic Contractor Work Receipt",
-        "short_term_only": True,
-        "standalone": True,
+        "id": "invoice_payment_receipt",
+        "title": "Contractor Invoice & Payment Receipt",
+        "interactive": True,
     },
     {
         "id": "first_time_packet",
@@ -439,12 +522,6 @@ CONTRACTOR_FORM_CATALOG = [
         "id": "rate_confirmation",
         "title": "Contractor Rate / Payment Confirmation",
         "sections": ["3"],
-    },
-    {
-        "id": "biweekly_payment_summary",
-        "title": "Contractor Payment Summary",
-        "sections": ["11"],
-        "interactive": True,
     },
     {"id": "written_warning", "title": "Written Warning / Notice", "sections": ["13"]},
     {"id": "probation_review", "title": "Two-Week Probation Review", "sections": ["14"]},

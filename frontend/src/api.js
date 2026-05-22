@@ -869,6 +869,10 @@ export const getContractorPaymentYtd = (userId, year) =>
 export const postContractorPaymentSummary = (userId, body) =>
   axios.post(`${API_BASE}/api/ta/contractors/${userId}/payment-summaries`, body);
 
+/** Save invoice/payment receipt; user_id optional in body for manual temp/one-time. */
+export const postContractorPaymentRecord = (body) =>
+  axios.post(`${API_BASE}/api/ta/contractors/payment-records`, body);
+
 export const computeContractorPayment = (body) =>
   axios.post(`${API_BASE}/api/ta/contractors/compute-payment`, body);
 

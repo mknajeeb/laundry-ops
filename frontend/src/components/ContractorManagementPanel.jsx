@@ -4,10 +4,14 @@ import {
   Autocomplete,
   Box,
   Button,
-  Divider,
+  Checkbox,
+  FormControl,
+  FormControlLabel,
   Grid,
   MenuItem,
   Paper,
+  Radio,
+  RadioGroup,
   Stack,
   Tab,
   Tabs,
@@ -22,20 +26,18 @@ import {
   getContractorPaymentYtd,
   getContractorPrefill,
   getContractors,
+  postContractorPaymentRecord,
   postContractorPaymentSummary,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import ContractorDocumentsPanel from "./ContractorDocumentsPanel";
 import packetMarkdown from "../contractorForms/veewash_1099_contractor_packet.md?raw";
-import BasicWorkReceiptPrint, {
-  calcBasicReceiptTotal,
-  emptyBasicReceipt,
-} from "../contractorForms/BasicWorkReceiptPrint";
 import ContractorFormEditor from "../contractorForms/ContractorFormEditor";
-import ContractorPaymentInvoicePrint from "../contractorForms/ContractorPaymentInvoicePrint";
-import ContractorPaymentReceiptPrint, {
-  receiptFromInvoice,
-} from "../contractorForms/ContractorPaymentReceiptPrint";
+import ContractorInvoicePaymentPrint, {
+  calcServiceAmount,
+  emptyPaymentRecord,
+} from "../contractorForms/ContractorInvoicePaymentPrint";
 import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCatalog";
@@ -44,9 +46,8 @@ import { buildMultiSectionPrintHtml } from "../contractorForms/prefillMarkdown";
 import { parsePacketSections } from "../contractorForms/parsePacket";
 import "../contractorForms/contractorPrint.css";
 
-const FORMS_TAB_LIST = CONTRACTOR_FORMS.filter((f) => !f.tabOnly);
-
 const PAYMENT_METHODS = ["Check", "ACH", "Zelle", "Venmo", "Cash", "Other"];
+const MANUAL_OPTION = { user_id: null, label: "Manual entry (no profile)", manual: true };
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -69,33 +70,11 @@ export default function ContractorManagementPanel() {
   const [error, setError] = useState("");
   const [tab, setTab] = useState(0);
   const [activeFormId, setActiveFormId] = useState("written_warning");
-  const [receipt, setReceipt] = useState(() => emptyBasicReceipt({}));
   const [formFieldValues, setFormFieldValues] = useState({});
-  const [paymentReceipt, setPaymentReceipt] = useState({
-    payment_date: todayIso(),
-    payment_reference: "",
-    total_amount_paid: "",
-    payment_method: "",
-    notes: "",
-  });
-  const [savedSummaries, setSavedSummaries] = useState([]);
+  const [savedRecords, setSavedRecords] = useState([]);
   const [saving, setSaving] = useState(false);
-
-  const [payment, setPayment] = useState({
-    pay_period_start: "",
-    pay_period_end: "",
-    invoice_date: todayIso(),
-    approved_service_hours: "",
-    service_rate: "",
-    health_safety_credit_hours: "",
-    adjustments: "",
-    payment_method: "",
-    payment_reference: "",
-    notes: "",
-    service_amount: 0,
-    health_safety_credit_amount: 0,
-    total_payment: 0,
-  });
+  const [ytdPrior, setYtdPrior] = useState(0);
+  const [record, setRecord] = useState(() => emptyPaymentRecord({}, "regular"));
 
   const loadContractors = useCallback(async () => {
     setLoading(true);
@@ -114,186 +93,153 @@ export default function ContractorManagementPanel() {
     loadContractors();
   }, [loadContractors]);
 
-  const loadContractor = useCallback(async (userId) => {
-    if (!userId) {
+  const contractorType = record.contractor_type || "regular";
+  const isRegular = contractorType === "regular";
+  const isManual = selected?.manual === true;
+
+  const loadContractor = useCallback(
+    async (userId) => {
+      if (!userId) {
+        setPrefill(null);
+        return;
+      }
+      setError("");
+      try {
+        const year = new Date().getFullYear();
+        const [preRes, sumRes, ytdRes] = await Promise.all([
+          getContractorPrefill(userId),
+          getContractorPaymentSummaries(userId).catch(() => ({ data: { items: [] } })),
+          getContractorPaymentYtd(userId, year).catch(() => ({
+            data: { total_paid_ytd: 0, year },
+          })),
+        ]);
+        const pre = {
+          ...(preRes.data || {}),
+          organization_logo_url:
+            preRes.data?.organization_logo_url || authUser?.organization_logo_url || null,
+        };
+        setPrefill(pre);
+        setSavedRecords(sumRes.data?.items || []);
+        const ytd = Number(ytdRes.data?.total_paid_ytd) || 0;
+        setYtdPrior(ytd);
+        const kind =
+          pre.worker_kind === "short_term"
+            ? "temp"
+            : pre.worker_kind === "1099"
+              ? "regular"
+              : "regular";
+        setRecord((r) => ({
+          ...emptyPaymentRecord(pre, kind),
+          ...r,
+          contractor_type: kind,
+          worker_name: pre.full_name || r.worker_name,
+          worker_phone: pre.phone || r.worker_phone,
+          worker_email: pre.email || r.worker_email,
+          service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : r.service_rate,
+          payment_method: pre.payment_method || r.payment_method,
+          total_paid_ytd_prior: String(ytd),
+        }));
+        setFormFieldValues((prev) => {
+          const next = { ...prev };
+          for (const f of CONTRACTOR_FORMS) {
+            if (!next[f.id]) next[f.id] = emptyFormValues(f.id, pre);
+          }
+          return next;
+        });
+      } catch (e) {
+        setError(e.response?.data?.error || e.message || "Failed to load contractor");
+      }
+    },
+    [authUser?.organization_logo_url],
+  );
+
+  useEffect(() => {
+    if (selected?.manual) {
       setPrefill(null);
+      setYtdPrior(0);
+      setSavedRecords([]);
+      setRecord(emptyPaymentRecord({}, "one_time"));
       return;
     }
-    setError("");
-    try {
-      const year = new Date().getFullYear();
-      const [preRes, sumRes, ytdRes] = await Promise.all([
-        getContractorPrefill(userId),
-        getContractorPaymentSummaries(userId).catch(() => ({ data: { items: [] } })),
-        getContractorPaymentYtd(userId, year).catch(() => ({
-          data: { total_paid_ytd: 0, year },
-        })),
-      ]);
-      const pre = {
-        ...(preRes.data || {}),
-        organization_logo_url:
-          preRes.data?.organization_logo_url || authUser?.organization_logo_url || null,
-      };
-      setPrefill(pre);
-      setSavedSummaries(sumRes.data?.items || []);
-      const ytd = Number(ytdRes.data?.total_paid_ytd) || 0;
-      setReceipt({
-        ...emptyBasicReceipt(pre),
-        total_paid_ytd_prior: String(ytd),
-      });
-      setPayment((p) => ({
-        ...p,
-        service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : p.service_rate,
-        payment_method: pre.payment_method || p.payment_method,
-      }));
-      setFormFieldValues((prev) => {
-        const next = { ...prev };
-        for (const f of FORMS_TAB_LIST) {
-          if (!next[f.id]) {
-            next[f.id] = emptyFormValues(f.id, pre);
-          }
-        }
-        return next;
-      });
-    } catch (e) {
-      setError(e.response?.data?.error || e.message || "Failed to load contractor");
-    }
-  }, []);
-
-  useEffect(() => {
     if (selected?.user_id) loadContractor(selected.user_id);
-  }, [selected?.user_id, loadContractor]);
-
-  useEffect(() => {
-    const kind = selected?.worker_kind || prefill?.worker_kind;
-    if (kind === "short_term") setTab(0);
-    else if (kind === "1099") setTab(1);
-  }, [selected?.worker_kind, prefill?.worker_kind]);
-
-  useEffect(() => {
-    if (tab !== 2 || !prefill) return;
-    setPaymentReceipt((r) => ({
-      ...receiptFromInvoice(
-        {
-          ...payment,
-          contractor_name: prefill.full_name,
-          payment_method: payment.payment_method || prefill.payment_method,
-        },
-        prefill,
-      ),
-      payment_reference: r.payment_reference || payment.payment_reference || "",
-      payment_date: r.payment_date || todayIso(),
-    }));
-  }, [
-    tab,
-    payment.total_payment,
-    payment.pay_period_start,
-    payment.pay_period_end,
-    payment.invoice_date,
-    payment.approved_service_hours,
-    payment.payment_method,
-    payment.payment_reference,
-    payment.notes,
-    prefill?.full_name,
-    prefill?.payment_method,
-  ]);
-
-  const isShortTermWorker =
-    selected?.worker_kind === "short_term" ||
-    prefill?.worker_kind === "short_term" ||
-    prefill?.is_short_term;
-
-  const onReceiptField = (key, value) => {
-    setReceipt((r) => {
-      const next = { ...r, [key]: value };
-      if (key === "total_hours" || key === "rate") {
-        const auto = calcBasicReceiptTotal(next.total_hours, next.rate);
-        if (auto > 0) next.total_amount_paid = String(auto);
-      }
-      return next;
-    });
-  };
-
-  const recalcPayment = useCallback(async (next) => {
-    const body = {
-      approved_service_hours: next.approved_service_hours || 0,
-      service_rate: next.service_rate || 0,
-      health_safety_credit_hours: next.health_safety_credit_hours || 0,
-      adjustments: next.adjustments || 0,
-    };
-    try {
-      const res = await computeContractorPayment(body);
-      const d = res.data || {};
-      setPayment((p) => ({
-        ...p,
-        ...next,
-        service_amount: d.service_amount ?? 0,
-        health_safety_credit_amount: d.health_safety_credit_amount ?? 0,
-        total_payment: d.total_payment ?? 0,
-      }));
-    } catch {
-      const hours = Number(next.approved_service_hours) || 0;
-      const rate = Number(next.service_rate) || 0;
-      const hs = Number(next.health_safety_credit_hours) || 0;
-      const adj = Number(next.adjustments) || 0;
-      const sa = Math.round(hours * rate * 100) / 100;
-      const hsa = Math.round(hs * rate * 100) / 100;
-      setPayment((p) => ({
-        ...p,
-        ...next,
-        service_amount: sa,
-        health_safety_credit_amount: hsa,
-        total_payment: Math.round((sa + hsa + adj) * 100) / 100,
-      }));
+    else {
+      setPrefill(null);
+      setRecord(emptyPaymentRecord({}, "regular"));
     }
-  }, []);
+  }, [selected?.user_id, selected?.manual, loadContractor]);
 
-  useEffect(() => {
-    const rv = formFieldValues.rate_confirmation;
-    if (!rv) return;
-    const pmFromChecks = () => {
-      if (rv.payment_method__check) return "Check";
-      if (rv.payment_method__ach) return "ACH";
-      if (rv.payment_method__zelle) return "Zelle";
-      if (rv.payment_method__venmo) return "Venmo";
-      if (rv.payment_method__cash) return "Cash";
-      if (rv.payment_method_other) return rv.payment_method_other;
-      return "";
-    };
-    const pm = pmFromChecks();
-    setPayment((p) => ({
-      ...p,
-      service_rate:
-        rv.rate_per_hour !== "" && rv.rate_per_hour != null
-          ? String(rv.rate_per_hour)
-          : p.service_rate,
-      payment_method: pm || p.payment_method,
-    }));
-  }, [formFieldValues.rate_confirmation]);
+  const recalcAmounts = useCallback(
+    async (next) => {
+      const hours = next.approved_hours;
+      const rate = next.service_rate;
+      const hs = isRegular ? next.health_safety_credit_hours : 0;
+      const adj = next.adjustment_amount;
+      try {
+        const res = await computeContractorPayment({
+          approved_service_hours: hours || 0,
+          service_rate: rate || 0,
+          health_safety_credit_hours: hs || 0,
+          adjustments: adj || 0,
+        });
+        const d = res.data || {};
+        setRecord((r) => ({
+          ...r,
+          ...next,
+          service_amount: d.service_amount ?? 0,
+          health_safety_credit_amount: d.health_safety_credit_amount ?? 0,
+          total_amount_due: d.total_payment ?? 0,
+        }));
+      } catch {
+        const sa = calcServiceAmount(hours, rate);
+        const hsa = isRegular
+          ? calcServiceAmount(hs, rate)
+          : 0;
+        const total =
+          Math.round((sa + hsa + (Number(adj) || 0)) * 100) / 100;
+        setRecord((r) => ({
+          ...r,
+          ...next,
+          service_amount: sa,
+          health_safety_credit_amount: hsa,
+          total_amount_due: total,
+        }));
+      }
+    },
+    [isRegular],
+  );
 
-  const onPaymentField = (key, value) => {
-    const next = { ...payment, [key]: value };
+  const onRecordField = (key, value) => {
+    const next = { ...record, [key]: value };
+    if (key === "approved_hours" || key === "service_rate") {
+      const sa = calcServiceAmount(next.approved_hours, next.service_rate);
+      next.service_amount = sa;
+      if (!next.amount_paid && sa > 0) next.amount_paid = String(sa);
+    }
     if (
-      ["approved_service_hours", "service_rate", "health_safety_credit_hours", "adjustments"].includes(
+      ["approved_hours", "service_rate", "health_safety_credit_hours", "adjustment_amount"].includes(
         key,
       )
     ) {
-      recalcPayment(next);
+      recalcAmounts(next);
     } else {
-      setPayment(next);
+      setRecord(next);
     }
   };
 
-  const formDef = findContractorForm(activeFormId);
-
-  const activeFormValues = useMemo(() => {
-    const base = formFieldValues[activeFormId] || emptyFormValues(activeFormId, prefill || {});
-    return { ...base };
-  }, [formFieldValues, activeFormId, prefill]);
-
-  const setActiveFormValues = (next) => {
-    setFormFieldValues((prev) => ({ ...prev, [activeFormId]: next }));
+  const onContractorType = (type) => {
+    const next = { ...record, contractor_type: type };
+    if (type !== "regular") {
+      next.health_safety_credit_hours = "";
+      next.health_safety_credit_amount = 0;
+    }
+    recalcAmounts(next);
   };
+
+  const formDef = findContractorForm(activeFormId);
+  const activeFormValues = useMemo(
+    () => formFieldValues[activeFormId] || emptyFormValues(activeFormId, prefill || {}),
+    [formFieldValues, activeFormId, prefill],
+  );
 
   const formHtml = useMemo(() => {
     if (!formDef?.sections?.length) return "";
@@ -306,50 +252,53 @@ export default function ContractorManagementPanel() {
     );
   }, [formDef, sections, prefill, activeFormValues, activeFormId]);
 
-  const paymentForPrint = useMemo(
-    () => ({
-      ...payment,
-      contractor_name: prefill?.full_name || "",
-      payment_method: payment.payment_method || prefill?.payment_method || "",
-    }),
-    [payment, prefill],
-  );
-
-  const printDocumentTitle = useMemo(() => {
-    if (tab === 0) return "Basic Contractor Work Receipt";
-    if (tab === 1) return "Contractor Payment Invoice";
-    if (tab === 2) return "Contractor Payment Receipt";
-    if (tab === 3) return formDef?.title || "";
+  const printTitle = useMemo(() => {
+    if (tab === 0) return "Contractor Invoice & Payment Receipt";
+    if (tab === 2) return formDef?.title || "";
     return "";
   }, [tab, formDef]);
 
   const doPrint = () => {
-    openPrintWindow(printRef.current);
+    requestAnimationFrame(() => {
+      openPrintWindow(printRef.current);
+    });
   };
 
-  const saveAndPrintSummary = async () => {
-    if (!selected?.user_id) return;
+  const savePaymentRecord = async () => {
     setSaving(true);
     setError("");
     try {
-      const snapshot = {
-        ...(prefill || {}),
-        ...payment,
-        rate_form: formFieldValues.rate_confirmation || {},
-        _snapshot_note: "Invoice values at save time",
-      };
       const body = {
-        ...payment,
-        approved_service_hours: Number(payment.approved_service_hours) || 0,
-        service_rate: Number(payment.service_rate) || 0,
-        health_safety_credit_hours: Number(payment.health_safety_credit_hours) || 0,
-        adjustments: Number(payment.adjustments) || 0,
-        clock_hours_source: "manual",
-        form_snapshot_json: snapshot,
+        ...record,
+        user_id: selected?.manual ? null : selected?.user_id,
+        approved_service_hours: Number(record.approved_hours) || 0,
+        approved_hours: Number(record.approved_hours) || 0,
+        adjustments: Number(record.adjustment_amount) || 0,
+        adjustment_amount: Number(record.adjustment_amount) || 0,
+        health_safety_credit_hours: isRegular
+          ? Number(record.health_safety_credit_hours) || 0
+          : 0,
+        service_rate: Number(record.service_rate) || 0,
+        total_amount_due: Number(record.total_amount_due) || 0,
+        amount_paid: Number(record.amount_paid) || 0,
+        total_payment: Number(record.amount_paid) || Number(record.total_amount_due) || 0,
+        pay_period_start: record.work_period_start,
+        pay_period_end: record.work_period_end,
+        source_type: "manual",
+        status: "paid",
+        form_snapshot_json: { ...(prefill || {}), ...record },
       };
-      const res = await postContractorPaymentSummary(selected.user_id, body);
-      setSavedSummaries((prev) => [res.data, ...prev]);
-      setTimeout(() => openPrintWindow(printRef.current), 300);
+      let res;
+      if (selected?.user_id && !selected?.manual) {
+        res = await postContractorPaymentSummary(selected.user_id, body);
+      } else {
+        res = await postContractorPaymentRecord(body);
+      }
+      setSavedRecords((prev) => [res.data, ...prev]);
+      const newPrior =
+        (Number(record.total_paid_ytd_prior) || 0) + (Number(record.amount_paid) || 0);
+      setYtdPrior(newPrior);
+      setRecord((r) => ({ ...r, total_paid_ytd_prior: String(newPrior) }));
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Save failed");
     } finally {
@@ -357,18 +306,24 @@ export default function ContractorManagementPanel() {
     }
   };
 
-  const contractorOptions = contractors.map((c) => {
-    const tag =
-      c.worker_kind === "short_term"
-        ? ` · ${t("contractor.shortTermTag")}`
-        : c.worker_kind === "1099"
-          ? ""
+  const contractorOptions = [
+    MANUAL_OPTION,
+    ...contractors.map((c) => {
+      const tag =
+        c.worker_kind === "short_term"
+          ? ` · ${t("contractor.shortTermTag")}`
           : "";
-    return {
-      ...c,
-      label: `${c.full_name || "Worker"}${c.contractor_id ? ` (${c.contractor_id})` : ""}${tag}`,
-    };
-  });
+      return {
+        ...c,
+        label: `${c.full_name || "Worker"}${c.contractor_id ? ` (${c.contractor_id})` : ""}${tag}`,
+      };
+    }),
+  ];
+
+  const ytdIncluding =
+    (Number(record.total_paid_ytd_prior) || 0) + (Number(record.amount_paid) || 0);
+
+  const canWork = selected && (selected.manual || prefill);
 
   return (
     <Stack spacing={2}>
@@ -388,25 +343,28 @@ export default function ContractorManagementPanel() {
           value={selected}
           onChange={(_, v) => setSelected(v)}
           getOptionLabel={(o) => o?.label || ""}
-          isOptionEqualToValue={(a, b) => a?.user_id === b?.user_id}
+          isOptionEqualToValue={(a, b) =>
+            a?.manual === b?.manual && a?.user_id === b?.user_id
+          }
           renderInput={(params) => (
-            <TextField {...params} label={t("contractor.selectLabel")} placeholder={t("contractor.selectHint")} />
+            <TextField
+              {...params}
+              label={t("contractor.selectLabel")}
+              placeholder={t("contractor.selectHint")}
+            />
           )}
-          sx={{ maxWidth: 520 }}
+          sx={{ maxWidth: 560 }}
         />
-        {prefill ? (
+        {prefill && !isManual ? (
           <Box sx={{ mt: 2 }}>
-            <Typography variant="body2" color="text.secondary">
-              {t("contractor.masterNote")}
-            </Typography>
-            <Grid container spacing={1} sx={{ mt: 0.5 }}>
-              <Grid item xs={12} sm={6} md={4}>
+            <Grid container spacing={1}>
+              <Grid item xs={12} sm={4}>
                 <Typography variant="caption" color="text.secondary">
                   {t("contractor.fieldName")}
                 </Typography>
                 <Typography variant="body2">{prefill.full_name || "—"}</Typography>
               </Grid>
-              <Grid item xs={12} sm={6} md={4}>
+              <Grid item xs={12} sm={4}>
                 <Typography variant="caption" color="text.secondary">
                   {t("contractor.fieldRate")}
                 </Typography>
@@ -414,83 +372,108 @@ export default function ContractorManagementPanel() {
                   {prefill.rate_per_hour != null ? `$${prefill.rate_per_hour}/hr` : "—"}
                 </Typography>
               </Grid>
-              <Grid item xs={12} sm={6} md={4}>
+              <Grid item xs={12} sm={4}>
                 <Typography variant="caption" color="text.secondary">
-                  {t("contractor.fieldStatus")}
+                  Emergency contact
                 </Typography>
-                <Typography variant="body2">{prefill.status || "—"}</Typography>
+                <Typography variant="body2">{prefill.emergency_contact || "—"}</Typography>
               </Grid>
             </Grid>
-            {isShortTermWorker ? (
-              <Alert severity="info" sx={{ mt: 1 }}>
-                {t("contractor.shortTermUseReceipt")}
-              </Alert>
-            ) : null}
-            {!prefill.is_contractor && !prefill.is_short_term ? (
-              <Alert severity="warning" sx={{ mt: 1 }}>
-                {t("contractor.not1099Warning")}
-              </Alert>
-            ) : null}
           </Box>
         ) : null}
       </Paper>
 
-      {selected && prefill ? (
+      {canWork ? (
         <>
           <Tabs value={tab} onChange={(_, v) => setTab(v)} className="no-print">
-            <Tab label={t("contractor.tabBasicReceipt")} />
-            <Tab label={t("contractor.tabInvoice")} />
-            <Tab label={t("contractor.tabReceipt")} />
+            <Tab label="Invoice & Payment Receipt" />
+            <Tab label="Documents" disabled={isManual} />
             <Tab label={t("contractor.tabForms")} />
           </Tabs>
 
           {tab === 0 ? (
             <Paper sx={{ p: 2 }} className="no-print">
-              <Typography variant="h6" sx={{ mb: 0.5 }}>
-                {t("contractor.basicReceiptTitle")}
+              <Typography variant="h6" sx={{ mb: 1 }}>
+                Contractor Invoice &amp; Payment Receipt
               </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                {t("contractor.basicReceiptBlurb")}
+              <FormControl sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                  Contractor type
+                </Typography>
+                <RadioGroup
+                  row
+                  value={contractorType}
+                  onChange={(e) => onContractorType(e.target.value)}
+                >
+                  <FormControlLabel
+                    value="regular"
+                    control={<Radio size="small" />}
+                    label="Regular Contractor"
+                  />
+                  <FormControlLabel
+                    value="temp"
+                    control={<Radio size="small" />}
+                    label="Temporary / Short-Term"
+                  />
+                  <FormControlLabel
+                    value="one_time"
+                    control={<Radio size="small" />}
+                    label="One-Time"
+                  />
+                </RadioGroup>
+              </FormControl>
+
+              <Typography variant="subtitle2" color="primary" sx={{ mt: 1 }}>
+                Part 1 — Invoice / Work Summary (no signature required)
               </Typography>
-              <Grid container spacing={2}>
+              <Grid container spacing={2} sx={{ mt: 0.5 }}>
                 <Grid item xs={12} sm={6}>
                   <TextField
                     fullWidth
                     size="small"
-                    label={t("contractor.receiptWorkerName")}
-                    value={receipt.worker_name}
-                    onChange={(e) => onReceiptField("worker_name", e.target.value)}
+                    label="Worker name"
+                    value={record.worker_name}
+                    onChange={(e) => onRecordField("worker_name", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
-                    label={t("contractor.receiptPhone")}
-                    value={receipt.phone}
-                    onChange={(e) => onReceiptField("phone", e.target.value)}
+                    label="Phone"
+                    value={record.worker_phone}
+                    onChange={(e) => onRecordField("worker_phone", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Email"
+                    value={record.worker_email}
+                    onChange={(e) => onRecordField("worker_email", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="date"
                     InputLabelProps={{ shrink: true }}
                     label={t("contractor.periodStart")}
-                    value={receipt.work_period_start}
-                    onChange={(e) => onReceiptField("work_period_start", e.target.value)}
+                    value={record.work_period_start}
+                    onChange={(e) => onRecordField("work_period_start", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="date"
                     InputLabelProps={{ shrink: true }}
                     label={t("contractor.periodEnd")}
-                    value={receipt.work_period_end}
-                    onChange={(e) => onReceiptField("work_period_end", e.target.value)}
+                    value={record.work_period_end}
+                    onChange={(e) => onRecordField("work_period_end", e.target.value)}
                   />
                 </Grid>
                 <Grid item xs={12}>
@@ -499,281 +482,143 @@ export default function ContractorManagementPanel() {
                     size="small"
                     multiline
                     minRows={2}
-                    label={t("contractor.receiptWorkPerformed")}
-                    value={receipt.work_performed}
-                    onChange={(e) => onReceiptField("work_performed", e.target.value)}
+                    label="Work performed"
+                    value={record.work_performed}
+                    onChange={(e) => onRecordField("work_performed", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="number"
-                    inputProps={{ min: 0, step: 0.25 }}
-                    label={t("contractor.receiptTotalHours")}
-                    value={receipt.total_hours}
-                    onChange={(e) => onReceiptField("total_hours", e.target.value)}
+                    label="Approved hours"
+                    helperText={t("contractor.manualHoursHint")}
+                    value={record.approved_hours}
+                    onChange={(e) => onRecordField("approved_hours", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="number"
-                    inputProps={{ min: 0, step: 0.01 }}
                     label={t("contractor.serviceRate")}
-                    value={receipt.rate}
-                    onChange={(e) => onReceiptField("rate", e.target.value)}
+                    value={record.service_rate}
+                    onChange={(e) => onRecordField("service_rate", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                {isRegular ? (
+                  <Grid item xs={12} sm={3}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      type="number"
+                      label={t("contractor.hsCreditHours")}
+                      value={record.health_safety_credit_hours}
+                      onChange={(e) =>
+                        onRecordField("health_safety_credit_hours", e.target.value)
+                      }
+                    />
+                  </Grid>
+                ) : null}
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="number"
-                    inputProps={{ min: 0, step: 0.01 }}
-                    label={t("contractor.receiptTotalPaid")}
-                    value={receipt.total_amount_paid}
-                    onChange={(e) => onReceiptField("total_amount_paid", e.target.value)}
+                    label={t("contractor.adjustments")}
+                    value={record.adjustment_amount}
+                    onChange={(e) => onRecordField("adjustment_amount", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12}>
+                  <Typography variant="body1">
+                    <strong>Total amount due:</strong> $
+                    {Number(record.total_amount_due || 0).toFixed(2)}
+                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 2 }}>
+                      YTD before: ${Number(record.total_paid_ytd_prior || 0).toFixed(2)} · Including
+                      this payment: ${ytdIncluding.toFixed(2)}
+                    </Typography>
+                  </Typography>
+                </Grid>
+              </Grid>
+
+              <Typography variant="subtitle2" color="primary" sx={{ mt: 2 }}>
+                Part 2 — Payment Receipt (signature required on printed copy)
+              </Typography>
+              <Grid container spacing={2} sx={{ mt: 0.5 }}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="number"
-                    inputProps={{ min: 0, step: 0.01 }}
-                    label={t("contractor.receiptYtdPrior")}
-                    helperText={t("contractor.receiptYtdPriorHint")}
-                    value={receipt.total_paid_ytd_prior}
-                    onChange={(e) => onReceiptField("total_paid_ytd_prior", e.target.value)}
+                    label="Amount paid"
+                    value={record.amount_paid}
+                    onChange={(e) => onRecordField("amount_paid", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
-                    disabled
-                    label={t("contractor.receiptYtdIncluding")}
-                    value={
-                      receipt.total_amount_paid || receipt.total_paid_ytd_prior
-                        ? `$${(
-                            (Number(receipt.total_paid_ytd_prior) || 0) +
-                            (Number(receipt.total_amount_paid) || 0)
-                          ).toFixed(2)}`
-                        : ""
-                    }
+                    select
+                    label={t("contractor.paymentMethod")}
+                    value={record.payment_method}
+                    onChange={(e) => onRecordField("payment_method", e.target.value)}
+                  >
+                    <MenuItem value="">—</MenuItem>
+                    {PAYMENT_METHODS.map((m) => (
+                      <MenuItem key={m} value={m}>
+                        {m}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label={t("contractor.paymentRef")}
+                    value={record.payment_reference}
+                    onChange={(e) => onRecordField("payment_reference", e.target.value)}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="date"
                     InputLabelProps={{ shrink: true }}
                     label={t("contractor.receiptPaymentDate")}
-                    value={receipt.payment_date}
-                    onChange={(e) => onReceiptField("payment_date", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    select
-                    label={t("contractor.paymentMethod")}
-                    value={receipt.payment_method}
-                    onChange={(e) => onReceiptField("payment_method", e.target.value)}
-                  >
-                    <MenuItem value="">—</MenuItem>
-                    {PAYMENT_METHODS.map((m) => (
-                      <MenuItem key={m} value={m}>
-                        {m}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    multiline
-                    minRows={2}
-                    label={t("contractor.receiptPayRefNotes")}
-                    value={receipt.payment_reference_notes}
-                    onChange={(e) => onReceiptField("payment_reference_notes", e.target.value)}
+                    value={record.payment_date}
+                    onChange={(e) => onRecordField("payment_date", e.target.value)}
                   />
                 </Grid>
               </Grid>
-              <Button
-                variant="contained"
-                startIcon={<PrintIcon />}
-                sx={{ mt: 2 }}
-                onClick={doPrint}
-              >
-                {t("contractor.printBasicReceipt")}
-              </Button>
-            </Paper>
-          ) : null}
 
-          {tab === 1 ? (
-            <Paper sx={{ p: 2 }} className="no-print">
-              <Typography variant="h6" sx={{ mb: 0.5 }}>
-                {t("contractor.invoiceTitle")}
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                {t("contractor.invoiceBlurb")}
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label={t("contractor.periodStart")}
-                    InputLabelProps={{ shrink: true }}
-                    value={payment.pay_period_start}
-                    onChange={(e) => onPaymentField("pay_period_start", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label={t("contractor.periodEnd")}
-                    InputLabelProps={{ shrink: true }}
-                    value={payment.pay_period_end}
-                    onChange={(e) => onPaymentField("pay_period_end", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    label={t("contractor.invoiceDate")}
-                    InputLabelProps={{ shrink: true }}
-                    value={payment.invoice_date}
-                    onChange={(e) => onPaymentField("invoice_date", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    inputProps={{ min: 0, step: 0.25 }}
-                    label={t("contractor.approvedHours")}
-                    helperText={t("contractor.manualHoursHint")}
-                    value={payment.approved_service_hours}
-                    onChange={(e) => onPaymentField("approved_service_hours", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    inputProps={{ min: 0, step: 0.01 }}
-                    label={t("contractor.serviceRate")}
-                    value={payment.service_rate}
-                    onChange={(e) => onPaymentField("service_rate", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    inputProps={{ min: 0, step: 0.25 }}
-                    label={t("contractor.hsCreditHours")}
-                    value={payment.health_safety_credit_hours}
-                    onChange={(e) => onPaymentField("health_safety_credit_hours", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    inputProps={{ step: 0.01 }}
-                    label={t("contractor.adjustments")}
-                    value={payment.adjustments}
-                    onChange={(e) => onPaymentField("adjustments", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    select
-                    label={t("contractor.paymentMethod")}
-                    value={payment.payment_method}
-                    onChange={(e) => onPaymentField("payment_method", e.target.value)}
-                  >
-                    <MenuItem value="">—</MenuItem>
-                    {PAYMENT_METHODS.map((m) => (
-                      <MenuItem key={m} value={m}>
-                        {m}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label={t("contractor.paymentRef")}
-                    value={payment.payment_reference}
-                    onChange={(e) => onPaymentField("payment_reference", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    multiline
-                    minRows={2}
-                    label={t("contractor.notes")}
-                    value={payment.notes}
-                    onChange={(e) => onPaymentField("notes", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12}>
-                  <Typography variant="body1">
-                    <strong>{t("contractor.total")}:</strong> $
-                    {Number(payment.total_payment || 0).toFixed(2)}
-                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 2 }}>
-                      ({t("contractor.serviceAmt")}: ${Number(payment.service_amount || 0).toFixed(2)}
-                      {payment.health_safety_credit_amount
-                        ? ` · ${t("contractor.hsAmt")}: $${Number(payment.health_safety_credit_amount).toFixed(2)}`
-                        : ""}
-                      )
-                    </Typography>
-                  </Typography>
-                </Grid>
-              </Grid>
               <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
                 <Button
                   variant="contained"
                   startIcon={<SaveIcon />}
                   disabled={saving}
-                  onClick={saveAndPrintSummary}
+                  onClick={savePaymentRecord}
                 >
-                  {saving ? t("common.saving") : t("contractor.saveAndPrint")}
+                  {saving ? t("common.saving") : "Save payment record"}
                 </Button>
                 <Button variant="outlined" startIcon={<PrintIcon />} onClick={doPrint}>
                   {t("contractor.printPreview")}
                 </Button>
               </Stack>
-              {savedSummaries.length ? (
+              {savedRecords.length ? (
                 <Box sx={{ mt: 2 }}>
-                  <Typography variant="subtitle2">{t("contractor.recentSummaries")}</Typography>
-                  {savedSummaries.slice(0, 5).map((s) => (
+                  <Typography variant="subtitle2">Recent payment records</Typography>
+                  {savedRecords.slice(0, 8).map((s) => (
                     <Typography key={s.id} variant="body2" color="text.secondary">
-                      #{s.id} {s.pay_period_start || "?"} – {s.pay_period_end || "?"} · $
-                      {Number(s.total_payment || 0).toFixed(2)}
+                      #{s.id}{" "}
+                      {s.pay_period_start || s.work_period_start || "?"} –{" "}
+                      {s.pay_period_end || s.work_period_end || "?"} · $
+                      {Number(s.amount_paid ?? s.total_payment ?? 0).toFixed(2)}
                     </Typography>
                   ))}
                 </Box>
@@ -781,157 +626,32 @@ export default function ContractorManagementPanel() {
             </Paper>
           ) : null}
 
-          {tab === 2 ? (
+          {tab === 1 ? (
             <Paper sx={{ p: 2 }} className="no-print">
-              <Typography variant="h6" sx={{ mb: 0.5 }}>
-                {t("contractor.receiptTitle")}
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                {t("contractor.receiptBlurb")}
-              </Typography>
-              <Grid container spacing={2}>
-                <Grid item xs={12} sm={6} md={4}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label={t("contractor.periodStart")}
-                    type="date"
-                    InputLabelProps={{ shrink: true }}
-                    value={paymentReceipt.pay_period_start || ""}
-                    onChange={(e) =>
-                      setPaymentReceipt((r) => ({ ...r, pay_period_start: e.target.value }))
-                    }
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label={t("contractor.periodEnd")}
-                    type="date"
-                    InputLabelProps={{ shrink: true }}
-                    value={paymentReceipt.pay_period_end || ""}
-                    onChange={(e) =>
-                      setPaymentReceipt((r) => ({ ...r, pay_period_end: e.target.value }))
-                    }
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    inputProps={{ min: 0, step: 0.01 }}
-                    label={t("contractor.receiptTotalPaid")}
-                    value={paymentReceipt.total_amount_paid ?? ""}
-                    onChange={(e) =>
-                      setPaymentReceipt((r) => ({ ...r, total_amount_paid: e.target.value }))
-                    }
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    InputLabelProps={{ shrink: true }}
-                    label={t("contractor.receiptPaymentDate")}
-                    value={paymentReceipt.payment_date || ""}
-                    onChange={(e) =>
-                      setPaymentReceipt((r) => ({ ...r, payment_date: e.target.value }))
-                    }
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    select
-                    label={t("contractor.paymentMethod")}
-                    value={paymentReceipt.payment_method || ""}
-                    onChange={(e) =>
-                      setPaymentReceipt((r) => ({ ...r, payment_method: e.target.value }))
-                    }
-                  >
-                    <MenuItem value="">—</MenuItem>
-                    {PAYMENT_METHODS.map((m) => (
-                      <MenuItem key={m} value={m}>
-                        {m}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label={t("contractor.paymentRef")}
-                    value={paymentReceipt.payment_reference || ""}
-                    onChange={(e) =>
-                      setPaymentReceipt((r) => ({ ...r, payment_reference: e.target.value }))
-                    }
-                  />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    multiline
-                    minRows={2}
-                    label={t("contractor.notes")}
-                    value={paymentReceipt.notes || ""}
-                    onChange={(e) => setPaymentReceipt((r) => ({ ...r, notes: e.target.value }))}
-                  />
-                </Grid>
-              </Grid>
-              <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() =>
-                    setPaymentReceipt(
-                      receiptFromInvoice(
-                        {
-                          ...payment,
-                          contractor_name: prefill?.full_name,
-                          payment_method: payment.payment_method || prefill?.payment_method,
-                        },
-                        prefill,
-                      ),
-                    )
-                  }
-                >
-                  {t("contractor.syncFromInvoice")}
-                </Button>
-                <Button variant="contained" startIcon={<PrintIcon />} onClick={doPrint}>
-                  {t("contractor.printPreview")}
-                </Button>
-              </Stack>
+              <ContractorDocumentsPanel
+                userId={selected?.user_id}
+                contractorType={contractorType}
+                ytdTotal={ytdIncluding}
+              />
             </Paper>
           ) : null}
 
-          {tab === 3 ? (
+          {tab === 2 ? (
             <Grid container spacing={2} className="no-print">
-              {isShortTermWorker ? (
-                <Grid item xs={12}>
-                  <Alert severity="warning">
-                    {t("contractor.noFullPacketForTemp")}
-                  </Alert>
-                </Grid>
-              ) : null}
               <Grid item xs={12} md={4}>
                 <Paper sx={{ p: 1.5 }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>
                     {t("contractor.formsList")}
                   </Typography>
                   <Stack spacing={0.5}>
-                    {FORMS_TAB_LIST.map((f) => (
+                    {CONTRACTOR_FORMS.map((f) => (
                       <Button
                         key={f.id}
                         size="small"
                         variant={activeFormId === f.id ? "contained" : "text"}
                         sx={{ justifyContent: "flex-start", textAlign: "left" }}
                         onClick={() => setActiveFormId(f.id)}
+                        disabled={isManual && f.id === "first_time_packet"}
                       >
                         {f.title}
                       </Button>
@@ -944,38 +664,32 @@ export default function ContractorManagementPanel() {
                   <Typography variant="h6" sx={{ mb: 1 }}>
                     {formDef?.title}
                   </Typography>
-                  {formDef?.description ? (
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                      {formDef.description}
-                    </Typography>
-                  ) : null}
                   <ContractorFormEditor
                     formId={activeFormId}
                     values={activeFormValues}
-                    onChange={setActiveFormValues}
+                    onChange={(next) =>
+                      setFormFieldValues((prev) => ({ ...prev, [activeFormId]: next }))
+                    }
                   />
-                  <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
-                    <Button variant="contained" startIcon={<PrintIcon />} onClick={doPrint}>
-                      {t("contractor.printForm")}
-                    </Button>
-                  </Stack>
+                  <Button
+                    variant="contained"
+                    startIcon={<PrintIcon />}
+                    sx={{ mt: 2 }}
+                    onClick={doPrint}
+                  >
+                    {t("contractor.printForm")}
+                  </Button>
                 </Paper>
               </Grid>
             </Grid>
           ) : null}
 
           <Box ref={printRef} className="contractor-print-area">
-            <ContractorPrintShell prefill={prefill} documentTitle={printDocumentTitle}>
+            <ContractorPrintShell prefill={prefill || { company_name: "VeeWash" }} documentTitle={printTitle}>
               {tab === 0 ? (
-                <BasicWorkReceiptPrint receipt={receipt} />
+                <ContractorInvoicePaymentPrint record={record} prefill={prefill} />
               ) : null}
-              {tab === 1 ? (
-                <ContractorPaymentInvoicePrint prefill={prefill} payment={paymentForPrint} />
-              ) : null}
-              {tab === 2 ? (
-                <ContractorPaymentReceiptPrint prefill={prefill} receipt={paymentReceipt} />
-              ) : null}
-              {tab === 3 && formHtml ? <MarkdownFormPrint html={formHtml} /> : null}
+              {tab === 2 && formHtml ? <MarkdownFormPrint html={formHtml} /> : null}
             </ContractorPrintShell>
           </Box>
         </>

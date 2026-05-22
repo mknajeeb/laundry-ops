@@ -1,6 +1,5 @@
 /** Printable contractor form catalog (content from veewash_1099_contractor_packet.md). */
 
-/** Full legal/onboarding forms — not for short-term temp workers (use Basic Work Receipt tab). */
 export const CONTRACTOR_FORMS = [
   {
     id: "first_time_packet",
@@ -12,20 +11,6 @@ export const CONTRACTOR_FORMS = [
     id: "rate_confirmation",
     title: "Contractor Rate / Payment Confirmation",
     sections: ["3"],
-  },
-  {
-    id: "biweekly_payment_invoice",
-    title: "Contractor Payment Invoice",
-    sections: ["11"],
-    interactive: true,
-    tabOnly: true,
-  },
-  {
-    id: "biweekly_payment_receipt",
-    title: "Contractor Payment Receipt",
-    sections: [],
-    interactive: true,
-    tabOnly: true,
   },
   {
     id: "written_warning",
@@ -63,11 +48,6 @@ export const CONTRACTOR_FORMS = [
     sections: ["19"],
   },
 ];
-
-export const BASIC_WORK_RECEIPT = {
-  id: "basic_work_receipt",
-  title: "Basic Contractor Work Receipt",
-};
 
 export function findContractorForm(id) {
   return CONTRACTOR_FORMS.find((f) => f.id === id) || null;
