@@ -1,46 +1,10 @@
-# VeeWash / Washpro 1099 Contractor Packet
-
-**First-Time Sign-Off Packet + Simple Biweekly Payment Summary**  
-**Location:** 10438 Jamaica Avenue, Richmond Hill, NY 11418
-
-> Practical template for Cursor/app implementation. Attorney/CPA/insurance broker review recommended.
-
----
-
-## Implementation Intent for Cursor
-
-Build two printable document flows:
-
-### 1. First-Time Contractor Packet
-A full onboarding packet signed once. It should include:
-- Independent Contractor Agreement
-- Contractor Rate / Payment Confirmation
-- Service Standards, Warnings, and Removal from Future Assignments
-- Premises Break, Rest Area, and Conduct Rules
-- Clock-In / Clock-Out and Biweekly Invoice Authorization
-- Contractor Health & Safety Credit Policy
-- Workers’ Compensation / Injury Reporting Acknowledgment
-- Confidentiality and Customer Property Acknowledgment
-- First-Time Contractor Sign-Off Page
-
-### 2. Simple Biweekly Contractor Payment Summary
-A short one-page form generated every pay period from manual hours/rate for now, later from clock-in/clock-out records.
-
-Do not label any contractor document as paycheck, paystub, employee payroll, employee wage statement, PTO, or employee sick leave. Use:
-- Contractor Payment Summary
-- Contractor Rate / Payment Confirmation
-- Health & Safety Credit
-- Warnings/notices for documentation only
-
----
-
 # PART A — FIRST-TIME SIGN-OFF PACKET
 
 ---
 
 ## 1. Contractor Intake Checklist
 
-Before contractor starts, collect:
+**Intake checklist.** The Company and Contractor confirm the following items are complete before service begins:
 
 | Item | Received |
 |---|---:|
@@ -55,8 +19,6 @@ Before contractor starts, collect:
 | Signed Confidentiality / Customer Property Acknowledgment | ☐ |
 | Emergency contact | ☐ |
 | Insurance certificate, if contractor has one | ☐ |
-
-Internal company note: Contractor payments and clock-in records should be kept for workers’ compensation audit, tax reporting, payment verification, and injury/incident documentation.
 
 ---
 
@@ -524,10 +486,7 @@ Contractor understands that warnings or notices are for documentation and servic
 
 ---
 
-## 11. Biweekly Contractor Invoice / Payment Summary
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 11. Biweekly Contractor Payment Summary
 
 ### Contractor Payment Summary
 
@@ -562,9 +521,7 @@ Contractor confirms that this invoice/payment summary accurately reflects approv
 
 ---
 
-## 12. Manager Weekly/Biweekly Checklist
-
-Keep this simple every pay period.
+## 12. Manager Weekly/Biweekly Checklist (Company use only — not for contractor signature)
 
 | Task | Done |
 |---|---:|
@@ -580,31 +537,11 @@ Keep this simple every pay period.
 
 ---
 
-## Simple Internal Rule
-
-For every contractor, keep only these ongoing records:
-
-1. First-time signed packet  
-2. W-9  
-3. Clock-in/out report  
-4. Biweekly Contractor Payment Summary  
-5. Proof of payment  
-6. Incident report, only if needed  
-7. Workers’ comp audit record
-
+# PART C — OPERATIONAL FORMS
 
 ---
 
-# PART C — OPERATIONAL TEMPLATES
-
-These templates are used only when needed. They should be printable from Payroll/Contractor Management and stored in the contractor record.
-
----
-
-## 13. Contractor Written Warning / Notice Template
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 13. Contractor Written Warning / Notice
 
 ### Contractor Written Warning / Notice
 
@@ -682,10 +619,7 @@ Signature confirms receipt only and does not mean Contractor agrees with the not
 
 ---
 
-## 14. Two-Week Probation / Review Confirmation Template
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 14. Two-Week Probation / Review Confirmation
 
 ### Two-Week Contractor Review / Probation Confirmation
 
@@ -736,10 +670,7 @@ Signature confirms receipt only and does not mean Contractor agrees with the rev
 
 ---
 
-## 15. Final Warning / Last Opportunity Notice Template
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 15. Final Warning / Last Opportunity Notice
 
 ### Final Warning / Last Opportunity Notice
 
@@ -789,10 +720,7 @@ Signature confirms receipt only and does not mean Contractor agrees with the not
 
 ---
 
-## 16. Contractor Termination / Non-Offer of Future Assignments Notice Template
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 16. Contractor Termination / Non-Offer of Future Assignments Notice
 
 ### Contractor Termination / Non-Offer of Future Assignments Notice
 
@@ -863,10 +791,7 @@ If Contractor refuses to sign, Company representative should note:
 
 ---
 
-## 17. Contractor Incident / Injury Report Template
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 17. Contractor Incident / Injury Report
 
 ### Contractor Incident / Injury Report
 
@@ -936,10 +861,7 @@ __________________________________________________________________
 
 ---
 
-## 18. Contractor Clock / Payment Correction Request Template
-
-**VeeWash / Washpro**  
-**10438 Jamaica Avenue, Richmond Hill, NY 11418**
+## 18. Contractor Clock / Payment Correction Request
 
 ### Contractor Clock / Payment Correction Request
 
@@ -995,7 +917,7 @@ __________________________________________________________________
 
 ## 19. Contractor Property / Access Return Checklist
 
-Use this when a contractor relationship ends or when access is removed.
+**Property and access return.** Complete when the contractor relationship ends or when Company premises/system access is removed.
 
 **Contractor Name:** ___________________________________
 

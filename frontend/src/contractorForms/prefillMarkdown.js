@@ -86,15 +86,63 @@ export function applyPrefillToMarkdown(md, prefill, extra = {}) {
   return out;
 }
 
+/** Strip internal/meta instructions that must not appear on signed final documents. */
 export function sanitizePacketMarkdown(md) {
   let out = String(md || "");
   out = out.replace(/^# PART\s+[A-Z][^\n]*\n*/gim, "");
   out = out.replace(/^# [^\n]*1099 Contractor Packet[^\n]*\n*/gim, "");
   out = out.replace(/^## Implementation Intent[^\n]*\n[\s\S]*?(?=\n## \d+\.|\n# PART|$)/gim, "");
+  out = out.replace(/^## Simple Internal Rule[\s\S]*?(?=\n## \d+\.|$)/gim, "");
   out = out.replace(/^>\s.*$/gm, "");
   out = out.replace(/\*\*VeeWash \/ Washpro\*\*\s*\n\*\*10438[^\n]*\n*/gi, "");
+  out = out.replace(/^Internal company note:.*$/gim, "");
+  out = out.replace(/^Before contractor starts, collect:\s*$/gim, "");
+  out = out.replace(/^Keep this simple every pay period\.\s*$/gim, "");
+  out = out.replace(
+    /^These templates are used only when needed\..*$/gim,
+    "",
+  );
+  out = out.replace(
+    /^Use this when a contractor relationship ends.*$/gim,
+    "",
+  );
+  out = out.replace(/^For every contractor, keep only these ongoing records:\s*$/gim, "");
+  out = out.replace(/^\d+\.\s+First-time signed packet\s*$/gim, "");
+  out = out.replace(/^Practical template for Cursor.*$/gim, "");
+  out = out.replace(/\s+Template\s*$/gim, "");
+  out = out.replace(/\s*\(Company use only[^)]*\)\s*/gi, " ");
   out = out.replace(/\n{3,}/g, "\n\n");
-  return out.trim();
+  return stripDuplicateSectionSubtitles(out);
+}
+
+/** Remove ### subtitle when it repeats the ## section title (common in packet source). */
+function stripDuplicateSectionSubtitles(md) {
+  const lines = String(md).split("\n");
+  const out = [];
+  let lastH2 = "";
+  for (const line of lines) {
+    if (/^## /.test(line)) {
+      lastH2 = line
+        .replace(/^##\s+/, "")
+        .replace(/^\d+\.\s*/, "")
+        .replace(/\s+Template\s*$/i, "")
+        .trim()
+        .toLowerCase();
+      out.push(line);
+      continue;
+    }
+    if (/^### /.test(line) && lastH2) {
+      const h3 = line
+        .replace(/^###\s+/, "")
+        .trim()
+        .toLowerCase();
+      if (h3 === lastH2 || lastH2.includes(h3) || h3.includes(lastH2)) {
+        continue;
+      }
+    }
+    out.push(line);
+  }
+  return out.join("\n").trim();
 }
 
 function escapeHtml(s) {
@@ -163,7 +211,10 @@ export function markdownToPrintHtml(md) {
       continue;
     }
     if (/^## /.test(line)) {
-      html.push(`<h2 class="cform-h2">${inlineFormat(line.slice(3))}</h2>`);
+      let h2 = line.slice(3).replace(/\s+Template\s*$/i, "");
+      h2 = h2.replace(/^\d+\.\s*/, "");
+      h2 = h2.replace(/\s*\(Company use only[^)]*\)\s*$/i, "");
+      html.push(`<h2 class="cform-h2">${inlineFormat(h2)}</h2>`);
       continue;
     }
     if (/^# /.test(line)) {
