@@ -14,10 +14,18 @@ export const CONTRACTOR_FORMS = [
     sections: ["3"],
   },
   {
-    id: "biweekly_payment_summary",
-    title: "Contractor Payment Summary",
+    id: "biweekly_payment_invoice",
+    title: "Contractor Payment Invoice",
     sections: ["11"],
     interactive: true,
+    tabOnly: true,
+  },
+  {
+    id: "biweekly_payment_receipt",
+    title: "Contractor Payment Receipt",
+    sections: [],
+    interactive: true,
+    tabOnly: true,
   },
   {
     id: "written_warning",

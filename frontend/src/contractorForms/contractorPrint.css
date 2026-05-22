@@ -185,6 +185,63 @@
   vertical-align: -0.08em;
 }
 
+.cform-check--on {
+  background: #1e3a8a;
+  border-color: #1e3a8a;
+  box-shadow: inset 0 0 0 2px #fff;
+}
+
+.cform-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.cform-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+
+.cform-editor-field--full {
+  grid-column: 1 / -1;
+}
+
+.cform-editor-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.cform-editor-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.cform-editor input,
+.cform-editor textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+@media screen {
+  .contractor-print-area {
+    position: absolute;
+    left: -10000px;
+    top: 0;
+    width: 7.5in;
+    pointer-events: none;
+    opacity: 0;
+  }
+}
+
 .cform-page {
   margin: 0;
   padding: 0;
@@ -256,56 +313,23 @@
     margin: 0.5in;
   }
 
-  html,
-  body {
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #fff !important;
-  }
-
-  body * {
-    visibility: hidden;
-  }
-
-  .contractor-print-area,
-  .contractor-print-area * {
-    visibility: visible !important;
+  .no-print {
+    display: none !important;
   }
 
   .contractor-print-area {
-    display: block !important;
-    position: fixed !important;
-    left: 0 !important;
-    top: 0 !important;
-    width: 100% !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    background: #fff !important;
-    z-index: 2147483647 !important;
-  }
-
-  .contractor-print-root {
-    width: 7.5in !important;
-    max-width: 7.5in !important;
-    margin: 0 auto !important;
-    padding: 0 !important;
-  }
-
-  .contractor-print-area img {
-    visibility: visible !important;
-    display: block !important;
-    max-width: 0.95in !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  /* Single-form print: title is in letterhead; hide duplicate ## heading in body. */
-  .cform-body > section.cform-page:only-child > .cform-h2:first-child {
-    display: none !important;
+    position: static !important;
+    left: auto !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
   }
 
   .cform-page--new .cform-mini-head {
     display: flex !important;
+  }
+
+  .cform-body > section.cform-page:only-child > .cform-h2:first-child {
+    display: none !important;
   }
 
   .cform-table,

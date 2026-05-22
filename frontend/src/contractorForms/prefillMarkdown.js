@@ -1,3 +1,4 @@
+import { applyFormValuesToMarkdown } from "./applyFormValues";
 import { miniHeadHtml } from "./ContractorPrintShell";
 
 /** Apply contractor prefill values into markdown; convert to print HTML. */
@@ -157,6 +158,7 @@ function inlineFormat(text) {
   let s = escapeHtml(text);
   s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/☐/g, '<span class="cform-check" aria-hidden="true"></span>');
+  s = s.replace(/☑/g, '<span class="cform-check cform-check--on" aria-hidden="true"></span>');
   return s;
 }
 
@@ -235,12 +237,22 @@ export function markdownToPrintHtml(md) {
 }
 
 /** Build HTML for one or more packet sections with page breaks between sections. */
-export function buildMultiSectionPrintHtml(sectionsByNum, sectionNums, prefill, extra = {}) {
+export function buildMultiSectionPrintHtml(
+  sectionsByNum,
+  sectionNums,
+  prefill,
+  extra = {},
+  options = {},
+) {
+  const { formId, formValues } = options;
   const parts = [];
   (sectionNums || []).forEach((n, index) => {
     const s = sectionsByNum[n];
     if (!s?.body) return;
-    const md = applyPrefillToMarkdown(s.body, prefill, extra);
+    let md = applyPrefillToMarkdown(s.body, prefill, extra);
+    if (formId && formValues && Object.keys(formValues).length) {
+      md = applyFormValuesToMarkdown(md, formId, formValues, prefill);
+    }
     const inner = markdownToPrintHtml(md);
     const pageClass = index > 0 ? " cform-page--new" : "";
     const mini = index > 0 ? miniHeadHtml(prefill) : "";

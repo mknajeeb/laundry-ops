@@ -30,104 +30,25 @@ import BasicWorkReceiptPrint, {
   calcBasicReceiptTotal,
   emptyBasicReceipt,
 } from "../contractorForms/BasicWorkReceiptPrint";
+import ContractorFormEditor from "../contractorForms/ContractorFormEditor";
+import ContractorPaymentInvoicePrint from "../contractorForms/ContractorPaymentInvoicePrint";
+import ContractorPaymentReceiptPrint, {
+  receiptFromInvoice,
+} from "../contractorForms/ContractorPaymentReceiptPrint";
 import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
+import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCatalog";
+import { emptyFormValues } from "../contractorForms/formFieldSchemas";
 import { buildMultiSectionPrintHtml } from "../contractorForms/prefillMarkdown";
 import { parsePacketSections } from "../contractorForms/parsePacket";
 import "../contractorForms/contractorPrint.css";
+
+const FORMS_TAB_LIST = CONTRACTOR_FORMS.filter((f) => !f.tabOnly);
 
 const PAYMENT_METHODS = ["Check", "ACH", "Zelle", "Venmo", "Cash", "Other"];
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
-}
-
-function FieldRow({ label, children }) {
-  return (
-    <div className="cform-field">
-      <span className="cform-field-label">{label}</span>
-      <span className="cform-field-value">{children}</span>
-    </div>
-  );
-}
-
-function BiweeklySummaryPrint({ prefill, payment }) {
-  const snap = payment.form_snapshot || prefill;
-  const name = snap.full_name || prefill.full_name || "";
-  const pm = payment.payment_method || prefill.payment_method || "";
-  return (
-    <>
-      <FieldRow label="Contractor Name">{name || "______________________________"}</FieldRow>
-      <FieldRow label="Invoice Period">
-        From {payment.pay_period_start || "________"} To {payment.pay_period_end || "________"}
-      </FieldRow>
-      <FieldRow label="Invoice Date">{payment.invoice_date || todayIso()}</FieldRow>
-      <table className="contractor-payment-table">
-        <tbody>
-          <tr>
-            <td>Approved service hours</td>
-            <td>{Number(payment.approved_service_hours || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td>Service rate</td>
-            <td>${Number(payment.service_rate || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td>Service amount</td>
-            <td>${Number(payment.service_amount || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td>Health &amp; Safety Credit hours, if any</td>
-            <td>{Number(payment.health_safety_credit_hours || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td>Health &amp; Safety Credit amount, if any</td>
-            <td>${Number(payment.health_safety_credit_amount || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td>Adjustments, if any</td>
-            <td>${Number(payment.adjustments || 0).toFixed(2)}</td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Total contractor payment</strong>
-            </td>
-            <td>
-              <strong>${Number(payment.total_payment || 0).toFixed(2)}</strong>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <FieldRow label="Payment Method">{pm || "________________"}</FieldRow>
-      <FieldRow label="Payment Reference">
-        {payment.payment_reference || "________________"}
-      </FieldRow>
-      {payment.notes ? (
-        <FieldRow label="Notes">
-          <span style={{ whiteSpace: "pre-wrap" }}>{payment.notes}</span>
-        </FieldRow>
-      ) : null}
-      <p className="cform-p" style={{ marginTop: "0.2in", fontSize: "9.5pt" }}>
-        Contractor confirms that this invoice/payment summary accurately reflects approved service
-        time and payment, unless Contractor notifies the Company of an error. This payment summary
-        confirms contractor payment only and does not waive any legal rights.
-      </p>
-      <div className="cform-sig-block">
-        <div>
-          <strong>Contractor Signature</strong>
-          <div className="cform-sig-line" />
-          <strong>Date</strong>
-          <div className="cform-sig-line" />
-        </div>
-        <div>
-          <strong>Company Signature</strong>
-          <div className="cform-sig-line" />
-          <strong>Date</strong>
-          <div className="cform-sig-line" />
-        </div>
-      </div>
-    </>
-  );
 }
 
 function MarkdownFormPrint({ html }) {
@@ -148,11 +69,13 @@ export default function ContractorManagementPanel() {
   const [tab, setTab] = useState(0);
   const [activeFormId, setActiveFormId] = useState("written_warning");
   const [receipt, setReceipt] = useState(() => emptyBasicReceipt({}));
-  const [formExtras, setFormExtras] = useState({
-    issued_by: "",
-    company_representative: "",
-    effective_date: todayIso(),
-    notice_date: todayIso(),
+  const [formFieldValues, setFormFieldValues] = useState({});
+  const [paymentReceipt, setPaymentReceipt] = useState({
+    payment_date: todayIso(),
+    payment_reference: "",
+    total_amount_paid: "",
+    payment_method: "",
+    notes: "",
   });
   const [savedSummaries, setSavedSummaries] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -214,10 +137,15 @@ export default function ContractorManagementPanel() {
         service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : p.service_rate,
         payment_method: pre.payment_method || p.payment_method,
       }));
-      setFormExtras((ex) => ({
-        ...ex,
-        effective_date: pre.start_date || ex.effective_date,
-      }));
+      setFormFieldValues((prev) => {
+        const next = { ...prev };
+        for (const f of FORMS_TAB_LIST) {
+          if (!next[f.id]) {
+            next[f.id] = emptyFormValues(f.id, pre);
+          }
+        }
+        return next;
+      });
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Failed to load contractor");
     }
@@ -232,6 +160,34 @@ export default function ContractorManagementPanel() {
     if (kind === "short_term") setTab(0);
     else if (kind === "1099") setTab(1);
   }, [selected?.worker_kind, prefill?.worker_kind]);
+
+  useEffect(() => {
+    if (tab !== 2 || !prefill) return;
+    setPaymentReceipt((r) => ({
+      ...receiptFromInvoice(
+        {
+          ...payment,
+          contractor_name: prefill.full_name,
+          payment_method: payment.payment_method || prefill.payment_method,
+        },
+        prefill,
+      ),
+      payment_reference: r.payment_reference || payment.payment_reference || "",
+      payment_date: r.payment_date || todayIso(),
+    }));
+  }, [
+    tab,
+    payment.total_payment,
+    payment.pay_period_start,
+    payment.pay_period_end,
+    payment.invoice_date,
+    payment.approved_service_hours,
+    payment.payment_method,
+    payment.payment_reference,
+    payment.notes,
+    prefill?.full_name,
+    prefill?.payment_method,
+  ]);
 
   const isShortTermWorker =
     selected?.worker_kind === "short_term" ||
@@ -283,6 +239,29 @@ export default function ContractorManagementPanel() {
     }
   }, []);
 
+  useEffect(() => {
+    const rv = formFieldValues.rate_confirmation;
+    if (!rv) return;
+    const pmFromChecks = () => {
+      if (rv.payment_method__check) return "Check";
+      if (rv.payment_method__ach) return "ACH";
+      if (rv.payment_method__zelle) return "Zelle";
+      if (rv.payment_method__venmo) return "Venmo";
+      if (rv.payment_method__cash) return "Cash";
+      if (rv.payment_method_other) return rv.payment_method_other;
+      return "";
+    };
+    const pm = pmFromChecks();
+    setPayment((p) => ({
+      ...p,
+      service_rate:
+        rv.rate_per_hour !== "" && rv.rate_per_hour != null
+          ? String(rv.rate_per_hour)
+          : p.service_rate,
+      payment_method: pm || p.payment_method,
+    }));
+  }, [formFieldValues.rate_confirmation]);
+
   const onPaymentField = (key, value) => {
     const next = { ...payment, [key]: value };
     if (
@@ -298,28 +277,45 @@ export default function ContractorManagementPanel() {
 
   const formDef = findContractorForm(activeFormId);
 
+  const activeFormValues = useMemo(() => {
+    const base = formFieldValues[activeFormId] || emptyFormValues(activeFormId, prefill || {});
+    return { ...base };
+  }, [formFieldValues, activeFormId, prefill]);
+
+  const setActiveFormValues = (next) => {
+    setFormFieldValues((prev) => ({ ...prev, [activeFormId]: next }));
+  };
+
   const formHtml = useMemo(() => {
-    if (!formDef?.sections?.length || activeFormId === "biweekly_payment_summary") return "";
+    if (!formDef?.sections?.length) return "";
     return buildMultiSectionPrintHtml(
       sections,
       formDef.sections,
       prefill || {},
-      formExtras,
+      activeFormValues,
+      { formId: activeFormId, formValues: activeFormValues },
     );
-  }, [formDef, sections, prefill, formExtras, activeFormId]);
+  }, [formDef, sections, prefill, activeFormValues, activeFormId]);
+
+  const paymentForPrint = useMemo(
+    () => ({
+      ...payment,
+      contractor_name: prefill?.full_name || "",
+      payment_method: payment.payment_method || prefill?.payment_method || "",
+    }),
+    [payment, prefill],
+  );
 
   const printDocumentTitle = useMemo(() => {
     if (tab === 0) return "Basic Contractor Work Receipt";
-    if (tab === 1) return "Contractor Payment Summary";
-    if (tab === 2 && activeFormId === "biweekly_payment_summary") {
-      return "Contractor Payment Summary";
-    }
-    if (tab === 2) return formDef?.title || "";
+    if (tab === 1) return "Contractor Payment Invoice";
+    if (tab === 2) return "Contractor Payment Receipt";
+    if (tab === 3) return formDef?.title || "";
     return "";
-  }, [tab, formDef, activeFormId]);
+  }, [tab, formDef]);
 
   const doPrint = () => {
-    window.print();
+    openPrintWindow(printRef.current);
   };
 
   const saveAndPrintSummary = async () => {
@@ -327,7 +323,12 @@ export default function ContractorManagementPanel() {
     setSaving(true);
     setError("");
     try {
-      const snapshot = { ...(prefill || {}), ...formExtras, _snapshot_note: "Form values at print time" };
+      const snapshot = {
+        ...(prefill || {}),
+        ...payment,
+        rate_form: formFieldValues.rate_confirmation || {},
+        _snapshot_note: "Invoice values at save time",
+      };
       const body = {
         ...payment,
         approved_service_hours: Number(payment.approved_service_hours) || 0,
@@ -339,7 +340,7 @@ export default function ContractorManagementPanel() {
       };
       const res = await postContractorPaymentSummary(selected.user_id, body);
       setSavedSummaries((prev) => [res.data, ...prev]);
-      setTimeout(() => window.print(), 300);
+      setTimeout(() => openPrintWindow(printRef.current), 300);
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Save failed");
     } finally {
@@ -429,7 +430,8 @@ export default function ContractorManagementPanel() {
         <>
           <Tabs value={tab} onChange={(_, v) => setTab(v)} className="no-print">
             <Tab label={t("contractor.tabBasicReceipt")} />
-            <Tab label={t("contractor.tabPayment")} />
+            <Tab label={t("contractor.tabInvoice")} />
+            <Tab label={t("contractor.tabReceipt")} />
             <Tab label={t("contractor.tabForms")} />
           </Tabs>
 
@@ -579,8 +581,11 @@ export default function ContractorManagementPanel() {
 
           {tab === 1 ? (
             <Paper sx={{ p: 2 }} className="no-print">
-              <Typography variant="h6" sx={{ mb: 1 }}>
-                {t("contractor.paymentTitle")}
+              <Typography variant="h6" sx={{ mb: 0.5 }}>
+                {t("contractor.invoiceTitle")}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                {t("contractor.invoiceBlurb")}
               </Typography>
               <Grid container spacing={2}>
                 <Grid item xs={12} sm={6} md={3}>
@@ -740,6 +745,135 @@ export default function ContractorManagementPanel() {
           ) : null}
 
           {tab === 2 ? (
+            <Paper sx={{ p: 2 }} className="no-print">
+              <Typography variant="h6" sx={{ mb: 0.5 }}>
+                {t("contractor.receiptTitle")}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                {t("contractor.receiptBlurb")}
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label={t("contractor.periodStart")}
+                    type="date"
+                    InputLabelProps={{ shrink: true }}
+                    value={paymentReceipt.pay_period_start || ""}
+                    onChange={(e) =>
+                      setPaymentReceipt((r) => ({ ...r, pay_period_start: e.target.value }))
+                    }
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label={t("contractor.periodEnd")}
+                    type="date"
+                    InputLabelProps={{ shrink: true }}
+                    value={paymentReceipt.pay_period_end || ""}
+                    onChange={(e) =>
+                      setPaymentReceipt((r) => ({ ...r, pay_period_end: e.target.value }))
+                    }
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    inputProps={{ min: 0, step: 0.01 }}
+                    label={t("contractor.receiptTotalPaid")}
+                    value={paymentReceipt.total_amount_paid ?? ""}
+                    onChange={(e) =>
+                      setPaymentReceipt((r) => ({ ...r, total_amount_paid: e.target.value }))
+                    }
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="date"
+                    InputLabelProps={{ shrink: true }}
+                    label={t("contractor.receiptPaymentDate")}
+                    value={paymentReceipt.payment_date || ""}
+                    onChange={(e) =>
+                      setPaymentReceipt((r) => ({ ...r, payment_date: e.target.value }))
+                    }
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    select
+                    label={t("contractor.paymentMethod")}
+                    value={paymentReceipt.payment_method || ""}
+                    onChange={(e) =>
+                      setPaymentReceipt((r) => ({ ...r, payment_method: e.target.value }))
+                    }
+                  >
+                    <MenuItem value="">—</MenuItem>
+                    {PAYMENT_METHODS.map((m) => (
+                      <MenuItem key={m} value={m}>
+                        {m}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label={t("contractor.paymentRef")}
+                    value={paymentReceipt.payment_reference || ""}
+                    onChange={(e) =>
+                      setPaymentReceipt((r) => ({ ...r, payment_reference: e.target.value }))
+                    }
+                  />
+                </Grid>
+                <Grid item xs={12}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    multiline
+                    minRows={2}
+                    label={t("contractor.notes")}
+                    value={paymentReceipt.notes || ""}
+                    onChange={(e) => setPaymentReceipt((r) => ({ ...r, notes: e.target.value }))}
+                  />
+                </Grid>
+              </Grid>
+              <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() =>
+                    setPaymentReceipt(
+                      receiptFromInvoice(
+                        {
+                          ...payment,
+                          contractor_name: prefill?.full_name,
+                          payment_method: payment.payment_method || prefill?.payment_method,
+                        },
+                        prefill,
+                      ),
+                    )
+                  }
+                >
+                  {t("contractor.syncFromInvoice")}
+                </Button>
+                <Button variant="contained" startIcon={<PrintIcon />} onClick={doPrint}>
+                  {t("contractor.printPreview")}
+                </Button>
+              </Stack>
+            </Paper>
+          ) : null}
+
+          {tab === 3 ? (
             <Grid container spacing={2} className="no-print">
               {isShortTermWorker ? (
                 <Grid item xs={12}>
@@ -754,7 +888,7 @@ export default function ContractorManagementPanel() {
                     {t("contractor.formsList")}
                   </Typography>
                   <Stack spacing={0.5}>
-                    {CONTRACTOR_FORMS.map((f) => (
+                    {FORMS_TAB_LIST.map((f) => (
                       <Button
                         key={f.id}
                         size="small"
@@ -778,62 +912,16 @@ export default function ContractorManagementPanel() {
                       {formDef.description}
                     </Typography>
                   ) : null}
-                  <Grid container spacing={1} sx={{ mb: 2 }}>
-                    <Grid item xs={12} sm={6}>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        label={t("contractor.issuedBy")}
-                        value={formExtras.issued_by}
-                        onChange={(e) =>
-                          setFormExtras((ex) => ({ ...ex, issued_by: e.target.value }))
-                        }
-                      />
-                    </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        label={t("contractor.companyRep")}
-                        value={formExtras.company_representative}
-                        onChange={(e) =>
-                          setFormExtras((ex) => ({
-                            ...ex,
-                            company_representative: e.target.value,
-                          }))
-                        }
-                      />
-                    </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        type="date"
-                        InputLabelProps={{ shrink: true }}
-                        label={t("contractor.effectiveDate")}
-                        value={formExtras.effective_date}
-                        onChange={(e) =>
-                          setFormExtras((ex) => ({ ...ex, effective_date: e.target.value }))
-                        }
-                      />
-                    </Grid>
-                    <Grid item xs={12} sm={6}>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        type="date"
-                        InputLabelProps={{ shrink: true }}
-                        label={t("contractor.noticeDate")}
-                        value={formExtras.notice_date}
-                        onChange={(e) =>
-                          setFormExtras((ex) => ({ ...ex, notice_date: e.target.value }))
-                        }
-                      />
-                    </Grid>
-                  </Grid>
-                  <Button variant="contained" startIcon={<PrintIcon />} onClick={doPrint}>
-                    {t("contractor.printForm")}
-                  </Button>
+                  <ContractorFormEditor
+                    formId={activeFormId}
+                    values={activeFormValues}
+                    onChange={setActiveFormValues}
+                  />
+                  <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+                    <Button variant="contained" startIcon={<PrintIcon />} onClick={doPrint}>
+                      {t("contractor.printForm")}
+                    </Button>
+                  </Stack>
                 </Paper>
               </Grid>
             </Grid>
@@ -845,14 +933,12 @@ export default function ContractorManagementPanel() {
                 <BasicWorkReceiptPrint receipt={receipt} />
               ) : null}
               {tab === 1 ? (
-                <BiweeklySummaryPrint prefill={prefill} payment={payment} />
+                <ContractorPaymentInvoicePrint prefill={prefill} payment={paymentForPrint} />
               ) : null}
-              {tab === 2 && activeFormId === "biweekly_payment_summary" ? (
-                <BiweeklySummaryPrint prefill={prefill} payment={payment} />
+              {tab === 2 ? (
+                <ContractorPaymentReceiptPrint prefill={prefill} receipt={paymentReceipt} />
               ) : null}
-              {tab === 2 && activeFormId !== "biweekly_payment_summary" && formHtml ? (
-                <MarkdownFormPrint html={formHtml} />
-              ) : null}
+              {tab === 3 && formHtml ? <MarkdownFormPrint html={formHtml} /> : null}
             </ContractorPrintShell>
           </Box>
         </>

@@ -1001,8 +1001,17 @@ export const TRANSLATIONS = {
     "contractor.not1099Warning":
       "This person is not tagged as a 1099 contractor category. Assign a 1099 employment category in People to include them in this list.",
     "contractor.tabBasicReceipt": "Basic work receipt",
+    "contractor.tabInvoice": "Payment invoice",
+    "contractor.tabReceipt": "Payment receipt",
     "contractor.tabPayment": "Payment summary",
     "contractor.tabForms": "Forms & packets",
+    "contractor.invoiceTitle": "Contractor Payment Invoice",
+    "contractor.invoiceBlurb":
+      "Biweekly invoice for approved hours and amount due. Edit fields below, then save or print.",
+    "contractor.receiptTitle": "Contractor Payment Receipt",
+    "contractor.receiptBlurb":
+      "Confirms payment was made (after invoice is paid). Prefills from the invoice tab; edit before printing.",
+    "contractor.syncFromInvoice": "Refresh from invoice",
     "contractor.shortTermTag": "Short-term",
     "contractor.shortTermUseReceipt":
       "Short-term / temporary worker — use the Basic work receipt tab. Do not use the full contractor onboarding packet.",
@@ -2142,8 +2151,17 @@ export const TRANSLATIONS = {
     "contractor.not1099Warning":
       "Esta persona no tiene categoría 1099. Asigne una categoría de contratista en People.",
     "contractor.tabBasicReceipt": "Recibo básico de trabajo",
+    "contractor.tabInvoice": "Factura de pago",
+    "contractor.tabReceipt": "Recibo de pago",
     "contractor.tabPayment": "Resumen de pago",
     "contractor.tabForms": "Formularios",
+    "contractor.invoiceTitle": "Factura de pago del contratista",
+    "contractor.invoiceBlurb":
+      "Factura quincenal por horas aprobadas y monto adeudado. Edite los campos y guarde o imprima.",
+    "contractor.receiptTitle": "Recibo de pago del contratista",
+    "contractor.receiptBlurb":
+      "Confirma que se realizó el pago. Se rellena desde la factura; edite antes de imprimir.",
+    "contractor.syncFromInvoice": "Actualizar desde factura",
     "contractor.shortTermTag": "Corto plazo",
     "contractor.shortTermUseReceipt":
       "Trabajador temporal — use la pestaña Recibo básico. No use el paquete completo de contratista.",
