@@ -1,72 +1,86 @@
 /* Contractor printable forms — branded layout for browser print */
 
+.contractor-print-area {
+  background: #fff;
+}
+
 .contractor-print-root {
   font-family: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
   font-size: 10.5pt;
-  line-height: 1.5;
+  line-height: 1.45;
   color: #1a1a2e;
-  max-width: 8.5in;
+  width: 7.5in;
+  max-width: 7.5in;
   margin: 0 auto;
-  padding: 0.4in 0.55in 0.55in;
+  padding: 0;
   background: #fff;
+  box-sizing: border-box;
 }
 
 .cform-letterhead {
   display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding-bottom: 0.65rem;
-  margin-bottom: 1rem;
+  align-items: flex-start;
+  gap: 0.2in;
+  padding-bottom: 0.12in;
+  margin-bottom: 0.18in;
   border-bottom: 2px solid #1e3a8a;
 }
 
 .cform-logo {
-  width: 72px;
-  height: 72px;
+  width: 0.95in;
+  height: 0.95in;
+  min-width: 0.95in;
   object-fit: contain;
   flex-shrink: 0;
+  display: block;
 }
 
 .cform-letterhead-text {
   flex: 1;
   min-width: 0;
+  padding-top: 0.02in;
 }
 
 .cform-company-name {
-  font-size: 18pt;
+  font-size: 16pt;
   font-weight: 700;
   color: #1e3a8a;
   letter-spacing: 0.02em;
+  line-height: 1.2;
 }
 
 .cform-company-address {
   font-size: 9.5pt;
   color: #475569;
-  margin-top: 0.15rem;
+  margin-top: 0.06in;
+  line-height: 1.35;
 }
 
 .cform-document-title {
   font-size: 13pt;
   font-weight: 600;
   color: #0f172a;
-  margin: 0.5rem 0 0;
+  margin: 0.14in 0 0;
   padding: 0;
   border: none;
+  line-height: 1.25;
 }
 
 .cform-mini-head {
   display: none;
   align-items: center;
-  gap: 0.5rem;
-  padding-bottom: 0.35rem;
-  margin-bottom: 0.65rem;
+  gap: 0.12in;
+  padding-bottom: 0.1in;
+  margin-bottom: 0.14in;
   border-bottom: 1px solid #cbd5e1;
 }
 
 .cform-logo-mini {
-  width: 36px;
-  height: 36px;
+  width: 0.45in;
+  height: 0.45in;
+  min-width: 0.45in;
   object-fit: contain;
+  display: block;
 }
 
 .cform-mini-company {
@@ -79,52 +93,71 @@
   font-size: 10.5pt;
 }
 
+.cform-field {
+  display: grid;
+  grid-template-columns: 1.55in 1fr;
+  gap: 0.12in;
+  margin: 0.1in 0;
+  align-items: baseline;
+}
+
+.cform-field-label {
+  font-weight: 600;
+  color: #334155;
+}
+
+.cform-field-value {
+  color: #0f172a;
+}
+
 .cform-h2 {
-  font-size: 12.5pt;
+  font-size: 12pt;
   font-weight: 700;
   color: #1e3a8a;
-  margin: 0 0 0.65rem;
-  padding-bottom: 0.25rem;
+  margin: 0 0 0.14in;
+  padding-bottom: 0.06in;
   border-bottom: 1px solid #e2e8f0;
   page-break-after: avoid;
 }
 
 .cform-h3 {
-  font-size: 11pt;
+  font-size: 10.5pt;
   font-weight: 600;
   color: #334155;
-  margin: 0.85rem 0 0.35rem;
+  margin: 0.16in 0 0.08in;
 }
 
 .cform-h4 {
-  font-size: 10.5pt;
+  font-size: 10pt;
   font-weight: 600;
   color: #475569;
-  margin: 0.65rem 0 0.25rem;
+  margin: 0.12in 0 0.06in;
 }
 
 .cform-p {
-  margin: 0.3rem 0;
+  margin: 0.08in 0;
+  max-width: 7.5in;
 }
 
 .cform-bullet {
-  margin: 0.2rem 0 0.2rem 1rem;
-  padding-left: 0.35rem;
+  margin: 0.06in 0 0.06in 0.2in;
+  padding-left: 0.12in;
   position: relative;
 }
 
 .cform-bullet::before {
   content: "•";
   position: absolute;
-  left: -0.85rem;
+  left: -0.12in;
   color: #1e3a8a;
 }
 
 .cform-table {
   width: 100%;
   border-collapse: collapse;
-  margin: 0.55rem 0 0.75rem;
+  margin: 0.14in 0;
   font-size: 10pt;
+  table-layout: fixed;
 }
 
 .cform-table th {
@@ -136,19 +169,20 @@
 .cform-table th,
 .cform-table td {
   border: 1px solid #cbd5e1;
-  padding: 6px 10px;
+  padding: 0.08in 0.1in;
   text-align: left;
   vertical-align: top;
+  word-wrap: break-word;
 }
 
 .cform-check {
   display: inline-block;
-  width: 0.85em;
-  height: 0.85em;
+  width: 0.75em;
+  height: 0.75em;
   border: 1.5px solid #334155;
   border-radius: 2px;
-  margin-right: 0.15em;
-  vertical-align: -0.1em;
+  margin-right: 0.2em;
+  vertical-align: -0.08em;
 }
 
 .cform-page {
@@ -159,7 +193,7 @@
 .cform-page--new {
   page-break-before: always;
   break-before: page;
-  padding-top: 0.15in;
+  padding-top: 0.1in;
 }
 
 .cform-page-break {
@@ -171,44 +205,62 @@
 }
 
 .cform-sig-block {
-  margin-top: 1.75rem;
+  margin-top: 0.35in;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
+  gap: 0.35in;
   page-break-inside: avoid;
 }
 
 .cform-sig-line {
   border-bottom: 1px solid #1e293b;
-  min-height: 1.5rem;
-  margin-top: 1.25rem;
+  min-height: 0.22in;
+  margin-top: 0.2in;
 }
 
 .contractor-payment-table {
   width: 100%;
   border-collapse: collapse;
-  margin: 1rem 0;
+  margin: 0.14in 0;
+  table-layout: fixed;
+  font-size: 10pt;
 }
 
 .contractor-payment-table td {
   border: 1px solid #cbd5e1;
-  padding: 8px 12px;
+  padding: 0.08in 0.1in;
+  vertical-align: middle;
 }
 
 .contractor-payment-table td:first-child {
   background: #f8fafc;
-  font-weight: 500;
-  width: 42%;
+  font-weight: 600;
+  color: #334155;
+  width: 58%;
 }
 
 .contractor-payment-table td:last-child {
-  text-align: left;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  width: 42%;
+}
+
+.contractor-payment-table tr:last-child td {
+  font-weight: 700;
+  background: #f1f5f9;
 }
 
 @media print {
   @page {
-    size: letter;
-    margin: 0.55in;
+    size: letter portrait;
+    margin: 0.5in;
+  }
+
+  html,
+  body {
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
   }
 
   body * {
@@ -217,34 +269,51 @@
 
   .contractor-print-area,
   .contractor-print-area * {
-    visibility: visible;
+    visibility: visible !important;
   }
 
   .contractor-print-area {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-  }
-
-  .no-print {
-    display: none !important;
+    display: block !important;
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    z-index: 2147483647 !important;
   }
 
   .contractor-print-root {
-    padding: 0;
-    max-width: none;
+    width: 7.5in !important;
+    max-width: 7.5in !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
+  }
+
+  .contractor-print-area img {
+    visibility: visible !important;
+    display: block !important;
+    max-width: 0.95in !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Single-form print: title is in letterhead; hide duplicate ## heading in body. */
+  .cform-body > section.cform-page:only-child > .cform-h2:first-child {
+    display: none !important;
   }
 
   .cform-page--new .cform-mini-head {
-    display: flex;
+    display: flex !important;
   }
 
-  .cform-h2 {
-    page-break-after: avoid;
+  .cform-table,
+  .contractor-payment-table {
+    page-break-inside: avoid;
   }
 
-  .cform-table {
+  .cform-sig-block {
     page-break-inside: avoid;
   }
 }

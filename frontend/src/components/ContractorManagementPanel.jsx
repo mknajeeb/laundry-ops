@@ -42,23 +42,26 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function BiweeklySummaryPrint({ prefill, payment, extras }) {
+function FieldRow({ label, children }) {
+  return (
+    <div className="cform-field">
+      <span className="cform-field-label">{label}</span>
+      <span className="cform-field-value">{children}</span>
+    </div>
+  );
+}
+
+function BiweeklySummaryPrint({ prefill, payment }) {
   const snap = payment.form_snapshot || prefill;
   const name = snap.full_name || prefill.full_name || "";
   const pm = payment.payment_method || prefill.payment_method || "";
   return (
     <>
-      <h2 className="cform-h2">Contractor Payment Summary</h2>
-      <p>
-        <strong>Contractor Name:</strong> {name}
-      </p>
-      <p>
-        <strong>Invoice Period:</strong> From {payment.pay_period_start || "________"} To{" "}
-        {payment.pay_period_end || "________"}
-      </p>
-      <p>
-        <strong>Invoice Date:</strong> {payment.invoice_date || todayIso()}
-      </p>
+      <FieldRow label="Contractor Name">{name || "______________________________"}</FieldRow>
+      <FieldRow label="Invoice Period">
+        From {payment.pay_period_start || "________"} To {payment.pay_period_end || "________"}
+      </FieldRow>
+      <FieldRow label="Invoice Date">{payment.invoice_date || todayIso()}</FieldRow>
       <table className="contractor-payment-table">
         <tbody>
           <tr>
@@ -95,20 +98,16 @@ function BiweeklySummaryPrint({ prefill, payment, extras }) {
           </tr>
         </tbody>
       </table>
-      <p>
-        <strong>Payment Method:</strong> {pm || "________________"}
-      </p>
-      <p>
-        <strong>Payment Reference:</strong> {payment.payment_reference || "________________"}
-      </p>
+      <FieldRow label="Payment Method">{pm || "________________"}</FieldRow>
+      <FieldRow label="Payment Reference">
+        {payment.payment_reference || "________________"}
+      </FieldRow>
       {payment.notes ? (
-        <p>
-          <strong>Notes:</strong>
-          <br />
-          {payment.notes}
-        </p>
+        <FieldRow label="Notes">
+          <span style={{ whiteSpace: "pre-wrap" }}>{payment.notes}</span>
+        </FieldRow>
       ) : null}
-      <p style={{ marginTop: "1rem", fontSize: "10pt" }}>
+      <p className="cform-p" style={{ marginTop: "0.2in", fontSize: "9.5pt" }}>
         Contractor confirms that this invoice/payment summary accurately reflects approved service
         time and payment, unless Contractor notifies the Company of an error. This payment summary
         confirms contractor payment only and does not waive any legal rights.
@@ -127,11 +126,6 @@ function BiweeklySummaryPrint({ prefill, payment, extras }) {
           <div className="cform-sig-line" />
         </div>
       </div>
-      {extras?.company_representative ? (
-        <p className="cform-p" style={{ fontSize: "9pt", marginTop: "1rem" }}>
-          Prepared by: {extras.company_representative}
-        </p>
-      ) : null}
     </>
   );
 }
@@ -317,8 +311,12 @@ export default function ContractorManagementPanel() {
   const printDocumentTitle = useMemo(() => {
     if (tab === 0) return "Basic Contractor Work Receipt";
     if (tab === 1) return "Contractor Payment Summary";
-    return formDef?.title || "";
-  }, [tab, formDef]);
+    if (tab === 2 && activeFormId === "biweekly_payment_summary") {
+      return "Contractor Payment Summary";
+    }
+    if (tab === 2) return formDef?.title || "";
+    return "";
+  }, [tab, formDef, activeFormId]);
 
   const doPrint = () => {
     window.print();
@@ -847,10 +845,10 @@ export default function ContractorManagementPanel() {
                 <BasicWorkReceiptPrint receipt={receipt} />
               ) : null}
               {tab === 1 ? (
-                <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
+                <BiweeklySummaryPrint prefill={prefill} payment={payment} />
               ) : null}
               {tab === 2 && activeFormId === "biweekly_payment_summary" ? (
-                <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
+                <BiweeklySummaryPrint prefill={prefill} payment={payment} />
               ) : null}
               {tab === 2 && activeFormId !== "biweekly_payment_summary" && formHtml ? (
                 <MarkdownFormPrint html={formHtml} />

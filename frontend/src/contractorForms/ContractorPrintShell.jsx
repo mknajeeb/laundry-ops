@@ -1,6 +1,6 @@
+import ContractorPrintLogo from "./ContractorPrintLogo";
+import { EMBEDDED_VEEWASH_LOGO } from "./contractorLogo";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
-
-const FALLBACK_LOGO = "/assets/veewash-logo.png";
 
 function escapeHtml(s) {
   return String(s)
@@ -11,15 +11,13 @@ function escapeHtml(s) {
 
 /** Repeat header on continuation pages when printing multi-section packets. */
 export function miniHeadHtml(prefill) {
-  const logoSrc =
-    resolveOrgLogoUrl(prefill?.organization_logo_url) || FALLBACK_LOGO;
+  const org = resolveOrgLogoUrl(prefill?.organization_logo_url);
+  const logoSrc = org || EMBEDDED_VEEWASH_LOGO;
   const company = escapeHtml(prefill?.company_name || "VeeWash");
-  return `<div class="cform-mini-head"><img src="${logoSrc}" alt="" class="cform-logo-mini" /><span class="cform-mini-company">${company}</span></div>`;
+  return `<div class="cform-mini-head"><img src="${logoSrc}" alt="" class="cform-logo-mini" onerror="this.onerror=null;this.src='${EMBEDDED_VEEWASH_LOGO}'" /><span class="cform-mini-company">${company}</span></div>`;
 }
 
 export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false }) {
-  const logoSrc =
-    resolveOrgLogoUrl(prefill?.organization_logo_url) || FALLBACK_LOGO;
   const company = prefill?.company_name || "VeeWash";
   const address =
     prefill?.company_address || "10438 Jamaica Avenue, Richmond Hill, NY 11418";
@@ -27,7 +25,7 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
   if (mini) {
     return (
       <div className="cform-mini-head">
-        <img src={logoSrc} alt="" className="cform-logo-mini" />
+        <ContractorPrintLogo prefill={prefill} className="cform-logo-mini" />
         <span className="cform-mini-company">{company}</span>
       </div>
     );
@@ -35,7 +33,7 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
 
   return (
     <header className="cform-letterhead">
-      <img src={logoSrc} alt="" className="cform-logo" />
+      <ContractorPrintLogo prefill={prefill} className="cform-logo" />
       <div className="cform-letterhead-text">
         <div className="cform-company-name">{company}</div>
         <div className="cform-company-address">{address}</div>
