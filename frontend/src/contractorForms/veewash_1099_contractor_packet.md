@@ -27,7 +27,9 @@
 This Independent Contractor Agreement is between:
 
 **Company:** ______________________________  
-**Address:** 10438 Jamaica Avenue, Richmond Hill, NY 11418
+**Address:** 10438 Jamaica Avenue, Richmond Hill, NY 11418  
+**Phone:** (917) 341-5161  
+**Website:** https://veewash.com
 
 and
 

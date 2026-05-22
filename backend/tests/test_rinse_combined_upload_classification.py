@@ -269,8 +269,8 @@ class TestIncompleteRegistryUploadAcceptance(unittest.TestCase):
         self.assertEqual(params[6], "REJECTED_DUPLICATE")
         self.assertEqual(params[7], REASON_ALREADY_COMPLETED)
 
-    def test_pre_upload_completed_but_recomputed_incomplete_accepted(self):
-        """Stale COMPLETED in snapshot demoted to INCOMPLETE after recompute → accept."""
+    def test_pre_upload_completed_snapshot_rejects_even_if_live_registry_incomplete(self):
+        """Frozen pre-upload snapshot wins; live registry recompute does not un-reject."""
         cursor = MagicMock()
         cursor.fetchone.return_value = None
         cursor.fetchall.return_value = []
@@ -281,10 +281,10 @@ class TestIncompleteRegistryUploadAcceptance(unittest.TestCase):
             registry_completed_now=False,
             staging_hit={"id": 7},
         )
-        self.assertEqual(counts["rejected_rows"], 0)
+        self.assertEqual(counts["rejected_rows"], 1)
         params = inserts[0][0][1]
-        self.assertEqual(params[6], "ACCEPTED")
-        self.assertEqual(params[7], REASON_UPDATED_EXISTING_BAG)
+        self.assertEqual(params[6], "REJECTED_DUPLICATE")
+        self.assertEqual(params[7], REASON_ALREADY_COMPLETED)
 
 
 class TestCommitCombinedUploadFlow(unittest.TestCase):

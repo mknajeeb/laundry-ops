@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -17,12 +18,24 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import { getPayrollTimeRecords, getTaUsers, patchSessionPayrollLine } from "../api";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
+import {
+  deletePayrollTimeRecord,
+  getPayrollTimeRecords,
+  getTaUsers,
+  patchSessionPayrollLine,
+  postAdjustSessionTimes,
+  postPayrollTimeRecord,
+} from "../api";
 import { formatEasternDateTime } from "../utils/datetimeFormat";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
@@ -41,6 +54,25 @@ function statusColor(st) {
   return "default";
 }
 
+function toDatetimeLocal(val) {
+  if (!val) return "";
+  const s = String(val).trim().replace(" ", "T");
+  if (s.length >= 16) return s.slice(0, 16);
+  return s;
+}
+
+function toApiDateTime(local) {
+  if (!local) return "";
+  return local.length === 16 ? `${local.replace("T", " ")}:00` : local;
+}
+
+const emptyForm = () => ({
+  user_id: "",
+  clock_in_at: "",
+  clock_out_at: "",
+  notes: "",
+});
+
 export default function PayrollTimeRecordsPanel() {
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -51,8 +83,12 @@ export default function PayrollTimeRecordsPanel() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [detail, setDetail] = useState(null);
-  const [noteDraft, setNoteDraft] = useState("");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState("add");
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     getTaUsers()
@@ -83,32 +119,113 @@ export default function PayrollTimeRecordsPanel() {
     load();
   }, [load]);
 
-  const saveNote = async () => {
-    if (!detail?.id) return;
+  const openAdd = () => {
+    setEditorMode("add");
+    setEditingId(null);
+    setForm(emptyForm());
+    setEditorOpen(true);
+  };
+
+  const openEdit = (row) => {
+    setEditorMode("edit");
+    setEditingId(row.id);
+    setForm({
+      user_id: String(row.user_id || ""),
+      clock_in_at: toDatetimeLocal(row.clock_in_at),
+      clock_out_at: toDatetimeLocal(row.clock_out_at),
+      notes: row.notes || "",
+    });
+    setEditorOpen(true);
+  };
+
+  const saveEditor = async () => {
+    if (!form.user_id || !form.clock_in_at || !form.clock_out_at) {
+      setError("Worker, clock in, and clock out are required.");
+      return;
+    }
+    setSaving(true);
+    setError("");
     try {
-      await patchSessionPayrollLine(detail.id, { period_adjustment_remarks: noteDraft });
-      setDetail(null);
+      const remarks = (form.notes || "").trim() || "Payroll time record update";
+      if (editorMode === "add") {
+        await postPayrollTimeRecord({
+          user_id: Number(form.user_id),
+          clock_in_at: toApiDateTime(form.clock_in_at),
+          clock_out_at: toApiDateTime(form.clock_out_at),
+          remarks,
+        });
+      } else if (editingId) {
+        const row = rows.find((r) => r.id === editingId);
+        const cinChanged = toDatetimeLocal(row?.clock_in_at) !== form.clock_in_at;
+        const coutChanged = toDatetimeLocal(row?.clock_out_at) !== form.clock_out_at;
+        if (cinChanged || coutChanged) {
+          await postAdjustSessionTimes(editingId, {
+            clock_in_at: toApiDateTime(form.clock_in_at),
+            clock_out_at: toApiDateTime(form.clock_out_at),
+            remarks,
+          });
+        }
+        await patchSessionPayrollLine(editingId, { period_adjustment_remarks: form.notes || "" });
+      }
+      setEditorOpen(false);
       await load();
     } catch (e) {
-      setError(e.response?.data?.error || "Save failed");
+      setError(e.response?.data?.error || e.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget?.id) return;
+    setSaving(true);
+    setError("");
+    try {
+      await deletePayrollTimeRecord(deleteTarget.id);
+      setDeleteTarget(null);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Delete failed");
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {error ? (
         <Alert severity="error" onClose={() => setError("")}>
           {error}
         </Alert>
       ) : null}
       <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1" sx={{ mb: 1 }}>
-          Time Records
-        </Typography>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          justifyContent="space-between"
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={1}
+          sx={{ mb: 1 }}
+        >
+          <Typography variant="subtitle1">Time Records</Typography>
+          <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={openAdd}>
+            Add record
+          </Button>
+        </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           Review clock-in/out and approve hours before creating payout batches.
         </Typography>
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1} flexWrap="wrap" useFlexGap>
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: {
+              xs: "1fr",
+              sm: "repeat(2, 1fr)",
+              md: "repeat(3, minmax(140px, 1fr)) auto",
+            },
+            gap: 1.5,
+            alignItems: "end",
+          }}
+        >
           <TextField
             size="small"
             type="date"
@@ -125,7 +242,7 @@ export default function PayrollTimeRecordsPanel() {
             value={toDate}
             onChange={(e) => setToDate(e.target.value)}
           />
-          <FormControl size="small" sx={{ minWidth: 160 }}>
+          <FormControl size="small">
             <InputLabel>Worker category</InputLabel>
             <Select label="Worker category" value={category} onChange={(e) => setCategory(e.target.value)}>
               {WORKER_CATEGORY_OPTIONS.map((o) => (
@@ -135,7 +252,7 @@ export default function PayrollTimeRecordsPanel() {
               ))}
             </Select>
           </FormControl>
-          <FormControl size="small" sx={{ minWidth: 140 }}>
+          <FormControl size="small">
             <InputLabel>Status</InputLabel>
             <Select label="Status" value={status} onChange={(e) => setStatus(e.target.value)}>
               {STATUS_OPTIONS.map((o) => (
@@ -145,7 +262,7 @@ export default function PayrollTimeRecordsPanel() {
               ))}
             </Select>
           </FormControl>
-          <FormControl size="small" sx={{ minWidth: 180 }}>
+          <FormControl size="small">
             <InputLabel>Worker</InputLabel>
             <Select label="Worker" value={userId} onChange={(e) => setUserId(e.target.value)}>
               <MenuItem value="">All</MenuItem>
@@ -156,91 +273,155 @@ export default function PayrollTimeRecordsPanel() {
               ))}
             </Select>
           </FormControl>
-          <Button variant="contained" onClick={load} disabled={loading}>
+          <Button variant="outlined" onClick={load} disabled={loading}>
             {loading ? "Loading…" : "Apply filters"}
           </Button>
-        </Stack>
+        </Box>
       </Paper>
 
-      <Table size="small" component={Paper}>
-        <TableHead>
-          <TableRow>
-            <TableCell>Date</TableCell>
-            <TableCell>Worker</TableCell>
-            <TableCell>Category</TableCell>
-            <TableCell>Clock in</TableCell>
-            <TableCell>Clock out</TableCell>
-            <TableCell>Break</TableCell>
-            <TableCell>Total hours</TableCell>
-            <TableCell>Approved hrs</TableCell>
-            <TableCell>Status</TableCell>
-            <TableCell>Notes</TableCell>
-            <TableCell />
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map((r) => (
-            <TableRow key={r.id} hover>
-              <TableCell>{r.work_date}</TableCell>
-              <TableCell>{r.worker_name}</TableCell>
-              <TableCell>{r.worker_category_label}</TableCell>
-              <TableCell>{formatEasternDateTime(r.clock_in_at)}</TableCell>
-              <TableCell>{formatEasternDateTime(r.clock_out_at)}</TableCell>
-              <TableCell>{Math.round((r.break_seconds || 0) / 60)}m</TableCell>
-              <TableCell>{r.total_hours_display}</TableCell>
-              <TableCell>{r.approved_hours_display}</TableCell>
-              <TableCell>
-                <Chip size="small" label={r.status} color={statusColor(r.status)} />
-              </TableCell>
-              <TableCell sx={{ maxWidth: 120 }} noWrap>
-                {r.notes || "—"}
-              </TableCell>
-              <TableCell>
-                <Button size="small" onClick={() => { setDetail(r); setNoteDraft(r.notes || ""); }}>
-                  View
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-          {!rows.length && !loading ? (
+      <TableContainer component={Paper} sx={{ width: "100%", overflowX: "auto" }}>
+        <Table size="small" sx={{ minWidth: 900, tableLayout: "fixed" }}>
+          <TableHead>
             <TableRow>
-              <TableCell colSpan={11}>
-                <Typography color="text.secondary">No records for these filters.</Typography>
+              <TableCell sx={{ width: 88 }}>Date</TableCell>
+              <TableCell sx={{ width: 120 }}>Worker</TableCell>
+              <TableCell sx={{ width: 100 }}>Category</TableCell>
+              <TableCell sx={{ width: 130 }}>Clock in</TableCell>
+              <TableCell sx={{ width: 130 }}>Clock out</TableCell>
+              <TableCell sx={{ width: 72 }} align="right">
+                Hours
+              </TableCell>
+              <TableCell sx={{ width: 72 }} align="right">
+                Approved
+              </TableCell>
+              <TableCell sx={{ width: 100 }}>Status</TableCell>
+              <TableCell>Notes</TableCell>
+              <TableCell sx={{ width: 88 }} align="right">
+                Actions
               </TableCell>
             </TableRow>
-          ) : null}
-        </TableBody>
-      </Table>
+          </TableHead>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={r.id} hover sx={{ "& td": { whiteSpace: "nowrap", py: 0.75 } }}>
+                <TableCell>{r.work_date}</TableCell>
+                <TableCell sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>{r.worker_name}</TableCell>
+                <TableCell sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {r.worker_category_label}
+                </TableCell>
+                <TableCell>{formatEasternDateTime(r.clock_in_at)}</TableCell>
+                <TableCell>{formatEasternDateTime(r.clock_out_at)}</TableCell>
+                <TableCell align="right">{r.total_hours_display}</TableCell>
+                <TableCell align="right">{r.approved_hours_display}</TableCell>
+                <TableCell>
+                  <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                </TableCell>
+                <TableCell
+                  sx={{
+                    maxWidth: 160,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={r.notes || ""}
+                >
+                  {r.notes || "—"}
+                </TableCell>
+                <TableCell align="right">
+                  <Tooltip title="Edit">
+                    <IconButton size="small" onClick={() => openEdit(r)} aria-label="Edit">
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Delete">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={() => setDeleteTarget(r)}
+                      aria-label="Delete"
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                </TableCell>
+              </TableRow>
+            ))}
+            {!rows.length && !loading ? (
+              <TableRow>
+                <TableCell colSpan={10}>
+                  <Typography color="text.secondary">No records for these filters.</Typography>
+                </TableCell>
+              </TableRow>
+            ) : null}
+          </TableBody>
+        </Table>
+      </TableContainer>
 
-      <Dialog open={!!detail} onClose={() => setDetail(null)} maxWidth="sm" fullWidth>
-        <DialogTitle>Time record — {detail?.worker_name}</DialogTitle>
+      <Dialog open={editorOpen} onClose={() => setEditorOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>{editorMode === "add" ? "Add time record" : "Edit time record"}</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" gutterBottom>
-            {detail?.worker_category_label} · {detail?.work_date}
-          </Typography>
-          <Typography variant="body2">
-            Clock in: {formatEasternDateTime(detail?.clock_in_at)}
-          </Typography>
-          <Typography variant="body2">
-            Clock out: {formatEasternDateTime(detail?.clock_out_at)}
-          </Typography>
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            Approved hours: {detail?.approved_hours_display}
-          </Typography>
-          <TextField
-            fullWidth
-            multiline
-            minRows={3}
-            label="Notes / correction"
-            sx={{ mt: 2 }}
-            value={noteDraft}
-            onChange={(e) => setNoteDraft(e.target.value)}
-          />
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <FormControl fullWidth size="small" disabled={editorMode === "edit"}>
+              <InputLabel>Worker</InputLabel>
+              <Select
+                label="Worker"
+                value={form.user_id}
+                onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))}
+              >
+                {users.map((u) => (
+                  <MenuItem key={u.id} value={String(u.id)}>
+                    {u.first_name} {u.last_name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              fullWidth
+              size="small"
+              type="datetime-local"
+              label="Clock in"
+              InputLabelProps={{ shrink: true }}
+              value={form.clock_in_at}
+              onChange={(e) => setForm((f) => ({ ...f, clock_in_at: e.target.value }))}
+            />
+            <TextField
+              fullWidth
+              size="small"
+              type="datetime-local"
+              label="Clock out"
+              InputLabelProps={{ shrink: true }}
+              value={form.clock_out_at}
+              onChange={(e) => setForm((f) => ({ ...f, clock_out_at: e.target.value }))}
+            />
+            <TextField
+              fullWidth
+              size="small"
+              multiline
+              minRows={2}
+              label="Notes / correction"
+              value={form.notes}
+              onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+            />
+          </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDetail(null)}>Close</Button>
-          <Button variant="contained" onClick={saveNote}>
-            Save note
+          <Button onClick={() => setEditorOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={saveEditor} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)}>
+        <DialogTitle>Delete time record?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Remove {deleteTarget?.worker_name} on {deleteTarget?.work_date}? This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteTarget(null)}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={confirmDelete} disabled={saving}>
+            Delete
           </Button>
         </DialogActions>
       </Dialog>

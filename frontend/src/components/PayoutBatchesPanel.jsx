@@ -31,6 +31,8 @@ import {
   patchPayoutBatch,
   postPayoutBatch,
 } from "../api";
+import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
+import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
@@ -51,13 +53,10 @@ function PayoutBatchSummaryPrint({ batch }) {
   const lines = b.lines || [];
   return (
     <div className="contractor-print-root">
-      <header className="cform-letterhead">
-        <div className="cform-letterhead-text">
-          <div className="cform-company-name">VeeWash / Washpro</div>
-          <div className="cform-company-address">10438 Jamaica Avenue, Richmond Hill, NY 11418</div>
-          <h1 className="cform-document-title">Payroll / Contractor Payout Summary</h1>
-        </div>
-      </header>
+      <ContractorPrintLetterhead
+        prefill={{ company_name: "VeeWash / Washpro" }}
+        documentTitle="Payroll / Contractor Payout Summary"
+      />
       <p className="cform-p">
         <strong>Pay period:</strong> {b.pay_period_start} – {b.pay_period_end}
         <br />
@@ -133,6 +132,7 @@ export default function PayoutBatchesPanel() {
     notes: "",
   });
   const [contractors, setContractors] = useState([]);
+  const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
 
   const loadList = useCallback(async () => {
     setError("");
@@ -217,7 +217,7 @@ export default function PayoutBatchesPanel() {
   }, [contractors, detail?.worker_category]);
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {error ? (
         <Alert severity="error" onClose={() => setError("")}>
           {error}
@@ -300,8 +300,20 @@ export default function PayoutBatchesPanel() {
                 })} disabled={!filteredContractors.length}>
                   Add worker line
                 </Button>
-                <Button size="small" startIcon={<PrintIcon />} onClick={() => openPrintWindow(printRef.current)}>
-                  Print summary
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<PrintIcon />}
+                  onClick={() => setPrintPreviewOpen(true)}
+                >
+                  Print preview
+                </Button>
+                <Button
+                  size="small"
+                  startIcon={<PrintIcon />}
+                  onClick={() => openPrintWindow(printRef.current)}
+                >
+                  Print
                 </Button>
                 <Button size="small" onClick={downloadCsv}>
                   Download CSV
@@ -341,7 +353,22 @@ export default function PayoutBatchesPanel() {
         </Grid>
       </Grid>
 
-      <Box ref={printRef} className="contractor-print-area" sx={{ display: detail ? "block" : "none" }}>
+      <ContractorPrintPreviewDialog
+        open={printPreviewOpen}
+        onClose={() => setPrintPreviewOpen(false)}
+        title="Payroll / Contractor Payout Summary"
+        printRef={printRef}
+      />
+      <Box
+        ref={printRef}
+        className="contractor-print-area"
+        sx={{
+          position: "absolute",
+          left: -9999,
+          visibility: detail ? "hidden" : "hidden",
+          width: "7.5in",
+        }}
+      >
         {detail ? <PayoutBatchSummaryPrint batch={detail} /> : null}
       </Box>
 

@@ -19,7 +19,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.app import get_db  # noqa: E402
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env")
+    load_dotenv()
+except ImportError:
+    pass
+
+from backend.db import get_db  # noqa: E402
 from backend.rinse_bag_completion import normalize_bag_id  # noqa: E402
 from backend.rinse_bag_registry import (  # noqa: E402
     apply_completion_to_registry,
@@ -48,10 +56,30 @@ def main() -> int:
         type=str,
         help="comma-separated bag_ids",
     )
+    parser.add_argument(
+        "--stale-legacy-reasons",
+        action="store_true",
+        help="recompute bags still carrying pre-Clean-rack completion reasons",
+    )
+    parser.add_argument(
+        "--upload-batch-id",
+        type=int,
+        help="recompute every bag_id on this upload batch (portal + scan-events)",
+    )
     args = parser.parse_args()
 
-    if not args.bag and not args.all_incomplete and not args.all_completed and not args.bags:
-        parser.error("Provide --bag, --bags, --all-incomplete, or --all-completed")
+    if (
+        not args.bag
+        and not args.all_incomplete
+        and not args.all_completed
+        and not args.bags
+        and not args.stale_legacy_reasons
+        and args.upload_batch_id is None
+    ):
+        parser.error(
+            "Provide --bag, --bags, --all-incomplete, --all-completed, "
+            "--stale-legacy-reasons, or --upload-batch-id"
+        )
 
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
@@ -70,6 +98,33 @@ def main() -> int:
                 bid = normalize_bag_id(raw.strip())
                 if bid:
                     bag_ids.append(bid)
+        elif args.upload_batch_id is not None:
+            from backend.repair_latest_upload_batch import _collect_bag_ids_from_batch
+
+            bag_ids = sorted(
+                _collect_bag_ids_from_batch(cursor, args.org, int(args.upload_batch_id))
+            )
+        elif args.stale_legacy_reasons:
+            cursor.execute(
+                """
+                SELECT bag_id FROM rinse_bag_registry
+                WHERE organization_id = %s
+                  AND (
+                    completion_reason IN (
+                      'CLEAN_WITHOUT_QUALIFYING_LATER_SCAN',
+                      'POST_CLEAN_RACK_AND_USER',
+                      'POST_CLEAN_RACK_OR_USER',
+                      'WORKFLOW_THEN_CLEAN'
+                    )
+                    OR (
+                      completion_status = 'COMPLETED'
+                      AND completion_reason NOT IN ('CLEAN_RACK_SCANNED', 'MISSING_FROM_LATEST_PORTAL_UPLOAD')
+                    )
+                  )
+                """,
+                (int(args.org),),
+            )
+            bag_ids = [str(r["bag_id"]) for r in cursor.fetchall() or [] if r.get("bag_id")]
         elif args.all_completed:
             rows = list_registry_rows(
                 cursor, args.org, status="COMPLETED", limit=5000, offset=0

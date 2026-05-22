@@ -876,6 +876,15 @@ export const postContractorPaymentRecord = (body) =>
 export const getPayrollTimeRecords = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/time-records`, { params });
 
+export const postPayrollTimeRecord = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/time-records`, body);
+
+export const deletePayrollTimeRecord = (recordId) =>
+  axios.delete(`${API_BASE}/api/ta/payroll/time-records/${recordId}`);
+
+export const postAdjustSessionTimes = (sessionId, body) =>
+  axios.post(`${API_BASE}/api/ta/sessions/${sessionId}/adjust-times`, body);
+
 export const getPayoutBatches = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/payout-batches`, { params });
 

@@ -1,26 +1,23 @@
 #!/usr/bin/env bash
-# Export Rinse "Scans" table per ticket → CSV → optional Python logic (local only).
-# Does NOT run production scrape.mjs. See README_SCAN_EVENTS.md
-#
-# Usage:
-#   bash run-local-scan-events.sh
-#   bash run-local-scan-events.sh 3          # cap list pages
-#   bash run-local-scan-events.sh 3 --apply  # scrape then enrich CSV
-
+# Scan-events export (tickets + events CSVs) per vendor folder under tenants/.
+# Mac: run-local-scan-events.command
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 if [[ ! -f .env ]]; then
-  echo "Missing .env — cp .env.example .env && npm run save-session"
+  echo "Missing .env — cp .env.example .env"
   exit 1
 fi
 
-if [[ ! -d node_modules ]]; then
-  echo "Installing npm dependencies…"
-  npm install
-fi
-npx playwright install chromium
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+VENDOR="$(bash "$ROOT/pick-rinse-vendor.sh")"
+# shellcheck disable=SC1091
+source "$ROOT/vendor-layout.sh" "$VENDOR"
 
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
   export RINSE_MAX_PAGES="$1"
@@ -28,22 +25,30 @@ if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
   echo "RINSE_MAX_PAGES=$RINSE_MAX_PAGES"
 fi
 
-echo "Running scan-events scrape…"
-node scrape-scan-events.mjs
+STAMP="$(date +%Y-%m-%d)"
+export OUTPUT_SCAN_TICKETS_CSV="$TENANT_DIR/scan-events-$STAMP-tickets.csv"
+export OUTPUT_SCAN_EVENTS_CSV="$TENANT_DIR/scan-events-$STAMP-events.csv"
 
-CSV="${OUTPUT_SCAN_EVENTS_CSV:-}"
-if [[ -z "$CSV" ]]; then
-  CSV="$(ls -t scan-events-*.csv 2>/dev/null | head -1 || true)"
-fi
-if [[ -z "$CSV" || ! -f "$CSV" ]]; then
-  echo "No scan-events CSV found. Set OUTPUT_SCAN_EVENTS_CSV in .env or check scrape output."
+echo ""
+echo "=== Scan events: $(printf '%s' "$VENDOR" | tr '[:lower:]' '[:upper:]') ==="
+echo "  $OUTPUT_SCAN_TICKETS_CSV"
+echo "  $OUTPUT_SCAN_EVENTS_CSV"
+echo ""
+
+if [[ ! -f "$RINSE_STORAGE_STATE" ]]; then
+  echo "No session for $VENDOR — run save-session.command first."
   exit 1
 fi
-CSV_ABS="$(cd "$(dirname "$CSV")" && pwd)/$(basename "$CSV")"
-echo "CSV: $CSV_ABS"
+
+if [[ ! -d node_modules ]]; then
+  npm install
+fi
+npx playwright install chromium
+
+node scrape-scan-events.mjs
 
 if [[ "${1:-}" == "--apply" ]]; then
   REPO="$(cd "$ROOT/../.." && pwd)"
-  echo "Applying logic → enriched CSV…"
-  (cd "$REPO" && python3 -m backend.rinse_scan_events_cli apply --csv "$CSV_ABS" --json-summary)
+  echo "Applying event logic…"
+  (cd "$REPO" && python3 -m backend.rinse_scan_events_cli apply --csv "$OUTPUT_SCAN_EVENTS_CSV" --json-summary)
 fi

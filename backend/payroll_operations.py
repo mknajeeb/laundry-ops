@@ -13,7 +13,11 @@ from backend.contractor_management import (
     user_is_contractor,
     user_is_short_term_temp,
 )
-from backend.payroll_identity import fetch_payroll_profile_row, payroll_profiles_active
+from backend.payroll_identity import (
+    fetch_payroll_profile_row,
+    get_or_create_payroll_cycle_unified,
+    payroll_profiles_active,
+)
 from backend.ta_helpers import json_safe, table_exists, table_has_column
 
 
@@ -252,6 +256,88 @@ def list_time_records(
             continue
         out.append(json_safe(rec))
     return out
+
+
+def _parse_clock_dt(value: Any) -> Optional[datetime]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    s = str(value).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.strptime(s[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def create_manual_time_record(
+    conn,
+    organization_id: int,
+    *,
+    user_id: int,
+    clock_in_at: Any,
+    clock_out_at: Any,
+    remarks: str = "",
+) -> dict:
+    ci = _parse_clock_dt(clock_in_at)
+    co = _parse_clock_dt(clock_out_at)
+    if not ci or not co or co <= ci:
+        raise ValueError("Clock out must be after clock in")
+    pc_id = get_or_create_payroll_cycle_unified(conn, ci, int(organization_id))
+    net = int((co - ci).total_seconds())
+    chk = conn.cursor()
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
+    cols = ["user_id", "payroll_cycle_id", "clock_in_at", "clock_out_at", "status", "total_break_seconds", "net_work_seconds", "manual_override"]
+    vals = [int(user_id), pc_id, ci, co, "completed", 0, net, 1]
+    if has_ss_org:
+        cols.insert(1, "organization_id")
+        vals.insert(1, int(organization_id))
+    if has_remarks:
+        cols.append("period_adjustment_remarks")
+        vals.append((remarks or "Manual payroll entry")[:2000])
+    placeholders = ", ".join(["%s"] * len(cols))
+    c = conn.cursor()
+    c.execute(
+        f"INSERT INTO shift_sessions ({', '.join(cols)}) VALUES ({placeholders})",
+        tuple(vals),
+    )
+    sid = c.lastrowid
+    conn.commit()
+    items = list_time_records(conn, organization_id, limit=2000)
+    for rec in items:
+        if rec["id"] == sid:
+            return rec
+    return {"id": sid, "user_id": user_id}
+
+
+def delete_time_record(conn, organization_id: int, session_id: int) -> bool:
+    chk = conn.cursor()
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    c = conn.cursor()
+    if has_ss_org:
+        c.execute(
+            "DELETE FROM shift_sessions WHERE id=%s AND organization_id=%s",
+            (int(session_id), int(organization_id)),
+        )
+    else:
+        c.execute(
+            """
+            DELETE s FROM shift_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.id=%s AND u.organization_id=%s
+            """,
+            (int(session_id), int(organization_id)),
+        )
+    conn.commit()
+    return c.rowcount > 0
 
 
 def _recompute_batch_totals(conn, batch_id: int) -> None:

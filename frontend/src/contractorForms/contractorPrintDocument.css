@@ -45,11 +45,27 @@
   line-height: 1.2;
 }
 
-.cform-company-address {
+.cform-company-address,
+.cform-company-contact {
   font-size: 9.5pt;
   color: #475569;
   margin-top: 0.06in;
   line-height: 1.35;
+}
+
+.cform-company-contact {
+  margin-top: 0.03in;
+}
+
+.cform-company-website {
+  color: #1e3a8a;
+  text-decoration: none;
+}
+
+.cform-mini-contact {
+  font-size: 8.5pt;
+  color: #64748b;
+  margin-left: auto;
 }
 
 .cform-document-title {

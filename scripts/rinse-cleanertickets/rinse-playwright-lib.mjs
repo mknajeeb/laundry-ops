@@ -56,6 +56,9 @@ export const PORTAL_TICKET_DATE_LINE_RE =
 
 const RINSE_LOGIN_URL = "https://www.rinse.com/accounts/login/";
 
+/** Default ticket list when RINSE_TICKETS_URL is unset (page-only; no q/status filters). */
+export const DEFAULT_TICKETS_LIST_URL = "https://www.rinse.com/cleanertickets/?page=1";
+
 export function navTimeoutMs() {
   const n = parseInt(process.env.RINSE_NAV_TIMEOUT_MS || "120000", 10);
   return Math.max(15000, Math.min(300000, Number.isFinite(n) ? n : 120000));
@@ -63,7 +66,7 @@ export function navTimeoutMs() {
 
 export function urlForPage(baseUrl, pageNum) {
   const u = String(baseUrl || "").trim();
-  if (!u) return `https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=${pageNum}`;
+  if (!u) return `https://www.rinse.com/cleanertickets/?page=${pageNum}`;
   try {
     const parsed = new URL(u);
     parsed.searchParams.set("page", String(pageNum));
@@ -87,10 +90,26 @@ export function pageNumFromUrl(href) {
   }
 }
 
-export function defaultScanEventsOutputPath() {
+export function scanEventsDateStamp() {
   const d = new Date();
-  const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return path.join(__rinseDir, `scan-events-${stamp}.csv`);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Events-only CSV: Bag ID + scan columns (join key = alphanumeric bag code). */
+export function defaultScanEventsOutputPath() {
+  return path.join(__rinseDir, `scan-events-${scanEventsDateStamp()}-events.csv`);
+}
+
+/** Tickets CSV: same 16 columns as production portal scrape (one row per bag). */
+export function defaultScanTicketsOutputPath() {
+  return path.join(__rinseDir, `scan-events-${scanEventsDateStamp()}-tickets.csv`);
+}
+
+/** Unique bag code from scrape (matches backend rinse_portal_csv ticket_id). */
+export function ticketIdFromBag(bagId, bagDisplay) {
+  const raw = String(bagId || bagDisplay || "").trim();
+  const m = raw.match(/^([A-Z0-9]{4,})/i);
+  return m ? m[1].toUpperCase() : "";
 }
 
 export function bodyRowsSelector() {
@@ -283,7 +302,7 @@ export async function tryLogin(page, cleanerTicketsUrl) {
 }
 
 function buildLoginUrlWithNext(cleanerTicketsFullUrl) {
-  const fallback = "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
+  const fallback = DEFAULT_TICKETS_LIST_URL;
   let u;
   try {
     u = new URL(String(cleanerTicketsFullUrl || "").trim() || fallback);
@@ -319,11 +338,15 @@ export async function hasNextPageInUi(page, currentPageNum) {
 export async function extractScansFromExpandedTicket(rowLocator) {
   return rowLocator.evaluate((row) => {
     const norm = (s) => String(s || "").replace(/\s+/g, " ").trim();
-    const detail = row.nextElementSibling;
-    if (!detail || detail.tagName !== "TR") return [];
-
     const events = [];
-    const tables = detail.querySelectorAll("table");
+    const roots = [row];
+    let n = row.nextElementSibling;
+    for (let i = 0; i < 8 && n; i++) {
+      roots.push(n);
+      n = n.nextElementSibling;
+    }
+    for (const root of roots) {
+    const tables = root.querySelectorAll("table");
     for (const table of tables) {
       const headRow =
         table.querySelector("thead tr") ||
@@ -366,6 +389,7 @@ export async function extractScansFromExpandedTicket(rowLocator) {
           is_last_scan: isLastScan,
         });
       }
+    }
     }
     return events;
   });

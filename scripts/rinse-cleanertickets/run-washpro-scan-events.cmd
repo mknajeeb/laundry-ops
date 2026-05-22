@@ -38,11 +38,12 @@ if errorlevel 1 goto :fail
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyy-MM-dd-HHmm"') do set "DATESTAMP=%%i"
 
 set "OUTPUT_CSV=%cd%\tenants\washpro\TODAY\washpro-scan-events-%DATESTAMP%.csv"
-set "RINSE_TICKETS_URL=https://www.rinse.com/cleanertickets/?q=^&status=at_vendor^&page=1"
+set "RINSE_TICKETS_URL=https://www.rinse.com/cleanertickets/?page=1"
 set "RINSE_SCAN_OUTPUT_LAYOUT=events_only"
 set "RINSE_STORAGE_STATE=%cd%\tenants\washpro\rinse-auth.json"
 set "OUTPUT_SCAN_EVENTS_CSV=%OUTPUT_CSV%"
-set "OUTPUT_CSV=%OUTPUT_CSV%"
+
+echo RINSE_TICKETS_URL=%RINSE_TICKETS_URL%
 
 node scrape-scan-events.mjs
 if errorlevel 1 goto :fail

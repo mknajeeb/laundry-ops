@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -15,6 +15,53 @@ import {
   Typography,
 } from "@mui/material";
 import { getRinseBagDetail, postRinseBagRecomputeCompletion } from "../api";
+
+function scanEventPurpose(ev) {
+  const direct = String(ev?.purpose ?? "").trim();
+  if (direct) return direct;
+  try {
+    const raw =
+      typeof ev?.raw_json === "string" ? JSON.parse(ev.raw_json) : ev?.raw_json;
+    const fromRaw = String(raw?.Purpose ?? raw?.purpose ?? "").trim();
+    if (fromRaw) return fromRaw;
+  } catch {
+    /* ignore */
+  }
+  return "—";
+}
+
+function formatScanTime(ev) {
+  const raw = String(ev?.time_scanned_raw ?? "").trim();
+  const parsed = ev?.scanned_at_parsed;
+  if (parsed) {
+    const d = new Date(parsed);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    }
+    return String(parsed);
+  }
+  return raw || "—";
+}
+
+function sortScanEvents(events) {
+  return [...(events || [])].sort((a, b) => {
+    const ta = new Date(a.scanned_at_parsed || 0).getTime();
+    const tb = new Date(b.scanned_at_parsed || 0).getTime();
+    if (ta !== tb) return ta - tb;
+    const sia = Number(a.scan_index);
+    const sib = Number(b.scan_index);
+    const ai = Number.isFinite(sia) ? sia : 0;
+    const bi = Number.isFinite(sib) ? sib : 0;
+    if (ai !== bi) return ai - bi;
+    return (Number(a.id) || 0) - (Number(b.id) || 0);
+  });
+}
 
 function RinseBagLookupPage() {
   const [bagId, setBagId] = useState("");
@@ -63,9 +110,13 @@ function RinseBagLookupPage() {
   };
 
   const reg = detail?.registry || {};
+  const scanEvents = useMemo(
+    () => sortScanEvents(detail?.scan_events),
+    [detail?.scan_events]
+  );
 
   return (
-    <Box sx={{ p: 2, maxWidth: 1100, mx: "auto" }}>
+    <Box sx={{ p: 2, maxWidth: 1280, mx: "auto" }}>
       <Typography variant="h5" sx={{ fontWeight: 600, mb: 2 }}>
         Rinse Bag ID lookup
       </Typography>
@@ -115,26 +166,35 @@ function RinseBagLookupPage() {
               </Typography>
             </Paper>
           )}
-          <Paper sx={{ p: 2 }}>
+          <Paper sx={{ p: 2, overflowX: "auto" }}>
             <Typography sx={{ fontWeight: 600, mb: 1 }}>
-              Scan events ({detail.scan_events?.length || 0})
+              Scan events ({scanEvents.length})
             </Typography>
-            <Table size="small">
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              Sorted by time, then scan index. Event / Purpose shows the Rinse workflow step.
+            </Typography>
+            <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
-                  <TableCell>#</TableCell>
-                  <TableCell>Rack</TableCell>
-                  <TableCell>User</TableCell>
-                  <TableCell>Time</TableCell>
+                  <TableCell sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>Timeline #</TableCell>
+                  <TableCell sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>Scan Index</TableCell>
+                  <TableCell sx={{ fontWeight: 600, minWidth: 140 }}>Event / Purpose</TableCell>
+                  <TableCell sx={{ fontWeight: 600, minWidth: 120 }}>Rack</TableCell>
+                  <TableCell sx={{ fontWeight: 600, minWidth: 120 }}>User</TableCell>
+                  <TableCell sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>Time</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {(detail.scan_events || []).map((ev) => (
-                  <TableRow key={ev.id}>
-                    <TableCell>{ev.scan_index}</TableCell>
-                    <TableCell>{ev.rack}</TableCell>
-                    <TableCell>{ev.user_name}</TableCell>
-                    <TableCell>{ev.time_scanned_raw || ev.scanned_at_parsed}</TableCell>
+                {scanEvents.map((ev, idx) => (
+                  <TableRow key={ev.id ?? `${idx}-${ev.scan_index}`}>
+                    <TableCell>{idx + 1}</TableCell>
+                    <TableCell>{ev.scan_index ?? "—"}</TableCell>
+                    <TableCell sx={{ fontFamily: "monospace", fontSize: "0.85rem" }}>
+                      {scanEventPurpose(ev)}
+                    </TableCell>
+                    <TableCell>{ev.rack || "—"}</TableCell>
+                    <TableCell>{ev.user_name || "—"}</TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap" }}>{formatScanTime(ev)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

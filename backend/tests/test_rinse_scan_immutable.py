@@ -255,7 +255,7 @@ class TestFoldingWorkDateFromETTimeline(unittest.TestCase):
 
 
 class TestCompletionUsesETTimeline(unittest.TestCase):
-    def test_clean_cannot_trigger_itself_later_scan_completes(self):
+    def test_clean_rack_completes_on_first_clean_scan(self):
         at_clean = datetime(2026, 5, 17, 15, 17)
         at_later = datetime(2026, 5, 17, 15, 30)
         events = [
@@ -264,7 +264,7 @@ class TestCompletionUsesETTimeline(unittest.TestCase):
         ]
         result = evaluate_bag_completion(events)
         self.assertEqual(result.completion_status, "COMPLETED")
-        self.assertNotEqual(result.trigger_scan_event_id, 1)
+        self.assertEqual(result.trigger_scan_event_id, 1)
 
 
 if __name__ == "__main__":

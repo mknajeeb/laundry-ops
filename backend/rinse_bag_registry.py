@@ -13,7 +13,7 @@ import pandas as pd
 from backend.rinse_bag_completion import (
     COMPLETION_COMPLETED,
     COMPLETION_INCOMPLETE,
-    REASON_CLEAN_WITHOUT_QUALIFYING_LATER,
+    REASON_NO_CLEAN_SCAN,
     CompletionResult,
     completion_result_references_persisted_events,
     evaluate_bag_completion,
@@ -551,9 +551,9 @@ def apply_completion_to_registry(
     ):
         result = CompletionResult(
             completion_status=COMPLETION_INCOMPLETE,
-            completion_reason=REASON_CLEAN_WITHOUT_QUALIFYING_LATER,
-            first_clean_scan_at=result.first_clean_scan_at,
-            first_clean_scan_event_id=result.first_clean_scan_event_id,
+            completion_reason=REASON_NO_CLEAN_SCAN,
+            first_clean_scan_at=None,
+            first_clean_scan_event_id=None,
             trigger_scan_at=None,
             trigger_scan_event_id=None,
             trigger_kind=None,
@@ -561,6 +561,15 @@ def apply_completion_to_registry(
     fields = result.to_registry_update()
 
     ensure_rinse_bag_registry_table(cursor)
+    org = int(organization_id)
+    cursor.execute(
+        """
+        INSERT INTO rinse_bag_registry (organization_id, bag_id)
+        VALUES (%s, %s)
+        ON DUPLICATE KEY UPDATE updated_at = NOW()
+        """,
+        (org, bid),
+    )
     cursor.execute(
         """
         UPDATE rinse_bag_registry
@@ -585,7 +594,7 @@ def apply_completion_to_registry(
             fields["trigger_scan_at"],
             fields["trigger_scan_event_id"],
             fields["trigger_kind"],
-            int(organization_id),
+            org,
             bid,
         ),
     )

@@ -144,7 +144,7 @@ const RINSE_LOGIN_URL = "https://www.rinse.com/accounts/login/";
  * /accounts/login/?next=%2Fcleanertickets%2F%3F... so post-login returns to the list.
  */
 function buildLoginUrlWithNext(cleanerTicketsFullUrl) {
-  const fallback = "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
+  const fallback = "https://www.rinse.com/cleanertickets/?page=1";
   let u;
   try {
     u = new URL(String(cleanerTicketsFullUrl || "").trim() || fallback);

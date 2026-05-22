@@ -24,7 +24,7 @@ const RINSE_LOGIN = "https://www.rinse.com/accounts/login/";
 
 /** Same as browser: login/?next=/cleanertickets/... so after MFA you land on your list. */
 function loginUrlWithNext() {
-  const fallback = "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
+  const fallback = "https://www.rinse.com/cleanertickets/?page=1";
   const raw = (process.env.RINSE_TICKETS_URL || "").trim() || fallback;
   let u;
   try {

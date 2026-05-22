@@ -7,6 +7,7 @@ import {
   Checkbox,
   FormControl,
   FormControlLabel,
+  FormGroup,
   Grid,
   MenuItem,
   Paper,
@@ -39,6 +40,7 @@ import ContractorInvoicePaymentPrint, {
   calcServiceAmount,
   emptyPaymentRecord,
 } from "../contractorForms/ContractorInvoicePaymentPrint";
+import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
 import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCatalog";
@@ -79,8 +81,21 @@ export default function ContractorManagementPanel() {
   const [formFieldValues, setFormFieldValues] = useState({});
   const [savedRecords, setSavedRecords] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [ytdPrior, setYtdPrior] = useState(0);
   const [record, setRecord] = useState(() => emptyPaymentRecord({}, "regular"));
+
+  const formGridSx = {
+    display: "grid",
+    gridTemplateColumns: {
+      xs: "1fr",
+      sm: "repeat(2, minmax(0, 1fr))",
+      md: "repeat(3, minmax(0, 1fr))",
+    },
+    gap: 2,
+    width: "100%",
+    minWidth: 0,
+  };
 
   const loadContractors = useCallback(async () => {
     setLoading(true);
@@ -134,17 +149,17 @@ export default function ContractorManagementPanel() {
             : pre.worker_kind === "1099"
               ? "regular"
               : "regular";
-        setRecord((r) => ({
+        setRecord({
           ...emptyPaymentRecord(pre, kind),
-          ...r,
           contractor_type: kind,
-          worker_name: pre.full_name || r.worker_name,
-          worker_phone: pre.phone || r.worker_phone,
-          worker_email: pre.email || r.worker_email,
-          service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : r.service_rate,
-          payment_method: pre.payment_method || r.payment_method,
+          worker_name: pre.full_name || "",
+          worker_phone: pre.phone || "",
+          worker_email: pre.email || "",
+          service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : "",
+          payment_method: pre.payment_method || "",
           total_paid_ytd_prior: String(ytd),
-        }));
+          amount_paid_manual: false,
+        });
         setFormFieldValues((prev) => {
           const next = { ...prev };
           for (const f of CONTRACTOR_FORMS) {
@@ -174,6 +189,22 @@ export default function ContractorManagementPanel() {
     }
   }, [selected?.user_id, selected?.manual, loadContractor]);
 
+  const mergeRecalc = (r, next, amounts) => {
+    const total = amounts.total_amount_due ?? 0;
+    const manual = next.amount_paid_manual ?? r.amount_paid_manual;
+    const merged = {
+      ...r,
+      ...next,
+      service_amount: amounts.service_amount,
+      health_safety_credit_amount: amounts.health_safety_credit_amount,
+      total_amount_due: total,
+    };
+    if (!manual) {
+      merged.amount_paid = total > 0 ? String(total) : "";
+    }
+    return merged;
+  };
+
   const recalcAmounts = useCallback(
     async (next) => {
       const hours = next.approved_hours;
@@ -188,27 +219,24 @@ export default function ContractorManagementPanel() {
           adjustments: adj || 0,
         });
         const d = res.data || {};
-        setRecord((r) => ({
-          ...r,
-          ...next,
-          service_amount: d.service_amount ?? 0,
-          health_safety_credit_amount: d.health_safety_credit_amount ?? 0,
-          total_amount_due: d.total_payment ?? 0,
-        }));
+        setRecord((r) =>
+          mergeRecalc(r, next, {
+            service_amount: d.service_amount ?? 0,
+            health_safety_credit_amount: d.health_safety_credit_amount ?? 0,
+            total_amount_due: d.total_payment ?? 0,
+          }),
+        );
       } catch {
         const sa = calcServiceAmount(hours, rate);
-        const hsa = isRegular
-          ? calcServiceAmount(hs, rate)
-          : 0;
-        const total =
-          Math.round((sa + hsa + (Number(adj) || 0)) * 100) / 100;
-        setRecord((r) => ({
-          ...r,
-          ...next,
-          service_amount: sa,
-          health_safety_credit_amount: hsa,
-          total_amount_due: total,
-        }));
+        const hsa = isRegular ? calcServiceAmount(hs, rate) : 0;
+        const total = Math.round((sa + hsa + (Number(adj) || 0)) * 100) / 100;
+        setRecord((r) =>
+          mergeRecalc(r, next, {
+            service_amount: sa,
+            health_safety_credit_amount: hsa,
+            total_amount_due: total,
+          }),
+        );
       }
     },
     [isRegular],
@@ -237,10 +265,8 @@ export default function ContractorManagementPanel() {
 
   const onRecordField = (key, value) => {
     const next = { ...record, [key]: value };
-    if (key === "approved_hours" || key === "service_rate") {
-      const sa = calcServiceAmount(next.approved_hours, next.service_rate);
-      next.service_amount = sa;
-      if (!next.amount_paid && sa > 0) next.amount_paid = String(sa);
+    if (key === "amount_paid") {
+      next.amount_paid_manual = true;
     }
     if (
       ["approved_hours", "service_rate", "health_safety_credit_hours", "adjustment_amount"].includes(
@@ -251,6 +277,14 @@ export default function ContractorManagementPanel() {
     } else {
       setRecord(next);
     }
+  };
+
+  const matchAmountToDue = () => {
+    setRecord((r) => ({
+      ...r,
+      amount_paid: String(r.total_amount_due || 0),
+      amount_paid_manual: false,
+    }));
   };
 
   const onContractorType = (type) => {
@@ -298,6 +332,10 @@ export default function ContractorManagementPanel() {
     requestAnimationFrame(() => {
       openPrintWindow(printRef.current);
     });
+  };
+
+  const openPreview = () => {
+    setPrintPreviewOpen(true);
   };
 
   const savePaymentRecord = async () => {
@@ -363,7 +401,7 @@ export default function ContractorManagementPanel() {
   const canWork = selected && (selected.manual || prefill);
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {error ? (
         <Alert severity="error" onClose={() => setError("")}>
           {error}
@@ -429,7 +467,7 @@ export default function ContractorManagementPanel() {
           </Tabs>
 
           {tab === 0 ? (
-            <Paper sx={{ p: 2 }} className="no-print">
+            <Paper sx={{ p: 2, width: "100%", minWidth: 0, overflow: "hidden" }} className="no-print">
               <Typography variant="h6" sx={{ mb: 1 }}>
                 Contractor Invoice &amp; Payment Receipt
               </Typography>
@@ -463,217 +501,245 @@ export default function ContractorManagementPanel() {
               <Typography variant="subtitle2" color="primary" sx={{ mt: 1 }}>
                 Part 1 — Invoice / Work Summary (no signature required)
               </Typography>
-              <Grid container spacing={2} sx={{ mt: 0.5 }}>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label="Worker name"
-                    value={record.worker_name}
-                    onChange={(e) => onRecordField("worker_name", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label="Phone"
-                    value={record.worker_phone}
-                    onChange={(e) => onRecordField("worker_phone", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label="Email"
-                    value={record.worker_email}
-                    onChange={(e) => onRecordField("worker_email", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    InputLabelProps={{ shrink: true }}
-                    label={t("contractor.periodStart")}
-                    value={record.work_period_start}
-                    onChange={(e) => onRecordField("work_period_start", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    InputLabelProps={{ shrink: true }}
-                    label={t("contractor.periodEnd")}
-                    value={record.work_period_end}
-                    onChange={(e) => onRecordField("work_period_end", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    select
-                    label="Service performed"
-                    value={record.work_performed_preset || ""}
-                    onChange={(e) => onWorkPerformedPreset(e.target.value)}
-                  >
-                    <MenuItem value="">— Select service type —</MenuItem>
-                    {WORK_PERFORMED_PRESETS.map((p) => (
-                      <MenuItem key={p.id} value={p.id}>
-                        {p.label}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    multiline
-                    minRows={record.work_performed_preset === "other" ? 3 : 2}
-                    label={
-                      record.work_performed_preset === "other"
-                        ? "Service description (enter manually)"
-                        : "Service description"
-                    }
-                    helperText={
-                      record.work_performed_preset && record.work_performed_preset !== "other"
-                        ? "Filled from preset; edit if this assignment differed."
-                        : "Use service-based wording only."
-                    }
-                    value={record.work_performed}
-                    onChange={(e) => onRecordField("work_performed", e.target.value)}
-                    disabled={!record.work_performed_preset}
-                  />
-                </Grid>
-                <Grid item xs={12}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    multiline
-                    minRows={2}
-                    label="Additional notes (optional)"
-                    placeholder="Extra detail for this pay period only, if needed."
-                    value={record.work_performed_notes || ""}
-                    onChange={(e) => onRecordField("work_performed_notes", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    label="Approved hours"
-                    helperText={t("contractor.manualHoursHint")}
-                    value={record.approved_hours}
-                    onChange={(e) => onRecordField("approved_hours", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    label={t("contractor.serviceRate")}
-                    value={record.service_rate}
-                    onChange={(e) => onRecordField("service_rate", e.target.value)}
-                  />
-                </Grid>
+              <Box sx={{ ...formGridSx, mt: 1 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Worker name"
+                  value={record.worker_name}
+                  onChange={(e) => onRecordField("worker_name", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Phone"
+                  value={record.worker_phone}
+                  onChange={(e) => onRecordField("worker_phone", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Email"
+                  value={record.worker_email}
+                  onChange={(e) => onRecordField("worker_email", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  InputLabelProps={{ shrink: true }}
+                  label={t("contractor.periodStart")}
+                  value={record.work_period_start}
+                  onChange={(e) => onRecordField("work_period_start", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  InputLabelProps={{ shrink: true }}
+                  label={t("contractor.periodEnd")}
+                  value={record.work_period_end}
+                  onChange={(e) => onRecordField("work_period_end", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  select
+                  label="Service performed"
+                  value={record.work_performed_preset || ""}
+                  onChange={(e) => onWorkPerformedPreset(e.target.value)}
+                >
+                  <MenuItem value="">— Select service type —</MenuItem>
+                  {WORK_PERFORMED_PRESETS.map((p) => (
+                    <MenuItem key={p.id} value={p.id}>
+                      {p.label}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Box>
+              <Box sx={{ mt: 2, display: "flex", flexDirection: "column", gap: 2 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  multiline
+                  minRows={record.work_performed_preset === "other" ? 3 : 2}
+                  label={
+                    record.work_performed_preset === "other"
+                      ? "Service description (enter manually)"
+                      : "Service description"
+                  }
+                  helperText={
+                    record.work_performed_preset && record.work_performed_preset !== "other"
+                      ? "Filled from preset; edit if this assignment differed."
+                      : "Use service-based wording only."
+                  }
+                  value={record.work_performed}
+                  onChange={(e) => onRecordField("work_performed", e.target.value)}
+                  disabled={!record.work_performed_preset}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  multiline
+                  minRows={2}
+                  label="Additional notes (optional)"
+                  placeholder="Extra detail for this pay period only, if needed."
+                  value={record.work_performed_notes || ""}
+                  onChange={(e) => onRecordField("work_performed_notes", e.target.value)}
+                />
+              </Box>
+              <Box
+                sx={{
+                  ...formGridSx,
+                  mt: 2,
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    sm: "repeat(2, minmax(0, 1fr))",
+                    md: isRegular ? "repeat(4, minmax(0, 1fr))" : "repeat(3, minmax(0, 1fr))",
+                  },
+                }}
+              >
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="number"
+                  label="Approved hours"
+                  value={record.approved_hours}
+                  onChange={(e) => onRecordField("approved_hours", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="number"
+                  label={t("contractor.serviceRate")}
+                  value={record.service_rate}
+                  onChange={(e) => onRecordField("service_rate", e.target.value)}
+                />
                 {isRegular ? (
-                  <Grid item xs={12} sm={3}>
-                    <TextField
-                      fullWidth
-                      size="small"
-                      type="number"
-                      label={t("contractor.hsCreditHours")}
-                      value={record.health_safety_credit_hours}
-                      onChange={(e) =>
-                        onRecordField("health_safety_credit_hours", e.target.value)
-                      }
-                    />
-                  </Grid>
-                ) : null}
-                <Grid item xs={12} sm={3}>
                   <TextField
                     fullWidth
                     size="small"
                     type="number"
-                    label={t("contractor.adjustments")}
-                    value={record.adjustment_amount}
-                    onChange={(e) => onRecordField("adjustment_amount", e.target.value)}
+                    label={t("contractor.hsCreditHours")}
+                    value={record.health_safety_credit_hours}
+                    onChange={(e) => onRecordField("health_safety_credit_hours", e.target.value)}
                   />
-                </Grid>
-                <Grid item xs={12}>
-                  <Typography variant="body1">
-                    <strong>Total amount due:</strong> $
-                    {Number(record.total_amount_due || 0).toFixed(2)}
-                    <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 2 }}>
-                      YTD before: ${Number(record.total_paid_ytd_prior || 0).toFixed(2)} · Including
-                      this payment: ${ytdIncluding.toFixed(2)}
-                    </Typography>
-                  </Typography>
-                </Grid>
-              </Grid>
+                ) : null}
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="number"
+                  label={t("contractor.adjustments")}
+                  value={record.adjustment_amount}
+                  onChange={(e) => onRecordField("adjustment_amount", e.target.value)}
+                />
+              </Box>
+              <Paper variant="outlined" sx={{ mt: 2, p: 1.5, bgcolor: "grey.50" }}>
+                <Typography variant="body1">
+                  <strong>Total amount due:</strong> ${Number(record.total_amount_due || 0).toFixed(2)}
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Prior payments this year (before this receipt): $
+                  {Number(record.total_paid_ytd_prior || 0).toFixed(2)} · Year-to-date after this receipt:{" "}
+                  ${ytdIncluding.toFixed(2)} (uses Amount paid in Part 2)
+                </Typography>
+                {record.amount_paid_manual &&
+                Number(record.amount_paid) !== Number(record.total_amount_due) ? (
+                  <Button size="small" sx={{ mt: 1 }} onClick={matchAmountToDue}>
+                    Use total due (${Number(record.total_amount_due || 0).toFixed(2)})
+                  </Button>
+                ) : null}
+              </Paper>
 
               <Typography variant="subtitle2" color="primary" sx={{ mt: 2 }}>
                 Part 2 — Payment Receipt (signature required on printed copy)
               </Typography>
-              <Grid container spacing={2} sx={{ mt: 0.5 }}>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="number"
-                    label="Amount paid"
-                    value={record.amount_paid}
-                    onChange={(e) => onRecordField("amount_paid", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    select
-                    label={t("contractor.paymentMethod")}
-                    value={record.payment_method}
-                    onChange={(e) => onRecordField("payment_method", e.target.value)}
-                  >
-                    <MenuItem value="">—</MenuItem>
-                    {PAYMENT_METHODS.map((m) => (
-                      <MenuItem key={m} value={m}>
-                        {m}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    label={t("contractor.paymentRef")}
-                    value={record.payment_reference}
-                    onChange={(e) => onRecordField("payment_reference", e.target.value)}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={3}>
-                  <TextField
-                    fullWidth
-                    size="small"
-                    type="date"
-                    InputLabelProps={{ shrink: true }}
-                    label={t("contractor.receiptPaymentDate")}
-                    value={record.payment_date}
-                    onChange={(e) => onRecordField("payment_date", e.target.value)}
-                  />
-                </Grid>
-              </Grid>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: {
+                    xs: "1fr",
+                    sm: "repeat(2, minmax(0, 1fr))",
+                    lg: "repeat(4, minmax(160px, 1fr))",
+                  },
+                  gap: 2,
+                  mt: 1,
+                  width: "100%",
+                }}
+              >
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="number"
+                  label="Amount paid"
+                  value={record.amount_paid}
+                  onChange={(e) => onRecordField("amount_paid", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  select
+                  label={t("contractor.paymentMethod")}
+                  value={record.payment_method}
+                  onChange={(e) => onRecordField("payment_method", e.target.value)}
+                >
+                  <MenuItem value="">—</MenuItem>
+                  {PAYMENT_METHODS.map((m) => (
+                    <MenuItem key={m} value={m}>
+                      {m}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label={t("contractor.paymentRef")}
+                  value={record.payment_reference}
+                  onChange={(e) => onRecordField("payment_reference", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  InputLabelProps={{ shrink: true }}
+                  label={t("contractor.receiptPaymentDate")}
+                  value={record.payment_date}
+                  onChange={(e) => onRecordField("payment_date", e.target.value)}
+                />
+              </Box>
 
-              <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
+              <FormGroup
+                sx={{
+                  mt: 1.5,
+                  flexDirection: { xs: "column", sm: "row" },
+                  gap: { xs: 0, sm: 2 },
+                }}
+              >
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={record.print_include_service_details !== false}
+                      onChange={(e) =>
+                        onRecordField("print_include_service_details", e.target.checked)
+                      }
+                    />
+                  }
+                  label="Include service details on print"
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={record.print_include_payment_reference !== false}
+                      onChange={(e) =>
+                        onRecordField("print_include_payment_reference", e.target.checked)
+                      }
+                    />
+                  }
+                  label="Include payment reference on print"
+                />
+              </FormGroup>
+
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
                 <Button
                   variant="contained"
                   startIcon={<SaveIcon />}
@@ -682,8 +748,11 @@ export default function ContractorManagementPanel() {
                 >
                   {saving ? t("common.saving") : "Save payment record"}
                 </Button>
-                <Button variant="outlined" startIcon={<PrintIcon />} onClick={doPrint}>
+                <Button variant="outlined" startIcon={<PrintIcon />} onClick={openPreview}>
                   {t("contractor.printPreview")}
+                </Button>
+                <Button variant="outlined" startIcon={<PrintIcon />} onClick={doPrint}>
+                  Print
                 </Button>
               </Stack>
               {savedRecords.length ? (
@@ -713,8 +782,8 @@ export default function ContractorManagementPanel() {
           ) : null}
 
           {tab === 2 ? (
-            <Grid container spacing={2} className="no-print">
-              <Grid item xs={12} md={4}>
+            <Grid container spacing={2} className="no-print" sx={{ width: "100%", minWidth: 0, m: 0 }}>
+              <Grid item xs={12} md={4} sx={{ minWidth: 0 }}>
                 <Paper sx={{ p: 1.5 }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>
                     {t("contractor.formsList")}
@@ -735,8 +804,8 @@ export default function ContractorManagementPanel() {
                   </Stack>
                 </Paper>
               </Grid>
-              <Grid item xs={12} md={8}>
-                <Paper sx={{ p: 2 }}>
+              <Grid item xs={12} md={8} sx={{ minWidth: 0 }}>
+                <Paper sx={{ p: 2, overflow: "hidden" }}>
                   <Typography variant="h6" sx={{ mb: 1 }}>
                     {formDef?.title}
                   </Typography>
@@ -792,20 +861,30 @@ export default function ContractorManagementPanel() {
                       }
                     />
                   )}
-                  <Button
-                    variant="contained"
-                    startIcon={<PrintIcon />}
-                    sx={{ mt: 2 }}
-                    onClick={doPrint}
-                  >
-                    {t("contractor.printForm")}
-                  </Button>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
+                    <Button variant="outlined" startIcon={<PrintIcon />} onClick={openPreview}>
+                      {t("contractor.printPreview")}
+                    </Button>
+                    <Button variant="contained" startIcon={<PrintIcon />} onClick={doPrint}>
+                      Print
+                    </Button>
+                  </Stack>
                 </Paper>
               </Grid>
             </Grid>
           ) : null}
 
-          <Box ref={printRef} className="contractor-print-area">
+          <ContractorPrintPreviewDialog
+            open={printPreviewOpen}
+            onClose={() => setPrintPreviewOpen(false)}
+            title={printTitle}
+            printRef={printRef}
+          />
+          <Box
+            ref={printRef}
+            className="contractor-print-area"
+            sx={{ position: "absolute", left: -9999, top: 0, width: "7.5in", visibility: "hidden" }}
+          >
             <ContractorPrintShell prefill={prefill || { company_name: "VeeWash" }} documentTitle={printTitle}>
               {tab === 0 ? (
                 <ContractorInvoicePaymentPrint record={record} prefill={prefill} />

@@ -6,7 +6,6 @@ import unittest
 
 from backend.rinse_bag_completion import (
     REASON_ALREADY_COMPLETED,
-    REASON_COMPLETED_NEEDS_CHECKOUT,
     REASON_OK,
     REASON_UPDATED_EXISTING_BAG,
     ROW_REJECTED,
@@ -37,15 +36,15 @@ class TestClassifyPortalUploadRow(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
-    def test_completed_bag_without_staging_accepted_for_checkout(self):
+    def test_completed_bag_without_staging_rejected_on_repeat_upload(self):
         st, reason = classify_portal_upload_row(
             ticket_id="ABCD1234",
             was_completed_before_upload=True,
             has_active_staging=False,
             row_date_before_batch=False,
         )
-        self.assertEqual(st, "ACCEPTED")
-        self.assertEqual(reason, REASON_COMPLETED_NEEDS_CHECKOUT)
+        self.assertEqual(st, ROW_REJECTED)
+        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
     def test_completed_bag_with_active_staging_rejected(self):
         st, reason = classify_portal_upload_row(

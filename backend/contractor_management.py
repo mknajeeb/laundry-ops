@@ -303,6 +303,8 @@ def build_contractor_prefill(conn, user_id: int, organization_id: int) -> dict[s
                 org.get("employer_address")
                 or "10438 Jamaica Avenue, Richmond Hill, NY 11418"
             ).strip(),
+            "company_phone": "(917) 341-5161",
+            "company_website": "https://veewash.com",
             "organization_logo_url": u.get("organization_logo_url"),
             "is_contractor": user_is_contractor(conn, user_id),
             "is_short_term": user_is_short_term_temp(conn, user_id),

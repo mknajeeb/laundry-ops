@@ -491,11 +491,31 @@ function UploadPage({ user }) {
     }
   };
 
-  const foldingConfirmMessage = (data) => {
+  const confirmSummaryMessage = (data) => {
+    const parts = [];
+    const accepted = Number(data?.accepted_portal_rows ?? 0);
+    const rejectedCompleted = Number(data?.rejected_already_completed_rows ?? 0);
+    const newlyCompleted = Number(data?.newly_completed_clean_rack_count ?? 0);
+    const stagingApplied = Number(data?.staging_orders_applied_count ?? 0);
+    if (accepted || rejectedCompleted) {
+      parts.push(
+        `Accepted: ${accepted}, already completed (rejected): ${rejectedCompleted}.`
+      );
+    }
+    if (newlyCompleted) {
+      parts.push(`Newly completed from Clean rack: ${newlyCompleted}.`);
+    }
+    if (stagingApplied) {
+      parts.push(`Staging orders applied: ${stagingApplied}.`);
+    }
     const calculated = Number(data?.folding_recompute_calculated ?? 0);
     const exceptions = Number(data?.folding_recompute_exceptions ?? 0);
-    if (!calculated && !exceptions) return "";
-    return ` Folding updated: ${calculated} calculated, ${exceptions} exceptions.`;
+    if (calculated || exceptions) {
+      parts.push(
+        `Folding updated: ${calculated} calculated, ${exceptions} exceptions.`
+      );
+    }
+    return parts.length ? ` ${parts.join(" ")}` : "";
   };
 
   const handleConfirm = async () => {
@@ -514,7 +534,7 @@ function UploadPage({ user }) {
       const data = res?.data || {};
       setMessage({
         type: "success",
-        text: `Batch confirmed and applied to staging.${foldingConfirmMessage(data)}`,
+        text: `Batch confirmed and applied to staging.${confirmSummaryMessage(data)}`,
       });
       await loadCurrentBatch(rowStatusFilter);
       await loadBatchHistory();
@@ -537,7 +557,7 @@ function UploadPage({ user }) {
           const data = res?.data || {};
           setMessage({
             type: "success",
-            text: `Batch force-confirmed and applied.${foldingConfirmMessage(data)}`,
+            text: `Batch force-confirmed and applied.${confirmSummaryMessage(data)}`,
           });
           await loadCurrentBatch(rowStatusFilter);
           await loadBatchHistory();

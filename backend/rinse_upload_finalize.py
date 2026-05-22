@@ -14,7 +14,12 @@ from typing import Any
 
 import pandas as pd
 
-from backend.rinse_bag_completion import evaluate_bag_completion, normalize_bag_id
+from backend.rinse_bag_completion import (
+    COMPLETION_COMPLETED,
+    REASON_CLEAN_RACK_SCANNED,
+    evaluate_bag_completion,
+    normalize_bag_id,
+)
 from backend.rinse_bag_registry import (
     merge_scan_events_from_upload,
     recompute_completion_for_bags,
@@ -181,6 +186,48 @@ def _union_normalized_bag_ids(*groups: Any) -> list[str]:
     return sorted(out)
 
 
+def count_clean_rack_completed_bags(completion_payload: dict[str, Any]) -> int:
+    """Bags marked COMPLETED with CLEAN_RACK_SCANNED after this confirm's recompute."""
+    bags = list(completion_payload.get("bags") or [])
+    return sum(
+        1
+        for b in bags
+        if str(b.get("completion_status") or "").upper() == COMPLETION_COMPLETED
+        and str(b.get("completion_reason") or "") == REASON_CLEAN_RACK_SCANNED
+    )
+
+
+def summarize_confirm_batch_portal_rows(cursor, upload_batch_id: int) -> dict[str, int]:
+    """Portal row counts from upload_batch_rows for confirm response."""
+    if not table_exists(cursor, "upload_batch_rows"):
+        return {
+            "accepted_portal_rows": 0,
+            "rejected_already_completed_rows": 0,
+            "rejected_duplicate_rows": 0,
+        }
+    from backend.rinse_bag_completion import REASON_ALREADY_COMPLETED
+
+    cursor.execute(
+        """
+        SELECT
+            SUM(row_status IN ('ACCEPTED', 'OVERRIDDEN')) AS accepted_portal_rows,
+            SUM(
+                row_status = 'REJECTED_DUPLICATE' AND reason = %s
+            ) AS rejected_already_completed_rows,
+            SUM(row_status = 'REJECTED_DUPLICATE') AS rejected_duplicate_rows
+        FROM upload_batch_rows
+        WHERE upload_batch_id = %s
+        """,
+        (REASON_ALREADY_COMPLETED, int(upload_batch_id)),
+    )
+    row = cursor.fetchone() or {}
+    return {
+        "accepted_portal_rows": int(row.get("accepted_portal_rows") or 0),
+        "rejected_already_completed_rows": int(row.get("rejected_already_completed_rows") or 0),
+        "rejected_duplicate_rows": int(row.get("rejected_duplicate_rows") or 0),
+    }
+
+
 def finalize_rinse_after_batch_confirm(
     cursor,
     organization_id: int,
@@ -255,6 +302,7 @@ def finalize_rinse_after_batch_confirm(
         completion_summaries=completion_summaries,
     )
     folding_summary = folding_recompute_summary_for_response(folding_payload)
+    newly_completed_clean_rack_count = count_clean_rack_completed_bags(completion_payload)
 
     return {
         "persistent_merge": merge_payload,
@@ -264,6 +312,7 @@ def finalize_rinse_after_batch_confirm(
         "folding": folding_payload,
         "folding_summary": folding_summary,
         "bag_ids": completion_candidate_ids,
+        "newly_completed_clean_rack_count": newly_completed_clean_rack_count,
         "missing_prior_bags_completed_count": int(portal_absence.get("count") or 0),
         "missing_prior_bag_ids_completed": absence_bag_ids,
         "full_snapshot": bool(portal_absence.get("full_snapshot")),

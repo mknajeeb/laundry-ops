@@ -282,9 +282,14 @@ function writeEventsCsv(ticketRecords, outPath) {
 }
 
 async function main() {
+  console.error(
+    "[rinse-scan-events] process.env.RINSE_TICKETS_URL:",
+    process.env.RINSE_TICKETS_URL ?? "<unset>",
+  );
   const baseUrl =
     process.env.RINSE_TICKETS_URL?.trim() ||
-    "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1";
+    "https://www.rinse.com/cleanertickets/?page=1";
+  console.error("[rinse-scan-events] baseUrl:", baseUrl);
   const headed = process.env.HEADED === "1" || process.env.HEADED === "true";
   const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
   const storageState =
@@ -347,6 +352,7 @@ async function main() {
 
     for (let p = pageStart; p < pageStart + maxPages; p++) {
       const url = urlForPage(baseUrl, p);
+      console.error("[rinse-scan-events] page URL:", url);
       progressLine(`\nPage ${p}: ${url}`);
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: Math.max(pwTimeout, 90000) });
       await page.waitForTimeout(pageSettleMs);

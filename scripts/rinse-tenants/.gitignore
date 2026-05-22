@@ -1,0 +1,6 @@
+washpro/.env
+washpro/rinse-auth.json
+washpro/output/*.csv
+veewash/.env
+veewash/rinse-auth.json
+veewash/output/*.csv

@@ -13,6 +13,7 @@ import {
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   Typography,
@@ -47,7 +48,7 @@ export default function AccountantReportsPanel() {
   }, [load]);
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {error ? (
         <Alert severity="error" onClose={() => setError("")}>
           {error}
@@ -92,7 +93,8 @@ export default function AccountantReportsPanel() {
       </Tabs>
 
       {subTab === 0 ? (
-        <Table size="small" component={Paper}>
+        <TableContainer component={Paper} sx={{ overflowX: "auto" }}>
+        <Table size="small" sx={{ minWidth: 640 }}>
           <TableHead>
             <TableRow>
               <TableCell>Batch</TableCell>
@@ -116,10 +118,12 @@ export default function AccountantReportsPanel() {
             ))}
           </TableBody>
         </Table>
+        </TableContainer>
       ) : null}
 
       {subTab === 1 ? (
-        <Table size="small" component={Paper}>
+        <TableContainer component={Paper} sx={{ overflowX: "auto" }}>
+        <Table size="small" sx={{ minWidth: 720 }}>
           <TableHead>
             <TableRow>
               <TableCell>Worker</TableCell>
@@ -145,6 +149,7 @@ export default function AccountantReportsPanel() {
             ))}
           </TableBody>
         </Table>
+        </TableContainer>
       ) : null}
 
       {subTab === 2 ? (

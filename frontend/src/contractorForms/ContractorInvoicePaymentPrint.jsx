@@ -1,5 +1,7 @@
 /** Universal Contractor Invoice & Payment Receipt (print layout). */
 
+import { presetById } from "./workPerformedPresets";
+
 function line(val) {
   const s = val != null && String(val).trim() !== "" ? String(val).trim() : "";
   return s || "______________________________";
@@ -64,22 +66,33 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
               {line(r.work_period_start)} — {line(r.work_period_end)}
             </td>
           </tr>
-          <tr>
-            <td>
-              <strong>Service performed</strong>
-            </td>
-            <td style={{ textAlign: "left", whiteSpace: "pre-wrap" }}>
-              {line(r.work_performed)}
-              {r.work_performed_notes ? (
-                <>
-                  <br />
-                  <span style={{ color: "#64748b", fontSize: "9.5pt" }}>
-                    Notes: {r.work_performed_notes}
-                  </span>
-                </>
-              ) : null}
-            </td>
-          </tr>
+          {r.print_include_service_details !== false ? (
+            <tr>
+              <td>
+                <strong>Service performed</strong>
+              </td>
+              <td style={{ textAlign: "left", whiteSpace: "pre-wrap" }}>
+                {line(r.work_performed)}
+                {r.work_performed_notes ? (
+                  <>
+                    <br />
+                    <span style={{ color: "#64748b", fontSize: "9.5pt" }}>
+                      Notes: {r.work_performed_notes}
+                    </span>
+                  </>
+                ) : null}
+              </td>
+            </tr>
+          ) : r.work_performed_preset ? (
+            <tr>
+              <td>
+                <strong>Service type</strong>
+              </td>
+              <td style={{ textAlign: "left" }}>
+                {line(presetById(r.work_performed_preset)?.label || r.work_performed?.split(",")[0])}
+              </td>
+            </tr>
+          ) : null}
           <tr>
             <td>
               <strong>Total approved hours</strong>
@@ -166,12 +179,14 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
             </td>
             <td style={{ textAlign: "left" }}>{line(r.payment_method)}</td>
           </tr>
-          <tr>
-            <td>
-              <strong>Payment reference</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>{line(r.payment_reference)}</td>
-          </tr>
+          {r.print_include_payment_reference !== false ? (
+            <tr>
+              <td>
+                <strong>Payment reference</strong>
+              </td>
+              <td style={{ textAlign: "left" }}>{line(r.payment_reference)}</td>
+            </tr>
+          ) : null}
           <tr>
             <td>
               <strong>Payment date</strong>
@@ -224,6 +239,9 @@ export function emptyPaymentRecord(prefill = {}, contractorType = "regular") {
     payment_date: today,
     invoice_date: today,
     total_paid_ytd_prior: "0",
+    amount_paid_manual: false,
+    print_include_service_details: true,
+    print_include_payment_reference: true,
     notes: "",
     source_type: "manual",
     status: "paid",

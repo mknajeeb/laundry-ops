@@ -1,5 +1,7 @@
 """
-Rinse bag completion from scan-events (progressive timeline: exit CLEAN rack).
+Rinse bag completion from scan-events.
+
+Business rule: COMPLETED when any scan-event rack contains "Clean" (first such scan).
 """
 
 from __future__ import annotations
@@ -20,15 +22,16 @@ COMPLETION_INCOMPLETE = "INCOMPLETE"
 COMPLETION_COMPLETED = "COMPLETED"
 
 REASON_NO_CLEAN_SCAN = "NO_CLEAN_SCAN"
+REASON_CLEAN_RACK_SCANNED = "CLEAN_RACK_SCANNED"
+TRIGGER_CLEAN_RACK = "CLEAN_RACK"
+
+# Legacy registry / upload reasons (older rows)
 REASON_POST_CLEAN_RACK_AND_USER = "POST_CLEAN_RACK_AND_USER"
 REASON_CLEAN_WITHOUT_QUALIFYING_LATER = "CLEAN_WITHOUT_QUALIFYING_LATER_SCAN"
-
-# Legacy aliases (older registry rows / docs)
 REASON_WORKFLOW_THEN_CLEAN = REASON_POST_CLEAN_RACK_AND_USER
 REASON_CLEAN_WITHOUT_PRIOR_WORKFLOW = REASON_CLEAN_WITHOUT_QUALIFYING_LATER
 REASON_POST_CLEAN_ONLY_INTERNAL_ON_CLEAN_RACK = REASON_CLEAN_WITHOUT_QUALIFYING_LATER
 REASON_POST_CLEAN_RACK_OR_USER = REASON_POST_CLEAN_RACK_AND_USER
-
 TRIGGER_RACK_NOT_CLEAN = "RACK_NOT_CLEAN"
 TRIGGER_USER_NOT_INTERNAL = "USER_NOT_INTERNAL"
 TRIGGER_BOTH = "BOTH"
@@ -57,20 +60,14 @@ def classify_portal_upload_row(
     Draft upload row_status + reason when ticket_id controls identity.
 
     was_completed_before_upload: registry was COMPLETED before this upload began
-    (not completion inferred from scan-events merged in the same upload).
-
-    Completed bags with no active staging row are accepted so Checkout can receive them
-    (registry may be ahead of orders_staging after scan-event completion).
+    (frozen pre-upload snapshot — not completion from scan-events in this upload).
     """
     tid = normalize_bag_id(ticket_id)
     if not tid:
         raise ValueError("classify_portal_upload_row requires ticket_id")
 
-    if was_completed_before_upload and has_active_staging:
-        return ROW_REJECTED, REASON_ALREADY_COMPLETED
-
     if was_completed_before_upload:
-        return ROW_ACCEPTED, REASON_COMPLETED_NEEDS_CHECKOUT
+        return ROW_REJECTED, REASON_ALREADY_COMPLETED
 
     if row_date_before_batch:
         return "NEEDS_ATTENTION", "OLDER_THAN_BATCH_DATE"
@@ -91,7 +88,7 @@ def confirm_staging_action(
     tid = normalize_bag_id(ticket_id)
     if not tid:
         return "USE_IDENTITY_PATH"
-    if was_completed_before_upload and has_active_staging:
+    if was_completed_before_upload:
         return "BLOCK"
     if has_active_staging:
         return "UPDATE_STAGING"
@@ -172,17 +169,6 @@ def _progressive_timeline_sort_key(ev: Mapping[str, Any]) -> tuple:
     return (_parsed_scan_datetime(ev), _scan_index_num(ev), _event_id_num(ev))
 
 
-def _same_event_id(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    a_id = a.get("id")
-    b_id = b.get("id")
-    if a_id is None or b_id is None:
-        return False
-    try:
-        return int(a_id) == int(b_id)
-    except (TypeError, ValueError):
-        return False
-
-
 def _dedupe_events_by_id(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop duplicate DB/join rows that share the same event id."""
     seen: set[int] = set()
@@ -205,43 +191,6 @@ def order_events_for_completion(
     return sorted(_dedupe_events_by_id(records), key=_progressive_timeline_sort_key)
 
 
-def _is_valid_post_clean_trigger(
-    clean_ev: Mapping[str, Any],
-    trigger_ev: Mapping[str, Any],
-    *,
-    clean_position: int,
-    trigger_position: int,
-) -> bool:
-    """Clean row cannot trigger; trigger must be strictly later in timeline order."""
-    if trigger_position <= clean_position:
-        return False
-    if _same_event_id(clean_ev, trigger_ev):
-        return False
-    if rack_contains_clean(trigger_ev.get("rack")):
-        return False
-    if not qualifying_post_clean_scan(trigger_ev.get("rack"), trigger_ev.get("user")):
-        return False
-    return True
-
-
-def _rack_is_meaningful(rack: Any) -> bool:
-    s = str(rack or "").strip().lower()
-    if not s:
-        return False
-    if s in ("none", "(none)", "null", "n/a", "na"):
-        return False
-    return True
-
-
-def qualifying_post_clean_scan(rack: Any, user: Any) -> bool:
-    """After CLEAN: meaningful non-Clean rack AND named external user (both required)."""
-    if not _rack_is_meaningful(rack) or rack_contains_clean(rack):
-        return False
-    if not usable_user_name(user) or user_is_internal(user):
-        return False
-    return True
-
-
 def events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in records:
@@ -259,6 +208,16 @@ def events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, 
             }
         )
     return out
+
+
+def _event_id_from_mapping(ev: Mapping[str, Any]) -> int | None:
+    raw = ev.get("id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -288,11 +247,11 @@ def evaluate_bag_completion(
     events: Iterable[Mapping[str, Any]],
 ) -> CompletionResult:
     """
-    Progressive timeline: scanned_at_parsed ASC, scan_index ASC, id ASC.
+    COMPLETED on first scan whose rack contains "Clean" (case-insensitive substring).
 
-    Find the first CLEAN rack scan, then only rows at a strictly greater timeline
-    position may trigger completion. The Clean row itself can never be the trigger.
-  """
+    Examples: Clean, VeeWash Clean, Washpro Clean, Clean 1.
+    No later scan is required.
+    """
     ordered = order_events_for_completion(events)
     if not ordered:
         return CompletionResult(
@@ -305,114 +264,47 @@ def evaluate_bag_completion(
             trigger_kind=None,
         )
 
-    first_clean_idx = None
-    for i, ev in enumerate(ordered):
-        if rack_contains_clean(ev.get("rack")):
-            first_clean_idx = i
-            break
-
-    if first_clean_idx is None:
+    for ev in ordered:
+        if not rack_contains_clean(ev.get("rack")):
+            continue
+        clean_at = _parsed_scan_datetime(ev)
+        if clean_at == datetime.min:
+            clean_at = None
+        clean_event_id = _event_id_from_mapping(ev)
         return CompletionResult(
-            completion_status=COMPLETION_INCOMPLETE,
-            completion_reason=REASON_NO_CLEAN_SCAN,
-            first_clean_scan_at=None,
-            first_clean_scan_event_id=None,
-            trigger_scan_at=None,
-            trigger_scan_event_id=None,
-            trigger_kind=None,
+            completion_status=COMPLETION_COMPLETED,
+            completion_reason=REASON_CLEAN_RACK_SCANNED,
+            first_clean_scan_at=clean_at,
+            first_clean_scan_event_id=clean_event_id,
+            trigger_scan_at=clean_at,
+            trigger_scan_event_id=clean_event_id,
+            trigger_kind=TRIGGER_CLEAN_RACK,
         )
 
-    first_clean = ordered[first_clean_idx]
-    first_clean_at = _parsed_scan_datetime(first_clean)
-    if first_clean_at == datetime.min:
-        first_clean_at = None
-
-    fc_event_id = first_clean.get("id")
-    try:
-        fc_event_id_int = int(fc_event_id) if fc_event_id is not None else None
-    except (TypeError, ValueError):
-        fc_event_id_int = None
-
-    incomplete_after_clean = CompletionResult(
+    return CompletionResult(
         completion_status=COMPLETION_INCOMPLETE,
-        completion_reason=REASON_CLEAN_WITHOUT_QUALIFYING_LATER,
-        first_clean_scan_at=first_clean_at,
-        first_clean_scan_event_id=fc_event_id_int,
+        completion_reason=REASON_NO_CLEAN_SCAN,
+        first_clean_scan_at=None,
+        first_clean_scan_event_id=None,
         trigger_scan_at=None,
         trigger_scan_event_id=None,
         trigger_kind=None,
     )
-
-    for trigger_pos, ev in enumerate(ordered[first_clean_idx + 1 :], start=first_clean_idx + 1):
-        if not _is_valid_post_clean_trigger(
-            first_clean,
-            ev,
-            clean_position=first_clean_idx,
-            trigger_position=trigger_pos,
-        ):
-            continue
-
-        trigger_at = _parsed_scan_datetime(ev)
-        if trigger_at == datetime.min:
-            trigger_at = None
-        try:
-            trigger_id = int(ev.get("id")) if ev.get("id") is not None else None
-        except (TypeError, ValueError):
-            trigger_id = None
-
-        if trigger_id is not None and fc_event_id_int is not None and trigger_id == fc_event_id_int:
-            continue
-
-        return CompletionResult(
-            completion_status=COMPLETION_COMPLETED,
-            completion_reason=REASON_POST_CLEAN_RACK_AND_USER,
-            first_clean_scan_at=first_clean_at,
-            first_clean_scan_event_id=fc_event_id_int,
-            trigger_scan_at=trigger_at,
-            trigger_scan_event_id=trigger_id,
-            trigger_kind=TRIGGER_BOTH,
-        )
-
-    return incomplete_after_clean
 
 
 def completion_result_references_persisted_events(
     result: CompletionResult,
     ordered_events: Sequence[Mapping[str, Any]],
 ) -> bool:
-    """
-    COMPLETED rows must reference a trigger event that exists after the clean row
-    in the same timeline used for evaluation (guards stale registry / phantom triggers).
-    """
+    """COMPLETED must reference the first persisted Clean rack scan in the timeline."""
     if result.completion_status != COMPLETION_COMPLETED:
         return True
+    if result.completion_reason != REASON_CLEAN_RACK_SCANNED:
+        return True
     ordered = order_events_for_completion(ordered_events)
-    clean_pos = None
-    for i, ev in enumerate(ordered):
-        if result.first_clean_scan_event_id is not None and _event_id_num(ev) == int(
-            result.first_clean_scan_event_id
-        ):
-            clean_pos = i
-            break
-    if clean_pos is None:
-        for i, ev in enumerate(ordered):
-            if rack_contains_clean(ev.get("rack")):
-                clean_pos = i
-                break
-    if clean_pos is None:
-        return False
-    clean_ev = ordered[clean_pos]
-    trigger_pos = None
-    if result.trigger_scan_event_id is not None:
-        for i, ev in enumerate(ordered):
-            if _event_id_num(ev) == int(result.trigger_scan_event_id):
-                trigger_pos = i
-                break
-    if trigger_pos is None:
-        return False
-    return _is_valid_post_clean_trigger(
-        clean_ev,
-        ordered[trigger_pos],
-        clean_position=clean_pos,
-        trigger_position=trigger_pos,
-    )
+    for ev in ordered:
+        if rack_contains_clean(ev.get("rack")):
+            if result.first_clean_scan_event_id is None:
+                return True
+            return _event_id_num(ev) == int(result.first_clean_scan_event_id)
+    return False

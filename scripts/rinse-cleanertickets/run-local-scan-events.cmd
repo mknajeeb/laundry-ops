@@ -14,6 +14,8 @@ if not "%~1"=="" (
   set RINSE_MAX_PAGES=%~1
   shift
 )
+set "RINSE_TICKETS_URL=https://www.rinse.com/cleanertickets/?page=1"
+echo RINSE_TICKETS_URL=%RINSE_TICKETS_URL%
 echo Running scan-events scrape...
 node scrape-scan-events.mjs
 if "%~1"=="--apply" (

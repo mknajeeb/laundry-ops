@@ -5,6 +5,7 @@
   "scripts": {
     "scrape": "node scrape.mjs",
     "scrape:portal": "RINSE_CSV_LAYOUT=portal node scrape.mjs",
+    "scrape:portal:1page": "RINSE_CSV_LAYOUT=portal RINSE_MAX_PAGES=1 node scrape.mjs",
     "scrape:scan-events": "node scrape-scan-events.mjs",
     "scrape:scan-events:headed": "HEADED=1 node scrape-scan-events.mjs",
     "save-session": "node save-session.mjs"

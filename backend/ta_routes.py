@@ -5170,15 +5170,37 @@ def contractors_compute_payment():
 # --- Payroll operations (time records, payout batches, accountant reports) ---
 
 
-@ta_bp.route("/payroll/time-records", methods=["GET"])
+@ta_bp.route("/payroll/time-records", methods=["GET", "POST"])
 @require_auth
 @require_any_perm("ta.monitor", "ta.settings", "users.view")
 def payroll_time_records():
     conn = get_db()
     try:
-        from backend.payroll_operations import list_time_records
+        from backend.payroll_operations import create_manual_time_record, list_time_records
 
         oid = _tenant_id()
+        if request.method == "POST":
+            if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
+                conn, g.ta_user["id"], "ta.override"
+            ):
+                return jsonify({"error": "Forbidden"}), 403
+            body = request.json or {}
+            uid = body.get("user_id")
+            if not uid:
+                return jsonify({"error": "user_id required"}), 400
+            try:
+                rec = create_manual_time_record(
+                    conn,
+                    oid,
+                    user_id=int(uid),
+                    clock_in_at=body.get("clock_in_at"),
+                    clock_out_at=body.get("clock_out_at"),
+                    remarks=(body.get("remarks") or body.get("notes") or "").strip(),
+                )
+                return jsonify(rec), 201
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+
         items = list_time_records(
             conn,
             oid,
@@ -5191,6 +5213,34 @@ def payroll_time_records():
         return jsonify({"items": items})
     except Exception as e:
         current_app.logger.exception("payroll_time_records failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/time-records/<int:rid>", methods=["DELETE"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override")
+def payroll_time_record_delete(rid):
+    conn = get_db()
+    try:
+        from backend.payroll_operations import delete_time_record
+
+        ok = delete_time_record(conn, _tenant_id(), rid)
+        if not ok:
+            return jsonify({"error": "Not found"}), 404
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_session",
+            rid,
+            "payroll_time_delete",
+            remarks="deleted from payroll time records",
+        )
+        conn.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_delete failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

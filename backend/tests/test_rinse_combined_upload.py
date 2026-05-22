@@ -11,7 +11,6 @@ import pandas as pd
 
 from backend.rinse_bag_completion import (
     REASON_ALREADY_COMPLETED,
-    REASON_COMPLETED_NEEDS_CHECKOUT,
     REASON_OK,
     REASON_UPDATED_EXISTING_BAG,
     classify_portal_upload_row,
@@ -69,15 +68,15 @@ class TestPreUploadCompletionSnapshot(unittest.TestCase):
         self.assertEqual(st, "REJECTED_DUPLICATE")
         self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
-    def test_already_completed_without_staging_accepted_for_checkout(self):
+    def test_already_completed_without_staging_still_rejected(self):
         st, reason = classify_portal_upload_row(
             ticket_id=self.BAG,
             was_completed_before_upload=True,
             has_active_staging=False,
             row_date_before_batch=False,
         )
-        self.assertEqual(st, "ACCEPTED")
-        self.assertEqual(reason, REASON_COMPLETED_NEEDS_CHECKOUT)
+        self.assertEqual(st, "REJECTED_DUPLICATE")
+        self.assertEqual(reason, REASON_ALREADY_COMPLETED)
 
     def test_snapshot_reads_registry_without_recompute(self):
         cursor = MagicMock()
