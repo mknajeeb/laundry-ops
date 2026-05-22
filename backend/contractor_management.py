@@ -309,6 +309,36 @@ def list_tenant_contractors(conn, organization_id: int) -> list[dict]:
     return out
 
 
+def sum_payments_ytd(
+    conn,
+    organization_id: int,
+    user_id: int,
+    *,
+    year: Optional[int] = None,
+) -> dict[str, Any]:
+    """Sum saved contractor payment summaries for calendar year (invoice/pay period date)."""
+    ensure_contractor_payment_summaries_table(conn.cursor())
+    y = int(year or date.today().year)
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT COALESCE(SUM(total_payment), 0) AS total_paid,
+               COUNT(*) AS payment_count
+        FROM contractor_payment_summaries
+        WHERE organization_id = %s AND user_id = %s
+          AND YEAR(COALESCE(invoice_date, pay_period_end, DATE(created_at))) = %s
+        """,
+        (int(organization_id), int(user_id), y),
+    )
+    row = c.fetchone() or {}
+    total = float(_money(row.get("total_paid")))
+    return {
+        "year": y,
+        "total_paid_ytd": total,
+        "payment_count": int(row.get("payment_count") or 0),
+    }
+
+
 def list_payment_summaries(conn, organization_id: int, user_id: int, *, limit: int = 50) -> list[dict]:
     ensure_contractor_payment_summaries_table(conn.cursor())
     c = conn.cursor(dictionary=True)

@@ -5,8 +5,18 @@ function line(val) {
   return s || "______________________________";
 }
 
+function money(val) {
+  if (val == null || val === "") return null;
+  const n = Number(val);
+  if (Number.isNaN(n)) return null;
+  return `$${n.toFixed(2)}`;
+}
+
 export default function BasicWorkReceiptPrint({ receipt }) {
   const r = receipt || {};
+  const thisPayment = Number(r.total_amount_paid) || 0;
+  const priorYtd = Number(r.total_paid_ytd_prior) || 0;
+  const ytdIncluding = Math.round((priorYtd + thisPayment) * 100) / 100;
 
   return (
     <>
@@ -65,7 +75,7 @@ export default function BasicWorkReceiptPrint({ receipt }) {
           </tr>
           <tr>
             <td>
-              <strong>Total amount paid</strong>
+              <strong>Total amount paid (this payment)</strong>
             </td>
             <td>
               <strong>
@@ -73,6 +83,20 @@ export default function BasicWorkReceiptPrint({ receipt }) {
                   ? `$${Number(r.total_amount_paid).toFixed(2)}`
                   : line("")}
               </strong>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              <strong>Total paid this year (prior payments)</strong>
+            </td>
+            <td>{money(priorYtd) ?? "$0.00"}</td>
+          </tr>
+          <tr>
+            <td>
+              <strong>Total paid this year (including this payment)</strong>
+            </td>
+            <td>
+              <strong>{money(ytdIncluding) ?? line("")}</strong>
             </td>
           </tr>
           <tr>
@@ -132,6 +156,7 @@ export function emptyBasicReceipt(prefill) {
     payment_method: prefill?.payment_method || "",
     payment_date: new Date().toISOString().slice(0, 10),
     payment_reference_notes: "",
+    total_paid_ytd_prior: "",
   };
 }
 

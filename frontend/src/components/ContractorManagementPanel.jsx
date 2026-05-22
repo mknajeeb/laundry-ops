@@ -19,6 +19,7 @@ import SaveIcon from "@mui/icons-material/Save";
 import {
   computeContractorPayment,
   getContractorPaymentSummaries,
+  getContractorPaymentYtd,
   getContractorPrefill,
   getContractors,
   postContractorPaymentSummary,
@@ -120,9 +121,13 @@ export default function ContractorManagementPanel() {
     }
     setError("");
     try {
-      const [preRes, sumRes] = await Promise.all([
+      const year = new Date().getFullYear();
+      const [preRes, sumRes, ytdRes] = await Promise.all([
         getContractorPrefill(userId),
         getContractorPaymentSummaries(userId).catch(() => ({ data: { items: [] } })),
+        getContractorPaymentYtd(userId, year).catch(() => ({
+          data: { total_paid_ytd: 0, year },
+        })),
       ]);
       const pre = {
         ...(preRes.data || {}),
@@ -131,7 +136,11 @@ export default function ContractorManagementPanel() {
       };
       setPrefill(pre);
       setSavedSummaries(sumRes.data?.items || []);
-      setReceipt(emptyBasicReceipt(pre));
+      const ytd = Number(ytdRes.data?.total_paid_ytd) || 0;
+      setReceipt({
+        ...emptyBasicReceipt(pre),
+        total_paid_ytd_prior: String(ytd),
+      });
       setPayment((p) => ({
         ...p,
         service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : p.service_rate,
@@ -526,6 +535,34 @@ export default function ContractorManagementPanel() {
                     label={t("contractor.receiptTotalPaid")}
                     value={receipt.total_amount_paid}
                     onChange={(e) => onReceiptField("total_amount_paid", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    inputProps={{ min: 0, step: 0.01 }}
+                    label={t("contractor.receiptYtdPrior")}
+                    helperText={t("contractor.receiptYtdPriorHint")}
+                    value={receipt.total_paid_ytd_prior}
+                    onChange={(e) => onReceiptField("total_paid_ytd_prior", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    disabled
+                    label={t("contractor.receiptYtdIncluding")}
+                    value={
+                      receipt.total_amount_paid || receipt.total_paid_ytd_prior
+                        ? `$${(
+                            (Number(receipt.total_paid_ytd_prior) || 0) +
+                            (Number(receipt.total_amount_paid) || 0)
+                          ).toFixed(2)}`
+                        : ""
+                    }
                   />
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>

@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.contractor_management import (
     compute_payment_summary_amounts,
+    sum_payments_ytd,
     user_in_contractor_management,
     user_is_contractor,
     user_is_short_term_temp,
@@ -24,6 +25,19 @@ class TestContractorPaymentMath(unittest.TestCase):
     def test_zero_hours(self):
         out = compute_payment_summary_amounts(0, 30, 0, 0)
         self.assertEqual(out["total_payment"], 0.0)
+
+
+class TestSumPaymentsYtd(unittest.TestCase):
+    def test_sum_ytd(self):
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        cur.fetchone.return_value = {"total_paid": "697.00", "payment_count": 2}
+        with patch("backend.contractor_management.table_exists", return_value=True):
+            out = sum_payments_ytd(conn, 1, 9, year=2026)
+        self.assertEqual(out["year"], 2026)
+        self.assertEqual(out["total_paid_ytd"], 697.0)
+        self.assertEqual(out["payment_count"], 2)
 
 
 class TestUserIsContractor(unittest.TestCase):

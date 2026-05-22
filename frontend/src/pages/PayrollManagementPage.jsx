@@ -495,14 +495,20 @@ function PayrollManagementPage() {
         boxSizing: "border-box",
       }}
     >
-      <Typography sx={{ fontSize: 28, fontWeight: 700, mb: 1 }}>
+      <Typography className="no-print" sx={{ fontSize: 28, fontWeight: 700, mb: 1 }}>
         {t("payroll.mgmtTitle")}
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 720 }}>
+      <Typography
+        className="no-print"
+        variant="body2"
+        color="text.secondary"
+        sx={{ mb: 2, maxWidth: 720 }}
+      >
         {t("payroll.mgmtBlurb")}
       </Typography>
 
       <Tabs
+        className="no-print"
         value={tab}
         onChange={(_, v) => setTab(v)}
         variant="scrollable"

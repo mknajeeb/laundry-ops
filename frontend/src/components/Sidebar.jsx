@@ -27,6 +27,7 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
 
   return (
     <Box
+      className="no-print app-shell-sidebar"
       sx={{
         width: 240,
         minHeight: "100vh",

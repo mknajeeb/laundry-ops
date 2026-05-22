@@ -861,6 +861,11 @@ export const getContractorPrefill = (userId) =>
 export const getContractorPaymentSummaries = (userId) =>
   axios.get(`${API_BASE}/api/ta/contractors/${userId}/payment-summaries`);
 
+export const getContractorPaymentYtd = (userId, year) =>
+  axios.get(`${API_BASE}/api/ta/contractors/${userId}/payment-ytd`, {
+    params: year != null ? { year } : {},
+  });
+
 export const postContractorPaymentSummary = (userId, body) =>
   axios.post(`${API_BASE}/api/ta/contractors/${userId}/payment-summaries`, body);
 

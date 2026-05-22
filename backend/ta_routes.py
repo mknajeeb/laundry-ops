@@ -5095,6 +5095,28 @@ def contractors_payment_summaries(user_id):
         conn.close()
 
 
+@ta_bp.route("/contractors/<int:user_id>/payment-ytd", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def contractors_payment_ytd(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        oid = int(u.get("organization_id") or _tenant_id())
+        from backend.contractor_management import sum_payments_ytd
+
+        year = request.args.get("year", type=int)
+        return jsonify(sum_payments_ytd(conn, oid, user_id, year=year))
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/contractors/compute-payment", methods=["POST"])
 @require_auth
 @require_any_perm("users.view", "users.edit", "ta.settings")

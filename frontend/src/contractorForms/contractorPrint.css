@@ -313,15 +313,44 @@
     margin: 0.5in;
   }
 
-  .no-print {
+  .no-print,
+  .app-shell-sidebar,
+  .MuiDrawer-root {
     display: none !important;
   }
 
-  .contractor-print-area {
-    position: static !important;
-    left: auto !important;
+  body * {
+    visibility: hidden !important;
+  }
+
+  .contractor-print-area,
+  .contractor-print-area *,
+  .contractor-print-area--active,
+  .contractor-print-area--active * {
+    visibility: visible !important;
+  }
+
+  .contractor-print-area,
+  .contractor-print-area--active {
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    right: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+    margin: 0 auto !important;
+    padding: 0 !important;
     opacity: 1 !important;
-    pointer-events: auto !important;
+    pointer-events: none !important;
+    z-index: 2147483647 !important;
+    background: #fff !important;
+  }
+
+  .contractor-print-root {
+    width: 7.5in !important;
+    max-width: 7.5in !important;
+    margin: 0 auto !important;
   }
 
   .cform-page--new .cform-mini-head {
@@ -339,5 +368,11 @@
 
   .cform-sig-block {
     page-break-inside: avoid;
+  }
+
+  .contractor-print-area img,
+  .contractor-print-area--active img {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }
