@@ -37,12 +37,15 @@ BATCH_STATUSES = (
 
 
 def worker_category_for_user(conn, user_id: int) -> str:
-    has_1099 = user_is_contractor(conn, user_id)
-    has_temp = user_is_short_term_temp(conn, user_id)
-    if has_temp and not has_1099:
-        return "temp"
-    if has_1099:
-        return "contractor_1099"
+    try:
+        has_1099 = user_is_contractor(conn, user_id)
+        has_temp = user_is_short_term_temp(conn, user_id)
+        if has_temp and not has_1099:
+            return "temp"
+        if has_1099:
+            return "contractor_1099"
+    except Exception:
+        pass
     return "w2"
 
 
@@ -178,18 +181,34 @@ def list_time_records(
 ) -> list[dict]:
     if not payroll_profiles_active(conn):
         return []
-    c = conn.cursor(dictionary=True)
-    has_review = table_has_column(c, "payroll_cycles", "review_state")
+    chk = conn.cursor()
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
+    has_override = table_has_column(chk, "shift_sessions", "manual_override")
+    has_review = table_has_column(chk, "payroll_cycles", "review_state")
+    remarks_sel = (
+        ", s.period_adjustment_remarks"
+        if has_remarks
+        else ", NULL AS period_adjustment_remarks"
+    )
+    override_sel = ", s.manual_override" if has_override else ", 0 AS manual_override"
     review_sel = ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
+    if has_ss_org:
+        org_clause = "s.organization_id = %s"
+    else:
+        org_clause = "u.organization_id = %s"
+    c = conn.cursor(dictionary=True)
     q = f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.clock_out_at, s.status,
-               s.total_break_seconds, s.net_work_seconds, s.manual_override,
-               s.period_adjustment_remarks, pp.first_name, pp.last_name
+               s.total_break_seconds, s.net_work_seconds
+               {override_sel}{remarks_sel},
+               pp.first_name, pp.last_name
                {review_sel}
         FROM shift_sessions s
+        JOIN users u ON u.id = s.user_id
         JOIN payroll_profiles pp ON pp.user_id = s.user_id
         JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
-        WHERE s.organization_id = %s
+        WHERE {org_clause}
     """
     params: list[Any] = [int(organization_id)]
     if from_date:

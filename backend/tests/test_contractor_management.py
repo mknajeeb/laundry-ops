@@ -13,6 +13,7 @@ from backend.contractor_management import (
     user_is_short_term_temp,
     worker_kind_for_user,
 )
+from backend.payroll_operations import list_time_records
 
 
 class TestContractorPaymentMath(unittest.TestCase):
@@ -25,6 +26,47 @@ class TestContractorPaymentMath(unittest.TestCase):
     def test_zero_hours(self):
         out = compute_payment_summary_amounts(0, 30, 0, 0)
         self.assertEqual(out["total_payment"], 0.0)
+
+
+class TestListTimeRecords(unittest.TestCase):
+    def test_list_without_optional_columns(self):
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        cur.fetchall.return_value = [
+            {
+                "id": 1,
+                "user_id": 2,
+                "clock_in_at": "2026-05-01 09:00:00",
+                "clock_out_at": "2026-05-01 17:00:00",
+                "status": "completed",
+                "total_break_seconds": 0,
+                "net_work_seconds": 28800,
+                "manual_override": 0,
+                "period_adjustment_remarks": None,
+                "first_name": "A",
+                "last_name": "B",
+            }
+        ]
+
+        def col_exists(_c, table, column):
+            if table == "shift_sessions" and column == "organization_id":
+                return False
+            if table == "shift_sessions" and column == "period_adjustment_remarks":
+                return False
+            if table == "shift_sessions" and column == "manual_override":
+                return False
+            return False
+
+        with patch("backend.payroll_operations.payroll_profiles_active", return_value=True):
+            with patch("backend.payroll_operations.table_has_column", side_effect=col_exists):
+                with patch(
+                    "backend.payroll_operations.worker_category_for_user",
+                    return_value="w2",
+                ):
+                    items = list_time_records(conn, 1)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["worker_category"], "w2")
 
 
 class TestSumPaymentsYtd(unittest.TestCase):

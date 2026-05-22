@@ -5189,6 +5189,9 @@ def payroll_time_records():
             status_filter=request.args.get("status"),
         )
         return jsonify({"items": items})
+    except Exception as e:
+        current_app.logger.exception("payroll_time_records failed")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
@@ -5218,6 +5221,9 @@ def payroll_payout_batches():
         return jsonify(row), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_batches failed")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
@@ -5288,6 +5294,9 @@ def payroll_accountant_ytd():
                 )
             }
         )
+    except Exception as e:
+        current_app.logger.exception("payroll_accountant_ytd failed")
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
