@@ -4990,5 +4990,127 @@ def admin_role_permissions_put(role_id):
         conn.close()
 
 
+# --- Contractor management (1099 forms; uses payroll_profiles, not a duplicate master) ---
+
+
+@ta_bp.route("/contractors/forms/catalog", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def contractors_forms_catalog():
+    from backend.contractor_management import CONTRACTOR_FORM_CATALOG
+
+    return jsonify({"forms": CONTRACTOR_FORM_CATALOG})
+
+
+@ta_bp.route("/contractors", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def contractors_list():
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        from backend.contractor_management import list_tenant_contractors
+
+        return jsonify({"contractors": list_tenant_contractors(conn, _tenant_id())})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/contractors/<int:user_id>/prefill", methods=["GET"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def contractors_prefill(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        from backend.contractor_management import build_contractor_prefill
+
+        oid = _tenant_id()
+        return jsonify(build_contractor_prefill(conn, user_id, oid))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/contractors/<int:user_id>/payment-summaries", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def contractors_payment_summaries(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        oid = int(u.get("organization_id") or _tenant_id())
+        from backend.contractor_management import (
+            compute_payment_summary_amounts,
+            create_payment_summary,
+            list_payment_summaries,
+        )
+
+        if request.method == "GET":
+            return jsonify({"items": list_payment_summaries(conn, oid, user_id)})
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return jsonify({"error": "JSON body must be an object"}), 400
+        row = create_payment_summary(
+            conn, oid, user_id, body, created_by=int(g.ta_user["id"])
+        )
+        try:
+            cur = conn.cursor()
+            ensure_document_compliance_tables(cur)
+            period = ""
+            if row.get("pay_period_start") and row.get("pay_period_end"):
+                period = f"{row['pay_period_start']} – {row['pay_period_end']}"
+            create_employee_document_record(
+                conn,
+                oid,
+                user_id,
+                int(g.ta_user["id"]),
+                {
+                    "document_code": "contractor_payment_summary",
+                    "document_name": f"Contractor Payment Summary {period}".strip(),
+                    "status": "generated",
+                    "notes": f"Payment summary record #{row.get('id')}",
+                },
+            )
+        except Exception:
+            current_app.logger.exception(
+                "contractor payment summary document link failed user_id=%s", user_id
+            )
+        conn.commit()
+        return jsonify(row), 201
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/contractors/compute-payment", methods=["POST"])
+@require_auth
+@require_any_perm("users.view", "users.edit", "ta.settings")
+def contractors_compute_payment():
+    body = request.get_json(silent=True) or {}
+    from backend.contractor_management import compute_payment_summary_amounts
+
+    return jsonify(
+        compute_payment_summary_amounts(
+            body.get("approved_service_hours"),
+            body.get("service_rate"),
+            body.get("health_safety_credit_hours"),
+            body.get("adjustments"),
+        )
+    )
+
+
 def register_ta_routes(app):
     app.register_blueprint(ta_bp, url_prefix="/api/ta")

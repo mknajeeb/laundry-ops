@@ -35,6 +35,7 @@ import {
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import ClockPayrollUiSettingsPanel from "../components/ClockPayrollUiSettingsPanel";
+import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import AttendanceSetupPage from "./AttendanceSetupPage";
 import PayrollMonitorPage from "./PayrollMonitorPage";
 
@@ -425,6 +426,8 @@ function PayrollManagementPage() {
   const canPeriod = hasPerm("ta.settings") || isAdminRole;
   const canClockUi = hasPerm("ta.settings") || isAdminRole;
   const canDocs = hasPerm("ta.settings") || hasPerm("users.view") || isAdminRole;
+  const canContractors =
+    hasPerm("users.edit") || hasPerm("users.view") || hasPerm("ta.settings") || isAdminRole;
   const [payrollUi, setPayrollUi] = useState(null);
 
   useEffect(() => {
@@ -451,8 +454,11 @@ function PayrollManagementPage() {
     if (canDocs) {
       out.push({ key: "docs", label: t("payroll.tabDocCompliance") });
     }
+    if (canContractors) {
+      out.push({ key: "contractors", label: t("payroll.tabContractors") });
+    }
     return out;
-  }, [canMonitor, canMaint, canPeriod, canClockUi, canDocs, payrollUi, t]);
+  }, [canMonitor, canMaint, canPeriod, canClockUi, canDocs, canContractors, payrollUi, t]);
 
   const [tab, setTab] = useState(0);
 
@@ -522,6 +528,7 @@ function PayrollManagementPage() {
         {active?.key === "period" ? <PayrollPeriodPanel /> : null}
         {active?.key === "clockui" ? <ClockPayrollUiSettingsPanel /> : null}
         {active?.key === "docs" ? <DocumentCompliancePanel /> : null}
+        {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
       </Box>
     </Box>
   );

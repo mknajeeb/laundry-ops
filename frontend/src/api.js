@@ -852,6 +852,21 @@ export const taBreakEnd = () =>
 
 export const getTaUsers = () => axios.get(`${API_BASE}/api/ta/users`);
 
+/** 1099 contractors for current tenant (payroll_profiles + contractor_1099 lane). */
+export const getContractors = () => axios.get(`${API_BASE}/api/ta/contractors`);
+
+export const getContractorPrefill = (userId) =>
+  axios.get(`${API_BASE}/api/ta/contractors/${userId}/prefill`);
+
+export const getContractorPaymentSummaries = (userId) =>
+  axios.get(`${API_BASE}/api/ta/contractors/${userId}/payment-summaries`);
+
+export const postContractorPaymentSummary = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/contractors/${userId}/payment-summaries`, body);
+
+export const computeContractorPayment = (body) =>
+  axios.post(`${API_BASE}/api/ta/contractors/compute-payment`, body);
+
 export const getTaUser = (id) => axios.get(`${API_BASE}/api/ta/users/${id}`);
 
 export const createTaUser = (body) =>

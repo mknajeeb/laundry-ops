@@ -1,0 +1,91 @@
+.contractor-print-root {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 11pt;
+  line-height: 1.45;
+  color: #111;
+  max-width: 8.5in;
+  margin: 0 auto;
+  padding: 0.5in;
+}
+
+.contractor-print-root h1 {
+  font-size: 16pt;
+  margin: 0 0 0.5rem;
+}
+
+.contractor-print-root h2 {
+  font-size: 13pt;
+  margin: 1.25rem 0 0.5rem;
+  page-break-after: avoid;
+}
+
+.contractor-print-root h3 {
+  font-size: 11.5pt;
+  margin: 0.75rem 0 0.35rem;
+}
+
+.contractor-print-root p {
+  margin: 0.35rem 0;
+}
+
+.contractor-print-root .cform-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 10pt;
+}
+
+.contractor-print-root .cform-table th,
+.contractor-print-root .cform-table td {
+  border: 1px solid #333;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.contractor-print-root .sig-block {
+  margin-top: 2rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.contractor-print-root .sig-line {
+  border-bottom: 1px solid #000;
+  min-height: 1.4rem;
+  margin-top: 1.5rem;
+}
+
+.contractor-payment-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+
+.contractor-payment-table td {
+  border: 1px solid #333;
+  padding: 8px 12px;
+}
+
+.contractor-payment-table td:last-child {
+  text-align: right;
+  width: 140px;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .contractor-print-area,
+  .contractor-print-area * {
+    visibility: visible;
+  }
+  .contractor-print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
