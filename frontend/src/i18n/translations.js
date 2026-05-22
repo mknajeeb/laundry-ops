@@ -1000,8 +1000,25 @@ export const TRANSLATIONS = {
     "contractor.fieldStatus": "Status",
     "contractor.not1099Warning":
       "This person is not tagged as a 1099 contractor category. Assign a 1099 employment category in People to include them in this list.",
+    "contractor.tabBasicReceipt": "Basic work receipt",
     "contractor.tabPayment": "Payment summary",
     "contractor.tabForms": "Forms & packets",
+    "contractor.shortTermTag": "Short-term",
+    "contractor.shortTermUseReceipt":
+      "Short-term / temporary worker — use the Basic work receipt tab. Do not use the full contractor onboarding packet.",
+    "contractor.noFullPacketForTemp":
+      "For short-term or two-week workers, use the Basic work receipt tab only — not the full contractor packet.",
+    "contractor.basicReceiptTitle": "Basic Contractor Work Receipt",
+    "contractor.basicReceiptBlurb":
+      "Simple receipt for one-time, two-week, or other brief work. Confirms hours and payment only — no W-9, warnings, or onboarding packet.",
+    "contractor.receiptWorkerName": "Worker name",
+    "contractor.receiptPhone": "Phone",
+    "contractor.receiptWorkPerformed": "Work performed",
+    "contractor.receiptTotalHours": "Total hours worked",
+    "contractor.receiptTotalPaid": "Total amount paid",
+    "contractor.receiptPaymentDate": "Payment date",
+    "contractor.receiptPayRefNotes": "Payment reference / notes",
+    "contractor.printBasicReceipt": "Print receipt",
     "contractor.paymentTitle": "Contractor Payment Summary",
     "contractor.periodStart": "Pay period start",
     "contractor.periodEnd": "Pay period end",
@@ -2124,8 +2141,25 @@ export const TRANSLATIONS = {
     "contractor.fieldStatus": "Estado",
     "contractor.not1099Warning":
       "Esta persona no tiene categoría 1099. Asigne una categoría de contratista en People.",
+    "contractor.tabBasicReceipt": "Recibo básico de trabajo",
     "contractor.tabPayment": "Resumen de pago",
     "contractor.tabForms": "Formularios",
+    "contractor.shortTermTag": "Corto plazo",
+    "contractor.shortTermUseReceipt":
+      "Trabajador temporal — use la pestaña Recibo básico. No use el paquete completo de contratista.",
+    "contractor.noFullPacketForTemp":
+      "Para trabajadores de corto plazo, use solo el recibo básico — no el paquete completo.",
+    "contractor.basicReceiptTitle": "Recibo básico de trabajo del contratista",
+    "contractor.basicReceiptBlurb":
+      "Recibo simple para trabajo breve. Solo confirma horas y pago — sin W-9 ni paquete de incorporación.",
+    "contractor.receiptWorkerName": "Nombre del trabajador",
+    "contractor.receiptPhone": "Teléfono",
+    "contractor.receiptWorkPerformed": "Trabajo realizado",
+    "contractor.receiptTotalHours": "Horas totales trabajadas",
+    "contractor.receiptTotalPaid": "Monto total pagado",
+    "contractor.receiptPaymentDate": "Fecha de pago",
+    "contractor.receiptPayRefNotes": "Referencia / notas de pago",
+    "contractor.printBasicReceipt": "Imprimir recibo",
     "contractor.paymentTitle": "Resumen de pago del contratista",
     "contractor.periodStart": "Inicio del período",
     "contractor.periodEnd": "Fin del período",

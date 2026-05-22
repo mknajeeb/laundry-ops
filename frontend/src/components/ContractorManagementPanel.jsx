@@ -25,6 +25,10 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import packetMarkdown from "../contractorForms/veewash_1099_contractor_packet.md?raw";
+import BasicWorkReceiptPrint, {
+  calcBasicReceiptTotal,
+  emptyBasicReceipt,
+} from "../contractorForms/BasicWorkReceiptPrint";
 import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCatalog";
 import { applyPrefillToMarkdown, markdownToPrintHtml } from "../contractorForms/prefillMarkdown";
 import { buildFormMarkdown, parsePacketSections } from "../contractorForms/parsePacket";
@@ -156,7 +160,8 @@ export default function ContractorManagementPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState(0);
-  const [activeFormId, setActiveFormId] = useState("biweekly_payment_summary");
+  const [activeFormId, setActiveFormId] = useState("written_warning");
+  const [receipt, setReceipt] = useState(() => emptyBasicReceipt({}));
   const [formExtras, setFormExtras] = useState({
     issued_by: "",
     company_representative: "",
@@ -213,6 +218,7 @@ export default function ContractorManagementPanel() {
       const pre = preRes.data || {};
       setPrefill(pre);
       setSavedSummaries(sumRes.data?.items || []);
+      setReceipt(emptyBasicReceipt(pre));
       setPayment((p) => ({
         ...p,
         service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : p.service_rate,
@@ -230,6 +236,28 @@ export default function ContractorManagementPanel() {
   useEffect(() => {
     if (selected?.user_id) loadContractor(selected.user_id);
   }, [selected?.user_id, loadContractor]);
+
+  useEffect(() => {
+    const kind = selected?.worker_kind || prefill?.worker_kind;
+    if (kind === "short_term") setTab(0);
+    else if (kind === "1099") setTab(1);
+  }, [selected?.worker_kind, prefill?.worker_kind]);
+
+  const isShortTermWorker =
+    selected?.worker_kind === "short_term" ||
+    prefill?.worker_kind === "short_term" ||
+    prefill?.is_short_term;
+
+  const onReceiptField = (key, value) => {
+    setReceipt((r) => {
+      const next = { ...r, [key]: value };
+      if (key === "total_hours" || key === "rate") {
+        const auto = calcBasicReceiptTotal(next.total_hours, next.rate);
+        if (auto > 0) next.total_amount_paid = String(auto);
+      }
+      return next;
+    });
+  };
 
   const recalcPayment = useCallback(async (next) => {
     const body = {
@@ -319,10 +347,18 @@ export default function ContractorManagementPanel() {
     }
   };
 
-  const contractorOptions = contractors.map((c) => ({
-    ...c,
-    label: `${c.full_name || "Contractor"}${c.contractor_id ? ` (${c.contractor_id})` : ""}`,
-  }));
+  const contractorOptions = contractors.map((c) => {
+    const tag =
+      c.worker_kind === "short_term"
+        ? ` · ${t("contractor.shortTermTag")}`
+        : c.worker_kind === "1099"
+          ? ""
+          : "";
+    return {
+      ...c,
+      label: `${c.full_name || "Worker"}${c.contractor_id ? ` (${c.contractor_id})` : ""}${tag}`,
+    };
+  });
 
   return (
     <Stack spacing={2}>
@@ -375,7 +411,12 @@ export default function ContractorManagementPanel() {
                 <Typography variant="body2">{prefill.status || "—"}</Typography>
               </Grid>
             </Grid>
-            {!prefill.is_contractor ? (
+            {isShortTermWorker ? (
+              <Alert severity="info" sx={{ mt: 1 }}>
+                {t("contractor.shortTermUseReceipt")}
+              </Alert>
+            ) : null}
+            {!prefill.is_contractor && !prefill.is_short_term ? (
               <Alert severity="warning" sx={{ mt: 1 }}>
                 {t("contractor.not1099Warning")}
               </Alert>
@@ -387,11 +428,156 @@ export default function ContractorManagementPanel() {
       {selected && prefill ? (
         <>
           <Tabs value={tab} onChange={(_, v) => setTab(v)} className="no-print">
+            <Tab label={t("contractor.tabBasicReceipt")} />
             <Tab label={t("contractor.tabPayment")} />
             <Tab label={t("contractor.tabForms")} />
           </Tabs>
 
           {tab === 0 ? (
+            <Paper sx={{ p: 2 }} className="no-print">
+              <Typography variant="h6" sx={{ mb: 0.5 }}>
+                {t("contractor.basicReceiptTitle")}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                {t("contractor.basicReceiptBlurb")}
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label={t("contractor.receiptWorkerName")}
+                    value={receipt.worker_name}
+                    onChange={(e) => onReceiptField("worker_name", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label={t("contractor.receiptPhone")}
+                    value={receipt.phone}
+                    onChange={(e) => onReceiptField("phone", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="date"
+                    InputLabelProps={{ shrink: true }}
+                    label={t("contractor.periodStart")}
+                    value={receipt.work_period_start}
+                    onChange={(e) => onReceiptField("work_period_start", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="date"
+                    InputLabelProps={{ shrink: true }}
+                    label={t("contractor.periodEnd")}
+                    value={receipt.work_period_end}
+                    onChange={(e) => onReceiptField("work_period_end", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    multiline
+                    minRows={2}
+                    label={t("contractor.receiptWorkPerformed")}
+                    value={receipt.work_performed}
+                    onChange={(e) => onReceiptField("work_performed", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    inputProps={{ min: 0, step: 0.25 }}
+                    label={t("contractor.receiptTotalHours")}
+                    value={receipt.total_hours}
+                    onChange={(e) => onReceiptField("total_hours", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    inputProps={{ min: 0, step: 0.01 }}
+                    label={t("contractor.serviceRate")}
+                    value={receipt.rate}
+                    onChange={(e) => onReceiptField("rate", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="number"
+                    inputProps={{ min: 0, step: 0.01 }}
+                    label={t("contractor.receiptTotalPaid")}
+                    value={receipt.total_amount_paid}
+                    onChange={(e) => onReceiptField("total_amount_paid", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    type="date"
+                    InputLabelProps={{ shrink: true }}
+                    label={t("contractor.receiptPaymentDate")}
+                    value={receipt.payment_date}
+                    onChange={(e) => onReceiptField("payment_date", e.target.value)}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    select
+                    label={t("contractor.paymentMethod")}
+                    value={receipt.payment_method}
+                    onChange={(e) => onReceiptField("payment_method", e.target.value)}
+                  >
+                    <MenuItem value="">—</MenuItem>
+                    {PAYMENT_METHODS.map((m) => (
+                      <MenuItem key={m} value={m}>
+                        {m}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    multiline
+                    minRows={2}
+                    label={t("contractor.receiptPayRefNotes")}
+                    value={receipt.payment_reference_notes}
+                    onChange={(e) => onReceiptField("payment_reference_notes", e.target.value)}
+                  />
+                </Grid>
+              </Grid>
+              <Button
+                variant="contained"
+                startIcon={<PrintIcon />}
+                sx={{ mt: 2 }}
+                onClick={doPrint}
+              >
+                {t("contractor.printBasicReceipt")}
+              </Button>
+            </Paper>
+          ) : null}
+
+          {tab === 1 ? (
             <Paper sx={{ p: 2 }} className="no-print">
               <Typography variant="h6" sx={{ mb: 1 }}>
                 {t("contractor.paymentTitle")}
@@ -553,8 +739,15 @@ export default function ContractorManagementPanel() {
             </Paper>
           ) : null}
 
-          {tab === 1 ? (
+          {tab === 2 ? (
             <Grid container spacing={2} className="no-print">
+              {isShortTermWorker ? (
+                <Grid item xs={12}>
+                  <Alert severity="warning">
+                    {t("contractor.noFullPacketForTemp")}
+                  </Alert>
+                </Grid>
+              ) : null}
               <Grid item xs={12} md={4}>
                 <Paper sx={{ p: 1.5 }}>
                   <Typography variant="subtitle2" sx={{ mb: 1 }}>
@@ -648,12 +841,15 @@ export default function ContractorManagementPanel() {
 
           <Box ref={printRef} className="contractor-print-area">
             {tab === 0 ? (
+              <BasicWorkReceiptPrint prefill={prefill} receipt={receipt} />
+            ) : null}
+            {tab === 1 ? (
               <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
             ) : null}
-            {tab === 1 && activeFormId === "biweekly_payment_summary" ? (
+            {tab === 2 && activeFormId === "biweekly_payment_summary" ? (
               <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
             ) : null}
-            {tab === 1 && activeFormId !== "biweekly_payment_summary" && formHtml ? (
+            {tab === 2 && activeFormId !== "biweekly_payment_summary" && formHtml ? (
               <MarkdownFormPrint html={formHtml} />
             ) : null}
           </Box>

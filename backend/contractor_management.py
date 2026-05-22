@@ -46,12 +46,37 @@ def ensure_contractor_payment_summaries_table(cursor) -> None:
     )
 
 
-def user_is_contractor(conn, user_id: int) -> bool:
+def _user_form_lanes(conn, user_id: int) -> list[str]:
     try:
-        lanes = infer_user_form_lanes(conn, int(user_id))
+        return infer_user_form_lanes(conn, int(user_id))
     except Exception:
-        lanes = []
-    return "contractor_1099" in lanes
+        return []
+
+
+def user_is_contractor(conn, user_id: int) -> bool:
+    return "contractor_1099" in _user_form_lanes(conn, user_id)
+
+
+def user_is_short_term_temp(conn, user_id: int) -> bool:
+    return "temp_worker" in _user_form_lanes(conn, user_id)
+
+
+def user_in_contractor_management(conn, user_id: int) -> bool:
+    lanes = _user_form_lanes(conn, user_id)
+    return "contractor_1099" in lanes or "temp_worker" in lanes
+
+
+def worker_kind_for_user(conn, user_id: int) -> str:
+    lanes = _user_form_lanes(conn, user_id)
+    has_1099 = "contractor_1099" in lanes
+    has_temp = "temp_worker" in lanes
+    if has_temp and not has_1099:
+        return "short_term"
+    if has_1099 and not has_temp:
+        return "1099"
+    if has_1099 and has_temp:
+        return "1099_and_temp"
+    return "other"
 
 
 def _json_load(val: Any) -> Any:
@@ -238,6 +263,8 @@ def build_contractor_prefill(conn, user_id: int, organization_id: int) -> dict[s
                 or "10438 Jamaica Avenue, Richmond Hill, NY 11418"
             ).strip(),
             "is_contractor": user_is_contractor(conn, user_id),
+            "is_short_term": user_is_short_term_temp(conn, user_id),
+            "worker_kind": worker_kind_for_user(conn, user_id),
         }
     )
 
@@ -259,12 +286,13 @@ def list_tenant_contractors(conn, organization_id: int) -> list[dict]:
     out: list[dict] = []
     for row in c.fetchall() or []:
         uid = int(row["user_id"])
-        if not user_is_contractor(conn, uid):
+        if not user_in_contractor_management(conn, uid):
             continue
         u = fetch_payroll_profile_row(conn, uid)
         if not u:
             continue
         pre = build_contractor_prefill(conn, uid, organization_id)
+        kind = worker_kind_for_user(conn, uid)
         out.append(
             {
                 "user_id": uid,
@@ -273,6 +301,8 @@ def list_tenant_contractors(conn, organization_id: int) -> list[dict]:
                 "status": pre.get("status"),
                 "rate_per_hour": pre.get("rate_per_hour"),
                 "email": pre.get("email"),
+                "worker_kind": kind,
+                "is_short_term": kind in ("short_term", "1099_and_temp"),
             }
         )
     return out
@@ -363,6 +393,12 @@ def create_payment_summary(
 
 
 CONTRACTOR_FORM_CATALOG = [
+    {
+        "id": "basic_work_receipt",
+        "title": "Basic Contractor Work Receipt",
+        "short_term_only": True,
+        "standalone": True,
+    },
     {
         "id": "first_time_packet",
         "title": "First-Time Contractor Packet",

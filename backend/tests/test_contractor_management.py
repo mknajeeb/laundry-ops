@@ -7,7 +7,10 @@ from unittest.mock import MagicMock, patch
 
 from backend.contractor_management import (
     compute_payment_summary_amounts,
+    user_in_contractor_management,
     user_is_contractor,
+    user_is_short_term_temp,
+    worker_kind_for_user,
 )
 
 
@@ -39,6 +42,17 @@ class TestUserIsContractor(unittest.TestCase):
             return_value=["employee_w2"],
         ):
             self.assertFalse(user_is_contractor(conn, 1))
+            self.assertFalse(user_in_contractor_management(conn, 1))
+
+    def test_short_term_temp(self):
+        conn = MagicMock()
+        with patch(
+            "backend.contractor_management.infer_user_form_lanes",
+            return_value=["temp_worker"],
+        ):
+            self.assertTrue(user_is_short_term_temp(conn, 2))
+            self.assertTrue(user_in_contractor_management(conn, 2))
+            self.assertEqual(worker_kind_for_user(conn, 2), "short_term")
 
 
 if __name__ == "__main__":
