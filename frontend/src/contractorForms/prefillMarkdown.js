@@ -1,4 +1,6 @@
-/** Apply contractor prefill values into markdown underscore blanks (form snapshot labels). */
+import { miniHeadHtml } from "./ContractorPrintShell";
+
+/** Apply contractor prefill values into markdown; convert to print HTML. */
 
 const LABEL_MAP = [
   ["Contractor Printed Name", "full_name"],
@@ -60,7 +62,7 @@ export function applyPrefillToMarkdown(md, prefill, extra = {}) {
     merged.emergency_contact_name = parts[0] || merged.emergency_contact;
     merged.emergency_contact_phone = parts[1] || "";
   }
-  let out = md;
+  let out = sanitizePacketMarkdown(md);
   for (const [label, key] of LABEL_MAP) {
     out = fillLabelLine(out, label, merged[key]);
   }
@@ -84,7 +86,33 @@ export function applyPrefillToMarkdown(md, prefill, extra = {}) {
   return out;
 }
 
-/** Minimal markdown → HTML for print (headings, bold, tables, checkboxes). */
+export function sanitizePacketMarkdown(md) {
+  let out = String(md || "");
+  out = out.replace(/^# PART\s+[A-Z][^\n]*\n*/gim, "");
+  out = out.replace(/^# [^\n]*1099 Contractor Packet[^\n]*\n*/gim, "");
+  out = out.replace(/^## Implementation Intent[^\n]*\n[\s\S]*?(?=\n## \d+\.|\n# PART|$)/gim, "");
+  out = out.replace(/^>\s.*$/gm, "");
+  out = out.replace(/\*\*VeeWash \/ Washpro\*\*\s*\n\*\*10438[^\n]*\n*/gi, "");
+  out = out.replace(/\n{3,}/g, "\n\n");
+  return out.trim();
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function inlineFormat(text) {
+  let s = escapeHtml(text);
+  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/☐/g, '<span class="cform-check" aria-hidden="true"></span>');
+  return s;
+}
+
+/** Markdown → HTML for print (headings, bold, tables, checkboxes). */
 export function markdownToPrintHtml(md) {
   const lines = String(md || "").split("\n");
   const html = [];
@@ -98,7 +126,7 @@ export function markdownToPrintHtml(md) {
       const tag = i === 0 ? "th" : "td";
       html.push("<tr>");
       row.forEach((cell) => {
-        html.push(`<${tag}>${escapeHtml(cell)}</${tag}>`);
+        html.push(`<${tag}>${cell}</${tag}>`);
       });
       html.push("</tr>");
     });
@@ -108,8 +136,14 @@ export function markdownToPrintHtml(md) {
   };
 
   for (let line of lines) {
-    if (/^\|.+\|$/.test(line.trim())) {
-      if (/^\|[\s\-:|]+\|$/.test(line.trim())) continue;
+    const trimmed = line.trim();
+    if (trimmed === "<!-- PAGE_BREAK -->") {
+      if (inTable) flushTable();
+      html.push('<div class="cform-page-break"></div>');
+      continue;
+    }
+    if (/^\|.+\|$/.test(trimmed)) {
+      if (/^\|[\s\-:|]+\|$/.test(trimmed)) continue;
       const cells = line
         .trim()
         .slice(1, -1)
@@ -120,43 +154,46 @@ export function markdownToPrintHtml(md) {
       continue;
     }
     if (inTable) flushTable();
-    if (/^---+$/.test(line.trim())) {
-      html.push("<hr />");
+    if (/^#### /.test(line)) {
+      html.push(`<h4 class="cform-h4">${inlineFormat(line.slice(5))}</h4>`);
       continue;
     }
     if (/^### /.test(line)) {
-      html.push(`<h3>${inlineFormat(line.slice(4))}</h3>`);
+      html.push(`<h3 class="cform-h3">${inlineFormat(line.slice(4))}</h3>`);
       continue;
     }
     if (/^## /.test(line)) {
-      html.push(`<h2>${inlineFormat(line.slice(3))}</h2>`);
+      html.push(`<h2 class="cform-h2">${inlineFormat(line.slice(3))}</h2>`);
       continue;
     }
     if (/^# /.test(line)) {
-      html.push(`<h1>${inlineFormat(line.slice(2))}</h1>`);
+      html.push(`<h2 class="cform-h2">${inlineFormat(line.slice(2))}</h2>`);
       continue;
     }
-    if (!line.trim()) {
-      html.push("<br />");
+    if (/^[-*]\s+/.test(trimmed)) {
+      html.push(`<p class="cform-bullet">${inlineFormat(trimmed.replace(/^[-*]\s+/, ""))}</p>`);
       continue;
     }
-    html.push(`<p>${inlineFormat(line)}</p>`);
+    if (!trimmed) {
+      continue;
+    }
+    html.push(`<p class="cform-p">${inlineFormat(line)}</p>`);
   }
   flushTable();
   return html.join("\n");
 }
 
-function inlineFormat(text) {
-  let s = escapeHtml(text);
-  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/☐/g, '<span class="cform-box">☐</span>');
-  return s;
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+/** Build HTML for one or more packet sections with page breaks between sections. */
+export function buildMultiSectionPrintHtml(sectionsByNum, sectionNums, prefill, extra = {}) {
+  const parts = [];
+  (sectionNums || []).forEach((n, index) => {
+    const s = sectionsByNum[n];
+    if (!s?.body) return;
+    const md = applyPrefillToMarkdown(s.body, prefill, extra);
+    const inner = markdownToPrintHtml(md);
+    const pageClass = index > 0 ? " cform-page--new" : "";
+    const mini = index > 0 ? miniHeadHtml(prefill) : "";
+    parts.push(`<section class="cform-page${pageClass}">${mini}${inner}</section>`);
+  });
+  return parts.join("\n");
 }

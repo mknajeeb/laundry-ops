@@ -23,15 +23,17 @@ import {
   getContractors,
   postContractorPaymentSummary,
 } from "../api";
+import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import packetMarkdown from "../contractorForms/veewash_1099_contractor_packet.md?raw";
 import BasicWorkReceiptPrint, {
   calcBasicReceiptTotal,
   emptyBasicReceipt,
 } from "../contractorForms/BasicWorkReceiptPrint";
+import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
 import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCatalog";
-import { applyPrefillToMarkdown, markdownToPrintHtml } from "../contractorForms/prefillMarkdown";
-import { buildFormMarkdown, parsePacketSections } from "../contractorForms/parsePacket";
+import { buildMultiSectionPrintHtml } from "../contractorForms/prefillMarkdown";
+import { parsePacketSections } from "../contractorForms/parsePacket";
 import "../contractorForms/contractorPrint.css";
 
 const PAYMENT_METHODS = ["Check", "ACH", "Zelle", "Venmo", "Cash", "Other"];
@@ -45,14 +47,8 @@ function BiweeklySummaryPrint({ prefill, payment, extras }) {
   const name = snap.full_name || prefill.full_name || "";
   const pm = payment.payment_method || prefill.payment_method || "";
   return (
-    <div className="contractor-print-root">
-      <Typography component="p" sx={{ fontWeight: 700, fontSize: "14pt", mb: 1 }}>
-        VeeWash / Washpro
-      </Typography>
-      <Typography component="p" sx={{ mb: 2 }}>
-        {prefill.company_address || "10438 Jamaica Avenue, Richmond Hill, NY 11418"}
-      </Typography>
-      <h2>Contractor Payment Summary</h2>
+    <>
+      <h2 className="cform-h2">Contractor Payment Summary</h2>
       <p>
         <strong>Contractor Name:</strong> {name}
       </p>
@@ -117,40 +113,36 @@ function BiweeklySummaryPrint({ prefill, payment, extras }) {
         time and payment, unless Contractor notifies the Company of an error. This payment summary
         confirms contractor payment only and does not waive any legal rights.
       </p>
-      <div className="sig-block">
+      <div className="cform-sig-block">
         <div>
           <strong>Contractor Signature</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
           <strong>Date</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
         </div>
         <div>
           <strong>Company Signature</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
           <strong>Date</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
         </div>
       </div>
       {extras?.company_representative ? (
-        <p style={{ fontSize: "9pt", marginTop: "1rem" }}>
+        <p className="cform-p" style={{ fontSize: "9pt", marginTop: "1rem" }}>
           Prepared by: {extras.company_representative}
         </p>
       ) : null}
-    </div>
+    </>
   );
 }
 
 function MarkdownFormPrint({ html }) {
-  return (
-    <div
-      className="contractor-print-root"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  return <div dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 export default function ContractorManagementPanel() {
   const { t } = useI18n();
+  const { user: authUser } = useAuth();
   const printRef = useRef(null);
   const sections = useMemo(() => parsePacketSections(packetMarkdown), []);
 
@@ -215,7 +207,11 @@ export default function ContractorManagementPanel() {
         getContractorPrefill(userId),
         getContractorPaymentSummaries(userId).catch(() => ({ data: { items: [] } })),
       ]);
-      const pre = preRes.data || {};
+      const pre = {
+        ...(preRes.data || {}),
+        organization_logo_url:
+          preRes.data?.organization_logo_url || authUser?.organization_logo_url || null,
+      };
       setPrefill(pre);
       setSavedSummaries(sumRes.data?.items || []);
       setReceipt(emptyBasicReceipt(pre));
@@ -307,16 +303,22 @@ export default function ContractorManagementPanel() {
   };
 
   const formDef = findContractorForm(activeFormId);
-  const formMarkdown = useMemo(() => {
-    if (!formDef) return "";
-    return buildFormMarkdown(sections, formDef.sections);
-  }, [formDef, sections]);
 
   const formHtml = useMemo(() => {
-    if (!formMarkdown || activeFormId === "biweekly_payment_summary") return "";
-    const merged = applyPrefillToMarkdown(formMarkdown, prefill || {}, formExtras);
-    return markdownToPrintHtml(merged);
-  }, [formMarkdown, prefill, formExtras, activeFormId]);
+    if (!formDef?.sections?.length || activeFormId === "biweekly_payment_summary") return "";
+    return buildMultiSectionPrintHtml(
+      sections,
+      formDef.sections,
+      prefill || {},
+      formExtras,
+    );
+  }, [formDef, sections, prefill, formExtras, activeFormId]);
+
+  const printDocumentTitle = useMemo(() => {
+    if (tab === 0) return "Basic Contractor Work Receipt";
+    if (tab === 1) return "Contractor Payment Summary";
+    return formDef?.title || "";
+  }, [tab, formDef]);
 
   const doPrint = () => {
     window.print();
@@ -840,18 +842,20 @@ export default function ContractorManagementPanel() {
           ) : null}
 
           <Box ref={printRef} className="contractor-print-area">
-            {tab === 0 ? (
-              <BasicWorkReceiptPrint prefill={prefill} receipt={receipt} />
-            ) : null}
-            {tab === 1 ? (
-              <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
-            ) : null}
-            {tab === 2 && activeFormId === "biweekly_payment_summary" ? (
-              <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
-            ) : null}
-            {tab === 2 && activeFormId !== "biweekly_payment_summary" && formHtml ? (
-              <MarkdownFormPrint html={formHtml} />
-            ) : null}
+            <ContractorPrintShell prefill={prefill} documentTitle={printDocumentTitle}>
+              {tab === 0 ? (
+                <BasicWorkReceiptPrint receipt={receipt} />
+              ) : null}
+              {tab === 1 ? (
+                <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
+              ) : null}
+              {tab === 2 && activeFormId === "biweekly_payment_summary" ? (
+                <BiweeklySummaryPrint prefill={prefill} payment={payment} extras={formExtras} />
+              ) : null}
+              {tab === 2 && activeFormId !== "biweekly_payment_summary" && formHtml ? (
+                <MarkdownFormPrint html={formHtml} />
+              ) : null}
+            </ContractorPrintShell>
           </Box>
         </>
       ) : (

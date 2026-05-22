@@ -1,58 +1,187 @@
+/* Contractor printable forms — branded layout for browser print */
+
 .contractor-print-root {
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 11pt;
-  line-height: 1.45;
-  color: #111;
+  font-family: "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.5;
+  color: #1a1a2e;
   max-width: 8.5in;
   margin: 0 auto;
-  padding: 0.5in;
+  padding: 0.4in 0.55in 0.55in;
+  background: #fff;
 }
 
-.contractor-print-root h1 {
-  font-size: 16pt;
-  margin: 0 0 0.5rem;
+.cform-letterhead {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 0.65rem;
+  margin-bottom: 1rem;
+  border-bottom: 2px solid #1e3a8a;
 }
 
-.contractor-print-root h2 {
+.cform-logo {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.cform-letterhead-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.cform-company-name {
+  font-size: 18pt;
+  font-weight: 700;
+  color: #1e3a8a;
+  letter-spacing: 0.02em;
+}
+
+.cform-company-address {
+  font-size: 9.5pt;
+  color: #475569;
+  margin-top: 0.15rem;
+}
+
+.cform-document-title {
   font-size: 13pt;
-  margin: 1.25rem 0 0.5rem;
+  font-weight: 600;
+  color: #0f172a;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  border: none;
+}
+
+.cform-mini-head {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.35rem;
+  margin-bottom: 0.65rem;
+  border-bottom: 1px solid #cbd5e1;
+}
+
+.cform-logo-mini {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+}
+
+.cform-mini-company {
+  font-size: 11pt;
+  font-weight: 600;
+  color: #1e3a8a;
+}
+
+.cform-body {
+  font-size: 10.5pt;
+}
+
+.cform-h2 {
+  font-size: 12.5pt;
+  font-weight: 700;
+  color: #1e3a8a;
+  margin: 0 0 0.65rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #e2e8f0;
   page-break-after: avoid;
 }
 
-.contractor-print-root h3 {
-  font-size: 11.5pt;
-  margin: 0.75rem 0 0.35rem;
+.cform-h3 {
+  font-size: 11pt;
+  font-weight: 600;
+  color: #334155;
+  margin: 0.85rem 0 0.35rem;
 }
 
-.contractor-print-root p {
-  margin: 0.35rem 0;
+.cform-h4 {
+  font-size: 10.5pt;
+  font-weight: 600;
+  color: #475569;
+  margin: 0.65rem 0 0.25rem;
 }
 
-.contractor-print-root .cform-table {
+.cform-p {
+  margin: 0.3rem 0;
+}
+
+.cform-bullet {
+  margin: 0.2rem 0 0.2rem 1rem;
+  padding-left: 0.35rem;
+  position: relative;
+}
+
+.cform-bullet::before {
+  content: "•";
+  position: absolute;
+  left: -0.85rem;
+  color: #1e3a8a;
+}
+
+.cform-table {
   width: 100%;
   border-collapse: collapse;
-  margin: 0.5rem 0;
+  margin: 0.55rem 0 0.75rem;
   font-size: 10pt;
 }
 
-.contractor-print-root .cform-table th,
-.contractor-print-root .cform-table td {
-  border: 1px solid #333;
-  padding: 4px 8px;
-  text-align: left;
+.cform-table th {
+  background: #f1f5f9;
+  color: #1e293b;
+  font-weight: 600;
 }
 
-.contractor-print-root .sig-block {
-  margin-top: 2rem;
+.cform-table th,
+.cform-table td {
+  border: 1px solid #cbd5e1;
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.cform-check {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  border: 1.5px solid #334155;
+  border-radius: 2px;
+  margin-right: 0.15em;
+  vertical-align: -0.1em;
+}
+
+.cform-page {
+  margin: 0;
+  padding: 0;
+}
+
+.cform-page--new {
+  page-break-before: always;
+  break-before: page;
+  padding-top: 0.15in;
+}
+
+.cform-page-break {
+  page-break-before: always;
+  break-before: page;
+  height: 0;
+  margin: 0;
+  border: 0;
+}
+
+.cform-sig-block {
+  margin-top: 1.75rem;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1.5rem;
+  page-break-inside: avoid;
 }
 
-.contractor-print-root .sig-line {
-  border-bottom: 1px solid #000;
-  min-height: 1.4rem;
-  margin-top: 1.5rem;
+.cform-sig-line {
+  border-bottom: 1px solid #1e293b;
+  min-height: 1.5rem;
+  margin-top: 1.25rem;
 }
 
 .contractor-payment-table {
@@ -62,30 +191,60 @@
 }
 
 .contractor-payment-table td {
-  border: 1px solid #333;
+  border: 1px solid #cbd5e1;
   padding: 8px 12px;
 }
 
+.contractor-payment-table td:first-child {
+  background: #f8fafc;
+  font-weight: 500;
+  width: 42%;
+}
+
 .contractor-payment-table td:last-child {
-  text-align: right;
-  width: 140px;
+  text-align: left;
 }
 
 @media print {
+  @page {
+    size: letter;
+    margin: 0.55in;
+  }
+
   body * {
     visibility: hidden;
   }
+
   .contractor-print-area,
   .contractor-print-area * {
     visibility: visible;
   }
+
   .contractor-print-area {
     position: absolute;
     left: 0;
     top: 0;
     width: 100%;
   }
+
   .no-print {
     display: none !important;
+  }
+
+  .contractor-print-root {
+    padding: 0;
+    max-width: none;
+  }
+
+  .cform-page--new .cform-mini-head {
+    display: flex;
+  }
+
+  .cform-h2 {
+    page-break-after: avoid;
+  }
+
+  .cform-table {
+    page-break-inside: avoid;
   }
 }

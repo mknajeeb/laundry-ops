@@ -5,37 +5,29 @@ function line(val) {
   return s || "______________________________";
 }
 
-export default function BasicWorkReceiptPrint({ prefill, receipt }) {
+export default function BasicWorkReceiptPrint({ receipt }) {
   const r = receipt || {};
-  const company = prefill?.company_name || "VeeWash / Washpro";
-  const address =
-    prefill?.company_address || "10438 Jamaica Avenue, Richmond Hill, NY 11418";
 
   return (
-    <div className="contractor-print-root">
-      <p style={{ fontWeight: 700, fontSize: "14pt", margin: "0 0 0.25rem" }}>
-        {company}
-      </p>
-      <p style={{ margin: "0 0 1rem" }}>{address}</p>
-      <h2 style={{ marginBottom: "0.75rem" }}>Basic Contractor Work Receipt</h2>
-      <p style={{ fontSize: "10pt", marginBottom: "1rem" }}>
+    <>
+      <p className="cform-p" style={{ color: "#475569", marginBottom: "1rem" }}>
         Short-term / one-time work — confirms hours performed and payment received. Not an
         employee paystub or full contractor onboarding packet.
       </p>
 
-      <table className="contractor-payment-table" style={{ marginBottom: "1rem" }}>
+      <table className="contractor-payment-table">
         <tbody>
           <tr>
             <td>
               <strong>Worker name</strong>
             </td>
-            <td>{line(r.worker_name || prefill?.full_name)}</td>
+            <td>{line(r.worker_name)}</td>
           </tr>
           <tr>
             <td>
               <strong>Phone</strong>
             </td>
-            <td>{line(r.phone || prefill?.phone)}</td>
+            <td>{line(r.phone)}</td>
           </tr>
           <tr>
             <td>
@@ -49,9 +41,7 @@ export default function BasicWorkReceiptPrint({ prefill, receipt }) {
             <td>
               <strong>Work performed</strong>
             </td>
-            <td style={{ textAlign: "left", whiteSpace: "pre-wrap" }}>
-              {line(r.work_performed)}
-            </td>
+            <td style={{ whiteSpace: "pre-wrap" }}>{line(r.work_performed)}</td>
           </tr>
           <tr>
             <td>
@@ -89,7 +79,7 @@ export default function BasicWorkReceiptPrint({ prefill, receipt }) {
             <td>
               <strong>Payment method</strong>
             </td>
-            <td>{line(r.payment_method || prefill?.payment_method)}</td>
+            <td>{line(r.payment_method)}</td>
           </tr>
           <tr>
             <td>
@@ -101,33 +91,31 @@ export default function BasicWorkReceiptPrint({ prefill, receipt }) {
             <td>
               <strong>Payment reference / notes</strong>
             </td>
-            <td style={{ textAlign: "left", whiteSpace: "pre-wrap" }}>
-              {line(r.payment_reference_notes)}
-            </td>
+            <td style={{ whiteSpace: "pre-wrap" }}>{line(r.payment_reference_notes)}</td>
           </tr>
         </tbody>
       </table>
 
-      <p style={{ fontSize: "10pt", marginTop: "1rem" }}>
+      <p className="cform-p" style={{ marginTop: "1rem", fontSize: "10pt" }}>
         Worker confirms the hours and payment above, unless Worker notifies the Company of an
         error in writing.
       </p>
 
-      <div className="sig-block">
+      <div className="cform-sig-block">
         <div>
           <strong>Worker signature</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
           <strong>Date</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
         </div>
         <div>
           <strong>Company signature</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
           <strong>Date</strong>
-          <div className="sig-line" />
+          <div className="cform-sig-line" />
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
