@@ -45,6 +45,11 @@ import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCat
 import { emptyFormValues } from "../contractorForms/formFieldSchemas";
 import { buildMultiSectionPrintHtml } from "../contractorForms/prefillMarkdown";
 import { parsePacketSections } from "../contractorForms/parsePacket";
+import {
+  formatWorkPerformedForSave,
+  presetById,
+  WORK_PERFORMED_PRESETS,
+} from "../contractorForms/workPerformedPresets";
 import "../contractorForms/contractorPrint.css";
 
 const PAYMENT_METHODS = ["Check", "ACH", "Zelle", "Venmo", "Cash", "Other"];
@@ -209,6 +214,27 @@ export default function ContractorManagementPanel() {
     [isRegular],
   );
 
+  const onWorkPerformedPreset = (presetId) => {
+    const preset = presetById(presetId);
+    setRecord((r) => {
+      if (presetId === "other") {
+        return {
+          ...r,
+          work_performed_preset: "other",
+          work_performed: r.work_performed_preset === "other" ? r.work_performed : "",
+        };
+      }
+      if (preset?.description) {
+        return {
+          ...r,
+          work_performed_preset: presetId,
+          work_performed: preset.description,
+        };
+      }
+      return { ...r, work_performed_preset: "", work_performed: "" };
+    });
+  };
+
   const onRecordField = (key, value) => {
     const next = { ...record, [key]: value };
     if (key === "approved_hours" || key === "service_rate") {
@@ -280,6 +306,7 @@ export default function ContractorManagementPanel() {
     try {
       const body = {
         ...record,
+        work_performed: formatWorkPerformedForSave(record),
         user_id: selected?.manual ? null : selected?.user_id,
         approved_service_hours: Number(record.approved_hours) || 0,
         approved_hours: Number(record.approved_hours) || 0,
@@ -486,15 +513,54 @@ export default function ContractorManagementPanel() {
                     onChange={(e) => onRecordField("work_period_end", e.target.value)}
                   />
                 </Grid>
+                <Grid item xs={12} sm={6}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    select
+                    label="Service performed"
+                    value={record.work_performed_preset || ""}
+                    onChange={(e) => onWorkPerformedPreset(e.target.value)}
+                  >
+                    <MenuItem value="">— Select service type —</MenuItem>
+                    {WORK_PERFORMED_PRESETS.map((p) => (
+                      <MenuItem key={p.id} value={p.id}>
+                        {p.label}
+                      </MenuItem>
+                    ))}
+                  </TextField>
+                </Grid>
+                <Grid item xs={12}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    multiline
+                    minRows={record.work_performed_preset === "other" ? 3 : 2}
+                    label={
+                      record.work_performed_preset === "other"
+                        ? "Service description (enter manually)"
+                        : "Service description"
+                    }
+                    helperText={
+                      record.work_performed_preset && record.work_performed_preset !== "other"
+                        ? "Filled from preset; edit if this assignment differed."
+                        : "Use service-based wording only."
+                    }
+                    value={record.work_performed}
+                    onChange={(e) => onRecordField("work_performed", e.target.value)}
+                    disabled={!record.work_performed_preset}
+                  />
+                </Grid>
                 <Grid item xs={12}>
                   <TextField
                     fullWidth
                     size="small"
                     multiline
                     minRows={2}
-                    label="Work performed"
-                    value={record.work_performed}
-                    onChange={(e) => onRecordField("work_performed", e.target.value)}
+                    label="Additional notes (optional)"
+                    placeholder="Extra detail for this pay period only, if needed."
+                    value={record.work_performed_notes || ""}
+                    onChange={(e) => onRecordField("work_performed_notes", e.target.value)}
                   />
                 </Grid>
                 <Grid item xs={12} sm={3}>

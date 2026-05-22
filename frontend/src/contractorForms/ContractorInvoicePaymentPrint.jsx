@@ -66,10 +66,18 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
           </tr>
           <tr>
             <td>
-              <strong>Work performed</strong>
+              <strong>Service performed</strong>
             </td>
             <td style={{ textAlign: "left", whiteSpace: "pre-wrap" }}>
               {line(r.work_performed)}
+              {r.work_performed_notes ? (
+                <>
+                  <br />
+                  <span style={{ color: "#64748b", fontSize: "9.5pt" }}>
+                    Notes: {r.work_performed_notes}
+                  </span>
+                </>
+              ) : null}
             </td>
           </tr>
           <tr>
@@ -200,7 +208,9 @@ export function emptyPaymentRecord(prefill = {}, contractorType = "regular") {
     worker_email: prefill?.email || "",
     work_period_start: "",
     work_period_end: "",
+    work_performed_preset: "",
     work_performed: "",
+    work_performed_notes: "",
     approved_hours: "",
     service_rate: prefill?.rate_per_hour != null ? String(prefill.rate_per_hour) : "",
     service_amount: 0,
