@@ -47,6 +47,12 @@ export const CONTRACTOR_FORMS = [
     title: "Property / Access Return Checklist",
     sections: ["19"],
   },
+  {
+    id: "engagement_verification_letter",
+    title: "Contractor Engagement & Payment Verification Letter",
+    sections: [],
+    letterOnly: true,
+  },
 ];
 
 export function findContractorForm(id) {

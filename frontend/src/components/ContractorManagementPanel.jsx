@@ -34,6 +34,7 @@ import { useI18n } from "../i18n/I18nContext";
 import ContractorDocumentsPanel from "./ContractorDocumentsPanel";
 import packetMarkdown from "../contractorForms/veewash_1099_contractor_packet.md?raw";
 import ContractorFormEditor from "../contractorForms/ContractorFormEditor";
+import ContractorEngagementLetterPrint from "../contractorForms/ContractorEngagementLetterPrint";
 import ContractorInvoicePaymentPrint, {
   calcServiceAmount,
   emptyPaymentRecord,
@@ -251,6 +252,15 @@ export default function ContractorManagementPanel() {
       { formId: activeFormId, formValues: activeFormValues },
     );
   }, [formDef, sections, prefill, activeFormValues, activeFormId]);
+
+  const [engagementLetter, setEngagementLetter] = useState({
+    first_work_date: "",
+    last_work_date: "",
+    services_description: "Laundry support / folding",
+    avg_weekly_pay: "",
+    avg_monthly_pay: "",
+    total_paid_period: "",
+  });
 
   const printTitle = useMemo(() => {
     if (tab === 0) return "Contractor Invoice & Payment Receipt";
@@ -664,13 +674,58 @@ export default function ContractorManagementPanel() {
                   <Typography variant="h6" sx={{ mb: 1 }}>
                     {formDef?.title}
                   </Typography>
-                  <ContractorFormEditor
-                    formId={activeFormId}
-                    values={activeFormValues}
-                    onChange={(next) =>
-                      setFormFieldValues((prev) => ({ ...prev, [activeFormId]: next }))
-                    }
-                  />
+                  {activeFormId === "engagement_verification_letter" ? (
+                    <Stack spacing={1} sx={{ mb: 2 }}>
+                      <TextField
+                        size="small"
+                        type="date"
+                        label="First work date"
+                        InputLabelProps={{ shrink: true }}
+                        value={engagementLetter.first_work_date}
+                        onChange={(e) =>
+                          setEngagementLetter((l) => ({ ...l, first_work_date: e.target.value }))
+                        }
+                      />
+                      <TextField
+                        size="small"
+                        type="date"
+                        label="Last work date"
+                        InputLabelProps={{ shrink: true }}
+                        value={engagementLetter.last_work_date}
+                        onChange={(e) =>
+                          setEngagementLetter((l) => ({ ...l, last_work_date: e.target.value }))
+                        }
+                      />
+                      <TextField
+                        size="small"
+                        label="Services description"
+                        value={engagementLetter.services_description}
+                        onChange={(e) =>
+                          setEngagementLetter((l) => ({
+                            ...l,
+                            services_description: e.target.value,
+                          }))
+                        }
+                      />
+                      <TextField
+                        size="small"
+                        type="number"
+                        label="Total paid in period ($)"
+                        value={engagementLetter.total_paid_period}
+                        onChange={(e) =>
+                          setEngagementLetter((l) => ({ ...l, total_paid_period: e.target.value }))
+                        }
+                      />
+                    </Stack>
+                  ) : (
+                    <ContractorFormEditor
+                      formId={activeFormId}
+                      values={activeFormValues}
+                      onChange={(next) =>
+                        setFormFieldValues((prev) => ({ ...prev, [activeFormId]: next }))
+                      }
+                    />
+                  )}
                   <Button
                     variant="contained"
                     startIcon={<PrintIcon />}
@@ -689,7 +744,23 @@ export default function ContractorManagementPanel() {
               {tab === 0 ? (
                 <ContractorInvoicePaymentPrint record={record} prefill={prefill} />
               ) : null}
-              {tab === 2 && formHtml ? <MarkdownFormPrint html={formHtml} /> : null}
+              {tab === 2 && activeFormId === "engagement_verification_letter" ? (
+                <ContractorEngagementLetterPrint
+                  prefill={prefill}
+                  letter={{
+                    ...engagementLetter,
+                    worker_name: record.worker_name,
+                    worker_category: record.contractor_type,
+                    worker_category_label:
+                      record.contractor_type === "temp"
+                        ? "Temp Contractor"
+                        : "1099 Contractor",
+                  }}
+                />
+              ) : null}
+              {tab === 2 && activeFormId !== "engagement_verification_letter" && formHtml ? (
+                <MarkdownFormPrint html={formHtml} />
+              ) : null}
             </ContractorPrintShell>
           </Box>
         </>

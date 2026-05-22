@@ -873,6 +873,24 @@ export const postContractorPaymentSummary = (userId, body) =>
 export const postContractorPaymentRecord = (body) =>
   axios.post(`${API_BASE}/api/ta/contractors/payment-records`, body);
 
+export const getPayrollTimeRecords = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/time-records`, { params });
+
+export const getPayoutBatches = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches`, { params });
+
+export const postPayoutBatch = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/payout-batches`, body);
+
+export const getPayoutBatch = (batchId) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`);
+
+export const patchPayoutBatch = (batchId, body) =>
+  axios.patch(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`, body);
+
+export const getAccountantYtd = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/accountant/ytd`, { params });
+
 export const computeContractorPayment = (body) =>
   axios.post(`${API_BASE}/api/ta/contractors/compute-payment`, body);
 

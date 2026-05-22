@@ -5167,5 +5167,130 @@ def contractors_compute_payment():
     )
 
 
+# --- Payroll operations (time records, payout batches, accountant reports) ---
+
+
+@ta_bp.route("/payroll/time-records", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings", "users.view")
+def payroll_time_records():
+    conn = get_db()
+    try:
+        from backend.payroll_operations import list_time_records
+
+        oid = _tenant_id()
+        items = list_time_records(
+            conn,
+            oid,
+            from_date=request.args.get("from_date"),
+            to_date=request.args.get("to_date"),
+            user_id=request.args.get("user_id", type=int),
+            worker_category=request.args.get("worker_category"),
+            status_filter=request.args.get("status"),
+        )
+        return jsonify({"items": items})
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/payout-batches", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_batches():
+    conn = get_db()
+    try:
+        from backend.payroll_operations import create_payout_batch, list_payout_batches
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(
+                {
+                    "items": list_payout_batches(
+                        conn,
+                        oid,
+                        worker_category=request.args.get("worker_category"),
+                    )
+                }
+            )
+        body = request.get_json(silent=True) or {}
+        row = create_payout_batch(conn, oid, body, created_by=int(g.ta_user["id"]))
+        conn.commit()
+        return jsonify(row), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>", methods=["GET", "PATCH"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit", "users.view")
+def payroll_payout_batch_detail(batch_id):
+    conn = get_db()
+    try:
+        from backend.payroll_operations import (
+            add_payout_batch_line,
+            build_batch_from_time_records,
+            get_payout_batch,
+            update_payout_batch_status,
+        )
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            row = get_payout_batch(conn, oid, batch_id)
+            if not row:
+                return jsonify({"error": "Not found"}), 404
+            return jsonify(row)
+        body = request.get_json(silent=True) or {}
+        if body.get("action") == "add_line":
+            line = add_payout_batch_line(conn, oid, batch_id, body)
+            conn.commit()
+            return jsonify(line), 201
+        if body.get("action") == "build_from_time_records":
+            row = build_batch_from_time_records(
+                conn,
+                oid,
+                batch_id,
+                from_date=body.get("from_date") or body.get("pay_period_start"),
+                to_date=body.get("to_date") or body.get("pay_period_end"),
+            )
+            conn.commit()
+            return jsonify(row)
+        if body.get("status"):
+            row = update_payout_batch_status(
+                conn, oid, batch_id, body["status"], actor_id=int(g.ta_user["id"])
+            )
+            conn.commit()
+            return jsonify(row)
+        return jsonify({"error": "Unsupported patch"}), 400
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/accountant/ytd", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_accountant_ytd():
+    conn = get_db()
+    try:
+        from backend.payroll_operations import accountant_ytd_summary
+
+        oid = _tenant_id()
+        return jsonify(
+            {
+                "items": accountant_ytd_summary(
+                    conn,
+                    oid,
+                    year=request.args.get("year", type=int),
+                    worker_category=request.args.get("worker_category"),
+                )
+            }
+        )
+    finally:
+        conn.close()
+
+
 def register_ta_routes(app):
     app.register_blueprint(ta_bp, url_prefix="/api/ta")

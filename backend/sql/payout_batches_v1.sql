@@ -1,0 +1,2 @@
+-- Payout batches (category-separated: w2 / contractor_1099 / temp).
+-- Runtime ensure in payroll_operations.ensure_payout_batches_tables().
