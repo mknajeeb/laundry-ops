@@ -51,3 +51,24 @@ export function formatEasternDateTime(iso) {
     timeZoneName: "short",
   });
 }
+
+/** Compact clock time for tables (no seconds or timezone label). */
+export function formatEasternTimeShort(iso) {
+  if (iso == null || iso === "") return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+/** Decimal hours for compact payroll tables. */
+export function formatHoursDecimal(hours) {
+  if (hours == null || hours === "") return "—";
+  const n = Number(hours);
+  if (Number.isNaN(n)) return "—";
+  return n.toFixed(2);
+}

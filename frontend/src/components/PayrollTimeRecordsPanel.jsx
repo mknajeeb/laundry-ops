@@ -36,7 +36,16 @@ import {
   postAdjustSessionTimes,
   postPayrollTimeRecord,
 } from "../api";
-import { formatEasternDateTime } from "../utils/datetimeFormat";
+import {
+  formatEasternTimeShort,
+  formatHoursDecimal,
+} from "../utils/datetimeFormat";
+
+const CATEGORY_SHORT = {
+  w2: "W-2",
+  contractor_1099: "1099",
+  temp: "Temp",
+};
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
 const STATUS_OPTIONS = [
@@ -280,53 +289,41 @@ export default function PayrollTimeRecordsPanel() {
       </Paper>
 
       <TableContainer component={Paper} sx={{ width: "100%", overflowX: "auto" }}>
-        <Table size="small" sx={{ minWidth: 900, tableLayout: "fixed" }}>
+        <Table size="small" sx={{ minWidth: 720 }}>
           <TableHead>
             <TableRow>
-              <TableCell sx={{ width: 88 }}>Date</TableCell>
-              <TableCell sx={{ width: 120 }}>Worker</TableCell>
-              <TableCell sx={{ width: 100 }}>Category</TableCell>
-              <TableCell sx={{ width: 130 }}>Clock in</TableCell>
-              <TableCell sx={{ width: 130 }}>Clock out</TableCell>
-              <TableCell sx={{ width: 72 }} align="right">
-                Hours
-              </TableCell>
-              <TableCell sx={{ width: 72 }} align="right">
-                Approved
-              </TableCell>
-              <TableCell sx={{ width: 100 }}>Status</TableCell>
-              <TableCell>Notes</TableCell>
-              <TableCell sx={{ width: 88 }} align="right">
-                Actions
-              </TableCell>
+              <TableCell>Date</TableCell>
+              <TableCell>Worker</TableCell>
+              <TableCell>Cat.</TableCell>
+              <TableCell>In</TableCell>
+              <TableCell>Out</TableCell>
+              <TableCell align="right">Hrs</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell align="right">Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {rows.map((r) => (
-              <TableRow key={r.id} hover sx={{ "& td": { whiteSpace: "nowrap", py: 0.75 } }}>
-                <TableCell>{r.work_date}</TableCell>
-                <TableCell sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>{r.worker_name}</TableCell>
-                <TableCell sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {r.worker_category_label}
+              <TableRow key={r.id} hover>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{r.work_date}</TableCell>
+                <TableCell
+                  sx={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  title={r.worker_name}
+                >
+                  {r.worker_name}
                 </TableCell>
-                <TableCell>{formatEasternDateTime(r.clock_in_at)}</TableCell>
-                <TableCell>{formatEasternDateTime(r.clock_out_at)}</TableCell>
-                <TableCell align="right">{r.total_hours_display}</TableCell>
-                <TableCell align="right">{r.approved_hours_display}</TableCell>
-                <TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>
+                  {CATEGORY_SHORT[r.worker_category] || r.worker_category_label}
+                </TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{formatEasternTimeShort(r.clock_in_at)}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>{formatEasternTimeShort(r.clock_out_at)}</TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                  {formatHoursDecimal(r.approved_hours)}
+                </TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap" }}>
                   <Chip size="small" label={r.status} color={statusColor(r.status)} />
                 </TableCell>
-                <TableCell
-                  sx={{
-                    maxWidth: 160,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                  title={r.notes || ""}
-                >
-                  {r.notes || "—"}
-                </TableCell>
-                <TableCell align="right">
+                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
                   <Tooltip title="Edit">
                     <IconButton size="small" onClick={() => openEdit(r)} aria-label="Edit">
                       <EditIcon fontSize="small" />
@@ -347,7 +344,7 @@ export default function PayrollTimeRecordsPanel() {
             ))}
             {!rows.length && !loading ? (
               <TableRow>
-                <TableCell colSpan={10}>
+                <TableCell colSpan={8}>
                   <Typography color="text.secondary">No records for these filters.</Typography>
                 </TableCell>
               </TableRow>
