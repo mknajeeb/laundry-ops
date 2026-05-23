@@ -157,6 +157,7 @@ export default function ContractorManagementPanel() {
           worker_email: pre.email || "",
           service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : "",
           payment_method: pre.payment_method || "",
+          company_supervisor_name: pre.company_supervisor_name || "",
           total_paid_ytd_prior: String(ytd),
           amount_paid_manual: false,
         });
@@ -707,6 +708,15 @@ export default function ContractorManagementPanel() {
                   onChange={(e) => onRecordField("payment_date", e.target.value)}
                 />
               </Box>
+              <TextField
+                fullWidth
+                size="small"
+                sx={{ mt: 2 }}
+                label="Supervisor name (printed with company signature)"
+                placeholder="Defaults from org settings when configured"
+                value={record.company_supervisor_name || ""}
+                onChange={(e) => onRecordField("company_supervisor_name", e.target.value)}
+              />
 
               <FormControlLabel
                 sx={{ mt: 1.5 }}

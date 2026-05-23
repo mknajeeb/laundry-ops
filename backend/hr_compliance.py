@@ -955,10 +955,30 @@ def format_employer_address_from_org_row(org: dict) -> str:
     return _s(org.get("address"))
 
 
+def _org_system_setting(conn, organization_id: int, skey: str) -> str:
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "system_settings") or not table_has_column(c, "system_settings", "organization_id"):
+        return ""
+    try:
+        c.execute(
+            "SELECT svalue FROM system_settings WHERE organization_id=%s AND skey=%s LIMIT 1",
+            (int(organization_id), skey),
+        )
+        row = c.fetchone()
+        return (row.get("svalue") or "").strip() if row else ""
+    except Exception:
+        return ""
+
+
 def fetch_hr_org_settings(conn, organization_id: int) -> dict:
     """Employer line for forms: prefer `organizations` structured fields (see organizations_employer_form_fields_v1.sql)."""
     c = conn.cursor(dictionary=True)
-    out = {"employer_name": "", "employer_address": "", "employer_ein": ""}
+    out = {
+        "employer_name": "",
+        "employer_address": "",
+        "employer_ein": "",
+        "company_supervisor_name": _org_system_setting(conn, organization_id, "hr_company_supervisor_name"),
+    }
     if table_exists(c, "system_settings") and table_has_column(c, "system_settings", "organization_id"):
         try:
             for key, tgt in (

@@ -305,6 +305,7 @@ def build_contractor_prefill(conn, user_id: int, organization_id: int) -> dict[s
             ).strip(),
             "company_phone": "(917) 341-5161",
             "company_website": "https://veewash.com",
+            "company_supervisor_name": str(org.get("company_supervisor_name") or "").strip(),
             "organization_logo_url": u.get("organization_logo_url"),
             "is_contractor": user_is_contractor(conn, user_id),
             "is_short_term": user_is_short_term_temp(conn, user_id),

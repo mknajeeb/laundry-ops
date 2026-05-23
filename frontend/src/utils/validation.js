@@ -26,6 +26,16 @@ export function isValidUsPhone10(digits) {
   return digits.length === 10;
 }
 
+/** Display US phone as (XXX) XXX-XXXX when 10 digits are available. */
+export function formatUsPhoneDisplay(s) {
+  const d = normalizeUsPhoneDigits(s);
+  if (d.length !== 10) {
+    const t = String(s || "").trim();
+    return t || null;
+  }
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+}
+
 /** SSN / ITIN: 9 digits only for storage and PDF prefill. */
 export function normalizeTaxIdDigits(s) {
   return String(s || "").replace(/\D/g, "").slice(0, 9);

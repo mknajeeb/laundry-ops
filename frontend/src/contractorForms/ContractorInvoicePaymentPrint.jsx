@@ -1,5 +1,7 @@
 /** Universal Contractor Invoice & Payment Receipt (print layout). */
 
+import { formatUsPhoneDisplay } from "../utils/validation";
+
 function hasValue(val) {
   return val != null && String(val).trim() !== "";
 }
@@ -7,6 +9,14 @@ function hasValue(val) {
 function pickText(...vals) {
   for (const v of vals) {
     if (hasValue(v)) return String(v).trim();
+  }
+  return null;
+}
+
+function pickPhone(...vals) {
+  for (const v of vals) {
+    const formatted = formatUsPhoneDisplay(v);
+    if (formatted) return formatted;
   }
   return null;
 }
@@ -71,7 +81,7 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
       strongLabel: true,
       left: true,
     },
-    { key: "phone", label: "Phone", value: pickText(r.worker_phone, prefill?.phone), left: true },
+    { key: "phone", label: "Phone", value: pickPhone(r.worker_phone, prefill?.phone), left: true },
     { key: "email", label: "Email", value: pickText(r.worker_email, prefill?.email), left: true },
     { key: "period", label: "Work period", value: workPeriod, left: true },
     {
@@ -167,6 +177,12 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
     strongLabel: true,
   });
 
+  const supervisorName = pickText(
+    r.company_supervisor_name,
+    prefill?.company_supervisor_name,
+    prefill?.company_representative,
+  );
+
   return (
     <>
       <p className="cform-p" style={{ color: "#475569", marginBottom: "0.12in" }}>
@@ -200,6 +216,11 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
         </div>
         <div>
           <strong>Company signature</strong>
+          {supervisorName ? (
+            <p className="cform-p" style={{ margin: "0.08in 0 0.1in", fontSize: "10pt" }}>
+              <strong>Supervisor name:</strong> {supervisorName}
+            </p>
+          ) : null}
           <div className="cform-sig-line" />
           <strong>Date</strong>
           <div className="cform-sig-line" />
@@ -236,6 +257,7 @@ export function emptyPaymentRecord(prefill = {}, contractorType = "regular") {
     total_paid_ytd_prior: "0",
     amount_paid_manual: false,
     print_include_payment_reference: true,
+    company_supervisor_name: prefill?.company_supervisor_name || "",
     notes: "",
     source_type: "manual",
     status: "paid",
