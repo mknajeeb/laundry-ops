@@ -290,15 +290,26 @@ def _geofence_for_user(conn, user_id: int, organization_id: int) -> int:
         row = c.fetchone()
         if row and row.get("geofence_id") is not None:
             return int(row["geofence_id"])
-    c.execute(
-        """
-        SELECT id FROM geofences
-        WHERE organization_id=%s AND active=1
-        ORDER BY id ASC
-        LIMIT 1
-        """,
-        (int(organization_id),),
-    )
+    chk = conn.cursor()
+    if table_has_column(chk, "geofences", "organization_id"):
+        c.execute(
+            """
+            SELECT id FROM geofences
+            WHERE organization_id=%s AND active=1
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (int(organization_id),),
+        )
+    else:
+        c.execute(
+            """
+            SELECT id FROM geofences
+            WHERE active=1
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+        )
     row = c.fetchone()
     if row and row.get("id") is not None:
         return int(row["id"])
