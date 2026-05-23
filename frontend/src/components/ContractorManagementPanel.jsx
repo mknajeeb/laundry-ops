@@ -708,36 +708,18 @@ export default function ContractorManagementPanel() {
                 />
               </Box>
 
-              <FormGroup
-                sx={{
-                  mt: 1.5,
-                  flexDirection: { xs: "column", sm: "row" },
-                  gap: { xs: 0, sm: 2 },
-                }}
-              >
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={record.print_include_service_details !== false}
-                      onChange={(e) =>
-                        onRecordField("print_include_service_details", e.target.checked)
-                      }
-                    />
-                  }
-                  label="Include service details on print"
-                />
-                <FormControlLabel
-                  control={
-                    <Checkbox
-                      checked={record.print_include_payment_reference !== false}
-                      onChange={(e) =>
-                        onRecordField("print_include_payment_reference", e.target.checked)
-                      }
-                    />
-                  }
-                  label="Include payment reference on print"
-                />
-              </FormGroup>
+              <FormControlLabel
+                sx={{ mt: 1.5 }}
+                control={
+                  <Checkbox
+                    checked={record.print_include_payment_reference !== false}
+                    onChange={(e) =>
+                      onRecordField("print_include_payment_reference", e.target.checked)
+                    }
+                  />
+                }
+                label="Include payment reference on print (only when filled in)"
+              />
 
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
                 <Button

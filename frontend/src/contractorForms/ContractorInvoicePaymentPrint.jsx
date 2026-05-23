@@ -1,13 +1,17 @@
 /** Universal Contractor Invoice & Payment Receipt (print layout). */
 
-import { presetById } from "./workPerformedPresets";
-
-function line(val) {
-  const s = val != null && String(val).trim() !== "" ? String(val).trim() : "";
-  return s || "______________________________";
+function hasValue(val) {
+  return val != null && String(val).trim() !== "";
 }
 
-function money(val) {
+function pickText(...vals) {
+  for (const v of vals) {
+    if (hasValue(v)) return String(v).trim();
+  }
+  return null;
+}
+
+function formatMoney(val) {
   if (val == null || val === "") return null;
   const n = Number(val);
   if (Number.isNaN(n)) return null;
@@ -20,12 +24,148 @@ function typeLabel(t) {
   return "Regular Contractor";
 }
 
+function PrintTable({ rows }) {
+  const visible = rows.filter((row) => row.value != null && row.value !== "");
+  if (!visible.length) return null;
+  return (
+    <table className="contractor-payment-table">
+      <tbody>
+        {visible.map((row) => (
+          <tr key={row.key}>
+            <td>
+              {row.strongLabel ? <strong>{row.label}</strong> : row.label}
+            </td>
+            <td style={{ textAlign: row.left ? "left" : undefined }}>
+              {row.strongValue ? <strong>{row.value}</strong> : row.value}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export default function ContractorInvoicePaymentPrint({ record, prefill }) {
   const r = record || {};
   const isRegular = r.contractor_type === "regular";
   const priorYtd = Number(r.total_paid_ytd_prior) || 0;
   const amountPaid = Number(r.amount_paid) || 0;
   const ytdIncluding = Math.round((priorYtd + amountPaid) * 100) / 100;
+
+  const workPeriodStart = pickText(r.work_period_start);
+  const workPeriodEnd = pickText(r.work_period_end);
+  let workPeriod = null;
+  if (workPeriodStart && workPeriodEnd) workPeriod = `${workPeriodStart} — ${workPeriodEnd}`;
+  else if (workPeriodStart) workPeriod = workPeriodStart;
+  else if (workPeriodEnd) workPeriod = workPeriodEnd;
+
+  const hsHours = Number(r.health_safety_credit_hours) || 0;
+  const hsAmount = Number(r.health_safety_credit_amount) || 0;
+  const adjustments = Number(r.adjustment_amount) || 0;
+
+  const part1Rows = [
+    {
+      key: "name",
+      label: "Contractor / worker name",
+      value: pickText(r.worker_name, prefill?.full_name),
+      strongLabel: true,
+      left: true,
+    },
+    { key: "phone", label: "Phone", value: pickText(r.worker_phone, prefill?.phone), left: true },
+    { key: "email", label: "Email", value: pickText(r.worker_email, prefill?.email), left: true },
+    { key: "period", label: "Work period", value: workPeriod, left: true },
+    {
+      key: "hours",
+      label: "Total approved hours",
+      value: hasValue(r.approved_hours) ? Number(r.approved_hours).toFixed(2) : null,
+    },
+    {
+      key: "rate",
+      label: "Service rate",
+      value: formatMoney(r.service_rate),
+    },
+    {
+      key: "service_amount",
+      label: "Service amount",
+      value: formatMoney(r.service_amount),
+    },
+  ];
+
+  if (isRegular && hsHours > 0) {
+    part1Rows.push({
+      key: "hs_hours",
+      label: "Health & Safety Credit hours, if any",
+      value: hsHours.toFixed(2),
+    });
+  }
+  if (isRegular && hsAmount > 0) {
+    part1Rows.push({
+      key: "hs_amount",
+      label: "Health & Safety Credit amount, if any",
+      value: formatMoney(hsAmount),
+    });
+  }
+  if (adjustments !== 0) {
+    part1Rows.push({
+      key: "adjustments",
+      label: "Adjustments, if any",
+      value: formatMoney(adjustments),
+    });
+  }
+
+  part1Rows.push(
+    {
+      key: "total_due",
+      label: "Total amount due",
+      value: formatMoney(r.total_amount_due),
+      strongLabel: true,
+      strongValue: true,
+    },
+    {
+      key: "ytd_prior",
+      label: "Total paid this year (before this payment)",
+      value: priorYtd > 0 ? formatMoney(priorYtd) : null,
+    },
+    {
+      key: "ytd_including",
+      label: "Total paid this year (including this payment)",
+      value: formatMoney(ytdIncluding),
+      strongValue: true,
+    },
+  );
+
+  const part2Rows = [
+    {
+      key: "amount_paid",
+      label: "Amount paid",
+      value: formatMoney(r.amount_paid),
+      strongLabel: true,
+      strongValue: true,
+    },
+    {
+      key: "method",
+      label: "Payment method",
+      value: pickText(r.payment_method),
+      left: true,
+    },
+  ];
+
+  if (r.print_include_payment_reference !== false && hasValue(r.payment_reference)) {
+    part2Rows.push({
+      key: "reference",
+      label: "Payment reference",
+      value: pickText(r.payment_reference),
+      left: true,
+    });
+  }
+
+  part2Rows.push({
+    key: "payment_date",
+    label: "Payment date",
+    value: pickText(r.payment_date),
+    left: true,
+    strongLabel: true,
+  });
 
   return (
     <>
@@ -38,121 +178,7 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
         Work summary for the pay period. Signature is not required for this section.
       </p>
 
-      <table className="contractor-payment-table">
-        <tbody>
-          <tr>
-            <td>
-              <strong>Contractor / worker name</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>{line(r.worker_name || prefill?.full_name)}</td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Phone</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>{line(r.worker_phone || prefill?.phone)}</td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Email</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>{line(r.worker_email || prefill?.email)}</td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Work period</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>
-              {line(r.work_period_start)} — {line(r.work_period_end)}
-            </td>
-          </tr>
-          {r.print_include_service_details !== false ? (
-            <tr>
-              <td>
-                <strong>Service performed</strong>
-              </td>
-              <td style={{ textAlign: "left", whiteSpace: "pre-wrap" }}>
-                {line(r.work_performed)}
-                {r.work_performed_notes ? (
-                  <>
-                    <br />
-                    <span style={{ color: "#64748b", fontSize: "9.5pt" }}>
-                      Notes: {r.work_performed_notes}
-                    </span>
-                  </>
-                ) : null}
-              </td>
-            </tr>
-          ) : r.work_performed_preset ? (
-            <tr>
-              <td>
-                <strong>Service type</strong>
-              </td>
-              <td style={{ textAlign: "left" }}>
-                {line(presetById(r.work_performed_preset)?.label || r.work_performed?.split(",")[0])}
-              </td>
-            </tr>
-          ) : null}
-          <tr>
-            <td>
-              <strong>Total approved hours</strong>
-            </td>
-            <td>
-              {r.approved_hours != null && r.approved_hours !== ""
-                ? Number(r.approved_hours).toFixed(2)
-                : line("")}
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Service rate</strong>
-            </td>
-            <td>{money(r.service_rate) ?? line("")}</td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Service amount</strong>
-            </td>
-            <td>{money(r.service_amount) ?? line("")}</td>
-          </tr>
-          {isRegular ? (
-            <>
-              <tr>
-                <td>Health &amp; Safety Credit hours, if any</td>
-                <td>
-                  {Number(r.health_safety_credit_hours || 0).toFixed(2)}
-                </td>
-              </tr>
-              <tr>
-                <td>Health &amp; Safety Credit amount, if any</td>
-                <td>{money(r.health_safety_credit_amount) ?? "$0.00"}</td>
-              </tr>
-            </>
-          ) : null}
-          <tr>
-            <td>Adjustments, if any</td>
-            <td>{money(r.adjustment_amount) ?? "$0.00"}</td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Total amount due</strong>
-            </td>
-            <td>
-              <strong>{money(r.total_amount_due) ?? line("")}</strong>
-            </td>
-          </tr>
-          <tr>
-            <td>Total paid this year (before this payment)</td>
-            <td>{money(priorYtd) ?? "$0.00"}</td>
-          </tr>
-          <tr>
-            <td>Total paid this year (including this payment)</td>
-            <td>
-              <strong>{money(ytdIncluding) ?? line("")}</strong>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <PrintTable rows={part1Rows} />
 
       <h2 className="cform-section-title" style={{ marginTop: "0.28in" }}>
         Part 2 — Payment Receipt
@@ -163,38 +189,7 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
         rights. This form does not guarantee future work.
       </p>
 
-      <table className="contractor-payment-table">
-        <tbody>
-          <tr>
-            <td>
-              <strong>Amount paid</strong>
-            </td>
-            <td>
-              <strong>{money(r.amount_paid) ?? line("")}</strong>
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <strong>Payment method</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>{line(r.payment_method)}</td>
-          </tr>
-          {r.print_include_payment_reference !== false ? (
-            <tr>
-              <td>
-                <strong>Payment reference</strong>
-              </td>
-              <td style={{ textAlign: "left" }}>{line(r.payment_reference)}</td>
-            </tr>
-          ) : null}
-          <tr>
-            <td>
-              <strong>Payment date</strong>
-            </td>
-            <td style={{ textAlign: "left" }}>{line(r.payment_date)}</td>
-          </tr>
-        </tbody>
-      </table>
+      <PrintTable rows={part2Rows} />
 
       <div className="cform-sig-block">
         <div>
@@ -240,7 +235,6 @@ export function emptyPaymentRecord(prefill = {}, contractorType = "regular") {
     invoice_date: today,
     total_paid_ytd_prior: "0",
     amount_paid_manual: false,
-    print_include_service_details: true,
     print_include_payment_reference: true,
     notes: "",
     source_type: "manual",
