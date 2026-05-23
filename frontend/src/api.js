@@ -883,6 +883,9 @@ export const postPayrollTimeRecord = (body) =>
 export const patchPayrollTimeRecord = (recordId, body) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/save`, body);
 
+export const postApprovePayrollTimeRecord = (recordId) =>
+  axios.post(`${API_BASE}/api/ta/payroll/time-records/${recordId}/approve`, {});
+
 export const deletePayrollTimeRecord = (recordId) =>
   axios.delete(`${API_BASE}/api/ta/payroll/time-records/${recordId}`);
 
@@ -900,6 +903,9 @@ export const getPayoutBatch = (batchId) =>
 
 export const patchPayoutBatch = (batchId, body) =>
   axios.patch(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`, body);
+
+export const deletePayoutBatch = (batchId) =>
+  axios.delete(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`);
 
 export const getAccountantYtd = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/accountant/ytd`, { params });

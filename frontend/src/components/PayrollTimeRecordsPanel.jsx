@@ -26,6 +26,7 @@ import {
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import CheckIcon from "@mui/icons-material/Check";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import {
@@ -33,6 +34,7 @@ import {
   getPayrollTimeRecords,
   getTaUsers,
   patchPayrollTimeRecord,
+  postApprovePayrollTimeRecord,
   postPayrollTimeRecord,
 } from "../api";
 import {
@@ -51,14 +53,22 @@ const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "open", label: "Open" },
   { value: "completed", label: "Completed" },
+  { value: "pending_approval", label: "Pending approval" },
   { value: "approved", label: "Approved" },
-  { value: "needs_correction", label: "Needs correction" },
 ];
+
+function statusLabel(st) {
+  if (st === "pending_approval") return "Pending approval";
+  if (st === "approved") return "Approved";
+  if (st === "open") return "Open";
+  if (st === "completed") return "Completed";
+  return st || "—";
+}
 
 function statusColor(st) {
   if (st === "open") return "info";
   if (st === "approved") return "success";
-  if (st === "needs_correction") return "warning";
+  if (st === "pending_approval") return "warning";
   return "default";
 }
 
@@ -192,6 +202,16 @@ export default function PayrollTimeRecordsPanel() {
     }
   };
 
+  const approveRecord = async (row) => {
+    setError("");
+    try {
+      await postApprovePayrollTimeRecord(row.id);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Approve failed");
+    }
+  };
+
   const confirmDelete = async () => {
     if (!deleteTarget?.id) return;
     setSaving(true);
@@ -228,7 +248,8 @@ export default function PayrollTimeRecordsPanel() {
           </Button>
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Review clock-in/out and approve hours before creating payout batches.
+          Review clock-in/out, then click <strong>Approve</strong> on each row before pulling hours into a
+          payout batch.
         </Typography>
         <Box
           sx={{
@@ -328,9 +349,21 @@ export default function PayrollTimeRecordsPanel() {
                   {formatHoursDecimal(r.approved_hours)}
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>
-                  <Chip size="small" label={r.status} color={statusColor(r.status)} />
+                  <Chip size="small" label={statusLabel(r.status)} color={statusColor(r.status)} />
                 </TableCell>
                 <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                  {r.status === "pending_approval" || r.status === "completed" ? (
+                    <Tooltip title="Approve for payroll">
+                      <IconButton
+                        size="small"
+                        color="success"
+                        onClick={() => approveRecord(r)}
+                        aria-label="Approve"
+                      >
+                        <CheckIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
                   <Tooltip title="Edit">
                     <IconButton size="small" onClick={() => openEdit(r)} aria-label="Edit">
                       <EditIcon fontSize="small" />

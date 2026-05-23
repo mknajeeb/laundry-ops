@@ -5268,6 +5268,33 @@ def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
     return rec
 
 
+@ta_bp.route("/payroll/time-records/<int:rid>/approve", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_approve(rid):
+    conn = get_db()
+    try:
+        from backend.payroll_operations import approve_time_record
+
+        rec = approve_time_record(conn, _tenant_id(), rid)
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_session",
+            rid,
+            "payroll_hours_approved",
+        )
+        conn.commit()
+        return jsonify(rec)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_approve failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/time-records/<int:rid>/save", methods=["POST"])
 @require_auth
 @require_any_perm("ta.settings", "ta.override", "users.edit")
@@ -5361,7 +5388,7 @@ def payroll_payout_batches():
         conn.close()
 
 
-@ta_bp.route("/payroll/payout-batches/<int:batch_id>", methods=["GET", "PATCH"])
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>", methods=["GET", "PATCH", "DELETE"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit", "users.view")
 def payroll_payout_batch_detail(batch_id):
@@ -5370,7 +5397,11 @@ def payroll_payout_batch_detail(batch_id):
         from backend.payroll_operations import (
             add_payout_batch_line,
             build_batch_from_time_records,
+            delete_payout_batch,
+            delete_payout_batch_line,
             get_payout_batch,
+            update_payout_batch,
+            update_payout_batch_line,
             update_payout_batch_status,
         )
 
@@ -5380,21 +5411,50 @@ def payroll_payout_batch_detail(batch_id):
             if not row:
                 return jsonify({"error": "Not found"}), 404
             return jsonify(row)
+        if request.method == "DELETE":
+            if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
+                conn, g.ta_user["id"], "users.edit"
+            ):
+                return jsonify({"error": "Forbidden"}), 403
+            try:
+                delete_payout_batch(conn, oid, batch_id)
+                return jsonify({"ok": True})
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
         body = request.get_json(silent=True) or {}
         if body.get("action") == "add_line":
             line = add_payout_batch_line(conn, oid, batch_id, body)
             conn.commit()
             return jsonify(line), 201
         if body.get("action") == "build_from_time_records":
-            row = build_batch_from_time_records(
-                conn,
-                oid,
-                batch_id,
-                from_date=body.get("from_date") or body.get("pay_period_start"),
-                to_date=body.get("to_date") or body.get("pay_period_end"),
-            )
+            try:
+                row = build_batch_from_time_records(
+                    conn,
+                    oid,
+                    batch_id,
+                    from_date=body.get("from_date") or body.get("pay_period_start"),
+                    to_date=body.get("to_date") or body.get("pay_period_end"),
+                )
+                return jsonify(row)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+        if body.get("action") == "update_batch":
+            row = update_payout_batch(conn, oid, batch_id, body)
             conn.commit()
             return jsonify(row)
+        if body.get("action") == "delete_line":
+            lid = body.get("line_id")
+            if not lid:
+                return jsonify({"error": "line_id required"}), 400
+            delete_payout_batch_line(conn, oid, int(lid))
+            row = get_payout_batch(conn, oid, batch_id)
+            return jsonify(row)
+        if body.get("action") == "update_line":
+            lid = body.get("line_id")
+            if not lid:
+                return jsonify({"error": "line_id required"}), 400
+            line = update_payout_batch_line(conn, oid, batch_id, int(lid), body)
+            return jsonify(line)
         if body.get("status"):
             row = update_payout_batch_status(
                 conn, oid, batch_id, body["status"], actor_id=int(g.ta_user["id"])

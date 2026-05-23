@@ -85,12 +85,26 @@ def format_hours_display(seconds: Any) -> str:
     return f"{dec} h"
 
 
+def ensure_payroll_hours_approved_column(cursor) -> None:
+    if table_exists(cursor, "shift_sessions") and not table_has_column(
+        cursor, "shift_sessions", "payroll_hours_approved"
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE shift_sessions
+            ADD COLUMN payroll_hours_approved TINYINT(1) NOT NULL DEFAULT 0
+            """
+        )
+
+
 def time_record_status(row: dict) -> str:
     st = str(row.get("status") or "")
     if st == "active":
         return "open"
-    if bool(row.get("manual_override")) or bool(row.get("needs_correction")):
-        return "needs_correction"
+    if bool(row.get("payroll_hours_approved")):
+        return "approved"
+    if bool(row.get("manual_override")):
+        return "pending_approval"
     if str(row.get("payroll_cycle_review_state") or "") == "approved":
         return "approved"
     if st in ("completed", "auto_closed"):
@@ -189,6 +203,7 @@ def list_time_records(
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
     has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
     has_override = table_has_column(chk, "shift_sessions", "manual_override")
+    has_hours_approved = table_has_column(chk, "shift_sessions", "payroll_hours_approved")
     has_review = table_has_column(chk, "payroll_cycles", "review_state")
     remarks_sel = (
         ", s.period_adjustment_remarks"
@@ -196,6 +211,11 @@ def list_time_records(
         else ", NULL AS period_adjustment_remarks"
     )
     override_sel = ", s.manual_override" if has_override else ", 0 AS manual_override"
+    hours_approved_sel = (
+        ", s.payroll_hours_approved"
+        if has_hours_approved
+        else ", 0 AS payroll_hours_approved"
+    )
     review_sel = ", pc.review_state AS payroll_cycle_review_state" if has_review else ""
     if has_ss_org:
         org_clause = "s.organization_id = %s"
@@ -205,7 +225,7 @@ def list_time_records(
     q = f"""
         SELECT s.id, s.user_id, s.clock_in_at, s.clock_out_at, s.status,
                s.total_break_seconds, s.net_work_seconds
-               {override_sel}{remarks_sel},
+               {override_sel}{hours_approved_sel}{remarks_sel},
                pp.first_name, pp.last_name
                {review_sel}
         FROM shift_sessions s
@@ -250,7 +270,9 @@ def list_time_records(
             "approved_hours_display": format_hours_display(approved_sec),
             "status": time_record_status(row),
             "notes": row.get("period_adjustment_remarks") or "",
-            "needs_correction": bool(row.get("manual_override")),
+            "payroll_hours_approved": bool(row.get("payroll_hours_approved")),
+            "pending_approval": bool(row.get("manual_override"))
+            and not bool(row.get("payroll_hours_approved")),
         }
         if status_filter and status_filter != "all" and rec["status"] != status_filter:
             continue
@@ -507,6 +529,33 @@ def update_time_record(
     return {"id": sid}
 
 
+def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
+    if not _session_in_org(conn, organization_id, session_id):
+        raise ValueError("Time record not found")
+    chk = conn.cursor()
+    ensure_payroll_hours_approved_column(chk)
+    has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    sets = ["payroll_hours_approved=1"]
+    if has_manual:
+        sets.append("manual_override=0")
+    where = "id=%s"
+    params: list[Any] = [int(session_id)]
+    if has_ss_org:
+        where += " AND organization_id=%s"
+        params.append(int(organization_id))
+    c = conn.cursor()
+    c.execute(f"UPDATE shift_sessions SET {', '.join(sets)} WHERE {where}", tuple(params))
+    if c.rowcount < 1:
+        raise ValueError("Time record not found")
+    conn.commit()
+    items = list_time_records(conn, organization_id, limit=2000)
+    for rec in items:
+        if rec["id"] == session_id:
+            return rec
+    return {"id": session_id, "status": "approved"}
+
+
 def delete_time_record(conn, organization_id: int, session_id: int) -> bool:
     chk = conn.cursor()
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
@@ -636,6 +685,120 @@ def create_payout_batch(
     return get_payout_batch(conn, organization_id, batch_id) or {}
 
 
+def update_payout_batch(
+    conn, organization_id: int, batch_id: int, body: dict
+) -> Optional[dict]:
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
+        raise ValueError("Only draft or hours-reviewed batches can be edited")
+    fields = []
+    vals: list[Any] = []
+    for key, col in (
+        ("batch_name", "batch_name"),
+        ("pay_period_start", "pay_period_start"),
+        ("pay_period_end", "pay_period_end"),
+        ("payout_frequency", "payout_frequency"),
+        ("notes", "notes"),
+    ):
+        if key in body and body[key] is not None:
+            fields.append(f"{col}=%s")
+            vals.append(body[key])
+    if not fields:
+        return batch
+    vals.extend([int(batch_id), int(organization_id)])
+    c = conn.cursor()
+    c.execute(
+        f"UPDATE payout_batches SET {', '.join(fields)}, updated_at=CURRENT_TIMESTAMP "
+        f"WHERE id=%s AND organization_id=%s",
+        tuple(vals),
+    )
+    conn.commit()
+    return get_payout_batch(conn, organization_id, batch_id)
+
+
+def delete_payout_batch(conn, organization_id: int, batch_id: int) -> bool:
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        return False
+    if str(batch.get("status") or "") not in ("draft",):
+        raise ValueError("Only draft batches can be deleted")
+    c = conn.cursor()
+    c.execute(
+        "DELETE FROM payout_batches WHERE id=%s AND organization_id=%s",
+        (int(batch_id), int(organization_id)),
+    )
+    conn.commit()
+    return c.rowcount > 0
+
+
+def delete_payout_batch_line(conn, organization_id: int, line_id: int) -> bool:
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT batch_id FROM payout_batch_lines WHERE id=%s AND organization_id=%s",
+        (int(line_id), int(organization_id)),
+    )
+    row = c.fetchone()
+    if not row:
+        return False
+    batch_id = int(row["batch_id"])
+    c2 = conn.cursor()
+    c2.execute(
+        "DELETE FROM payout_batch_lines WHERE id=%s AND organization_id=%s",
+        (int(line_id), int(organization_id)),
+    )
+    _recompute_batch_totals(conn, batch_id)
+    conn.commit()
+    return True
+
+
+def update_payout_batch_line(
+    conn, organization_id: int, batch_id: int, line_id: int, body: dict
+) -> dict:
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    hours = float(_money(body.get("approved_hours", body.get("hours"))))
+    rate = float(_money(body.get("rate")))
+    adj = float(_money(body.get("adjustments")))
+    if batch["worker_category"] == "contractor_1099":
+        amounts = compute_payment_summary_amounts(
+            hours, rate, body.get("health_safety_credit_hours") or 0, adj
+        )
+        gross = amounts["service_amount"]
+        total = amounts["total_payment"]
+    else:
+        gross = float(_money(hours * rate))
+        total = gross + adj
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batch_lines SET
+          approved_hours=%s, rate=%s, gross_amount=%s, adjustments=%s, total_amount=%s,
+          line_status=%s, notes=%s
+        WHERE id=%s AND batch_id=%s AND organization_id=%s
+        """,
+        (
+            hours,
+            rate,
+            gross,
+            adj,
+            total,
+            str(body.get("line_status") or "pending_approval"),
+            body.get("notes"),
+            int(line_id),
+            int(batch_id),
+            int(organization_id),
+        ),
+    )
+    _recompute_batch_totals(conn, batch_id)
+    conn.commit()
+    c2 = conn.cursor(dictionary=True)
+    c2.execute("SELECT * FROM payout_batch_lines WHERE id=%s", (int(line_id),))
+    return json_safe(c2.fetchone() or {})
+
+
 def update_payout_batch_status(
     conn, organization_id: int, batch_id: int, status: str, *, actor_id: Optional[int] = None
 ) -> Optional[dict]:
@@ -716,7 +879,7 @@ def add_payout_batch_line(
             (body.get("payment_method") or "")[:64] or None,
             (body.get("payment_reference") or "")[:255] or None,
             body.get("payment_date"),
-            str(body.get("line_status") or "pending"),
+            str(body.get("line_status") or "pending_approval"),
             body.get("document_status"),
             body.get("notes"),
             gross if batch["worker_category"] == "w2" else None,
@@ -739,13 +902,27 @@ def build_batch_from_time_records(
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
+    fd = from_date or batch.get("pay_period_start")
+    td = to_date or batch.get("pay_period_end")
     records = list_time_records(
         conn,
         organization_id,
-        from_date=from_date,
-        to_date=to_date,
+        from_date=fd,
+        to_date=td,
         worker_category=batch["worker_category"],
         status_filter="approved",
+    )
+    if not records:
+        raise ValueError(
+            "No approved time records in this period. Approve hours on the Time Records tab first."
+        )
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM payout_batch_lines
+        WHERE batch_id=%s AND organization_id=%s AND source_type='clock_records'
+        """,
+        (int(batch_id), int(organization_id)),
     )
     by_user: dict[int, dict] = {}
     for rec in records:
@@ -761,14 +938,13 @@ def build_batch_from_time_records(
         by_user[uid]["session_ids"].append(rec["id"])
     for uid, agg in by_user.items():
         rate = 0.0
-        if batch["worker_category"] != "temp":
-            try:
-                from backend.contractor_management import build_contractor_prefill
+        try:
+            from backend.contractor_management import build_contractor_prefill
 
-                pre = build_contractor_prefill(conn, uid, organization_id)
-                rate = float(pre.get("rate_per_hour") or 0)
-            except Exception:
-                rate = 0.0
+            pre = build_contractor_prefill(conn, uid, organization_id)
+            rate = float(pre.get("rate_per_hour") or 0)
+        except Exception:
+            rate = 0.0
         add_payout_batch_line(
             conn,
             organization_id,
@@ -779,10 +955,12 @@ def build_batch_from_time_records(
                 "approved_hours": agg["hours"],
                 "rate": rate,
                 "adjustments": 0,
+                "line_status": "approved",
                 "source_type": "clock_records",
                 "source_shift_session_ids": agg["session_ids"],
             },
         )
+    conn.commit()
     return get_payout_batch(conn, organization_id, batch_id) or {}
 
 
