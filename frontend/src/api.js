@@ -879,6 +879,9 @@ export const getPayrollTimeRecords = (params) =>
 export const postPayrollTimeRecord = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/time-records`, body);
 
+export const patchPayrollTimeRecord = (recordId, body) =>
+  axios.patch(`${API_BASE}/api/ta/payroll/time-records/${recordId}`, body);
+
 export const deletePayrollTimeRecord = (recordId) =>
   axios.delete(`${API_BASE}/api/ta/payroll/time-records/${recordId}`);
 

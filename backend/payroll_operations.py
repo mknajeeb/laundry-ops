@@ -258,6 +258,95 @@ def list_time_records(
     return out
 
 
+def _sum_break_seconds(conn, shift_id: int) -> int:
+    chk = conn.cursor()
+    if not table_exists(chk, "shift_breaks"):
+        return 0
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT break_start_at, break_end_at FROM shift_breaks WHERE shift_session_id=%s",
+        (int(shift_id),),
+    )
+    total = 0
+    for row in c.fetchall() or []:
+        start, end = row.get("break_start_at"), row.get("break_end_at")
+        if start and end:
+            total += int((end - start).total_seconds())
+    return total
+
+
+def _geofence_for_user(conn, user_id: int, organization_id: int) -> int:
+    c = conn.cursor(dictionary=True)
+    if table_exists(c, "user_geofences"):
+        c.execute(
+            """
+            SELECT geofence_id FROM user_geofences
+            WHERE user_id=%s
+            ORDER BY is_primary DESC, geofence_id ASC
+            LIMIT 1
+            """,
+            (int(user_id),),
+        )
+        row = c.fetchone()
+        if row and row.get("geofence_id") is not None:
+            return int(row["geofence_id"])
+    c.execute(
+        """
+        SELECT id FROM geofences
+        WHERE organization_id=%s AND active=1
+        ORDER BY id ASC
+        LIMIT 1
+        """,
+        (int(organization_id),),
+    )
+    row = c.fetchone()
+    if row and row.get("id") is not None:
+        return int(row["id"])
+    raise ValueError(
+        "No active geofence for this organization. Configure a geofence under Time & Attendance."
+    )
+
+
+def _employment_category_for_user(conn, user_id: int) -> Optional[int]:
+    c = conn.cursor(dictionary=True)
+    if not table_exists(c, "user_employment_categories"):
+        return None
+    c.execute(
+        """
+        SELECT employment_category_id FROM user_employment_categories
+        WHERE user_id=%s AND effective_from <= CURDATE()
+          AND (effective_to IS NULL OR effective_to >= CURDATE())
+        ORDER BY effective_from DESC LIMIT 1
+        """,
+        (int(user_id),),
+    )
+    row = c.fetchone()
+    if row and row.get("employment_category_id") is not None:
+        return int(row["employment_category_id"])
+    return None
+
+
+def _session_in_org(conn, organization_id: int, session_id: int) -> bool:
+    chk = conn.cursor()
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+    c = conn.cursor(dictionary=True)
+    if has_ss_org:
+        c.execute(
+            "SELECT id FROM shift_sessions WHERE id=%s AND organization_id=%s",
+            (int(session_id), int(organization_id)),
+        )
+    else:
+        c.execute(
+            """
+            SELECT s.id FROM shift_sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.id=%s AND u.organization_id=%s
+            """,
+            (int(session_id), int(organization_id)),
+        )
+    return c.fetchone() is not None
+
+
 def _parse_clock_dt(value: Any) -> Optional[datetime]:
     if value is None or value == "":
         return None
@@ -290,19 +379,40 @@ def create_manual_time_record(
     co = _parse_clock_dt(clock_out_at)
     if not ci or not co or co <= ci:
         raise ValueError("Clock out must be after clock in")
-    pc_id = get_or_create_payroll_cycle_unified(conn, ci, int(organization_id))
+    uid = int(user_id)
+    oid = int(organization_id)
+    pc_id = get_or_create_payroll_cycle_unified(conn, ci, oid)
     net = int((co - ci).total_seconds())
+    geofence_id = _geofence_for_user(conn, uid, oid)
+    employment_category_id = _employment_category_for_user(conn, uid)
+
     chk = conn.cursor()
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
     has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
-    cols = ["user_id", "payroll_cycle_id", "clock_in_at", "clock_out_at", "status", "total_break_seconds", "net_work_seconds", "manual_override"]
-    vals = [int(user_id), pc_id, ci, co, "completed", 0, net, 1]
+    has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+
+    cols = [
+        "user_id",
+        "payroll_cycle_id",
+        "geofence_id",
+        "employment_category_id",
+        "clock_in_at",
+        "clock_out_at",
+        "status",
+        "total_break_seconds",
+        "net_work_seconds",
+    ]
+    vals: list[Any] = [uid, pc_id, geofence_id, employment_category_id, ci, co, "completed", 0, net]
     if has_ss_org:
         cols.insert(1, "organization_id")
-        vals.insert(1, int(organization_id))
+        vals.insert(1, oid)
+    if has_manual:
+        cols.append("manual_override")
+        vals.append(1)
     if has_remarks:
         cols.append("period_adjustment_remarks")
         vals.append((remarks or "Manual payroll entry")[:2000])
+
     placeholders = ", ".join(["%s"] * len(cols))
     c = conn.cursor()
     c.execute(
@@ -315,7 +425,75 @@ def create_manual_time_record(
     for rec in items:
         if rec["id"] == sid:
             return rec
-    return {"id": sid, "user_id": user_id}
+    return {"id": sid, "user_id": uid}
+
+
+def update_time_record(
+    conn,
+    organization_id: int,
+    session_id: int,
+    *,
+    clock_in_at: Any = None,
+    clock_out_at: Any = None,
+    remarks: Optional[str] = None,
+) -> dict:
+    sid = int(session_id)
+    if not _session_in_org(conn, organization_id, sid):
+        raise ValueError("Time record not found")
+
+    chk = conn.cursor()
+    has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
+    has_manual = table_has_column(chk, "shift_sessions", "manual_override")
+    has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
+
+    ci = _parse_clock_dt(clock_in_at) if clock_in_at is not None else None
+    co = _parse_clock_dt(clock_out_at) if clock_out_at is not None else None
+
+    c = conn.cursor(dictionary=True)
+    c.execute("SELECT clock_in_at, clock_out_at FROM shift_sessions WHERE id=%s", (sid,))
+    cur = c.fetchone()
+    if not cur:
+        raise ValueError("Time record not found")
+
+    new_ci = ci if ci is not None else cur.get("clock_in_at")
+    new_co = co if co is not None else cur.get("clock_out_at")
+    if isinstance(new_ci, str):
+        new_ci = _parse_clock_dt(new_ci)
+    if isinstance(new_co, str):
+        new_co = _parse_clock_dt(new_co)
+    if not new_ci or not new_co or new_co <= new_ci:
+        raise ValueError("Clock out must be after clock in")
+
+    updates = ["clock_in_at=%s", "clock_out_at=%s"]
+    params: list[Any] = [new_ci, new_co]
+    if has_manual:
+        updates.append("manual_override=1")
+    if has_remarks and remarks is not None:
+        updates.append("period_adjustment_remarks=%s")
+        params.append(str(remarks)[:2000])
+
+    br = _sum_break_seconds(conn, sid)
+    net = int((new_co - new_ci).total_seconds()) - br
+    updates.extend(["total_break_seconds=%s", "net_work_seconds=%s", "status=%s"])
+    params.extend([br, net, "completed"])
+
+    where = "id=%s"
+    params.append(sid)
+    if has_ss_org:
+        where += " AND organization_id=%s"
+        params.append(int(organization_id))
+
+    c2 = conn.cursor()
+    c2.execute(f"UPDATE shift_sessions SET {', '.join(updates)} WHERE {where}", tuple(params))
+    if c2.rowcount < 1:
+        raise ValueError("Time record not found")
+    conn.commit()
+
+    items = list_time_records(conn, organization_id, limit=2000)
+    for rec in items:
+        if rec["id"] == sid:
+            return rec
+    return {"id": sid}
 
 
 def delete_time_record(conn, organization_id: int, session_id: int) -> bool:

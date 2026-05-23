@@ -32,8 +32,7 @@ import {
   deletePayrollTimeRecord,
   getPayrollTimeRecords,
   getTaUsers,
-  patchSessionPayrollLine,
-  postAdjustSessionTimes,
+  patchPayrollTimeRecord,
   postPayrollTimeRecord,
 } from "../api";
 import {
@@ -164,22 +163,22 @@ export default function PayrollTimeRecordsPanel() {
           remarks,
         });
       } else if (editingId) {
-        const row = rows.find((r) => r.id === editingId);
-        const cinChanged = toDatetimeLocal(row?.clock_in_at) !== form.clock_in_at;
-        const coutChanged = toDatetimeLocal(row?.clock_out_at) !== form.clock_out_at;
-        if (cinChanged || coutChanged) {
-          await postAdjustSessionTimes(editingId, {
-            clock_in_at: toApiDateTime(form.clock_in_at),
-            clock_out_at: toApiDateTime(form.clock_out_at),
-            remarks,
-          });
-        }
-        await patchSessionPayrollLine(editingId, { period_adjustment_remarks: form.notes || "" });
+        await patchPayrollTimeRecord(editingId, {
+          clock_in_at: toApiDateTime(form.clock_in_at),
+          clock_out_at: toApiDateTime(form.clock_out_at),
+          remarks: form.notes || "",
+        });
       }
       setEditorOpen(false);
       await load();
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Save failed");
+      const msg =
+        e.response?.data?.error ||
+        (e.code === "ERR_NETWORK"
+          ? "Could not reach the server. The API may still be deploying — wait a minute and try again."
+          : e.message) ||
+        "Save failed";
+      setError(msg);
     } finally {
       setSaving(false);
     }

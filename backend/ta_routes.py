@@ -4412,16 +4412,29 @@ def session_payroll_line_patch(sid):
     try:
         c = conn.cursor(dictionary=True)
         has_rev = table_has_column(c, "payroll_cycles", "review_state")
+        has_ss_org = table_has_column(c, "shift_sessions", "organization_id")
         rev_sel = ", pc.review_state AS payroll_cycle_review_state" if has_rev else ""
-        c.execute(
-            f"""
-            SELECT s.*{rev_sel}
-            FROM shift_sessions s
-            JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
-            WHERE s.id=%s AND s.organization_id=%s
-            """,
-            (sid, _tenant_id()),
-        )
+        if has_ss_org:
+            c.execute(
+                f"""
+                SELECT s.*{rev_sel}
+                FROM shift_sessions s
+                JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
+                WHERE s.id=%s AND s.organization_id=%s
+                """,
+                (sid, _tenant_id()),
+            )
+        else:
+            c.execute(
+                f"""
+                SELECT s.*{rev_sel}
+                FROM shift_sessions s
+                JOIN payroll_cycles pc ON pc.id = s.payroll_cycle_id
+                JOIN users u ON u.id = s.user_id
+                WHERE s.id=%s AND u.organization_id=%s
+                """,
+                (sid, _tenant_id()),
+            )
         sess = c.fetchone()
         if not sess:
             return jsonify({"error": "Not found"}), 404
@@ -4462,10 +4475,21 @@ def session_payroll_line_patch(sid):
             return jsonify({"error": "No updatable fields"}), 400
         vals.append(sid)
         c2 = conn.cursor()
-        c2.execute(
-            f"UPDATE shift_sessions SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
-            vals + [_tenant_id()],
-        )
+        if has_ss_org:
+            c2.execute(
+                f"UPDATE shift_sessions SET {', '.join(fields)} WHERE id=%s AND organization_id=%s",
+                vals + [_tenant_id()],
+            )
+        else:
+            c2.execute(
+                f"""
+                UPDATE shift_sessions s
+                JOIN users u ON u.id = s.user_id
+                SET {', '.join(fields)}
+                WHERE s.id=%s AND u.organization_id=%s
+                """,
+                vals + [_tenant_id()],
+            )
         write_audit(conn, g.ta_user["id"], "shift_session", sid, "payroll_line_patch", new=data)
         conn.commit()
         return jsonify(json_safe(fetch_session(conn, sid)))
@@ -5180,8 +5204,10 @@ def payroll_time_records():
 
         oid = _tenant_id()
         if request.method == "POST":
-            if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
-                conn, g.ta_user["id"], "ta.override"
+            if not (
+                user_has_perm(conn, g.ta_user["id"], "ta.settings")
+                or user_has_perm(conn, g.ta_user["id"], "ta.override")
+                or user_has_perm(conn, g.ta_user["id"], "users.edit")
             ):
                 return jsonify({"error": "Forbidden"}), 403
             body = request.json or {}
@@ -5218,29 +5244,59 @@ def payroll_time_records():
         conn.close()
 
 
-@ta_bp.route("/payroll/time-records/<int:rid>", methods=["DELETE"])
+@ta_bp.route("/payroll/time-records/<int:rid>", methods=["PATCH", "DELETE"])
 @require_auth
-@require_any_perm("ta.settings", "ta.override")
-def payroll_time_record_delete(rid):
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_mutate(rid):
     conn = get_db()
     try:
-        from backend.payroll_operations import delete_time_record
+        from backend.payroll_operations import delete_time_record, update_time_record
 
-        ok = delete_time_record(conn, _tenant_id(), rid)
-        if not ok:
-            return jsonify({"error": "Not found"}), 404
-        write_audit(
-            conn,
-            g.ta_user["id"],
-            "shift_session",
-            rid,
-            "payroll_time_delete",
-            remarks="deleted from payroll time records",
-        )
-        conn.commit()
-        return jsonify({"ok": True})
+        oid = _tenant_id()
+        if request.method == "DELETE":
+            if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
+                conn, g.ta_user["id"], "ta.override"
+            ):
+                return jsonify({"error": "Forbidden"}), 403
+            ok = delete_time_record(conn, oid, rid)
+            if not ok:
+                return jsonify({"error": "Not found"}), 404
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_session",
+                rid,
+                "payroll_time_delete",
+                remarks="deleted from payroll time records",
+            )
+            conn.commit()
+            return jsonify({"ok": True})
+
+        body = request.json or {}
+        try:
+            patch_kwargs = {
+                "clock_in_at": body.get("clock_in_at"),
+                "clock_out_at": body.get("clock_out_at"),
+            }
+            if "remarks" in body:
+                patch_kwargs["remarks"] = (body.get("remarks") or "").strip()
+            elif "notes" in body:
+                patch_kwargs["remarks"] = (body.get("notes") or "").strip()
+            rec = update_time_record(conn, oid, rid, **patch_kwargs)
+            write_audit(
+                conn,
+                g.ta_user["id"],
+                "shift_session",
+                rid,
+                "payroll_time_update",
+                new=body,
+            )
+            conn.commit()
+            return jsonify(rec)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
     except Exception as e:
-        current_app.logger.exception("payroll_time_record_delete failed")
+        current_app.logger.exception("payroll_time_record_mutate failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
