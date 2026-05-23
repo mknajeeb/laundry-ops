@@ -107,7 +107,7 @@ CORS(
         "X-Hr-Form-Format",
     ],
     expose_headers=["Content-Type", "Content-Disposition", "Content-Length"],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     max_age=_cors_max_age_sec(),
 )
 

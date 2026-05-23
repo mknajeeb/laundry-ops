@@ -5244,13 +5244,57 @@ def payroll_time_records():
         conn.close()
 
 
+def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
+    from backend.payroll_operations import update_time_record
+
+    patch_kwargs = {
+        "clock_in_at": body.get("clock_in_at"),
+        "clock_out_at": body.get("clock_out_at"),
+    }
+    if "remarks" in body:
+        patch_kwargs["remarks"] = (body.get("remarks") or "").strip()
+    elif "notes" in body:
+        patch_kwargs["remarks"] = (body.get("notes") or "").strip()
+    rec = update_time_record(conn, oid, rid, **patch_kwargs)
+    write_audit(
+        conn,
+        g.ta_user["id"],
+        "shift_session",
+        rid,
+        "payroll_time_update",
+        new=body,
+    )
+    conn.commit()
+    return rec
+
+
+@ta_bp.route("/payroll/time-records/<int:rid>/save", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_record_save(rid):
+    """POST alias for update (works when CORS blocks PATCH on older API deploys)."""
+    conn = get_db()
+    try:
+        body = request.json or {}
+        try:
+            rec = _payroll_time_record_update(conn, _tenant_id(), rid, body)
+            return jsonify(rec)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_record_save failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/time-records/<int:rid>", methods=["PATCH", "DELETE"])
 @require_auth
 @require_any_perm("ta.settings", "ta.override", "users.edit")
 def payroll_time_record_mutate(rid):
     conn = get_db()
     try:
-        from backend.payroll_operations import delete_time_record, update_time_record
+        from backend.payroll_operations import delete_time_record
 
         oid = _tenant_id()
         if request.method == "DELETE":
@@ -5274,24 +5318,7 @@ def payroll_time_record_mutate(rid):
 
         body = request.json or {}
         try:
-            patch_kwargs = {
-                "clock_in_at": body.get("clock_in_at"),
-                "clock_out_at": body.get("clock_out_at"),
-            }
-            if "remarks" in body:
-                patch_kwargs["remarks"] = (body.get("remarks") or "").strip()
-            elif "notes" in body:
-                patch_kwargs["remarks"] = (body.get("notes") or "").strip()
-            rec = update_time_record(conn, oid, rid, **patch_kwargs)
-            write_audit(
-                conn,
-                g.ta_user["id"],
-                "shift_session",
-                rid,
-                "payroll_time_update",
-                new=body,
-            )
-            conn.commit()
+            rec = _payroll_time_record_update(conn, oid, rid, body)
             return jsonify(rec)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400

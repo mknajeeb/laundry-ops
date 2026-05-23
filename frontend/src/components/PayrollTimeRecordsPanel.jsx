@@ -106,7 +106,6 @@ export default function PayrollTimeRecordsPanel() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError("");
     try {
       const params = {};
       if (fromDate) params.from_date = fromDate;
@@ -116,8 +115,15 @@ export default function PayrollTimeRecordsPanel() {
       if (userId) params.user_id = userId;
       const res = await getPayrollTimeRecords(params);
       setRows(res.data?.items || []);
+      setError("");
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Load failed");
+      if (e.code === "ERR_NETWORK") {
+        setError(
+          "Could not reach the server. Check your connection or wait for the API deploy to finish.",
+        );
+      } else {
+        setError(e.response?.data?.error || e.message || "Load failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -172,13 +178,15 @@ export default function PayrollTimeRecordsPanel() {
       setEditorOpen(false);
       await load();
     } catch (e) {
-      const msg =
-        e.response?.data?.error ||
-        (e.code === "ERR_NETWORK"
-          ? "Could not reach the server. The API may still be deploying — wait a minute and try again."
-          : e.message) ||
-        "Save failed";
-      setError(msg);
+      if (e.response?.data?.error) {
+        setError(e.response.data.error);
+      } else if (e.code === "ERR_NETWORK") {
+        setError(
+          "Save blocked by browser (API CORS). Hard-refresh after deploy, or contact support if this persists.",
+        );
+      } else {
+        setError(e.message || "Save failed");
+      }
     } finally {
       setSaving(false);
     }
