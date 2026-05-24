@@ -107,7 +107,11 @@ function PayoutBatchSummaryPrint({ batch }) {
   );
 }
 
-export default function PayoutBatchesPanel() {
+export default function PayoutBatchesPanel({
+  payPeriodStart = "",
+  payPeriodEnd = "",
+  onPayPeriodChange,
+}) {
   const printRef = useRef(null);
   const [filterCat, setFilterCat] = useState("all");
   const [batches, setBatches] = useState([]);
@@ -122,8 +126,8 @@ export default function PayoutBatchesPanel() {
   const [draft, setDraft] = useState({
     batch_name: "",
     worker_category: "temp",
-    pay_period_start: "",
-    pay_period_end: "",
+    pay_period_start: payPeriodStart || "",
+    pay_period_end: payPeriodEnd || "",
     payout_frequency: "biweekly",
     notes: "",
   });
@@ -140,29 +144,69 @@ export default function PayoutBatchesPanel() {
     }
   }, [filterCat]);
 
-  const loadDetail = useCallback(async (id) => {
-    if (!id) return;
-    try {
-      const res = await getPayoutBatch(id);
-      setDetail(res.data);
-      setSelectedId(id);
-    } catch (e) {
-      setError(e.response?.data?.error || "Load batch failed");
-    }
-  }, []);
+  const loadDetail = useCallback(
+    async (id, { quiet = false } = {}) => {
+      if (!id) return;
+      try {
+        const res = await getPayoutBatch(id, { sync: 1 });
+        const batch = res.data;
+        setDetail(batch);
+        setSelectedId(id);
+        if (batch?.pay_period_start && batch?.pay_period_end) {
+          onPayPeriodChange?.({
+            start: batch.pay_period_start,
+            end: batch.pay_period_end,
+            category: batch.worker_category,
+          });
+        }
+        if (!quiet && batch?.status === "draft") {
+          const n = batch?.lines?.length || 0;
+          if (n) {
+            setInfo(`Synced ${n} worker line(s) from approved time records for this pay period.`);
+          } else {
+            setInfo(
+              "No approved time in this period yet. Approve rows on Time Records — they will appear here on refresh.",
+            );
+          }
+        }
+      } catch (e) {
+        setError(e.response?.data?.error || "Load batch failed");
+      }
+    },
+    [onPayPeriodChange],
+  );
 
   useEffect(() => {
     loadList();
     getContractors().catch(() => {});
   }, [loadList]);
 
+  const openCreateBatch = () => {
+    setDraft((d) => ({
+      ...d,
+      pay_period_start: payPeriodStart || d.pay_period_start,
+      pay_period_end: payPeriodEnd || d.pay_period_end,
+    }));
+    setCreateOpen(true);
+  };
+
   const createBatch = async () => {
     try {
       const res = await postPayoutBatch(draft);
       setCreateOpen(false);
-      setInfo("Batch created. Approve time on the Time Records tab, then pull hours here.");
+      onPayPeriodChange?.({
+        start: draft.pay_period_start,
+        end: draft.pay_period_end,
+        category: draft.worker_category,
+      });
+      const n = res.data?.lines?.length || 0;
+      setInfo(
+        n
+          ? `Batch created with ${n} worker line(s) from approved time records.`
+          : "Batch created. Approve time on Time Records for this period — lines update when you open the batch.",
+      );
       await loadList();
-      await loadDetail(res.data.id);
+      await loadDetail(res.data.id, { quiet: true });
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Create failed");
     }
@@ -180,7 +224,19 @@ export default function PayoutBatchesPanel() {
       });
       setDetail(res.data);
       setEditOpen(false);
+      onPayPeriodChange?.({
+        start: draft.pay_period_start,
+        end: draft.pay_period_end,
+        category: detail?.worker_category || draft.worker_category,
+      });
       await loadList();
+      await loadDetail(selectedId, { quiet: true });
+      const n = res.data?.lines?.length || 0;
+      setInfo(
+        n
+          ? `Pay period updated — synced ${n} worker line(s) from approved time records.`
+          : "Pay period updated. No approved time in range yet.",
+      );
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Save failed");
     }
@@ -198,22 +254,12 @@ export default function PayoutBatchesPanel() {
     }
   };
 
-  const pullHours = async () => {
-    if (!selectedId || !detail) return;
+  const refreshHours = async () => {
+    if (!selectedId) return;
     setInfo("");
     setError("");
-    try {
-      const res = await patchPayoutBatch(selectedId, {
-        action: "build_from_time_records",
-        from_date: detail.pay_period_start,
-        to_date: detail.pay_period_end,
-      });
-      setDetail(res.data);
-      setInfo(`Pulled ${res.data?.lines?.length || 0} worker line(s) from approved time records.`);
-      await loadList();
-    } catch (e) {
-      setError(e.response?.data?.error || e.message || "Pull failed");
-    }
+    await loadDetail(selectedId);
+    await loadList();
   };
 
   const setBatchStatus = async (status) => {
@@ -370,8 +416,8 @@ export default function PayoutBatchesPanel() {
           <Box>
             <Typography variant="h6">Payout batches</Typography>
             <Typography variant="body2" color="text.secondary">
-              Step 1: Approve hours on <strong>Time Records</strong>. Step 2: Create a batch and
-              pull approved hours. One batch per worker category.
+              Approved hours for the batch pay period sync automatically when you create or open a
+              draft batch. One batch per worker category.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} alignItems="center">
@@ -547,7 +593,8 @@ export default function PayoutBatchesPanel() {
                       <TableRow>
                         <TableCell colSpan={6}>
                           <Typography variant="body2" color="text.secondary">
-                            No workers in this batch. Approve time records, then click Pull approved hours.
+                            No workers in this batch yet. Approve time on Time Records for this pay period,
+                            then refresh.
                           </Typography>
                         </TableCell>
                       </TableRow>

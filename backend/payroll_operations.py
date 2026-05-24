@@ -18,7 +18,7 @@ from backend.payroll_identity import (
     get_or_create_payroll_cycle_unified,
     payroll_profiles_active,
 )
-from backend.ta_helpers import json_safe, table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, json_safe, table_exists, table_has_column
 
 
 WORKER_CATEGORIES = ("w2", "contractor_1099", "temp")
@@ -86,15 +86,22 @@ def format_hours_display(seconds: Any) -> str:
 
 
 def ensure_payroll_hours_approved_column(cursor) -> None:
-    if table_exists(cursor, "shift_sessions") and not table_has_column(
-        cursor, "shift_sessions", "payroll_hours_approved"
-    ):
+    if not table_exists(cursor, "shift_sessions"):
+        return
+    if table_has_column(cursor, "shift_sessions", "payroll_hours_approved"):
+        return
+    try:
         cursor.execute(
             """
             ALTER TABLE shift_sessions
             ADD COLUMN payroll_hours_approved TINYINT(1) NOT NULL DEFAULT 0
             """
         )
+    except Exception as exc:
+        # 1060: duplicate column — another request added it first; refresh cache.
+        if getattr(exc, "args", (None,))[0] != 1060:
+            raise
+    invalidate_schema_cache()
 
 
 def time_record_status(row: dict) -> str:
@@ -200,6 +207,7 @@ def list_time_records(
     if not payroll_profiles_active(conn):
         return []
     chk = conn.cursor()
+    ensure_payroll_hours_approved_column(chk)
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
     has_remarks = table_has_column(chk, "shift_sessions", "period_adjustment_remarks")
     has_override = table_has_column(chk, "shift_sessions", "manual_override")
@@ -556,6 +564,44 @@ def approve_time_record(conn, organization_id: int, session_id: int) -> dict:
     return {"id": session_id, "status": "approved"}
 
 
+def bulk_approve_time_records(
+    conn,
+    organization_id: int,
+    *,
+    session_ids: Optional[list[int]] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    user_id: Optional[int] = None,
+    worker_category: Optional[str] = None,
+) -> dict:
+    if session_ids:
+        ids = [int(x) for x in session_ids]
+    else:
+        records = list_time_records(
+            conn,
+            organization_id,
+            from_date=from_date,
+            to_date=to_date,
+            user_id=user_id,
+            worker_category=worker_category,
+            limit=2000,
+        )
+        ids = [
+            int(r["id"])
+            for r in records
+            if r.get("status") in ("pending_approval", "completed")
+        ]
+    approved = 0
+    errors: list[dict] = []
+    for sid in ids:
+        try:
+            approve_time_record(conn, organization_id, sid)
+            approved += 1
+        except ValueError as exc:
+            errors.append({"id": sid, "error": str(exc)})
+    return {"approved": approved, "skipped": len(errors), "errors": errors}
+
+
 def delete_time_record(conn, organization_id: int, session_id: int) -> bool:
     chk = conn.cursor()
     has_ss_org = table_has_column(chk, "shift_sessions", "organization_id")
@@ -682,6 +728,15 @@ def create_payout_batch(
         ),
     )
     batch_id = int(c.lastrowid)
+    if body.get("pay_period_start") and body.get("pay_period_end"):
+        return build_batch_from_time_records(
+            conn,
+            organization_id,
+            batch_id,
+            from_date=str(body["pay_period_start"]),
+            to_date=str(body["pay_period_end"]),
+            allow_empty=True,
+        )
     return get_payout_batch(conn, organization_id, batch_id) or {}
 
 
@@ -709,12 +764,26 @@ def update_payout_batch(
         return batch
     vals.extend([int(batch_id), int(organization_id)])
     c = conn.cursor()
+    period_changed = any(
+        k in body and body[k] is not None for k in ("pay_period_start", "pay_period_end")
+    )
     c.execute(
         f"UPDATE payout_batches SET {', '.join(fields)}, updated_at=CURRENT_TIMESTAMP "
         f"WHERE id=%s AND organization_id=%s",
         tuple(vals),
     )
     conn.commit()
+    if period_changed:
+        batch = get_payout_batch(conn, organization_id, batch_id) or {}
+        if batch.get("pay_period_start") and batch.get("pay_period_end"):
+            return build_batch_from_time_records(
+                conn,
+                organization_id,
+                batch_id,
+                from_date=str(batch["pay_period_start"]),
+                to_date=str(batch["pay_period_end"]),
+                allow_empty=True,
+            )
     return get_payout_batch(conn, organization_id, batch_id)
 
 
@@ -897,11 +966,19 @@ def add_payout_batch_line(
 
 
 def build_batch_from_time_records(
-    conn, organization_id: int, batch_id: int, *, from_date: str, to_date: str
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    from_date: str,
+    to_date: str,
+    allow_empty: bool = False,
 ) -> dict:
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
+    if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
+        raise ValueError("Only draft or hours-reviewed batches can sync from time records")
     fd = from_date or batch.get("pay_period_start")
     td = to_date or batch.get("pay_period_end")
     records = list_time_records(
@@ -912,10 +989,6 @@ def build_batch_from_time_records(
         worker_category=batch["worker_category"],
         status_filter="approved",
     )
-    if not records:
-        raise ValueError(
-            "No approved time records in this period. Approve hours on the Time Records tab first."
-        )
     c = conn.cursor()
     c.execute(
         """
@@ -924,6 +997,14 @@ def build_batch_from_time_records(
         """,
         (int(batch_id), int(organization_id)),
     )
+    if not records:
+        _recompute_batch_totals(conn, batch_id)
+        conn.commit()
+        if allow_empty:
+            return get_payout_batch(conn, organization_id, batch_id) or {}
+        raise ValueError(
+            "No approved time records in this period. Approve hours on the Time Records tab first."
+        )
     by_user: dict[int, dict] = {}
     for rec in records:
         uid = int(rec["user_id"])

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -48,6 +48,21 @@ export default function PayrollManagementPage() {
 
   const [tab, setTab] = useState(0);
 
+  const [payPeriod, setPayPeriod] = useState(() => {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 13);
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+      category: "all",
+    };
+  });
+
+  const onPayPeriodChange = useCallback((patch) => {
+    setPayPeriod((prev) => ({ ...prev, ...patch }));
+  }, []);
+
   useEffect(() => {
     if (tab >= sections.length) setTab(Math.max(0, sections.length - 1));
   }, [sections.length, tab]);
@@ -76,8 +91,9 @@ export default function PayrollManagementPage() {
         {t("payroll.mgmtTitle")}
       </Typography>
       <Typography className="no-print" variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 720 }}>
-        Approve time, run category-specific payout batches, and export accountant reports. W-2,
-        1099, and temp workers are never mixed in one batch.
+        Approve time on <strong>Time Records</strong>, then open or create a payout batch for the
+        same pay period — approved hours sync automatically by date. W-2, 1099, and temp workers are
+        never mixed in one batch.
       </Typography>
 
       <Tabs
@@ -94,8 +110,21 @@ export default function PayrollManagementPage() {
       </Tabs>
 
       <Box sx={{ pt: 2 }} role="tabpanel">
-        {active?.key === "time" ? <PayrollTimeRecordsPanel /> : null}
-        {active?.key === "batches" ? <PayoutBatchesPanel /> : null}
+        {active?.key === "time" ? (
+          <PayrollTimeRecordsPanel
+            payPeriodStart={payPeriod.start}
+            payPeriodEnd={payPeriod.end}
+            linkedCategory={payPeriod.category}
+            onPayPeriodChange={onPayPeriodChange}
+          />
+        ) : null}
+        {active?.key === "batches" ? (
+          <PayoutBatchesPanel
+            payPeriodStart={payPeriod.start}
+            payPeriodEnd={payPeriod.end}
+            onPayPeriodChange={onPayPeriodChange}
+          />
+        ) : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "documents" ? <PayrollDocumentsPanel /> : null}
         {active?.key === "accountant" ? <AccountantReportsPanel /> : null}

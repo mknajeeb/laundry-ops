@@ -5268,6 +5268,46 @@ def _payroll_time_record_update(conn, oid: int, rid: int, body: dict):
     return rec
 
 
+@ta_bp.route("/payroll/time-records/bulk-approve", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.override", "users.edit")
+def payroll_time_records_bulk_approve():
+    conn = get_db()
+    try:
+        from backend.payroll_operations import bulk_approve_time_records
+
+        body = request.get_json(silent=True) or {}
+        ids = body.get("ids")
+        if ids is not None and not isinstance(ids, list):
+            return jsonify({"error": "ids must be an array"}), 400
+        result = bulk_approve_time_records(
+            conn,
+            _tenant_id(),
+            session_ids=[int(x) for x in ids] if ids else None,
+            from_date=body.get("from_date"),
+            to_date=body.get("to_date"),
+            user_id=body.get("user_id"),
+            worker_category=body.get("worker_category"),
+        )
+        write_audit(
+            conn,
+            g.ta_user["id"],
+            "shift_session",
+            0,
+            "payroll_hours_bulk_approved",
+            new=result,
+        )
+        conn.commit()
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_time_records_bulk_approve failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/time-records/<int:rid>/approve", methods=["POST"])
 @require_auth
 @require_any_perm("ta.settings", "ta.override", "users.edit")
@@ -5410,6 +5450,19 @@ def payroll_payout_batch_detail(batch_id):
             row = get_payout_batch(conn, oid, batch_id)
             if not row:
                 return jsonify({"error": "Not found"}), 404
+            sync = str(request.args.get("sync") or "").lower()
+            if sync in ("1", "true", "yes") and str(row.get("status") or "") in (
+                "draft",
+                "hours_reviewed",
+            ):
+                row = build_batch_from_time_records(
+                    conn,
+                    oid,
+                    batch_id,
+                    from_date=str(row.get("pay_period_start") or ""),
+                    to_date=str(row.get("pay_period_end") or ""),
+                    allow_empty=True,
+                )
             return jsonify(row)
         if request.method == "DELETE":
             if not user_has_perm(conn, g.ta_user["id"], "ta.settings") and not user_has_perm(
@@ -5434,6 +5487,7 @@ def payroll_payout_batch_detail(batch_id):
                     batch_id,
                     from_date=body.get("from_date") or body.get("pay_period_start"),
                     to_date=body.get("to_date") or body.get("pay_period_end"),
+                    allow_empty=bool(body.get("allow_empty")),
                 )
                 return jsonify(row)
             except ValueError as e:

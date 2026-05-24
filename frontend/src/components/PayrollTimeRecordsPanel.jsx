@@ -35,6 +35,7 @@ import {
   getTaUsers,
   patchPayrollTimeRecord,
   postApprovePayrollTimeRecord,
+  postBulkApprovePayrollTimeRecords,
   postPayrollTimeRecord,
 } from "../api";
 import {
@@ -52,7 +53,7 @@ import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },
   { value: "open", label: "Open" },
-  { value: "completed", label: "Completed" },
+  { value: "completed", label: "Awaiting approval" },
   { value: "pending_approval", label: "Pending approval" },
   { value: "approved", label: "Approved" },
 ];
@@ -61,15 +62,23 @@ function statusLabel(st) {
   if (st === "pending_approval") return "Pending approval";
   if (st === "approved") return "Approved";
   if (st === "open") return "Open";
-  if (st === "completed") return "Completed";
+  if (st === "completed") return "Awaiting approval";
   return st || "—";
 }
 
 function statusColor(st) {
   if (st === "open") return "info";
   if (st === "approved") return "success";
-  if (st === "pending_approval") return "warning";
+  if (st === "pending_approval" || st === "completed") return "warning";
   return "default";
+}
+
+function canApproveRecord(row) {
+  return (
+    row?.status === "pending_approval" ||
+    row?.status === "completed" ||
+    (row?.status !== "approved" && row?.status !== "open" && !row?.payroll_hours_approved)
+  );
 }
 
 function toDatetimeLocal(val) {
@@ -91,10 +100,15 @@ const emptyForm = () => ({
   notes: "",
 });
 
-export default function PayrollTimeRecordsPanel() {
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
-  const [category, setCategory] = useState("all");
+export default function PayrollTimeRecordsPanel({
+  payPeriodStart = "",
+  payPeriodEnd = "",
+  linkedCategory = "all",
+  onPayPeriodChange,
+}) {
+  const [fromDate, setFromDate] = useState(payPeriodStart || "");
+  const [toDate, setToDate] = useState(payPeriodEnd || "");
+  const [category, setCategory] = useState(linkedCategory || "all");
   const [status, setStatus] = useState("all");
   const [userId, setUserId] = useState("");
   const [users, setUsers] = useState([]);
@@ -107,12 +121,27 @@ export default function PayrollTimeRecordsPanel() {
   const [editingId, setEditingId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [bulkApproving, setBulkApproving] = useState(false);
+
+  const approvableRows = rows.filter(canApproveRecord);
 
   useEffect(() => {
     getTaUsers()
       .then((r) => setUsers(r.data?.users || r.data || []))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (payPeriodStart) setFromDate(payPeriodStart);
+  }, [payPeriodStart]);
+
+  useEffect(() => {
+    if (payPeriodEnd) setToDate(payPeriodEnd);
+  }, [payPeriodEnd]);
+
+  useEffect(() => {
+    if (linkedCategory && linkedCategory !== "all") setCategory(linkedCategory);
+  }, [linkedCategory]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,6 +241,27 @@ export default function PayrollTimeRecordsPanel() {
     }
   };
 
+  const bulkApproveVisible = async () => {
+    if (!approvableRows.length) return;
+    setBulkApproving(true);
+    setError("");
+    try {
+      const res = await postBulkApprovePayrollTimeRecords({
+        ids: approvableRows.map((r) => r.id),
+      });
+      const n = res.data?.approved || 0;
+      const skipped = res.data?.skipped || 0;
+      if (skipped) {
+        setError(`Approved ${n} record(s). ${skipped} could not be approved.`);
+      }
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Bulk approve failed");
+    } finally {
+      setBulkApproving(false);
+    }
+  };
+
   const confirmDelete = async () => {
     if (!deleteTarget?.id) return;
     setSaving(true);
@@ -243,13 +293,27 @@ export default function PayrollTimeRecordsPanel() {
           sx={{ mb: 1 }}
         >
           <Typography variant="subtitle1">Time Records</Typography>
-          <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={openAdd}>
-            Add record
-          </Button>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Button
+              variant="outlined"
+              size="small"
+              color="success"
+              startIcon={<CheckIcon />}
+              onClick={bulkApproveVisible}
+              disabled={bulkApproving || !approvableRows.length}
+            >
+              {bulkApproving
+                ? "Approving…"
+                : `Approve all visible (${approvableRows.length})`}
+            </Button>
+            <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={openAdd}>
+              Add record
+            </Button>
+          </Stack>
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Review clock-in/out, then click <strong>Approve</strong> on each row before pulling hours into a
-          payout batch.
+          Review clock-in/out, then click <strong>Approve</strong>. Approved hours in this date range
+          sync into matching payout batches automatically.
         </Typography>
         <Box
           sx={{
@@ -269,7 +333,11 @@ export default function PayrollTimeRecordsPanel() {
             label="Start date"
             InputLabelProps={{ shrink: true }}
             value={fromDate}
-            onChange={(e) => setFromDate(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setFromDate(v);
+              onPayPeriodChange?.({ start: v, end: toDate, category });
+            }}
           />
           <TextField
             size="small"
@@ -277,11 +345,23 @@ export default function PayrollTimeRecordsPanel() {
             label="End date"
             InputLabelProps={{ shrink: true }}
             value={toDate}
-            onChange={(e) => setToDate(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setToDate(v);
+              onPayPeriodChange?.({ start: fromDate, end: v, category });
+            }}
           />
           <FormControl size="small">
             <InputLabel>Worker category</InputLabel>
-            <Select label="Worker category" value={category} onChange={(e) => setCategory(e.target.value)}>
+            <Select
+              label="Worker category"
+              value={category}
+              onChange={(e) => {
+                const v = e.target.value;
+                setCategory(v);
+                onPayPeriodChange?.({ start: fromDate, end: toDate, category: v });
+              }}
+            >
               {WORKER_CATEGORY_OPTIONS.map((o) => (
                 <MenuItem key={o.value} value={o.value}>
                   {o.label}
@@ -352,7 +432,7 @@ export default function PayrollTimeRecordsPanel() {
                   <Chip size="small" label={statusLabel(r.status)} color={statusColor(r.status)} />
                 </TableCell>
                 <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                  {r.status === "pending_approval" || r.status === "completed" ? (
+                  {canApproveRecord(r) ? (
                     <Tooltip title="Approve for payroll">
                       <IconButton
                         size="small"
