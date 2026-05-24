@@ -295,7 +295,7 @@ export default function PayrollTimeRecordsPanel({
           <Typography variant="subtitle1">Time Records</Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
             <Button
-              variant="outlined"
+              variant="contained"
               size="small"
               color="success"
               startIcon={<CheckIcon />}
@@ -304,7 +304,7 @@ export default function PayrollTimeRecordsPanel({
             >
               {bulkApproving
                 ? "Approving…"
-                : `Approve all visible (${approvableRows.length})`}
+                : `Bulk approve (${approvableRows.length})`}
             </Button>
             <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={openAdd}>
               Add record

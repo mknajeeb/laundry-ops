@@ -431,7 +431,7 @@ export default function PayoutBatchesPanel({
                 ))}
               </Select>
             </FormControl>
-            <Button variant="contained" startIcon={<AddIcon />} onClick={() => setCreateOpen(true)}>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={openCreateBatch}>
               New batch
             </Button>
           </Stack>
@@ -518,8 +518,8 @@ export default function PayoutBatchesPanel({
               </Stack>
 
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-                <Button size="small" variant="contained" onClick={pullHours}>
-                  Pull approved hours
+                <Button size="small" variant="outlined" onClick={refreshHours} disabled={!isDraft}>
+                  Refresh from time records
                 </Button>
                 <FormControl size="small" sx={{ minWidth: 200 }}>
                   <InputLabel>Batch status</InputLabel>
