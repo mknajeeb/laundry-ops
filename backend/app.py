@@ -3940,10 +3940,12 @@ def list_rinse_bags():
             offset = 0
         from backend.rinse_bag_registry import list_registry_rows
 
+        from backend.rinse_scan_time import json_safe_rinse
+
         rows = list_registry_rows(
             cursor, tenant_oid, status=status, limit=limit, offset=offset
         )
-        return jsonify(rows)
+        return jsonify(json_safe_rinse(rows))
     finally:
         cursor.close()
         conn.close()
@@ -3965,9 +3967,11 @@ def get_rinse_bag(bag_id: str):
         if not bid:
             return jsonify({"error": "Invalid bag id"}), 400
         row = get_registry_row(cursor, tenant_oid, bid)
+        from backend.rinse_scan_time import json_safe_rinse
+
         if not row:
             return jsonify({"error": "Bag not found"}), 404
-        return jsonify(row)
+        return jsonify(json_safe_rinse(row))
     finally:
         cursor.close()
         conn.close()
@@ -3995,9 +3999,11 @@ def recompute_rinse_bag_completion(bag_id: str):
 
         if not get_registry_row(cursor, tenant_oid, bid):
             return jsonify({"error": "Bag not found"}), 404
+        from backend.rinse_scan_time import json_safe_rinse
+
         payload = recompute_bag_completion_with_audit(cursor, tenant_oid, bid)
         conn.commit()
-        return jsonify(payload)
+        return jsonify(json_safe_rinse(payload))
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
@@ -4034,9 +4040,11 @@ def get_rinse_bag_detail(bag_id: str):
             has_ticket_id_col=cap.get("has_ticket_id", False),
             upload_batch_row_pk=get_upload_batch_rows_pk(cursor),
         )
+        from backend.rinse_scan_time import json_safe_rinse
+
         if not detail:
             return jsonify({"error": "Bag not found"}), 404
-        return jsonify(detail)
+        return jsonify(json_safe_rinse(detail))
     finally:
         cursor.close()
         conn.close()
@@ -4061,8 +4069,10 @@ def list_rinse_bag_scan_events(bag_id: str):
             limit = int(request.args.get("limit", 500))
         except (TypeError, ValueError):
             limit = 500
+        from backend.rinse_scan_time import json_safe_rinse
+
         rows = list_scan_events_for_bag(cursor, tenant_oid, bid, limit=limit)
-        return jsonify(rows)
+        return jsonify(json_safe_rinse(rows))
     finally:
         cursor.close()
         conn.close()

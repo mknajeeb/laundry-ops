@@ -13,12 +13,16 @@ Do not treat Rinse times as UTC. Do not apply server local timezone when parsing
 
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 RINSE_SCAN_SOURCE_TIMEZONE = "America/New_York"
+_ET = ZoneInfo(RINSE_SCAN_SOURCE_TIMEZONE)
 
 _PARSE_FORMATS = (
     "%A, %B %d, %Y %I:%M %p",
@@ -73,6 +77,46 @@ def parse_rinse_scanned_at_pandas(text: str) -> pd.Timestamp | pd.NaT:
     if dt is None:
         return pd.NaT
     return pd.Timestamp(dt)
+
+
+def serialize_rinse_datetime_for_api(dt: datetime | None) -> str | None:
+    """
+    Serialize naive Rinse DB datetimes for JSON APIs.
+
+    Naive values are America/New_York wall time (not UTC).
+    Returns ISO-8601 with offset, e.g. 2026-05-24T17:25:00-04:00 — never HTTP GMT or Z.
+    """
+    if dt is None:
+        return None
+    if not isinstance(dt, datetime):
+        raise TypeError(f"expected datetime, got {type(dt).__name__}")
+    if dt.tzinfo is None:
+        localized = dt.replace(tzinfo=_ET)
+    else:
+        localized = dt.astimezone(_ET)
+    return localized.isoformat(timespec="seconds")
+
+
+def json_safe_rinse(obj: Any) -> Any:
+    """Recursively serialize Rinse API payloads (ET datetimes, dates, decimals)."""
+    if obj is None:
+        return None
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, datetime):
+        return serialize_rinse_datetime_for_api(obj)
+    if isinstance(obj, date):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: json_safe_rinse(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe_rinse(x) for x in obj]
+    return obj
+
+
+def rinse_api_json_dumps(obj: Any) -> str:
+    """Test helper: JSON text for Rinse responses without Flask GMT encoding."""
+    return json.dumps(json_safe_rinse(obj), ensure_ascii=False)
 
 
 def format_scanned_at_et_for_dedupe(val: Any) -> str:

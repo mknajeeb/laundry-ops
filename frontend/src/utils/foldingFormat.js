@@ -1,3 +1,5 @@
+import { formatRinseApiDateTime, hasExplicitTzOffset } from "./rinseTimeFormat";
+
 export function formatFoldingDuration(seconds) {
   const s = Number(seconds);
   if (!Number.isFinite(s) || s <= 0) return "—";
@@ -29,6 +31,9 @@ export function formatLbs(val) {
 
 export function formatDateTime(val) {
   if (!val) return "—";
+  const s = String(val).trim();
+  if (hasExplicitTzOffset(s)) return formatRinseApiDateTime(s);
+  if (/\bGMT\b/i.test(s)) return "—";
   const d = new Date(val);
   if (Number.isNaN(d.getTime())) return String(val);
   return d.toLocaleString(undefined, {

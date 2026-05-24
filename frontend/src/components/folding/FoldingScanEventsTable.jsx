@@ -6,6 +6,10 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import {
+  formatRinseScanTime,
+  sortRinseScanEvents,
+} from "../../utils/rinseTimeFormat";
 
 export function scanEventPurpose(ev) {
   const direct = String(ev?.purpose ?? "").trim();
@@ -21,35 +25,7 @@ export function scanEventPurpose(ev) {
   return "—";
 }
 
-export function formatScanTime(ev) {
-  const raw = String(ev?.time_scanned_raw ?? "").trim();
-  const parsed = ev?.scanned_at_parsed;
-  if (parsed) {
-    const d = new Date(parsed);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
-    }
-    return String(parsed);
-  }
-  return raw || "—";
-}
-
-export function sortScanEvents(events) {
-  return [...(events || [])].sort((a, b) => {
-    const ta = new Date(a.scanned_at_parsed || 0).getTime();
-    const tb = new Date(b.scanned_at_parsed || 0).getTime();
-    if (ta !== tb) return ta - tb;
-    const ai = Number.isFinite(Number(a.scan_index)) ? Number(a.scan_index) : 0;
-    const bi = Number.isFinite(Number(b.scan_index)) ? Number(b.scan_index) : 0;
-    if (ai !== bi) return ai - bi;
-    return (Number(a.id) || 0) - (Number(b.id) || 0);
-  });
-}
+export { formatRinseScanTime as formatScanTime, sortRinseScanEvents as sortScanEvents };
 
 export default function FoldingScanEventsTable({ events }) {
   const sorted = sortScanEvents(events);

@@ -15,6 +15,11 @@ import {
   Typography,
 } from "@mui/material";
 import { getRinseBagDetail, postRinseBagRecomputeCompletion } from "../api";
+import {
+  formatRinseApiDateTime,
+  formatRinseScanTime,
+  sortRinseScanEvents,
+} from "../utils/rinseTimeFormat";
 
 function scanEventPurpose(ev) {
   const direct = String(ev?.purpose ?? "").trim();
@@ -28,39 +33,6 @@ function scanEventPurpose(ev) {
     /* ignore */
   }
   return "—";
-}
-
-function formatScanTime(ev) {
-  const raw = String(ev?.time_scanned_raw ?? "").trim();
-  const parsed = ev?.scanned_at_parsed;
-  if (parsed) {
-    const d = new Date(parsed);
-    if (!Number.isNaN(d.getTime())) {
-      return d.toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
-    }
-    return String(parsed);
-  }
-  return raw || "—";
-}
-
-function sortScanEvents(events) {
-  return [...(events || [])].sort((a, b) => {
-    const ta = new Date(a.scanned_at_parsed || 0).getTime();
-    const tb = new Date(b.scanned_at_parsed || 0).getTime();
-    if (ta !== tb) return ta - tb;
-    const sia = Number(a.scan_index);
-    const sib = Number(b.scan_index);
-    const ai = Number.isFinite(sia) ? sia : 0;
-    const bi = Number.isFinite(sib) ? sib : 0;
-    if (ai !== bi) return ai - bi;
-    return (Number(a.id) || 0) - (Number(b.id) || 0);
-  });
 }
 
 function RinseBagLookupPage() {
@@ -111,7 +83,7 @@ function RinseBagLookupPage() {
 
   const reg = detail?.registry || {};
   const scanEvents = useMemo(
-    () => sortScanEvents(detail?.scan_events),
+    () => sortRinseScanEvents(detail?.scan_events),
     [detail?.scan_events]
   );
 
@@ -153,7 +125,9 @@ function RinseBagLookupPage() {
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
               {reg.completion_reason}
-              {reg.completed_at ? ` • ${reg.completed_at}` : ""}
+              {reg.completed_at
+                ? ` • ${formatRinseApiDateTime(reg.completed_at, { withYear: true })}`
+                : ""}
               {reg.trigger_kind ? ` • trigger ${reg.trigger_kind}` : ""}
             </Typography>
           </Paper>
@@ -194,7 +168,7 @@ function RinseBagLookupPage() {
                     </TableCell>
                     <TableCell>{ev.rack || "—"}</TableCell>
                     <TableCell>{ev.user_name || "—"}</TableCell>
-                    <TableCell sx={{ whiteSpace: "nowrap" }}>{formatScanTime(ev)}</TableCell>
+                    <TableCell sx={{ whiteSpace: "nowrap" }}>{formatRinseScanTime(ev)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

@@ -18,7 +18,10 @@ from backend.rinse_bag_registry import (
 from backend.rinse_scan_event_identity import compute_scan_event_dedupe_key
 from backend.rinse_scan_time import (
     RINSE_SCAN_SOURCE_TIMEZONE,
+    json_safe_rinse,
     parse_rinse_scanned_at,
+    rinse_api_json_dumps,
+    serialize_rinse_datetime_for_api,
 )
 
 
@@ -28,6 +31,37 @@ class TestRinseScanTimeET(unittest.TestCase):
         dt = parse_rinse_scanned_at(raw)
         self.assertIsNotNone(dt)
         self.assertEqual(dt, datetime(2026, 5, 17, 15, 17, 0))
+
+    def test_may_24_525_pm_parse_and_api_serialization(self):
+        raw = "Sunday, May 24, 2026 5:25 PM"
+        dt = parse_rinse_scanned_at(raw)
+        self.assertEqual(dt, datetime(2026, 5, 24, 17, 25, 0))
+        api = serialize_rinse_datetime_for_api(dt)
+        self.assertEqual(api, "2026-05-24T17:25:00-04:00")
+        payload = rinse_api_json_dumps(
+            {
+                "time_scanned_raw": raw,
+                "scanned_at_parsed": dt,
+            }
+        )
+        self.assertIn("2026-05-24T17:25:00-04:00", payload)
+        self.assertNotIn("GMT", payload)
+        self.assertNotRegex(payload, r"17:25:00Z")
+
+    def test_json_safe_rinse_nested_scan_events(self):
+        out = json_safe_rinse(
+            {
+                "scan_events": [
+                    {
+                        "scanned_at_parsed": datetime(2026, 5, 24, 17, 25),
+                        "time_scanned_raw": "Sunday, May 24, 2026 5:25 PM",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(
+            out["scan_events"][0]["scanned_at_parsed"], "2026-05-24T17:25:00-04:00"
+        )
 
     def test_late_night_et_does_not_shift_calendar_date(self):
         raw = "Saturday, May 16, 2026 11:45 PM"

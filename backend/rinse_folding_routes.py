@@ -22,6 +22,7 @@ from backend.rinse_folding_registry import (
     summarize_recompute_results,
 )
 from backend.rinse_folding_settings import get_rinse_folding_benchmarks, put_rinse_folding_benchmarks
+from backend.rinse_scan_time import json_safe_rinse
 
 
 def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_id, parse_date_value):
@@ -61,7 +62,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 limit=limit,
                 offset=offset,
             )
-            return jsonify(rows)
+            return jsonify(json_safe_rinse(rows))
         finally:
             cursor.close()
             conn.close()
@@ -97,7 +98,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                     for r in rows
                     if str(r.get("exception_code") or "").upper() == exception_code.upper()
                 ]
-            return jsonify(rows)
+            return jsonify(json_safe_rinse(rows))
         finally:
             cursor.close()
             conn.close()
@@ -124,14 +125,16 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if registry:
                 perf["name_clean"] = registry.get("name_clean")
             return jsonify(
-                {
-                    "performance": perf,
-                    "registry": registry,
-                    "scan_events": list_scan_events_for_bag(cursor, tenant_oid, bid),
-                    "override_history": list_folding_performance_overrides(
-                        cursor, tenant_oid, bid
-                    ),
-                }
+                json_safe_rinse(
+                    {
+                        "performance": perf,
+                        "registry": registry,
+                        "scan_events": list_scan_events_for_bag(cursor, tenant_oid, bid),
+                        "override_history": list_folding_performance_overrides(
+                            cursor, tenant_oid, bid
+                        ),
+                    }
+                )
             )
         finally:
             cursor.close()
@@ -159,7 +162,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 return jsonify({"error": "Bag not found"}), 404
             payload["summary"] = summarize_recompute_results([payload])
             conn.commit()
-            return jsonify(payload)
+            return jsonify(json_safe_rinse(payload))
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500
@@ -208,7 +211,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                     {"error": "Provide bag_ids or start_date and end_date"}
                 ), 400
             conn.commit()
-            return jsonify(payload)
+            return jsonify(json_safe_rinse(payload))
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500
@@ -248,12 +251,12 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 payload["performance_id"],
                 "override",
                 old=None,
-                new=json_safe_row(payload.get("row")),
+                new=json_safe_rinse(payload.get("row")),
                 remarks=data.get("notes"),
                 organization_id=tenant_oid,
             )
             conn.commit()
-            return jsonify(payload)
+            return jsonify(json_safe_rinse(payload))
         except ValueError as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 400
@@ -290,7 +293,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             payload = aggregate_folding_leaderboard(
                 cursor, tenant_oid, period=period, anchor=anchor
             )
-            return jsonify(payload)
+            return jsonify(json_safe_rinse(payload))
         finally:
             cursor.close()
             conn.close()
@@ -326,7 +329,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 )
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
-            return jsonify(payload)
+            return jsonify(json_safe_rinse(payload))
         finally:
             cursor.close()
             conn.close()
@@ -353,7 +356,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             stats = aggregate_user_folding_stats(
                 cursor, tenant_oid, user_name, day, day
             )
-            return jsonify(stats)
+            return jsonify(json_safe_rinse(stats))
         finally:
             cursor.close()
             conn.close()
@@ -383,7 +386,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 cursor, tenant_oid, user_name, week_start, week_end
             )
             stats["granularity"] = "week"
-            return jsonify(stats)
+            return jsonify(json_safe_rinse(stats))
         finally:
             cursor.close()
             conn.close()
@@ -423,15 +426,10 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
 
 
 def json_safe_row(row: dict | None) -> dict | None:
+    """Serialize one row for audit/API (ET-aware datetimes)."""
     if not row:
         return None
-    out = {}
-    for k, v in row.items():
-        if isinstance(v, (date, datetime)):
-            out[k] = v.isoformat()
-        else:
-            out[k] = v
-    return out
+    return json_safe_rinse(row)
 
 
 def _opt_float(val):
