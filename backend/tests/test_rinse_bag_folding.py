@@ -16,8 +16,9 @@ from backend.rinse_bag_folding import (
     SOURCE_FOLDING_SCAN,
     STATUS_CALCULATED,
     STATUS_EXCEPTION,
+    EXCEPTION_FOLDING_DURATION_TOO_SHORT,
+    EXCEPTION_MULTIPLE_FOLDING_SCANS,
     WARNING_MULTIPLE_CLEAN_SCANS,
-    WARNING_MULTIPLE_FOLDING_SCANS,
     evaluate_folding_performance_for_bag,
 )
 
@@ -127,7 +128,7 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
         self.assertEqual(r.status, STATUS_EXCEPTION)
         self.assertEqual(r.exception_code, EXCEPTION_CLEAN_BEFORE_FOLDING)
 
-    def test_multiple_scans_soft_warning_still_calculated(self):
+    def test_multiple_folding_scans_exception(self):
         t0 = datetime(2026, 5, 16, 10, 0)
         t1 = datetime(2026, 5, 16, 10, 30)
         t2 = datetime(2026, 5, 16, 11, 0)
@@ -140,9 +141,21 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
             ],
             registry_row={"date_clean": date(2026, 5, 16)},
         )
-        self.assertEqual(r.status, STATUS_CALCULATED)
-        self.assertEqual(r.exception_code, WARNING_MULTIPLE_FOLDING_SCANS)
-        self.assertEqual(r.duration_seconds, int((t1 - t0).total_seconds()))
+        self.assertEqual(r.status, STATUS_EXCEPTION)
+        self.assertEqual(r.exception_code, EXCEPTION_MULTIPLE_FOLDING_SCANS)
+
+    def test_folding_duration_under_10_minutes_exception(self):
+        t0 = datetime(2026, 5, 16, 10, 0)
+        t1 = datetime(2026, 5, 16, 10, 5)
+        r = evaluate_folding_performance_for_bag(
+            [
+                _ev("FOLDING", "Folder", t0, 1, 1),
+                _ev("CLEAN", "Staff", t1, 2, 2),
+            ],
+            registry_row={"date_clean": date(2026, 5, 16)},
+        )
+        self.assertEqual(r.status, STATUS_EXCEPTION)
+        self.assertEqual(r.exception_code, EXCEPTION_FOLDING_DURATION_TOO_SHORT)
 
     def test_multiple_clean_warning(self):
         t0 = datetime(2026, 5, 16, 10, 0)
@@ -193,7 +206,7 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
 class TestWorkDateFromScanTimestamps(unittest.TestCase):
     def test_portal_date_clean_ignored_calculated_uses_clean_end(self):
         folding_at = datetime(2026, 5, 17, 16, 16)
-        clean_at = datetime(2026, 5, 17, 16, 18)
+        clean_at = datetime(2026, 5, 17, 16, 30)
         r = evaluate_folding_performance_for_bag(
             [
                 _ev("FOLDING", "Sarah Kamran", folding_at, 1, 1),

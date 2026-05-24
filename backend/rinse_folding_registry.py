@@ -717,13 +717,29 @@ def aggregate_user_folding_stats(
     period_end: date,
 ) -> dict[str, Any]:
     ensure_rinse_folding_tables(cursor)
+    from backend.rinse_folding_excluded_users import (
+        is_user_excluded_from_scoring,
+        sql_exclude_scoring_users_clause,
+    )
+
     org = int(organization_id)
     uname = str(user_name or "").strip()
     if not uname:
         return {"error": "user_name required"}
+    if is_user_excluded_from_scoring(cursor, org, uname):
+        return {
+            "user_name": uname,
+            "excluded_from_leaderboard": True,
+            "bag_count": 0,
+            "total_lbs": 0,
+            "total_folding_seconds": 0,
+            "bags_per_hour": None,
+            "lbs_per_hour": None,
+        }
 
+    ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
     cursor.execute(
-        """
+        f"""
         SELECT
             p.bag_id,
             p.duration_seconds,
@@ -741,6 +757,7 @@ def aggregate_user_folding_stats(
           AND r.completion_status = %s
           AND p.work_date >= %s
           AND p.work_date <= %s
+          {ex_sql}
         ORDER BY p.folding_start_at ASC
         """,
         (
@@ -750,6 +767,7 @@ def aggregate_user_folding_stats(
             COMPLETION_COMPLETED,
             period_start,
             period_end,
+            *ex_args,
         ),
     )
     rows = list(cursor.fetchall() or [])
@@ -991,9 +1009,12 @@ def aggregate_team_folding_stats(
     period_end: date,
 ) -> dict[str, Any]:
     ensure_rinse_folding_tables(cursor)
+    from backend.rinse_folding_excluded_users import sql_exclude_scoring_users_clause
+
     org = int(organization_id)
+    ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
     cursor.execute(
-        """
+        f"""
         SELECT
             p.bag_id,
             p.duration_seconds,
@@ -1007,6 +1028,7 @@ def aggregate_team_folding_stats(
           AND r.completion_status = %s
           AND p.work_date >= %s
           AND p.work_date <= %s
+          {ex_sql}
         """,
         (
             org,
@@ -1014,6 +1036,7 @@ def aggregate_team_folding_stats(
             COMPLETION_COMPLETED,
             period_start,
             period_end,
+            *ex_args,
         ),
     )
     rows = list(cursor.fetchall() or [])
@@ -1101,9 +1124,12 @@ def list_folding_users_in_period(
     period_end: date,
 ) -> list[str]:
     ensure_rinse_folding_tables(cursor)
+    from backend.rinse_folding_excluded_users import sql_exclude_scoring_users_clause
+
     org = int(organization_id)
+    ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
     cursor.execute(
-        """
+        f"""
         SELECT DISTINCT p.assigned_user_name
         FROM rinse_folding_performance p
         INNER JOIN rinse_bag_registry r
@@ -1116,6 +1142,7 @@ def list_folding_users_in_period(
           AND p.work_date <= %s
           AND p.assigned_user_name IS NOT NULL
           AND TRIM(p.assigned_user_name) != ''
+          {ex_sql}
         ORDER BY p.assigned_user_name
         """,
         (
@@ -1124,6 +1151,7 @@ def list_folding_users_in_period(
             COMPLETION_COMPLETED,
             period_start,
             period_end,
+            *ex_args,
         ),
     )
     names: list[str] = []
@@ -1221,8 +1249,12 @@ def aggregate_folding_leaderboard(
     prev_user_names = list_folding_users_in_period(cursor, org, prev_start, prev_end)
     all_names = sorted(set(user_names) | set(prev_user_names))
 
+    from backend.rinse_folding_excluded_users import is_user_excluded_from_scoring
+
     users: list[dict[str, Any]] = []
     for uname in user_names:
+        if is_user_excluded_from_scoring(cursor, org, uname):
+            continue
         stats = aggregate_user_folding_stats(cursor, org, uname, period_start, period_end)
         prev_stats = aggregate_user_folding_stats(cursor, org, uname, prev_start, prev_end)
         bags_h = stats.get("bags_per_hour")

@@ -37,6 +37,8 @@ import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
 import RinseFoldingTvPage from "./pages/RinseFoldingTvPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import RinseBagLookupPage from "./pages/RinseBagLookupPage";
+import RinseOrderSearchPage from "./pages/RinseOrderSearchPage";
+import RinseScheduledSyncPage from "./pages/RinseScheduledSyncPage";
 import IssuePage from "./pages/IssuePage";
 import PeoplePage from "./pages/PeoplePage";
 import ClockPage from "./pages/ClockPage";
@@ -758,6 +760,26 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"]}>
                     <RinseBagLookupPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/order-search"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <RinseOrderSearchPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/scheduled-sync"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"]}>
+                    <RinseScheduledSyncPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

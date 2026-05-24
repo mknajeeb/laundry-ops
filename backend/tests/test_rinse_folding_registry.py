@@ -219,18 +219,22 @@ class TestRecomputeSummary(unittest.TestCase):
             {"skipped": False, "status": STATUS_CALCULATED},
             {
                 "skipped": False,
-                "status": STATUS_CALCULATED,
+                "status": STATUS_EXCEPTION,
                 "exception_code": "MULTIPLE_FOLDING_SCANS",
             },
-            {"skipped": False, "status": STATUS_EXCEPTION},
+            {
+                "skipped": False,
+                "status": STATUS_EXCEPTION,
+                "exception_code": "FOLDING_DURATION_TOO_SHORT",
+            },
         ]
         s = summarize_recompute_results(bags)
         self.assertEqual(s["skipped_not_completed"], 1)
         self.assertEqual(s["errors"], 1)
         self.assertEqual(s["processed"], 3)
-        self.assertEqual(s["calculated"], 2)
-        self.assertEqual(s["warnings"], 1)
-        self.assertEqual(s["exceptions"], 1)
+        self.assertEqual(s["calculated"], 1)
+        self.assertEqual(s["warnings"], 0)
+        self.assertEqual(s["exceptions"], 2)
 
 
 class TestLeaderboardRanking(unittest.TestCase):

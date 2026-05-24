@@ -395,6 +395,15 @@ export const uploadRinseScanEventsCsv = (batchId, formData) =>
 export const getRinseBagDetail = (bagId) =>
   axios.get(`${API_BASE}/rinse/bags/${encodeURIComponent(bagId)}/detail`, { timeout: 30000 });
 
+export const getRinseScheduledScrapeStatus = () =>
+  axios.get(`${API_BASE}/rinse/scheduled-scrape/status`, { timeout: 30000 });
+
+export const searchRinseOrders = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/order-search`, { params, timeout: 30000 });
+
+export const getRinseOrderArchiveDetail = (bagId) =>
+  axios.get(`${API_BASE}/rinse/order-search/${encodeURIComponent(bagId)}`, { timeout: 30000 });
+
 export const postRinseBagRecomputeCompletion = (bagId) =>
   axios.post(`${API_BASE}/rinse/bags/${encodeURIComponent(bagId)}/recompute-completion`, {}, {
     timeout: 30000,

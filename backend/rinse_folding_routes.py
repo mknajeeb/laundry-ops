@@ -391,6 +391,57 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/folding/excluded-users", methods=["GET", "POST"])
+    def rinse_folding_excluded_users():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            from backend.rinse_folding_excluded_users import (
+                ensure_rinse_folding_excluded_users_table,
+                list_excluded_folding_users,
+            )
+
+            if request.method == "GET":
+                return jsonify(list_excluded_folding_users(cursor, tenant_oid))
+
+            data = request.get_json(silent=True) or {}
+            user_name = (data.get("user_name") or "").strip()
+            if not user_name:
+                return jsonify({"error": "user_name is required"}), 400
+            ensure_rinse_folding_excluded_users_table(cursor)
+            cursor.execute(
+                """
+                INSERT INTO rinse_folding_excluded_users
+                  (organization_id, user_name, employee_id, reason, created_by_user_id)
+                VALUES (%s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  employee_id = COALESCE(VALUES(employee_id), employee_id),
+                  reason = COALESCE(VALUES(reason), reason)
+                """,
+                (
+                    tenant_oid,
+                    user_name,
+                    (data.get("employee_id") or "").strip() or None,
+                    (data.get("reason") or "").strip() or None,
+                    me.get("id") if isinstance(me, dict) else None,
+                ),
+            )
+            conn.commit()
+            return jsonify({"ok": True, "user_name": user_name}), 201
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/folding/benchmarks", methods=["GET", "PUT"])
     def rinse_folding_benchmarks():
         conn = get_db()

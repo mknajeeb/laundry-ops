@@ -28,12 +28,13 @@ EXCEPTION_MISSING_CLEAN = "MISSING_CLEAN"
 EXCEPTION_CLEAN_BEFORE_FOLDING = "CLEAN_BEFORE_FOLDING"
 EXCEPTION_INVALID_TIMESTAMPS = "INVALID_TIMESTAMPS"
 EXCEPTION_MISSING_ASSIGNED_USER = "MISSING_ASSIGNED_USER"
-WARNING_MULTIPLE_FOLDING_SCANS = "MULTIPLE_FOLDING_SCANS"
+EXCEPTION_MULTIPLE_FOLDING_SCANS = "MULTIPLE_FOLDING_SCANS"
+EXCEPTION_FOLDING_DURATION_TOO_SHORT = "FOLDING_DURATION_TOO_SHORT"
 WARNING_MULTIPLE_CLEAN_SCANS = "MULTIPLE_CLEAN_SCANS"
 
-FOLDING_WARNING_CODES = frozenset(
-    {WARNING_MULTIPLE_FOLDING_SCANS, WARNING_MULTIPLE_CLEAN_SCANS}
-)
+MIN_FOLDING_DURATION_SECONDS = 600
+
+FOLDING_WARNING_CODES = frozenset({WARNING_MULTIPLE_CLEAN_SCANS})
 
 SOURCE_FOLDING_SCAN = "FOLDING_SCAN"
 SOURCE_CLEAN_SCAN_FALLBACK = "CLEAN_SCAN_FALLBACK"
@@ -267,6 +268,19 @@ def evaluate_folding_performance_for_bag(
             timeline=timeline,
         )
 
+    if len(folding_indices) > 1:
+        first_folding_i = folding_indices[0]
+        folding_ev = timeline[first_folding_i]
+        folding_at = _parsed_scan_datetime(folding_ev)
+        return _exception_result(
+            EXCEPTION_MULTIPLE_FOLDING_SCANS,
+            registry_row=registry_row,
+            folding_scan_count=len(folding_indices),
+            clean_scan_count=len(clean_indices),
+            folding_start_at=folding_at if _timestamp_valid(folding_at) else None,
+            timeline=timeline,
+        )
+
     first_folding_i = folding_indices[0]
     folding_ev = timeline[first_folding_i]
     folding_at = _parsed_scan_datetime(folding_ev)
@@ -355,6 +369,17 @@ def evaluate_folding_performance_for_bag(
             timeline=timeline,
         )
 
+    if duration < MIN_FOLDING_DURATION_SECONDS:
+        return _exception_result(
+            EXCEPTION_FOLDING_DURATION_TOO_SHORT,
+            registry_row=registry_row,
+            folding_scan_count=len(folding_indices),
+            clean_scan_count=clean_after_count,
+            folding_start_at=folding_at,
+            folding_end_at=clean_at,
+            timeline=timeline,
+        )
+
     folding_user = _user_from_event(folding_ev)
     clean_user = _user_from_event(end_clean_ev)
     assigned: str | None = None
@@ -384,11 +409,7 @@ def evaluate_folding_performance_for_bag(
         )
 
     warning: str | None = None
-    if end_clean_i is not None:
-        folding_before_end = sum(1 for fi in folding_indices if fi <= end_clean_i)
-        if folding_before_end > 1:
-            warning = WARNING_MULTIPLE_FOLDING_SCANS
-    if clean_after_count > 1 and warning is None:
+    if clean_after_count > 1:
         warning = WARNING_MULTIPLE_CLEAN_SCANS
 
     return FoldingResult(

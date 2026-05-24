@@ -56,6 +56,18 @@ export const TENANT_NAV_ITEMS = [
     roles: ["ADMIN", "OPS"],
     moduleKey: "scoreboard",
   },
+  {
+    to: "/rinse/order-search",
+    labelKey: "nav.rinseOrderSearch",
+    roles: ["ADMIN"],
+    moduleKey: "scoreboard",
+  },
+  {
+    to: "/rinse/scheduled-sync",
+    labelKey: "nav.rinseScheduledSync",
+    roles: ["ADMIN"],
+    moduleKey: "scoreboard",
+  },
   { to: "/rinse/folding-tv", labelKey: "nav.foldingTv", roles: OPS, moduleKey: "scoreboard" },
   { to: "/maintenance", labelKey: "nav.maintenance", roles: OPS, moduleKey: "maintenance" },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },

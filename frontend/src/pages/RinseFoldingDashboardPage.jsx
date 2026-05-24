@@ -286,7 +286,7 @@ function RinseFoldingDashboardPage({ user }) {
         </Box>
         <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center">
           {period !== "custom" ? (
-            <TextField type="date" size="small" label="Anchor date" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} InputLabelProps={{ shrink: true }} />
+            <TextField type="date" size="small" label="Folding work date (period anchor)" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Leaderboard period is based on folding work date" />
           ) : (
             <>
               <TextField type="date" size="small" label="Start" value={customStart} onChange={(e) => setCustomStart(e.target.value)} InputLabelProps={{ shrink: true }} />

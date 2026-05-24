@@ -43,6 +43,7 @@ import {
   uploadRinseScanEventsCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
+import { formatRinseApiDateTime } from "../utils/rinseTimeFormat";
 import { useAuth } from "../context/AuthContext";
 import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
 import { easternTzLabel, getTodayYmdEastern } from "../utils/estWallClock";
@@ -124,20 +125,38 @@ function UploadPage({ user }) {
   const halfDraftWithoutEvents = requireBothCsv && isDraft && batch?.id && hasOrderRows && !hasScanEvents;
   const dualUploadReady = Boolean(portalCsvFile && scanEventsCsvFile);
 
+  const formatBatchCreatedLabel = (row) => {
+    if (!row) return "No time";
+    const et = row.batch_created_at || row.created_at;
+    const formatted = formatRinseApiDateTime(et);
+    if (formatted !== "—") return formatted;
+    const dtSource = row.created_at || row.updated_at;
+    const dt = dtSource ? new Date(dtSource) : null;
+    if (dt && !Number.isNaN(dt.getTime())) {
+      return dt.toLocaleString(undefined, {
+        timeZone: "America/New_York",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+    }
+    return "No time";
+  };
+
   const formatBatchLabel = (row) => {
     if (!row) return "No active batch";
-    const dtSource = row.created_at || row.updated_at || row.confirmed_at || row.closed_at;
-    const dt = dtSource ? new Date(dtSource) : null;
-    const dtLabel = dt && !Number.isNaN(dt.getTime())
-      ? dt.toLocaleString(undefined, {
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        })
-      : "No time";
-    return `Batch #${row.id} • ${dtLabel}`;
+    const timeLabel = row.batch_time_label || (row.scheduled_scrape ? "Imported at" : "Batch created");
+    return `Batch #${row.id} • ${timeLabel} ${formatBatchCreatedLabel(row)}`;
+  };
+
+  const formatBatchTimingSecondary = (row) => {
+    const scrape = row?.scheduled_scrape;
+    if (scrape?.timing_summary) return scrape.timing_summary;
+    if (row?.batch_confirmed_at) {
+      return `Confirmed ${formatRinseApiDateTime(row.batch_confirmed_at)}`;
+    }
+    return null;
   };
 
   const filteredRows = useMemo(() => {
@@ -1200,17 +1219,29 @@ function UploadPage({ user }) {
                 justifyContent="space-between"
                 sx={{ border: "1px solid #e5e7eb", borderRadius: 1.5, p: 1 }}
               >
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
-                  <Typography sx={{ fontWeight: 500 }}>{formatBatchLabel(b)}</Typography>
-                  <Chip
-                    size="small"
-                    label={(b.state || "DRAFT").toUpperCase()}
-                    color={String(b.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
-                  />
+                <Stack spacing={0.25} sx={{ flex: 1, minWidth: 0 }}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: "wrap" }}>
+                    <Typography sx={{ fontWeight: 500 }}>{formatBatchLabel(b)}</Typography>
+                    <Chip
+                      size="small"
+                      label={(b.state || "DRAFT").toUpperCase()}
+                      color={String(b.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
+                    />
+                    {b.scheduled_scrape ? (
+                      <Chip size="small" variant="outlined" label="Scheduled scrape" color="info" />
+                    ) : null}
+                  </Stack>
+                  {formatBatchTimingSecondary(b) ? (
+                    <Typography variant="caption" color="text.secondary">
+                      {formatBatchTimingSecondary(b)}
+                    </Typography>
+                  ) : null}
                 </Stack>
                 <Stack direction="row" spacing={1} alignItems="center">
                   <Typography color="text.secondary">
-                    Loaded {b.orders_loaded || 0}
+                    {b.scheduled_scrape?.rows_imported != null
+                      ? `${b.scheduled_scrape.rows_imported} portal rows`
+                      : `Loaded ${b.orders_loaded || 0}`}
                   </Typography>
                   <Button
                     size="small"
