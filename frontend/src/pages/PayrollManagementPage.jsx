@@ -16,6 +16,7 @@ import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
+import { PAYROLL_ESTIMATE_PURPOSE } from "../payroll/payrollTaxMessages";
 
 /**
  * Payroll Management — operations vs accountant reporting.
@@ -99,6 +100,9 @@ export default function PayrollManagementPage() {
         same pay period — approved hours sync automatically by date. W-2, 1099, and temp workers are
         never mixed in one batch.
       </Typography>
+      <Alert className="no-print" severity="info" sx={{ mb: 2, maxWidth: 900 }}>
+        {PAYROLL_ESTIMATE_PURPOSE}
+      </Alert>
 
       <Tabs
         className="no-print"

@@ -29,7 +29,8 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import AddIcon from "@mui/icons-material/Add";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import HighlightOffIcon from "@mui/icons-material/HighlightOff";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import PrintIcon from "@mui/icons-material/Print";
@@ -47,6 +48,13 @@ import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPrev
 import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
+import {
+  ESTIMATE_DISCLAIMER,
+  PAYROLL_ESTIMATE_PURPOSE,
+  SEND_TO_ACCOUNTANT_W2_CONFIRM,
+  formatTaxAmount,
+  isLineTaxIncomplete,
+} from "../payroll/payrollTaxMessages";
 
 const BATCH_STATUS_FLOW = [
   { value: "draft", label: "Draft" },
@@ -121,6 +129,34 @@ function PayoutBatchSummaryPrint({ batch }) {
   );
 }
 
+function PayrollReadinessChecklist({ items }) {
+  if (!items?.length) return null;
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5, mb: 2 }}>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>
+        Payroll readiness
+      </Typography>
+      <Stack spacing={1}>
+        {items.map((item) => (
+          <Stack key={item.key} direction="row" spacing={1} alignItems="flex-start">
+            {item.ok ? (
+              <CheckCircleOutlineIcon fontSize="small" color="success" sx={{ mt: 0.25 }} />
+            ) : (
+              <HighlightOffIcon fontSize="small" color="warning" sx={{ mt: 0.25 }} />
+            )}
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="body2">{item.label}</Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {item.detail}
+              </Typography>
+            </Box>
+          </Stack>
+        ))}
+      </Stack>
+    </Paper>
+  );
+}
+
 export default function PayoutBatchesPanel({
   payPeriodStart = "",
   payPeriodEnd = "",
@@ -146,6 +182,7 @@ export default function PayoutBatchesPanel({
     notes: "",
   });
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
+  const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
 
   const loadList = useCallback(async () => {
     setError("");
@@ -357,8 +394,10 @@ export default function PayoutBatchesPanel({
 
   const isDraft = detail?.status === "draft";
   const isW2 = detail?.worker_category === "w2";
+  const isGrossOnly = detail?.worker_category === "temp" || detail?.worker_category === "contractor_1099";
   const summary = detail?.summary || {};
   const batchWarnings = detail?.warnings || [];
+  const readiness = detail?.readiness || [];
 
   const openEditBatch = () => {
     setDraft({
@@ -526,6 +565,24 @@ export default function PayoutBatchesPanel({
                 </Stack>
               ) : null}
 
+              {isW2 ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  {detail.payroll_estimate_purpose_notice || PAYROLL_ESTIMATE_PURPOSE}
+                  <Typography variant="body2" sx={{ mt: 1, fontWeight: 600 }}>
+                    {detail.estimated_withholding_notice || ESTIMATE_DISCLAIMER}
+                  </Typography>
+                </Alert>
+              ) : null}
+
+              {isGrossOnly ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  {detail.payroll_estimate_purpose_notice ||
+                    "Gross payout tracking only — tax engine does not run for Temp/1099 batches."}
+                </Alert>
+              ) : null}
+
+              <PayrollReadinessChecklist items={readiness} />
+
               <Stack
                 direction={{ xs: "column", md: "row" }}
                 justifyContent="space-between"
@@ -602,9 +659,12 @@ export default function PayoutBatchesPanel({
                           Employee taxes (est.)
                         </Typography>
                         <Typography>
-                          {summary.taxes_withheld_total > 0
+                          {summary.taxes_withheld_total != null
                             ? `$${Number(summary.taxes_withheld_total).toFixed(2)}`
                             : "—"}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {ESTIMATE_DISCLAIMER}
                         </Typography>
                       </Box>
                       <Box>
@@ -614,20 +674,31 @@ export default function PayoutBatchesPanel({
                         <Typography>
                           {summary.net_pay_total != null
                             ? `$${Number(summary.net_pay_total).toFixed(2)}`
-                            : summary.net_pay_note || "Complete W-4 profile"}
+                            : summary.net_pay_note || "—"}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {ESTIMATE_DISCLAIMER}
                         </Typography>
                       </Box>
                       <Box>
                         <Typography variant="caption" color="text.secondary">
                           Employer taxes (est.)
                         </Typography>
-                        <Typography>${Number(summary.employer_taxes_total || 0).toFixed(2)}</Typography>
+                        <Typography>
+                          {summary.employer_taxes_total != null
+                            ? `$${Number(summary.employer_taxes_total).toFixed(2)}`
+                            : "—"}
+                        </Typography>
                       </Box>
                       <Box>
                         <Typography variant="caption" color="text.secondary">
                           Total payroll cost
                         </Typography>
-                        <Typography>${Number(summary.employer_cost_total || 0).toFixed(2)}</Typography>
+                        <Typography>
+                          {summary.employer_cost_total != null
+                            ? `$${Number(summary.employer_cost_total).toFixed(2)}`
+                            : "—"}
+                        </Typography>
                       </Box>
                     </>
                   ) : null}
@@ -675,7 +746,7 @@ export default function PayoutBatchesPanel({
                     size="small"
                     variant="contained"
                     color="primary"
-                    onClick={() => runWorkflowAction("send_to_accountant")}
+                    onClick={() => (isW2 ? setSendConfirmOpen(true) : runWorkflowAction("send_to_accountant"))}
                   >
                     Send to accountant
                   </Button>
@@ -731,8 +802,18 @@ export default function PayoutBatchesPanel({
                       {isW2 ? (
                         <>
                           <TableCell align="right">Gross</TableCell>
-                          <TableCell>Taxes</TableCell>
-                          <TableCell>Net pay</TableCell>
+                          <TableCell align="right">
+                            Taxes (est.)
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              {ESTIMATE_DISCLAIMER}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            Net pay (est.)
+                            <Typography variant="caption" color="text.secondary" display="block">
+                              {ESTIMATE_DISCLAIMER}
+                            </Typography>
+                          </TableCell>
                         </>
                       ) : null}
                       <TableCell>Payment</TableCell>
@@ -763,16 +844,22 @@ export default function PayoutBatchesPanel({
                             <TableCell align="right">
                               ${Number(ln.gross_wages || ln.gross_amount || 0).toFixed(2)}
                             </TableCell>
-                            <TableCell>
-                              <Typography variant="caption" color="text.secondary">
-                                {ln.tax_calc_status === "pending" ? "Pending" : "—"}
-                              </Typography>
+                            <TableCell align="right">
+                              <Tooltip title={isLineTaxIncomplete(ln) ? ln.net_pay_note || "Profile incomplete" : ""}>
+                                <Typography variant="caption" color="text.secondary">
+                                  {ln.tax_calc_status === "estimated"
+                                    ? formatTaxAmount(ln.employee_taxes_total)
+                                    : ln.tax_calc_status === "profile_incomplete"
+                                      ? "—"
+                                      : "Pending"}
+                                </Typography>
+                              </Tooltip>
                             </TableCell>
                             <TableCell>
                               <Typography variant="caption" color="text.secondary">
-                                {ln.net_pay != null
-                                  ? `$${Number(ln.net_pay).toFixed(2)}`
-                                  : ln.net_pay_note || "Pending"}
+                                {ln.net_pay_display != null
+                                  ? formatTaxAmount(ln.net_pay_display)
+                                  : ln.net_pay_note || "—"}
                               </Typography>
                             </TableCell>
                           </>
@@ -865,6 +952,27 @@ export default function PayoutBatchesPanel({
           <Button onClick={() => setEditOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={saveBatchEdit}>
             Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={sendConfirmOpen} onClose={() => setSendConfirmOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Send W-2 batch to accountant?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mt: 1 }}>
+            {detail?.send_to_accountant_confirm_message || SEND_TO_ACCOUNTANT_W2_CONFIRM}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSendConfirmOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={async () => {
+              setSendConfirmOpen(false);
+              await runWorkflowAction("send_to_accountant");
+            }}
+          >
+            Confirm send
           </Button>
         </DialogActions>
       </Dialog>

@@ -12,12 +12,9 @@ import json
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
 
+from backend.payroll_tax_messages import ESTIMATE_DISCLAIMER
 from backend.payroll_tax_settings import fetch_payroll_tax_settings
 from backend.payroll_identity import fetch_payroll_profile_row
-
-ESTIMATE_DISCLAIMER = (
-    "Estimated withholding — verify with accountant/payroll provider."
-)
 
 PAY_PERIODS = {
     "weekly": 52,

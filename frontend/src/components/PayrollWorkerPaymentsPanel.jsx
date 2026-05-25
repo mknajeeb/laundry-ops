@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 import { getWorkerPayments } from "../api";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
+import { ESTIMATE_DISCLAIMER } from "../payroll/payrollTaxMessages";
 
 export default function PayrollWorkerPaymentsPanel() {
   const [year, setYear] = useState(new Date().getFullYear());
@@ -51,8 +52,8 @@ export default function PayrollWorkerPaymentsPanel() {
           Worker payment records
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Per-person payout history, open unpaid amounts, and year-to-date totals. W-2 net pay
-          requires the withholding engine (pending).
+          Per-person payout history, open unpaid amounts, and year-to-date totals. W-2 net pay in
+          batches is an estimate only — {ESTIMATE_DISCLAIMER}
         </Typography>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
           <FormControl size="small" sx={{ minWidth: 100 }}>

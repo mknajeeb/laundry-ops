@@ -24,7 +24,11 @@ import {
   Typography,
 } from "@mui/material";
 import { getAccountantYtd, getPayoutBatch, getPayoutBatches } from "../api";
-import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
+import {
+  ESTIMATE_DISCLAIMER,
+  PAYROLL_ESTIMATE_PURPOSE,
+  isLineTaxIncomplete,
+} from "../payroll/payrollTaxMessages";
 
 export default function AccountantReportsPanel() {
   const [subTab, setSubTab] = useState(0);
@@ -80,6 +84,7 @@ export default function AccountantReportsPanel() {
   const downloadBatchCsv = (batch) => {
     if (!batch?.lines?.length) return;
     const isW2 = batch.worker_category === "w2";
+    const csvCell = (val) => String(val ?? "").replace(/,/g, ";");
     const header = isW2
       ? [
           "Worker",
@@ -102,36 +107,44 @@ export default function AccountantReportsPanel() {
           "Workers comp",
           "Total employer taxes",
           "Total employer cost",
-          "Tax status",
-          "Tax notes",
+          "tax_calculation_status",
+          "tax_notes",
+          "profile_incomplete_fields",
+          "estimated_withholding_notice",
           "Payment status",
         ]
       : ["Worker", "Type", "Hours", "Rate", "Gross", "Net/Total", "Payment status", "Paid date"];
-    const lines = batch.lines.map((ln) =>
-      isW2
+    const lines = batch.lines.map((ln) => {
+      const incomplete = isLineTaxIncomplete(ln);
+      const profileFields = Array.isArray(ln.profile_incomplete_fields)
+        ? ln.profile_incomplete_fields.join("; ")
+        : ln.profile_incomplete_fields || "";
+      return isW2
         ? [
             ln.worker_name_snapshot,
             ln.approved_hours,
             ln.rate,
             ln.gross_amount,
-            ln.federal_withholding,
-            ln.state_withholding,
-            ln.city_withholding,
-            ln.social_security_withholding,
-            ln.medicare_withholding,
-            ln.additional_medicare_withholding,
-            ln.total_employee_taxes,
-            ln.net_pay ?? "",
-            ln.employer_social_security,
-            ln.employer_medicare,
-            ln.futa_estimate,
-            ln.ny_suta_estimate,
-            ln.employer_other_tax_estimate,
-            ln.workers_comp_estimate,
-            ln.total_employer_taxes,
-            ln.total_employer_cost,
-            ln.tax_calc_status,
-            (ln.tax_calc_notes || "").replace(/,/g, ";"),
+            incomplete ? "" : ln.federal_withholding ?? "",
+            incomplete ? "" : ln.state_withholding ?? "",
+            incomplete ? "" : ln.city_withholding ?? "",
+            incomplete ? "" : ln.social_security_withholding ?? "",
+            incomplete ? "" : ln.medicare_withholding ?? "",
+            incomplete ? "" : ln.additional_medicare_withholding ?? "",
+            incomplete ? "" : ln.total_employee_taxes ?? "",
+            incomplete ? "" : ln.net_pay ?? "",
+            incomplete ? "" : ln.employer_social_security ?? "",
+            incomplete ? "" : ln.employer_medicare ?? "",
+            incomplete ? "" : ln.futa_estimate ?? "",
+            incomplete ? "" : ln.ny_suta_estimate ?? "",
+            incomplete ? "" : ln.employer_other_tax_estimate ?? "",
+            incomplete ? "" : ln.workers_comp_estimate ?? "",
+            incomplete ? "" : ln.total_employer_taxes ?? "",
+            incomplete ? "" : ln.total_employer_cost ?? "",
+            ln.tax_calculation_status || ln.tax_calc_status || "",
+            csvCell(ln.tax_notes || ln.tax_calc_notes),
+            csvCell(profileFields),
+            ln.estimated_withholding_notice || (incomplete ? "" : ESTIMATE_DISCLAIMER),
             ln.payment_status_label || ln.payment_status,
           ].join(",")
         : [
@@ -143,8 +156,8 @@ export default function AccountantReportsPanel() {
             ln.total_amount,
             ln.payment_status_label || ln.payment_status,
             ln.payment_date || "",
-          ].join(","),
-    );
+          ].join(",");
+    });
     const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -172,8 +185,11 @@ export default function AccountantReportsPanel() {
         <Typography variant="h6">Accountant Reports</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
           View approved batches sent for accountant review. W-2, 1099, and temp categories are
-          always separate. W-2 net pay shows as pending until withholding engine ships.
+          always separate. W-2 exports include estimated withholding only — {ESTIMATE_DISCLAIMER}
         </Typography>
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {PAYROLL_ESTIMATE_PURPOSE}
+        </Alert>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
           <FormControl size="small" sx={{ minWidth: 100 }}>
             <InputLabel>Year</InputLabel>
@@ -322,8 +338,8 @@ export default function AccountantReportsPanel() {
       {subTab === 3 ? (
         <Paper sx={{ p: 2 }}>
           <Alert severity="info" sx={{ mb: 2 }}>
-            W-2 federal / NY / NYC withholding engine is pending. Reports show gross wages only —
-            do not use net pay until calculation is enabled.
+            W-2 reports show estimated withholding from employee W-4 profiles. {ESTIMATE_DISCLAIMER}{" "}
+            {PAYROLL_ESTIMATE_PURPOSE}
           </Alert>
           <Table size="small">
             <TableHead>

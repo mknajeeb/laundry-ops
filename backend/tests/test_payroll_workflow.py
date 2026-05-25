@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 from backend.payroll_workflow import (
     _batch_payment_status,
     _line_payment_status_label,
+    _mask_incomplete_w2_line_taxes,
+    build_payroll_readiness,
     fetch_w4_compliance_summary,
     validate_batch_for_workflow,
 )
@@ -37,9 +39,53 @@ def test_validate_batch_blocks_missing_rates():
 
 def test_fetch_w4_compliance_empty():
     conn = MagicMock()
-    with patch("backend.payroll_workflow.ensure_hr_extended_profiles_table"):
+    with patch("backend.payroll_workflow.ensure_hr_extended_profiles_table"), patch(
+        "backend.w2_payroll_tax_engine.fetch_employee_tax_profile",
+        return_value={"w4_complete": False, "missing_fields": []},
+    ):
         c = conn.cursor.return_value
         c.fetchone.return_value = {"work_json": "{}"}
         out = fetch_w4_compliance_summary(conn, 1, 1)
     assert out["w4_on_file"] is False
-    assert out["tax_calc_status"] == "pending"
+    assert out["tax_calc_status"] == "profile_incomplete"
+
+
+def test_mask_incomplete_w2_line_taxes_clears_amounts():
+    row = {
+        "tax_calc_status": "profile_incomplete",
+        "federal_withholding": 0,
+        "net_pay": 0,
+        "total_employee_taxes": 0,
+    }
+    _mask_incomplete_w2_line_taxes(row)
+    assert row["federal_withholding"] is None
+    assert row["net_pay"] is None
+    assert row["total_employee_taxes"] is None
+
+
+def test_build_payroll_readiness_w2_complete():
+    batch = {"status": "hours_reviewed", "worker_category": "w2"}
+    lines = [{"tax_calc_status": "estimated", "rate": 20}]
+    items = build_payroll_readiness(batch, "w2", [], [], lines)
+    keys = {i["key"] for i in items}
+    assert keys == {
+        "worker_type",
+        "rate_present",
+        "hours_reviewed",
+        "w4_profile",
+        "tax_estimate",
+        "accountant_export",
+        "paid_tracking",
+    }
+    assert all(i["ok"] for i in items if i["key"] != "paid_tracking" or i["ok"])
+
+
+def test_build_payroll_readiness_temp_skips_tax_items():
+    batch = {"status": "draft", "worker_category": "temp"}
+    lines = [{"rate": 18, "total_amount": 100}]
+    items = build_payroll_readiness(batch, "temp", [], [], lines)
+    w4 = next(i for i in items if i["key"] == "w4_profile")
+    tax = next(i for i in items if i["key"] == "tax_estimate")
+    assert w4["ok"] is True
+    assert tax["ok"] is True
+    assert "tax engine does not run" in tax["detail"].lower()

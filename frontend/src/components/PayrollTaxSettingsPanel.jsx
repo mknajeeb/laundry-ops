@@ -8,6 +8,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getPayrollTaxSettings, putPayrollTaxSettings } from "../api";
+import { ESTIMATE_DISCLAIMER, PAYROLL_ESTIMATE_PURPOSE } from "../payroll/payrollTaxMessages";
 
 const FIELDS = [
   { key: "tax_year", label: "Tax year", type: "number" },
@@ -70,8 +71,7 @@ export default function PayrollTaxSettingsPanel() {
   return (
     <Stack spacing={2}>
       <Alert severity="info">
-        Estimated payroll taxes — verify with accountant/payroll provider. Rates apply to W-2
-        batch calculations only.
+        {PAYROLL_ESTIMATE_PURPOSE} {ESTIMATE_DISCLAIMER} Rates apply to W-2 batch calculations only.
       </Alert>
       {error ? <Alert severity="error">{error}</Alert> : null}
       {info ? (
