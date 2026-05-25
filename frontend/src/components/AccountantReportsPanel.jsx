@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Box,
+  Button,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   InputLabel,
   MenuItem,
@@ -18,16 +23,18 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { getAccountantYtd, getPayoutBatches } from "../api";
+import { getAccountantYtd, getPayoutBatch, getPayoutBatches } from "../api";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
 export default function AccountantReportsPanel() {
   const [subTab, setSubTab] = useState(0);
   const [year, setYear] = useState(new Date().getFullYear());
   const [category, setCategory] = useState("all");
+  const [batchFilter, setBatchFilter] = useState("accountant");
   const [ytdRows, setYtdRows] = useState([]);
   const [batches, setBatches] = useState([]);
   const [error, setError] = useState("");
+  const [viewBatch, setViewBatch] = useState(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -47,6 +54,70 @@ export default function AccountantReportsPanel() {
     load();
   }, [load]);
 
+  const filteredBatches = useMemo(() => {
+    let rows = batches;
+    if (batchFilter === "accountant") {
+      rows = rows.filter((b) =>
+        ["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid", "closed"].includes(
+          b.status,
+        ),
+      );
+    } else if (batchFilter === "unpaid") {
+      rows = rows.filter((b) => b.status !== "paid" && b.status !== "closed");
+    }
+    return rows;
+  }, [batches, batchFilter]);
+
+  const openBatch = async (id) => {
+    try {
+      const res = await getPayoutBatch(id);
+      setViewBatch(res.data);
+    } catch (e) {
+      setError(e.response?.data?.error || "Could not load batch");
+    }
+  };
+
+  const downloadBatchCsv = (batch) => {
+    if (!batch?.lines?.length) return;
+    const isW2 = batch.worker_category === "w2";
+    const header = [
+      "Worker",
+      "Type",
+      "Hours",
+      "Rate",
+      "Gross",
+      ...(isW2 ? ["Net pay"] : []),
+      "Payment status",
+      "Paid date",
+    ];
+    const lines = batch.lines.map((ln) =>
+      [
+        ln.worker_name_snapshot,
+        batch.worker_category_label,
+        ln.approved_hours,
+        ln.rate,
+        ln.gross_amount,
+        ...(isW2 ? [ln.net_pay ?? "Pending"] : []),
+        ln.payment_status_label || ln.payment_status,
+        ln.payment_date || "",
+      ].join(","),
+    );
+    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `accountant-batch-${batch.id}.csv`;
+    a.click();
+  };
+
+  const categoryTotals = useMemo(() => {
+    const out = { w2: 0, contractor_1099: 0, temp: 0 };
+    for (const r of ytdRows) {
+      const cat = r.worker_category;
+      if (cat in out) out[cat] += Number(r.total_paid_ytd || 0);
+    }
+    return out;
+  }, [ytdRows]);
+
   return (
     <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
       {error ? (
@@ -57,8 +128,8 @@ export default function AccountantReportsPanel() {
       <Paper sx={{ p: 2 }}>
         <Typography variant="h6">Accountant Reports</Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Read-only reporting for your accountant. Role-based access (accountant_viewer) can be
-          added later — use admin access for now.
+          View approved batches sent for accountant review. W-2, 1099, and temp categories are
+          always separate. W-2 net pay shows as pending until withholding engine ships.
         </Typography>
         <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
           <FormControl size="small" sx={{ minWidth: 100 }}>
@@ -81,83 +152,115 @@ export default function AccountantReportsPanel() {
               ))}
             </Select>
           </FormControl>
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Batch filter</InputLabel>
+            <Select label="Batch filter" value={batchFilter} onChange={(e) => setBatchFilter(e.target.value)}>
+              <MenuItem value="accountant">Sent to accountant+</MenuItem>
+              <MenuItem value="all">All batches</MenuItem>
+              <MenuItem value="unpaid">Not fully paid</MenuItem>
+            </Select>
+          </FormControl>
+        </Stack>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mt: 2 }}>
+          <Chip label={`W-2 YTD: $${categoryTotals.w2.toFixed(2)}`} color="primary" variant="outlined" />
+          <Chip
+            label={`1099 YTD: $${categoryTotals.contractor_1099.toFixed(2)}`}
+            color="secondary"
+            variant="outlined"
+          />
+          <Chip label={`Temp YTD: $${categoryTotals.temp.toFixed(2)}`} color="warning" variant="outlined" />
         </Stack>
       </Paper>
 
       <Tabs value={subTab} onChange={(_, v) => setSubTab(v)}>
-        <Tab label="Payout batches" />
+        <Tab label="Approved batches" />
         <Tab label="YTD by worker" />
-        <Tab label="1099 / Temp summary" />
+        <Tab label="1099 / Temp" />
         <Tab label="W-2 support" />
-        <Tab label="Engagement letter" />
       </Tabs>
 
       {subTab === 0 ? (
         <TableContainer component={Paper} sx={{ overflowX: "auto" }}>
-        <Table size="small" sx={{ minWidth: 640 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell>Batch</TableCell>
-              <TableCell>Category</TableCell>
-              <TableCell>Period</TableCell>
-              <TableCell>Status</TableCell>
-              <TableCell align="right">Payout</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {batches.map((b) => (
-              <TableRow key={b.id}>
-                <TableCell>{b.batch_name}</TableCell>
-                <TableCell>{b.worker_category_label || b.worker_category}</TableCell>
-                <TableCell>
-                  {b.pay_period_start} – {b.pay_period_end}
-                </TableCell>
-                <TableCell>{b.status}</TableCell>
-                <TableCell align="right">${Number(b.total_payout_amount || 0).toFixed(2)}</TableCell>
+          <Table size="small" sx={{ minWidth: 720 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Batch</TableCell>
+                <TableCell>Category</TableCell>
+                <TableCell>Period</TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell align="right">Payout</TableCell>
+                <TableCell align="right">Actions</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {filteredBatches.map((b) => (
+                <TableRow key={b.id} hover>
+                  <TableCell>{b.batch_name}</TableCell>
+                  <TableCell>{b.worker_category_label || b.worker_category}</TableCell>
+                  <TableCell>
+                    {b.pay_period_start} – {b.pay_period_end}
+                  </TableCell>
+                  <TableCell>{b.status}</TableCell>
+                  <TableCell align="right">${Number(b.total_payout_amount || 0).toFixed(2)}</TableCell>
+                  <TableCell align="right">
+                    <Button size="small" onClick={() => openBatch(b.id)}>
+                      View / download
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!filteredBatches.length ? (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <Typography color="text.secondary">No batches match this filter.</Typography>
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
         </TableContainer>
       ) : null}
 
       {subTab === 1 ? (
         <TableContainer component={Paper} sx={{ overflowX: "auto" }}>
-        <Table size="small" sx={{ minWidth: 720 }}>
-          <TableHead>
-            <TableRow>
-              <TableCell>Worker</TableCell>
-              <TableCell>Category</TableCell>
-              <TableCell align="right">Paid YTD</TableCell>
-              <TableCell align="right">Payments</TableCell>
-              <TableCell align="right">Avg weekly</TableCell>
-              <TableCell align="right">Avg monthly</TableCell>
-              <TableCell>Last paid</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {ytdRows.map((r) => (
-              <TableRow key={`${r.user_id}-${r.worker_category}`}>
-                <TableCell>{r.worker_name}</TableCell>
-                <TableCell>{r.worker_category_label}</TableCell>
-                <TableCell align="right">${Number(r.total_paid_ytd || 0).toFixed(2)}</TableCell>
-                <TableCell align="right">{r.payment_count}</TableCell>
-                <TableCell align="right">${Number(r.avg_weekly_pay || 0).toFixed(2)}</TableCell>
-                <TableCell align="right">${Number(r.avg_monthly_pay || 0).toFixed(2)}</TableCell>
-                <TableCell>{r.last_payment_date || "—"}</TableCell>
+          <Table size="small" sx={{ minWidth: 720 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Worker</TableCell>
+                <TableCell>Category</TableCell>
+                <TableCell align="right">Paid YTD</TableCell>
+                <TableCell align="right">Payments</TableCell>
+                <TableCell>Last paid</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {ytdRows.map((r) => (
+                <TableRow key={`${r.user_id}-${r.worker_category}`}>
+                  <TableCell>{r.worker_name}</TableCell>
+                  <TableCell>{r.worker_category_label}</TableCell>
+                  <TableCell align="right">${Number(r.total_paid_ytd || 0).toFixed(2)}</TableCell>
+                  <TableCell align="right">{r.payment_count}</TableCell>
+                  <TableCell>{r.last_payment_date || "—"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </TableContainer>
       ) : null}
 
       {subTab === 2 ? (
         <Paper sx={{ p: 2 }}>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
-            1099 / Temp payment summary ({year})
+            1099 / Temp — {year}
           </Typography>
           <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Worker</TableCell>
+                <TableCell>Type</TableCell>
+                <TableCell align="right">YTD paid</TableCell>
+              </TableRow>
+            </TableHead>
             <TableBody>
               {ytdRows
                 .filter((r) => r.worker_category !== "w2")
@@ -166,15 +269,6 @@ export default function AccountantReportsPanel() {
                     <TableCell>{r.worker_name}</TableCell>
                     <TableCell>{r.worker_category_label}</TableCell>
                     <TableCell align="right">${Number(r.total_paid_ytd || 0).toFixed(2)}</TableCell>
-                    <TableCell>
-                      {r.reporting_threshold_warning ? (
-                        <Typography color="warning.main" variant="caption">
-                          Review W-9 / 1099 threshold
-                        </Typography>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
                   </TableRow>
                 ))}
             </TableBody>
@@ -184,16 +278,15 @@ export default function AccountantReportsPanel() {
 
       {subTab === 3 ? (
         <Paper sx={{ p: 2 }}>
-          <Typography variant="body2" color="text.secondary">
-            W-2 payroll support: gross wages and withholding fields are stored on payout batch
-            lines when category is W-2. Full tax engine and paystub generation will be added
-            later. Use payout batch summaries for accountant handoff.
-          </Typography>
-          <Table size="small" sx={{ mt: 2 }}>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            W-2 federal / NY / NYC withholding engine is pending. Reports show gross wages only —
+            do not use net pay until calculation is enabled.
+          </Alert>
+          <Table size="small">
             <TableHead>
               <TableRow>
                 <TableCell>Worker</TableCell>
-                <TableCell align="right">YTD paid (batches)</TableCell>
+                <TableCell align="right">YTD gross (batches)</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -210,22 +303,52 @@ export default function AccountantReportsPanel() {
         </Paper>
       ) : null}
 
-      {subTab === 4 ? (
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>
-            Contractor Engagement and Payment Verification Letter
-          </Typography>
-          <Typography variant="body2" paragraph>
-            Planned template for 1099/temp workers requesting proof of work. Print from
-            Contractor Management → Forms &amp; Packets when available.
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>
-            “This letter confirms that, according to our records, [Name] provided contractor
-            services to VeeWash/Washpro from [date] to [date]. Payments were made for contractor
-            services based on approved work records…”
-          </Typography>
-        </Paper>
-      ) : null}
+      <Dialog open={!!viewBatch} onClose={() => setViewBatch(null)} maxWidth="md" fullWidth>
+        <DialogTitle>{viewBatch?.batch_name || "Batch report"}</DialogTitle>
+        <DialogContent>
+          {viewBatch ? (
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              <Typography variant="body2">
+                {viewBatch.worker_category_label} · {viewBatch.pay_period_start} –{" "}
+                {viewBatch.pay_period_end} · {viewBatch.status}
+              </Typography>
+              {(viewBatch.warnings || []).map((w) => (
+                <Alert key={w} severity="warning">
+                  {w}
+                </Alert>
+              ))}
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Worker</TableCell>
+                    <TableCell align="right">Hours</TableCell>
+                    <TableCell align="right">Rate</TableCell>
+                    <TableCell align="right">Gross</TableCell>
+                    <TableCell>Payment</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(viewBatch.lines || []).map((ln) => (
+                    <TableRow key={ln.id}>
+                      <TableCell>{ln.worker_name_snapshot}</TableCell>
+                      <TableCell align="right">{Number(ln.approved_hours || 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">${Number(ln.rate || 0).toFixed(2)}</TableCell>
+                      <TableCell align="right">${Number(ln.gross_amount || 0).toFixed(2)}</TableCell>
+                      <TableCell>{ln.payment_status_label || ln.payment_status}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setViewBatch(null)}>Close</Button>
+          <Button onClick={() => downloadBatchCsv(viewBatch)} disabled={!viewBatch?.lines?.length}>
+            Download CSV
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

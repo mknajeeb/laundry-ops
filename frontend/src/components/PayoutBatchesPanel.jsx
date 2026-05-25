@@ -42,6 +42,7 @@ import {
   patchPayoutBatch,
   postPayoutBatch,
 } from "../api";
+import PayrollDueSummary from "./PayrollDueSummary";
 import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
 import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
@@ -59,6 +60,19 @@ const BATCH_STATUS_FLOW = [
 
 const CATEGORY_BATCH = WORKER_CATEGORY_OPTIONS.filter((o) => o.value !== "all");
 
+function batchPaymentLabel(st) {
+  if (st === "paid") return "Paid";
+  if (st === "partially_paid") return "Partially paid";
+  if (st === "approved_unpaid") return "Approved — unpaid";
+  return "Pending";
+}
+
+function batchPaymentColor(st) {
+  if (st === "paid") return "success";
+  if (st === "partially_paid") return "warning";
+  if (st === "approved_unpaid") return "info";
+  return "default";
+}
 function lineStatusLabel(st) {
   if (st === "pending" || st === "pending_approval") return "Pending approval";
   if (st === "approved") return "Approved";
@@ -262,6 +276,30 @@ export default function PayoutBatchesPanel({
     await loadList();
   };
 
+  const runWorkflowAction = async (action, extra = {}) => {
+    if (!selectedId) return;
+    setError("");
+    setInfo("");
+    try {
+      const res = await patchPayoutBatch(selectedId, { action, ...extra });
+      setDetail(res.data);
+      await loadList();
+      const labels = {
+        hours_reviewed: "Hours marked reviewed.",
+        send_to_accountant: "Batch sent to accountant.",
+        mark_paid: "Batch marked paid.",
+        mark_line_paid: "Worker marked paid.",
+        mark_line_unpaid: "Worker marked unpaid.",
+      };
+      setInfo(labels[action] || "Updated.");
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Action failed");
+    }
+  };
+
+  const markLinePaid = (lineId) => runWorkflowAction("mark_line_paid", { line_id: lineId });
+  const markLineUnpaid = (lineId) => runWorkflowAction("mark_line_unpaid", { line_id: lineId });
+
   const setBatchStatus = async (status) => {
     try {
       const res = await patchPayoutBatch(selectedId, { status });
@@ -316,6 +354,9 @@ export default function PayoutBatchesPanel({
   };
 
   const isDraft = detail?.status === "draft";
+  const isW2 = detail?.worker_category === "w2";
+  const summary = detail?.summary || {};
+  const batchWarnings = detail?.warnings || [];
 
   const openEditBatch = () => {
     setDraft({
@@ -406,6 +447,8 @@ export default function PayoutBatchesPanel({
         </Alert>
       ) : null}
 
+      <PayrollDueSummary fromDate={payPeriodStart} toDate={payPeriodEnd} />
+
       <Paper sx={{ p: 2 }}>
         <Stack
           direction={{ xs: "column", sm: "row" }}
@@ -471,6 +514,16 @@ export default function PayoutBatchesPanel({
             <Typography color="text.secondary">Select a batch to view or edit.</Typography>
           ) : (
             <>
+              {batchWarnings.length ? (
+                <Stack spacing={1} sx={{ mb: 2 }}>
+                  {batchWarnings.map((w) => (
+                    <Alert key={w} severity="warning">
+                      {w}
+                    </Alert>
+                  ))}
+                </Stack>
+              ) : null}
+
               <Stack
                 direction={{ xs: "column", md: "row" }}
                 justifyContent="space-between"
@@ -488,6 +541,18 @@ export default function PayoutBatchesPanel({
                     {detail.worker_count} worker(s) · {Number(detail.total_approved_hours || 0).toFixed(2)}{" "}
                     hrs
                   </Typography>
+                  <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                    <Chip
+                      size="small"
+                      label={`Batch: ${detail.status}`}
+                      color={detail.status === "paid" ? "success" : "default"}
+                    />
+                    <Chip
+                      size="small"
+                      label={`Payment: ${batchPaymentLabel(detail.payment_status)}`}
+                      color={batchPaymentColor(detail.payment_status)}
+                    />
+                  </Stack>
                 </Box>
                 <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                   <Tooltip title="View details">
@@ -517,10 +582,94 @@ export default function PayoutBatchesPanel({
                 </Stack>
               </Stack>
 
+              <Paper variant="outlined" sx={{ p: 1.5, mb: 2 }}>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                  Batch summary — {detail.worker_category_label}
+                </Typography>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" useFlexGap>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Gross
+                    </Typography>
+                    <Typography>${Number(summary.gross_total || 0).toFixed(2)}</Typography>
+                  </Box>
+                  {isW2 ? (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">
+                        Taxes withheld
+                      </Typography>
+                      <Typography>
+                        {summary.taxes_withheld_total > 0
+                          ? `$${Number(summary.taxes_withheld_total).toFixed(2)}`
+                          : "Pending engine"}
+                      </Typography>
+                    </Box>
+                  ) : null}
+                  {isW2 ? (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary">
+                        Net pay
+                      </Typography>
+                      <Typography>{summary.net_pay_note || "Pending"}</Typography>
+                    </Box>
+                  ) : null}
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Paid
+                    </Typography>
+                    <Typography>${Number(summary.paid_amount || 0).toFixed(2)}</Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Unpaid
+                    </Typography>
+                    <Typography>${Number(summary.unpaid_amount || 0).toFixed(2)}</Typography>
+                  </Box>
+                </Stack>
+              </Paper>
+
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
                 <Button size="small" variant="outlined" onClick={refreshHours} disabled={!isDraft}>
                   Refresh from time records
                 </Button>
+                {isDraft ? (
+                  <Button size="small" variant="outlined" onClick={() => runWorkflowAction("refresh_rates")}>
+                    Apply profile rates
+                  </Button>
+                ) : null}
+                {detail.status === "draft" ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={() => runWorkflowAction("hours_reviewed")}
+                    disabled={!detail.lines?.length}
+                  >
+                    Mark hours reviewed
+                  </Button>
+                ) : null}
+                {detail.status === "hours_reviewed" ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="primary"
+                    onClick={() => runWorkflowAction("send_to_accountant")}
+                  >
+                    Send to accountant
+                  </Button>
+                ) : null}
+                {["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"].includes(
+                  detail.status,
+                ) ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="success"
+                    onClick={() => runWorkflowAction("mark_paid")}
+                    disabled={detail.payment_status === "paid"}
+                  >
+                    Mark batch paid
+                  </Button>
+                ) : null}
                 <FormControl size="small" sx={{ minWidth: 200 }}>
                   <InputLabel>Batch status</InputLabel>
                   <Select
@@ -556,6 +705,14 @@ export default function PayoutBatchesPanel({
                       <TableCell align="right">Hours</TableCell>
                       <TableCell align="right">Rate</TableCell>
                       <TableCell align="right">Total</TableCell>
+                      {isW2 ? (
+                        <>
+                          <TableCell align="right">Gross</TableCell>
+                          <TableCell>Taxes</TableCell>
+                          <TableCell>Net pay</TableCell>
+                        </>
+                      ) : null}
+                      <TableCell>Payment</TableCell>
                       <TableCell>Status</TableCell>
                       <TableCell align="right">Actions</TableCell>
                     </TableRow>
@@ -565,8 +722,45 @@ export default function PayoutBatchesPanel({
                       <TableRow key={ln.id} hover>
                         <TableCell>{ln.worker_name_snapshot}</TableCell>
                         <TableCell align="right">{Number(ln.approved_hours || 0).toFixed(2)}</TableCell>
-                        <TableCell align="right">${Number(ln.rate || 0).toFixed(2)}</TableCell>
+                        <TableCell align="right">
+                          {Number(ln.rate || 0) <= 0 ? (
+                            <Typography component="span" color="warning.main" variant="body2">
+                              Missing
+                              {ln.suggested_rate
+                                ? ` (suggest $${Number(ln.suggested_rate).toFixed(2)})`
+                                : ""}
+                            </Typography>
+                          ) : (
+                            `$${Number(ln.rate || 0).toFixed(2)}`
+                          )}
+                        </TableCell>
                         <TableCell align="right">${Number(ln.total_amount || 0).toFixed(2)}</TableCell>
+                        {isW2 ? (
+                          <>
+                            <TableCell align="right">
+                              ${Number(ln.gross_wages || ln.gross_amount || 0).toFixed(2)}
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption" color="text.secondary">
+                                {ln.tax_calc_status === "pending" ? "Pending" : "—"}
+                              </Typography>
+                            </TableCell>
+                            <TableCell>
+                              <Typography variant="caption" color="text.secondary">
+                                {ln.net_pay != null
+                                  ? `$${Number(ln.net_pay).toFixed(2)}`
+                                  : ln.net_pay_note || "Pending"}
+                              </Typography>
+                            </TableCell>
+                          </>
+                        ) : null}
+                        <TableCell>
+                          <Chip
+                            size="small"
+                            color={ln.payment_status === "paid" ? "success" : "warning"}
+                            label={ln.payment_status_label || ln.payment_status || "Pending"}
+                          />
+                        </TableCell>
                         <TableCell>
                           <Chip
                             size="small"
@@ -575,6 +769,19 @@ export default function PayoutBatchesPanel({
                           />
                         </TableCell>
                         <TableCell align="right">
+                          {ln.payment_status !== "paid" &&
+                          ["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"].includes(
+                            detail.status,
+                          ) ? (
+                            <Button size="small" onClick={() => markLinePaid(ln.id)}>
+                              Mark paid
+                            </Button>
+                          ) : null}
+                          {ln.payment_status === "paid" ? (
+                            <Button size="small" onClick={() => markLineUnpaid(ln.id)}>
+                              Unpaid
+                            </Button>
+                          ) : null}
                           <IconButton size="small" onClick={() => setLineEdit({ ...ln })} disabled={!isDraft}>
                             <EditIcon fontSize="small" />
                           </IconButton>
@@ -591,7 +798,7 @@ export default function PayoutBatchesPanel({
                     ))}
                     {!detail.lines?.length ? (
                       <TableRow>
-                        <TableCell colSpan={6}>
+                        <TableCell colSpan={isW2 ? 10 : 7}>
                           <Typography variant="body2" color="text.secondary">
                             No workers in this batch yet. Approve time on Time Records for this pay period,
                             then refresh.

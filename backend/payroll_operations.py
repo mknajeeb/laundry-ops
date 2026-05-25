@@ -693,7 +693,9 @@ def get_payout_batch(conn, organization_id: int, batch_id: int) -> Optional[dict
     batch["worker_category_label"] = CATEGORY_LABELS.get(
         batch.get("worker_category"), batch.get("worker_category")
     )
-    return batch
+    from backend.payroll_workflow import enrich_payout_batch
+
+    return enrich_payout_batch(conn, organization_id, batch)
 
 
 def create_payout_batch(
@@ -924,6 +926,16 @@ def add_payout_batch_line(
             name = f"{u.get('first_name') or ''} {u.get('last_name') or ''}".strip()
     if not name:
         raise ValueError("worker_name required")
+    from backend.payroll_workflow import apply_w2_fields_on_line_insert, ensure_payout_batch_line_extensions
+
+    ensure_payout_batch_line_extensions(conn.cursor())
+    w2_extra = {}
+    if uid and batch["worker_category"] == "w2":
+        w2_extra = apply_w2_fields_on_line_insert(conn, int(uid), batch["worker_category"], gross)
+    payment_status = str(body.get("payment_status") or "pending")
+    tax_calc_status = w2_extra.get("tax_calc_status") or (
+        "not_applicable" if batch["worker_category"] != "w2" else "pending"
+    )
     c = conn.cursor()
     c.execute(
         """
@@ -931,8 +943,9 @@ def add_payout_batch_line(
           batch_id, organization_id, user_id, worker_name_snapshot, worker_category,
           approved_hours, rate, gross_amount, adjustments, total_amount,
           payment_method, payment_reference, payment_date, line_status,
-          document_status, notes, gross_wages, source_type, source_shift_session_ids
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+          document_status, notes, gross_wages, source_type, source_shift_session_ids,
+          payment_status, tax_calc_status
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(batch_id),
@@ -951,11 +964,13 @@ def add_payout_batch_line(
             str(body.get("line_status") or "pending_approval"),
             body.get("document_status"),
             body.get("notes"),
-            gross if batch["worker_category"] == "w2" else None,
+            w2_extra.get("gross_wages") if batch["worker_category"] == "w2" else None,
             str(body.get("source_type") or "manual"),
             json.dumps(body.get("source_shift_session_ids"))
             if body.get("source_shift_session_ids")
             else None,
+            payment_status,
+            tax_calc_status,
         ),
     )
     _recompute_batch_totals(conn, batch_id)
@@ -1018,14 +1033,9 @@ def build_batch_from_time_records(
         by_user[uid]["hours"] += float(rec.get("approved_hours") or 0)
         by_user[uid]["session_ids"].append(rec["id"])
     for uid, agg in by_user.items():
-        rate = 0.0
-        try:
-            from backend.contractor_management import build_contractor_prefill
+        from backend.payroll_workflow import resolve_rate_for_batch_line
 
-            pre = build_contractor_prefill(conn, uid, organization_id)
-            rate = float(pre.get("rate_per_hour") or 0)
-        except Exception:
-            rate = 0.0
+        rate = resolve_rate_for_batch_line(conn, organization_id, uid)
         add_payout_batch_line(
             conn,
             organization_id,

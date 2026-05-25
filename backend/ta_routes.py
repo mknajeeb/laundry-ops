@@ -5396,6 +5396,53 @@ def payroll_time_record_mutate(rid):
         conn.close()
 
 
+@ta_bp.route("/payroll/pay-due", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit", "users.view")
+def payroll_pay_due():
+    conn = get_db()
+    try:
+        from backend.payroll_workflow import payroll_due_summary
+
+        oid = _tenant_id()
+        return jsonify(
+            payroll_due_summary(
+                conn,
+                oid,
+                from_date=request.args.get("from_date"),
+                to_date=request.args.get("to_date"),
+            )
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_pay_due failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/worker-payments", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_worker_payments():
+    conn = get_db()
+    try:
+        from backend.payroll_workflow import worker_payment_overview
+
+        oid = _tenant_id()
+        return jsonify(
+            {
+                "items": worker_payment_overview(
+                    conn, oid, year=request.args.get("year", type=int)
+                )
+            }
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_worker_payments failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches", methods=["GET", "POST"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")
@@ -5488,6 +5535,30 @@ def payroll_payout_batch_detail(batch_id):
                     from_date=body.get("from_date") or body.get("pay_period_start"),
                     to_date=body.get("to_date") or body.get("pay_period_end"),
                     allow_empty=bool(body.get("allow_empty")),
+                )
+                return jsonify(row)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+        if body.get("action") in (
+            "hours_reviewed",
+            "send_to_accountant",
+            "mark_paid",
+            "mark_line_paid",
+            "mark_line_unpaid",
+            "refresh_rates",
+        ):
+            from backend.payroll_workflow import apply_batch_workflow_action
+
+            try:
+                row = apply_batch_workflow_action(
+                    conn,
+                    oid,
+                    batch_id,
+                    body["action"],
+                    actor_id=int(g.ta_user["id"]),
+                    line_id=body.get("line_id"),
+                    payment_date=body.get("payment_date"),
+                    payment_reference=body.get("payment_reference"),
                 )
                 return jsonify(row)
             except ValueError as e:
