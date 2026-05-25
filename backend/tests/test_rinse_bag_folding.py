@@ -43,6 +43,8 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
     def test_folding_to_clean_calculated_folding_user(self):
         t0 = datetime(2026, 5, 16, 23, 10)
         t1 = datetime(2026, 5, 17, 14, 57)
+        from backend.rinse_folding_exception_rules import parse_exception_rules_payload
+
         r = evaluate_folding_performance_for_bag(
             [
                 _ev("003-NY-WF", "Mahmoudou Nduwayo", datetime(2026, 5, 16, 23, 4), 1, 1),
@@ -50,6 +52,7 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
                 _ev("CLEAN", "Veewash Training Account", t1, 3, 3),
             ],
             registry_row={"date_clean": date(2026, 5, 16), "completion_status": "COMPLETED"},
+            rules=parse_exception_rules_payload({"max_duration_minutes": 0}),
         )
         self.assertEqual(r.status, STATUS_CALCULATED)
         self.assertEqual(r.assigned_user_name, "Sarah Kamran")

@@ -57,6 +57,12 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
+    to: "/rinse/folding-exceptions",
+    labelKey: "nav.foldingExceptions",
+    roles: ["ADMIN", "OPS"],
+    moduleKey: "scoreboard",
+  },
+  {
     to: "/rinse/order-search",
     labelKey: "nav.rinseOrderSearch",
     roles: ["ADMIN"],

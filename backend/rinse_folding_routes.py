@@ -38,6 +38,12 @@ def _optional_int(val: str | None) -> int | None:
     return int(val)
 
 
+def _optional_bool(val: str | None) -> bool | None:
+    if val is None or str(val).strip() == "":
+        return None
+    return str(val).strip().lower() in ("1", "true", "yes")
+
+
 def _folding_list_kwargs(request, parse_date_value) -> dict:
     start_raw = request.args.get("date_start") or request.args.get("start_date")
     end_raw = request.args.get("date_end") or request.args.get("end_date")
@@ -62,6 +68,10 @@ def _folding_list_kwargs(request, parse_date_value) -> dict:
         "lbs_per_hour_max": _optional_float(request.args.get("lbs_per_hour_max")),
         "bags_per_hour_min": _optional_float(request.args.get("bags_per_hour_min")),
         "bags_per_hour_max": _optional_float(request.args.get("bags_per_hour_max")),
+        "reviewed": _optional_bool(request.args.get("reviewed")),
+        "approved": _optional_bool(request.args.get("approved")),
+        "excluded_from_scoring": _optional_bool(request.args.get("excluded_from_scoring")),
+        "included_in_scoring": _optional_bool(request.args.get("included_in_scoring")),
     }
 
 
@@ -518,6 +528,212 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             )
             conn.commit()
             return jsonify({"ok": True, "user_name": user_name}), 201
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/settings/exception-rules", methods=["GET", "PUT"])
+    def rinse_folding_exception_rules_settings():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            from backend.rinse_folding_exception_rules import (
+                get_folding_exception_rules,
+                put_folding_exception_rules,
+            )
+
+            if request.method == "GET":
+                return jsonify(get_folding_exception_rules(cursor, tenant_oid))
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            data = request.get_json(silent=True) or {}
+            out = put_folding_exception_rules(cursor, tenant_oid, data)
+            conn.commit()
+            return jsonify(out)
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exceptions/search", methods=["GET"])
+    def rinse_folding_exceptions_search():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            try:
+                limit = min(500, max(1, int(request.args.get("limit", 100))))
+            except (TypeError, ValueError):
+                limit = 100
+            try:
+                offset = max(0, int(request.args.get("offset", 0)))
+            except (TypeError, ValueError):
+                offset = 0
+            from backend.rinse_folding_review import search_folding_exceptions
+
+            kwargs = _folding_list_kwargs(request, parse_date_value)
+            payload = search_folding_exceptions(
+                cursor, tenant_oid, limit=limit, offset=offset, **kwargs
+            )
+            return jsonify(json_safe_rinse(payload))
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exceptions/<bag_id>/reviewed", methods=["POST"])
+    def rinse_folding_exception_mark_reviewed(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            bid = normalize_bag_id(bag_id)
+            if not bid:
+                return jsonify({"error": "Invalid bag id"}), 400
+            data = request.get_json(silent=True) or {}
+            from backend.rinse_folding_review import mark_exception_reviewed
+
+            payload = mark_exception_reviewed(
+                cursor,
+                tenant_oid,
+                bid,
+                actor_user_id=int(me.get("user_id") or 0) or None,
+                note=data.get("note") or data.get("admin_notes"),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exceptions/<bag_id>/approve", methods=["POST"])
+    def rinse_folding_exception_approve(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            bid = normalize_bag_id(bag_id)
+            if not bid:
+                return jsonify({"error": "Invalid bag id"}), 400
+            data = request.get_json(silent=True) or {}
+            from backend.rinse_folding_review import approve_exception_for_scoring
+
+            payload = approve_exception_for_scoring(
+                cursor,
+                tenant_oid,
+                bid,
+                actor_user_id=int(me.get("user_id") or 0) or None,
+                note=data.get("note") or data.get("admin_notes"),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exceptions/<bag_id>/exclude", methods=["POST"])
+    def rinse_folding_exception_exclude(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            bid = normalize_bag_id(bag_id)
+            if not bid:
+                return jsonify({"error": "Invalid bag id"}), 400
+            data = request.get_json(silent=True) or {}
+            from backend.rinse_folding_review import exclude_exception_from_scoring
+
+            payload = exclude_exception_from_scoring(
+                cursor,
+                tenant_oid,
+                bid,
+                actor_user_id=int(me.get("user_id") or 0) or None,
+                note=data.get("note") or data.get("admin_notes"),
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exceptions/<bag_id>/override", methods=["POST"])
+    def rinse_folding_exception_override(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            bid = normalize_bag_id(bag_id)
+            if not bid:
+                return jsonify({"error": "Invalid bag id"}), 400
+            data = request.get_json(silent=True) or {}
+            from backend.rinse_folding_review import apply_review_override
+
+            payload = apply_review_override(
+                cursor,
+                tenant_oid,
+                bid,
+                data,
+                actor_user_id=int(me.get("user_id") or 0) or None,
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500

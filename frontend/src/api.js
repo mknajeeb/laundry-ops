@@ -419,6 +419,27 @@ export const listFoldingPerformance = (params = {}) =>
 export const listFoldingExceptions = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/exceptions`, { params, timeout: 30000 });
 
+export const searchFoldingExceptions = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/folding/exceptions/search`, { params, timeout: 30000 });
+
+export const getFoldingExceptionRules = () =>
+  axios.get(`${API_BASE}/rinse/folding/settings/exception-rules`, { timeout: 15000 });
+
+export const putFoldingExceptionRules = (body) =>
+  axios.put(`${API_BASE}/rinse/folding/settings/exception-rules`, body, { timeout: 15000 });
+
+export const markFoldingExceptionReviewed = (bagId, body = {}) =>
+  axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/reviewed`, body, { timeout: 30000 });
+
+export const approveFoldingException = (bagId, body = {}) =>
+  axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/approve`, body, { timeout: 30000 });
+
+export const excludeFoldingException = (bagId, body = {}) =>
+  axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/exclude`, body, { timeout: 30000 });
+
+export const overrideFoldingExceptionReview = (bagId, body = {}) =>
+  axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/override`, body, { timeout: 30000 });
+
 export const getFoldingPerformanceDetail = (bagId) =>
   axios.get(`${API_BASE}/rinse/folding/performance/${encodeURIComponent(bagId)}`, {
     timeout: 30000,
@@ -924,6 +945,12 @@ export const getPayrollTaxSettings = () =>
 
 export const putPayrollTaxSettings = (body) =>
   axios.put(`${API_BASE}/api/ta/payroll/tax-settings`, body);
+
+export const getPayrollEmployeePto = (userId) =>
+  axios.get(`${API_BASE}/api/ta/payroll/pto/${userId}`);
+
+export const postPayrollEmployeePtoAdjust = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/pto/${userId}`, body);
 
 export const getPayrollDue = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/pay-due`, { params });

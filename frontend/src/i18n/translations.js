@@ -14,6 +14,7 @@ export const TRANSLATIONS = {
     "nav.production": "Production",
     "nav.scoreboard": "Scoreboard",
     "nav.foldingDashboard": "Folding dashboard",
+    "nav.foldingExceptions": "Folding exceptions review",
     "nav.foldingTv": "Folding TV",
     "nav.rinseOrderSearch": "Rinse order search",
     "nav.rinseScheduledSync": "Scheduled Rinse sync",

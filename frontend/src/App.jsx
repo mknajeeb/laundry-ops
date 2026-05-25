@@ -34,6 +34,7 @@ import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
+import RinseFoldingExceptionsPage from "./pages/RinseFoldingExceptionsPage";
 import RinseFoldingTvPage from "./pages/RinseFoldingTvPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import RinseBagLookupPage from "./pages/RinseBagLookupPage";
@@ -825,6 +826,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
                     <RinseFoldingDashboardPage user={user} />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/folding-exceptions"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <RinseFoldingExceptionsPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

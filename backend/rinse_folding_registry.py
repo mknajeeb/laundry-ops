@@ -90,9 +90,28 @@ def ensure_rinse_folding_performance_overrides_table(cursor) -> None:
     )
 
 
+def ensure_rinse_folding_v2_columns(cursor) -> None:
+    """Phase 3 review/scoring columns (idempotent)."""
+    ensure_rinse_folding_performance_table(cursor)
+    from backend.ta_helpers import table_has_column
+
+    for col, ddl in (
+        ("scoring_status", "VARCHAR(24) NULL"),
+        ("included_in_scoring", "TINYINT(1) NOT NULL DEFAULT 0"),
+        ("reviewed_at", "DATETIME NULL"),
+        ("reviewed_by_user_id", "INT NULL"),
+        ("exception_review_note", "TEXT NULL"),
+    ):
+        if not table_has_column(cursor, "rinse_folding_performance", col):
+            cursor.execute(
+                f"ALTER TABLE rinse_folding_performance ADD COLUMN {col} {ddl}"
+            )
+
+
 def ensure_rinse_folding_tables(cursor) -> None:
     ensure_rinse_folding_performance_table(cursor)
     ensure_rinse_folding_performance_overrides_table(cursor)
+    ensure_rinse_folding_v2_columns(cursor)
 
 
 def delete_folding_performance_for_bag(
@@ -161,36 +180,61 @@ def _upsert_performance_row(
     existing = get_folding_performance_row(cursor, org, bid)
     excluded = 0
     admin_notes = None
+    reviewed_at = None
+    reviewed_by = None
+    review_note = None
     if existing and preserve_excluded:
         excluded = int(existing.get("excluded_from_performance") or 0)
         admin_notes = existing.get("admin_notes")
+        reviewed_at = existing.get("reviewed_at")
+        reviewed_by = existing.get("reviewed_by_user_id")
+        review_note = existing.get("exception_review_note")
+
+    from backend.rinse_folding_scoring import scoring_fields_from_compute
+
+    scoring = scoring_fields_from_compute(
+        status=str(fields["status"]),
+        exception_code=fields.get("exception_code"),
+        existing=existing,
+        preserve_review=preserve_excluded,
+    )
+    if "scoring_status" in fields:
+        scoring["scoring_status"] = fields["scoring_status"]
+    if "included_in_scoring" in fields:
+        scoring["included_in_scoring"] = int(fields["included_in_scoring"])
 
     cursor.execute(
         """
         INSERT INTO rinse_folding_performance (
             organization_id, bag_id, status, exception_code,
+            scoring_status, included_in_scoring,
             folding_start_at, folding_end_at, duration_seconds,
             folding_start_event_id, folding_end_event_id,
             folding_start_rack, folding_end_rack,
             assigned_user_name, assigned_user_name_source,
             weight_lbs, work_date, registry_completion_status,
             excluded_from_performance, admin_notes,
+            reviewed_at, reviewed_by_user_id, exception_review_note,
             folding_scan_count, clean_scan_count,
             source_recompute_kind, computed_at
         ) VALUES (
             %s, %s, %s, %s,
-            %s, %s, %s,
-            %s, %s,
-            %s, %s,
             %s, %s,
             %s, %s, %s,
             %s, %s,
+            %s, %s,
+            %s, %s,
+            %s, %s, %s,
+            %s, %s,
+            %s, %s, %s,
             %s, %s,
             %s, NOW()
         )
         ON DUPLICATE KEY UPDATE
             status = VALUES(status),
             exception_code = VALUES(exception_code),
+            scoring_status = VALUES(scoring_status),
+            included_in_scoring = VALUES(included_in_scoring),
             folding_start_at = VALUES(folding_start_at),
             folding_end_at = VALUES(folding_end_at),
             duration_seconds = VALUES(duration_seconds),
@@ -214,6 +258,8 @@ def _upsert_performance_row(
             bid,
             fields["status"],
             fields.get("exception_code"),
+            scoring["scoring_status"],
+            scoring["included_in_scoring"],
             fields.get("folding_start_at"),
             fields.get("folding_end_at"),
             fields.get("duration_seconds"),
@@ -228,6 +274,9 @@ def _upsert_performance_row(
             fields.get("registry_completion_status"),
             excluded,
             admin_notes,
+            reviewed_at,
+            reviewed_by,
+            review_note,
             fields.get("folding_scan_count"),
             fields.get("clean_scan_count"),
             source_recompute_kind,
@@ -276,8 +325,11 @@ def apply_folding_performance_for_bag(
             "folding_performance_deleted": folding_deleted,
         }
 
+    from backend.rinse_folding_exception_rules import get_folding_exception_rules_typed
+
     events = fetch_persistent_scan_events_for_bag(cursor, org, bid)
-    result = evaluate_folding_performance_for_bag(events, registry_row=reg)
+    rules = get_folding_exception_rules_typed(cursor, org)
+    result = evaluate_folding_performance_for_bag(events, registry_row=reg, rules=rules)
 
     row_fields = result.to_performance_row(
         registry_completion_status=COMPLETION_COMPLETED
@@ -528,14 +580,20 @@ def _folding_performance_search_clauses(
     lbs_per_hour_max: float | None = None,
     bags_per_hour_min: float | None = None,
     bags_per_hour_max: float | None = None,
+    reviewed: bool | None = None,
+    approved: bool | None = None,
+    excluded_from_scoring: bool | None = None,
+    included_in_scoring: bool | None = None,
 ) -> tuple[str, list[Any]]:
     from backend.rinse_folding_period import sql_period_range_clause
 
     sql = ""
     args: list[Any] = []
     if exception_only:
-        sql += " AND p.status = %s"
-        args.append(STATUS_EXCEPTION)
+        sql += (
+            " AND (p.status = %s OR (p.status = %s AND COALESCE(p.exception_code,'') != ''))"
+        )
+        args.extend([STATUS_EXCEPTION, STATUS_CALCULATED])
     elif status:
         sql += " AND p.status = %s"
         args.append(status.upper())
@@ -593,6 +651,26 @@ def _folding_performance_search_clauses(
     if bags_per_hour_max is not None:
         sql += f" AND ({rate_expr} AND (3600.0 / p.duration_seconds) <= %s)"
         args.append(float(bags_per_hour_max))
+    if reviewed is True:
+        sql += " AND p.reviewed_at IS NOT NULL"
+    elif reviewed is False:
+        sql += " AND p.reviewed_at IS NULL"
+    if approved is True:
+        sql += " AND COALESCE(p.scoring_status, p.status) = 'APPROVED'"
+    elif approved is False:
+        sql += " AND COALESCE(p.scoring_status, p.status) != 'APPROVED'"
+    if excluded_from_scoring is True:
+        sql += " AND (COALESCE(p.excluded_from_performance,0) = 1 OR COALESCE(p.scoring_status,'') = 'EXCLUDED')"
+    elif excluded_from_scoring is False:
+        sql += " AND COALESCE(p.excluded_from_performance,0) = 0 AND COALESCE(p.scoring_status,'') != 'EXCLUDED'"
+    if included_in_scoring is True:
+        from backend.rinse_folding_scoring import sql_scoring_included_predicate
+
+        sql += f" AND {sql_scoring_included_predicate('p')}"
+    elif included_in_scoring is False:
+        from backend.rinse_folding_scoring import sql_scoring_included_predicate
+
+        sql += f" AND NOT ({sql_scoring_included_predicate('p').strip()})"
     return sql, args
 
 
@@ -619,6 +697,10 @@ def list_folding_performance_rows(
     lbs_per_hour_max: float | None = None,
     bags_per_hour_min: float | None = None,
     bags_per_hour_max: float | None = None,
+    reviewed: bool | None = None,
+    approved: bool | None = None,
+    excluded_from_scoring: bool | None = None,
+    included_in_scoring: bool | None = None,
     limit: int = 100,
     offset: int = 0,
     include_total: bool = False,
@@ -653,6 +735,10 @@ def list_folding_performance_rows(
         lbs_per_hour_max=lbs_per_hour_max,
         bags_per_hour_min=bags_per_hour_min,
         bags_per_hour_max=bags_per_hour_max,
+        reviewed=reviewed,
+        approved=approved,
+        excluded_from_scoring=excluded_from_scoring,
+        included_in_scoring=included_in_scoring,
     )
     args.extend(filt_args)
 
@@ -860,7 +946,10 @@ def aggregate_user_folding_stats(
             "lbs_per_hour": None,
         }
 
+    from backend.rinse_folding_scoring import sql_scoring_included_predicate
+
     ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
+    incl = sql_scoring_included_predicate("p")
     cursor.execute(
         f"""
         SELECT
@@ -875,8 +964,7 @@ def aggregate_user_folding_stats(
           ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
         WHERE p.organization_id = %s
           AND p.assigned_user_name = %s
-          AND p.status = %s
-          AND p.excluded_from_performance = 0
+          AND {incl}
           AND r.completion_status = %s
           AND p.work_date >= %s
           AND p.work_date <= %s
@@ -886,7 +974,6 @@ def aggregate_user_folding_stats(
         (
             org,
             uname,
-            STATUS_CALCULATED,
             COMPLETION_COMPLETED,
             period_start,
             period_end,
@@ -1135,7 +1222,10 @@ def aggregate_team_folding_stats(
     from backend.rinse_folding_excluded_users import sql_exclude_scoring_users_clause
 
     org = int(organization_id)
+    from backend.rinse_folding_scoring import sql_scoring_included_predicate
+
     ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
+    incl = sql_scoring_included_predicate("p")
     cursor.execute(
         f"""
         SELECT
@@ -1146,8 +1236,7 @@ def aggregate_team_folding_stats(
         INNER JOIN rinse_bag_registry r
           ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
         WHERE p.organization_id = %s
-          AND p.status = %s
-          AND p.excluded_from_performance = 0
+          AND {incl}
           AND r.completion_status = %s
           AND p.work_date >= %s
           AND p.work_date <= %s
@@ -1155,7 +1244,6 @@ def aggregate_team_folding_stats(
         """,
         (
             org,
-            STATUS_CALCULATED,
             COMPLETION_COMPLETED,
             period_start,
             period_end,
@@ -1250,7 +1338,10 @@ def list_folding_users_in_period(
     from backend.rinse_folding_excluded_users import sql_exclude_scoring_users_clause
 
     org = int(organization_id)
+    from backend.rinse_folding_scoring import sql_scoring_included_predicate
+
     ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
+    incl = sql_scoring_included_predicate("p")
     cursor.execute(
         f"""
         SELECT DISTINCT p.assigned_user_name
@@ -1258,8 +1349,7 @@ def list_folding_users_in_period(
         INNER JOIN rinse_bag_registry r
           ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
         WHERE p.organization_id = %s
-          AND p.status = %s
-          AND p.excluded_from_performance = 0
+          AND {incl}
           AND r.completion_status = %s
           AND p.work_date >= %s
           AND p.work_date <= %s
@@ -1270,7 +1360,6 @@ def list_folding_users_in_period(
         """,
         (
             org,
-            STATUS_CALCULATED,
             COMPLETION_COMPLETED,
             period_start,
             period_end,

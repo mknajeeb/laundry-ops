@@ -8,7 +8,8 @@ const LABELS = {
   INVALID_TIMESTAMPS: "Folding or clean scan timestamps could not be parsed.",
   MISSING_ASSIGNED_USER: "No user on the folding or end clean scan.",
   MULTIPLE_FOLDING_SCANS: "More than one FOLDING scan; cannot auto-calculate.",
-  FOLDING_DURATION_TOO_SHORT: "Folding interval is under 10 minutes.",
+  FOLDING_DURATION_TOO_SHORT: "Folding interval is under the configured minimum.",
+  FOLDING_DURATION_TOO_LONG: "Folding interval exceeds the configured maximum.",
   MULTIPLE_CLEAN_SCANS:
     "Multiple CLEAN scans after folding; duration uses first FOLDING and last CLEAN after folding. Still counts in scoring unless excluded.",
 };

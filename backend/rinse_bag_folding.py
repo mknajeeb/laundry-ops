@@ -30,6 +30,7 @@ EXCEPTION_INVALID_TIMESTAMPS = "INVALID_TIMESTAMPS"
 EXCEPTION_MISSING_ASSIGNED_USER = "MISSING_ASSIGNED_USER"
 EXCEPTION_MULTIPLE_FOLDING_SCANS = "MULTIPLE_FOLDING_SCANS"
 EXCEPTION_FOLDING_DURATION_TOO_SHORT = "FOLDING_DURATION_TOO_SHORT"
+EXCEPTION_FOLDING_DURATION_TOO_LONG = "FOLDING_DURATION_TOO_LONG"
 WARNING_MULTIPLE_CLEAN_SCANS = "MULTIPLE_CLEAN_SCANS"
 
 MIN_FOLDING_DURATION_SECONDS = 600
@@ -239,12 +240,29 @@ def evaluate_folding_performance_for_bag(
     events: Sequence[Mapping[str, Any]],
     *,
     registry_row: Mapping[str, Any] | None = None,
+    rules: Any = None,
 ) -> FoldingResult:
     """
     Compute FOLDING → CLEAN interval for one bag.
 
     registry_row is used for weight snapshot upstream only — never for work_date.
+    ``rules`` is a FoldingExceptionRules instance (tenant settings); defaults match legacy constants.
     """
+    from backend.rinse_folding_exception_rules import (
+        FoldingExceptionRules,
+        parse_exception_rules_payload,
+    )
+
+    if rules is None:
+        rules = parse_exception_rules_payload(None)
+    elif isinstance(rules, dict):
+        rules = parse_exception_rules_payload(rules)
+    elif not isinstance(rules, FoldingExceptionRules):
+        rules = parse_exception_rules_payload(None)
+
+    min_secs = rules.min_duration_seconds
+    max_secs = rules.max_duration_seconds
+
     normalized = events_from_records(events)
     if not normalized:
         return _exception_result(EXCEPTION_MISSING_SCAN_EVENTS, registry_row=registry_row)
@@ -260,15 +278,32 @@ def evaluate_folding_performance_for_bag(
             clean_indices.append(i)
 
     if not folding_indices:
-        return _exception_result(
-            EXCEPTION_MISSING_FOLDING,
-            registry_row=registry_row,
+        if rules.rule_missing_folding:
+            return _exception_result(
+                EXCEPTION_MISSING_FOLDING,
+                registry_row=registry_row,
+                clean_scan_count=len(clean_indices),
+                clean_scan_at=_first_clean_scan_at_in_timeline(timeline, clean_indices),
+                timeline=timeline,
+            )
+        return FoldingResult(
+            status=STATUS_CALCULATED,
+            exception_code=EXCEPTION_MISSING_FOLDING,
+            folding_start_at=None,
+            folding_end_at=_first_clean_scan_at_in_timeline(timeline, clean_indices),
+            duration_seconds=None,
+            folding_start_event_id=None,
+            folding_end_event_id=None,
+            folding_start_rack=None,
+            folding_end_rack=None,
+            assigned_user_name=None,
+            assigned_user_name_source=None,
+            folding_scan_count=0,
             clean_scan_count=len(clean_indices),
-            clean_scan_at=_first_clean_scan_at_in_timeline(timeline, clean_indices),
-            timeline=timeline,
+            work_date=_best_timeline_scan_date(timeline, registry_row=registry_row),
         )
 
-    if len(folding_indices) > 1:
+    if len(folding_indices) > 1 and rules.rule_multiple_folding_scans:
         first_folding_i = folding_indices[0]
         folding_ev = timeline[first_folding_i]
         folding_at = _parsed_scan_datetime(folding_ev)
@@ -297,17 +332,22 @@ def evaluate_folding_performance_for_bag(
 
     for ci in clean_indices:
         if ci < first_folding_i:
-            return _exception_result(
-                EXCEPTION_CLEAN_BEFORE_FOLDING,
-                registry_row=registry_row,
-                folding_scan_count=len(folding_indices),
-                clean_scan_count=len(clean_indices),
-                folding_start_at=folding_at,
-                clean_scan_at=_parsed_scan_datetime(timeline[ci]),
-                timeline=timeline,
-            )
+            if rules.rule_clean_before_folding:
+                return _exception_result(
+                    EXCEPTION_CLEAN_BEFORE_FOLDING,
+                    registry_row=registry_row,
+                    folding_scan_count=len(folding_indices),
+                    clean_scan_count=len(clean_indices),
+                    folding_start_at=folding_at,
+                    clean_scan_at=_parsed_scan_datetime(timeline[ci]),
+                    timeline=timeline,
+                )
         clean_at_check = _parsed_scan_datetime(timeline[ci])
-        if _timestamp_valid(clean_at_check) and clean_at_check < folding_at:
+        if (
+            rules.rule_clean_before_folding
+            and _timestamp_valid(clean_at_check)
+            and clean_at_check < folding_at
+        ):
             return _exception_result(
                 EXCEPTION_CLEAN_BEFORE_FOLDING,
                 registry_row=registry_row,
@@ -336,13 +376,30 @@ def evaluate_folding_performance_for_bag(
             end_clean_i = ci
 
     if end_clean_ev is None:
-        return _exception_result(
-            EXCEPTION_MISSING_CLEAN,
-            registry_row=registry_row,
+        if rules.rule_missing_clean:
+            return _exception_result(
+                EXCEPTION_MISSING_CLEAN,
+                registry_row=registry_row,
+                folding_scan_count=len(folding_indices),
+                clean_scan_count=len(clean_indices),
+                folding_start_at=folding_at,
+                timeline=timeline,
+            )
+        return FoldingResult(
+            status=STATUS_CALCULATED,
+            exception_code=EXCEPTION_MISSING_CLEAN,
+            folding_start_at=folding_at,
+            folding_end_at=None,
+            duration_seconds=None,
+            folding_start_event_id=folding_ev.get("id"),
+            folding_end_event_id=None,
+            folding_start_rack=str(folding_ev.get("rack") or "")[:128] or None,
+            folding_end_rack=None,
+            assigned_user_name=_user_from_event(folding_ev) or None,
+            assigned_user_name_source=SOURCE_FOLDING_SCAN if usable_user_name(_user_from_event(folding_ev)) else None,
             folding_scan_count=len(folding_indices),
             clean_scan_count=len(clean_indices),
-            folding_start_at=folding_at,
-            timeline=timeline,
+            work_date=_resolve_work_date_calculated(folding_at),
         )
 
     clean_at = _parsed_scan_datetime(end_clean_ev)
@@ -369,9 +426,20 @@ def evaluate_folding_performance_for_bag(
             timeline=timeline,
         )
 
-    if duration < MIN_FOLDING_DURATION_SECONDS:
+    if duration < min_secs:
         return _exception_result(
             EXCEPTION_FOLDING_DURATION_TOO_SHORT,
+            registry_row=registry_row,
+            folding_scan_count=len(folding_indices),
+            clean_scan_count=clean_after_count,
+            folding_start_at=folding_at,
+            folding_end_at=clean_at,
+            timeline=timeline,
+        )
+
+    if max_secs is not None and duration > max_secs:
+        return _exception_result(
+            EXCEPTION_FOLDING_DURATION_TOO_LONG,
             registry_row=registry_row,
             folding_scan_count=len(folding_indices),
             clean_scan_count=clean_after_count,
@@ -406,6 +474,17 @@ def evaluate_folding_performance_for_bag(
             folding_scan_count=len(folding_indices),
             clean_scan_count=clean_after_count,
             work_date=_resolve_work_date_calculated(clean_at),
+        )
+
+    if clean_after_count > 1 and rules.multiple_clean_scans_as_exception:
+        return _exception_result(
+            WARNING_MULTIPLE_CLEAN_SCANS,
+            registry_row=registry_row,
+            folding_scan_count=len(folding_indices),
+            clean_scan_count=clean_after_count,
+            folding_start_at=folding_at,
+            folding_end_at=clean_at,
+            timeline=timeline,
         )
 
     warning: str | None = None
