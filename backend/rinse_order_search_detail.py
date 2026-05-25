@@ -53,6 +53,23 @@ def _upload_batches_pk(cursor) -> str:
     return "id"
 
 
+def _upload_batches_timestamp_sql(
+    cursor, alias: str, *, out_alias: str = "created_at"
+) -> str:
+    """Schema-safe batch timestamp (production may use uploaded_at, not created_at)."""
+    if table_has_column(cursor, "upload_batches", "created_at"):
+        return f"{alias}.created_at AS {out_alias}"
+    if table_has_column(cursor, "upload_batches", "uploaded_at"):
+        return f"{alias}.uploaded_at AS {out_alias}"
+    return f"NULL AS {out_alias}"
+
+
+def _upload_batch_rows_timestamp_sql(cursor, alias: str = "ubr") -> str:
+    if table_has_column(cursor, "upload_batch_rows", "created_at"):
+        return f"{alias}.created_at"
+    return "NULL AS created_at"
+
+
 def _safe_section(
     section_errors: dict[str, str],
     name: str,
@@ -308,11 +325,7 @@ def list_upload_history_for_bag(
     pk = _upload_batches_pk(cursor)
     has_purged = table_has_column(cursor, "upload_batches", "raw_rows_purged_at")
     has_summary = table_has_column(cursor, "upload_batches", "purged_summary_json")
-    ub_cols = [f"{pk} AS batch_id", "state", "batch_date"]
-    if table_has_column(cursor, "upload_batches", "created_at"):
-        ub_cols.append("created_at")
-    elif table_has_column(cursor, "upload_batches", "uploaded_at"):
-        ub_cols.append("uploaded_at AS created_at")
+    ub_cols = [f"{pk} AS batch_id", "state", "batch_date", _upload_batches_timestamp_sql(cursor, "upload_batches")]
     if table_has_column(cursor, "upload_batches", "confirmed_at"):
         ub_cols.append("confirmed_at")
     if has_purged:
@@ -337,12 +350,29 @@ def list_upload_history_for_bag(
 
     rows_by_batch: dict[int, dict[str, Any]] = {}
     if table_exists(cursor, "upload_batch_rows"):
+        ubr_ts = _upload_batch_rows_timestamp_sql(cursor, "ubr")
+        ub_batch_ts = _upload_batches_timestamp_sql(cursor, "ub", out_alias="batch_created_at")
+        ub_confirmed = (
+            "ub.confirmed_at"
+            if table_has_column(cursor, "upload_batches", "confirmed_at")
+            else "NULL AS confirmed_at"
+        )
+        ub_batch_date = (
+            "ub.batch_date"
+            if table_has_column(cursor, "upload_batches", "batch_date")
+            else "NULL AS batch_date"
+        )
+        ub_state = (
+            "ub.state"
+            if table_has_column(cursor, "upload_batches", "state")
+            else "NULL AS state"
+        )
         cursor.execute(
             f"""
             SELECT ubr.id, ubr.upload_batch_id, ubr.row_status, ubr.reason,
-                   ubr.date_clean, ubr.name_clean, ubr.created_at,
-                   ub.state, ub.confirmed_at, ub.batch_date,
-                   ub.created_at AS batch_created_at
+                   ubr.date_clean, ubr.name_clean, {ubr_ts},
+                   {ub_state}, {ub_confirmed}, {ub_batch_date},
+                   {ub_batch_ts}
             FROM upload_batch_rows ubr
             LEFT JOIN upload_batches ub ON ub.{pk} = ubr.upload_batch_id
             WHERE ubr.ticket_id = %s

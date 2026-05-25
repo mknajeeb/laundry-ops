@@ -179,6 +179,59 @@ class TestDetailRegressionPartialSections(unittest.TestCase):
         self.assertIsNone(shell["folding"])
 
 
+class TestUploadHistorySchemaSafe(unittest.TestCase):
+    def test_upload_history_without_ub_created_at(self):
+        from backend.rinse_order_search_detail import list_upload_history_for_bag
+
+        cursor = MagicMock()
+
+        def has_col(_c, table, col):
+            if table == "upload_batches" and col == "created_at":
+                return False
+            if table == "upload_batches" and col == "uploaded_at":
+                return True
+            return col in (
+                "batch_id",
+                "state",
+                "batch_date",
+                "confirmed_at",
+                "id",
+                "upload_batch_id",
+                "row_status",
+                "reason",
+                "date_clean",
+                "name_clean",
+                "created_at",
+                "raw_rows_purged_at",
+                "purged_summary_json",
+            )
+
+        registry = {"last_upload_batch_id": 191}
+        fetch_batches = [{"batch_id": 191, "state": "CONFIRMED", "created_at": None, "batch_date": None}]
+        fetch_rows = [
+            {
+                "id": 1,
+                "upload_batch_id": 191,
+                "row_status": "ACCEPTED",
+                "created_at": None,
+                "batch_created_at": None,
+            }
+        ]
+
+        with patch("backend.rinse_order_search_detail.table_exists", return_value=True):
+            with patch("backend.rinse_order_search_detail.table_has_column", side_effect=has_col):
+                with patch(
+                    "backend.rinse_order_search_detail._collect_upload_batch_ids",
+                    return_value=[191],
+                ):
+                    cursor.fetchall.side_effect = [fetch_batches, fetch_rows]
+                    history = list_upload_history_for_bag(cursor, 3, "7DGTUXAGP1", registry)
+        self.assertEqual(len(history), 1)
+        join_sql = cursor.execute.call_args_list[1][0][0]
+        self.assertNotIn("ub.created_at", join_sql)
+        self.assertIn("uploaded_at", join_sql)
+
+
 class TestPurgedMessageConstant(unittest.TestCase):
     def test_purged_message_non_empty(self):
         self.assertIn("purged", PURGED_ROW_MESSAGE.lower())
