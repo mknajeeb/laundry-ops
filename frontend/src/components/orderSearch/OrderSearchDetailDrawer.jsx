@@ -51,10 +51,25 @@ function SummaryTab({ detail }) {
   );
 }
 
-function UploadsTab({ uploadHistory }) {
+function SectionLoadError({ sectionErrors, name }) {
+  const msg = sectionErrors?.[name];
+  if (!msg) return null;
+  return (
+    <Alert severity="warning" sx={{ mb: 1 }} variant="outlined">
+      Could not load this section: {msg}
+    </Alert>
+  );
+}
+
+function UploadsTab({ uploadHistory, sectionErrors }) {
   const rows = uploadHistory || [];
   if (!rows.length) {
-    return <Typography variant="body2" color="text.secondary">No upload batch history for this bag.</Typography>;
+    return (
+      <>
+        <SectionLoadError sectionErrors={sectionErrors} name="upload_history" />
+        <Typography variant="body2" color="text.secondary">No upload batch history for this bag.</Typography>
+      </>
+    );
   }
   return (
     <Table size="small">
@@ -108,10 +123,15 @@ function UploadPurgedNotes({ uploadHistory }) {
   );
 }
 
-function CheckoutTab({ stagingHistory, stagingActive }) {
+function CheckoutTab({ stagingHistory, stagingActive, sectionErrors }) {
   const rows = stagingHistory || [];
   if (!rows.length && !stagingActive) {
-    return <Typography variant="body2" color="text.secondary">No checkout / staging rows for this bag.</Typography>;
+    return (
+      <>
+        <SectionLoadError sectionErrors={sectionErrors} name="staging_history" />
+        <Typography variant="body2" color="text.secondary">No checkout / staging rows for this bag.</Typography>
+      </>
+    );
   }
   return (
     <>
@@ -156,13 +176,16 @@ function CheckoutTab({ stagingHistory, stagingActive }) {
   );
 }
 
-function ScanTimelineTab({ scanEvents }) {
+function ScanTimelineTab({ scanEvents, sectionErrors }) {
   const sorted = useMemo(() => sortRinseScanEvents(scanEvents), [scanEvents]);
   if (!sorted.length) {
     return (
-      <Typography variant="body2" color="text.secondary">
-        No persistent scan events for this bag.
-      </Typography>
+      <>
+        <SectionLoadError sectionErrors={sectionErrors} name="scan_events" />
+        <Typography variant="body2" color="text.secondary">
+          No scan events found for this bag.
+        </Typography>
+      </>
     );
   }
   return (
@@ -204,9 +227,15 @@ function ScanTimelineTab({ scanEvents }) {
   );
 }
 
-function FoldingTab({ folding }) {
+function FoldingTab({ folding, sectionErrors }) {
   if (!folding) {
-    return <Typography variant="body2" color="text.secondary">No folding performance row.</Typography>;
+    return (
+      <>
+        <SectionLoadError sectionErrors={sectionErrors} name="folding" />
+        <SectionLoadError sectionErrors={sectionErrors} name="folding_performance" />
+        <Typography variant="body2" color="text.secondary">No folding record found for this bag.</Typography>
+      </>
+    );
   }
   const perf = folding.performance || {};
   return (
@@ -305,10 +334,12 @@ function FoldingTab({ folding }) {
   );
 }
 
-function SourceTab({ scrapeSources, scheduledScrapeStatus }) {
+function SourceTab({ scrapeSources, scheduledScrapeStatus, sectionErrors }) {
   const sources = scrapeSources || [];
   return (
     <Box>
+      <SectionLoadError sectionErrors={sectionErrors} name="scrape_sources" />
+      <SectionLoadError sectionErrors={sectionErrors} name="scheduled_scrape_status" />
       {sources.length ? (
         sources.map((src) => (
           <Box key={src.upload_batch_id ?? src.scrape_run_id ?? src.id} sx={{ mb: 2 }}>
@@ -342,7 +373,7 @@ function SourceTab({ scrapeSources, scheduledScrapeStatus }) {
 
 const TAB_IDS = ["summary", "uploads", "checkout", "scans", "folding", "source"];
 
-export default function OrderSearchDetailDrawer({ open, onClose, detail, bagId, loading }) {
+export default function OrderSearchDetailDrawer({ open, onClose, detail, bagId, loading, detailError }) {
   const [tab, setTab] = useState(0);
 
   const panels = useMemo(() => {
@@ -351,7 +382,7 @@ export default function OrderSearchDetailDrawer({ open, onClose, detail, bagId, 
       summary: <SummaryTab detail={detail} />,
       uploads: (
         <>
-          <UploadsTab uploadHistory={detail.upload_history} />
+          <UploadsTab uploadHistory={detail.upload_history} sectionErrors={detail.section_errors} />
           <UploadPurgedNotes uploadHistory={detail.upload_history} />
         </>
       ),
@@ -359,14 +390,16 @@ export default function OrderSearchDetailDrawer({ open, onClose, detail, bagId, 
         <CheckoutTab
           stagingHistory={detail.staging_history}
           stagingActive={detail.staging_active || detail.staging}
+          sectionErrors={detail.section_errors}
         />
       ),
-      scans: <ScanTimelineTab scanEvents={detail.scan_events} />,
-      folding: <FoldingTab folding={detail.folding} />,
+      scans: <ScanTimelineTab scanEvents={detail.scan_events} sectionErrors={detail.section_errors} />,
+      folding: <FoldingTab folding={detail.folding} sectionErrors={detail.section_errors} />,
       source: (
         <SourceTab
           scrapeSources={detail.scrape_sources}
           scheduledScrapeStatus={detail.scheduled_scrape_status}
+          sectionErrors={detail.section_errors}
         />
       ),
     };
@@ -387,8 +420,18 @@ export default function OrderSearchDetailDrawer({ open, onClose, detail, bagId, 
       <Typography variant="h6" fontWeight={800} gutterBottom>
         {detail?.bag_id || bagId || "Bag detail"}
       </Typography>
-      {loading && !detail ? (
-        <Typography variant="body2" color="text.secondary">Loading…</Typography>
+      {detailError ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {detailError}
+        </Alert>
+      ) : null}
+      {detail?.section_errors?._request ? (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {detail.section_errors._request}
+        </Alert>
+      ) : null}
+      {loading ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Loading detail…</Typography>
       ) : null}
       {detail ? (
         <>

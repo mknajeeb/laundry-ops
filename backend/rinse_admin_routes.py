@@ -143,6 +143,12 @@ def register_rinse_admin_routes(
                 bag_id=(request.args.get("bag_id") or request.args.get("ticket_id") or "").strip()
                 or None,
                 customer_name=(request.args.get("customer_name") or "").strip() or None,
+                wild_search=(
+                    request.args.get("wild_search")
+                    or request.args.get("q")
+                    or ""
+                ).strip()
+                or None,
                 batch_id=batch_id,
                 completion_status=(request.args.get("completion_status") or "").strip() or None,
                 folding_status=(request.args.get("folding_status") or "").strip() or None,
@@ -175,15 +181,25 @@ def register_rinse_admin_routes(
             if not bid:
                 return jsonify({"error": "Invalid bag id"}), 400
             cap = orders_status_capabilities(cursor)
-            detail = get_order_archive_detail(
-                cursor,
-                tenant_oid,
-                bid,
-                active_where_sql=where_not_sent_or_forced_sql(cap),
-                has_staging_org=table_has_column(cursor, "orders_staging", "organization_id"),
-                has_ticket_id_col=cap.get("has_ticket_id", False),
-                upload_batch_row_pk=get_upload_batch_rows_pk(cursor),
-            )
+            try:
+                detail = get_order_archive_detail(
+                    cursor,
+                    tenant_oid,
+                    bid,
+                    active_where_sql=where_not_sent_or_forced_sql(cap),
+                    has_staging_org=table_has_column(cursor, "orders_staging", "organization_id"),
+                    has_ticket_id_col=cap.get("has_ticket_id", False),
+                    upload_batch_row_pk=get_upload_batch_rows_pk(cursor),
+                )
+            except Exception as e:
+                from backend.rinse_bag_registry import get_registry_row
+                from backend.rinse_order_search_detail import empty_lifecycle_detail_shell
+
+                reg = get_registry_row(cursor, tenant_oid, bid)
+                if not reg:
+                    return jsonify({"error": "Bag not found"}), 404
+                detail = empty_lifecycle_detail_shell(bid, reg)
+                detail["section_errors"] = {"_detail": str(e)}
             if not detail:
                 return jsonify({"error": "Bag not found"}), 404
             return jsonify(json_safe_rinse(detail))

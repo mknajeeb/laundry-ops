@@ -26,7 +26,7 @@ const LIFECYCLE_CHIPS = [
 
 export default function RinseOrderSearchPage() {
   const [bagId, setBagId] = useState("");
-  const [customerName, setCustomerName] = useState("");
+  const [customerSearch, setCustomerSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [completionStatus, setCompletionStatus] = useState("");
@@ -45,7 +45,10 @@ export default function RinseOrderSearchPage() {
     (extra = {}) => {
       const params = { limit: 100, ...extra };
       if (bagId.trim()) params.bag_id = bagId.trim();
-      if (customerName.trim()) params.customer_name = customerName.trim();
+      if (customerSearch.trim()) {
+        params.wild_search = customerSearch.trim();
+        params.customer_name = customerSearch.trim();
+      }
       if (dateFrom) params.date_clean_from = dateFrom;
       if (dateTo) params.date_clean_to = dateTo;
       if (completionStatus.trim()) params.completion_status = completionStatus.trim();
@@ -55,7 +58,7 @@ export default function RinseOrderSearchPage() {
       if (lf) params.lifecycle_filter = lf;
       return params;
     },
-    [bagId, customerName, dateFrom, dateTo, completionStatus, foldingStatus, lifecycleFilter]
+    [bagId, customerSearch, dateFrom, dateTo, completionStatus, foldingStatus, lifecycleFilter]
   );
 
   const search = async (extra = {}) => {
@@ -85,19 +88,36 @@ export default function RinseOrderSearchPage() {
     search({ lifecycle_filter: next || "" });
   };
 
+  const [detailError, setDetailError] = useState("");
+
   const openDetail = async (id) => {
     const bid = String(id || "").trim();
     if (!bid) return;
     setDrawerOpen(true);
     setSelectedBag(bid);
-    setDetail(null);
+    setDetail({ bag_id: bid, scan_events: [], upload_history: [], staging_history: [], section_errors: {} });
+    setDetailError("");
+    setMessage({ type: "", text: "" });
     try {
       setDetailLoading(true);
       const res = await getRinseOrderArchiveDetail(bid);
       setDetail(res.data);
+      const errs = res.data?.section_errors;
+      if (errs && Object.keys(errs).length) {
+        setDetailError(`Some sections could not load: ${Object.keys(errs).join(", ")}`);
+      }
     } catch (e) {
-      setDetail(null);
-      setMessage({ type: "error", text: e?.response?.data?.error || "Detail failed" });
+      const errText = e?.response?.data?.error || e?.message || "Detail failed";
+      setDetailError(errText);
+      setDetail((prev) => ({
+        ...(prev || {}),
+        bag_id: bid,
+        scan_events: [],
+        upload_history: [],
+        staging_history: [],
+        section_errors: { _request: errText },
+      }));
+      setMessage({ type: "error", text: errText });
     } finally {
       setDetailLoading(false);
     }
@@ -106,6 +126,7 @@ export default function RinseOrderSearchPage() {
   const closeDrawer = () => {
     setDrawerOpen(false);
     setDetail(null);
+    setDetailError("");
     setSelectedBag("");
   };
 
@@ -120,8 +141,14 @@ export default function RinseOrderSearchPage() {
 
       <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1} flexWrap="wrap">
-          <TextField size="small" label="Bag ID / ticket" value={bagId} onChange={(e) => setBagId(e.target.value)} />
-          <TextField size="small" label="Customer name" value={customerName} onChange={(e) => setCustomerName(e.target.value)} />
+          <TextField size="small" label="Bag ID (partial OK)" value={bagId} onChange={(e) => setBagId(e.target.value)} />
+          <TextField
+            size="small"
+            label="Customer / user search"
+            value={customerSearch}
+            onChange={(e) => setCustomerSearch(e.target.value)}
+            placeholder="step, davis, stephanie…"
+          />
           <TextField size="small" type="date" label="Cleaning date from" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} InputLabelProps={{ shrink: true }} />
           <TextField size="small" type="date" label="Cleaning date to" value={dateTo} onChange={(e) => setDateTo(e.target.value)} InputLabelProps={{ shrink: true }} />
           <TextField size="small" label="Completion status" value={completionStatus} onChange={(e) => setCompletionStatus(e.target.value)} placeholder="COMPLETED" />
@@ -202,6 +229,7 @@ export default function RinseOrderSearchPage() {
         detail={detail}
         bagId={selectedBag}
         loading={detailLoading}
+        detailError={detailError}
       />
     </Box>
   );

@@ -4,6 +4,7 @@ Rinse order / bag archive search (full lifecycle, not checkout-only).
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -13,6 +14,63 @@ from backend.ta_helpers import table_exists, table_has_column
 
 def _like(s: str) -> str:
     return f"%{s}%"
+
+
+def _wild_tokens(query: str) -> list[str]:
+    return [t for t in re.split(r"\s+", (query or "").strip()) if t]
+
+
+def _append_wild_search(
+    cursor,
+    org: int,
+    query: str,
+    where: list[str],
+    args: list[Any],
+) -> None:
+    """
+    Loose match: each whitespace token must match at least one of
+    name_clean, bag_id, folding assigned user, or scan event user.
+    """
+    tokens = _wild_tokens(query)
+    if not tokens:
+        return
+
+    for token in tokens:
+        like = _like(token)
+        like_bag = _like(token.upper())
+        or_parts = ["r.name_clean LIKE %s", "r.bag_id LIKE %s"]
+        token_args: list[Any] = [like, like_bag]
+
+        if table_exists(cursor, "rinse_folding_performance"):
+            or_parts.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM rinse_folding_performance f
+                    WHERE f.organization_id = r.organization_id
+                      AND f.bag_id = r.bag_id
+                      AND f.assigned_user_name LIKE %s
+                )
+                """
+            )
+            token_args.append(like)
+
+        if table_exists(cursor, "rinse_bag_scan_events") and table_has_column(
+            cursor, "rinse_bag_scan_events", "user_name"
+        ):
+            or_parts.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM rinse_bag_scan_events e
+                    WHERE e.organization_id = r.organization_id
+                      AND e.bag_id = r.bag_id
+                      AND e.user_name LIKE %s
+                )
+                """
+            )
+            token_args.append(like)
+
+        where.append(f"({' OR '.join(or_parts)})")
+        args.extend(token_args)
 
 
 def _active_staging_where_sql(cursor) -> str:
@@ -51,6 +109,7 @@ def search_rinse_orders(
     *,
     bag_id: str | None = None,
     customer_name: str | None = None,
+    wild_search: str | None = None,
     batch_id: int | None = None,
     completion_status: str | None = None,
     folding_status: str | None = None,
@@ -94,13 +153,18 @@ def search_rinse_orders(
         where.append("UPPER(COALESCE(r.completion_status,'')) != 'COMPLETED'")
 
     if bag_id:
-        bid = normalize_bag_id(bag_id)
+        raw = str(bag_id).strip()
+        bid = normalize_bag_id(raw)
         if bid:
-            where.append("r.bag_id = %s")
-            args.append(bid)
-    if customer_name:
-        where.append("r.name_clean LIKE %s")
-        args.append(_like(customer_name.strip()))
+            where.append("(r.bag_id = %s OR r.bag_id LIKE %s)")
+            args.extend([bid, _like(bid)])
+        elif raw:
+            where.append("r.bag_id LIKE %s")
+            args.append(_like(raw.upper()))
+
+    search_text = (wild_search or customer_name or "").strip()
+    if search_text:
+        _append_wild_search(cursor, org, search_text, where, args)
     if completion_status:
         where.append("UPPER(COALESCE(r.completion_status,'')) = %s")
         args.append(str(completion_status).strip().upper())
@@ -267,39 +331,72 @@ def get_order_archive_detail(
     has_ticket_id_col: bool,
     upload_batch_row_pk: str,
 ) -> dict[str, Any] | None:
-    """Full lifecycle archive detail for one bag."""
-    from backend.rinse_order_search_detail import build_order_lifecycle_detail
+    """Full lifecycle archive detail for one bag (sections fail soft)."""
+    import logging
+
+    from backend.rinse_bag_registry import get_registry_row
+    from backend.rinse_order_search_detail import (
+        build_order_lifecycle_detail,
+        empty_lifecycle_detail_shell,
+    )
     from backend.rinse_scrape_status import get_scheduled_scrape_status
 
-    detail = build_order_lifecycle_detail(
-        cursor,
-        organization_id,
-        bag_id,
-        active_where_sql=active_where_sql,
-        has_staging_org=has_staging_org,
-        has_ticket_id_col=has_ticket_id_col,
-        upload_batch_row_pk=upload_batch_row_pk,
-    )
-    if not detail:
+    log = logging.getLogger(__name__)
+    org = int(organization_id)
+    bid = normalize_bag_id(bag_id)
+    if not bid:
         return None
 
-    org = int(organization_id)
-    bid = detail["bag_id"]
+    reg = get_registry_row(cursor, org, bid)
+    if not reg:
+        return None
+
+    try:
+        detail = build_order_lifecycle_detail(
+            cursor,
+            org,
+            bid,
+            active_where_sql=active_where_sql,
+            has_staging_org=has_staging_org,
+            has_ticket_id_col=has_ticket_id_col,
+            upload_batch_row_pk=upload_batch_row_pk,
+        )
+    except Exception as exc:
+        log.exception("order lifecycle detail failed bag=%s", bid)
+        detail = empty_lifecycle_detail_shell(bid, reg)
+        detail["section_errors"] = {"_detail": str(exc)}
+
+    if not detail:
+        detail = empty_lifecycle_detail_shell(bid, reg)
+
     if detail.get("registry", {}).get("last_upload_batch_id") and table_exists(
         cursor, "upload_batch_rows"
     ):
-        cursor.execute(
-            f"""
-            SELECT * FROM upload_batch_rows
-            WHERE upload_batch_id = %s AND ticket_id = %s
-            ORDER BY {upload_batch_row_pk} DESC
-            LIMIT 1
-            """,
-            (int(detail["registry"]["last_upload_batch_id"]), bid),
-        )
-        detail["latest_upload_batch_row"] = cursor.fetchone()
+        try:
+            cursor.execute(
+                f"""
+                SELECT * FROM upload_batch_rows
+                WHERE upload_batch_id = %s AND ticket_id = %s
+                ORDER BY {upload_batch_row_pk} DESC
+                LIMIT 1
+                """,
+                (int(detail["registry"]["last_upload_batch_id"]), bid),
+            )
+            detail["latest_upload_batch_row"] = cursor.fetchone()
+        except Exception as exc:
+            log.warning("latest_upload_batch_row bag=%s: %s", bid, exc)
+            errs = detail.setdefault("section_errors", {})
+            errs["latest_upload_batch_row"] = str(exc)
 
-    scrape_status = get_scheduled_scrape_status(cursor, org)
-    detail["scheduled_scrape"] = scrape_status.get("last_success")
-    detail["scheduled_scrape_status"] = scrape_status
+    try:
+        scrape_status = get_scheduled_scrape_status(cursor, org)
+        detail["scheduled_scrape"] = scrape_status.get("last_success")
+        detail["scheduled_scrape_status"] = scrape_status
+    except Exception as exc:
+        log.warning("scheduled_scrape_status bag=%s: %s", bid, exc)
+        detail["scheduled_scrape"] = None
+        detail["scheduled_scrape_status"] = None
+        errs = detail.setdefault("section_errors", {})
+        errs["scheduled_scrape_status"] = str(exc)
+
     return detail

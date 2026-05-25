@@ -1,10 +1,14 @@
 """
 Order Search lifecycle detail — registry, uploads, staging, scans, folding, scrape.
+
+Each section loads independently; failures become empty sections + section_errors
+instead of failing the whole detail response.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import Any, Callable
 
 from backend.rinse_bag_folding import (
     FOLDING_WARNING_CODES,
@@ -18,9 +22,10 @@ from backend.rinse_bag_folding import (
 from backend.rinse_bag_registry import list_scan_events_for_bag
 from backend.rinse_bag_upload import find_active_staging_by_ticket_id
 from backend.rinse_bag_completion import normalize_bag_id
-from backend.rinse_folding_registry import list_folding_performance_overrides
 from backend.rinse_scrape_status import fetch_scrape_run_for_batch
 from backend.ta_helpers import table_exists, table_has_column
+
+log = logging.getLogger(__name__)
 
 PURGED_ROW_MESSAGE = (
     "Raw upload row detail was purged after retention period. Batch summary remains available."
@@ -40,6 +45,26 @@ FOLDING_CODE_LABELS: dict[str, str] = {
         "Duration still uses the first FOLDING scan and the last CLEAN scan after folding."
     ),
 }
+
+
+def _upload_batches_pk(cursor) -> str:
+    if table_has_column(cursor, "upload_batches", "batch_id"):
+        return "batch_id"
+    return "id"
+
+
+def _safe_section(
+    section_errors: dict[str, str],
+    name: str,
+    fn: Callable[[], Any],
+    default: Any,
+) -> Any:
+    try:
+        return fn()
+    except Exception as exc:
+        log.warning("order detail section %s failed: %s", name, exc, exc_info=True)
+        section_errors[name] = str(exc)
+        return default
 
 
 def _folding_rates(perf: dict[str, Any] | None) -> dict[str, Any]:
@@ -83,14 +108,26 @@ def build_folding_detail(
     excluded = bool(int(perf.get("excluded_from_performance") or 0))
     included = status == STATUS_CALCULATED and not excluded
 
-    by_id = {int(ev["id"]): ev for ev in scan_events if ev.get("id") is not None}
+    by_id: dict[int, dict[str, Any]] = {}
+    for ev in scan_events:
+        eid = ev.get("id")
+        if eid is None:
+            continue
+        try:
+            by_id[int(eid)] = ev
+        except (TypeError, ValueError):
+            continue
+
     start_id = perf.get("folding_start_event_id")
     end_id = perf.get("folding_end_event_id")
     scans_used: list[dict[str, Any]] = []
-    if start_id is not None and int(start_id) in by_id:
-        scans_used.append(_event_brief(by_id[int(start_id)]))
-    if end_id is not None and int(end_id) in by_id and int(end_id) != int(start_id or -1):
-        scans_used.append(_event_brief(by_id[int(end_id)]))
+    try:
+        if start_id is not None and int(start_id) in by_id:
+            scans_used.append(_event_brief(by_id[int(start_id)]))
+        if end_id is not None and int(end_id) in by_id and int(end_id) != int(start_id or -1):
+            scans_used.append(_event_brief(by_id[int(end_id)]))
+    except (TypeError, ValueError):
+        pass
 
     folding_scans = []
     clean_scans = []
@@ -113,11 +150,9 @@ def build_folding_detail(
     warning_only = code in FOLDING_WARNING_CODES if code else False
     rates = _folding_rates(perf)
 
-    weight = perf.get("weight_lbs")
-
     return {
         "performance": perf,
-        "weight_lbs": weight,
+        "weight_lbs": perf.get("weight_lbs"),
         "status": status,
         "exception_code": code,
         "plain_english_reason": plain or None,
@@ -135,7 +170,8 @@ def build_folding_detail(
 
 
 def _staging_columns(cursor) -> list[str]:
-    base = [
+    """Only columns that exist on orders_staging (production schemas vary)."""
+    candidates = [
         "id",
         "ticket_id",
         "date_clean",
@@ -146,26 +182,19 @@ def _staging_columns(cursor) -> list[str]:
         "batch_date",
         "created_at",
         "updated_at",
-    ]
-    optional = [
         "status",
         "checkout_status",
         "logistics_status",
         "processing_status",
         "checked_out_at",
         "closed_at",
-        "organization_id",
     ]
-    out = [c for c in base if c != "organization_id"]
-    for c in optional:
-        if table_has_column(cursor, "orders_staging", c):
-            if c not in out:
-                out.append(c)
-    return out
+    if not table_exists(cursor, "orders_staging"):
+        return ["id"]
+    return [c for c in candidates if table_has_column(cursor, "orders_staging", c)]
 
 
 def _row_is_active_staging(row: dict[str, Any]) -> bool:
-    """Mirror _active_staging_where_sql semantics for a single staging row."""
     logistics = str(row.get("logistics_status") or "").strip().upper()
     status = str(row.get("status") or "").strip().upper()
     if row.get("logistics_status") is not None or logistics:
@@ -187,7 +216,6 @@ def list_staging_history_for_bag(
     organization_id: int,
     bag_id: str,
     *,
-    active_where_sql: str,
     has_staging_org: bool,
     has_ticket_id_col: bool,
 ) -> list[dict[str, Any]]:
@@ -197,9 +225,11 @@ def list_staging_history_for_bag(
     if not bid:
         return []
     cols = _staging_columns(cursor)
+    if "ticket_id" not in cols:
+        return []
     sql = f"SELECT {', '.join(cols)} FROM orders_staging WHERE ticket_id = %s"
     args: list[Any] = [bid]
-    if has_staging_org:
+    if has_staging_org and table_has_column(cursor, "orders_staging", "organization_id"):
         sql += " AND organization_id = %s"
         args.append(int(organization_id))
     sql += " ORDER BY id DESC LIMIT 50"
@@ -209,8 +239,7 @@ def list_staging_history_for_bag(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        active = _row_is_active_staging(row)
-        out.append({**row, "active_in_checkout": active})
+        out.append({**row, "active_in_checkout": _row_is_active_staging(row)})
     return out
 
 
@@ -222,6 +251,8 @@ def _collect_upload_batch_ids(
 ) -> list[int]:
     ids: set[int] = set()
     for key in ("last_upload_batch_id", "last_seen_upload_batch_id"):
+        if not table_has_column(cursor, "rinse_bag_registry", key):
+            continue
         v = registry.get(key)
         if v is not None:
             try:
@@ -267,13 +298,23 @@ def list_upload_history_for_bag(
     *,
     upload_batch_row_pk: str = "id",
 ) -> list[dict[str, Any]]:
+    if not table_exists(cursor, "upload_batches"):
+        return []
+
     batch_ids = _collect_upload_batch_ids(cursor, organization_id, bag_id, registry)
     if not batch_ids:
         return []
 
+    pk = _upload_batches_pk(cursor)
     has_purged = table_has_column(cursor, "upload_batches", "raw_rows_purged_at")
     has_summary = table_has_column(cursor, "upload_batches", "purged_summary_json")
-    ub_cols = ["batch_id", "state", "batch_date", "created_at", "confirmed_at"]
+    ub_cols = [f"{pk} AS batch_id", "state", "batch_date"]
+    if table_has_column(cursor, "upload_batches", "created_at"):
+        ub_cols.append("created_at")
+    elif table_has_column(cursor, "upload_batches", "uploaded_at"):
+        ub_cols.append("uploaded_at AS created_at")
+    if table_has_column(cursor, "upload_batches", "confirmed_at"):
+        ub_cols.append("confirmed_at")
     if has_purged:
         ub_cols.append("raw_rows_purged_at")
     if has_summary:
@@ -284,8 +325,8 @@ def list_upload_history_for_bag(
         f"""
         SELECT {", ".join(ub_cols)}
         FROM upload_batches
-        WHERE batch_id IN ({placeholders})
-        ORDER BY batch_id DESC
+        WHERE {pk} IN ({placeholders})
+        ORDER BY {pk} DESC
         """,
         tuple(batch_ids),
     )
@@ -300,9 +341,10 @@ def list_upload_history_for_bag(
             f"""
             SELECT ubr.id, ubr.upload_batch_id, ubr.row_status, ubr.reason,
                    ubr.date_clean, ubr.name_clean, ubr.created_at,
-                   ub.state, ub.confirmed_at, ub.batch_date, ub.created_at AS batch_created_at
+                   ub.state, ub.confirmed_at, ub.batch_date,
+                   ub.created_at AS batch_created_at
             FROM upload_batch_rows ubr
-            LEFT JOIN upload_batches ub ON ub.batch_id = ubr.upload_batch_id
+            LEFT JOIN upload_batches ub ON ub.{pk} = ubr.upload_batch_id
             WHERE ubr.ticket_id = %s
             ORDER BY ubr.upload_batch_id DESC, ubr.{upload_batch_row_pk} DESC
             """,
@@ -321,7 +363,7 @@ def list_upload_history_for_bag(
         purged = bool(batch.get("raw_rows_purged_at")) if has_purged else False
         entry: dict[str, Any] = {
             "upload_batch_id": batch_id,
-            "batch_state": batch.get("state") or row.get("state") if row else batch.get("state"),
+            "batch_state": batch.get("state") or (row.get("state") if row else None),
             "batch_date": batch.get("batch_date") or (row.get("batch_date") if row else None),
             "batch_created_at": batch.get("created_at") or (row.get("batch_created_at") if row else None),
             "confirmed_at": batch.get("confirmed_at") or (row.get("confirmed_at") if row else None),
@@ -334,11 +376,89 @@ def list_upload_history_for_bag(
         }
         if purged and row is None:
             entry["purged_message"] = PURGED_ROW_MESSAGE
-        elif purged and row is not None:
-            entry["purged_message"] = None
         history.append(entry)
 
     return history
+
+
+def list_folding_overrides_safe(
+    cursor, organization_id: int, bag_id: str
+) -> list[dict[str, Any]]:
+    if not table_exists(cursor, "rinse_folding_performance_overrides"):
+        return []
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return []
+    cursor.execute(
+        """
+        SELECT id, organization_id, performance_id, bag_id, field_name,
+               old_value, new_value, actor_user_id, notes, created_at
+        FROM rinse_folding_performance_overrides
+        WHERE organization_id = %s AND bag_id = %s
+        ORDER BY created_at DESC, id DESC
+        """,
+        (int(organization_id), bid),
+    )
+    return list(cursor.fetchall() or [])
+
+
+def list_scrape_sources_safe(
+    cursor, organization_id: int, upload_history: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    scrape_sources: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    org = int(organization_id)
+    for uh in upload_history:
+        batch_id = uh.get("upload_batch_id")
+        if batch_id is None:
+            continue
+        try:
+            bid_int = int(batch_id)
+        except (TypeError, ValueError):
+            continue
+        if bid_int in seen:
+            continue
+        seen.add(bid_int)
+        try:
+            run = fetch_scrape_run_for_batch(cursor, org, bid_int)
+        except Exception as exc:
+            log.warning("scrape source batch %s: %s", bid_int, exc)
+            continue
+        if run:
+            scrape_sources.append({"upload_batch_id": bid_int, **run})
+    return scrape_sources
+
+
+def empty_lifecycle_detail_shell(bag_id: str, registry: dict[str, Any] | None) -> dict[str, Any]:
+    reg = registry or {}
+    summary = {
+        "bag_id": reg.get("bag_id") or bag_id,
+        "customer": reg.get("name_clean"),
+        "completion_status": reg.get("completion_status"),
+        "completion_reason": reg.get("completion_reason"),
+        "completed_at": reg.get("completed_at"),
+        "date_clean": reg.get("date_clean"),
+        "weight": reg.get("weight_num"),
+        "service_type": reg.get("service_type"),
+        "rush_type": reg.get("rush_type"),
+        "last_upload_batch_id": reg.get("last_upload_batch_id"),
+        "last_staging_order_id": reg.get("last_staging_order_id"),
+    }
+    return {
+        "bag_id": normalize_bag_id(bag_id) or bag_id,
+        "registry": reg,
+        "registry_summary": summary,
+        "upload_history": [],
+        "staging_history": [],
+        "staging": None,
+        "staging_active": None,
+        "scan_events": [],
+        "folding": None,
+        "folding_performance": None,
+        "scrape_sources": [],
+        "latest_upload_batch_row": None,
+        "section_errors": {},
+    }
 
 
 def build_order_lifecycle_detail(
@@ -361,84 +481,96 @@ def build_order_lifecycle_detail(
     if not reg:
         return None
 
-    scan_events = list_scan_events_for_bag(cursor, org, bid)
-    upload_history = list_upload_history_for_bag(
-        cursor, org, bid, reg, upload_batch_row_pk=upload_batch_row_pk
+    section_errors: dict[str, str] = {}
+    detail = empty_lifecycle_detail_shell(bid, reg)
+
+    detail["scan_events"] = _safe_section(
+        section_errors,
+        "scan_events",
+        lambda: list_scan_events_for_bag(cursor, org, bid),
+        [],
     )
-    staging_history = list_staging_history_for_bag(
-        cursor,
-        org,
-        bid,
-        active_where_sql=active_where_sql,
-        has_staging_org=has_staging_org,
-        has_ticket_id_col=has_ticket_id_col,
+    detail["upload_history"] = _safe_section(
+        section_errors,
+        "upload_history",
+        lambda: list_upload_history_for_bag(
+            cursor, org, bid, reg, upload_batch_row_pk=upload_batch_row_pk
+        ),
+        [],
     )
-    staging_active = find_active_staging_by_ticket_id(
-        cursor,
-        org,
-        bid,
-        active_where_sql,
-        has_staging_org=has_staging_org,
-        has_ticket_id_col=has_ticket_id_col,
+    detail["staging_history"] = _safe_section(
+        section_errors,
+        "staging_history",
+        lambda: list_staging_history_for_bag(
+            cursor,
+            org,
+            bid,
+            has_staging_org=has_staging_org,
+            has_ticket_id_col=has_ticket_id_col,
+        ),
+        [],
     )
+    detail["staging_active"] = _safe_section(
+        section_errors,
+        "staging_active",
+        lambda: find_active_staging_by_ticket_id(
+            cursor,
+            org,
+            bid,
+            active_where_sql,
+            has_staging_org=has_staging_org,
+            has_ticket_id_col=has_ticket_id_col,
+        ),
+        None,
+    )
+    detail["staging"] = detail["staging_active"]
 
     folding_perf = None
     if table_exists(cursor, "rinse_folding_performance"):
-        cursor.execute(
-            "SELECT * FROM rinse_folding_performance WHERE organization_id = %s AND bag_id = %s LIMIT 1",
-            (org, bid),
+        folding_perf = _safe_section(
+            section_errors,
+            "folding_performance",
+            lambda: _fetch_folding_row(cursor, org, bid),
+            None,
         )
-        folding_perf = cursor.fetchone()
+    detail["folding_performance"] = folding_perf
 
-    overrides = list_folding_performance_overrides(cursor, org, bid)
-    folding_detail = build_folding_detail(
-        folding_perf if isinstance(folding_perf, dict) else None, scan_events
+    overrides = _safe_section(
+        section_errors,
+        "folding_overrides",
+        lambda: list_folding_overrides_safe(cursor, org, bid),
+        [],
     )
-    if folding_detail is not None:
-        folding_detail["override_history"] = overrides
+    folding_detail = None
+    try:
+        folding_detail = build_folding_detail(
+            folding_perf if isinstance(folding_perf, dict) else None,
+            detail["scan_events"] or [],
+        )
+        if folding_detail is not None:
+            folding_detail["override_history"] = overrides
+    except Exception as exc:
+        section_errors["folding"] = str(exc)
+        log.warning("folding detail build failed: %s", exc, exc_info=True)
+    detail["folding"] = folding_detail
 
-    scrape_sources: list[dict[str, Any]] = []
-    seen_scrape: set[int] = set()
-    for uh in upload_history:
-        batch_id = uh.get("upload_batch_id")
-        if batch_id is None:
-            continue
-        try:
-            bid_int = int(batch_id)
-        except (TypeError, ValueError):
-            continue
-        if bid_int in seen_scrape:
-            continue
-        seen_scrape.add(bid_int)
-        run = fetch_scrape_run_for_batch(cursor, org, bid_int)
-        if run:
-            scrape_sources.append({"upload_batch_id": bid_int, **run})
+    detail["scrape_sources"] = _safe_section(
+        section_errors,
+        "scrape_sources",
+        lambda: list_scrape_sources_safe(cursor, org, detail["upload_history"] or []),
+        [],
+    )
 
-    registry_summary = {
-        "bag_id": reg.get("bag_id"),
-        "customer": reg.get("name_clean"),
-        "completion_status": reg.get("completion_status"),
-        "completion_reason": reg.get("completion_reason"),
-        "completed_at": reg.get("completed_at"),
-        "date_clean": reg.get("date_clean"),
-        "weight": reg.get("weight_num"),
-        "service_type": reg.get("service_type"),
-        "rush_type": reg.get("rush_type"),
-        "last_upload_batch_id": reg.get("last_upload_batch_id"),
-        "last_staging_order_id": reg.get("last_staging_order_id"),
-    }
+    if section_errors:
+        detail["section_errors"] = section_errors
 
-    return {
-        "bag_id": bid,
-        "registry": reg,
-        "registry_summary": registry_summary,
-        "upload_history": upload_history,
-        "staging_history": staging_history,
-        "staging": staging_active,
-        "staging_active": staging_active,
-        "scan_events": scan_events,
-        "folding": folding_detail,
-        "folding_performance": folding_perf,
-        "scrape_sources": scrape_sources,
-        "latest_upload_batch_row": None,
-    }
+    return detail
+
+
+def _fetch_folding_row(cursor, org: int, bid: str) -> dict[str, Any] | None:
+    cursor.execute(
+        "SELECT * FROM rinse_folding_performance WHERE organization_id = %s AND bag_id = %s LIMIT 1",
+        (org, bid),
+    )
+    row = cursor.fetchone()
+    return row if isinstance(row, dict) else None
