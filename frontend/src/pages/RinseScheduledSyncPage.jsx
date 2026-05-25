@@ -11,7 +11,7 @@ import {
   Divider,
 } from "@mui/material";
 import { getRinseScheduledScrapeStatus } from "../api";
-import { formatRinseApiDateTime } from "../utils/rinseTimeFormat";
+import { formatSystemDateTime } from "../utils/rinseTimeFormat";
 
 function statusColor(status) {
   const s = String(status || "").toLowerCase();
@@ -62,8 +62,8 @@ function RunTimingPanel({ title, run }) {
       <Typography variant="overline" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
         Scraper job
       </Typography>
-      <Row label="Scrape started" value={formatRinseApiDateTime(run.scrape_started_at)} />
-      <Row label="Scrape finished" value={formatRinseApiDateTime(run.scrape_finished_at)} />
+      <Row label="Scrape started" value={formatSystemDateTime(run.scrape_started_at)} />
+      <Row label="Scrape finished" value={formatSystemDateTime(run.scrape_finished_at)} />
       <Row
         label="Duration"
         value={run.scrape_duration_label || (run.scrape_duration_seconds != null ? `${run.scrape_duration_seconds}s` : "—")}
@@ -77,15 +77,15 @@ function RunTimingPanel({ title, run }) {
         Upload batch (import)
       </Typography>
       <Row label="Imported batch ID" value={run.imported_batch_id} />
-      <Row label="Batch created" value={formatRinseApiDateTime(run.batch_created_at)} />
-      <Row label="Batch confirmed" value={formatRinseApiDateTime(run.batch_confirmed_at)} />
+      <Row label="Batch created" value={formatSystemDateTime(run.batch_created_at)} />
+      <Row label="Batch confirmed" value={formatSystemDateTime(run.batch_confirmed_at)} />
       <Row label="Batch state" value={run.batch_state} />
 
       <Divider sx={{ my: 1.5 }} />
 
       <Row
         label="Data last updated at"
-        value={formatRinseApiDateTime(run.data_last_updated_at)}
+        value={formatSystemDateTime(run.data_last_updated_at)}
       />
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
         Uses batch confirmed time when available; otherwise scrape finished time. Not the batch created time.
@@ -145,7 +145,7 @@ export default function RinseScheduledSyncPage() {
               {data.currently_running ? <Chip size="small" label="Scrape running" color="info" /> : null}
             </Stack>
             <Typography variant="h6">
-              {formatRinseApiDateTime(data.data_last_updated_at_et || data.data_last_updated_at) || "—"}
+              {formatSystemDateTime(data.data_last_updated_at_et || data.data_last_updated_at) || "—"}
             </Typography>
             {data.timing_summary ? (
               <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
@@ -163,7 +163,7 @@ export default function RinseScheduledSyncPage() {
             <Typography variant="subtitle1" fontWeight={700} gutterBottom>Schedule</Typography>
             <Row label="Cron (UTC)" value={data.schedule_cron_utc} />
             <Row label="Interval" value={`${data.schedule_interval_minutes || 30} minutes`} />
-            <Row label="Next run (estimate)" value={formatRinseApiDateTime(data.next_run_estimate_et || data.next_run_estimate_utc)} />
+            <Row label="Next run (estimate)" value={formatSystemDateTime(data.next_run_estimate_et || data.next_run_estimate_utc)} />
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
               {data.timing_note || data.schedule_timezone_note}
             </Typography>

@@ -18,6 +18,9 @@ export function parseRinseApiInstant(value) {
   return Number.isFinite(t) ? t : Number.NaN;
 }
 
+/** System/job timestamps from API (UTC stored, serialized with ET offset). */
+export const formatSystemDateTime = formatRinseApiDateTime;
+
 export function formatRinseApiDateTime(value, { withYear = false } = {}) {
   if (!value) return "—";
   const s = String(value).trim();

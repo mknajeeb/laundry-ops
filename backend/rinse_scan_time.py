@@ -22,7 +22,9 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 RINSE_SCAN_SOURCE_TIMEZONE = "America/New_York"
+SYSTEM_DB_TIMEZONE = "UTC"
 _ET = ZoneInfo(RINSE_SCAN_SOURCE_TIMEZONE)
+_UTC = ZoneInfo(SYSTEM_DB_TIMEZONE)
 
 _PARSE_FORMATS = (
     "%A, %B %d, %Y %I:%M %p",
@@ -79,12 +81,11 @@ def parse_rinse_scanned_at_pandas(text: str) -> pd.Timestamp | pd.NaT:
     return pd.Timestamp(dt)
 
 
-def serialize_rinse_datetime_for_api(dt: datetime | None) -> str | None:
+def serialize_rinse_scan_datetime_for_api(dt: datetime | None) -> str | None:
     """
-    Serialize naive Rinse DB datetimes for JSON APIs.
+    Rinse portal / scan-event wall times (scanned_at_parsed, folding from scans).
 
-    Naive values are America/New_York wall time (not UTC).
-    Returns ISO-8601 with offset, e.g. 2026-05-24T17:25:00-04:00 — never HTTP GMT or Z.
+    Naive DB values are America/New_York local wall time — not UTC.
     """
     if dt is None:
         return None
@@ -97,20 +98,69 @@ def serialize_rinse_datetime_for_api(dt: datetime | None) -> str | None:
     return localized.isoformat(timespec="seconds")
 
 
+def serialize_rinse_datetime_for_api(dt: datetime | None) -> str | None:
+    """Alias for scan wall-time serialization (backward compatible)."""
+    return serialize_rinse_scan_datetime_for_api(dt)
+
+
+def serialize_system_datetime_for_api(dt: datetime | None) -> str | None:
+    """
+    System/job DB timestamps (rinse_scrape_runs, upload_batches, audit).
+
+    Naive values are stored as UTC (MySQL/server). Convert to Eastern for API ISO
+    with offset, e.g. UTC 2026-05-24 23:37:00 -> 2026-05-24T19:37:00-04:00.
+    """
+    if dt is None:
+        return None
+    if not isinstance(dt, datetime):
+        raise TypeError(f"expected datetime, got {type(dt).__name__}")
+    if dt.tzinfo is None:
+        utc_dt = dt.replace(tzinfo=_UTC)
+    else:
+        utc_dt = dt.astimezone(_UTC)
+    return utc_dt.astimezone(_ET).isoformat(timespec="seconds")
+
+
+def system_datetime_to_et(dt: datetime | None) -> datetime | None:
+    """Interpret naive system DB time as UTC; return aware America/New_York."""
+    if dt is None or not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_UTC).astimezone(_ET)
+    return dt.astimezone(_ET)
+
+
 def json_safe_rinse(obj: Any) -> Any:
-    """Recursively serialize Rinse API payloads (ET datetimes, dates, decimals)."""
+    """Recursively serialize Rinse scan/bag payloads (scan wall-time datetimes)."""
     if obj is None:
         return None
     if isinstance(obj, Decimal):
         return float(obj)
     if isinstance(obj, datetime):
-        return serialize_rinse_datetime_for_api(obj)
+        return serialize_rinse_scan_datetime_for_api(obj)
     if isinstance(obj, date):
         return obj.isoformat()
     if isinstance(obj, dict):
         return {k: json_safe_rinse(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [json_safe_rinse(x) for x in obj]
+    return obj
+
+
+def json_safe_system(obj: Any) -> Any:
+    """Recursively serialize job/system payloads (UTC naive datetimes → ET ISO)."""
+    if obj is None:
+        return None
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, datetime):
+        return serialize_system_datetime_for_api(obj)
+    if isinstance(obj, date):
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: json_safe_system(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe_system(x) for x in obj]
     return obj
 
 

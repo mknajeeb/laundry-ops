@@ -15,7 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getRinseOrderArchiveDetail, searchRinseOrders } from "../api";
-import { formatRinseApiDateTime } from "../utils/rinseTimeFormat";
+import { formatSystemDateTime } from "../utils/rinseTimeFormat";
 
 export default function RinseOrderSearchPage() {
   const [bagId, setBagId] = useState("");
@@ -169,7 +169,7 @@ export default function RinseOrderSearchPage() {
           ) : null}
           {detail.scheduled_scrape_status?.data_last_updated_at_et ? (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-              Data last updated: {formatRinseApiDateTime(detail.scheduled_scrape_status.data_last_updated_at_et)}
+              Data last updated: {formatSystemDateTime(detail.scheduled_scrape_status.data_last_updated_at_et)}
             </Typography>
           ) : null}
         </Paper>

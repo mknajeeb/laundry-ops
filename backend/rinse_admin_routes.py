@@ -10,7 +10,7 @@ from backend.db import get_db
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_order_search import get_order_archive_detail, search_rinse_orders
 from backend.rinse_scrape_status import get_scheduled_scrape_status
-from backend.rinse_scan_time import json_safe_rinse
+from backend.rinse_scan_time import json_safe_rinse, json_safe_system
 from backend.ta_helpers import table_has_column
 
 
@@ -42,7 +42,7 @@ def register_rinse_admin_routes(
                 "Data updates after scrape, CSV import, auto-confirm, finalize, and "
                 "completion/folding recompute finish — not at job start time."
             )
-            return jsonify(json_safe_rinse(payload))
+            return jsonify(json_safe_system(payload))
         finally:
             cursor.close()
             conn.close()

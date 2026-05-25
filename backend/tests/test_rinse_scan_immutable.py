@@ -19,9 +19,12 @@ from backend.rinse_scan_event_identity import compute_scan_event_dedupe_key
 from backend.rinse_scan_time import (
     RINSE_SCAN_SOURCE_TIMEZONE,
     json_safe_rinse,
+    json_safe_system,
     parse_rinse_scanned_at,
     rinse_api_json_dumps,
     serialize_rinse_datetime_for_api,
+    serialize_rinse_scan_datetime_for_api,
+    serialize_system_datetime_for_api,
 )
 
 
@@ -67,6 +70,34 @@ class TestRinseScanTimeET(unittest.TestCase):
         raw = "Saturday, May 16, 2026 11:45 PM"
         dt = parse_rinse_scanned_at(raw)
         self.assertEqual(dt, datetime(2026, 5, 16, 23, 45, 0))
+
+
+class TestSystemDatetimeUTC(unittest.TestCase):
+    def test_scrape_run_utc_2337_serializes_to_et_1937(self):
+        utc_naive = datetime(2026, 5, 24, 23, 37, 0)
+        api = serialize_system_datetime_for_api(utc_naive)
+        self.assertEqual(api, "2026-05-24T19:37:00-04:00")
+
+    def test_upload_batch_confirmed_utc_2337(self):
+        api = serialize_system_datetime_for_api(datetime(2026, 5, 24, 23, 37, 0))
+        self.assertEqual(api, "2026-05-24T19:37:00-04:00")
+
+    def test_json_safe_system_does_not_tag_utc_as_et_wall(self):
+        out = json_safe_system(
+            {
+                "finished_at": datetime(2026, 5, 24, 23, 38, 30),
+                "started_at": datetime(2026, 5, 24, 23, 30, 0),
+            }
+        )
+        self.assertEqual(out["finished_at"], "2026-05-24T19:38:30-04:00")
+        self.assertEqual(out["started_at"], "2026-05-24T19:30:00-04:00")
+
+    def test_scan_serializer_unchanged_for_1725_wall(self):
+        dt = datetime(2026, 5, 24, 17, 25, 0)
+        self.assertEqual(
+            serialize_rinse_scan_datetime_for_api(dt), "2026-05-24T17:25:00-04:00"
+        )
+        self.assertEqual(serialize_rinse_datetime_for_api(dt), "2026-05-24T17:25:00-04:00")
 
 
 class TestDedupeKeyDistinctScans(unittest.TestCase):

@@ -18,7 +18,10 @@ from backend.rinse_folding_excluded_users import (
     sql_exclude_scoring_users_clause,
 )
 from backend.rinse_folding_registry import aggregate_folding_leaderboard
-from backend.rinse_scan_time import serialize_rinse_datetime_for_api
+from backend.rinse_scan_time import (
+    serialize_rinse_datetime_for_api,
+    serialize_system_datetime_for_api,
+)
 from backend.rinse_scrape_status import get_scheduled_scrape_status
 
 
@@ -115,6 +118,32 @@ class TestScrapeBatchDetail(unittest.TestCase):
         self.assertIn("Duration", detail["timing_summary"])
         self.assertEqual(detail["rows_imported"], 70)
         self.assertEqual(detail["imported_batch_id"], 122)
+        self.assertEqual(detail["scrape_started_at"], "2026-05-24T14:30:00-04:00")
+        self.assertEqual(detail["batch_confirmed_at"], "2026-05-24T14:42:00-04:00")
+        self.assertIn("2:30 PM", detail["timing_summary"])
+        self.assertIn("2:42 PM", detail["timing_summary"])
+
+    def test_utc_db_2337_displays_as_737_pm_et_in_api(self):
+        from backend.rinse_scrape_status import build_scrape_run_batch_detail
+
+        detail = build_scrape_run_batch_detail(
+            {
+                "id": 8,
+                "status": "success",
+                "started_at": datetime(2026, 5, 24, 23, 30, 0),
+                "finished_at": datetime(2026, 5, 24, 23, 38, 30),
+                "duration_seconds": 510,
+                "portal_rows_count": 70,
+                "imported_batch_id": 124,
+            },
+            {
+                "created_at": datetime(2026, 5, 24, 23, 31, 0),
+                "confirmed_at": datetime(2026, 5, 24, 23, 37, 0),
+                "state": "CONFIRMED",
+            },
+        )
+        self.assertEqual(detail["data_last_updated_at"], "2026-05-24T19:37:00-04:00")
+        self.assertIn("7:37 PM", detail["timing_summary"])
 
 
 class TestScheduledScrapeStatus(unittest.TestCase):
@@ -124,8 +153,9 @@ class TestScheduledScrapeStatus(unittest.TestCase):
         def table_exists_side_effect(_c, name):
             return name == "rinse_scrape_runs"
 
-        finished = datetime(2026, 5, 24, 18, 54, 0)
-        started = datetime(2026, 5, 24, 18, 42, 0)
+        finished = datetime(2026, 5, 24, 22, 54, 0)
+        started = datetime(2026, 5, 24, 22, 42, 0)
+        confirmed = datetime(2026, 5, 24, 22, 54, 0)
         calls = {"n": 0}
 
         def fetchone():
@@ -159,23 +189,40 @@ class TestScheduledScrapeStatus(unittest.TestCase):
                 }
             return None
 
+        def fetch_batch_row(*_a, **_k):
+            return {
+                "batch_id": 121,
+                "state": "CONFIRMED",
+                "orders_loaded": 70,
+                "confirmed_at": confirmed,
+                "created_at": datetime(2026, 5, 24, 22, 43, 0),
+            }
+
         cursor.fetchone.side_effect = fetchone
-        with patch("backend.rinse_scrape_status.table_exists", side_effect=table_exists_side_effect):
-            with patch("backend.rinse_scrape_status.table_exists", side_effect=table_exists_side_effect):
-                out = get_scheduled_scrape_status(cursor, 3)
-        self.assertIsNotNone(out.get("data_last_updated_at"))
+        with (
+            patch("backend.rinse_scrape_status.table_exists", side_effect=table_exists_side_effect),
+            patch(
+                "backend.rinse_scrape_status._fetch_upload_batch_row",
+                side_effect=fetch_batch_row,
+            ),
+        ):
+            out = get_scheduled_scrape_status(cursor, 3)
+        self.assertEqual(out.get("data_last_updated_at"), "2026-05-24T18:54:00-04:00")
+        self.assertEqual(out.get("data_last_updated_at_et"), "2026-05-24T18:54:00-04:00")
         latest = out.get("latest_run") or {}
-        self.assertEqual(latest.get("started_at"), latest.get("started_at"))
-        if out.get("data_last_updated_at_et"):
-            self.assertIn("-04:00", out["data_last_updated_at_et"])
+        self.assertEqual(latest.get("scrape_finished_at"), "2026-05-24T18:54:00-04:00")
 
 
 class TestTimezoneSerialization(unittest.TestCase):
-    def test_may_24_et_offset_not_gmt_string(self):
+    def test_may_24_scan_wall_et_offset_not_gmt_string(self):
         dt = datetime(2026, 5, 24, 17, 25, 0)
         api = serialize_rinse_datetime_for_api(dt)
-        self.assertIn("-04:00", api)
+        self.assertEqual(api, "2026-05-24T17:25:00-04:00")
         self.assertNotIn("GMT", api)
+
+    def test_system_utc_2337_serializes_to_1937_et(self):
+        api = serialize_system_datetime_for_api(datetime(2026, 5, 24, 23, 37, 0))
+        self.assertEqual(api, "2026-05-24T19:37:00-04:00")
 
 
 class TestOrderSearchModule(unittest.TestCase):

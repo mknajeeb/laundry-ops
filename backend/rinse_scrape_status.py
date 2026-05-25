@@ -20,26 +20,24 @@ def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _fmt_et(dt: datetime | None) -> str | None:
+def _fmt_system(dt: datetime | None) -> str | None:
     if dt is None:
         return None
-    from backend.rinse_scan_time import serialize_rinse_datetime_for_api
+    from backend.rinse_scan_time import serialize_system_datetime_for_api
 
     if isinstance(dt, datetime):
-        return serialize_rinse_datetime_for_api(dt)
+        return serialize_system_datetime_for_api(dt)
     return str(dt)
-
-
-def _naive_as_et(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=ET)
-    return dt.astimezone(ET)
 
 
 def _short_time_et(dt: datetime | None) -> str | None:
     if not isinstance(dt, datetime):
         return None
-    local = _naive_as_et(dt)
+    from backend.rinse_scan_time import system_datetime_to_et
+
+    local = system_datetime_to_et(dt)
+    if local is None:
+        return None
     label = local.strftime("%I:%M %p")
     if label.startswith("0"):
         label = label[1:]
@@ -137,18 +135,18 @@ def build_scrape_run_batch_detail(
         "scrape_run_id": scrape_run.get("id"),
         "scrape_status": scrape_run.get("status"),
         "run_type": scrape_run.get("run_type"),
-        "scrape_started_at": _fmt_et(started),
-        "scrape_finished_at": _fmt_et(finished),
+        "scrape_started_at": _fmt_system(started),
+        "scrape_finished_at": _fmt_system(finished),
         "scrape_duration_seconds": duration_seconds,
         "scrape_duration_label": _duration_label(duration_seconds),
         "imported_batch_id": scrape_run.get("imported_batch_id"),
         "rows_imported": rows_imported,
         "portal_rows_count": portal_rows,
         "scan_events_count": scrape_run.get("scan_events_count"),
-        "batch_created_at": _fmt_et(batch_created),
-        "batch_confirmed_at": _fmt_et(batch_confirmed),
+        "batch_created_at": _fmt_system(batch_created),
+        "batch_confirmed_at": _fmt_system(batch_confirmed),
         "batch_state": batch_row.get("state") if batch_row else None,
-        "data_last_updated_at": _fmt_et(data_raw),
+        "data_last_updated_at": _fmt_system(data_raw),
         "data_last_updated_at_raw": data_raw,
         "timing_summary": _build_timing_summary(
             scrape_started_at=started if isinstance(started, datetime) else None,
@@ -203,8 +201,8 @@ def attach_scrape_runs_to_batches(
             continue
         created = b.get("created_at")
         confirmed = b.get("confirmed_at")
-        b["batch_created_at"] = _fmt_et(created) if isinstance(created, datetime) else None
-        b["batch_confirmed_at"] = _fmt_et(confirmed) if isinstance(confirmed, datetime) else None
+        b["batch_created_at"] = _fmt_system(created) if isinstance(created, datetime) else None
+        b["batch_confirmed_at"] = _fmt_system(confirmed) if isinstance(confirmed, datetime) else None
         b["batch_time_label"] = "Batch created"
         b["scheduled_scrape"] = None
 
@@ -315,7 +313,7 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
         if isinstance(started, datetime):
             nxt = _next_run_estimate_utc(started)
             out["next_run_estimate_utc"] = nxt.isoformat() + "Z" if nxt else None
-            out["next_run_estimate_et"] = _fmt_et(nxt)
+            out["next_run_estimate_et"] = _fmt_system(nxt)
 
     cursor.execute(
         """
@@ -339,9 +337,7 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
         if detail:
             out["last_success"] = detail
             data_raw = detail.get("data_last_updated_at_raw")
-            out["data_last_updated_at"] = (
-                data_raw.isoformat() if isinstance(data_raw, datetime) else None
-            )
+            out["data_last_updated_at"] = detail.get("data_last_updated_at")
             out["data_last_updated_at_et"] = detail.get("data_last_updated_at")
             out["timing_summary"] = detail.get("timing_summary")
 
@@ -357,6 +353,6 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
     out["currently_running"] = bool(running)
     if running and isinstance(running, dict):
         out["running_run_id"] = running.get("id")
-        out["running_started_at"] = _fmt_et(running.get("started_at"))
+        out["running_started_at"] = _fmt_system(running.get("started_at"))
 
     return out

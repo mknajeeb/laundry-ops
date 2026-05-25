@@ -43,7 +43,7 @@ import {
   uploadRinseScanEventsCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
-import { formatRinseApiDateTime } from "../utils/rinseTimeFormat";
+import { formatSystemDateTime } from "../utils/rinseTimeFormat";
 import { useAuth } from "../context/AuthContext";
 import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
 import { easternTzLabel, getTodayYmdEastern } from "../utils/estWallClock";
@@ -128,7 +128,7 @@ function UploadPage({ user }) {
   const formatBatchCreatedLabel = (row) => {
     if (!row) return "No time";
     const et = row.batch_created_at || row.created_at;
-    const formatted = formatRinseApiDateTime(et);
+    const formatted = formatSystemDateTime(et);
     if (formatted !== "—") return formatted;
     const dtSource = row.created_at || row.updated_at;
     const dt = dtSource ? new Date(dtSource) : null;
@@ -154,7 +154,7 @@ function UploadPage({ user }) {
     const scrape = row?.scheduled_scrape;
     if (scrape?.timing_summary) return scrape.timing_summary;
     if (row?.batch_confirmed_at) {
-      return `Confirmed ${formatRinseApiDateTime(row.batch_confirmed_at)}`;
+      return `Confirmed ${formatSystemDateTime(row.batch_confirmed_at)}`;
     }
     return null;
   };

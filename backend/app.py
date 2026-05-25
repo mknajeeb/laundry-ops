@@ -9047,10 +9047,10 @@ def get_current_upload_batch():
             row["scan_events_count"] = 0
             row["upload_files"] = None
         from backend.rinse_scrape_status import attach_scrape_runs_to_batches
-        from backend.rinse_scan_time import json_safe_rinse
+        from backend.rinse_scan_time import json_safe_system
 
         attach_scrape_runs_to_batches(cursor, tenant_oid, [row])
-        return jsonify(json_safe_rinse(row))
+        return jsonify(json_safe_system(row))
     finally:
         cursor.close()
         conn.close()
@@ -9126,10 +9126,10 @@ def list_upload_batches():
             row["summary"] = summarize_batch_rows(cursor, row["id"], row_pk)
 
         from backend.rinse_scrape_status import attach_scrape_runs_to_batches
-        from backend.rinse_scan_time import json_safe_rinse
+        from backend.rinse_scan_time import json_safe_system
 
         attach_scrape_runs_to_batches(cursor, tenant_oid, rows)
-        return jsonify(json_safe_rinse(rows))
+        return jsonify(json_safe_system(rows))
     finally:
         cursor.close()
         conn.close()
