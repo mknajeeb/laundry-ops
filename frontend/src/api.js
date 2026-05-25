@@ -904,6 +904,12 @@ export const deletePayrollTimeRecord = (recordId) =>
 export const postAdjustSessionTimes = (sessionId, body) =>
   axios.post(`${API_BASE}/api/ta/sessions/${sessionId}/adjust-times`, body);
 
+export const getPayrollTaxSettings = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/tax-settings`);
+
+export const putPayrollTaxSettings = (body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/tax-settings`, body);
+
 export const getPayrollDue = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/pay-due`, { params });
 

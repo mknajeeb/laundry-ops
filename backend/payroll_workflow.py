@@ -37,6 +37,7 @@ BATCH_ACTIONS = (
     "mark_line_paid",
     "mark_line_unpaid",
     "refresh_rates",
+    "recalculate_taxes",
 )
 
 
@@ -47,6 +48,17 @@ def ensure_payout_batch_line_extensions(cursor) -> None:
     extras = [
         ("payment_status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),
         ("tax_calc_status", "VARCHAR(32) NULL"),
+        ("tax_calc_notes", "TEXT NULL"),
+        ("additional_medicare_withholding", "DECIMAL(10,2) NULL"),
+        ("total_employee_taxes", "DECIMAL(10,2) NULL"),
+        ("employer_social_security", "DECIMAL(10,2) NULL"),
+        ("employer_medicare", "DECIMAL(10,2) NULL"),
+        ("futa_estimate", "DECIMAL(10,2) NULL"),
+        ("ny_suta_estimate", "DECIMAL(10,2) NULL"),
+        ("employer_other_tax_estimate", "DECIMAL(10,2) NULL"),
+        ("workers_comp_estimate", "DECIMAL(10,2) NULL"),
+        ("total_employer_taxes", "DECIMAL(10,2) NULL"),
+        ("total_employer_cost", "DECIMAL(10,2) NULL"),
     ]
     for col, typedef in extras:
         if not table_has_column(cursor, "payout_batch_lines", col):
@@ -134,63 +146,154 @@ def resolve_worker_hourly_rate(
     }
 
 
-def fetch_w4_compliance_summary(conn, user_id: int) -> dict[str, Any]:
-    """Read W-4 choices stored on the employee HR profile (not batch-level)."""
-    cur = conn.cursor()
-    ensure_hr_extended_profiles_table(cur)
-    c = conn.cursor(dictionary=True)
-    c.execute(
-        "SELECT work_json FROM hr_extended_profiles WHERE user_id=%s LIMIT 1",
-        (int(user_id),),
-    )
-    row = c.fetchone() or {}
-    wj = row.get("work_json")
-    if isinstance(wj, str):
-        try:
-            wj = json.loads(wj)
-        except Exception:
-            wj = {}
-    if not isinstance(wj, dict):
-        wj = {}
-    w4 = wj.get("w4") if isinstance(wj.get("w4"), dict) else {}
-    compliance = w4.get("compliance") if isinstance(w4.get("compliance"), dict) else {}
-    filing_status = (
-        compliance.get("filing_status")
-        or compliance.get("step1c_filing_status")
-        or compliance.get("filingStatus")
-        or ""
-    )
-    exempt = bool(compliance.get("exempt") or compliance.get("exempt_from_withholding"))
-    has_w4 = bool(filing_status or compliance.get("step3_total") is not None or exempt)
+def fetch_w4_compliance_summary(conn, user_id: int, organization_id: int) -> dict[str, Any]:
+    """Read W-4 / payroll tax profile for batch display and validation."""
+    from backend.w2_payroll_tax_engine import ESTIMATE_DISCLAIMER, fetch_employee_tax_profile
+
+    profile = fetch_employee_tax_profile(conn, user_id, organization_id)
     return {
-        "w4_on_file": has_w4,
-        "filing_status": str(filing_status or "").strip() or None,
-        "exempt_from_withholding": exempt,
-        "extra_withholding": compliance.get("extra_withholding")
-        or compliance.get("step4c_extra_withholding"),
-        "tax_calc_status": "pending",
+        "w4_on_file": profile.get("w4_complete"),
+        "filing_status": profile.get("filing_status"),
+        "pay_frequency": profile.get("pay_frequency"),
+        "work_state": profile.get("work_state"),
+        "work_city": profile.get("work_city"),
+        "exempt_from_withholding": profile.get("exempt_federal"),
+        "extra_withholding": float(profile.get("extra_withholding") or 0),
+        "missing_fields": profile.get("missing_fields") or [],
+        "tax_calc_status": "estimated" if profile.get("w4_complete") else "profile_incomplete",
         "tax_calc_note": (
-            "W-4 on file — federal/NY/NYC withholding engine pending; net pay not calculated yet."
-            if has_w4
-            else "W-4 not on file — add withholding choices on the employee Compliance tab."
+            ESTIMATE_DISCLAIMER
+            if profile.get("w4_complete")
+            else f"Missing: {', '.join(profile.get('missing_fields') or ['W-4/payroll fields'])}"
         ),
     }
 
 
-def prepare_w2_line_tax_fields(conn, user_id: int, gross: float) -> dict[str, Any]:
-    """Store gross wages and W-4 snapshot; do not fabricate withholding amounts."""
-    w4 = fetch_w4_compliance_summary(conn, user_id)
+def persist_w2_line_taxes(
+    conn,
+    organization_id: int,
+    line_id: int,
+    user_id: int,
+    gross_pay: float,
+    *,
+    pay_period_start: Optional[str] = None,
+) -> None:
+    from backend.w2_payroll_tax_engine import calculate_w2_line_taxes
+
+    ensure_payout_batch_line_extensions(conn.cursor())
+    calc = calculate_w2_line_taxes(
+        conn,
+        organization_id,
+        user_id,
+        gross_pay=gross_pay,
+        pay_period_start=pay_period_start,
+    )
+    c = conn.cursor()
+    if calc.get("tax_calc_status") == "profile_incomplete":
+        c.execute(
+            """
+            UPDATE payout_batch_lines SET
+              gross_wages=%s, gross_amount=%s,
+              federal_withholding=NULL, state_withholding=NULL, city_withholding=NULL,
+              social_security_withholding=NULL, medicare_withholding=NULL,
+              additional_medicare_withholding=NULL, total_employee_taxes=NULL,
+              net_pay=NULL, tax_calc_status=%s, tax_calc_notes=%s
+            WHERE id=%s AND organization_id=%s
+            """,
+            (
+                gross_pay,
+                gross_pay,
+                calc.get("tax_calc_status"),
+                calc.get("tax_calc_notes"),
+                int(line_id),
+                int(organization_id),
+            ),
+        )
+        return
+    c.execute(
+        """
+        UPDATE payout_batch_lines SET
+          gross_wages=%s, gross_amount=%s,
+          federal_withholding=%s, state_withholding=%s, city_withholding=%s,
+          social_security_withholding=%s, medicare_withholding=%s,
+          additional_medicare_withholding=%s, total_employee_taxes=%s, net_pay=%s,
+          employer_social_security=%s, employer_medicare=%s, futa_estimate=%s,
+          ny_suta_estimate=%s, employer_other_tax_estimate=%s, workers_comp_estimate=%s,
+          total_employer_taxes=%s, total_employer_cost=%s,
+          tax_calc_status=%s, tax_calc_notes=%s,
+          total_amount=%s
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            calc.get("gross_pay"),
+            calc.get("gross_pay"),
+            calc.get("federal_withholding_estimate"),
+            calc.get("ny_state_withholding_estimate"),
+            calc.get("nyc_withholding_estimate"),
+            calc.get("social_security_employee"),
+            calc.get("medicare_employee"),
+            calc.get("additional_medicare_employee"),
+            calc.get("total_employee_taxes"),
+            calc.get("net_pay"),
+            calc.get("employer_social_security"),
+            calc.get("employer_medicare"),
+            calc.get("futa_estimate"),
+            calc.get("ny_suta_estimate"),
+            calc.get("employer_other_tax_estimate"),
+            calc.get("workers_comp_estimate"),
+            calc.get("total_employer_taxes"),
+            calc.get("total_employer_cost"),
+            calc.get("tax_calc_status"),
+            calc.get("tax_calc_notes"),
+            calc.get("net_pay"),
+            int(line_id),
+            int(organization_id),
+        ),
+    )
+
+
+def recalculate_w2_batch_taxes(conn, organization_id: int, batch_id: int) -> None:
+    from backend.payroll_operations import _recompute_batch_totals
+
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT worker_category, pay_period_start FROM payout_batches WHERE id=%s AND organization_id=%s",
+        (int(batch_id), int(organization_id)),
+    )
+    batch = c.fetchone()
+    if not batch or str(batch.get("worker_category")) != "w2":
+        return
+    c.execute(
+        "SELECT id, user_id, gross_amount, approved_hours, rate FROM payout_batch_lines WHERE batch_id=%s",
+        (int(batch_id),),
+    )
+    for ln in c.fetchall() or []:
+        uid = ln.get("user_id")
+        if not uid:
+            continue
+        hours = float(ln.get("approved_hours") or 0)
+        rate = float(ln.get("rate") or 0)
+        gross = float(ln.get("gross_amount") or hours * rate)
+        persist_w2_line_taxes(
+            conn,
+            organization_id,
+            int(ln["id"]),
+            int(uid),
+            gross,
+            pay_period_start=str(batch.get("pay_period_start") or ""),
+        )
+    _recompute_batch_totals(conn, batch_id)
+    conn.commit()
+
+
+def prepare_w2_line_tax_fields(conn, user_id: int, gross: float, organization_id: int = 0) -> dict[str, Any]:
+    """Legacy hook — actual amounts filled by persist_w2_line_taxes."""
+    from backend.w2_payroll_tax_engine import fetch_employee_tax_profile
+
+    profile = fetch_employee_tax_profile(conn, user_id, organization_id or 1)
     return {
         "gross_wages": gross,
-        "federal_withholding": None,
-        "state_withholding": None,
-        "city_withholding": None,
-        "social_security_withholding": None,
-        "medicare_withholding": None,
-        "other_deductions": None,
-        "net_pay": None,
-        "tax_calc_status": "pending" if w4.get("w4_on_file") else "not_applicable",
-        "w4_summary": w4,
+        "tax_calc_status": "estimated" if profile.get("w4_complete") else "profile_incomplete",
     }
 
 
@@ -256,11 +359,18 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
                     }
                 )
             if cat == "w2":
-                w4 = fetch_w4_compliance_summary(conn, int(uid))
-                row["w4_summary"] = w4
-                if not w4.get("w4_on_file"):
+                from backend.w2_payroll_tax_engine import ESTIMATE_DISCLAIMER, fetch_employee_tax_profile
+
+                profile = fetch_employee_tax_profile(conn, int(uid), organization_id)
+                row["w4_summary"] = fetch_w4_compliance_summary(conn, int(uid), organization_id)
+                row["tax_disclaimer"] = ESTIMATE_DISCLAIMER
+                if not profile.get("w4_complete"):
                     missing_w4.append(
-                        {"user_id": uid, "worker_name": row.get("worker_name_snapshot")}
+                        {
+                            "user_id": uid,
+                            "worker_name": row.get("worker_name_snapshot"),
+                            "missing_fields": profile.get("missing_fields") or [],
+                        }
                     )
         ps = str(row.get("payment_status") or "pending")
         row["payment_status_label"] = _line_payment_status_label(ps)
@@ -271,39 +381,53 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
         else:
             unpaid_total += amt
         if cat == "w2":
-            row["employee_taxes_total"] = _sum_withholding(
-                [row],
-                "federal_withholding",
-            ) + _sum_withholding([row], "state_withholding") + _sum_withholding(
-                [row], "city_withholding"
-            ) + _sum_withholding([row], "social_security_withholding") + _sum_withholding(
-                [row], "medicare_withholding"
+            emp_tax = float(row.get("total_employee_taxes") or 0)
+            row["employee_taxes_total"] = emp_tax or (
+                _sum_withholding([row], "federal_withholding")
+                + _sum_withholding([row], "state_withholding")
+                + _sum_withholding([row], "city_withholding")
+                + _sum_withholding([row], "social_security_withholding")
+                + _sum_withholding([row], "medicare_withholding")
+                + _sum_withholding([row], "additional_medicare_withholding")
             )
-            if row.get("tax_calc_status") == "pending" or row.get("net_pay") is None:
+            if row.get("tax_calc_status") == "estimated" and row.get("net_pay") is not None:
+                row["net_pay_display"] = float(row.get("net_pay"))
+                row["net_pay_note"] = ESTIMATE_DISCLAIMER
+            elif row.get("tax_calc_status") == "profile_incomplete":
                 row["net_pay_display"] = None
-                row["net_pay_note"] = (
-                    row.get("w4_summary") or {}
-                ).get("tax_calc_note") or "Tax calculation pending"
+                row["net_pay_note"] = row.get("tax_calc_notes") or "Complete W-4/payroll tax profile"
+            else:
+                row["net_pay_display"] = None
+                row["net_pay_note"] = row.get("tax_calc_notes") or "Tax calculation pending"
         enriched_lines.append(json_safe(row))
     batch = dict(batch)
     batch["lines"] = enriched_lines
     batch["payment_status"] = _batch_payment_status(enriched_lines)
+    net_total = sum(float(ln.get("net_pay") or 0) for ln in enriched_lines if ln.get("net_pay") is not None)
+    employer_tax_total = sum(float(ln.get("total_employer_taxes") or 0) for ln in enriched_lines)
+    employer_cost_total = sum(float(ln.get("total_employer_cost") or 0) for ln in enriched_lines)
     batch["summary"] = json_safe(
         {
             "worker_category": cat,
             "worker_category_label": CATEGORY_LABELS.get(cat, cat),
             "gross_total": float(gross_total),
-            "taxes_withheld_total": _sum_withholding(enriched_lines, "federal_withholding")
-            + _sum_withholding(enriched_lines, "state_withholding")
-            + _sum_withholding(enriched_lines, "city_withholding")
-            + _sum_withholding(enriched_lines, "social_security_withholding")
-            + _sum_withholding(enriched_lines, "medicare_withholding"),
-            "net_pay_total": None if cat == "w2" else float(gross_total),
+            "taxes_withheld_total": _sum_withholding(enriched_lines, "total_employee_taxes")
+            or (
+                _sum_withholding(enriched_lines, "federal_withholding")
+                + _sum_withholding(enriched_lines, "state_withholding")
+                + _sum_withholding(enriched_lines, "city_withholding")
+                + _sum_withholding(enriched_lines, "social_security_withholding")
+                + _sum_withholding(enriched_lines, "medicare_withholding")
+                + _sum_withholding(enriched_lines, "additional_medicare_withholding")
+            ),
+            "net_pay_total": net_total if cat == "w2" and net_total > 0 else (float(gross_total) if cat != "w2" else None),
             "net_pay_note": (
-                "W-2 net pay requires withholding engine (pending)."
+                "Estimated withholding — verify with accountant/payroll provider."
                 if cat == "w2"
                 else None
             ),
+            "employer_taxes_total": employer_tax_total,
+            "employer_cost_total": employer_cost_total,
             "payout_total": float(_money(batch.get("total_payout_amount") or 0)),
             "paid_amount": float(paid_total),
             "unpaid_amount": float(unpaid_total),
@@ -318,13 +442,17 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             "employee profile, or contractor profile before approving the batch."
         )
     if cat == "w2" and missing_w4:
-        warnings.append(
-            f"{len(missing_w4)} W-2 employee(s) missing W-4 on file — complete Compliance tab before payroll."
-        )
+        for m in missing_w4[:3]:
+            fields = ", ".join(m.get("missing_fields") or ["W-4/payroll tax profile"])
+            warnings.append(
+                f"W-2 {m.get('worker_name') or 'worker'} missing: {fields}"
+            )
+        if len(missing_w4) > 3:
+            warnings.append(f"+{len(missing_w4) - 3} more W-2 worker(s) with incomplete tax profile.")
     if cat == "w2":
-        warnings.append(
-            "W-2 federal / NY / NYC withholding is not calculated yet — gross pay only until tax engine ships."
-        )
+        from backend.w2_payroll_tax_engine import ESTIMATE_DISCLAIMER
+
+        warnings.append(ESTIMATE_DISCLAIMER)
     batch["warnings"] = warnings
     batch["missing_rates"] = missing_rates
     batch["missing_w4"] = missing_w4
@@ -355,8 +483,22 @@ def validate_batch_for_workflow(batch: dict, action: str) -> None:
     if action == "send_to_accountant" and str(batch.get("worker_category")) == "w2":
         missing_w4 = batch.get("missing_w4") or []
         if missing_w4:
-            names = ", ".join(m.get("worker_name") or "?" for m in missing_w4[:5])
-            raise ValueError(f"Cannot send W-2 batch — missing W-4 for: {names}")
+            parts = []
+            for m in missing_w4[:3]:
+                fields = ", ".join(m.get("missing_fields") or ["tax profile"])
+                parts.append(f"{m.get('worker_name') or '?'} ({fields})")
+            raise ValueError(
+                "Cannot send W-2 batch — incomplete tax profile for: " + "; ".join(parts)
+            )
+        incomplete_lines = [
+            ln
+            for ln in (batch.get("lines") or [])
+            if str(ln.get("tax_calc_status") or "") == "profile_incomplete"
+        ]
+        if incomplete_lines:
+            raise ValueError(
+                "Cannot send W-2 batch — tax estimates incomplete. Complete employee W-4/payroll profiles."
+            )
     lines = batch.get("lines") or []
     if action in ("hours_reviewed", "send_to_accountant") and not lines:
         raise ValueError("Batch has no worker lines.")
@@ -391,6 +533,7 @@ def refresh_batch_line_rates(conn, organization_id: int, batch_id: int) -> dict:
                     "line_status": ln.get("line_status") or "approved",
                 },
             )
+    recalculate_w2_batch_taxes(conn, organization_id, batch_id)
     out = get_payout_batch(conn, organization_id, batch_id) or {}
     return enrich_payout_batch(conn, organization_id, out)
 
@@ -489,6 +632,10 @@ def apply_batch_workflow_action(
     elif action == "refresh_rates":
         conn.commit()
         return refresh_batch_line_rates(conn, organization_id, batch_id)
+    elif action == "recalculate_taxes":
+        recalculate_w2_batch_taxes(conn, organization_id, batch_id)
+        out = get_payout_batch(conn, organization_id, batch_id) or {}
+        return enrich_payout_batch(conn, organization_id, out)
     conn.commit()
     out = get_payout_batch(conn, organization_id, batch_id) or {}
     return enrich_payout_batch(conn, organization_id, out)
@@ -628,12 +775,8 @@ def resolve_rate_for_batch_line(
 
 
 def apply_w2_fields_on_line_insert(
-    conn, user_id: int, worker_category: str, gross: float
+    conn, user_id: int, worker_category: str, gross: float, organization_id: int = 0
 ) -> dict[str, Any]:
     if worker_category != "w2":
         return {"tax_calc_status": "not_applicable"}
-    tax = prepare_w2_line_tax_fields(conn, user_id, gross)
-    return {
-        "gross_wages": tax["gross_wages"],
-        "tax_calc_status": tax["tax_calc_status"],
-    }
+    return prepare_w2_line_tax_fields(conn, user_id, gross, organization_id)

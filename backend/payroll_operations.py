@@ -865,6 +865,18 @@ def update_payout_batch_line(
     )
     _recompute_batch_totals(conn, batch_id)
     conn.commit()
+    if batch["worker_category"] == "w2":
+        from backend.payroll_workflow import persist_w2_line_taxes
+
+        c3 = conn.cursor(dictionary=True)
+        c3.execute("SELECT user_id FROM payout_batch_lines WHERE id=%s", (int(line_id),))
+        urow = c3.fetchone() or {}
+        uid = urow.get("user_id")
+        if uid:
+            persist_w2_line_taxes(
+                conn, organization_id, int(line_id), int(uid), gross, pay_period_start=None
+            )
+            conn.commit()
     c2 = conn.cursor(dictionary=True)
     c2.execute("SELECT * FROM payout_batch_lines WHERE id=%s", (int(line_id),))
     return json_safe(c2.fetchone() or {})
@@ -931,7 +943,7 @@ def add_payout_batch_line(
     ensure_payout_batch_line_extensions(conn.cursor())
     w2_extra = {}
     if uid and batch["worker_category"] == "w2":
-        w2_extra = apply_w2_fields_on_line_insert(conn, int(uid), batch["worker_category"], gross)
+        w2_extra = apply_w2_fields_on_line_insert(conn, int(uid), batch["worker_category"], gross, organization_id)
     payment_status = str(body.get("payment_status") or "pending")
     tax_calc_status = w2_extra.get("tax_calc_status") or (
         "not_applicable" if batch["worker_category"] != "w2" else "pending"
@@ -975,6 +987,11 @@ def add_payout_batch_line(
     )
     _recompute_batch_totals(conn, batch_id)
     line_id = int(c.lastrowid)
+    if uid and batch["worker_category"] == "w2":
+        from backend.payroll_workflow import persist_w2_line_taxes
+
+        persist_w2_line_taxes(conn, organization_id, line_id, int(uid), gross)
+    conn.commit()
     c2 = conn.cursor(dictionary=True)
     c2.execute("SELECT * FROM payout_batch_lines WHERE id=%s", (line_id,))
     return json_safe(c2.fetchone() or {})
@@ -1052,6 +1069,9 @@ def build_batch_from_time_records(
             },
         )
     conn.commit()
+    from backend.payroll_workflow import recalculate_w2_batch_taxes
+
+    recalculate_w2_batch_taxes(conn, organization_id, batch_id)
     return get_payout_batch(conn, organization_id, batch_id) or {}
 
 

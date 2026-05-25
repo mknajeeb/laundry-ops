@@ -80,27 +80,70 @@ export default function AccountantReportsPanel() {
   const downloadBatchCsv = (batch) => {
     if (!batch?.lines?.length) return;
     const isW2 = batch.worker_category === "w2";
-    const header = [
-      "Worker",
-      "Type",
-      "Hours",
-      "Rate",
-      "Gross",
-      ...(isW2 ? ["Net pay"] : []),
-      "Payment status",
-      "Paid date",
-    ];
+    const header = isW2
+      ? [
+          "Worker",
+          "Hours",
+          "Rate",
+          "Gross",
+          "Federal est",
+          "NY est",
+          "NYC est",
+          "SS employee",
+          "Medicare employee",
+          "Addl Medicare",
+          "Total employee taxes",
+          "Net pay",
+          "Er SS",
+          "Er Medicare",
+          "FUTA est",
+          "NY SUTA est",
+          "Er other",
+          "Workers comp",
+          "Total employer taxes",
+          "Total employer cost",
+          "Tax status",
+          "Tax notes",
+          "Payment status",
+        ]
+      : ["Worker", "Type", "Hours", "Rate", "Gross", "Net/Total", "Payment status", "Paid date"];
     const lines = batch.lines.map((ln) =>
-      [
-        ln.worker_name_snapshot,
-        batch.worker_category_label,
-        ln.approved_hours,
-        ln.rate,
-        ln.gross_amount,
-        ...(isW2 ? [ln.net_pay ?? "Pending"] : []),
-        ln.payment_status_label || ln.payment_status,
-        ln.payment_date || "",
-      ].join(","),
+      isW2
+        ? [
+            ln.worker_name_snapshot,
+            ln.approved_hours,
+            ln.rate,
+            ln.gross_amount,
+            ln.federal_withholding,
+            ln.state_withholding,
+            ln.city_withholding,
+            ln.social_security_withholding,
+            ln.medicare_withholding,
+            ln.additional_medicare_withholding,
+            ln.total_employee_taxes,
+            ln.net_pay ?? "",
+            ln.employer_social_security,
+            ln.employer_medicare,
+            ln.futa_estimate,
+            ln.ny_suta_estimate,
+            ln.employer_other_tax_estimate,
+            ln.workers_comp_estimate,
+            ln.total_employer_taxes,
+            ln.total_employer_cost,
+            ln.tax_calc_status,
+            (ln.tax_calc_notes || "").replace(/,/g, ";"),
+            ln.payment_status_label || ln.payment_status,
+          ].join(",")
+        : [
+            ln.worker_name_snapshot,
+            batch.worker_category_label,
+            ln.approved_hours,
+            ln.rate,
+            ln.gross_amount,
+            ln.total_amount,
+            ln.payment_status_label || ln.payment_status,
+            ln.payment_date || "",
+          ].join(","),
     );
     const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
     const a = document.createElement("a");

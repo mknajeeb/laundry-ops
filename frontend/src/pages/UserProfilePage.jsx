@@ -125,6 +125,11 @@ function emptyW4Compliance() {
     other_income: "",
     deductions: "",
     extra_withholding: "",
+    pay_frequency: "biweekly",
+    work_state: "NY",
+    work_city: "",
+    home_city: "",
+    nyc_resident: true,
   };
 }
 
@@ -728,10 +733,17 @@ export default function UserProfilePage({ user: sessionUser }) {
             ? { Status: nyIt2104StatusFromW4Filing(w4Compliance.filing_status) }
             : {}),
         },
+        payroll_tax: {
+          pay_frequency: w4Compliance.pay_frequency || "biweekly",
+          work_state: addrState.trim() || w4Compliance.work_state || "NY",
+          work_city: addrCity.trim() || w4Compliance.work_city || null,
+          home_city: addrCity.trim() || w4Compliance.home_city || null,
+          nyc_resident: w4Compliance.nyc_resident !== false,
+        },
       },
     };
-    },
-    [
+  },
+  [
       profileDob,
       profileHrNotes,
       emergency,

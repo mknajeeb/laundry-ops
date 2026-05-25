@@ -13,6 +13,7 @@ import AccountantReportsPanel from "../components/AccountantReportsPanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
+import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 
@@ -44,6 +45,7 @@ export default function PayrollManagementPage() {
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
+    if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
     if (canAccountant) out.push({ key: "accountant", label: "Accountant Reports" });
     return out;
   }, [canTime, canPayout, canContractors, canAccountant, t]);
@@ -130,6 +132,7 @@ export default function PayrollManagementPage() {
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "documents" ? <PayrollDocumentsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}
+        {active?.key === "taxsettings" ? <PayrollTaxSettingsPanel /> : null}
         {active?.key === "accountant" ? <AccountantReportsPanel /> : null}
       </Box>
     </Box>

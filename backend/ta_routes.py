@@ -5396,6 +5396,28 @@ def payroll_time_record_mutate(rid):
         conn.close()
 
 
+@ta_bp.route("/payroll/tax-settings", methods=["GET", "PUT"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_tax_settings_route():
+    conn = get_db()
+    try:
+        from backend.payroll_tax_settings import fetch_payroll_tax_settings, save_payroll_tax_settings
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(fetch_payroll_tax_settings(conn, oid))
+        body = request.get_json(silent=True) or {}
+        row = save_payroll_tax_settings(conn, oid, body)
+        conn.commit()
+        return jsonify(row)
+    except Exception as e:
+        current_app.logger.exception("payroll_tax_settings failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/pay-due", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit", "users.view")
@@ -5546,6 +5568,7 @@ def payroll_payout_batch_detail(batch_id):
             "mark_line_paid",
             "mark_line_unpaid",
             "refresh_rates",
+            "recalculate_taxes",
         ):
             from backend.payroll_workflow import apply_batch_workflow_action
 

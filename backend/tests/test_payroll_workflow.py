@@ -40,6 +40,6 @@ def test_fetch_w4_compliance_empty():
     with patch("backend.payroll_workflow.ensure_hr_extended_profiles_table"):
         c = conn.cursor.return_value
         c.fetchone.return_value = {"work_json": "{}"}
-        out = fetch_w4_compliance_summary(conn, 1)
+        out = fetch_w4_compliance_summary(conn, 1, 1)
     assert out["w4_on_file"] is False
     assert out["tax_calc_status"] == "pending"

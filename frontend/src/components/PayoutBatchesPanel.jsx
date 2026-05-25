@@ -290,6 +290,8 @@ export default function PayoutBatchesPanel({
         mark_paid: "Batch marked paid.",
         mark_line_paid: "Worker marked paid.",
         mark_line_unpaid: "Worker marked unpaid.",
+        refresh_rates: "Profile rates applied.",
+        recalculate_taxes: "W-2 tax estimates recalculated.",
       };
       setInfo(labels[action] || "Updated.");
     } catch (e) {
@@ -594,24 +596,40 @@ export default function PayoutBatchesPanel({
                     <Typography>${Number(summary.gross_total || 0).toFixed(2)}</Typography>
                   </Box>
                   {isW2 ? (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">
-                        Taxes withheld
-                      </Typography>
-                      <Typography>
-                        {summary.taxes_withheld_total > 0
-                          ? `$${Number(summary.taxes_withheld_total).toFixed(2)}`
-                          : "Pending engine"}
-                      </Typography>
-                    </Box>
-                  ) : null}
-                  {isW2 ? (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">
-                        Net pay
-                      </Typography>
-                      <Typography>{summary.net_pay_note || "Pending"}</Typography>
-                    </Box>
+                    <>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">
+                          Employee taxes (est.)
+                        </Typography>
+                        <Typography>
+                          {summary.taxes_withheld_total > 0
+                            ? `$${Number(summary.taxes_withheld_total).toFixed(2)}`
+                            : "—"}
+                        </Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">
+                          Net pay (est.)
+                        </Typography>
+                        <Typography>
+                          {summary.net_pay_total != null
+                            ? `$${Number(summary.net_pay_total).toFixed(2)}`
+                            : summary.net_pay_note || "Complete W-4 profile"}
+                        </Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">
+                          Employer taxes (est.)
+                        </Typography>
+                        <Typography>${Number(summary.employer_taxes_total || 0).toFixed(2)}</Typography>
+                      </Box>
+                      <Box>
+                        <Typography variant="caption" color="text.secondary">
+                          Total payroll cost
+                        </Typography>
+                        <Typography>${Number(summary.employer_cost_total || 0).toFixed(2)}</Typography>
+                      </Box>
+                    </>
                   ) : null}
                   <Box>
                     <Typography variant="caption" color="text.secondary">
@@ -635,6 +653,11 @@ export default function PayoutBatchesPanel({
                 {isDraft ? (
                   <Button size="small" variant="outlined" onClick={() => runWorkflowAction("refresh_rates")}>
                     Apply profile rates
+                  </Button>
+                ) : null}
+                {isDraft && isW2 ? (
+                  <Button size="small" variant="outlined" onClick={() => runWorkflowAction("recalculate_taxes")}>
+                    Recalculate W-2 taxes
                   </Button>
                 ) : null}
                 {detail.status === "draft" ? (
