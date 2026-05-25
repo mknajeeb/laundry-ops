@@ -88,6 +88,10 @@ def _fetch_upload_batch_row(cursor, organization_id: int, batch_id: int) -> dict
         cols.append("created_at")
     elif table_has_column(cursor, "upload_batches", "uploaded_at"):
         cols.append("uploaded_at AS created_at")
+    if table_has_column(cursor, "upload_batches", "raw_rows_purged_at"):
+        cols.append("raw_rows_purged_at")
+    if table_has_column(cursor, "upload_batches", "purged_summary_json"):
+        cols.append("purged_summary_json")
     where_org = ""
     args: list[Any] = [int(batch_id)]
     if table_has_column(cursor, "upload_batches", "organization_id"):
@@ -257,6 +261,127 @@ def _next_run_estimate_utc(last_started: datetime | None) -> datetime | None:
     if last_started is None:
         return _utcnow_naive() + timedelta(minutes=DEFAULT_INTERVAL_MINUTES)
     return last_started + timedelta(minutes=DEFAULT_INTERVAL_MINUTES)
+
+
+def _batch_row_counts(
+    cursor, batch_id: int | None, batch_row: dict[str, Any] | None
+) -> dict[str, int]:
+    """Live row counts or purged snapshot from batch header."""
+    import json
+
+    if batch_row and batch_row.get("raw_rows_purged_at") and batch_row.get("purged_summary_json"):
+        try:
+            snap = json.loads(batch_row["purged_summary_json"])
+            if isinstance(snap, dict):
+                return {
+                    "accepted_rows": int(snap.get("accepted_rows") or 0),
+                    "rejected_rows": int(snap.get("rejected_rows") or 0),
+                    "attention_rows": int(snap.get("attention_rows") or 0),
+                    "total_rows": int(snap.get("total_rows") or 0),
+                }
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+    if not batch_id or not table_exists(cursor, "upload_batch_rows"):
+        return {
+            "accepted_rows": 0,
+            "rejected_rows": 0,
+            "attention_rows": 0,
+            "total_rows": 0,
+        }
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) AS total_rows,
+            SUM(row_status IN ('ACCEPTED', 'OVERRIDDEN')) AS accepted_rows,
+            SUM(row_status = 'REJECTED_DUPLICATE') AS rejected_rows,
+            SUM(row_status = 'NEEDS_ATTENTION') AS attention_rows
+        FROM upload_batch_rows
+        WHERE upload_batch_id = %s
+        """,
+        (int(batch_id),),
+    )
+    row = cursor.fetchone() or {}
+    return {
+        "accepted_rows": int(row.get("accepted_rows") or 0),
+        "rejected_rows": int(row.get("rejected_rows") or 0),
+        "attention_rows": int(row.get("attention_rows") or 0),
+        "total_rows": int(row.get("total_rows") or 0),
+    }
+
+
+def build_scrape_run_list_item(
+    cursor,
+    organization_id: int,
+    scrape_run: dict[str, Any],
+    batch_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """One row for Today's Rinse Sync Runs table."""
+    detail = build_scrape_run_batch_detail(scrape_run, batch_row) or {}
+    bid = scrape_run.get("imported_batch_id")
+    counts = _batch_row_counts(
+        cursor, int(bid) if bid is not None else None, batch_row
+    )
+    from backend.rinse_scan_time import system_datetime_to_et
+
+    started = scrape_run.get("started_at")
+    started_et = system_datetime_to_et(started) if isinstance(started, datetime) else None
+    return {
+        **detail,
+        "run_id": scrape_run.get("id"),
+        "status": scrape_run.get("status"),
+        "error_message": scrape_run.get("error_message"),
+        "log_path": scrape_run.get("log_path"),
+        "started_at_et_date": started_et.date().isoformat() if started_et else None,
+        "accepted_rows": counts["accepted_rows"],
+        "rejected_rows": counts["rejected_rows"],
+        "needs_attention_rows": counts["attention_rows"],
+        "job_finished_at": detail.get("scrape_finished_at"),
+        "data_available_at": detail.get("batch_confirmed_at") or detail.get("data_last_updated_at"),
+        "heavy_rows_purged": bool(batch_row.get("raw_rows_purged_at")) if batch_row else False,
+    }
+
+
+def list_scrape_runs_for_et_range(
+    cursor,
+    organization_id: int,
+    *,
+    from_date,
+    to_date,
+) -> list[dict[str, Any]]:
+    """List scrape runs whose started_at falls on ET calendar dates [from_date, to_date]."""
+    from datetime import date
+
+    from backend.rinse_upload_batch_retention import et_date_range_to_utc_bounds
+
+    if not table_exists(cursor, "rinse_scrape_runs"):
+        return []
+    org = int(organization_id)
+    if not isinstance(from_date, date) or not isinstance(to_date, date):
+        raise ValueError("from_date and to_date required")
+    start_utc, end_utc = et_date_range_to_utc_bounds(from_date, to_date)
+    cursor.execute(
+        """
+        SELECT id, status, started_at, finished_at, duration_seconds,
+               portal_rows_count, scan_events_count, imported_batch_id,
+               error_message, rinse_vendor, tenant_slug, run_type, log_path
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s
+          AND started_at >= %s AND started_at <= %s
+        ORDER BY started_at DESC
+        """,
+        (org, start_utc, end_utc),
+    )
+    out: list[dict[str, Any]] = []
+    for run in cursor.fetchall() or []:
+        if not isinstance(run, dict):
+            continue
+        bid = run.get("imported_batch_id")
+        batch_row = (
+            _fetch_upload_batch_row(cursor, org, int(bid)) if bid else None
+        )
+        item = build_scrape_run_list_item(cursor, org, run, batch_row)
+        out.append(item)
+    return out
 
 
 def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:

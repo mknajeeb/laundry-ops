@@ -9,7 +9,10 @@ from flask import jsonify, request
 from backend.db import get_db
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_order_search import get_order_archive_detail, search_rinse_orders
-from backend.rinse_scrape_status import get_scheduled_scrape_status
+from backend.rinse_scrape_status import (
+    get_scheduled_scrape_status,
+    list_scrape_runs_for_et_range,
+)
 from backend.rinse_scan_time import json_safe_rinse, json_safe_system
 from backend.ta_helpers import table_has_column
 
@@ -43,6 +46,52 @@ def register_rinse_admin_routes(
                 "completion/folding recompute finish — not at job start time."
             )
             return jsonify(json_safe_system(payload))
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/scheduled-scrape/runs", methods=["GET"])
+    def rinse_scheduled_scrape_runs():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+
+            from backend.rinse_upload_batch_retention import resolve_upload_batch_date_range
+
+            range_preset = request.args.get("range") or "today"
+            from_d = parse_date_value(request.args.get("from_date") or "")
+            to_d = parse_date_value(request.args.get("to_date") or "")
+            try:
+                fd, td = resolve_upload_batch_date_range(
+                    range_preset=range_preset,
+                    from_date=from_d if isinstance(from_d, date) else None,
+                    to_date=to_d if isinstance(to_d, date) else None,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+
+            runs = list_scrape_runs_for_et_range(
+                cursor, tenant_oid, from_date=fd, to_date=td
+            )
+            return jsonify(
+                json_safe_system(
+                    {
+                        "organization_id": tenant_oid,
+                        "range": range_preset,
+                        "from_date": fd.isoformat(),
+                        "to_date": td.isoformat(),
+                        "timezone": "America/New_York",
+                        "runs": runs,
+                    }
+                )
+            )
         finally:
             cursor.close()
             conn.close()

@@ -1,16 +1,28 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Box,
-  Chip,
-  Paper,
-  Stack,
-  Typography,
   Button,
+  Chip,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Typography,
   CircularProgress,
   Divider,
 } from "@mui/material";
-import { getRinseScheduledScrapeStatus } from "../api";
+import { Link as RouterLink } from "react-router-dom";
+import { getRinseScheduledScrapeRuns, getRinseScheduledScrapeStatus } from "../api";
 import { formatSystemDateTime } from "../utils/rinseTimeFormat";
 
 function statusColor(status) {
@@ -96,39 +108,66 @@ function RunTimingPanel({ title, run }) {
   );
 }
 
+const RANGE_OPTIONS = [
+  { value: "today", label: "Today" },
+  { value: "yesterday", label: "Yesterday" },
+  { value: "last_3_days", label: "Last 3 days" },
+  { value: "custom", label: "Custom range" },
+];
+
 export default function RinseScheduledSyncPage() {
   const [data, setData] = useState(null);
+  const [runsData, setRunsData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [range, setRange] = useState("today");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
-      const res = await getRinseScheduledScrapeStatus();
-      setData(res.data);
+      const params = { range };
+      if (range === "custom") {
+        if (!fromDate || !toDate) {
+          setError("Select from and to dates for custom range.");
+          setLoading(false);
+          return;
+        }
+        params.from_date = fromDate;
+        params.to_date = toDate;
+      }
+      const [statusRes, runsRes] = await Promise.all([
+        getRinseScheduledScrapeStatus(),
+        getRinseScheduledScrapeRuns(params),
+      ]);
+      setData(statusRes.data);
+      setRunsData(runsRes.data);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to load sync status");
       setData(null);
+      setRunsData(null);
     } finally {
       setLoading(false);
     }
-  };
+  }, [range, fromDate, toDate]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   const latest = data?.latest_run;
   const lastSuccess = data?.last_success;
+  const runs = runsData?.runs || [];
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 720, mx: "auto" }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
+    <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1200, mx: "auto" }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2} flexWrap="wrap" useFlexGap>
         <Box>
           <Typography variant="h5" fontWeight={800}>Scheduled Rinse Sync</Typography>
           <Typography variant="body2" color="text.secondary">
-            Scrape start/finish are job times. Batch created is when the draft import landed. Data last updated is when confirm/finalize finished.
+            Run list uses America/New_York calendar dates. Batch headers are kept after raw row purge.
           </Typography>
         </Box>
         <Button size="small" variant="outlined" onClick={load} disabled={loading}>Refresh</Button>
@@ -158,6 +197,94 @@ export default function RinseScheduledSyncPage() {
           {lastSuccess && lastSuccess.scrape_run_id !== latest?.scrape_run_id ? (
             <RunTimingPanel title="Last successful scrape" run={lastSuccess} />
           ) : null}
+
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }} mb={2}>
+              <Typography variant="subtitle1" fontWeight={700} sx={{ flex: 1 }}>
+                Today&apos;s Rinse Sync Runs
+              </Typography>
+              <FormControl size="small" sx={{ minWidth: 160 }}>
+                <InputLabel>Date filter</InputLabel>
+                <Select label="Date filter" value={range} onChange={(e) => setRange(e.target.value)}>
+                  {RANGE_OPTIONS.map((o) => (
+                    <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {range === "custom" ? (
+                <>
+                  <TextField size="small" type="date" label="From" InputLabelProps={{ shrink: true }} value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+                  <TextField size="small" type="date" label="To" InputLabelProps={{ shrink: true }} value={toDate} onChange={(e) => setToDate(e.target.value)} />
+                </>
+              ) : null}
+            </Stack>
+            {runsData ? (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                {runsData.from_date} – {runsData.to_date} ({runsData.timezone})
+              </Typography>
+            ) : null}
+            <TableContainer>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Run ID</TableCell>
+                    <TableCell>Status</TableCell>
+                    <TableCell>Scrape started</TableCell>
+                    <TableCell>Data available</TableCell>
+                    <TableCell>Job finished</TableCell>
+                    <TableCell>Duration</TableCell>
+                    <TableCell align="right">Batch</TableCell>
+                    <TableCell align="right">Portal</TableCell>
+                    <TableCell align="right">Scan ev.</TableCell>
+                    <TableCell align="right">Accepted</TableCell>
+                    <TableCell align="right">Rejected</TableCell>
+                    <TableCell align="right">Needs att.</TableCell>
+                    <TableCell>Error</TableCell>
+                    <TableCell align="right">Actions</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {runs.map((run) => (
+                    <TableRow key={run.run_id || run.scrape_run_id} hover>
+                      <TableCell>{run.run_id || run.scrape_run_id}</TableCell>
+                      <TableCell>
+                        <Chip size="small" label={run.status || run.scrape_status} color={statusColor(run.status || run.scrape_status)} />
+                      </TableCell>
+                      <TableCell>{formatSystemDateTime(run.scrape_started_at)}</TableCell>
+                      <TableCell>{formatSystemDateTime(run.data_available_at)}</TableCell>
+                      <TableCell>{formatSystemDateTime(run.job_finished_at || run.scrape_finished_at)}</TableCell>
+                      <TableCell>{run.scrape_duration_label || run.scrape_duration_seconds || "—"}</TableCell>
+                      <TableCell align="right">{run.imported_batch_id ?? "—"}</TableCell>
+                      <TableCell align="right">{run.portal_rows_count ?? run.rows_imported ?? "—"}</TableCell>
+                      <TableCell align="right">{run.scan_events_count ?? "—"}</TableCell>
+                      <TableCell align="right">{run.accepted_rows ?? "—"}</TableCell>
+                      <TableCell align="right">{run.rejected_rows ?? "—"}</TableCell>
+                      <TableCell align="right">{run.needs_attention_rows ?? "—"}</TableCell>
+                      <TableCell sx={{ maxWidth: 160 }}>
+                        <Typography variant="caption" noWrap title={run.error_message || ""}>
+                          {run.error_message || "—"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="right">
+                        {run.imported_batch_id ? (
+                          <Button size="small" component={RouterLink} to="/upload" state={{ batchId: run.imported_batch_id }}>
+                            View batch
+                          </Button>
+                        ) : null}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {!runs.length ? (
+                    <TableRow>
+                      <TableCell colSpan={14}>
+                        <Typography variant="body2" color="text.secondary">No runs in this date range.</Typography>
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          </Paper>
 
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Typography variant="subtitle1" fontWeight={700} gutterBottom>Schedule</Typography>

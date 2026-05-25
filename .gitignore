@@ -19,6 +19,9 @@ backend/instance/
 # uploads
 uploads/
 
+# scheduled Rinse scrape audit output (local / ACA volume)
+data/rinse-scrape/
+
 # OS
 .DS_Store
 

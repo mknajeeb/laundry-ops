@@ -2,7 +2,13 @@
 # Sourced by tenant run scripts — do not execute directly.
 set -euo pipefail
 TENANT_DIR="$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)"
-SCRAPER_ROOT="$(cd "$TENANT_DIR/../rinse-cleanertickets" && pwd)"
+# scripts/rinse-tenants/<vendor> → scripts/rinse-cleanertickets (not tenants/rinse-cleanertickets)
+SCRAPER_ROOT="$(cd "$TENANT_DIR/../../rinse-cleanertickets" && pwd)"
+
+# Azure ACA / server: auth + .env live on the mounted volume (see RINSE_SCRAPE_DATA_ROOT).
+if [[ -n "${RINSE_TENANT_DATA_DIR:-}" && -d "${RINSE_TENANT_DATA_DIR}" ]]; then
+  TENANT_DIR="${RINSE_TENANT_DATA_DIR}"
+fi
 
 if [[ ! -f "$TENANT_DIR/.env" ]]; then
   echo "Missing $TENANT_DIR/.env — run: bash setup-all.sh"

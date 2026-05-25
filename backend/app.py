@@ -9068,8 +9068,25 @@ def list_upload_batches():
             return err_resp, err_code
         tenant_oid = user_org_id(me)
         pk_col = get_upload_batches_pk(cursor)
-        limit = request.args.get("limit", default=20, type=int) or 20
-        limit = max(1, min(limit, 100))
+        limit = request.args.get("limit", default=50, type=int) or 50
+        limit = max(1, min(limit, 200))
+
+        from backend.rinse_upload_batch_retention import resolve_upload_batch_date_range
+
+        range_preset = request.args.get("range")
+        if range_preset or request.args.get("from_date") or request.args.get("to_date"):
+            from_d = parse_date_value(request.args.get("from_date") or "")
+            to_d = parse_date_value(request.args.get("to_date") or "")
+            try:
+                fd, td = resolve_upload_batch_date_range(
+                    range_preset=range_preset or "last_3_days",
+                    from_date=from_d if isinstance(from_d, date) else None,
+                    to_date=to_d if isinstance(to_d, date) else None,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+        else:
+            fd, td = resolve_upload_batch_date_range(range_preset="last_3_days")
 
         selected_cols = [
             f"{pk_col} AS id",
@@ -9105,11 +9122,26 @@ def list_upload_batches():
         else:
             selected_cols.append("NULL AS closed_at")
 
-        list_where = ""
+        if table_has_column(cursor, "upload_batches", "raw_rows_purged_at"):
+            selected_cols.append("raw_rows_purged_at")
+        else:
+            selected_cols.append("NULL AS raw_rows_purged_at")
+
+        if table_has_column(cursor, "upload_batches", "purged_summary_json"):
+            selected_cols.append("purged_summary_json")
+        else:
+            selected_cols.append("NULL AS purged_summary_json")
+
+        list_where_parts = []
         list_args = []
         if table_has_column(cursor, "upload_batches", "organization_id"):
-            list_where = "WHERE organization_id = %s"
+            list_where_parts.append("organization_id = %s")
             list_args.append(tenant_oid)
+        list_where_parts.append("batch_date >= %s")
+        list_args.append(fd)
+        list_where_parts.append("batch_date <= %s")
+        list_args.append(td)
+        list_where = "WHERE " + " AND ".join(list_where_parts)
         list_args.append(limit)
         cursor.execute(f"""
             SELECT
@@ -9122,14 +9154,42 @@ def list_upload_batches():
         rows = cursor.fetchall() or []
 
         row_pk = get_upload_batch_rows_pk(cursor)
+        import json as _json
+
         for row in rows:
+            if row.get("raw_rows_purged_at") and row.get("purged_summary_json"):
+                try:
+                    snap = _json.loads(row["purged_summary_json"])
+                    if isinstance(snap, dict):
+                        row["summary"] = {
+                            "total_rows": int(snap.get("total_rows") or 0),
+                            "accepted_rows": int(snap.get("accepted_rows") or 0),
+                            "rejected_rows": int(snap.get("rejected_rows") or 0),
+                            "attention_rows": int(snap.get("attention_rows") or 0),
+                            "deleted_rows": int(snap.get("deleted_rows") or 0),
+                            "purged": True,
+                        }
+                        row["heavy_rows_purged"] = True
+                        continue
+                except (_json.JSONDecodeError, TypeError, ValueError):
+                    pass
             row["summary"] = summarize_batch_rows(cursor, row["id"], row_pk)
+            row["heavy_rows_purged"] = bool(row.get("raw_rows_purged_at"))
 
         from backend.rinse_scrape_status import attach_scrape_runs_to_batches
         from backend.rinse_scan_time import json_safe_system
 
         attach_scrape_runs_to_batches(cursor, tenant_oid, rows)
-        return jsonify(json_safe_system(rows))
+        return jsonify(
+            json_safe_system(
+                {
+                    "from_date": fd.isoformat(),
+                    "to_date": td.isoformat(),
+                    "timezone": "America/New_York",
+                    "items": rows,
+                }
+            )
+        )
     finally:
         cursor.close()
         conn.close()

@@ -1690,6 +1690,8 @@ async function main() {
     const seenRowFingerprints = new Set();
     /** Any earlier page’s sorted bag-id signature — same as fingerprint but keyed on exported IDs. */
     const seenBagSigs = new Set();
+    let stoppedReason = null;
+    let pagesScraped = 0;
 
     function normFingerprint(s) {
       return String(s || "")
@@ -1698,6 +1700,7 @@ async function main() {
     }
 
     for (let p = pageStart; p < pageStart + maxPages; p++) {
+      pagesScraped = p - pageStart + 1;
       const url = urlForPage(baseUrl, p);
       console.error("[rinse-scrape] page URL:", url);
       progressLine(`\nPage ${p}: ${url}`);
@@ -1716,6 +1719,7 @@ async function main() {
         progressLine(
           `Stopping: requested page ${p} but landed on page ${landedPageNum} (pagination wrapped/redirected).`,
         );
+        stoppedReason = "pagination_redirect";
         break;
       }
 
@@ -1734,6 +1738,7 @@ async function main() {
         console.error(
           `\nStopping: no table rows on page ${p} (title: ${JSON.stringify(title)}). Either there are no tickets for this filter, or row selectors need updating — try RINSE_EXTRA_ROW_SELECTORS from DevTools (see scrape.mjs bodyRowsSelector).`,
         );
+        stoppedReason = "no_table_rows";
         break;
       }
 
@@ -1770,6 +1775,7 @@ async function main() {
 
       if (p > pageStart && rows.length === 0) {
         progressLine(`Stopping: page ${p} had no extractable ticket rows after filtering.`);
+        stoppedReason = "no_extractable_rows";
         break;
       }
 
@@ -1785,6 +1791,7 @@ async function main() {
         progressLine(
           `Stopping: page ${p} has the same bag ID set as an earlier page (no new tickets — end of pagination).`,
         );
+        stoppedReason = "duplicate_bag_set";
         break;
       }
       if (pageBagSig.length > 0) seenBagSigs.add(pageBagSig);
@@ -1800,8 +1807,17 @@ async function main() {
       const hasNextUi = await hasNextPageInUi(page, p);
       if (!hasNextUi) {
         progressLine(`Stopping: pagination UI shows no next page after page ${p}.`);
+        stoppedReason = "no_next_page_ui";
         break;
       }
+    }
+
+    const reachedMaxPages = stoppedReason === null;
+    if (reachedMaxPages) {
+      stoppedReason = "max_pages_reached";
+      progressLine(
+        `Stopping: reached RINSE_MAX_PAGES limit (${maxPages}) without natural end-of-pagination signal.`,
+      );
     }
 
     if (allRows.length === 0) {
@@ -1842,6 +1858,27 @@ async function main() {
     fs.writeFileSync(outCsvAbsolute, header + lines.join(""), "utf8");
     console.error("[rinse-scrape] wrote CSV:", outCsvAbsolute, `(${allRows.length} rows)`);
     progressLine(`\nWrote ${allRows.length} row records → ${outCsvAbsolute}`);
+
+    const portalScrapeMeta = {
+      stopped_reason: stoppedReason,
+      reached_max_pages: reachedMaxPages,
+      pages_scraped: pagesScraped,
+      max_pages_limit: maxPages,
+      page_start: pageStart,
+      row_count: allRows.length,
+      scraped_at: new Date().toISOString(),
+    };
+    const metaPath =
+      (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
+      `${outCsvAbsolute}.meta.json`;
+    fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
+    console.error("[rinse-scrape] portal scrape meta:", JSON.stringify(portalScrapeMeta));
+    console.error("[rinse-scrape] wrote meta:", metaPath);
+    if (reachedMaxPages) {
+      console.error(
+        "[rinse-scrape] WARNING: partial portal snapshot — increase RINSE_MAX_PAGES or confirm pagination; portal absence completion must be skipped.",
+      );
+    }
   } finally {
     await browser.close();
   }

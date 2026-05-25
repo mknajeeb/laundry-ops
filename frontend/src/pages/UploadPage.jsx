@@ -11,7 +11,9 @@ import {
   DialogContent,
   DialogTitle,
   MenuItem,
+  FormControl,
   FormControlLabel,
+  InputLabel,
   Paper,
   Stack,
   Tab,
@@ -78,6 +80,9 @@ function UploadPage({ user }) {
   const [loadingRows, setLoadingRows] = useState(false);
   const [batch, setBatch] = useState(null);
   const [batches, setBatches] = useState([]);
+  const [batchListRange, setBatchListRange] = useState("last_3_days");
+  const [batchListFrom, setBatchListFrom] = useState("");
+  const [batchListTo, setBatchListTo] = useState("");
   const [rows, setRows] = useState([]);
   const [viewTab, setViewTab] = useState("REVIEW");
   const [rowStatusFilter, setRowStatusFilter] = useState("ALL");
@@ -233,16 +238,27 @@ function UploadPage({ user }) {
 
   const loadBatchHistory = async () => {
     try {
-      const res = await getUploadBatches(15);
-      setBatches(Array.isArray(res.data) ? res.data : []);
+      const params = { range: batchListRange };
+      if (batchListRange === "custom") {
+        if (!batchListFrom || !batchListTo) return;
+        params.from_date = batchListFrom;
+        params.to_date = batchListTo;
+      }
+      const res = await getUploadBatches(params);
+      const payload = res.data;
+      setBatches(Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : []);
     } catch (error) {
       console.error(error);
     }
   };
 
   useEffect(() => {
-    loadCurrentBatch("ALL");
     loadBatchHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchListRange, batchListFrom, batchListTo]);
+
+  useEffect(() => {
+    loadCurrentBatch("ALL");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1205,7 +1221,28 @@ function UploadPage({ user }) {
 
       {viewTab === "BATCHES" && (
       <Paper sx={{ mt: 1.2, p: 2, borderRadius: 2 }}>
-        <Typography sx={{ fontSize: 18, fontWeight: 500, mb: 1 }}>Uploaded Batches</Typography>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }} sx={{ mb: 2 }}>
+          <Typography sx={{ fontSize: 18, fontWeight: 500, flex: 1 }}>Uploaded Batches</Typography>
+          <FormControl size="small" sx={{ minWidth: 160 }}>
+            <InputLabel>Date filter</InputLabel>
+            <Select label="Date filter" value={batchListRange} onChange={(e) => setBatchListRange(e.target.value)}>
+              <MenuItem value="today">Today</MenuItem>
+              <MenuItem value="last_3_days">Last 3 days</MenuItem>
+              <MenuItem value="last_7_days">Last 7 days</MenuItem>
+              <MenuItem value="custom">Custom range</MenuItem>
+            </Select>
+          </FormControl>
+          {batchListRange === "custom" ? (
+            <>
+              <TextField size="small" type="date" label="From" InputLabelProps={{ shrink: true }} value={batchListFrom} onChange={(e) => setBatchListFrom(e.target.value)} />
+              <TextField size="small" type="date" label="To" InputLabelProps={{ shrink: true }} value={batchListTo} onChange={(e) => setBatchListTo(e.target.value)} />
+            </>
+          ) : null}
+          <Button size="small" variant="outlined" onClick={loadBatchHistory}>Refresh</Button>
+        </Stack>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          Default shows last 3 days (America/New_York). Purged batches keep their header with summary counts.
+        </Typography>
         <Stack spacing={0.8}>
           {batches.length === 0 ? (
             <Typography color="text.secondary">No batches yet.</Typography>
@@ -1227,6 +1264,9 @@ function UploadPage({ user }) {
                       label={(b.state || "DRAFT").toUpperCase()}
                       color={String(b.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
                     />
+                    {b.heavy_rows_purged || b.raw_rows_purged_at ? (
+                      <Chip size="small" variant="outlined" label="Raw rows purged" />
+                    ) : null}
                     {b.scheduled_scrape ? (
                       <Chip size="small" variant="outlined" label="Scheduled scrape" color="info" />
                     ) : null}
@@ -1248,6 +1288,12 @@ function UploadPage({ user }) {
                     variant="outlined"
                     onClick={async () => {
                       setBatch(b);
+                      if (b.heavy_rows_purged || b.raw_rows_purged_at) {
+                        setMessage({
+                          type: "info",
+                          text: "Raw portal/scan rows were purged per retention policy. Summary counts remain on the batch header.",
+                        });
+                      }
                       await loadRows(b.id, "ALL");
                       setRowStatusFilter("ALL");
                       setViewTab("REVIEW");

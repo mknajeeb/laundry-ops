@@ -89,6 +89,32 @@ class TestPortalAbsenceCompletion(unittest.TestCase):
             finalize_rinse_after_batch_confirm(cursor, 1, 10, accepted_portal_rows=[])
         mock_absence.assert_called_once()
 
+    def test_absence_skipped_when_portal_scrape_hit_max_pages(self):
+        cursor = MagicMock()
+        with (
+            patch(
+                "backend.rinse_portal_absence_completion.fetch_portal_scrape_meta_for_batch",
+                return_value={
+                    "stopped_reason": "max_pages_reached",
+                    "reached_max_pages": True,
+                    "pages_scraped": 20,
+                },
+            ),
+            patch(
+                "backend.rinse_portal_absence_completion.mark_registry_completed_portal_absence"
+            ) as mock_mark,
+        ):
+            out = complete_bags_missing_from_latest_portal(
+                cursor,
+                1,
+                10,
+                [{"ticket_id": "BAG_B"}],
+            )
+        self.assertTrue(out["skipped"])
+        self.assertEqual(out["reason"], "partial_portal_scrape_max_pages")
+        self.assertEqual(out["count"], 0)
+        mock_mark.assert_not_called()
+
     def test_absence_skipped_when_not_full_snapshot(self):
         cursor = MagicMock()
         with patch(

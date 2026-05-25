@@ -17,7 +17,15 @@ from backend.rinse_bag_registry import (
     is_bag_already_completed,
     mark_registry_completed_portal_absence,
 )
+from backend.rinse_portal_scrape_meta import (
+    fetch_portal_scrape_meta_for_batch,
+    portal_scrape_meta_allows_absence_completion,
+)
 from backend.ta_helpers import table_exists, table_has_column
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def build_current_upload_bag_ids(accepted_portal_rows: list[dict]) -> set[str]:
@@ -51,14 +59,21 @@ def upload_batch_is_full_snapshot_portal(
     if not accepted_portal_rows:
         return False
 
+    meta = fetch_portal_scrape_meta_for_batch(cursor, int(upload_batch_id), organization_id)
+    if meta is not None and not portal_scrape_meta_allows_absence_completion(meta):
+        return False
+
     if table_exists(cursor, "upload_batches") and table_has_column(
         cursor, "upload_batches", "full_snapshot"
     ):
         batch_pk = "id" if table_has_column(cursor, "upload_batches", "id") else "batch_id"
-        cursor.execute(
-            f"SELECT full_snapshot FROM upload_batches WHERE {batch_pk} = %s LIMIT 1",
-            (int(upload_batch_id),),
-        )
+        sql = f"SELECT full_snapshot FROM upload_batches WHERE {batch_pk} = %s"
+        args: list[Any] = [int(upload_batch_id)]
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            sql += " AND organization_id = %s"
+            args.append(int(organization_id))
+        sql += " LIMIT 1"
+        cursor.execute(sql, tuple(args))
         row = cursor.fetchone()
         if row is not None:
             val = row.get("full_snapshot") if isinstance(row, dict) else row[0]
@@ -145,6 +160,26 @@ def complete_bags_missing_from_latest_portal(
     org = int(organization_id)
     batch_id = int(upload_batch_id)
     accepted = list(accepted_portal_rows or [])
+
+    batch_meta = fetch_portal_scrape_meta_for_batch(cursor, batch_id, org)
+    if batch_meta is not None and not portal_scrape_meta_allows_absence_completion(batch_meta):
+        logger.warning(
+            "Skipping MISSING_FROM_LATEST_PORTAL_UPLOAD for org=%s batch=%s: "
+            "partial portal scrape (stopped_reason=%s reached_max_pages=%s pages_scraped=%s)",
+            org,
+            batch_id,
+            batch_meta.get("stopped_reason"),
+            batch_meta.get("reached_max_pages"),
+            batch_meta.get("pages_scraped"),
+        )
+        return {
+            "full_snapshot": False,
+            "skipped": True,
+            "reason": "partial_portal_scrape_max_pages",
+            "count": 0,
+            "bag_ids": [],
+            "portal_scrape_meta": batch_meta,
+        }
 
     is_full = (
         bool(full_snapshot)
