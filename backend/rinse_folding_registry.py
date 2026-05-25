@@ -507,33 +507,32 @@ def recompute_folding_performance_for_date_range(
     return payload
 
 
-def list_folding_performance_rows(
-    cursor,
-    organization_id: int,
+def _folding_performance_search_clauses(
     *,
     status: str | None = None,
     exception_only: bool = False,
     work_date: date | None = None,
     period_start: date | None = None,
     period_end: date | None = None,
+    date_field: str = "folding_work_date",
     user_name: str | None = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> list[dict[str, Any]]:
-    ensure_rinse_folding_tables(cursor)
-    org = int(organization_id)
-    sql = """
-        SELECT p.*,
-               r.completion_status AS registry_completion_status_live,
-               r.name_clean,
-               r.weight_num AS registry_weight_num
-        FROM rinse_folding_performance p
-        INNER JOIN rinse_bag_registry r
-          ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
-        WHERE p.organization_id = %s
-          AND r.completion_status = %s
-    """
-    args: list[Any] = [org, COMPLETION_COMPLETED]
+    bag_id: str | None = None,
+    customer: str | None = None,
+    q: str | None = None,
+    exception_code: str | None = None,
+    weight_min: float | None = None,
+    weight_max: float | None = None,
+    duration_min: int | None = None,
+    duration_max: int | None = None,
+    lbs_per_hour_min: float | None = None,
+    lbs_per_hour_max: float | None = None,
+    bags_per_hour_min: float | None = None,
+    bags_per_hour_max: float | None = None,
+) -> tuple[str, list[Any]]:
+    from backend.rinse_folding_period import sql_period_range_clause
+
+    sql = ""
+    args: list[Any] = []
     if exception_only:
         sql += " AND p.status = %s"
         args.append(STATUS_EXCEPTION)
@@ -544,15 +543,139 @@ def list_folding_performance_rows(
         sql += " AND p.work_date = %s"
         args.append(work_date)
     elif period_start and period_end:
-        sql += " AND p.work_date >= %s AND p.work_date <= %s"
+        sql += sql_period_range_clause(date_field)
         args.extend([period_start, period_end])
     if user_name:
         sql += " AND p.assigned_user_name = %s"
         args.append(str(user_name).strip())
-    sql += " ORDER BY p.work_date DESC, p.computed_at DESC LIMIT %s OFFSET %s"
-    args.extend([int(limit), int(offset)])
-    cursor.execute(sql, tuple(args))
-    return list(cursor.fetchall() or [])
+    if bag_id:
+        bid = normalize_bag_id(bag_id)
+        if bid:
+            sql += " AND p.bag_id = %s"
+            args.append(bid)
+    if customer:
+        sql += " AND r.name_clean LIKE %s"
+        args.append(f"%{str(customer).strip()}%")
+    if q:
+        term = f"%{str(q).strip()}%"
+        bid_q = normalize_bag_id(q)
+        if bid_q:
+            sql += " AND (p.bag_id = %s OR r.name_clean LIKE %s)"
+            args.extend([bid_q, term])
+        else:
+            sql += " AND (p.bag_id LIKE %s OR r.name_clean LIKE %s)"
+            args.extend([term.upper(), term])
+    if exception_code:
+        sql += " AND UPPER(COALESCE(p.exception_code,'')) = %s"
+        args.append(str(exception_code).strip().upper())
+    if weight_min is not None:
+        sql += " AND p.weight_lbs >= %s"
+        args.append(float(weight_min))
+    if weight_max is not None:
+        sql += " AND p.weight_lbs <= %s"
+        args.append(float(weight_max))
+    if duration_min is not None:
+        sql += " AND p.duration_seconds >= %s"
+        args.append(int(duration_min))
+    if duration_max is not None:
+        sql += " AND p.duration_seconds <= %s"
+        args.append(int(duration_max))
+    rate_expr = "p.duration_seconds > 0"
+    if lbs_per_hour_min is not None:
+        sql += f" AND ({rate_expr} AND (p.weight_lbs * 3600.0 / p.duration_seconds) >= %s)"
+        args.append(float(lbs_per_hour_min))
+    if lbs_per_hour_max is not None:
+        sql += f" AND ({rate_expr} AND (p.weight_lbs * 3600.0 / p.duration_seconds) <= %s)"
+        args.append(float(lbs_per_hour_max))
+    if bags_per_hour_min is not None:
+        sql += f" AND ({rate_expr} AND (3600.0 / p.duration_seconds) >= %s)"
+        args.append(float(bags_per_hour_min))
+    if bags_per_hour_max is not None:
+        sql += f" AND ({rate_expr} AND (3600.0 / p.duration_seconds) <= %s)"
+        args.append(float(bags_per_hour_max))
+    return sql, args
+
+
+def list_folding_performance_rows(
+    cursor,
+    organization_id: int,
+    *,
+    status: str | None = None,
+    exception_only: bool = False,
+    work_date: date | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    date_field: str = "folding_work_date",
+    user_name: str | None = None,
+    bag_id: str | None = None,
+    customer: str | None = None,
+    q: str | None = None,
+    exception_code: str | None = None,
+    weight_min: float | None = None,
+    weight_max: float | None = None,
+    duration_min: int | None = None,
+    duration_max: int | None = None,
+    lbs_per_hour_min: float | None = None,
+    lbs_per_hour_max: float | None = None,
+    bags_per_hour_min: float | None = None,
+    bags_per_hour_max: float | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    include_total: bool = False,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    ensure_rinse_folding_tables(cursor)
+    org = int(organization_id)
+    base = """
+        FROM rinse_folding_performance p
+        INNER JOIN rinse_bag_registry r
+          ON r.organization_id = p.organization_id AND r.bag_id = p.bag_id
+        WHERE p.organization_id = %s
+          AND r.completion_status = %s
+    """
+    args: list[Any] = [org, COMPLETION_COMPLETED]
+    filt_sql, filt_args = _folding_performance_search_clauses(
+        status=status,
+        exception_only=exception_only,
+        work_date=work_date,
+        period_start=period_start,
+        period_end=period_end,
+        date_field=date_field,
+        user_name=user_name,
+        bag_id=bag_id,
+        customer=customer,
+        q=q,
+        exception_code=exception_code,
+        weight_min=weight_min,
+        weight_max=weight_max,
+        duration_min=duration_min,
+        duration_max=duration_max,
+        lbs_per_hour_min=lbs_per_hour_min,
+        lbs_per_hour_max=lbs_per_hour_max,
+        bags_per_hour_min=bags_per_hour_min,
+        bags_per_hour_max=bags_per_hour_max,
+    )
+    args.extend(filt_args)
+
+    total = None
+    if include_total:
+        cursor.execute(f"SELECT COUNT(*) AS cnt {base}{filt_sql}", tuple(args))
+        row = cursor.fetchone()
+        total = int((row.get("cnt") if isinstance(row, dict) else row[0]) or 0)
+
+    sql = f"""
+        SELECT p.*,
+               r.completion_status AS registry_completion_status_live,
+               r.name_clean,
+               r.weight_num AS registry_weight_num
+        {base}{filt_sql}
+        ORDER BY p.work_date DESC, p.computed_at DESC
+        LIMIT %s OFFSET %s
+    """
+    cursor.execute(sql, tuple(args) + (int(limit), int(offset)))
+    rows = list(cursor.fetchall() or [])
+    if include_total:
+        return {"rows": rows, "total": total, "limit": int(limit), "offset": int(offset)}
+    return rows
 
 
 def _serialize_override_value(val: Any) -> str | None:
@@ -1222,13 +1345,23 @@ def aggregate_folding_leaderboard(
     *,
     period: Literal["today", "week", "month"] = "week",
     anchor: date | None = None,
+    period_start: date | None = None,
+    period_end: date | None = None,
+    date_field: str = "folding_work_date",
 ) -> dict[str, Any]:
     org = int(organization_id)
     anchor_day = anchor or date.today()
     benchmarks = get_rinse_folding_benchmarks(cursor, org)
     week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
 
-    if period == "today":
+    if isinstance(period_start, date) and isinstance(period_end, date):
+        prev_len = (period_end - period_start).days + 1
+        prev_end = period_start - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=prev_len - 1)
+        period_label = "custom" if period_start != period_end else "today"
+        if period_start == period_end:
+            period_label = "today"
+    elif period == "today":
         period_start, period_end = folding_period_bounds("today", anchor_day)
         prev_start, prev_end = period_start - timedelta(days=1), period_end - timedelta(days=1)
         period_label = "today"
@@ -1307,6 +1440,7 @@ def aggregate_folding_leaderboard(
         "period": period_label,
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
+        "date_field": date_field,
         "previous_period_start": prev_start.isoformat(),
         "previous_period_end": prev_end.isoformat(),
         "anchor_date": anchor_day.isoformat(),

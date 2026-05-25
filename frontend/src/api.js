@@ -398,6 +398,9 @@ export const getRinseBagDetail = (bagId) =>
 export const getRinseScheduledScrapeStatus = () =>
   axios.get(`${API_BASE}/rinse/scheduled-scrape/status`, { timeout: 30000 });
 
+export const getRinseScheduledScrapeRuns = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/scheduled-scrape/runs`, { params, timeout: 30000 });
+
 export const searchRinseOrders = (params = {}) =>
   axios.get(`${API_BASE}/rinse/order-search`, { params, timeout: 30000 });
 
@@ -446,6 +449,18 @@ export const getFoldingLeaderboard = (params = {}) =>
 
 export const getFoldingEmployeeAnalysis = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/employee-analysis`, { params, timeout: 30000 });
+
+export const listFoldingUsers = () =>
+  axios.get(`${API_BASE}/rinse/folding/users`, { timeout: 30000 });
+
+export const listFoldingExcludedUsers = () =>
+  axios.get(`${API_BASE}/rinse/folding/excluded-users`, { timeout: 30000 });
+
+export const addFoldingExcludedUser = (body) =>
+  axios.post(`${API_BASE}/rinse/folding/excluded-users`, body, { timeout: 30000 });
+
+export const removeFoldingExcludedUser = (body) =>
+  axios.delete(`${API_BASE}/rinse/folding/excluded-users`, { data: body, timeout: 30000 });
 
 /** Admin: GET whether Rinse bag CSV export can run on the server (Node + scraper + env). */
 export const getRinseBagExportConfig = () =>
@@ -505,10 +520,10 @@ export const overrideUploadConflicts = (conflict_ids, overridden_by = "admin") =
 export const getCurrentUploadBatch = () =>
   axios.get(`${API_BASE}/upload_batches/current`, { timeout: 120000 });
 
-export const getUploadBatches = (limit = 20) =>
+export const getUploadBatches = (params = {}) =>
   axios.get(`${API_BASE}/upload_batches`, {
     timeout: 30000,
-    params: { limit }
+    params: { range: "last_3_days", limit: 50, ...params },
   });
 
 export const getUploadBatchRows = (batch_id, row_status = "") =>

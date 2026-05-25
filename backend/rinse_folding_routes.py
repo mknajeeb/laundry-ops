@@ -21,8 +21,48 @@ from backend.rinse_folding_registry import (
     recompute_folding_performance_for_date_range,
     summarize_recompute_results,
 )
+from backend.rinse_folding_period import parse_range_from_request
 from backend.rinse_folding_settings import get_rinse_folding_benchmarks, put_rinse_folding_benchmarks
 from backend.rinse_scan_time import json_safe_rinse
+
+
+def _optional_float(val: str | None) -> float | None:
+    if val is None or str(val).strip() == "":
+        return None
+    return float(val)
+
+
+def _optional_int(val: str | None) -> int | None:
+    if val is None or str(val).strip() == "":
+        return None
+    return int(val)
+
+
+def _folding_list_kwargs(request, parse_date_value) -> dict:
+    start_raw = request.args.get("date_start") or request.args.get("start_date")
+    end_raw = request.args.get("date_end") or request.args.get("end_date")
+    period_start = parse_date_value(start_raw) if start_raw else None
+    period_end = parse_date_value(end_raw) if end_raw else None
+    date_field = str(request.args.get("date_field") or "folding_work_date").strip().lower()
+    return {
+        "status": (request.args.get("status") or "").strip().upper() or None,
+        "period_start": period_start if isinstance(period_start, date) else None,
+        "period_end": period_end if isinstance(period_end, date) else None,
+        "date_field": date_field,
+        "user_name": (request.args.get("user_name") or "").strip() or None,
+        "bag_id": (request.args.get("bag_id") or "").strip() or None,
+        "customer": (request.args.get("customer") or request.args.get("name_clean") or "").strip() or None,
+        "q": (request.args.get("q") or "").strip() or None,
+        "exception_code": (request.args.get("exception_code") or "").strip() or None,
+        "weight_min": _optional_float(request.args.get("weight_min")),
+        "weight_max": _optional_float(request.args.get("weight_max")),
+        "duration_min": _optional_int(request.args.get("duration_min")),
+        "duration_max": _optional_int(request.args.get("duration_max")),
+        "lbs_per_hour_min": _optional_float(request.args.get("lbs_per_hour_min")),
+        "lbs_per_hour_max": _optional_float(request.args.get("lbs_per_hour_max")),
+        "bags_per_hour_min": _optional_float(request.args.get("bags_per_hour_min")),
+        "bags_per_hour_max": _optional_float(request.args.get("bags_per_hour_max")),
+    }
 
 
 def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_id, parse_date_value):
@@ -35,14 +75,8 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if err_resp:
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
-            status = (request.args.get("status") or "").strip().upper() or None
             work_date_raw = request.args.get("work_date")
             work_date = parse_date_value(work_date_raw) if work_date_raw else None
-            start_raw = request.args.get("start_date") or request.args.get("period_start")
-            end_raw = request.args.get("end_date") or request.args.get("period_end")
-            period_start = parse_date_value(start_raw) if start_raw else None
-            period_end = parse_date_value(end_raw) if end_raw else None
-            user_name = (request.args.get("user_name") or "").strip() or None
             try:
                 limit = min(500, max(1, int(request.args.get("limit", 100))))
             except (TypeError, ValueError):
@@ -51,18 +85,17 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 offset = max(0, int(request.args.get("offset", 0)))
             except (TypeError, ValueError):
                 offset = 0
-            rows = list_folding_performance_rows(
+            kwargs = _folding_list_kwargs(request, parse_date_value)
+            payload = list_folding_performance_rows(
                 cursor,
                 tenant_oid,
-                status=status,
-                work_date=work_date,
-                period_start=period_start if isinstance(period_start, date) else None,
-                period_end=period_end if isinstance(period_end, date) else None,
-                user_name=user_name,
+                work_date=work_date if isinstance(work_date, date) else None,
                 limit=limit,
                 offset=offset,
+                include_total=True,
+                **kwargs,
             )
-            return jsonify(json_safe_rinse(rows))
+            return jsonify(json_safe_rinse(payload))
         finally:
             cursor.close()
             conn.close()
@@ -76,7 +109,6 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if err_resp:
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
-            exception_code = (request.args.get("exception_code") or "").strip() or None
             try:
                 limit = min(500, max(1, int(request.args.get("limit", 100))))
             except (TypeError, ValueError):
@@ -85,20 +117,17 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 offset = max(0, int(request.args.get("offset", 0)))
             except (TypeError, ValueError):
                 offset = 0
-            rows = list_folding_performance_rows(
+            kwargs = _folding_list_kwargs(request, parse_date_value)
+            payload = list_folding_performance_rows(
                 cursor,
                 tenant_oid,
                 exception_only=True,
                 limit=limit,
                 offset=offset,
+                include_total=True,
+                **kwargs,
             )
-            if exception_code:
-                rows = [
-                    r
-                    for r in rows
-                    if str(r.get("exception_code") or "").upper() == exception_code.upper()
-                ]
-            return jsonify(json_safe_rinse(rows))
+            return jsonify(json_safe_rinse(payload))
         finally:
             cursor.close()
             conn.close()
@@ -276,22 +305,35 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if err_resp:
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
-            period_raw = (request.args.get("period") or "week").strip().lower()
+            benchmarks = get_rinse_folding_benchmarks(cursor, tenant_oid)
+            week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
+            try:
+                period_start, period_end, period_label, date_field = parse_range_from_request(
+                    request.args,
+                    parse_date_value,
+                    week_start_day=week_start_day,
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            period_raw = (request.args.get("period") or period_label).strip().lower()
             if period_raw == "month":
                 period = "month"
-            elif period_raw == "today":
+            elif period_raw in ("today", "day"):
                 period = "today"
             else:
                 period = "week"
-            date_raw = request.args.get("date")
-            if date_raw:
-                anchor = parse_date_value(date_raw)
-            else:
-                anchor = date.today()
+            anchor_raw = request.args.get("date")
+            anchor = parse_date_value(anchor_raw) if anchor_raw else date.today()
             if not isinstance(anchor, date):
-                return jsonify({"error": "Invalid date"}), 400
+                anchor = date.today()
             payload = aggregate_folding_leaderboard(
-                cursor, tenant_oid, period=period, anchor=anchor
+                cursor,
+                tenant_oid,
+                period=period,
+                anchor=anchor,
+                period_start=period_start,
+                period_end=period_end,
+                date_field=date_field,
             )
             return jsonify(json_safe_rinse(payload))
         finally:
@@ -307,24 +349,29 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if err_resp:
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
-            period_raw = (request.args.get("period") or "week").strip().lower()
+            benchmarks = get_rinse_folding_benchmarks(cursor, tenant_oid)
+            week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
+            try:
+                period_start, period_end, period_label, _date_field = parse_range_from_request(
+                    request.args,
+                    parse_date_value,
+                    week_start_day=week_start_day,
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
             date_raw = request.args.get("date")
             anchor = parse_date_value(date_raw) if date_raw else date.today()
             if not isinstance(anchor, date):
                 return jsonify({"error": "Invalid date"}), 400
-            start_raw = request.args.get("start_date")
-            end_raw = request.args.get("end_date")
-            custom_start = parse_date_value(start_raw) if start_raw else None
-            custom_end = parse_date_value(end_raw) if end_raw else None
             user_name = (request.args.get("user_name") or "").strip() or None
             try:
                 payload = aggregate_folding_employee_analysis(
                     cursor,
                     tenant_oid,
-                    period=period_raw,
+                    period=period_label,
                     anchor=anchor,
-                    custom_start=custom_start if isinstance(custom_start, date) else None,
-                    custom_end=custom_end if isinstance(custom_end, date) else None,
+                    custom_start=period_start,
+                    custom_end=period_end,
                     user_name=user_name,
                 )
             except ValueError as e:
@@ -391,7 +438,26 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             cursor.close()
             conn.close()
 
-    @app.route("/rinse/folding/excluded-users", methods=["GET", "POST"])
+    @app.route("/rinse/folding/users", methods=["GET"])
+    def rinse_folding_users():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            from backend.rinse_folding_excluded_users import list_distinct_folding_user_names
+
+            return jsonify({"users": list_distinct_folding_user_names(cursor, tenant_oid)})
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/excluded-users", methods=["GET", "POST", "DELETE"])
     def rinse_folding_excluded_users():
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -406,10 +472,27 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             from backend.rinse_folding_excluded_users import (
                 ensure_rinse_folding_excluded_users_table,
                 list_excluded_folding_users,
+                remove_excluded_folding_user,
             )
 
             if request.method == "GET":
                 return jsonify(list_excluded_folding_users(cursor, tenant_oid))
+
+            if request.method == "DELETE":
+                data = request.get_json(silent=True) or {}
+                user_name = (data.get("user_name") or request.args.get("user_name") or "").strip()
+                row_id = data.get("id") or request.args.get("id")
+                try:
+                    rid = int(row_id) if row_id is not None and str(row_id).strip() != "" else None
+                except (TypeError, ValueError):
+                    rid = None
+                if not user_name and rid is None:
+                    return jsonify({"error": "user_name or id is required"}), 400
+                deleted = remove_excluded_folding_user(
+                    cursor, tenant_oid, user_name=user_name or None, row_id=rid
+                )
+                conn.commit()
+                return jsonify({"ok": True, "deleted": deleted})
 
             data = request.get_json(silent=True) or {}
             user_name = (data.get("user_name") or "").strip()

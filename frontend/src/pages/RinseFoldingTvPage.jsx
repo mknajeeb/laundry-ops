@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Box, Chip, Grid, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
 import { getFoldingLeaderboard } from "../api";
+import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
+import { defaultWeekRange, foldingRangeParams } from "../utils/foldingDateRange";
 import {
   comparisonArrow,
   formatComparison,
@@ -8,7 +10,6 @@ import {
   formatLbs,
   formatPeriodRange,
   formatRate,
-  isoDateInput,
   targetStatusChipColor,
 } from "../utils/foldingFormat";
 
@@ -157,7 +158,10 @@ function RankCard({ user, rank, isTop }) {
 }
 
 function RinseFoldingTvPage({ user }) {
-  const [period, setPeriod] = useState("week");
+  const initialWeek = defaultWeekRange();
+  const [rangePreset, setRangePreset] = useState("week");
+  const [dateStart, setDateStart] = useState(initialWeek.start);
+  const [dateEnd, setDateEnd] = useState(initialWeek.end);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const orgLabel =
@@ -168,12 +172,14 @@ function RinseFoldingTvPage({ user }) {
   const load = useCallback(async () => {
     try {
       setError("");
-      const res = await getFoldingLeaderboard({ period, date: isoDateInput() });
+      const res = await getFoldingLeaderboard(
+        foldingRangeParams({ dateStart, dateEnd, dateField: "folding_work_date" })
+      );
       setData(res.data);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Failed to load leaderboard");
     }
-  }, [period]);
+  }, [dateStart, dateEnd]);
 
   useEffect(() => {
     load();
@@ -190,8 +196,9 @@ function RinseFoldingTvPage({ user }) {
     ? new Date(data.generated_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     : "—";
   const empty = (team.bag_count || 0) === 0;
-  const periodTitle = period === "month" ? "This Month" : "This Week";
-  const vsTitle = period === "month" ? "vs Last Month" : "vs Last Week";
+  const periodTitle =
+    rangePreset === "month" ? "This Month" : rangePreset === "today" ? "Today" : "This Week";
+  const vsTitle = rangePreset === "month" ? "vs Last Month" : "vs Last Week";
 
   return (
     <Box
@@ -226,33 +233,19 @@ function RinseFoldingTvPage({ user }) {
             Updated {updated} · {data?.data_source_note || "Live scoreboard"}
           </Typography>
         </Box>
-        <ToggleButtonGroup
-          exclusive
-          value={period}
-          onChange={(_, v) => v && setPeriod(v)}
-          sx={{
-            bgcolor: "rgba(255,255,255,0.15)",
-            borderRadius: 3,
-            p: 0.5,
-            "& .MuiToggleButton-root": {
-              color: VW.white,
-              border: "none",
-              fontWeight: 800,
-              fontSize: 16,
-              px: 4,
-              py: 1.25,
-              borderRadius: "12px !important",
-              "&.Mui-selected": {
-                bgcolor: VW.white,
-                color: VW.blueDeep,
-                boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
-              },
-            },
-          }}
-        >
-          <ToggleButton value="week">Week</ToggleButton>
-          <ToggleButton value="month">Month</ToggleButton>
-        </ToggleButtonGroup>
+        <Box sx={{ bgcolor: "rgba(255,255,255,0.12)", borderRadius: 3, p: 1.5 }}>
+          <FoldingDateRangeFilter
+            preset={rangePreset}
+            onPresetChange={setRangePreset}
+            dateStart={dateStart}
+            dateEnd={dateEnd}
+            onDateStartChange={setDateStart}
+            onDateEndChange={setDateEnd}
+            dateField="folding_work_date"
+            onDateFieldChange={() => {}}
+            showDateField={false}
+          />
+        </Box>
       </Stack>
 
       {error ? (

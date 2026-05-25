@@ -38,7 +38,10 @@ import {
   recomputeFoldingPerformance,
   updateFoldingBenchmarks,
 } from "../api";
+import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
+import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePanel";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
+import { defaultWeekRange, foldingRangeParams } from "../utils/foldingDateRange";
 import {
   comparisonArrow,
   formatComparison,
@@ -109,15 +112,34 @@ function SummaryCard({ label, value, sub }) {
   );
 }
 
+const EMPTY_RECORD_FILTERS = {
+  bag_id: "",
+  customer: "",
+  user_name: "",
+  status: "",
+  exception_code: "",
+  weight_min: "",
+  weight_max: "",
+  duration_min: "",
+  duration_max: "",
+  lbs_per_hour_min: "",
+  lbs_per_hour_max: "",
+  bags_per_hour_min: "",
+  bags_per_hour_max: "",
+};
+
 function RinseFoldingDashboardPage({ user }) {
   const admin = isFoldingAdmin(user);
   const today = isoDateInput();
   const weekAgo = isoDateInput(new Date(Date.now() - 6 * 86400000));
+  const initialWeek = defaultWeekRange();
 
-  const [period, setPeriod] = useState("week");
-  const [anchorDate, setAnchorDate] = useState(today);
-  const [customStart, setCustomStart] = useState(weekAgo);
-  const [customEnd, setCustomEnd] = useState(today);
+  const [rangePreset, setRangePreset] = useState("week");
+  const [dateStart, setDateStart] = useState(initialWeek.start);
+  const [dateEnd, setDateEnd] = useState(initialWeek.end);
+  const [listDateField, setListDateField] = useState("folding_work_date");
+  const [recordFilters, setRecordFilters] = useState(EMPTY_RECORD_FILTERS);
+  const [recordFiltersApplied, setRecordFiltersApplied] = useState(EMPTY_RECORD_FILTERS);
   const [leaderboard, setLeaderboard] = useState(null);
   const [employeeData, setEmployeeData] = useState(null);
   const [selectedEmployee, setSelectedEmployee] = useState("");
@@ -150,42 +172,63 @@ function RinseFoldingDashboardPage({ user }) {
     excluded_from_performance: false,
   });
 
+  const buildListParams = useCallback(() => {
+    const range = foldingRangeParams({
+      dateStart,
+      dateEnd,
+      dateField: listDateField,
+    });
+    const f = recordFiltersApplied;
+    const num = (v) => (v === "" || v == null ? undefined : v);
+    return {
+      ...range,
+      limit: 500,
+      ...(selectedEmployee ? { user_name: selectedEmployee } : {}),
+      ...(f.bag_id ? { bag_id: f.bag_id.trim() } : {}),
+      ...(f.customer ? { customer: f.customer.trim() } : {}),
+      ...(f.user_name ? { user_name: f.user_name.trim() } : {}),
+      ...(f.status ? { status: f.status } : {}),
+      ...(f.exception_code ? { exception_code: f.exception_code.trim() } : {}),
+      ...(num(f.weight_min) != null ? { weight_min: f.weight_min } : {}),
+      ...(num(f.weight_max) != null ? { weight_max: f.weight_max } : {}),
+      ...(num(f.duration_min) != null ? { duration_min: f.duration_min } : {}),
+      ...(num(f.duration_max) != null ? { duration_max: f.duration_max } : {}),
+      ...(num(f.lbs_per_hour_min) != null ? { lbs_per_hour_min: f.lbs_per_hour_min } : {}),
+      ...(num(f.lbs_per_hour_max) != null ? { lbs_per_hour_max: f.lbs_per_hour_max } : {}),
+      ...(num(f.bags_per_hour_min) != null ? { bags_per_hour_min: f.bags_per_hour_min } : {}),
+      ...(num(f.bags_per_hour_max) != null ? { bags_per_hour_max: f.bags_per_hour_max } : {}),
+    };
+  }, [dateStart, dateEnd, listDateField, recordFiltersApplied, selectedEmployee]);
+
   const loadAll = useCallback(async () => {
     try {
       setLoading(true);
       setMessage({ type: "", text: "" });
-      const lbPeriod = period === "custom" ? "week" : period;
-      const empParams =
-        period === "custom"
-          ? { period: "custom", start_date: customStart, end_date: customEnd, ...(selectedEmployee ? { user_name: selectedEmployee } : {}) }
-          : { period, date: anchorDate, ...(selectedEmployee ? { user_name: selectedEmployee } : {}) };
-      const [lbRes, empRes, benchRes, exRes] = await Promise.all([
-        getFoldingLeaderboard({ period: lbPeriod, date: period === "custom" ? customEnd : anchorDate }),
+      const range = foldingRangeParams({ dateStart, dateEnd, dateField: listDateField });
+      const listParams = buildListParams();
+      const empParams = {
+        ...range,
+        ...(selectedEmployee ? { user_name: selectedEmployee } : {}),
+      };
+      const [lbRes, empRes, benchRes, exRes, recRes] = await Promise.all([
+        getFoldingLeaderboard(range),
         getFoldingEmployeeAnalysis(empParams),
         getFoldingBenchmarks(),
-        listFoldingExceptions({ limit: 500 }),
+        listFoldingExceptions(listParams),
+        listFoldingPerformance(listParams),
       ]);
       setLeaderboard(lbRes.data);
       setEmployeeData(empRes.data);
       setBenchmarks(benchRes.data);
       setBenchForm(benchRes.data || {});
-
-      const ps = empRes.data?.period_start || lbRes.data?.period_start;
-      const pe = empRes.data?.period_end || lbRes.data?.period_end;
-      const recRes = await listFoldingPerformance({
-        limit: 500,
-        start_date: ps,
-        end_date: pe,
-        ...(selectedEmployee ? { user_name: selectedEmployee } : {}),
-      });
-      setRecords(recRes.data || []);
-      setExceptions(exRes.data || []);
+      setRecords(recRes.data?.rows || []);
+      setExceptions(exRes.data?.rows || []);
     } catch (e) {
       setMessage({ type: "error", text: e?.response?.data?.error || e?.message || "Failed to load folding data" });
     } finally {
       setLoading(false);
     }
-  }, [anchorDate, period, customStart, customEnd, selectedEmployee]);
+  }, [buildListParams, dateStart, dateEnd, listDateField, selectedEmployee]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -284,25 +327,24 @@ function RinseFoldingDashboardPage({ user }) {
             Metrics update when you confirm an upload batch (not on draft upload). Use backfill only for repair or history.
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1} flexWrap="wrap" alignItems="center">
-          {period !== "custom" ? (
-            <TextField type="date" size="small" label="Folding work date (period anchor)" value={anchorDate} onChange={(e) => setAnchorDate(e.target.value)} InputLabelProps={{ shrink: true }} helperText="Leaderboard period is based on folding work date" />
-          ) : (
-            <>
-              <TextField type="date" size="small" label="Start" value={customStart} onChange={(e) => setCustomStart(e.target.value)} InputLabelProps={{ shrink: true }} />
-              <TextField type="date" size="small" label="End" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} InputLabelProps={{ shrink: true }} />
-            </>
-          )}
-          <ToggleButtonGroup size="small" exclusive value={period} onChange={(_, v) => v && setPeriod(v)}>
-            <ToggleButton value="week">This week</ToggleButton>
-            <ToggleButton value="month">This month</ToggleButton>
-            <ToggleButton value="custom">Custom range</ToggleButton>
-          </ToggleButtonGroup>
-          <Button variant="outlined" size="small" onClick={loadAll} disabled={loading}>Refresh</Button>
-          <Button variant="outlined" size="small" onClick={() => exportEmployeesCsv(employees, `folding-${period}.csv`)} disabled={!employees.length}>
-            Export CSV
-          </Button>
-          {admin ? <Button variant="text" size="small" onClick={() => setBackfillOpen((o) => !o)}>Backfill / Recompute</Button> : null}
+        <Stack spacing={1.5} alignItems="flex-end">
+          <FoldingDateRangeFilter
+            preset={rangePreset}
+            onPresetChange={setRangePreset}
+            dateStart={dateStart}
+            dateEnd={dateEnd}
+            onDateStartChange={setDateStart}
+            onDateEndChange={setDateEnd}
+            dateField={listDateField}
+            onDateFieldChange={setListDateField}
+          />
+          <Stack direction="row" spacing={1} flexWrap="wrap">
+            <Button variant="outlined" size="small" onClick={loadAll} disabled={loading}>Refresh</Button>
+            <Button variant="outlined" size="small" onClick={() => exportEmployeesCsv(employees, `folding-${dateStart}-${dateEnd}.csv`)} disabled={!employees.length}>
+              Export CSV
+            </Button>
+            {admin ? <Button variant="text" size="small" onClick={() => setBackfillOpen((o) => !o)}>Backfill / Recompute</Button> : null}
+          </Stack>
         </Stack>
       </Stack>
 
@@ -362,6 +404,8 @@ function RinseFoldingDashboardPage({ user }) {
           />
         </Grid>
       </Grid>
+
+      {admin ? <FoldingMaintenancePanel onChanged={loadAll} /> : null}
 
       {admin ? (
         <Paper sx={{ p: 2, mb: 3, border: "1px solid", borderColor: "primary.light", bgcolor: "rgba(0, 114, 206, 0.06)" }}>
@@ -506,6 +550,68 @@ function RinseFoldingDashboardPage({ user }) {
 
       <Paper sx={{ p: 2, mb: 3 }}>
         <Typography variant="subtitle1" fontWeight={700} gutterBottom>Folding records</Typography>
+        <Grid container spacing={1.5} sx={{ mb: 2 }}>
+          {[
+            ["bag_id", "Bag ID"],
+            ["customer", "Customer"],
+            ["user_name", "Employee"],
+            ["status", "Status"],
+            ["exception_code", "Exception code"],
+            ["weight_min", "Weight min"],
+            ["weight_max", "Weight max"],
+            ["duration_min", "Duration min (sec)"],
+            ["duration_max", "Duration max (sec)"],
+            ["lbs_per_hour_min", "Lbs/hr min"],
+            ["lbs_per_hour_max", "Lbs/hr max"],
+            ["bags_per_hour_min", "Bags/hr min"],
+            ["bags_per_hour_max", "Bags/hr max"],
+          ].map(([key, label]) => (
+            <Grid item xs={6} sm={4} md={3} key={key}>
+              {key === "status" ? (
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Status</InputLabel>
+                  <Select
+                    label="Status"
+                    value={recordFilters.status}
+                    onChange={(e) => setRecordFilters((f) => ({ ...f, status: e.target.value }))}
+                  >
+                    <MenuItem value="">Any</MenuItem>
+                    <MenuItem value="CALCULATED">CALCULATED</MenuItem>
+                    <MenuItem value="EXCEPTION">EXCEPTION</MenuItem>
+                  </Select>
+                </FormControl>
+              ) : (
+                <TextField
+                  size="small"
+                  fullWidth
+                  label={label}
+                  value={recordFilters[key]}
+                  onChange={(e) => setRecordFilters((f) => ({ ...f, [key]: e.target.value }))}
+                />
+              )}
+            </Grid>
+          ))}
+          <Grid item xs={12}>
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="small"
+                variant="contained"
+                onClick={() => setRecordFiltersApplied({ ...recordFilters })}
+              >
+                Apply filters
+              </Button>
+              <Button
+                size="small"
+                onClick={() => {
+                  setRecordFilters(EMPTY_RECORD_FILTERS);
+                  setRecordFiltersApplied(EMPTY_RECORD_FILTERS);
+                }}
+              >
+                Clear
+              </Button>
+            </Stack>
+          </Grid>
+        </Grid>
         <Table size="small">
           <TableHead>
             <TableRow>
