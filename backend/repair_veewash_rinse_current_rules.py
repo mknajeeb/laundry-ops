@@ -14,7 +14,6 @@ from typing import Any
 from backend.repair_latest_upload_batch import (
     _apply_staging_for_accepted_rows,
     _collect_bag_ids_from_batch,
-    _fix_stale_already_completed_rows,
     _load_portal_rows,
     _orders_status_capabilities,
     _upload_batches_pk,
@@ -728,15 +727,6 @@ def apply_repair_plan(
         if str(b.get("state") or "").upper() != "CONFIRMED":
             continue
         portal_rows = _load_portal_rows(cursor, bid)
-        _fix_stale_already_completed_rows(
-            cursor,
-            org_id,
-            portal_rows,
-            cap=cap,
-            active_where=active_where,
-            has_staging_org=has_staging_org,
-            dry_run=False,
-        )
         accepted = [
             r
             for r in portal_rows
