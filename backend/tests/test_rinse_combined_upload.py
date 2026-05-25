@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from datetime import date
@@ -206,7 +207,18 @@ class TestCommitRinseCombinedUploadOrder(unittest.TestCase):
                 "backend.rinse_folding_registry.recompute_folding_after_upload",
                 side_effect=lambda *_a, **_k: (call_order.append("folding") or {"ok": True, "summary": {}}),
             ),
-            patch("backend.app.summarize_batch_rows", return_value={}),
+            patch(
+                "backend.rinse_portal_scrape_meta.persist_portal_scrape_meta_on_batch",
+                return_value={
+                    "full_snapshot": True,
+                    "portal_scrape_meta": None,
+                    "portal_absence_allowed": True,
+                },
+            ),
+            patch.dict(
+                sys.modules,
+                {"backend.app": MagicMock(summarize_batch_rows=MagicMock(return_value={}))},
+            ),
             patch(
                 "backend.upload_batch_requirements.batch_upload_files_status",
                 return_value={
