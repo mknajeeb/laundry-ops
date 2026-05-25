@@ -28,7 +28,7 @@ export function scanEventPurpose(ev) {
 export { formatRinseScanTime as formatScanTime, sortRinseScanEvents as sortScanEvents };
 
 export default function FoldingScanEventsTable({ events }) {
-  const sorted = sortScanEvents(events);
+  const sorted = sortRinseScanEvents(events);
   if (!sorted.length) {
     return (
       <Typography variant="body2" color="text.secondary">
@@ -56,7 +56,7 @@ export default function FoldingScanEventsTable({ events }) {
             <TableCell>{scanEventPurpose(ev)}</TableCell>
             <TableCell>{ev.rack || "—"}</TableCell>
             <TableCell>{ev.user_name || "—"}</TableCell>
-            <TableCell>{formatScanTime(ev)}</TableCell>
+            <TableCell>{formatRinseScanTime(ev)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
