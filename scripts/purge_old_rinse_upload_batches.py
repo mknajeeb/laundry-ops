@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.app import get_db  # noqa: E402
+from backend.db import get_db  # noqa: E402
 from backend.rinse_upload_batch_retention import (  # noqa: E402
     apply_heavy_row_purge,
     default_retention_days,
