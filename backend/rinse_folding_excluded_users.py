@@ -59,6 +59,55 @@ def is_user_excluded_from_scoring(
     return uname in excluded_user_names_set(cursor, organization_id)
 
 
+def list_distinct_folding_user_names(cursor, organization_id: int) -> list[str]:
+    """Users seen in folding performance (for maintenance dropdown)."""
+    if not table_exists(cursor, "rinse_folding_performance"):
+        return []
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT DISTINCT TRIM(assigned_user_name) AS user_name
+        FROM rinse_folding_performance
+        WHERE organization_id = %s
+          AND assigned_user_name IS NOT NULL
+          AND TRIM(assigned_user_name) != ''
+        ORDER BY user_name ASC
+        """,
+        (org,),
+    )
+    names: list[str] = []
+    for r in cursor.fetchall() or []:
+        n = str(r.get("user_name") if isinstance(r, dict) else r[0] or "").strip()
+        if n:
+            names.append(n)
+    return names
+
+
+def remove_excluded_folding_user(
+    cursor,
+    organization_id: int,
+    *,
+    user_name: str | None = None,
+    row_id: int | None = None,
+) -> int:
+    ensure_rinse_folding_excluded_users_table(cursor)
+    org = int(organization_id)
+    if row_id is not None:
+        cursor.execute(
+            "DELETE FROM rinse_folding_excluded_users WHERE organization_id = %s AND id = %s",
+            (org, int(row_id)),
+        )
+        return cursor.rowcount
+    uname = str(user_name or "").strip()
+    if not uname:
+        return 0
+    cursor.execute(
+        "DELETE FROM rinse_folding_excluded_users WHERE organization_id = %s AND user_name = %s",
+        (org, uname),
+    )
+    return cursor.rowcount
+
+
 def sql_exclude_scoring_users_clause(
     cursor, organization_id: int, *, user_column: str = "p.assigned_user_name"
 ) -> tuple[str, list[Any]]:
