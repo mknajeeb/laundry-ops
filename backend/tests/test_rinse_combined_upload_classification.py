@@ -93,7 +93,7 @@ class TestSameUploadCompletionClassification(unittest.TestCase):
 
         with (
             patch(
-                "backend.rinse_bag_upload.find_active_staging_by_ticket_id",
+                "backend.rinse_bag_upload.find_active_staging_for_portal_upload",
                 return_value={"id": 99},
             ),
             patch(
@@ -105,8 +105,8 @@ class TestSameUploadCompletionClassification(unittest.TestCase):
                 "backend.rinse_combined_upload.build_upload_duplicate_indexes",
                 return_value=(set(), {}, 3),
             ),
-            patch("backend.app.table_has_column", return_value=True),
-            patch("backend.app.where_not_sent_or_forced_sql", return_value="1=1"),
+            patch("backend.ta_helpers.table_has_column", return_value=True),
+            patch("backend.ta_helpers.table_exists", return_value=True),
         ):
             counts = insert_upload_batch_rows_from_orders_df(
                 cursor,
@@ -162,7 +162,7 @@ def _insert_bag_row(
     )
     with (
         patch(
-            "backend.rinse_bag_upload.find_active_staging_by_ticket_id",
+            "backend.rinse_bag_upload.find_active_staging_for_portal_upload",
             return_value=staging_hit,
         ),
         patch(
@@ -174,8 +174,8 @@ def _insert_bag_row(
             "backend.rinse_combined_upload.build_upload_duplicate_indexes",
             return_value=(set(), {}, 3),
         ),
-        patch("backend.app.table_has_column", return_value=True),
-        patch("backend.app.where_not_sent_or_forced_sql", return_value="1=1"),
+        patch("backend.ta_helpers.table_has_column", return_value=True),
+        patch("backend.ta_helpers.table_exists", return_value=True),
     ):
         counts = insert_upload_batch_rows_from_orders_df(
             cursor,

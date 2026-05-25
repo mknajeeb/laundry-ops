@@ -43,6 +43,7 @@ def confirm_upload_batch_core(
     from backend.rinse_bag_completion import normalize_bag_id
     from backend.rinse_bag_upload import (
         find_active_staging_by_ticket_id,
+        find_active_staging_for_portal_upload,
         update_staging_from_upload_row,
     )
     from backend.rinse_upload_finalize import finalize_rinse_after_batch_confirm
@@ -287,13 +288,13 @@ def confirm_upload_batch_core(
     for row in accepted_rows:
         tid = normalize_bag_id(row.get("ticket_id")) if row.get("ticket_id") else ""
         if tid and cap.get("has_ticket_id"):
-            existing_staging = find_active_staging_by_ticket_id(
+            existing_staging = find_active_staging_for_portal_upload(
                 cursor,
                 tenant_oid,
                 tid,
                 active_where,
                 has_staging_org=has_staging_org,
-                has_ticket_id_col=True,
+                portal_row=row,
             )
             if existing_staging:
                 update_staging_from_upload_row(
@@ -328,6 +329,43 @@ def confirm_upload_batch_core(
             row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"]
         )
         if identity_key in existing_identity_before_insert:
+            if tid and cap.get("has_ticket_id"):
+                by_tid = find_active_staging_by_ticket_id(
+                    cursor,
+                    tenant_oid,
+                    tid,
+                    active_where,
+                    has_staging_org=has_staging_org,
+                    has_ticket_id_col=True,
+                )
+                if not by_tid:
+                    by_portal = find_active_staging_for_portal_upload(
+                        cursor,
+                        tenant_oid,
+                        tid,
+                        active_where,
+                        has_staging_org=has_staging_org,
+                        portal_row=row,
+                    )
+                    if by_portal:
+                        update_staging_from_upload_row(
+                            cursor,
+                            int(by_portal["id"]),
+                            row,
+                            batch["batch_date"],
+                            cap,
+                            organization_id=tenant_oid,
+                            has_staging_org=has_staging_org,
+                        )
+                        staging_updated += 1
+                        cursor.execute(
+                            """
+                            UPDATE rinse_bag_registry
+                            SET last_staging_order_id = %s, updated_at = NOW()
+                            WHERE organization_id = %s AND bag_id = %s
+                            """,
+                            (int(by_portal["id"]), tenant_oid, tid),
+                        )
             continue
 
         cols = [

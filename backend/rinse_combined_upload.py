@@ -18,6 +18,27 @@ REQUIRE_DUAL_CSV_MESSAGE = (
 )
 
 
+def _active_staging_where_sql(cursor) -> str:
+    """Active-at-Washpro filter without importing Flask app."""
+    from backend.ta_helpers import table_has_column
+
+    has_logistics = table_has_column(cursor, "orders_staging", "logistics_status")
+    has_status = table_has_column(cursor, "orders_staging", "status")
+    if has_logistics:
+        if has_status:
+            return """
+                COALESCE(logistics_status, CASE
+                    WHEN status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                    WHEN status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                    ELSE 'AT_WASHPRO'
+                END) NOT IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT')
+            """
+        return "COALESCE(logistics_status, 'AT_WASHPRO') NOT IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT')"
+    if has_status:
+        return "status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')"
+    return "1 = 1"
+
+
 def dual_csv_required_error() -> tuple[dict, int]:
     return (
         {
@@ -319,28 +340,36 @@ def insert_upload_batch_rows_from_orders_df(
     existing_identity_reasons: dict,
     pre_existing_completed_bag_ids: set[str] | None = None,
 ) -> dict[str, int]:
-    from backend.app import (
-        build_identity_key,
-        parse_date_value,
-        table_has_column,
-        where_not_sent_or_forced_sql,
-    )
+    from backend.app import build_identity_key, parse_date_value, table_has_column
     from backend.rinse_bag_completion import classify_portal_upload_row, normalize_bag_id
-    from backend.rinse_bag_upload import find_active_staging_by_ticket_id
+    from backend.rinse_bag_upload import (
+        _ensure_ticket_id_columns,
+        find_active_staging_for_portal_upload,
+    )
 
     if pre_existing_completed_bag_ids is None:
         pre_existing_completed_bag_ids = collect_pre_existing_completed_bag_ids(
             cursor, tenant_oid, orders_df
         )
 
+    from backend.ta_helpers import table_exists
+
+    _ensure_ticket_id_columns(cursor)
+    if table_has_column(cursor, "upload_batch_rows", "ticket_id"):
+        pass
+    elif table_exists(cursor, "upload_batch_rows"):
+        cursor.execute(
+            "ALTER TABLE upload_batch_rows ADD COLUMN ticket_id VARCHAR(120) NULL"
+        )
+
     cap = schema.cap
+    active_where = _active_staging_where_sql(cursor)
     inserted = 0
     rejected = 0
     needs_attention = 0
     has_ticket_source = "ticket_id" in orders_df.columns
     has_ubr_ticket = table_has_column(cursor, "upload_batch_rows", "ticket_id")
     include_tid = bool(has_ticket_source and has_ubr_ticket)
-    active_where = where_not_sent_or_forced_sql(cap)
     has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
 
     for _, row in orders_df.iterrows():
@@ -376,13 +405,18 @@ def insert_upload_batch_rows_from_orders_df(
                 ticket_id = ts if ts else None
                 if ticket_id:
                     rinse_bag_row = True
-                    staging_hit = find_active_staging_by_ticket_id(
+                    staging_hit = find_active_staging_for_portal_upload(
                         cursor,
                         tenant_oid,
                         ticket_id,
                         active_where,
                         has_staging_org=has_staging_org,
-                        has_ticket_id_col=cap.get("has_ticket_id", False),
+                        portal_row={
+                            "name_clean": name_clean,
+                            "weight_num": weight_num,
+                            "service_type": service_type,
+                            "date_clean": row_date,
+                        },
                     )
                     was_completed_before = ticket_id in pre_existing_completed_bag_ids
                     # Draft must not mutate registry; reject only if already COMPLETED before upload.
@@ -585,6 +619,9 @@ def commit_rinse_combined_upload(
     orders_df: pd.DataFrame,
     events_filename: str,
     events_df: pd.DataFrame,
+    *,
+    portal_scrape_meta: dict | None = None,
+    portal_scrape_meta_path: str | Path | None = None,
 ) -> dict:
     """
     Dual CSV: scan-events merged and completion recomputed before portal row classification.
@@ -604,6 +641,18 @@ def commit_rinse_combined_upload(
     combined_name = f"{portal_filename} + {events_filename}"
     upload_batch_id = create_draft_upload_batch_shell(
         cursor, tenant_oid, batch_date, combined_name, schema
+    )
+
+    from backend.rinse_portal_scrape_meta import (
+        load_portal_scrape_meta_file,
+        persist_portal_scrape_meta_on_batch,
+    )
+
+    meta = portal_scrape_meta
+    if meta is None and portal_scrape_meta_path:
+        meta = load_portal_scrape_meta_file(portal_scrape_meta_path)
+    portal_meta_payload = persist_portal_scrape_meta_on_batch(
+        cursor, upload_batch_id, tenant_oid, meta
     )
 
     bag_ids = collect_bag_ids_from_upload(orders_df, events_df)
@@ -656,4 +705,7 @@ def commit_rinse_combined_upload(
         "scan_events_batch": batch_events_payload,
         "draft_bag_ids": bag_ids,
         "finalize_on_confirm": True,
+        "portal_scrape_meta": portal_meta_payload.get("portal_scrape_meta"),
+        "portal_absence_allowed": portal_meta_payload.get("portal_absence_allowed"),
+        "full_snapshot": portal_meta_payload.get("full_snapshot"),
     }
