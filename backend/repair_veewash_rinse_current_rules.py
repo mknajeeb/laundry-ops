@@ -705,12 +705,45 @@ def apply_upload_row_fixes(cursor, plan: dict[str, Any]) -> int:
     return n
 
 
+def apply_folding_alignment_only(
+    cursor,
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    """Recompute folding only for bags listed in folding_change_detail."""
+    org_id = int(plan["organization_id"])
+    bag_ids = sorted(
+        {
+            str(c.get("bag_id") or "").strip().upper()
+            for c in plan.get("folding_change_detail") or []
+            if c.get("bag_id")
+        }
+    )
+    if not bag_ids:
+        return {"folding_bags_requested": 0, "folding_summary": summarize_recompute_results([])}
+
+    folding_payload = recompute_folding_performance_for_bags(
+        cursor,
+        org_id,
+        bag_ids,
+        source_recompute_kind="veewash_folding_align",
+    )
+    return {
+        "folding_bags_requested": len(bag_ids),
+        "folding_bag_ids": bag_ids,
+        "folding_summary": summarize_recompute_results(folding_payload.get("bags") or []),
+    }
+
+
 def apply_repair_plan(
     cursor,
     plan: dict[str, Any],
     *,
     allow_absence_reversal: bool = False,
+    folding_only: bool = False,
 ) -> dict[str, Any]:
+    if folding_only:
+        return apply_folding_alignment_only(cursor, plan)
+
     org_id = int(plan["organization_id"])
     batch_ids = plan["batch_ids"]
     applied: dict[str, Any] = {"upload_row_updates": 0, "batches_staging": []}

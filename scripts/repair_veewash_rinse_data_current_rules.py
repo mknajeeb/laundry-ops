@@ -64,6 +64,18 @@ def _print_human_summary(plan: dict) -> None:
     if manual:
         print(f"\n--- Manual review bags ({len(manual)}) ---")
         print("  " + ", ".join(manual[:30]))
+    folding = plan.get("folding_change_detail") or []
+    if folding:
+        print(f"\n--- Folding alignment ({len(folding)} bags) ---")
+        for row in folding:
+            bid = row.get("bag_id") or "?"
+            if row.get("action") == "create":
+                print(f"  {bid}: (none) → {row.get('to_status')}/{row.get('to_code') or '—'}")
+            else:
+                print(
+                    f"  {bid}: {row.get('from_status')}/{row.get('from_code') or '—'} "
+                    f"→ {row.get('to_status')}/{row.get('to_code') or '—'}"
+                )
     print(f"\nProduction safe to apply (no manual-review blockers): {plan.get('production_safe_to_apply')}")
     for note in plan.get("notes") or []:
         print(f"  • {note}")
@@ -84,6 +96,11 @@ def main() -> int:
         help="Analyze only; no writes (default if --apply omitted)",
     )
     parser.add_argument("--apply", action="store_true", help="Apply repairs (commits transaction)")
+    parser.add_argument(
+        "--folding-only",
+        action="store_true",
+        help="With --apply: recompute folding only for bags in folding_change_detail",
+    )
     parser.add_argument("--json", action="store_true", help="Print full JSON plan")
     parser.add_argument(
         "--allow-absence-reversal",
@@ -139,6 +156,7 @@ def main() -> int:
                 cursor,
                 plan,
                 allow_absence_reversal=args.allow_absence_reversal,
+                folding_only=args.folding_only,
             )
             conn.commit()
             print("\n=== Applied ===")

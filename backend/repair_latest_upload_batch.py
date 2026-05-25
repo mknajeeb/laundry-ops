@@ -365,6 +365,35 @@ def _fix_stale_already_completed_rows(
     return changes
 
 
+def staging_row_values_differ(
+    existing: dict[str, Any],
+    portal: dict[str, Any],
+    batch_date: date | datetime | None,
+) -> bool:
+    """True when update_staging_from_upload_row would change meaningful fields."""
+    pairs = [
+        (_normalize_date_key(existing.get("date_clean")), _normalize_date_key(portal.get("date_clean"))),
+        (_normalize_name(existing.get("name_clean")), _normalize_name(portal.get("name_clean"))),
+        (
+            _normalize_measure_by_service(
+                existing.get("weight_num"), existing.get("service_type")
+            ),
+            _normalize_measure_by_service(
+                portal.get("weight_num"), portal.get("service_type")
+            ),
+        ),
+        (
+            str(existing.get("service_type") or "").strip().upper(),
+            str(portal.get("service_type") or "").strip().upper(),
+        ),
+        (
+            str(existing.get("rush_type") or "NON-RUSH").strip().upper(),
+            str(portal.get("rush_type") or "NON-RUSH").strip().upper(),
+        ),
+    ]
+    return any(a != b for a, b in pairs)
+
+
 def _apply_staging_for_accepted_rows(
     cursor,
     organization_id: int,
@@ -427,16 +456,20 @@ def _apply_staging_for_accepted_rows(
                 has_ticket_id_col=True,
             )
             if existing_staging:
+                would_update = staging_row_values_differ(
+                    existing_staging, portal, batch_date
+                )
                 if not dry_run:
-                    update_staging_from_upload_row(
-                        cursor,
-                        int(existing_staging["id"]),
-                        portal,
-                        batch_date,
-                        cap,
-                        organization_id=organization_id,
-                        has_staging_org=has_staging_org,
-                    )
+                    if would_update:
+                        update_staging_from_upload_row(
+                            cursor,
+                            int(existing_staging["id"]),
+                            portal,
+                            batch_date,
+                            cap,
+                            organization_id=organization_id,
+                            has_staging_org=has_staging_org,
+                        )
                     cursor.execute(
                         """
                         UPDATE rinse_bag_registry
@@ -445,7 +478,8 @@ def _apply_staging_for_accepted_rows(
                         """,
                         (int(existing_staging["id"]), int(organization_id), tid),
                     )
-                updated += 1
+                if would_update:
+                    updated += 1
                 continue
 
         identity_key = _build_identity_key(
