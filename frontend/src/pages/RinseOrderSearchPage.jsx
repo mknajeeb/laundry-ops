@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   Alert,
   Box,
@@ -15,7 +15,14 @@ import {
   Typography,
 } from "@mui/material";
 import { getRinseOrderArchiveDetail, searchRinseOrders } from "../api";
-import { formatSystemDateTime } from "../utils/rinseTimeFormat";
+import OrderSearchDetailDrawer from "../components/orderSearch/OrderSearchDetailDrawer";
+
+const LIFECYCLE_CHIPS = [
+  { key: "completed", label: "Completed", param: { lifecycle_filter: "completed" }, color: "success" },
+  { key: "incomplete", label: "Incomplete", param: { lifecycle_filter: "incomplete" } },
+  { key: "in_checkout", label: "In checkout", param: { lifecycle_filter: "in_checkout" }, color: "info" },
+  { key: "folding_exceptions", label: "Folding exceptions", param: { lifecycle_filter: "folding_exceptions" }, color: "warning" },
+];
 
 export default function RinseOrderSearchPage() {
   const [bagId, setBagId] = useState("");
@@ -24,29 +31,40 @@ export default function RinseOrderSearchPage() {
   const [dateTo, setDateTo] = useState("");
   const [completionStatus, setCompletionStatus] = useState("");
   const [foldingStatus, setFoldingStatus] = useState("");
+  const [lifecycleFilter, setLifecycleFilter] = useState("");
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
   const [detail, setDetail] = useState(null);
   const [selectedBag, setSelectedBag] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [message, setMessage] = useState({ type: "", text: "" });
   const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
 
-  const search = async () => {
-    try {
-      setLoading(true);
-      setMessage({ type: "", text: "" });
-      const params = { limit: 100 };
+  const buildSearchParams = useCallback(
+    (extra = {}) => {
+      const params = { limit: 100, ...extra };
       if (bagId.trim()) params.bag_id = bagId.trim();
       if (customerName.trim()) params.customer_name = customerName.trim();
       if (dateFrom) params.date_clean_from = dateFrom;
       if (dateTo) params.date_clean_to = dateTo;
       if (completionStatus.trim()) params.completion_status = completionStatus.trim();
       if (foldingStatus.trim()) params.folding_status = foldingStatus.trim();
-      const res = await searchRinseOrders(params);
+      const lf =
+        extra.lifecycle_filter !== undefined ? extra.lifecycle_filter : lifecycleFilter;
+      if (lf) params.lifecycle_filter = lf;
+      return params;
+    },
+    [bagId, customerName, dateFrom, dateTo, completionStatus, foldingStatus, lifecycleFilter]
+  );
+
+  const search = async (extra = {}) => {
+    try {
+      setLoading(true);
+      setMessage({ type: "", text: "" });
+      const res = await searchRinseOrders(buildSearchParams(extra));
       setRows(res.data?.rows || []);
       setSummary(res.data?.summary || null);
-      setDetail(null);
-      setSelectedBag("");
     } catch (e) {
       setMessage({ type: "error", text: e?.response?.data?.error || "Search failed" });
     } finally {
@@ -54,25 +72,48 @@ export default function RinseOrderSearchPage() {
     }
   };
 
+  const applyLifecycleChip = (key) => {
+    const next = lifecycleFilter === key ? "" : key;
+    setLifecycleFilter(next);
+    if (next === "completed") setCompletionStatus("COMPLETED");
+    else if (next === "incomplete") setCompletionStatus("");
+    else if (next === "folding_exceptions") setFoldingStatus("EXCEPTION");
+    else {
+      setCompletionStatus("");
+      setFoldingStatus("");
+    }
+    search({ lifecycle_filter: next || "" });
+  };
+
   const openDetail = async (id) => {
     const bid = String(id || "").trim();
     if (!bid) return;
+    setDrawerOpen(true);
+    setSelectedBag(bid);
+    setDetail(null);
     try {
-      setLoading(true);
-      setSelectedBag(bid);
+      setDetailLoading(true);
       const res = await getRinseOrderArchiveDetail(bid);
       setDetail(res.data);
     } catch (e) {
       setDetail(null);
       setMessage({ type: "error", text: e?.response?.data?.error || "Detail failed" });
     } finally {
-      setLoading(false);
+      setDetailLoading(false);
     }
+  };
+
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setDetail(null);
+    setSelectedBag("");
   };
 
   return (
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1200, mx: "auto" }}>
-      <Typography variant="h5" fontWeight={800} gutterBottom>Rinse Order Search</Typography>
+      <Typography variant="h5" fontWeight={800} gutterBottom>
+        Rinse Order Search
+      </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         Full bag lifecycle archive — registry, uploads, checkout, scans, folding, and scrape source.
       </Typography>
@@ -85,7 +126,14 @@ export default function RinseOrderSearchPage() {
           <TextField size="small" type="date" label="Cleaning date to" value={dateTo} onChange={(e) => setDateTo(e.target.value)} InputLabelProps={{ shrink: true }} />
           <TextField size="small" label="Completion status" value={completionStatus} onChange={(e) => setCompletionStatus(e.target.value)} placeholder="COMPLETED" />
           <TextField size="small" label="Folding status" value={foldingStatus} onChange={(e) => setFoldingStatus(e.target.value)} placeholder="CALCULATED / EXCEPTION" />
-          <Button variant="contained" onClick={search} disabled={loading}>Search</Button>
+          <Button variant="contained" onClick={() => search()} disabled={loading}>
+            Search
+          </Button>
+          {lifecycleFilter ? (
+            <Button size="small" onClick={() => { setLifecycleFilter(""); search(); }}>
+              Clear filter
+            </Button>
+          ) : null}
         </Stack>
       </Paper>
 
@@ -94,10 +142,16 @@ export default function RinseOrderSearchPage() {
       {summary ? (
         <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
           <Chip label={`Registry: ${summary.registry_total ?? 0}`} />
-          <Chip label={`Completed: ${summary.completed ?? 0}`} color="success" variant="outlined" />
-          <Chip label={`Incomplete: ${summary.incomplete ?? 0}`} variant="outlined" />
-          <Chip label={`In checkout: ${summary.in_checkout ?? 0}`} color="info" variant="outlined" />
-          <Chip label={`Folding exceptions: ${summary.folding_exceptions ?? 0}`} color="warning" variant="outlined" />
+          {LIFECYCLE_CHIPS.map((c) => (
+            <Chip
+              key={c.key}
+              label={`${c.label}: ${summary[c.key] ?? 0}`}
+              color={lifecycleFilter === c.key ? c.color || "primary" : c.color}
+              variant={lifecycleFilter === c.key ? "filled" : "outlined"}
+              onClick={() => applyLifecycleChip(c.key)}
+              sx={{ cursor: "pointer" }}
+            />
+          ))}
         </Stack>
       ) : null}
 
@@ -142,38 +196,13 @@ export default function RinseOrderSearchPage() {
         </Table>
       </Paper>
 
-      {detail ? (
-        <Paper variant="outlined" sx={{ p: 2 }}>
-          <Typography variant="h6" fontWeight={700} gutterBottom>
-            {detail.bag_id || selectedBag}
-          </Typography>
-          <Typography variant="body2" sx={{ mb: 1 }}>
-            {detail.registry?.name_clean} · {detail.registry?.date_clean} · {detail.registry?.completion_status}
-          </Typography>
-          {detail.staging ? (
-            <Alert severity="info" sx={{ mb: 1 }}>Active in checkout (staging #{detail.staging.id})</Alert>
-          ) : null}
-          {detail.upload_history?.length ? (
-            <>
-              <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1 }}>Upload history</Typography>
-              <Typography variant="caption" color="text.secondary">
-                {detail.upload_history.length} batch row(s)
-              </Typography>
-            </>
-          ) : null}
-          {detail.folding_performance ? (
-            <Typography variant="body2" sx={{ mt: 1 }}>
-              Folding: {detail.folding_performance.status}
-              {detail.folding_performance.exception_code ? ` — ${detail.folding_performance.exception_code}` : ""}
-            </Typography>
-          ) : null}
-          {detail.scheduled_scrape_status?.data_last_updated_at_et ? (
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-              Data last updated: {formatSystemDateTime(detail.scheduled_scrape_status.data_last_updated_at_et)}
-            </Typography>
-          ) : null}
-        </Paper>
-      ) : null}
+      <OrderSearchDetailDrawer
+        open={drawerOpen}
+        onClose={closeDrawer}
+        detail={detail}
+        bagId={selectedBag}
+        loading={detailLoading}
+      />
     </Box>
   );
 }

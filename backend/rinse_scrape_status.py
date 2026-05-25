@@ -163,6 +163,7 @@ def build_scrape_run_batch_detail(
             "cron",
         )
         or bool(scrape_run.get("id")),
+        "error_message": scrape_run.get("error_message"),
     }
 
 

@@ -34,6 +34,17 @@ def _active_staging_where_sql(cursor) -> str:
     return "1 = 1"
 
 
+def _in_checkout_exists_sql(has_staging_org: bool) -> str:
+    org_clause = " AND s.organization_id = r.organization_id" if has_staging_org else ""
+    return f"""
+        EXISTS (
+            SELECT 1 FROM orders_staging s
+            WHERE s.ticket_id = r.bag_id{org_clause}
+              AND ({{active_where}})
+        )
+    """
+
+
 def search_rinse_orders(
     cursor,
     organization_id: int,
@@ -44,6 +55,7 @@ def search_rinse_orders(
     completion_status: str | None = None,
     folding_status: str | None = None,
     in_checkout: bool | None = None,
+    lifecycle_filter: str | None = None,
     date_clean_from: date | None = None,
     date_clean_to: date | None = None,
     limit: int = 50,
@@ -61,9 +73,25 @@ def search_rinse_orders(
 
     active_where = _active_staging_where_sql(cursor)
     has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+    has_staging = table_exists(cursor, "orders_staging") and table_has_column(
+        cursor, "orders_staging", "ticket_id"
+    )
+
+    lf = (lifecycle_filter or "").strip().lower()
+    if lf == "completed":
+        completion_status = completion_status or "COMPLETED"
+    elif lf == "incomplete":
+        completion_status = None
+    elif lf == "folding_exceptions":
+        folding_status = folding_status or "EXCEPTION"
+    elif lf == "in_checkout":
+        in_checkout = True
 
     where = ["r.organization_id = %s"]
     args: list[Any] = [org]
+
+    if lf == "incomplete":
+        where.append("UPPER(COALESCE(r.completion_status,'')) != 'COMPLETED'")
 
     if bag_id:
         bid = normalize_bag_id(bag_id)
@@ -103,6 +131,27 @@ def search_rinse_orders(
         """
         args.append(int(batch_id))
 
+    checkout_sql = ""
+    if in_checkout is not None and has_staging:
+        exists_tpl = _in_checkout_exists_sql(has_staging_org).format(active_where=active_where)
+        if in_checkout:
+            where.append(exists_tpl)
+        else:
+            where.append(f"NOT ({exists_tpl.strip()})")
+
+    where_clause = " AND ".join(where)
+
+    count_sql = f"""
+        SELECT COUNT(*) AS cnt
+        FROM rinse_bag_registry r
+        {fold_join}
+        WHERE {where_clause}
+        {batch_sql}
+    """
+    cursor.execute(count_sql, tuple(args))
+    count_row = cursor.fetchone()
+    total = int(count_row.get("cnt") or 0) if isinstance(count_row, dict) else 0
+
     cursor.execute(
         f"""
         SELECT
@@ -112,7 +161,7 @@ def search_rinse_orders(
             f.status AS folding_status, f.exception_code AS folding_exception_code
         FROM rinse_bag_registry r
         {fold_join}
-        WHERE {" AND ".join(where)}
+        WHERE {where_clause}
         {batch_sql}
         ORDER BY r.updated_at DESC, r.bag_id ASC
         LIMIT %s OFFSET %s
@@ -128,7 +177,7 @@ def search_rinse_orders(
         bid = row.get("bag_id")
         in_co = False
         staging_id = None
-        if bid and table_exists(cursor, "orders_staging"):
+        if bid and has_staging:
             sq = f"SELECT id FROM orders_staging WHERE ticket_id = %s AND ({active_where})"
             sq_args: list[Any] = [bid]
             if has_staging_org:
@@ -141,15 +190,10 @@ def search_rinse_orders(
                 in_co = True
                 staging_id = hit.get("id") if isinstance(hit, dict) else hit[0]
 
-        if in_checkout is True and not in_co:
-            continue
-        if in_checkout is False and in_co:
-            continue
-
         out_rows.append({**row, "in_checkout": in_co, "staging_order_id": staging_id})
 
     return {
-        "total": len(out_rows),
+        "total": total,
         "limit": lim,
         "offset": off,
         "summary": summary,
@@ -223,18 +267,14 @@ def get_order_archive_detail(
     has_ticket_id_col: bool,
     upload_batch_row_pk: str,
 ) -> dict[str, Any] | None:
-    """Full archive detail for one bag (extends bag admin detail)."""
-    from backend.rinse_bag_upload import get_bag_admin_detail
+    """Full lifecycle archive detail for one bag."""
+    from backend.rinse_order_search_detail import build_order_lifecycle_detail
     from backend.rinse_scrape_status import get_scheduled_scrape_status
 
-    bid = normalize_bag_id(bag_id)
-    if not bid:
-        return None
-
-    detail = get_bag_admin_detail(
+    detail = build_order_lifecycle_detail(
         cursor,
         organization_id,
-        bid,
+        bag_id,
         active_where_sql=active_where_sql,
         has_staging_org=has_staging_org,
         has_ticket_id_col=has_ticket_id_col,
@@ -244,39 +284,22 @@ def get_order_archive_detail(
         return None
 
     org = int(organization_id)
-    upload_history: list[Any] = []
-    if table_exists(cursor, "upload_batch_rows"):
+    bid = detail["bag_id"]
+    if detail.get("registry", {}).get("last_upload_batch_id") and table_exists(
+        cursor, "upload_batch_rows"
+    ):
         cursor.execute(
-            """
-            SELECT ubr.id, ubr.upload_batch_id, ubr.row_status, ubr.reason,
-                   ubr.date_clean, ubr.name_clean, ubr.created_at,
-                   ub.state, ub.confirmed_at, ub.batch_date
-            FROM upload_batch_rows ubr
-            LEFT JOIN upload_batches ub ON ub.batch_id = ubr.upload_batch_id
-            WHERE ubr.ticket_id = %s
-            ORDER BY ubr.upload_batch_id DESC
-            LIMIT 50
+            f"""
+            SELECT * FROM upload_batch_rows
+            WHERE upload_batch_id = %s AND ticket_id = %s
+            ORDER BY {upload_batch_row_pk} DESC
+            LIMIT 1
             """,
-            (bid,),
+            (int(detail["registry"]["last_upload_batch_id"]), bid),
         )
-        upload_history = list(cursor.fetchall() or [])
+        detail["latest_upload_batch_row"] = cursor.fetchone()
 
     scrape_status = get_scheduled_scrape_status(cursor, org)
-    last_scrape = scrape_status.get("last_success")
-
-    folding = None
-    if table_exists(cursor, "rinse_folding_performance"):
-        cursor.execute(
-            """
-            SELECT * FROM rinse_folding_performance
-            WHERE organization_id = %s AND bag_id = %s LIMIT 1
-            """,
-            (org, bid),
-        )
-        folding = cursor.fetchone()
-
-    detail["upload_history"] = upload_history
-    detail["folding_performance"] = folding
-    detail["scheduled_scrape"] = last_scrape
+    detail["scheduled_scrape"] = scrape_status.get("last_success")
     detail["scheduled_scrape_status"] = scrape_status
     return detail

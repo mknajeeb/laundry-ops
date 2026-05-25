@@ -147,6 +147,7 @@ def register_rinse_admin_routes(
                 completion_status=(request.args.get("completion_status") or "").strip() or None,
                 folding_status=(request.args.get("folding_status") or "").strip() or None,
                 in_checkout=in_checkout,
+                lifecycle_filter=(request.args.get("lifecycle_filter") or "").strip() or None,
                 date_clean_from=_opt_date("date_clean_from")
                 or _opt_date("processing_date_from"),
                 date_clean_to=_opt_date("date_clean_to") or _opt_date("processing_date_to"),
