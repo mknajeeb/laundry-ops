@@ -314,6 +314,9 @@ export const putPlatformUserProfile = (userId, body) =>
 export const getDashboard = () =>
   axios.get(`${API_BASE}/dashboard`);
 
+export const getOperationsDashboardSummary = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/operations-dashboard/summary`, { params, timeout: 30000 });
+
 /* =========================================
    ORDERS
 ========================================= */
@@ -436,6 +439,9 @@ export const approveFoldingException = (bagId, body = {}) =>
 
 export const excludeFoldingException = (bagId, body = {}) =>
   axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/exclude`, body, { timeout: 30000 });
+
+export const bulkFoldingExceptionsAction = (body) =>
+  axios.post(`${API_BASE}/rinse/folding/exceptions/bulk-action`, body, { timeout: 120000 });
 
 export const overrideFoldingExceptionReview = (bagId, body = {}) =>
   axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/override`, body, { timeout: 30000 });

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   Dialog,
   DialogActions,
@@ -10,6 +11,7 @@ import {
   DialogTitle,
   Drawer,
   FormControl,
+  FormControlLabel,
   InputLabel,
   MenuItem,
   Paper,
@@ -25,6 +27,7 @@ import {
 } from "@mui/material";
 import {
   approveFoldingException,
+  bulkFoldingExceptionsAction,
   excludeFoldingException,
   getFoldingPerformanceDetail,
   listFoldingUsers,
@@ -44,6 +47,12 @@ import {
 } from "../utils/foldingFormat";
 import { foldingExceptionLabel } from "../utils/foldingExceptionLabels";
 
+const BULK_ACTIONS = [
+  { id: "mark_reviewed", label: "Mark reviewed" },
+  { id: "approve_scoring", label: "Approve for scoring" },
+  { id: "exclude_scoring", label: "Exclude from scoring" },
+];
+
 export default function RinseFoldingExceptionsPage() {
   const [range, setRange] = useState(() => defaultWeekRange());
   const [filters, setFilters] = useState({
@@ -61,6 +70,11 @@ export default function RinseFoldingExceptionsPage() {
   const [users, setUsers] = useState([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkAction, setBulkAction] = useState("mark_reviewed");
+  const [bulkNote, setBulkNote] = useState("");
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [timelineBag, setTimelineBag] = useState("");
   const [timelineEvents, setTimelineEvents] = useState([]);
@@ -101,6 +115,7 @@ export default function RinseFoldingExceptionsPage() {
       const res = await searchFoldingExceptions(params);
       setRows(res.data?.rows || []);
       setTotal(res.data?.total ?? (res.data?.rows || []).length);
+      setSelected(new Set());
     } catch (e) {
       setMessage(e?.response?.data?.error || "Search failed");
     } finally {
@@ -108,7 +123,76 @@ export default function RinseFoldingExceptionsPage() {
     }
   }, [filters, range]);
 
-  useEffect(() => { loadUsers(); search(); }, []);
+  useEffect(() => {
+    loadUsers();
+    search();
+  }, []);
+
+  const visibleIds = useMemo(() => rows.map((r) => r.bag_id).filter(Boolean), [rows]);
+  const selectedCount = selected.size;
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+
+  const toggleSelect = (bagId) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(bagId)) next.delete(bagId);
+      else next.add(bagId);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(visibleIds));
+    }
+  };
+
+  const bulkActionLabel = BULK_ACTIONS.find((a) => a.id === bulkAction)?.label || bulkAction;
+
+  const bulkConfirmText = useMemo(() => {
+    if (bulkAction === "approve_scoring") {
+      return `Approve ${selectedCount} exception(s) and include them in scoring?`;
+    }
+    if (bulkAction === "exclude_scoring") {
+      return `Exclude ${selectedCount} exception(s) from scoring?`;
+    }
+    return `Mark ${selectedCount} exception(s) as reviewed?`;
+  }, [bulkAction, selectedCount]);
+
+  const runBulkAction = async () => {
+    const bagIds = [...selected];
+    if (!bagIds.length) return;
+    if (
+      (bulkAction === "approve_scoring" || bulkAction === "exclude_scoring") &&
+      !bulkNote.trim()
+    ) {
+      setMessage("Admin note is required for bulk approve and exclude.");
+      return;
+    }
+    try {
+      setBulkBusy(true);
+      const res = await bulkFoldingExceptionsAction({
+        bag_ids: bagIds,
+        action: bulkAction,
+        note: bulkNote.trim() || undefined,
+      });
+      const data = res.data || {};
+      setBulkOpen(false);
+      setBulkNote("");
+      setSelected(new Set());
+      setMessage(
+        `Bulk ${bulkActionLabel}: updated ${data.updated ?? 0}, skipped ${data.skipped ?? 0} of ${data.requested ?? bagIds.length}.`
+      );
+      await search();
+    } catch (e) {
+      setMessage(e?.response?.data?.error || "Bulk action failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const openTimeline = async (bagId) => {
     const bid = String(bagId || "").trim();
@@ -186,16 +270,64 @@ export default function RinseFoldingExceptionsPage() {
         </Stack>
       </Paper>
 
-      {message ? <Alert severity="error" sx={{ mb: 2 }} onClose={() => setMessage("")}>{message}</Alert> : null}
+      {message ? (
+        <Alert
+          severity={message.startsWith("Bulk") ? "success" : "error"}
+          sx={{ mb: 2 }}
+          onClose={() => setMessage("")}
+        >
+          {message}
+        </Alert>
+      ) : null}
 
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-        {total} exception row(s)
-      </Typography>
+      {selectedCount > 0 ? (
+        <Paper variant="outlined" sx={{ p: 1.5, mb: 2, bgcolor: "#f0f9ff" }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+            <Typography variant="body2" fontWeight={700}>
+              {selectedCount} selected
+            </Typography>
+            <Button size="small" onClick={() => setSelected(new Set())}>Clear selection</Button>
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <InputLabel>Bulk action</InputLabel>
+              <Select label="Bulk action" value={bulkAction} onChange={(e) => setBulkAction(e.target.value)}>
+                {BULK_ACTIONS.map((a) => (
+                  <MenuItem key={a.id} value={a.id}>{a.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={() => setBulkOpen(true)}
+            >
+              Apply to selected
+            </Button>
+          </Stack>
+        </Paper>
+      ) : null}
+
+      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+        <Typography variant="body2" color="text.secondary">
+          {total} exception row(s)
+        </Typography>
+        <FormControlLabel
+          control={
+            <Checkbox
+              size="small"
+              checked={allVisibleSelected}
+              indeterminate={selectedCount > 0 && !allVisibleSelected}
+              onChange={toggleSelectAll}
+            />
+          }
+          label="Select all visible"
+        />
+      </Stack>
 
       <Paper variant="outlined">
         <Table size="small">
           <TableHead>
             <TableRow>
+              <TableCell padding="checkbox" />
               <TableCell>Bag</TableCell>
               <TableCell>Customer</TableCell>
               <TableCell>User</TableCell>
@@ -210,7 +342,14 @@ export default function RinseFoldingExceptionsPage() {
           </TableHead>
           <TableBody>
             {rows.map((r) => (
-              <TableRow key={r.bag_id}>
+              <TableRow key={r.bag_id} selected={selected.has(r.bag_id)}>
+                <TableCell padding="checkbox">
+                  <Checkbox
+                    size="small"
+                    checked={selected.has(r.bag_id)}
+                    onChange={() => toggleSelect(r.bag_id)}
+                  />
+                </TableCell>
                 <TableCell>{r.bag_id}</TableCell>
                 <TableCell>{r.name_clean || "—"}</TableCell>
                 <TableCell>{r.assigned_user_name || "—"}</TableCell>
@@ -256,7 +395,7 @@ export default function RinseFoldingExceptionsPage() {
             ))}
             {!rows.length ? (
               <TableRow>
-                <TableCell colSpan={10} align="center" sx={{ py: 3, color: "text.secondary" }}>
+                <TableCell colSpan={11} align="center" sx={{ py: 3, color: "text.secondary" }}>
                   Run search to load exceptions.
                 </TableCell>
               </TableRow>
@@ -264,6 +403,34 @@ export default function RinseFoldingExceptionsPage() {
           </TableBody>
         </Table>
       </Paper>
+
+      <Dialog open={bulkOpen} onClose={() => !bulkBusy && setBulkOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Confirm bulk action</DialogTitle>
+        <DialogContent>
+          <Typography sx={{ mb: 2 }}>{bulkConfirmText}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Original exception codes will be preserved on each row.
+          </Typography>
+          <TextField
+            label={
+              bulkAction === "approve_scoring" || bulkAction === "exclude_scoring"
+                ? "Admin note (required)"
+                : "Admin note (optional)"
+            }
+            value={bulkNote}
+            onChange={(e) => setBulkNote(e.target.value)}
+            fullWidth
+            multiline
+            minRows={2}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBulkOpen(false)} disabled={bulkBusy}>Cancel</Button>
+          <Button variant="contained" onClick={runBulkAction} disabled={bulkBusy}>
+            {bulkBusy ? "Applying…" : "Confirm"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Drawer anchor="right" open={timelineOpen} onClose={() => setTimelineOpen(false)} PaperProps={{ sx: { width: 480, p: 2 } }}>
         <Typography variant="h6" fontWeight={700} gutterBottom>Scan timeline — {timelineBag}</Typography>

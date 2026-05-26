@@ -704,6 +704,50 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/folding/exceptions/bulk-action", methods=["POST"])
+    def rinse_folding_exceptions_bulk_action():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            data = request.get_json(silent=True) or {}
+            action = (data.get("action") or "").strip()
+            raw_ids = data.get("bag_ids") or []
+            if not isinstance(raw_ids, list) or not raw_ids:
+                return jsonify({"error": "bag_ids required"}), 400
+            if not action:
+                return jsonify({"error": "action required"}), 400
+            note = (data.get("note") or data.get("admin_notes") or "").strip() or None
+            if action in ("approve_scoring", "exclude_scoring") and not note:
+                return jsonify({"error": "note is required for approve and exclude"}), 400
+            from backend.rinse_folding_review import bulk_folding_exceptions_action
+
+            payload = bulk_folding_exceptions_action(
+                cursor,
+                tenant_oid,
+                [str(x) for x in raw_ids],
+                action=action,
+                actor_user_id=int(me.get("user_id") or 0) or None,
+                note=note,
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/folding/exceptions/<bag_id>/override", methods=["POST"])
     def rinse_folding_exception_override(bag_id: str):
         conn = get_db()

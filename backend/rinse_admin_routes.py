@@ -8,6 +8,7 @@ from flask import jsonify, request
 
 from backend.db import get_db
 from backend.rinse_bag_completion import normalize_bag_id
+from backend.rinse_operations_dashboard import get_operations_dashboard_summary
 from backend.rinse_order_search import get_order_archive_detail, search_rinse_orders
 from backend.rinse_scrape_status import (
     get_scheduled_scrape_status,
@@ -28,6 +29,55 @@ def register_rinse_admin_routes(
     where_not_sent_or_forced_sql,
     get_upload_batch_rows_pk,
 ):
+    @app.route("/rinse/operations-dashboard/summary", methods=["GET"])
+    def rinse_operations_dashboard_summary():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+
+            raw_date = request.args.get("date") or request.args.get("batch_date")
+            target = parse_date_value(raw_date) if raw_date else None
+            batch_id = None
+            if request.args.get("batch_id"):
+                try:
+                    batch_id = int(request.args.get("batch_id"))
+                except (TypeError, ValueError):
+                    return jsonify({"error": "Invalid batch_id"}), 400
+
+            if not isinstance(target, date):
+                if table_exists(cursor, "upload_batches"):
+                    cursor.execute(
+                        """
+                        SELECT batch_date FROM upload_batches
+                        WHERE organization_id = %s
+                        ORDER BY id DESC LIMIT 1
+                        """,
+                        (tenant_oid,),
+                    )
+                    row = cursor.fetchone()
+                    if row and row.get("batch_date"):
+                        bd = row["batch_date"]
+                        if hasattr(bd, "date") and not isinstance(bd, date):
+                            bd = bd.date()
+                        target = bd
+                if not isinstance(target, date):
+                    target = date.today()
+
+            payload = get_operations_dashboard_summary(
+                cursor,
+                tenant_oid,
+                target_date=target,
+                batch_id=batch_id,
+            )
+            return jsonify(json_safe_rinse(payload))
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/scheduled-scrape/status", methods=["GET"])
     def rinse_scheduled_scrape_status():
         conn = get_db()
@@ -154,6 +204,10 @@ def register_rinse_admin_routes(
                 folding_status=(request.args.get("folding_status") or "").strip() or None,
                 in_checkout=in_checkout,
                 lifecycle_filter=(request.args.get("lifecycle_filter") or "").strip() or None,
+                rush_type=(request.args.get("rush_type") or request.args.get("rush") or "").strip()
+                or None,
+                service_type=(request.args.get("service_type") or request.args.get("service") or "").strip()
+                or None,
                 date_clean_from=_opt_date("date_clean_from")
                 or _opt_date("processing_date_from"),
                 date_clean_to=_opt_date("date_clean_to") or _opt_date("processing_date_to"),

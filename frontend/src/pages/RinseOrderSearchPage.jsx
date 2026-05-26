@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -25,13 +26,22 @@ const LIFECYCLE_CHIPS = [
 ];
 
 export default function RinseOrderSearchPage() {
+  const [searchParams] = useSearchParams();
   const [bagId, setBagId] = useState("");
   const [customerSearch, setCustomerSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(() => searchParams.get("date_clean_from") || "");
+  const [dateTo, setDateTo] = useState(() => searchParams.get("date_clean_to") || "");
   const [completionStatus, setCompletionStatus] = useState("");
   const [foldingStatus, setFoldingStatus] = useState("");
-  const [lifecycleFilter, setLifecycleFilter] = useState("");
+  const [lifecycleFilter, setLifecycleFilter] = useState(
+    () => searchParams.get("lifecycle_filter") || ""
+  );
+  const [rushType, setRushType] = useState(
+    () => searchParams.get("rush_type") || searchParams.get("rush") || ""
+  );
+  const [serviceType, setServiceType] = useState(
+    () => searchParams.get("service_type") || searchParams.get("service") || ""
+  );
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -43,23 +53,66 @@ export default function RinseOrderSearchPage() {
 
   const buildSearchParams = useCallback(
     (extra = {}) => {
-      const params = { limit: 100, ...extra };
+      const params = { limit: 100 };
       if (bagId.trim()) params.bag_id = bagId.trim();
       if (customerSearch.trim()) {
         params.wild_search = customerSearch.trim();
         params.customer_name = customerSearch.trim();
       }
-      if (dateFrom) params.date_clean_from = dateFrom;
-      if (dateTo) params.date_clean_to = dateTo;
+      const df = extra.date_clean_from !== undefined ? extra.date_clean_from : dateFrom;
+      const dt = extra.date_clean_to !== undefined ? extra.date_clean_to : dateTo;
+      if (df) params.date_clean_from = df;
+      if (dt) params.date_clean_to = dt;
       if (completionStatus.trim()) params.completion_status = completionStatus.trim();
       if (foldingStatus.trim()) params.folding_status = foldingStatus.trim();
       const lf =
         extra.lifecycle_filter !== undefined ? extra.lifecycle_filter : lifecycleFilter;
       if (lf) params.lifecycle_filter = lf;
+      const rt = extra.rush_type !== undefined ? extra.rush_type : rushType;
+      const st = extra.service_type !== undefined ? extra.service_type : serviceType;
+      if (rt) params.rush_type = rt;
+      if (st) params.service_type = st;
       return params;
     },
-    [bagId, customerSearch, dateFrom, dateTo, completionStatus, foldingStatus, lifecycleFilter]
+    [
+      bagId,
+      customerSearch,
+      dateFrom,
+      dateTo,
+      completionStatus,
+      foldingStatus,
+      lifecycleFilter,
+      rushType,
+      serviceType,
+    ]
   );
+
+  useEffect(() => {
+    const df = searchParams.get("date_clean_from") || "";
+    const dt = searchParams.get("date_clean_to") || "";
+    const lf = searchParams.get("lifecycle_filter") || "";
+    const rf = searchParams.get("rush_type") || searchParams.get("rush") || "";
+    const sf = searchParams.get("service_type") || searchParams.get("service") || "";
+    if (df) setDateFrom(df);
+    if (dt) setDateTo(dt);
+    if (lf) {
+      setLifecycleFilter(lf);
+      if (lf === "completed") setCompletionStatus("COMPLETED");
+      if (lf === "folding_exceptions") setFoldingStatus("EXCEPTION");
+    }
+    if (rf) setRushType(rf);
+    if (sf) setServiceType(sf);
+    if (df || dt || lf || rf || sf) {
+      search({
+        date_clean_from: df || undefined,
+        date_clean_to: dt || undefined,
+        lifecycle_filter: lf || undefined,
+        rush_type: rf || undefined,
+        service_type: sf || undefined,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const search = async (extra = {}) => {
     try {

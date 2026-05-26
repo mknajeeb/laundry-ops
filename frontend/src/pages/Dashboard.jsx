@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Box, CircularProgress, Paper, Stack, Typography } from "@mui/material";
-import { getCurrentUploadBatch, getDashboard } from "../api";
+import {
+  Alert,
+  Box,
+  CircularProgress,
+  Grid,
+  Paper,
+  Stack,
+  Typography,
+} from "@mui/material";
+import { getCurrentUploadBatch, getDashboard, getOperationsDashboardSummary } from "../api";
 import { useLocation, useNavigate } from "react-router-dom";
 
 function parseAsLocalDate(value) {
@@ -15,10 +23,47 @@ function parseAsLocalDate(value) {
   return new Date(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate());
 }
 
+function toDateParam(value) {
+  if (!value) return "";
+  const d = parseAsLocalDate(value);
+  if (!d || Number.isNaN(d.getTime())) return String(value).slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function StatCard({ label, value, color, onClick, sub }) {
+  return (
+    <Paper
+      elevation={0}
+      onClick={onClick}
+      sx={{
+        p: 1.1,
+        borderRadius: 1.5,
+        border: "1px solid #e5e7eb",
+        borderTop: `3px solid ${color}`,
+        cursor: onClick ? "pointer" : "default",
+        minHeight: 72,
+        "&:hover": onClick ? { bgcolor: "#f8fafc" } : undefined,
+      }}
+    >
+      <Typography sx={{ fontSize: 11, fontWeight: 700, color: "#6b7280", textTransform: "uppercase" }}>
+        {label}
+      </Typography>
+      <Typography sx={{ fontSize: 26, fontWeight: 900, lineHeight: 1.1, color: "#111827" }}>{value ?? 0}</Typography>
+      {sub ? (
+        <Typography sx={{ fontSize: 10, color: "#9ca3af", mt: 0.3 }}>{sub}</Typography>
+      ) : null}
+    </Paper>
+  );
+}
+
 function Dashboard() {
   const navigate = useNavigate();
   const location = useLocation();
   const [stats, setStats] = useState(null);
+  const [opsSummary, setOpsSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeBatch, setActiveBatch] = useState(null);
@@ -28,8 +73,19 @@ function Dashboard() {
       setLoading(true);
       setError("");
       const [dashRes, batchRes] = await Promise.all([getDashboard(), getCurrentUploadBatch()]);
+      const batch = batchRes?.data || null;
       setStats(dashRes.data || {});
-      setActiveBatch(batchRes?.data || null);
+      setActiveBatch(batch);
+
+      const dateParam = toDateParam(batch?.batch_date || dashRes.data?.batch_date);
+      const summaryParams = { date: dateParam };
+      if (batch?.id) summaryParams.batch_id = batch.id;
+      try {
+        const sumRes = await getOperationsDashboardSummary(summaryParams);
+        setOpsSummary(sumRes.data || null);
+      } catch {
+        setOpsSummary(null);
+      }
     } catch (err) {
       console.error(err);
       setError("Could not load dashboard stats.");
@@ -67,23 +123,41 @@ function Dashboard() {
   }, [location.pathname, reloadDashboard]);
 
   const safe = stats || {};
+  const sum = opsSummary || {};
+
+  const batchDateIso = useMemo(
+    () => toDateParam(sum.date || activeBatch?.batch_date || safe.batch_date),
+    [sum.date, activeBatch?.batch_date, safe.batch_date]
+  );
 
   const batchDateLabel = useMemo(() => {
-    if (!safe.batch_date) return "No batch date";
-
-    const dt = parseAsLocalDate(safe.batch_date) || new Date(safe.batch_date);
+    const raw = sum.date || activeBatch?.batch_date || safe.batch_date;
+    if (!raw) return "No batch date";
+    const dt = parseAsLocalDate(raw) || new Date(raw);
     const dateLabel = Number.isNaN(dt.getTime())
-      ? String(safe.batch_date).split(" ")[0]
-      : dt.toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-        });
-
-    const dayLabel = safe.batch_day || (Number.isNaN(dt.getTime()) ? "" : dt.toLocaleDateString(undefined, { weekday: "long" }));
-
+      ? String(raw).split(" ")[0]
+      : dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    const dayLabel =
+      safe.batch_day ||
+      (Number.isNaN(dt.getTime()) ? "" : dt.toLocaleDateString(undefined, { weekday: "long" }));
     return dayLabel ? `${dayLabel}, ${dateLabel}` : dateLabel;
-  }, [safe.batch_date, safe.batch_day]);
+  }, [sum.date, activeBatch?.batch_date, safe.batch_date, safe.batch_day]);
+
+  const asOfLabel = activeBatch?.id
+    ? `Batch #${activeBatch.id} · ${batchDateLabel}`
+    : `As of ${batchDateLabel}`;
+
+  const drillOrderSearch = (extra = {}) => {
+    const params = new URLSearchParams();
+    if (batchDateIso) {
+      params.set("date_clean_from", batchDateIso);
+      params.set("date_clean_to", batchDateIso);
+    }
+    Object.entries(extra).forEach(([k, v]) => {
+      if (v != null && v !== "") params.set(k, v);
+    });
+    navigate(`/rinse/order-search?${params.toString()}`);
+  };
 
   return (
     <Box
@@ -95,13 +169,14 @@ function Dashboard() {
       }}
     >
       <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>Operations Dashboard</Typography>
-      <Typography sx={{ color: "#6b7280", mt: 0.3 }}>Batch: {batchDateLabel}</Typography>
+      <Typography sx={{ color: "#6b7280", mt: 0.3 }}>{asOfLabel}</Typography>
       {activeBatch && (
         <Box sx={{ mt: 0.7 }}>
           <Alert
             severity={String(activeBatch.state || "").toUpperCase() === "CONFIRMED" ? "success" : "warning"}
           >
-            Batch #{activeBatch.id} • {String(activeBatch.batch_date || "").slice(0, 10)} • {String(activeBatch.state || "DRAFT").toUpperCase()}
+            Batch #{activeBatch.id} • {String(activeBatch.batch_date || "").slice(0, 10)} •{" "}
+            {String(activeBatch.state || "DRAFT").toUpperCase()}
           </Alert>
         </Box>
       )}
@@ -116,91 +191,156 @@ function Dashboard() {
           {error}
         </Alert>
       ) : (
-        <Stack spacing={1.2} sx={{ mt: 1.5 }}>
-          <Paper
-            onClick={() => navigate("/orders")}
-            sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #0ea5e9", cursor: "pointer" }}
-          >
-            <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>All Orders</Typography>
-            <Typography sx={{ fontSize: 36, fontWeight: 900, lineHeight: 1.1 }}>{safe.total_orders ?? 0}</Typography>
-          </Paper>
-
-          <Paper
-            onClick={() => navigate("/orders?service=WF")}
-            sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #f59e0b", cursor: "pointer" }}
-          >
-            <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>WF</Typography>
-            <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>{safe.wf_total ?? 0}</Typography>
-            <Stack direction="row" spacing={1} sx={{ mt: 0.8 }}>
-              <ChipStat
+        <Stack spacing={1.5} sx={{ mt: 1.5 }}>
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Order status (registry)</Typography>
+          <Grid container spacing={1}>
+            <Grid item xs={6} sm={4} md={2.4}>
+              <StatCard
+                label="Total orders"
+                value={sum.total_orders ?? safe.total_orders}
+                color="#0ea5e9"
+                onClick={() => drillOrderSearch({})}
+              />
+            </Grid>
+            <Grid item xs={6} sm={4} md={2.4}>
+              <StatCard
                 label="Rush"
-                value={safe.wf_rush ?? 0}
-                tone="#ef4444"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate("/orders?service=WF&rush=RUSH");
-                }}
+                value={sum.rush_total}
+                color="#ef4444"
+                onClick={() => drillOrderSearch({ rush_type: "RUSH" })}
               />
-              <ChipStat
+            </Grid>
+            <Grid item xs={6} sm={4} md={2.4}>
+              <StatCard
                 label="Non-Rush"
-                value={safe.wf_non_rush ?? 0}
-                tone="#16a34a"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate("/orders?service=WF&rush=NON-RUSH");
-                }}
+                value={sum.non_rush_total}
+                color="#16a34a"
+                onClick={() => drillOrderSearch({ rush_type: "NON-RUSH" })}
               />
-            </Stack>
-          </Paper>
+            </Grid>
+            <Grid item xs={6} sm={4} md={2.4}>
+              <StatCard
+                label="Completed"
+                value={sum.completed_total}
+                color="#059669"
+                onClick={() => drillOrderSearch({ lifecycle_filter: "completed" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={4} md={2.4}>
+              <StatCard
+                label="Remaining"
+                value={sum.remaining_total}
+                color="#f59e0b"
+                onClick={() => drillOrderSearch({ lifecycle_filter: "incomplete" })}
+              />
+            </Grid>
+          </Grid>
 
-          <Paper
-            onClick={() => navigate("/orders?service=HD")}
-            sx={{ p: 1.4, borderRadius: 2, borderTop: "4px solid #a855f7", cursor: "pointer" }}
-          >
-            <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>HD</Typography>
-            <Typography sx={{ fontSize: 30, fontWeight: 900, lineHeight: 1 }}>{safe.hd_total ?? 0}</Typography>
-            <Stack direction="row" spacing={1} sx={{ mt: 0.8 }}>
-              <ChipStat
-                label="Rush"
-                value={safe.hd_rush ?? 0}
-                tone="#ef4444"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate("/orders?service=HD&rush=RUSH");
-                }}
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Rush / Non-Rush breakdown</Typography>
+          <Grid container spacing={1}>
+            <Grid item xs={6} sm={3}>
+              <StatCard
+                label="Rush completed"
+                value={sum.rush_completed}
+                color="#dc2626"
+                onClick={() => drillOrderSearch({ rush_type: "RUSH", lifecycle_filter: "completed" })}
               />
-              <ChipStat
-                label="Non-Rush"
-                value={safe.hd_non_rush ?? 0}
-                tone="#16a34a"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate("/orders?service=HD&rush=NON-RUSH");
-                }}
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <StatCard
+                label="Rush remaining"
+                value={sum.rush_remaining}
+                color="#f87171"
+                onClick={() => drillOrderSearch({ rush_type: "RUSH", lifecycle_filter: "incomplete" })}
               />
-            </Stack>
-          </Paper>
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <StatCard
+                label="Non-Rush completed"
+                value={sum.non_rush_completed}
+                color="#15803d"
+                onClick={() => drillOrderSearch({ rush_type: "NON-RUSH", lifecycle_filter: "completed" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3}>
+              <StatCard
+                label="Non-Rush remaining"
+                value={sum.non_rush_remaining}
+                color="#4ade80"
+                onClick={() => drillOrderSearch({ rush_type: "NON-RUSH", lifecycle_filter: "incomplete" })}
+              />
+            </Grid>
+          </Grid>
+
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Service & ops</Typography>
+          <Grid container spacing={1}>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="WF total"
+                value={sum.wf_total ?? safe.wf_total}
+                color="#f59e0b"
+                onClick={() => navigate("/orders?service=WF")}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="WF completed"
+                value={sum.wf_completed}
+                color="#d97706"
+                onClick={() => drillOrderSearch({ service_type: "WF", lifecycle_filter: "completed" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="WF remaining"
+                value={sum.wf_remaining}
+                color="#fbbf24"
+                onClick={() => drillOrderSearch({ service_type: "WF", lifecycle_filter: "incomplete" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="HD total"
+                value={sum.hd_total ?? safe.hd_total}
+                color="#a855f7"
+                onClick={() => navigate("/orders?service=HD")}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="HD completed"
+                value={sum.hd_completed}
+                color="#9333ea"
+                onClick={() => drillOrderSearch({ service_type: "HD", lifecycle_filter: "completed" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="HD remaining"
+                value={sum.hd_remaining}
+                color="#c084fc"
+                onClick={() => drillOrderSearch({ service_type: "HD", lifecycle_filter: "incomplete" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="Checkout active"
+                value={sum.checkout_active ?? safe.total_orders}
+                color="#0284c7"
+                onClick={() => drillOrderSearch({ lifecycle_filter: "in_checkout" })}
+              />
+            </Grid>
+            <Grid item xs={6} sm={3} md={2}>
+              <StatCard
+                label="Folding exceptions"
+                value={sum.folding_exceptions}
+                color="#ea580c"
+                onClick={() => navigate("/rinse/folding-exceptions")}
+              />
+            </Grid>
+          </Grid>
         </Stack>
       )}
-    </Box>
-  );
-}
-
-function ChipStat({ label, value, tone, onClick }) {
-  return (
-    <Box
-      onClick={onClick}
-      sx={{
-        flex: 1,
-        background: "#f9fafb",
-        border: "1px solid #e5e7eb",
-        borderRadius: 1.5,
-        p: 0.8,
-        cursor: onClick ? "pointer" : "default",
-      }}
-    >
-      <Typography sx={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>{label}</Typography>
-      <Typography sx={{ fontSize: 20, fontWeight: 900, color: tone, lineHeight: 1.1 }}>{value}</Typography>
     </Box>
   );
 }

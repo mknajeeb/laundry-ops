@@ -115,6 +115,8 @@ def search_rinse_orders(
     folding_status: str | None = None,
     in_checkout: bool | None = None,
     lifecycle_filter: str | None = None,
+    rush_type: str | None = None,
+    service_type: str | None = None,
     date_clean_from: date | None = None,
     date_clean_to: date | None = None,
     limit: int = 50,
@@ -174,6 +176,20 @@ def search_rinse_orders(
     if date_clean_to:
         where.append("r.date_clean <= %s")
         args.append(date_clean_to)
+
+    if rush_type:
+        from backend.rinse_operations_dashboard import effective_rush_expr
+
+        rt = str(rush_type).strip().upper()
+        if rt in ("RUSH", "NON-RUSH"):
+            where.append(f"{effective_rush_expr('r')} = %s")
+            args.append(rt)
+
+    if service_type:
+        st = str(service_type).strip().upper()
+        if st in ("WF", "HD"):
+            where.append("UPPER(COALESCE(r.service_type, 'WF')) = %s")
+            args.append(st)
 
     fold_join = ""
     if table_exists(cursor, "rinse_folding_performance"):

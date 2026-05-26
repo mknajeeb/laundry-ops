@@ -217,18 +217,23 @@ def exclude_exception_from_scoring(
     perf_id = int(row["id"])
     old_ex = row.get("excluded_from_performance")
     old_scoring = row.get("scoring_status")
+    now = datetime.utcnow()
     cursor.execute(
         """
         UPDATE rinse_folding_performance
         SET excluded_from_performance = 1,
             scoring_status = %s,
             included_in_scoring = 0,
+            reviewed_at = COALESCE(reviewed_at, %s),
+            reviewed_by_user_id = COALESCE(reviewed_by_user_id, %s),
             exception_review_note = COALESCE(%s, exception_review_note),
             updated_at = NOW()
         WHERE id = %s AND organization_id = %s
         """,
         (
             SCORING_EXCLUDED,
+            now,
+            actor_user_id,
             (note or "").strip() or None,
             perf_id,
             org,
@@ -243,6 +248,76 @@ def exclude_exception_from_scoring(
         actor_user_id=actor_user_id, notes=note, action_type="EXCLUDE_SCORING",
     )
     return {"bag_id": bid, "performance_id": perf_id, "row": get_folding_performance_row(cursor, org, bid)}
+
+
+BULK_ACTION_MARK_REVIEWED = "mark_reviewed"
+BULK_ACTION_APPROVE_SCORING = "approve_scoring"
+BULK_ACTION_EXCLUDE_SCORING = "exclude_scoring"
+
+
+def bulk_folding_exceptions_action(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+    *,
+    action: str,
+    actor_user_id: int | None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Apply review action to many bags; per-row errors do not abort the batch."""
+    act = str(action or "").strip().lower()
+    handlers = {
+        BULK_ACTION_MARK_REVIEWED: mark_exception_reviewed,
+        BULK_ACTION_APPROVE_SCORING: approve_exception_for_scoring,
+        BULK_ACTION_EXCLUDE_SCORING: exclude_exception_from_scoring,
+    }
+    handler = handlers.get(act)
+    if not handler:
+        raise ValueError(f"Unknown action: {action}")
+
+    results: list[dict[str, Any]] = []
+    updated = 0
+    skipped = 0
+    errors: list[dict[str, Any]] = []
+
+    for raw in bag_ids:
+        bid = normalize_bag_id(raw)
+        if not bid:
+            skipped += 1
+            results.append(
+                {"bag_id": str(raw or ""), "ok": False, "skipped": True, "error": "invalid_bag_id"}
+            )
+            continue
+        try:
+            payload = handler(
+                cursor,
+                int(organization_id),
+                bid,
+                actor_user_id=actor_user_id,
+                note=note,
+            )
+            updated += 1
+            results.append({"bag_id": bid, "ok": True, "skipped": False, **payload})
+        except ValueError as exc:
+            skipped += 1
+            err = {"bag_id": bid, "ok": False, "skipped": True, "error": str(exc)}
+            errors.append(err)
+            results.append(err)
+        except Exception as exc:
+            skipped += 1
+            err = {"bag_id": bid, "ok": False, "skipped": True, "error": str(exc)}
+            errors.append(err)
+            results.append(err)
+
+    return {
+        "ok": True,
+        "action": act,
+        "requested": len(bag_ids),
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors,
+        "results": results,
+    }
 
 
 def apply_review_override(
