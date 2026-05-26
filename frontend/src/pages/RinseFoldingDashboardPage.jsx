@@ -42,6 +42,7 @@ import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter
 import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePanel";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import FoldingUserSelect from "../components/folding/FoldingUserSelect";
+import FoldingUserSequencePanel from "../components/folding/FoldingUserSequencePanel";
 import { defaultWeekRange, foldingRangeParams, todayRange } from "../utils/foldingDateRange";
 import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
@@ -152,7 +153,6 @@ function RinseFoldingDashboardPage({ user }) {
   const [leaderboard, setLeaderboard] = useState(null);
   const [employeeData, setEmployeeData] = useState(null);
   const [selectedEmployee, setSelectedEmployee] = useState("");
-  const [employeeBags, setEmployeeBags] = useState([]);
   const [records, setRecords] = useState([]);
   const [exceptions, setExceptions] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -238,11 +238,7 @@ function RinseFoldingDashboardPage({ user }) {
       setBenchForm(benchRes.data || {});
       setRecords(recRes.data?.rows || []);
       setExceptions(exRes.data?.rows || []);
-      if (appliedEmployee) {
-        setSelectedEmployee(appliedEmployee);
-        const bags = empRes.data?.bags;
-        setEmployeeBags(Array.isArray(bags) ? bags : bags?.rows || []);
-      }
+      if (appliedEmployee) setSelectedEmployee(appliedEmployee);
     } catch (e) {
       setMessage({ type: "error", text: e?.response?.data?.error || e?.message || "Failed to load folding data" });
     } finally {
@@ -277,30 +273,6 @@ function RinseFoldingDashboardPage({ user }) {
     if (searchTick < 1) return;
     loadAll();
   }, [searchTick, loadAll]);
-
-  const loadEmployeeBags = useCallback(async (userName) => {
-    const uname = String(userName || "").trim();
-    if (!uname || searchTick < 1) {
-      setEmployeeBags([]);
-      return;
-    }
-    try {
-      const range = foldingRangeParams({
-        dateStart: appliedDateStart,
-        dateEnd: appliedDateEnd,
-        dateField: appliedListDateField,
-      });
-      const res = await getFoldingEmployeeAnalysis({ ...range, user_name: uname });
-      const bags = res.data?.bags;
-      setEmployeeBags(Array.isArray(bags) ? bags : bags?.rows || []);
-    } catch {
-      setEmployeeBags([]);
-    }
-  }, [appliedDateStart, appliedDateEnd, appliedListDateField, searchTick]);
-
-  useEffect(() => {
-    loadEmployeeBags(selectedEmployee);
-  }, [selectedEmployee, loadEmployeeBags]);
 
   const openDrawer = async (bagId) => {
     setDrawerBagId(bagId);
@@ -557,7 +529,7 @@ function RinseFoldingDashboardPage({ user }) {
           <TableHead>
             <TableRow>
               <TableCell>Employee</TableCell>
-              <TableCell align="right">Bags</TableCell>
+              <TableCell align="right">Bags (scoring)</TableCell>
               <TableCell align="right">Lbs</TableCell>
               <TableCell align="right">Hours</TableCell>
               <TableCell align="right">Bags/hr</TableCell>
@@ -599,48 +571,14 @@ function RinseFoldingDashboardPage({ user }) {
             ))}
           </TableBody>
         </Table>
-        {selectedEmployee ? (
-          <Box mt={3}>
-            <Typography variant="subtitle2" fontWeight={700} mb={1}>
-              Bags folded by {selectedEmployee}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Uses the applied date range above. Click Search after changing dates.
-            </Typography>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  <TableCell>Bag ID</TableCell>
-                  <TableCell>Customer</TableCell>
-                  <TableCell align="right">Weight</TableCell>
-                  <TableCell>Folding start</TableCell>
-                  <TableCell>Folding end</TableCell>
-                  <TableCell>Duration</TableCell>
-                  <TableCell>Status</TableCell>
-                  <TableCell>Exception</TableCell>
-                  <TableCell />
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {employeeBags.length === 0 ? (
-                  <TableRow><TableCell colSpan={9} align="center">No bags in period.</TableCell></TableRow>
-                ) : employeeBags.map((r) => (
-                  <TableRow key={r.bag_id} hover>
-                    <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
-                    <TableCell>{r.name_clean || "—"}</TableCell>
-                    <TableCell align="right">{r.weight_lbs != null ? formatLbs(r.weight_lbs) : r.registry_weight_num != null ? formatLbs(r.registry_weight_num) : "—"}</TableCell>
-                    <TableCell>{formatDateTime(r.folding_start_at)}</TableCell>
-                    <TableCell>{formatDateTime(r.folding_end_at)}</TableCell>
-                    <TableCell>{formatFoldingDuration(r.duration_seconds)}</TableCell>
-                    <TableCell><Chip size="small" label={r.status} color={r.status === "CALCULATED" ? "success" : "warning"} /></TableCell>
-                    <TableCell>{r.exception_code || "—"}</TableCell>
-                    <TableCell><Button size="small" onClick={() => openDrawer(r.bag_id)}>Timeline</Button></TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Box>
-        ) : null}
+        <FoldingUserSequencePanel
+          userName={selectedEmployee}
+          appliedDateStart={appliedDateStart}
+          appliedDateEnd={appliedDateEnd}
+          appliedListDateField={appliedListDateField}
+          searchTick={searchTick}
+          onOpenTimeline={openDrawer}
+        />
       </Paper>
 
       <Paper sx={{ p: 2, mb: 3 }}>
@@ -756,7 +694,7 @@ function RinseFoldingDashboardPage({ user }) {
                   <Chip
                     size="small"
                     label={r.scoring_status || r.status}
-                    color={r.status === "CALCULATED" || r.scoring_status === "APPROVED" ? "success" : "warning"}
+                    color={r.included_in_scoring ? "success" : "warning"}
                   />
                 </TableCell>
                 <TableCell>{r.exception_code || "—"}</TableCell>

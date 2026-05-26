@@ -68,6 +68,9 @@ def main() -> int:
         payload = recompute_folding_performance_for_bags(
             cursor, org, bag_ids, source_recompute_kind="exception_rules_apply"
         )
+        from backend.rinse_folding_exception_rules import mark_folding_recompute_applied
+
+        mark_folding_recompute_applied(cursor, org)
         conn.commit()
         summary = payload.get("summary") or summarize_recompute_results(
             payload.get("bags") or []

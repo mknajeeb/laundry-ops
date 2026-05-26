@@ -9,6 +9,8 @@ from typing import Any
 from backend.ta_helpers import table_exists
 
 KEY_EXCEPTION_RULES_JSON = "rinse_folding_exception_rules_json"
+KEY_RULES_SAVED_AT = "rinse_folding_exception_rules_saved_at"
+KEY_LAST_RECOMPUTE_AT = "rinse_folding_last_recompute_at"
 
 DEFAULT_MIN_DURATION_MINUTES = 10
 DEFAULT_MAX_DURATION_MINUTES = 240  # UI default; use 0 to disable max check
@@ -180,4 +182,46 @@ def put_folding_exception_rules(
         }
     )
     _set_setting(cursor, int(organization_id), KEY_EXCEPTION_RULES_JSON, json.dumps(stored))
-    return get_folding_exception_rules(cursor, organization_id)
+    from datetime import datetime
+
+    _set_setting(
+        cursor,
+        int(organization_id),
+        KEY_RULES_SAVED_AT,
+        datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    )
+    return get_folding_exception_rules_with_meta(cursor, organization_id)
+
+
+def get_folding_rules_meta(cursor, organization_id: int) -> dict[str, Any]:
+    saved = _get_setting(cursor, int(organization_id), KEY_RULES_SAVED_AT)
+    recomputed = _get_setting(cursor, int(organization_id), KEY_LAST_RECOMPUTE_AT)
+    recompute_needed = False
+    if saved and recomputed:
+        recompute_needed = str(saved) > str(recomputed)
+    elif saved:
+        recompute_needed = True
+    return {
+        "rules_saved_at": saved,
+        "last_recompute_at": recomputed,
+        "recompute_needed": recompute_needed,
+    }
+
+
+def get_folding_exception_rules_with_meta(
+    cursor, organization_id: int
+) -> dict[str, Any]:
+    out = get_folding_exception_rules(cursor, organization_id)
+    out.update(get_folding_rules_meta(cursor, organization_id))
+    return out
+
+
+def mark_folding_recompute_applied(cursor, organization_id: int) -> None:
+    from datetime import datetime
+
+    _set_setting(
+        cursor,
+        int(organization_id),
+        KEY_LAST_RECOMPUTE_AT,
+        datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    )

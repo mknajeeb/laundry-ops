@@ -560,14 +560,142 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             )
 
             if request.method == "GET":
-                return jsonify(get_folding_exception_rules(cursor, tenant_oid))
+                from backend.rinse_folding_exception_rules import (
+                    get_folding_exception_rules_with_meta,
+                )
+
+                return jsonify(get_folding_exception_rules_with_meta(cursor, tenant_oid))
             _, err_a, code_a = require_admin(cursor)
             if err_a:
                 return err_a, code_a
             data = request.get_json(silent=True) or {}
-            out = put_folding_exception_rules(cursor, tenant_oid, data)
+            from backend.rinse_folding_exception_rules import (
+                get_folding_exception_rules_with_meta,
+                put_folding_exception_rules,
+            )
+
+            put_folding_exception_rules(cursor, tenant_oid, data)
             conn.commit()
+            out = get_folding_exception_rules_with_meta(cursor, tenant_oid)
+            out["recompute_notice"] = (
+                "Settings saved. Existing folding records need to be recomputed "
+                "to reflect the new rules."
+            )
             return jsonify(out)
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/user-sequence", methods=["GET"])
+    def rinse_folding_user_sequence():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            user_name = (request.args.get("user_name") or "").strip()
+            if not user_name:
+                return jsonify({"error": "user_name required"}), 400
+            benchmarks = get_rinse_folding_benchmarks(cursor, tenant_oid)
+            week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
+            try:
+                period_start, period_end, _label, date_field = parse_range_from_request(
+                    request.args,
+                    parse_date_value,
+                    week_start_day=week_start_day,
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            from backend.rinse_folding_user_sequence import build_user_folding_sequence
+
+            payload = build_user_folding_sequence(
+                cursor,
+                tenant_oid,
+                user_name=user_name,
+                period_start=period_start,
+                period_end=period_end,
+                date_field=date_field,
+            )
+            return jsonify(json_safe_rinse(payload))
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exception-rules/dry-run", methods=["POST"])
+    def rinse_folding_exception_rules_dry_run():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            from scripts.dry_run_folding_exception_rules import _run_dry_run
+
+            report = _run_dry_run(
+                cursor,
+                org=tenant_oid,
+                from_batch=None,
+                to_batch=None,
+                label=f"Org {tenant_oid} — dry-run (API)",
+            )
+            return jsonify(json_safe_rinse(report))
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/exception-rules/apply", methods=["POST"])
+    def rinse_folding_exception_rules_apply():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            from backend.rinse_bag_completion import COMPLETION_COMPLETED
+            from backend.rinse_bag_registry import list_registry_rows
+            from backend.rinse_folding_exception_rules import mark_folding_recompute_applied
+
+            rows = list_registry_rows(
+                cursor, tenant_oid, status=COMPLETION_COMPLETED, limit=10000, offset=0
+            )
+            bag_ids = [str(r["bag_id"]) for r in rows if r.get("bag_id")]
+            payload = recompute_folding_performance_for_bags(
+                cursor,
+                tenant_oid,
+                bag_ids,
+                source_recompute_kind="exception_rules_apply",
+            )
+            mark_folding_recompute_applied(cursor, tenant_oid)
+            conn.commit()
+            summary = payload.get("summary") or summarize_recompute_results(
+                payload.get("bags") or []
+            )
+            return jsonify(
+                json_safe_rinse(
+                    {
+                        "ok": True,
+                        "summary": summary,
+                        "bags_processed": len(bag_ids),
+                        "safety": {
+                            "scan_timestamps_rewritten": False,
+                            "upload_staging_registry_rows_changed": False,
+                        },
+                    }
+                )
+            )
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500

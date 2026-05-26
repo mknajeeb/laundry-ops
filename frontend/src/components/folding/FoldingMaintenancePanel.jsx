@@ -80,7 +80,7 @@ export default function FoldingMaintenancePanel({ onChanged }) {
 
   return (
     <>
-      <FoldingExceptionRulesPanel />
+      <FoldingExceptionRulesPanel onRecomputeApplied={onChanged} />
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
         Excluded users (leaderboard / TV scoring)

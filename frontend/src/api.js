@@ -431,6 +431,15 @@ export const getFoldingExceptionRules = () =>
 export const putFoldingExceptionRules = (body) =>
   axios.put(`${API_BASE}/rinse/folding/settings/exception-rules`, body, { timeout: 15000 });
 
+export const dryRunFoldingExceptionRules = () =>
+  axios.post(`${API_BASE}/rinse/folding/exception-rules/dry-run`, {}, { timeout: 300000 });
+
+export const applyFoldingExceptionRules = () =>
+  axios.post(`${API_BASE}/rinse/folding/exception-rules/apply`, {}, { timeout: 300000 });
+
+export const getFoldingUserSequence = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/folding/user-sequence`, { params, timeout: 60000 });
+
 export const markFoldingExceptionReviewed = (bagId, body = {}) =>
   axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/reviewed`, body, { timeout: 30000 });
 

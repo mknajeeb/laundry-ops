@@ -717,6 +717,7 @@ def list_folding_performance_rows(
     limit: int = 100,
     offset: int = 0,
     include_total: bool = False,
+    order_by: str = "work_date",
 ) -> list[dict[str, Any]] | dict[str, Any]:
     ensure_rinse_folding_tables(cursor)
     org = int(organization_id)
@@ -761,13 +762,26 @@ def list_folding_performance_rows(
         row = cursor.fetchone()
         total = int((row.get("cnt") if isinstance(row, dict) else row[0]) or 0)
 
+    order_key = str(order_by or "work_date").strip().lower()
+    if order_key == "folding_start":
+        order_clause = """
+        ORDER BY
+          CASE WHEN p.folding_start_at IS NULL THEN 1 ELSE 0 END,
+          p.folding_start_at ASC,
+          CASE WHEN p.folding_end_at IS NULL THEN 1 ELSE 0 END,
+          p.folding_end_at ASC,
+          p.bag_id ASC
+        """
+    else:
+        order_clause = "ORDER BY p.work_date DESC, p.computed_at DESC"
+
     sql = f"""
         SELECT p.*,
                r.completion_status AS registry_completion_status_live,
                r.name_clean,
                r.weight_num AS registry_weight_num
         {base}{filt_sql}
-        ORDER BY p.work_date DESC, p.computed_at DESC
+        {order_clause}
         LIMIT %s OFFSET %s
     """
     cursor.execute(sql, tuple(args) + (int(limit), int(offset)))
@@ -1639,6 +1653,7 @@ def aggregate_folding_employee_analysis(
             period_start=period_start,
             period_end=period_end,
             limit=500,
+            order_by="folding_start",
         )
         return {
             "period": period_label,

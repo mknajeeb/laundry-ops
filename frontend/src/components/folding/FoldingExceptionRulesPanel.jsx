@@ -3,6 +3,11 @@ import {
   Alert,
   Box,
   Button,
+  Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
   FormControlLabel,
   InputLabel,
@@ -14,12 +19,20 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { getFoldingExceptionRules, putFoldingExceptionRules } from "../../api";
+import {
+  applyFoldingExceptionRules,
+  dryRunFoldingExceptionRules,
+  getFoldingExceptionRules,
+  putFoldingExceptionRules,
+} from "../../api";
 
-export default function FoldingExceptionRulesPanel() {
+export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
   const [rules, setRules] = useState(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [dryRunResult, setDryRunResult] = useState(null);
+  const [applyOpen, setApplyOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -39,9 +52,10 @@ export default function FoldingExceptionRulesPanel() {
     try {
       setLoading(true);
       setMessage("");
+      setDryRunResult(null);
       const res = await putFoldingExceptionRules(rules);
       setRules(res.data);
-      setMessage("Exception rules saved.");
+      setMessage(res.data?.recompute_notice || "Exception rules saved.");
     } catch (e) {
       setMessage(e?.response?.data?.error || "Save failed");
     } finally {
@@ -49,9 +63,46 @@ export default function FoldingExceptionRulesPanel() {
     }
   };
 
+  const runDryRun = async () => {
+    try {
+      setBusy(true);
+      setMessage("");
+      const res = await dryRunFoldingExceptionRules();
+      setDryRunResult(res.data);
+      setMessage("Dry-run complete (no rows written).");
+    } catch (e) {
+      setMessage(e?.response?.data?.error || "Dry-run failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runApply = async () => {
+    try {
+      setBusy(true);
+      setMessage("");
+      const res = await applyFoldingExceptionRules();
+      setApplyOpen(false);
+      setDryRunResult(null);
+      const s = res.data?.summary || {};
+      setMessage(
+        `Recompute applied: processed=${s.processed ?? res.data?.bags_processed ?? "?"}, `
+        + `calculated=${s.calculated ?? "?"}, exceptions=${s.exceptions ?? "?"}.`
+      );
+      await load();
+      if (onRecomputeApplied) await onRecomputeApplied();
+    } catch (e) {
+      setMessage(e?.response?.data?.error || "Apply recompute failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!rules) {
     return <Typography variant="body2" color="text.secondary">Loading exception rules…</Typography>;
   }
+
+  const pc = dryRunResult?.proposed_changes || {};
 
   return (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
@@ -59,13 +110,31 @@ export default function FoldingExceptionRulesPanel() {
         Exception rule thresholds
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-        Tenant-scoped. Recompute folding after changing rules to apply to existing bags.
+        Save settings updates thresholds only. Recompute rewrites existing folding performance rows
+        (no upload, registry, staging, or scan timestamp changes).
       </Typography>
+
+      {rules.recompute_needed ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Rules changed — recompute needed to apply to existing bags.
+          {rules.last_recompute_at ? ` Last recompute: ${rules.last_recompute_at}.` : ""}
+        </Alert>
+      ) : null}
+
       {message ? (
-        <Alert severity={message.includes("saved") ? "success" : "error"} sx={{ mb: 2 }} onClose={() => setMessage("")}>
+        <Alert
+          severity={
+            message.includes("saved") || message.includes("applied") || message.includes("Dry-run")
+              ? "success"
+              : "error"
+          }
+          sx={{ mb: 2 }}
+          onClose={() => setMessage("")}
+        >
           {message}
         </Alert>
       ) : null}
+
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" sx={{ mb: 2 }}>
         <TextField
           size="small"
@@ -143,9 +212,48 @@ export default function FoldingExceptionRulesPanel() {
           label="Multiple clean scans = exception (off = warning only, still counts in scoring)"
         />
       </Stack>
-      <Box sx={{ mt: 2 }}>
+      <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 2 }}>
         <Button variant="contained" onClick={save} disabled={loading}>Save exception rules</Button>
-      </Box>
+        <Button variant="outlined" onClick={runDryRun} disabled={busy || loading}>Dry-run recompute</Button>
+        <Button variant="outlined" color="warning" onClick={() => setApplyOpen(true)} disabled={busy || loading}>
+          Apply recompute
+        </Button>
+      </Stack>
+
+      <Collapse in={Boolean(dryRunResult)}>
+        <Box sx={{ mt: 2, p: 1.5, bgcolor: "grey.50", borderRadius: 1 }}>
+          <Typography variant="subtitle2" fontWeight={700} gutterBottom>Dry-run summary</Typography>
+          <Typography variant="body2">
+            Bags evaluated: {dryRunResult?.total_completed_bags_evaluated ?? "—"}
+          </Typography>
+          <Typography variant="body2">
+            CALCULATED → EXCEPTION: {pc.calculated_to_exception ?? 0} · EXCEPTION → CALCULATED:{" "}
+            {pc.exception_to_calculated ?? 0} · Warning-only: {pc.warning_only ?? 0} · Unchanged:{" "}
+            {pc.unchanged ?? 0}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+            Scan timestamps rewritten: {String(dryRunResult?.safety?.scan_timestamps_rewritten)} ·
+            Registry/upload changed: {String(dryRunResult?.safety?.upload_staging_registry_rows_changed)}
+          </Typography>
+        </Box>
+      </Collapse>
+
+      <Dialog open={applyOpen} onClose={() => !busy && setApplyOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Apply recompute?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Apply recompute for this organization using current rules? This updates folding performance
+            statuses and scoring only. It does not change uploads, registry, staging, or scan timestamps.
+            Reviewed/approved/excluded audit fields are preserved.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setApplyOpen(false)} disabled={busy}>Cancel</Button>
+          <Button variant="contained" color="warning" onClick={runApply} disabled={busy}>
+            {busy ? "Applying…" : "Apply recompute"}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Paper>
   );
 }
