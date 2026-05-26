@@ -440,6 +440,18 @@ export const applyFoldingExceptionRules = () =>
 export const getFoldingUserSequence = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/user-sequence`, { params, timeout: 60000 });
 
+export const getFoldingUserProductivity = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/folding/user-productivity`, { params, timeout: 60000 });
+
+export const listFoldingUserMappings = () =>
+  axios.get(`${API_BASE}/rinse/folding/user-mappings`, { timeout: 30000 });
+
+export const upsertFoldingUserMapping = (body) =>
+  axios.put(`${API_BASE}/rinse/folding/user-mappings`, body, { timeout: 30000 });
+
+export const deleteFoldingUserMapping = (id) =>
+  axios.delete(`${API_BASE}/rinse/folding/user-mappings`, { params: { id }, timeout: 30000 });
+
 export const markFoldingExceptionReviewed = (bagId, body = {}) =>
   axios.post(`${API_BASE}/rinse/folding/exceptions/${encodeURIComponent(bagId)}/reviewed`, body, { timeout: 30000 });
 

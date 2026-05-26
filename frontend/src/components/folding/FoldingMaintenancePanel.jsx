@@ -23,6 +23,7 @@ import {
   removeFoldingExcludedUser,
 } from "../../api";
 import FoldingExceptionRulesPanel from "./FoldingExceptionRulesPanel";
+import FoldingUserMappingPanel from "./FoldingUserMappingPanel";
 
 export default function FoldingMaintenancePanel({ onChanged }) {
   const [excluded, setExcluded] = useState([]);
@@ -81,6 +82,7 @@ export default function FoldingMaintenancePanel({ onChanged }) {
   return (
     <>
       <FoldingExceptionRulesPanel onRecomputeApplied={onChanged} />
+      <FoldingUserMappingPanel />
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
         Excluded users (leaderboard / TV scoring)

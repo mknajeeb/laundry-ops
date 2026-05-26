@@ -589,6 +589,94 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/folding/user-productivity", methods=["GET"])
+    def rinse_folding_user_productivity():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            user_name = (request.args.get("user_name") or "").strip()
+            if not user_name:
+                return jsonify({"error": "user_name required"}), 400
+            benchmarks = get_rinse_folding_benchmarks(cursor, tenant_oid)
+            week_start_day = str(benchmarks.get("week_start_day") or "MONDAY")
+            try:
+                period_start, period_end, _label, date_field = parse_range_from_request(
+                    request.args,
+                    parse_date_value,
+                    week_start_day=week_start_day,
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            from backend.rinse_folding_user_productivity import build_user_folding_productivity
+
+            payload = build_user_folding_productivity(
+                cursor,
+                tenant_oid,
+                user_name=user_name,
+                period_start=period_start,
+                period_end=period_end,
+                date_field=date_field,
+            )
+            return jsonify(json_safe_rinse(payload))
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/user-mappings", methods=["GET", "PUT", "DELETE"])
+    def rinse_folding_user_mappings():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            from backend.rinse_folding_user_productivity import (
+                delete_user_map,
+                list_user_maps,
+                upsert_user_map,
+            )
+
+            if request.method == "GET":
+                return jsonify(
+                    json_safe_rinse({"mappings": list_user_maps(cursor, tenant_oid)})
+                )
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            if request.method == "PUT":
+                data = request.get_json(silent=True) or {}
+                row = upsert_user_map(
+                    cursor,
+                    tenant_oid,
+                    rinse_user_name=str(data.get("rinse_user_name") or "").strip(),
+                    user_id=int(data.get("user_id") or 0),
+                    active=bool(data.get("active", True)),
+                    notes=(data.get("notes") or "").strip() or None,
+                )
+                conn.commit()
+                return jsonify(json_safe_rinse(row))
+            map_id = request.args.get("id")
+            if not map_id:
+                return jsonify({"error": "id required"}), 400
+            if not delete_user_map(cursor, tenant_oid, int(map_id)):
+                return jsonify({"error": "mapping not found"}), 404
+            conn.commit()
+            return jsonify({"ok": True})
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/folding/user-sequence", methods=["GET"])
     def rinse_folding_user_sequence():
         conn = get_db()

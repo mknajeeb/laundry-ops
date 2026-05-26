@@ -42,7 +42,7 @@ import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter
 import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePanel";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import FoldingUserSelect from "../components/folding/FoldingUserSelect";
-import FoldingUserSequencePanel from "../components/folding/FoldingUserSequencePanel";
+import FoldingEmployeeProductivityPanel from "../components/folding/FoldingEmployeeProductivityPanel";
 import { defaultWeekRange, foldingRangeParams, todayRange } from "../utils/foldingDateRange";
 import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
@@ -571,7 +571,7 @@ function RinseFoldingDashboardPage({ user }) {
             ))}
           </TableBody>
         </Table>
-        <FoldingUserSequencePanel
+        <FoldingEmployeeProductivityPanel
           userName={selectedEmployee}
           appliedDateStart={appliedDateStart}
           appliedDateEnd={appliedDateEnd}
