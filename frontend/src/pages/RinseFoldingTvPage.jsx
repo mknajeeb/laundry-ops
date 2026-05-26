@@ -195,19 +195,11 @@ function RinseFoldingTvPage({ user }) {
     setAppliedDateEnd(dateEnd);
   };
 
-  const initialLoad = useRef(false);
   useEffect(() => {
-    if (!initialLoad.current) {
-      initialLoad.current = true;
-      setAppliedPreset("week");
-      setAppliedDateStart(initialWeek.start);
-      setAppliedDateEnd(initialWeek.end);
-      return;
-    }
     load();
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
-  }, [appliedDateStart, appliedDateEnd, load]);
+  }, [load]);
 
   const users = data?.users || [];
   const top = users[0];

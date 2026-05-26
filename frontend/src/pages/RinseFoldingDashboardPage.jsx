@@ -152,6 +152,7 @@ function RinseFoldingDashboardPage({ user }) {
   const [leaderboard, setLeaderboard] = useState(null);
   const [employeeData, setEmployeeData] = useState(null);
   const [selectedEmployee, setSelectedEmployee] = useState("");
+  const [employeeBags, setEmployeeBags] = useState([]);
   const [records, setRecords] = useState([]);
   const [exceptions, setExceptions] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -237,7 +238,11 @@ function RinseFoldingDashboardPage({ user }) {
       setBenchForm(benchRes.data || {});
       setRecords(recRes.data?.rows || []);
       setExceptions(exRes.data?.rows || []);
-      if (appliedEmployee) setSelectedEmployee(appliedEmployee);
+      if (appliedEmployee) {
+        setSelectedEmployee(appliedEmployee);
+        const bags = empRes.data?.bags;
+        setEmployeeBags(Array.isArray(bags) ? bags : bags?.rows || []);
+      }
     } catch (e) {
       setMessage({ type: "error", text: e?.response?.data?.error || e?.message || "Failed to load folding data" });
     } finally {
@@ -272,6 +277,30 @@ function RinseFoldingDashboardPage({ user }) {
     if (searchTick < 1) return;
     loadAll();
   }, [searchTick, loadAll]);
+
+  const loadEmployeeBags = useCallback(async (userName) => {
+    const uname = String(userName || "").trim();
+    if (!uname || searchTick < 1) {
+      setEmployeeBags([]);
+      return;
+    }
+    try {
+      const range = foldingRangeParams({
+        dateStart: appliedDateStart,
+        dateEnd: appliedDateEnd,
+        dateField: appliedListDateField,
+      });
+      const res = await getFoldingEmployeeAnalysis({ ...range, user_name: uname });
+      const bags = res.data?.bags;
+      setEmployeeBags(Array.isArray(bags) ? bags : bags?.rows || []);
+    } catch {
+      setEmployeeBags([]);
+    }
+  }, [appliedDateStart, appliedDateEnd, appliedListDateField, searchTick]);
+
+  useEffect(() => {
+    loadEmployeeBags(selectedEmployee);
+  }, [selectedEmployee, loadEmployeeBags]);
 
   const openDrawer = async (bagId) => {
     setDrawerBagId(bagId);
@@ -357,7 +386,6 @@ function RinseFoldingDashboardPage({ user }) {
   const comp = leaderboard?.team_comparison || {};
   const staffRows = leaderboard?.users || [];
   const employees = employeeData?.employees || (employeeData?.employee ? [employeeData.employee] : []);
-  const employeeBags = employeeData?.bags || [];
 
   return (
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1400, mx: "auto" }}>
@@ -395,6 +423,7 @@ function RinseFoldingDashboardPage({ user }) {
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         {formatAppliedRangeSummary({ dateStart: appliedDateStart, dateEnd: appliedDateEnd, preset: appliedPreset })}
         {appliedListDateField !== "folding_work_date" ? ` · Date meaning: ${appliedListDateField}` : ""}
+        {searchTick < 1 ? " · Set dates and click Search to load data." : ""}
       </Typography>
 
       {message.text ? <Alert severity={message.type || "info"} sx={{ mb: 2 }} onClose={() => setMessage({ type: "", text: "" })}>{message.text}</Alert> : null}
@@ -572,7 +601,12 @@ function RinseFoldingDashboardPage({ user }) {
         </Table>
         {selectedEmployee ? (
           <Box mt={3}>
-            <Typography variant="subtitle2" fontWeight={700} mb={1}>Bags folded by {selectedEmployee}</Typography>
+            <Typography variant="subtitle2" fontWeight={700} mb={1}>
+              Bags folded by {selectedEmployee}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Uses the applied date range above. Click Search after changing dates.
+            </Typography>
             <Table size="small">
               <TableHead>
                 <TableRow>
