@@ -44,6 +44,44 @@ export function formatDateTime(val) {
   });
 }
 
+/** Single-line ET wall time for folding tables (no timezone line-wrap). */
+export function formatFoldingWallDateTime(val) {
+  if (!val) return "—";
+  const s = String(val).trim();
+  if (/\bGMT\b/i.test(s)) return "—";
+  if (hasExplicitTzOffset(s)) {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return "—";
+    return `${d.toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })} ET`;
+  }
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})/);
+  if (m) {
+    const [, y, mo, d, h, mi] = m;
+    const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi));
+    if (Number.isNaN(dt.getTime())) return s;
+    return `${dt.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })} ET`;
+  }
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return String(val);
+  return `${d.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })} ET`;
+}
+
 export function formatPeriodRange(start, end) {
   if (!start || !end) return "—";
   const fmt = (iso) => {
