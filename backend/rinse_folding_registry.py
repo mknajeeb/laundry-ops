@@ -102,10 +102,20 @@ def ensure_rinse_folding_v2_columns(cursor) -> None:
         ("reviewed_by_user_id", "INT NULL"),
         ("exception_review_note", "TEXT NULL"),
     ):
-        if not table_has_column(cursor, "rinse_folding_performance", col):
+        if table_has_column(cursor, "rinse_folding_performance", col):
+            continue
+        try:
             cursor.execute(
                 f"ALTER TABLE rinse_folding_performance ADD COLUMN {col} {ddl}"
             )
+        except Exception as exc:
+            # Race or INFORMATION_SCHEMA mismatch vs actual table (e.g. Azure).
+            if getattr(exc, "errno", None) != 1060:
+                raise
+            from backend.ta_helpers import _column_cache, _schema_lock
+
+            with _schema_lock:
+                _column_cache[("rinse_folding_performance", col)] = True
 
 
 def ensure_rinse_folding_tables(cursor) -> None:
@@ -585,7 +595,7 @@ def _folding_performance_search_clauses(
     excluded_from_scoring: bool | None = None,
     included_in_scoring: bool | None = None,
 ) -> tuple[str, list[Any]]:
-    from backend.rinse_folding_period import sql_period_range_clause
+    from backend.rinse_folding_period import sql_period_filter_sql_and_args
 
     sql = ""
     args: list[Any] = []
@@ -601,8 +611,11 @@ def _folding_performance_search_clauses(
         sql += " AND p.work_date = %s"
         args.append(work_date)
     elif period_start and period_end:
-        sql += sql_period_range_clause(date_field)
-        args.extend([period_start, period_end])
+        filt_sql, filt_args = sql_period_filter_sql_and_args(
+            date_field, period_start, period_end
+        )
+        sql += filt_sql
+        args.extend(filt_args)
     if user_name:
         sql += " AND p.assigned_user_name = %s"
         args.append(str(user_name).strip())
@@ -950,6 +963,11 @@ def aggregate_user_folding_stats(
 
     ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
     incl = sql_scoring_included_predicate("p")
+    from backend.rinse_folding_period import sql_period_filter_sql_and_args
+
+    period_sql, period_args = sql_period_filter_sql_and_args(
+        "folding_work_date", period_start, period_end
+    )
     cursor.execute(
         f"""
         SELECT
@@ -966,8 +984,7 @@ def aggregate_user_folding_stats(
           AND p.assigned_user_name = %s
           AND {incl}
           AND r.completion_status = %s
-          AND p.work_date >= %s
-          AND p.work_date <= %s
+          {period_sql}
           {ex_sql}
         ORDER BY p.folding_start_at ASC
         """,
@@ -975,8 +992,7 @@ def aggregate_user_folding_stats(
             org,
             uname,
             COMPLETION_COMPLETED,
-            period_start,
-            period_end,
+            *period_args,
             *ex_args,
         ),
     )
@@ -1226,6 +1242,11 @@ def aggregate_team_folding_stats(
 
     ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
     incl = sql_scoring_included_predicate("p")
+    from backend.rinse_folding_period import sql_period_filter_sql_and_args
+
+    period_sql, period_args = sql_period_filter_sql_and_args(
+        "folding_work_date", period_start, period_end
+    )
     cursor.execute(
         f"""
         SELECT
@@ -1238,15 +1259,13 @@ def aggregate_team_folding_stats(
         WHERE p.organization_id = %s
           AND {incl}
           AND r.completion_status = %s
-          AND p.work_date >= %s
-          AND p.work_date <= %s
+          {period_sql}
           {ex_sql}
         """,
         (
             org,
             COMPLETION_COMPLETED,
-            period_start,
-            period_end,
+            *period_args,
             *ex_args,
         ),
     )
@@ -1342,6 +1361,11 @@ def list_folding_users_in_period(
 
     ex_sql, ex_args = sql_exclude_scoring_users_clause(cursor, org)
     incl = sql_scoring_included_predicate("p")
+    from backend.rinse_folding_period import sql_period_filter_sql_and_args
+
+    period_sql, period_args = sql_period_filter_sql_and_args(
+        "folding_work_date", period_start, period_end
+    )
     cursor.execute(
         f"""
         SELECT DISTINCT p.assigned_user_name
@@ -1351,8 +1375,7 @@ def list_folding_users_in_period(
         WHERE p.organization_id = %s
           AND {incl}
           AND r.completion_status = %s
-          AND p.work_date >= %s
-          AND p.work_date <= %s
+          {period_sql}
           AND p.assigned_user_name IS NOT NULL
           AND TRIM(p.assigned_user_name) != ''
           {ex_sql}
@@ -1361,8 +1384,7 @@ def list_folding_users_in_period(
         (
             org,
             COMPLETION_COMPLETED,
-            period_start,
-            period_end,
+            *period_args,
             *ex_args,
         ),
     )

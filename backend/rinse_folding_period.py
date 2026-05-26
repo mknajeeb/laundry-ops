@@ -5,6 +5,11 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any, Literal
 
+from backend.rinse_folding_et import (
+    eastern_month_bounds,
+    eastern_today,
+    eastern_week_bounds,
+)
 from backend.rinse_folding_registry import folding_period_bounds, resolve_analysis_period
 
 DateField = Literal["folding_work_date", "date_clean", "completed_at"]
@@ -15,8 +20,8 @@ def default_week_range(
     *,
     week_start_day: str = "MONDAY",
 ) -> tuple[date, date]:
-    """Current calendar week Mon–Sun (or configured week start)."""
-    return folding_period_bounds("week", anchor or date.today(), week_start_day=week_start_day)
+    """Current Eastern calendar week Mon–Sun (or configured week start)."""
+    return eastern_week_bounds(anchor or eastern_today(), week_start_day=week_start_day)
 
 
 def sql_date_column(date_field: str) -> str:
@@ -30,9 +35,24 @@ def sql_date_column(date_field: str) -> str:
 
 
 def sql_period_range_clause(date_field: str) -> str:
-    """Returns AND clause with two %s placeholders for start/end."""
+    """Deprecated: use sql_period_filter_sql_and_args from rinse_folding_et."""
     col = sql_date_column(date_field)
     return f" AND {col} >= %s AND {col} <= %s"
+
+
+def sql_period_filter_sql_and_args(
+    date_field: str,
+    period_start: date,
+    period_end: date,
+    *,
+    perf_alias: str = "p",
+    registry_alias: str = "r",
+) -> tuple[str, list]:
+    from backend.rinse_folding_et import sql_period_filter_sql_and_args as _et
+
+    return _et(
+        date_field, period_start, period_end, perf_alias=perf_alias, registry_alias=registry_alias
+    )
 
 
 def parse_folding_date_range(
@@ -56,17 +76,16 @@ def parse_folding_date_range(
             label = "today"
         return date_start, date_end, label
 
-    anchor_day = anchor or date.today()
+    anchor_day = anchor or eastern_today()
     p = str(period or "week").strip().lower()
     if p == "custom":
         raise ValueError("custom period requires date_start and date_end")
     if p in ("today", "day"):
-        start, end = folding_period_bounds("today", anchor_day)
-        return start, end, "today"
+        return anchor_day, anchor_day, "today"
     if p == "month":
-        start, end = folding_period_bounds("month", anchor_day, week_start_day=week_start_day)
+        start, end = eastern_month_bounds(anchor_day)
         return start, end, "month"
-    start, end = folding_period_bounds("week", anchor_day, week_start_day=week_start_day)
+    start, end = eastern_week_bounds(anchor_day, week_start_day=week_start_day)
     return start, end, "week"
 
 
@@ -98,7 +117,7 @@ def parse_range_from_request(
 
     period_raw = (args.get("period") or "week").strip().lower()
     anchor_raw = args.get("date") or args.get("anchor_date")
-    anchor = parse_date_value(anchor_raw) if anchor_raw else date.today()
+    anchor = parse_date_value(anchor_raw) if anchor_raw else eastern_today()
     if not isinstance(anchor, date):
         raise ValueError("Invalid anchor date")
 

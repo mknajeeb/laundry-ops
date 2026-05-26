@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Box, Chip, Grid, Paper, Stack, ToggleButton, ToggleButtonGroup, Typography } from "@mui/material";
+import { Box, Button, Chip, Grid, Paper, Stack, Typography } from "@mui/material";
 import { getFoldingLeaderboard } from "../api";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import { defaultWeekRange, foldingRangeParams } from "../utils/foldingDateRange";
+import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
   comparisonArrow,
   formatComparison,
@@ -162,6 +163,9 @@ function RinseFoldingTvPage({ user }) {
   const [rangePreset, setRangePreset] = useState("week");
   const [dateStart, setDateStart] = useState(initialWeek.start);
   const [dateEnd, setDateEnd] = useState(initialWeek.end);
+  const [appliedPreset, setAppliedPreset] = useState("week");
+  const [appliedDateStart, setAppliedDateStart] = useState(initialWeek.start);
+  const [appliedDateEnd, setAppliedDateEnd] = useState(initialWeek.end);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const orgLabel =
@@ -173,19 +177,37 @@ function RinseFoldingTvPage({ user }) {
     try {
       setError("");
       const res = await getFoldingLeaderboard(
-        foldingRangeParams({ dateStart, dateEnd, dateField: "folding_work_date" })
+        foldingRangeParams({
+          dateStart: appliedDateStart,
+          dateEnd: appliedDateEnd,
+          dateField: "folding_work_date",
+        })
       );
       setData(res.data);
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Failed to load leaderboard");
     }
-  }, [dateStart, dateEnd]);
+  }, [appliedDateStart, appliedDateEnd]);
 
+  const handleApply = () => {
+    setAppliedPreset(rangePreset);
+    setAppliedDateStart(dateStart);
+    setAppliedDateEnd(dateEnd);
+  };
+
+  const initialLoad = useRef(false);
   useEffect(() => {
+    if (!initialLoad.current) {
+      initialLoad.current = true;
+      setAppliedPreset("week");
+      setAppliedDateStart(initialWeek.start);
+      setAppliedDateEnd(initialWeek.end);
+      return;
+    }
     load();
     const id = setInterval(load, REFRESH_MS);
     return () => clearInterval(id);
-  }, [load]);
+  }, [appliedDateStart, appliedDateEnd, load]);
 
   const users = data?.users || [];
   const top = users[0];
@@ -234,17 +256,30 @@ function RinseFoldingTvPage({ user }) {
           </Typography>
         </Box>
         <Box sx={{ bgcolor: "rgba(255,255,255,0.12)", borderRadius: 3, p: 1.5 }}>
-          <FoldingDateRangeFilter
-            preset={rangePreset}
-            onPresetChange={setRangePreset}
-            dateStart={dateStart}
-            dateEnd={dateEnd}
-            onDateStartChange={setDateStart}
-            onDateEndChange={setDateEnd}
-            dateField="folding_work_date"
-            onDateFieldChange={() => {}}
-            showDateField={false}
-          />
+          <Stack spacing={1}>
+            <FoldingDateRangeFilter
+              preset={rangePreset}
+              onPresetChange={setRangePreset}
+              dateStart={dateStart}
+              dateEnd={dateEnd}
+              onDateStartChange={setDateStart}
+              onDateEndChange={setDateEnd}
+              dateField="folding_work_date"
+              onDateFieldChange={() => {}}
+              showDateField={false}
+            />
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+              <Button size="small" variant="contained" onClick={handleApply} sx={{ bgcolor: VW.aqua, color: VW.blueDeep }}>
+                Apply
+              </Button>
+              <Button size="small" variant="outlined" onClick={load} sx={{ color: VW.white, borderColor: "rgba(255,255,255,0.5)" }}>
+                Refresh
+              </Button>
+              <Typography variant="caption" sx={{ color: VW.textMuted }}>
+                {formatAppliedRangeSummary({ dateStart: appliedDateStart, dateEnd: appliedDateEnd, preset: appliedPreset })}
+              </Typography>
+            </Stack>
+          </Stack>
         </Box>
       </Stack>
 
@@ -269,7 +304,7 @@ function RinseFoldingTvPage({ user }) {
             Waiting for confirmed folding data
           </Typography>
           <Typography sx={{ color: VW.blue, fontSize: 20, mt: 2, maxWidth: 560, mx: "auto", fontWeight: 600 }}>
-            No completed bags in this {period === "month" ? "month" : "week"} yet. Performance updates after you confirm an upload batch.
+            No completed bags in this {rangePreset === "month" ? "month" : rangePreset === "today" ? "day" : "week"} yet. Performance updates after you confirm an upload batch.
           </Typography>
           <Typography sx={{ color: "rgba(0,76,151,0.55)", fontSize: 16, mt: 2 }}>
             Targets: {formatRate(bench.bags_per_hour_target)} bags/hr · {formatRate(bench.lbs_per_hour_target)} lbs/hr · {formatRate(bench.issue_free_percent_target, 0)}% quality

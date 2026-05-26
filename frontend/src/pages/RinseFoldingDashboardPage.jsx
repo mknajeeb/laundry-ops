@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -41,7 +41,9 @@ import {
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePanel";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
-import { defaultWeekRange, foldingRangeParams } from "../utils/foldingDateRange";
+import FoldingUserSelect from "../components/folding/FoldingUserSelect";
+import { defaultWeekRange, foldingRangeParams, todayRange } from "../utils/foldingDateRange";
+import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
   comparisonArrow,
   formatComparison,
@@ -118,6 +120,7 @@ const EMPTY_RECORD_FILTERS = {
   user_name: "",
   status: "",
   exception_code: "",
+  included_in_scoring: "",
   weight_min: "",
   weight_max: "",
   duration_min: "",
@@ -130,16 +133,22 @@ const EMPTY_RECORD_FILTERS = {
 
 function RinseFoldingDashboardPage({ user }) {
   const admin = isFoldingAdmin(user);
-  const today = isoDateInput();
-  const weekAgo = isoDateInput(new Date(Date.now() - 6 * 86400000));
+  const initialToday = todayRange();
   const initialWeek = defaultWeekRange();
 
-  const [rangePreset, setRangePreset] = useState("week");
-  const [dateStart, setDateStart] = useState(initialWeek.start);
-  const [dateEnd, setDateEnd] = useState(initialWeek.end);
+  const [rangePreset, setRangePreset] = useState("today");
+  const [dateStart, setDateStart] = useState(initialToday.start);
+  const [dateEnd, setDateEnd] = useState(initialToday.end);
   const [listDateField, setListDateField] = useState("folding_work_date");
+  const [appliedPreset, setAppliedPreset] = useState("today");
+  const [appliedDateStart, setAppliedDateStart] = useState(initialToday.start);
+  const [appliedDateEnd, setAppliedDateEnd] = useState(initialToday.end);
+  const [appliedListDateField, setAppliedListDateField] = useState("folding_work_date");
+  const [appliedEmployee, setAppliedEmployee] = useState("");
   const [recordFilters, setRecordFilters] = useState(EMPTY_RECORD_FILTERS);
   const [recordFiltersApplied, setRecordFiltersApplied] = useState(EMPTY_RECORD_FILTERS);
+  const [recomputeStart, setRecomputeStart] = useState(initialWeek.start);
+  const [recomputeEnd, setRecomputeEnd] = useState(initialWeek.end);
   const [leaderboard, setLeaderboard] = useState(null);
   const [employeeData, setEmployeeData] = useState(null);
   const [selectedEmployee, setSelectedEmployee] = useState("");
@@ -149,8 +158,6 @@ function RinseFoldingDashboardPage({ user }) {
   const [message, setMessage] = useState({ type: "", text: "" });
   const [backfillOpen, setBackfillOpen] = useState(false);
 
-  const [recomputeStart, setRecomputeStart] = useState(weekAgo);
-  const [recomputeEnd, setRecomputeEnd] = useState(today);
   const [dateField, setDateField] = useState("date_clean");
   const [recomputeSummary, setRecomputeSummary] = useState(null);
   const [recomputing, setRecomputing] = useState(false);
@@ -174,21 +181,23 @@ function RinseFoldingDashboardPage({ user }) {
 
   const buildListParams = useCallback(() => {
     const range = foldingRangeParams({
-      dateStart,
-      dateEnd,
-      dateField: listDateField,
+      dateStart: appliedDateStart,
+      dateEnd: appliedDateEnd,
+      dateField: appliedListDateField,
     });
     const f = recordFiltersApplied;
     const num = (v) => (v === "" || v == null ? undefined : v);
+    const userFilter = appliedEmployee || f.user_name?.trim() || "";
     return {
       ...range,
       limit: 500,
-      ...(selectedEmployee ? { user_name: selectedEmployee } : {}),
+      ...(userFilter ? { user_name: userFilter } : {}),
       ...(f.bag_id ? { bag_id: f.bag_id.trim() } : {}),
       ...(f.customer ? { customer: f.customer.trim() } : {}),
-      ...(f.user_name ? { user_name: f.user_name.trim() } : {}),
       ...(f.status ? { status: f.status } : {}),
       ...(f.exception_code ? { exception_code: f.exception_code.trim() } : {}),
+      ...(f.included_in_scoring === "yes" ? { included_in_scoring: "true" } : {}),
+      ...(f.included_in_scoring === "no" ? { included_in_scoring: "false" } : {}),
       ...(num(f.weight_min) != null ? { weight_min: f.weight_min } : {}),
       ...(num(f.weight_max) != null ? { weight_max: f.weight_max } : {}),
       ...(num(f.duration_min) != null ? { duration_min: f.duration_min } : {}),
@@ -198,23 +207,28 @@ function RinseFoldingDashboardPage({ user }) {
       ...(num(f.bags_per_hour_min) != null ? { bags_per_hour_min: f.bags_per_hour_min } : {}),
       ...(num(f.bags_per_hour_max) != null ? { bags_per_hour_max: f.bags_per_hour_max } : {}),
     };
-  }, [dateStart, dateEnd, listDateField, recordFiltersApplied, selectedEmployee]);
+  }, [appliedDateStart, appliedDateEnd, appliedListDateField, recordFiltersApplied, appliedEmployee]);
 
   const loadAll = useCallback(async () => {
     try {
       setLoading(true);
       setMessage({ type: "", text: "" });
-      const range = foldingRangeParams({ dateStart, dateEnd, dateField: listDateField });
+      const range = foldingRangeParams({
+        dateStart: appliedDateStart,
+        dateEnd: appliedDateEnd,
+        dateField: appliedListDateField,
+      });
       const listParams = buildListParams();
       const empParams = {
         ...range,
-        ...(selectedEmployee ? { user_name: selectedEmployee } : {}),
+        ...(appliedEmployee ? { user_name: appliedEmployee } : {}),
       };
+      const exParams = { ...listParams, exception_only: true };
       const [lbRes, empRes, benchRes, exRes, recRes] = await Promise.all([
         getFoldingLeaderboard(range),
         getFoldingEmployeeAnalysis(empParams),
         getFoldingBenchmarks(),
-        listFoldingExceptions(listParams),
+        listFoldingExceptions(exParams),
         listFoldingPerformance(listParams),
       ]);
       setLeaderboard(lbRes.data);
@@ -223,14 +237,41 @@ function RinseFoldingDashboardPage({ user }) {
       setBenchForm(benchRes.data || {});
       setRecords(recRes.data?.rows || []);
       setExceptions(exRes.data?.rows || []);
+      if (appliedEmployee) setSelectedEmployee(appliedEmployee);
     } catch (e) {
       setMessage({ type: "error", text: e?.response?.data?.error || e?.message || "Failed to load folding data" });
     } finally {
       setLoading(false);
     }
-  }, [buildListParams, dateStart, dateEnd, listDateField, selectedEmployee]);
+  }, [buildListParams, appliedDateStart, appliedDateEnd, appliedListDateField, appliedEmployee]);
 
-  useEffect(() => { loadAll(); }, [loadAll]);
+  const [searchTick, setSearchTick] = useState(0);
+
+  const handleSearch = useCallback(() => {
+    setAppliedPreset(rangePreset);
+    setAppliedDateStart(dateStart);
+    setAppliedDateEnd(dateEnd);
+    setAppliedListDateField(listDateField);
+    setAppliedEmployee(selectedEmployee);
+    setRecordFiltersApplied({ ...recordFilters });
+    setSearchTick((t) => t + 1);
+  }, [rangePreset, dateStart, dateEnd, listDateField, selectedEmployee, recordFilters]);
+
+  const initialSearch = useRef(false);
+  useEffect(() => {
+    if (initialSearch.current) return;
+    initialSearch.current = true;
+    setAppliedPreset("today");
+    setAppliedDateStart(initialToday.start);
+    setAppliedDateEnd(initialToday.end);
+    setAppliedListDateField("folding_work_date");
+    setSearchTick(1);
+  }, []);
+
+  useEffect(() => {
+    if (searchTick < 1) return;
+    loadAll();
+  }, [searchTick, loadAll]);
 
   const openDrawer = async (bagId) => {
     setDrawerBagId(bagId);
@@ -339,14 +380,22 @@ function RinseFoldingDashboardPage({ user }) {
             onDateFieldChange={setListDateField}
           />
           <Stack direction="row" spacing={1} flexWrap="wrap">
+            <Button variant="contained" size="small" onClick={handleSearch} disabled={loading}>
+              Search
+            </Button>
             <Button variant="outlined" size="small" onClick={loadAll} disabled={loading}>Refresh</Button>
-            <Button variant="outlined" size="small" onClick={() => exportEmployeesCsv(employees, `folding-${dateStart}-${dateEnd}.csv`)} disabled={!employees.length}>
+            <Button variant="outlined" size="small" onClick={() => exportEmployeesCsv(employees, `folding-${appliedDateStart}-${appliedDateEnd}.csv`)} disabled={!employees.length}>
               Export CSV
             </Button>
             {admin ? <Button variant="text" size="small" onClick={() => setBackfillOpen((o) => !o)}>Backfill / Recompute</Button> : null}
           </Stack>
         </Stack>
       </Stack>
+
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        {formatAppliedRangeSummary({ dateStart: appliedDateStart, dateEnd: appliedDateEnd, preset: appliedPreset })}
+        {appliedListDateField !== "folding_work_date" ? ` · Date meaning: ${appliedListDateField}` : ""}
+      </Typography>
 
       {message.text ? <Alert severity={message.type || "info"} sx={{ mb: 2 }} onClose={() => setMessage({ type: "", text: "" })}>{message.text}</Alert> : null}
 
@@ -442,7 +491,13 @@ function RinseFoldingDashboardPage({ user }) {
             {staffRows.length === 0 ? (
               <TableRow><TableCell colSpan={9} align="center">No calculated performance for this period.</TableCell></TableRow>
             ) : staffRows.map((u) => (
-              <TableRow key={u.user_name} hover sx={{ cursor: "pointer" }} onClick={() => setSelectedEmployee(u.user_name)}>
+              <TableRow
+                key={u.user_name}
+                hover
+                sx={{ cursor: "pointer" }}
+                selected={selectedEmployee === u.user_name}
+                onClick={() => setSelectedEmployee(u.user_name)}
+              >
                 <TableCell>{u.rank}</TableCell><TableCell>{u.user_name}</TableCell>
                 <TableCell align="right">{u.bag_count}</TableCell><TableCell align="right">{formatLbs(u.total_lbs)}</TableCell>
                 <TableCell align="right">{formatRate(u.lbs_per_hour)}</TableCell><TableCell align="right">{formatRate(u.bags_per_hour)}</TableCell>
@@ -458,8 +513,14 @@ function RinseFoldingDashboardPage({ user }) {
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1} flexWrap="wrap" gap={1}>
           <Typography variant="subtitle1" fontWeight={700}>Employee performance</Typography>
-          <Stack direction="row" spacing={1}>
-            {selectedEmployee ? <Button size="small" onClick={() => setSelectedEmployee("")}>Clear filter</Button> : null}
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            <FoldingUserSelect
+              label="Filter by employee"
+              value={selectedEmployee}
+              onChange={setSelectedEmployee}
+              sx={{ minWidth: 220 }}
+            />
+            {selectedEmployee ? <Button size="small" onClick={() => setSelectedEmployee("")}>Clear</Button> : null}
             <Button size="small" variant="outlined" onClick={() => exportEmployeesCsv(employees)} disabled={!employees.length}>Export</Button>
           </Stack>
         </Stack>
@@ -550,13 +611,21 @@ function RinseFoldingDashboardPage({ user }) {
 
       <Paper sx={{ p: 2, mb: 3 }}>
         <Typography variant="subtitle1" fontWeight={700} gutterBottom>Folding records</Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          All users and statuses (calculated, exception, approved, excluded). Use Search above to apply date range; record filters apply with Search.
+        </Typography>
         <Grid container spacing={1.5} sx={{ mb: 2 }}>
+          <Grid item xs={12} sm={6} md={3}>
+            <FoldingUserSelect
+              label="Employee"
+              value={recordFilters.user_name}
+              onChange={(v) => setRecordFilters((f) => ({ ...f, user_name: v }))}
+            />
+          </Grid>
           {[
             ["bag_id", "Bag ID"],
             ["customer", "Customer"],
-            ["user_name", "Employee"],
-            ["status", "Status"],
-            ["exception_code", "Exception code"],
+            ["exception_code", "Exception / warning"],
             ["weight_min", "Weight min"],
             ["weight_max", "Weight max"],
             ["duration_min", "Duration min (sec)"],
@@ -567,67 +636,98 @@ function RinseFoldingDashboardPage({ user }) {
             ["bags_per_hour_max", "Bags/hr max"],
           ].map(([key, label]) => (
             <Grid item xs={6} sm={4} md={3} key={key}>
-              {key === "status" ? (
-                <FormControl size="small" fullWidth>
-                  <InputLabel>Status</InputLabel>
-                  <Select
-                    label="Status"
-                    value={recordFilters.status}
-                    onChange={(e) => setRecordFilters((f) => ({ ...f, status: e.target.value }))}
-                  >
-                    <MenuItem value="">Any</MenuItem>
-                    <MenuItem value="CALCULATED">CALCULATED</MenuItem>
-                    <MenuItem value="EXCEPTION">EXCEPTION</MenuItem>
-                  </Select>
-                </FormControl>
-              ) : (
-                <TextField
-                  size="small"
-                  fullWidth
-                  label={label}
-                  value={recordFilters[key]}
-                  onChange={(e) => setRecordFilters((f) => ({ ...f, [key]: e.target.value }))}
-                />
-              )}
+              <TextField
+                size="small"
+                fullWidth
+                label={label}
+                value={recordFilters[key]}
+                onChange={(e) => setRecordFilters((f) => ({ ...f, [key]: e.target.value }))}
+              />
             </Grid>
           ))}
+          <Grid item xs={6} sm={4} md={3}>
+            <FormControl size="small" fullWidth>
+              <InputLabel>Status</InputLabel>
+              <Select
+                label="Status"
+                value={recordFilters.status}
+                onChange={(e) => setRecordFilters((f) => ({ ...f, status: e.target.value }))}
+              >
+                <MenuItem value="">Any</MenuItem>
+                <MenuItem value="CALCULATED">CALCULATED</MenuItem>
+                <MenuItem value="EXCEPTION">EXCEPTION</MenuItem>
+                <MenuItem value="APPROVED">APPROVED</MenuItem>
+                <MenuItem value="EXCLUDED">EXCLUDED</MenuItem>
+              </Select>
+            </FormControl>
+          </Grid>
+          <Grid item xs={6} sm={4} md={3}>
+            <FormControl size="small" fullWidth>
+              <InputLabel>In scoring</InputLabel>
+              <Select
+                label="In scoring"
+                value={recordFilters.included_in_scoring}
+                onChange={(e) => setRecordFilters((f) => ({ ...f, included_in_scoring: e.target.value }))}
+              >
+                <MenuItem value="">Any</MenuItem>
+                <MenuItem value="yes">Yes</MenuItem>
+                <MenuItem value="no">No</MenuItem>
+              </Select>
+            </FormControl>
+          </Grid>
           <Grid item xs={12}>
-            <Stack direction="row" spacing={1}>
-              <Button
-                size="small"
-                variant="contained"
-                onClick={() => setRecordFiltersApplied({ ...recordFilters })}
-              >
-                Apply filters
-              </Button>
-              <Button
-                size="small"
-                onClick={() => {
-                  setRecordFilters(EMPTY_RECORD_FILTERS);
-                  setRecordFiltersApplied(EMPTY_RECORD_FILTERS);
-                }}
-              >
-                Clear
-              </Button>
-            </Stack>
+            <Button
+              size="small"
+              onClick={() => {
+                setRecordFilters(EMPTY_RECORD_FILTERS);
+              }}
+            >
+              Clear record filters
+            </Button>
           </Grid>
         </Grid>
         <Table size="small">
           <TableHead>
             <TableRow>
-              <TableCell>Bag</TableCell><TableCell>Customer</TableCell><TableCell>User</TableCell>
-              <TableCell>Duration</TableCell><TableCell>Status</TableCell><TableCell />
+              <TableCell>User</TableCell>
+              <TableCell>Bag</TableCell>
+              <TableCell>Customer</TableCell>
+              <TableCell align="right">Weight</TableCell>
+              <TableCell>Start</TableCell>
+              <TableCell>End</TableCell>
+              <TableCell>Duration</TableCell>
+              <TableCell>Status</TableCell>
+              <TableCell>Exception / warning</TableCell>
+              <TableCell>In scoring</TableCell>
+              <TableCell />
             </TableRow>
           </TableHead>
           <TableBody>
-            {records.map((r) => (
+            {records.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={11} align="center" sx={{ py: 3, color: "text.secondary" }}>
+                  No folding records match the applied filters.
+                </TableCell>
+              </TableRow>
+            ) : records.map((r) => (
               <TableRow key={r.bag_id} hover>
+                <TableCell>{r.assigned_user_name || "—"}</TableCell>
                 <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
                 <TableCell>{r.name_clean || "—"}</TableCell>
-                <TableCell>{r.assigned_user_name || "—"}</TableCell>
+                <TableCell align="right">{r.weight_lbs != null ? formatLbs(r.weight_lbs) : "—"}</TableCell>
+                <TableCell>{formatDateTime(r.folding_start_at)}</TableCell>
+                <TableCell>{formatDateTime(r.folding_end_at)}</TableCell>
                 <TableCell>{formatFoldingDuration(r.duration_seconds)}</TableCell>
-                <TableCell><Chip size="small" label={r.status} color={r.status === "CALCULATED" ? "success" : "warning"} /></TableCell>
-                <TableCell><Button size="small" onClick={() => openDrawer(r.bag_id)}>View</Button></TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    label={r.scoring_status || r.status}
+                    color={r.status === "CALCULATED" || r.scoring_status === "APPROVED" ? "success" : "warning"}
+                  />
+                </TableCell>
+                <TableCell>{r.exception_code || "—"}</TableCell>
+                <TableCell>{r.included_in_scoring ? "Yes" : "No"}</TableCell>
+                <TableCell><Button size="small" onClick={() => openDrawer(r.bag_id)}>Timeline</Button></TableCell>
               </TableRow>
             ))}
           </TableBody>

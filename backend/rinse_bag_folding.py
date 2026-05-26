@@ -35,7 +35,9 @@ WARNING_MULTIPLE_CLEAN_SCANS = "MULTIPLE_CLEAN_SCANS"
 
 MIN_FOLDING_DURATION_SECONDS = 600
 
-FOLDING_WARNING_CODES = frozenset({WARNING_MULTIPLE_CLEAN_SCANS})
+FOLDING_WARNING_CODES = frozenset(
+    {WARNING_MULTIPLE_CLEAN_SCANS, EXCEPTION_MULTIPLE_FOLDING_SCANS}
+)
 
 SOURCE_FOLDING_SCAN = "FOLDING_SCAN"
 SOURCE_CLEAN_SCAN_FALLBACK = "CLEAN_SCAN_FALLBACK"
@@ -303,7 +305,22 @@ def evaluate_folding_performance_for_bag(
             work_date=_best_timeline_scan_date(timeline, registry_row=registry_row),
         )
 
-    if len(folding_indices) > 1 and rules.rule_multiple_folding_scans:
+    multiple_folding_warning = len(folding_indices) > 1
+    from backend.rinse_folding_exception_rules import MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION
+
+    behavior = str(
+        getattr(rules, "multiple_folding_scans_behavior", None) or ""
+    ).strip().lower()
+    if not behavior:
+        behavior = (
+            MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION
+            if rules.rule_multiple_folding_scans
+            else "warning_use_earliest_default"
+        )
+    if multiple_folding_warning and behavior in (
+        MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION,
+        "exception",
+    ):
         first_folding_i = folding_indices[0]
         folding_ev = timeline[first_folding_i]
         folding_at = _parsed_scan_datetime(folding_ev)
@@ -490,6 +507,8 @@ def evaluate_folding_performance_for_bag(
     warning: str | None = None
     if clean_after_count > 1:
         warning = WARNING_MULTIPLE_CLEAN_SCANS
+    if multiple_folding_warning and behavior != "exception":
+        warning = EXCEPTION_MULTIPLE_FOLDING_SCANS
 
     return FoldingResult(
         status=STATUS_CALCULATED,

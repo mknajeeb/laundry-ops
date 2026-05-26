@@ -21,10 +21,13 @@ from backend.rinse_folding_scoring import (
 )
 def exception_reason_plain_english(code: str | None) -> str:
     from backend.rinse_order_search_detail import FOLDING_CODE_LABELS
+    from backend.rinse_bag_folding import EXCEPTION_MULTIPLE_FOLDING_SCANS
 
     c = str(code or "").strip()
     if not c:
         return ""
+    if c == EXCEPTION_MULTIPLE_FOLDING_SCANS:
+        return "Multiple folding scans found; earliest valid scan used."
     return FOLDING_CODE_LABELS.get(c, c.replace("_", " ").lower())
 
 

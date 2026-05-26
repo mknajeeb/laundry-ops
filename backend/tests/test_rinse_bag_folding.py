@@ -131,7 +131,32 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
         self.assertEqual(r.status, STATUS_EXCEPTION)
         self.assertEqual(r.exception_code, EXCEPTION_CLEAN_BEFORE_FOLDING)
 
-    def test_multiple_folding_scans_exception(self):
+    def test_multiple_folding_scans_exception_when_rule_exception(self):
+        from backend.rinse_folding_exception_rules import (
+            MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION,
+            parse_exception_rules_payload,
+        )
+
+        rules = parse_exception_rules_payload(
+            {"multiple_folding_scans_behavior": MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION}
+        )
+        t0 = datetime(2026, 5, 16, 10, 0)
+        t1 = datetime(2026, 5, 16, 10, 30)
+        t2 = datetime(2026, 5, 16, 11, 0)
+        r = evaluate_folding_performance_for_bag(
+            [
+                _ev("FOLDING", "Folder A", t0, 1, 1),
+                _ev("VeeWash Folding", "Folder B", datetime(2026, 5, 16, 10, 15), 2, 2),
+                _ev("CLEAN", "X", t1, 3, 3),
+                _ev("Rack Clean", "Y", t2, 4, 4),
+            ],
+            registry_row={"date_clean": date(2026, 5, 16)},
+            rules=rules,
+        )
+        self.assertEqual(r.status, STATUS_EXCEPTION)
+        self.assertEqual(r.exception_code, EXCEPTION_MULTIPLE_FOLDING_SCANS)
+
+    def test_multiple_folding_scans_warning_by_default(self):
         t0 = datetime(2026, 5, 16, 10, 0)
         t1 = datetime(2026, 5, 16, 10, 30)
         t2 = datetime(2026, 5, 16, 11, 0)
@@ -144,7 +169,7 @@ class TestEvaluateFoldingPerformance(unittest.TestCase):
             ],
             registry_row={"date_clean": date(2026, 5, 16)},
         )
-        self.assertEqual(r.status, STATUS_EXCEPTION)
+        self.assertEqual(r.status, STATUS_CALCULATED)
         self.assertEqual(r.exception_code, EXCEPTION_MULTIPLE_FOLDING_SCANS)
 
     def test_folding_duration_under_10_minutes_exception(self):

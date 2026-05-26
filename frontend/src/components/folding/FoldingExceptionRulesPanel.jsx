@@ -3,8 +3,12 @@ import {
   Alert,
   Box,
   Button,
+  FormControl,
   FormControlLabel,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Switch,
   TextField,
@@ -81,16 +85,27 @@ export default function FoldingExceptionRulesPanel() {
           helperText={rules.max_duration_help || "0 disables max duration check"}
         />
       </Stack>
+      <FormControl size="small" sx={{ minWidth: 360, mb: 2 }}>
+        <InputLabel>Multiple folding scans</InputLabel>
+        <Select
+          label="Multiple folding scans"
+          value={rules.multiple_folding_scans_behavior || "warning_use_earliest_default"}
+          onChange={(e) => {
+            const v = e.target.value;
+            setRules({
+              ...rules,
+              multiple_folding_scans_behavior: v,
+              rule_multiple_folding_scans: v === "exception",
+            });
+          }}
+        >
+          <MenuItem value="warning_use_earliest_default">
+            Warning — use earliest scan, keep in scoring (default)
+          </MenuItem>
+          <MenuItem value="exception">Exception — block scoring</MenuItem>
+        </Select>
+      </FormControl>
       <Stack spacing={0.5}>
-        <FormControlLabel
-          control={
-            <Switch
-              checked={!!rules.rule_multiple_folding_scans}
-              onChange={(e) => setRules({ ...rules, rule_multiple_folding_scans: e.target.checked })}
-            />
-          }
-          label="Multiple folding scans = exception"
-        />
         <FormControlLabel
           control={
             <Switch

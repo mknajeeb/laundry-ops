@@ -460,9 +460,19 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if err_a:
                 return err_a, code_a
             tenant_oid = user_org_id(me)
-            from backend.rinse_folding_excluded_users import list_distinct_folding_user_names
+            from backend.rinse_folding_excluded_users import (
+                list_distinct_folding_user_names,
+                list_folding_user_options,
+            )
+            from backend.rinse_folding_settings_flags import folding_approvals_enabled
 
-            return jsonify({"users": list_distinct_folding_user_names(cursor, tenant_oid)})
+            return jsonify(
+                {
+                    "users": list_distinct_folding_user_names(cursor, tenant_oid),
+                    "user_options": list_folding_user_options(cursor, tenant_oid),
+                    "approvals_enabled": folding_approvals_enabled(),
+                }
+            )
         finally:
             cursor.close()
             conn.close()
@@ -724,6 +734,10 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             if not action:
                 return jsonify({"error": "action required"}), 400
             note = (data.get("note") or data.get("admin_notes") or "").strip() or None
+            from backend.rinse_folding_settings_flags import folding_approvals_enabled
+
+            if action == "approve_scoring" and not folding_approvals_enabled():
+                return jsonify({"error": "Folding approvals are disabled"}), 403
             if action in ("approve_scoring", "exclude_scoring") and not note:
                 return jsonify({"error": "note is required for approve and exclude"}), 400
             from backend.rinse_folding_review import bulk_folding_exceptions_action

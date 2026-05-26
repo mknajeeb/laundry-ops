@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.ta_helpers import table_exists
+from backend.ta_helpers import table_exists, table_has_column
 
 
 def ensure_rinse_folding_excluded_users_table(cursor) -> None:
@@ -57,6 +57,74 @@ def is_user_excluded_from_scoring(
     if not uname:
         return False
     return uname in excluded_user_names_set(cursor, organization_id)
+
+
+def list_folding_user_options(cursor, organization_id: int) -> list[dict[str, Any]]:
+    """Users for dropdowns: performance, exceptions, scan-only, excluded."""
+    org = int(organization_id)
+    excluded = excluded_user_names_set(cursor, org)
+    seen: dict[str, dict[str, Any]] = {}
+
+    def add(name: str, *, source: str, has_exception: bool = False, has_calculated: bool = False) -> None:
+        n = str(name or "").strip()
+        if not n:
+            return
+        row = seen.get(n)
+        if not row:
+            row = {
+                "user_name": n,
+                "label": f"{n}{' (excluded)' if n in excluded else ''}",
+                "excluded_from_scoring": n in excluded,
+                "sources": [],
+                "has_exception": False,
+                "has_calculated": False,
+            }
+            seen[n] = row
+        if source not in row["sources"]:
+            row["sources"].append(source)
+        row["has_exception"] = row["has_exception"] or has_exception
+        row["has_calculated"] = row["has_calculated"] or has_calculated
+
+    if table_exists(cursor, "rinse_folding_performance"):
+        cursor.execute(
+            """
+            SELECT TRIM(assigned_user_name) AS user_name,
+                   UPPER(COALESCE(status,'')) AS st,
+                   COUNT(*) AS cnt
+            FROM rinse_folding_performance
+            WHERE organization_id = %s
+              AND assigned_user_name IS NOT NULL AND TRIM(assigned_user_name) != ''
+            GROUP BY assigned_user_name, status
+            """,
+            (org,),
+        )
+        for r in cursor.fetchall() or []:
+            if not isinstance(r, dict):
+                continue
+            un = str(r.get("user_name") or "").strip()
+            st = str(r.get("st") or "").upper()
+            add(un, source="performance", has_exception=st == "EXCEPTION", has_calculated=st == "CALCULATED")
+
+    if table_exists(cursor, "rinse_bag_scan_events") and table_has_column(
+        cursor, "rinse_bag_scan_events", "user_name"
+    ):
+        cursor.execute(
+            """
+            SELECT DISTINCT TRIM(user_name) AS user_name
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND user_name IS NOT NULL AND TRIM(user_name) != ''
+            ORDER BY user_name
+            LIMIT 500
+            """,
+            (org,),
+        )
+        for r in cursor.fetchall() or []:
+            un = str(r.get("user_name") if isinstance(r, dict) else r[0] or "").strip()
+            add(un, source="scan_events")
+
+    out = sorted(seen.values(), key=lambda x: str(x.get("user_name") or "").lower())
+    return out
 
 
 def list_distinct_folding_user_names(cursor, organization_id: int) -> list[str]:

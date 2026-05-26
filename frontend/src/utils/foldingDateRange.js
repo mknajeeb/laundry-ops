@@ -1,25 +1,22 @@
 import { isoDateInput } from "./foldingFormat";
+import {
+  defaultWeekRangeEastern,
+  easternIsoDate,
+  monthRangeEastern,
+  todayRangeEastern,
+} from "./foldingEasternDate";
 
-/** Monday-based week containing `d` (inclusive Mon–Sun). */
+/** Monday-based week containing `d` (Eastern calendar). */
 export function defaultWeekRange(d = new Date()) {
-  const day = d.getDay();
-  const mondayOffset = (day + 6) % 7;
-  const start = new Date(d);
-  start.setDate(d.getDate() - mondayOffset);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
-  return { start: isoDateInput(start), end: isoDateInput(end) };
+  return defaultWeekRangeEastern(d);
 }
 
 export function todayRange() {
-  const t = isoDateInput();
-  return { start: t, end: t };
+  return todayRangeEastern();
 }
 
 export function monthRange(d = new Date()) {
-  const start = new Date(d.getFullYear(), d.getMonth(), 1);
-  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  return { start: isoDateInput(start), end: isoDateInput(end) };
+  return monthRangeEastern(d);
 }
 
 /** API query params for folding endpoints. */
@@ -28,5 +25,8 @@ export function foldingRangeParams({ dateStart, dateEnd, dateField = "folding_wo
     date_start: dateStart,
     date_end: dateEnd,
     date_field: dateField,
+    timezone: "America/New_York",
   };
 }
+
+export { easternIsoDate };

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -37,9 +37,11 @@ import {
 } from "../api";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
+import FoldingUserSelect from "../components/folding/FoldingUserSelect";
 import OrderSearchDetailDrawer from "../components/orderSearch/OrderSearchDetailDrawer";
 import { getRinseOrderArchiveDetail } from "../api";
-import { defaultWeekRange, foldingRangeParams } from "../utils/foldingDateRange";
+import { foldingRangeParams, todayRange } from "../utils/foldingDateRange";
+import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
   formatDateTime,
   formatFoldingDuration,
@@ -47,14 +49,21 @@ import {
 } from "../utils/foldingFormat";
 import { foldingExceptionLabel } from "../utils/foldingExceptionLabels";
 
-const BULK_ACTIONS = [
+const BULK_ACTIONS_BASE = [
   { id: "mark_reviewed", label: "Mark reviewed" },
-  { id: "approve_scoring", label: "Approve for scoring" },
   { id: "exclude_scoring", label: "Exclude from scoring" },
 ];
 
+const BULK_APPROVE = { id: "approve_scoring", label: "Approve for scoring" };
+
 export default function RinseFoldingExceptionsPage() {
-  const [range, setRange] = useState(() => defaultWeekRange());
+  const initialToday = todayRange();
+  const [rangePreset, setRangePreset] = useState("today");
+  const [dateStart, setDateStart] = useState(initialToday.start);
+  const [dateEnd, setDateEnd] = useState(initialToday.end);
+  const [appliedPreset, setAppliedPreset] = useState("today");
+  const [appliedDateStart, setAppliedDateStart] = useState(initialToday.start);
+  const [appliedDateEnd, setAppliedDateEnd] = useState(initialToday.end);
   const [filters, setFilters] = useState({
     user_name: "",
     bag_id: "",
@@ -65,9 +74,10 @@ export default function RinseFoldingExceptionsPage() {
     duration_min: "",
     duration_max: "",
   });
+  const [appliedFilters, setAppliedFilters] = useState(filters);
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
-  const [users, setUsers] = useState([]);
+  const [approvalsEnabled, setApprovalsEnabled] = useState(false);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
@@ -88,45 +98,76 @@ export default function RinseFoldingExceptionsPage() {
   const [overrideStart, setOverrideStart] = useState("");
   const [overrideEnd, setOverrideEnd] = useState("");
 
-  const loadUsers = useCallback(async () => {
-    try {
-      const res = await listFoldingUsers();
-      setUsers(res.data?.users || []);
-    } catch {
-      setUsers([]);
-    }
+  const bulkActions = useMemo(
+    () => (approvalsEnabled ? [...BULK_ACTIONS_BASE, BULK_APPROVE] : BULK_ACTIONS_BASE),
+    [approvalsEnabled]
+  );
+
+  useEffect(() => {
+    listFoldingUsers()
+      .then((res) => setApprovalsEnabled(!!res.data?.approvals_enabled))
+      .catch(() => setApprovalsEnabled(false));
   }, []);
 
-  const search = useCallback(async () => {
+  const runSearch = useCallback(async () => {
     try {
       setLoading(true);
       setMessage("");
-      const params = { limit: 200, ...foldingRangeParams(range) };
-      if (filters.user_name) params.user_name = filters.user_name;
-      if (filters.bag_id) params.bag_id = filters.bag_id;
-      if (filters.customer) params.customer = filters.customer;
-      if (filters.exception_code) params.exception_code = filters.exception_code;
-      if (filters.duration_min) params.duration_min = Number(filters.duration_min) * 60;
-      if (filters.duration_max) params.duration_max = Number(filters.duration_max) * 60;
-      if (filters.reviewed === "yes") params.reviewed = "true";
-      if (filters.reviewed === "no") params.reviewed = "false";
-      if (filters.approved === "yes") params.approved = "true";
-      if (filters.approved === "no") params.approved = "false";
+      const params = {
+        limit: 200,
+        ...foldingRangeParams({
+          dateStart: appliedDateStart,
+          dateEnd: appliedDateEnd,
+          dateField: "folding_work_date",
+        }),
+      };
+      const f = appliedFilters;
+      if (f.user_name) params.user_name = f.user_name;
+      if (f.bag_id) params.bag_id = f.bag_id;
+      if (f.customer) params.customer = f.customer;
+      if (f.exception_code) params.exception_code = f.exception_code;
+      if (f.duration_min) params.duration_min = Number(f.duration_min) * 60;
+      if (f.duration_max) params.duration_max = Number(f.duration_max) * 60;
+      if (f.reviewed === "yes") params.reviewed = "true";
+      if (f.reviewed === "no") params.reviewed = "false";
+      if (f.approved === "yes") params.approved = "true";
+      if (f.approved === "no") params.approved = "false";
       const res = await searchFoldingExceptions(params);
       setRows(res.data?.rows || []);
       setTotal(res.data?.total ?? (res.data?.rows || []).length);
       setSelected(new Set());
     } catch (e) {
       setMessage(e?.response?.data?.error || "Search failed");
+      setRows([]);
+      setTotal(0);
     } finally {
       setLoading(false);
     }
-  }, [filters, range]);
+  }, [appliedDateStart, appliedDateEnd, appliedFilters]);
+
+  const [searchTick, setSearchTick] = useState(0);
+  const initialSearch = useRef(false);
+
+  const handleSearch = () => {
+    setAppliedPreset(rangePreset);
+    setAppliedDateStart(dateStart);
+    setAppliedDateEnd(dateEnd);
+    setAppliedFilters({ ...filters });
+    setSearchTick((t) => t + 1);
+  };
 
   useEffect(() => {
-    loadUsers();
-    search();
-  }, []);
+    if (!initialSearch.current) {
+      initialSearch.current = true;
+      setAppliedPreset("today");
+      setAppliedDateStart(initialToday.start);
+      setAppliedDateEnd(initialToday.end);
+      setSearchTick(1);
+      return;
+    }
+    if (searchTick < 1) return;
+    runSearch();
+  }, [searchTick, runSearch]);
 
   const visibleIds = useMemo(() => rows.map((r) => r.bag_id).filter(Boolean), [rows]);
   const selectedCount = selected.size;
@@ -150,7 +191,7 @@ export default function RinseFoldingExceptionsPage() {
     }
   };
 
-  const bulkActionLabel = BULK_ACTIONS.find((a) => a.id === bulkAction)?.label || bulkAction;
+  const bulkActionLabel = bulkActions.find((a) => a.id === bulkAction)?.label || bulkAction;
 
   const bulkConfirmText = useMemo(() => {
     if (bulkAction === "approve_scoring") {
@@ -186,7 +227,7 @@ export default function RinseFoldingExceptionsPage() {
       setMessage(
         `Bulk ${bulkActionLabel}: updated ${data.updated ?? 0}, skipped ${data.skipped ?? 0} of ${data.requested ?? bagIds.length}.`
       );
-      await search();
+      await runSearch();
     } catch (e) {
       setMessage(e?.response?.data?.error || "Bulk action failed");
     } finally {
@@ -225,7 +266,7 @@ export default function RinseFoldingExceptionsPage() {
       await fn();
       setActionNote("");
       setOverrideOpen(false);
-      await search();
+      await runSearch();
     } catch (e) {
       setMessage(e?.response?.data?.error || "Action failed");
     }
@@ -237,14 +278,35 @@ export default function RinseFoldingExceptionsPage() {
         Folding Exceptions Review
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Review data-quality exceptions, approve for gaming/scoring, or exclude. Original exception codes are kept for audit.
+        Review blocking exceptions, mark reviewed, exclude from scoring, or override. Approve-for-scoring is disabled until folding logic is stable.
       </Typography>
 
-      <FoldingDateRangeFilter value={range} onChange={setRange} sx={{ mb: 2 }} />
+      <Stack spacing={1.5} sx={{ mb: 2 }}>
+        <FoldingDateRangeFilter
+          preset={rangePreset}
+          onPresetChange={setRangePreset}
+          dateStart={dateStart}
+          dateEnd={dateEnd}
+          onDateStartChange={setDateStart}
+          onDateEndChange={setDateEnd}
+          showDateField={false}
+        />
+        <Typography variant="body2" color="text.secondary">
+          {formatAppliedRangeSummary({
+            dateStart: appliedDateStart,
+            dateEnd: appliedDateEnd,
+            preset: appliedPreset,
+          })}
+        </Typography>
+      </Stack>
 
       <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-        <Stack direction={{ xs: "column", md: "row" }} spacing={1} flexWrap="wrap">
-          <TextField size="small" label="Employee / user" value={filters.user_name} onChange={(e) => setFilters({ ...filters, user_name: e.target.value })} sx={{ minWidth: 140 }} />
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1} flexWrap="wrap" alignItems="flex-end">
+          <FoldingUserSelect
+            label="Employee / user"
+            value={filters.user_name}
+            onChange={(v) => setFilters({ ...filters, user_name: v })}
+          />
           <TextField size="small" label="Bag ID" value={filters.bag_id} onChange={(e) => setFilters({ ...filters, bag_id: e.target.value })} />
           <TextField size="small" label="Customer" value={filters.customer} onChange={(e) => setFilters({ ...filters, customer: e.target.value })} />
           <TextField size="small" label="Exception code" value={filters.exception_code} onChange={(e) => setFilters({ ...filters, exception_code: e.target.value })} />
@@ -256,17 +318,20 @@ export default function RinseFoldingExceptionsPage() {
               <MenuItem value="yes">Reviewed</MenuItem>
             </Select>
           </FormControl>
-          <FormControl size="small" sx={{ minWidth: 120 }}>
-            <InputLabel>Approved</InputLabel>
-            <Select label="Approved" value={filters.approved} onChange={(e) => setFilters({ ...filters, approved: e.target.value })}>
-              <MenuItem value="">Any</MenuItem>
-              <MenuItem value="yes">Approved</MenuItem>
-              <MenuItem value="no">Not approved</MenuItem>
-            </Select>
-          </FormControl>
+          {approvalsEnabled ? (
+            <FormControl size="small" sx={{ minWidth: 120 }}>
+              <InputLabel>Approved</InputLabel>
+              <Select label="Approved" value={filters.approved} onChange={(e) => setFilters({ ...filters, approved: e.target.value })}>
+                <MenuItem value="">Any</MenuItem>
+                <MenuItem value="yes">Approved</MenuItem>
+                <MenuItem value="no">Not approved</MenuItem>
+              </Select>
+            </FormControl>
+          ) : null}
           <TextField size="small" type="number" label="Duration min (min)" value={filters.duration_min} onChange={(e) => setFilters({ ...filters, duration_min: e.target.value })} sx={{ width: 130 }} />
           <TextField size="small" type="number" label="Duration max (min)" value={filters.duration_max} onChange={(e) => setFilters({ ...filters, duration_max: e.target.value })} sx={{ width: 130 }} />
-          <Button variant="contained" onClick={search} disabled={loading}>Search</Button>
+          <Button variant="contained" onClick={handleSearch} disabled={loading}>Search</Button>
+          <Button variant="outlined" onClick={runSearch} disabled={loading}>Refresh</Button>
         </Stack>
       </Paper>
 
@@ -290,16 +355,12 @@ export default function RinseFoldingExceptionsPage() {
             <FormControl size="small" sx={{ minWidth: 200 }}>
               <InputLabel>Bulk action</InputLabel>
               <Select label="Bulk action" value={bulkAction} onChange={(e) => setBulkAction(e.target.value)}>
-                {BULK_ACTIONS.map((a) => (
+                {bulkActions.map((a) => (
                   <MenuItem key={a.id} value={a.id}>{a.label}</MenuItem>
                 ))}
               </Select>
             </FormControl>
-            <Button
-              variant="contained"
-              size="small"
-              onClick={() => setBulkOpen(true)}
-            >
+            <Button variant="contained" size="small" onClick={() => setBulkOpen(true)}>
               Apply to selected
             </Button>
           </Stack>
@@ -308,7 +369,7 @@ export default function RinseFoldingExceptionsPage() {
 
       <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
         <Typography variant="body2" color="text.secondary">
-          {total} exception row(s)
+          {loading ? "Loading…" : `${total} exception row(s)`}
         </Typography>
         <FormControlLabel
           control={
@@ -317,6 +378,7 @@ export default function RinseFoldingExceptionsPage() {
               checked={allVisibleSelected}
               indeterminate={selectedCount > 0 && !allVisibleSelected}
               onChange={toggleSelectAll}
+              disabled={!rows.length}
             />
           }
           label="Select all visible"
@@ -341,7 +403,13 @@ export default function RinseFoldingExceptionsPage() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((r) => (
+            {!loading && !rows.length ? (
+              <TableRow>
+                <TableCell colSpan={11} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                  No exceptions match the applied filters. Adjust criteria and click Search.
+                </TableCell>
+              </TableRow>
+            ) : rows.map((r) => (
               <TableRow key={r.bag_id} selected={selected.has(r.bag_id)}>
                 <TableCell padding="checkbox">
                   <Checkbox
@@ -375,7 +443,9 @@ export default function RinseFoldingExceptionsPage() {
                     <Button size="small" onClick={() => openTimeline(r.bag_id)}>Timeline</Button>
                     <Button size="small" onClick={() => openOrderDetail(r.bag_id)}>Order</Button>
                     <Button size="small" onClick={() => runAction(() => markFoldingExceptionReviewed(r.bag_id, { note: "Reviewed" }))}>Reviewed</Button>
-                    <Button size="small" color="success" onClick={() => runAction(() => approveFoldingException(r.bag_id, { note: actionNote || "Approved for scoring" }))}>Approve</Button>
+                    {approvalsEnabled ? (
+                      <Button size="small" color="success" onClick={() => runAction(() => approveFoldingException(r.bag_id, { note: actionNote || "Approved for scoring" }))}>Approve</Button>
+                    ) : null}
                     <Button size="small" color="warning" onClick={() => runAction(() => excludeFoldingException(r.bag_id, { note: "Excluded from gaming" }))}>Exclude</Button>
                     <Button
                       size="small"
@@ -393,13 +463,6 @@ export default function RinseFoldingExceptionsPage() {
                 </TableCell>
               </TableRow>
             ))}
-            {!rows.length ? (
-              <TableRow>
-                <TableCell colSpan={11} align="center" sx={{ py: 3, color: "text.secondary" }}>
-                  Run search to load exceptions.
-                </TableCell>
-              </TableRow>
-            ) : null}
           </TableBody>
         </Table>
       </Paper>

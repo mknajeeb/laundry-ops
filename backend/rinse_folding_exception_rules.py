@@ -14,6 +14,10 @@ DEFAULT_MIN_DURATION_MINUTES = 10
 DEFAULT_MAX_DURATION_MINUTES = 240  # UI default; use 0 to disable max check
 
 
+MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST = "warning_use_earliest_default"
+MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION = "exception"
+
+
 @dataclass(frozen=True)
 class FoldingExceptionRules:
     min_duration_minutes: int
@@ -23,6 +27,7 @@ class FoldingExceptionRules:
     rule_missing_folding: bool
     rule_clean_before_folding: bool
     multiple_clean_scans_as_exception: bool
+    multiple_folding_scans_behavior: str = MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST
 
     @property
     def min_duration_seconds(self) -> int:
@@ -40,7 +45,8 @@ def default_exception_rules_dict() -> dict[str, Any]:
     return {
         "min_duration_minutes": DEFAULT_MIN_DURATION_MINUTES,
         "max_duration_minutes": DEFAULT_MAX_DURATION_MINUTES,
-        "rule_multiple_folding_scans": True,
+        "rule_multiple_folding_scans": False,
+        "multiple_folding_scans_behavior": MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST,
         "rule_missing_clean": True,
         "rule_missing_folding": True,
         "rule_clean_before_folding": True,
@@ -73,19 +79,33 @@ def _int_val(raw: Any, default: int) -> int:
         return default
 
 
+def _multiple_folding_behavior(src: dict[str, Any]) -> str:
+    raw = src.get("multiple_folding_scans_behavior")
+    if raw is not None and str(raw).strip():
+        b = str(raw).strip().lower()
+        if b in (MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION, "exception"):
+            return MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION
+        return MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST
+    if _bool_val(src.get("rule_multiple_folding_scans"), False):
+        return MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION
+    return MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST
+
+
 def parse_exception_rules_payload(data: dict[str, Any] | None) -> FoldingExceptionRules:
     base = default_exception_rules_dict()
     src = {**base, **(data or {})}
+    behavior = _multiple_folding_behavior(src)
     return FoldingExceptionRules(
         min_duration_minutes=max(0, _int_val(src.get("min_duration_minutes"), DEFAULT_MIN_DURATION_MINUTES)),
         max_duration_minutes=_int_val(src.get("max_duration_minutes"), DEFAULT_MAX_DURATION_MINUTES),
-        rule_multiple_folding_scans=_bool_val(src.get("rule_multiple_folding_scans"), True),
+        rule_multiple_folding_scans=behavior == MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION,
         rule_missing_clean=_bool_val(src.get("rule_missing_clean"), True),
         rule_missing_folding=_bool_val(src.get("rule_missing_folding"), True),
         rule_clean_before_folding=_bool_val(src.get("rule_clean_before_folding"), True),
         multiple_clean_scans_as_exception=_bool_val(
             src.get("multiple_clean_scans_as_exception"), False
         ),
+        multiple_folding_scans_behavior=behavior,
     )
 
 
@@ -156,6 +176,7 @@ def put_folding_exception_rules(
             "rule_missing_folding": rules.rule_missing_folding,
             "rule_clean_before_folding": rules.rule_clean_before_folding,
             "multiple_clean_scans_as_exception": rules.multiple_clean_scans_as_exception,
+            "multiple_folding_scans_behavior": rules.multiple_folding_scans_behavior,
         }
     )
     _set_setting(cursor, int(organization_id), KEY_EXCEPTION_RULES_JSON, json.dumps(stored))
