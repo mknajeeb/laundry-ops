@@ -55,6 +55,7 @@ from backend.notification_routes import register_notification_routes
 from backend.rinse_export_routes import register_rinse_export_routes
 from backend.rinse_admin_routes import register_rinse_admin_routes
 from backend.rinse_folding_routes import register_rinse_folding_routes
+from backend.rinse_processing_routes import register_rinse_processing_routes
 from backend.ta_routes import (
     _build_permission_hierarchy,
     _sanitize_role_code,
@@ -10868,6 +10869,13 @@ def health_db():
 
 
 register_rinse_folding_routes(
+    app,
+    require_user=require_user,
+    require_admin=require_admin,
+    user_org_id=user_org_id,
+    parse_date_value=parse_date_value,
+)
+register_rinse_processing_routes(
     app,
     require_user=require_user,
     require_admin=require_admin,

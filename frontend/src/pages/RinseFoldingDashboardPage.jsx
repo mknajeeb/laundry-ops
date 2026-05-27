@@ -43,7 +43,7 @@ import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter
 import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePanel";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import FoldingUserSelect from "../components/folding/FoldingUserSelect";
-import FoldingEmployeeProductivityPanel from "../components/folding/FoldingEmployeeProductivityPanel";
+import EmployeeProductivitySection from "../components/folding/EmployeeProductivitySection";
 import { defaultWeekRange, foldingRangeParams, todayRange } from "../utils/foldingDateRange";
 import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
@@ -572,14 +572,16 @@ function RinseFoldingDashboardPage({ user }) {
             ))}
           </TableBody>
         </Table>
-        <FoldingEmployeeProductivityPanel
-          userName={selectedEmployee}
+        <EmployeeProductivitySection
+          selectedEmployee={selectedEmployee}
+          onSelectEmployee={setSelectedEmployee}
           appliedDateStart={appliedDateStart}
           appliedDateEnd={appliedDateEnd}
           appliedListDateField={appliedListDateField}
           searchTick={searchTick}
           admin={admin}
           onOpenTimeline={openDrawer}
+          onOpenOrder={openDrawer}
           onMapUser={() => {
             const el = document.getElementById("folding-user-mapping");
             if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });

@@ -443,6 +443,15 @@ export const getFoldingUserSequence = (params = {}) =>
 export const getFoldingUserProductivity = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/user-productivity`, { params, timeout: 60000 });
 
+export const getProcessingProductivity = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/processing/productivity`, { params, timeout: 60000 });
+
+export const getProcessingSettings = () =>
+  axios.get(`${API_BASE}/rinse/processing/settings`, { timeout: 15000 });
+
+export const putProcessingSettings = (body) =>
+  axios.put(`${API_BASE}/rinse/processing/settings`, body, { timeout: 15000 });
+
 export const listFoldingUserMappings = () =>
   axios.get(`${API_BASE}/rinse/folding/user-mappings`, { timeout: 30000 });
 
