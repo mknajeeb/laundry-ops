@@ -480,6 +480,13 @@ export const overrideFoldingPerformance = (bagId, body) =>
     timeout: 30000,
   });
 
+export const applyFoldingScoringOverride = (bagId, body) =>
+  axios.post(
+    `${API_BASE}/rinse/folding/performance/${encodeURIComponent(bagId)}/scoring-override`,
+    body,
+    { timeout: 30000 }
+  );
+
 export const getFoldingBenchmarks = () =>
   axios.get(`${API_BASE}/rinse/folding/benchmarks`, { timeout: 15000 });
 

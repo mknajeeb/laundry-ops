@@ -96,7 +96,7 @@ export default function FoldingUserMappingPanel() {
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" mb={2}>
         Maps Rinse assigned_user_name to internal users for clock-hour productivity (Mode C).
-        Bag-wise and work-span modes do not require a mapping.
+        Gaming / scoring records use Rinse assigned_user_name only. Clocked productivity requires a mapping.
       </Typography>
       {message ? <Alert severity="error" sx={{ mb: 2 }} onClose={() => setMessage("")}>{message}</Alert> : null}
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="flex-end" flexWrap="wrap" mb={2}>
