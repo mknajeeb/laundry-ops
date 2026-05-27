@@ -13,13 +13,14 @@ from typing import Any
 sys.path.insert(0, ".")
 
 EXCEPTION_CODES_REPORT = (
-    "MULTIPLE_FOLDING_SCANS",
+    "MISSING_CLEAN",
+    "MISSING_FOLDING",
+    "CLEAN_BEFORE_FOLDING",
     "FOLDING_DURATION_TOO_SHORT",
     "FOLDING_DURATION_TOO_LONG",
-    "MISSING_FOLDING",
-    "MISSING_CLEAN",
-    "CLEAN_BEFORE_FOLDING",
     "MULTIPLE_CLEAN_SCANS",
+    "OVERLAP_OR_INVALID_TIMING",
+    "MULTIPLE_FOLDING_SCANS",
 )
 
 
@@ -47,10 +48,19 @@ def _effective_scoring_status(row: dict[str, Any] | None) -> str:
     return str(row.get("scoring_status") or row.get("status") or "").upper()
 
 
+def _normalize_warning_codes_json(raw: Any) -> str | None:
+    from backend.rinse_bag_folding import parse_stored_warning_codes
+    import json
+
+    codes = parse_stored_warning_codes(raw)
+    return json.dumps(codes) if codes else None
+
+
 def _fields_after_recompute(
     existing: dict[str, Any] | None, compute
 ) -> dict[str, Any]:
     from backend.rinse_folding_scoring import scoring_fields_from_compute
+    import json
 
     scoring = scoring_fields_from_compute(
         status=str(compute.status),
@@ -58,9 +68,11 @@ def _fields_after_recompute(
         existing=existing,
         preserve_review=True,
     )
+    warnings = list(getattr(compute, "warning_codes", ()) or ())
     return {
         "status": compute.status,
         "exception_code": compute.exception_code,
+        "warning_codes": json.dumps(warnings) if warnings else None,
         "scoring_status": scoring["scoring_status"],
         "included_in_scoring": int(scoring["included_in_scoring"]),
     }
@@ -69,12 +81,15 @@ def _fields_after_recompute(
 def _would_change(existing: dict[str, Any] | None, proposed: dict[str, Any]) -> bool:
     if not existing:
         return True
-    for key in ("status", "exception_code", "scoring_status", "included_in_scoring"):
+    for key in ("status", "exception_code", "warning_codes", "scoring_status", "included_in_scoring"):
         old = existing.get(key)
         new = proposed.get(key)
         if key == "included_in_scoring":
             old = int(old or 0)
             new = int(new or 0)
+        elif key == "warning_codes":
+            old = _normalize_warning_codes_json(old)
+            new = _normalize_warning_codes_json(new)
         else:
             old = None if old is None else str(old)
             new = None if new is None else str(new)
@@ -142,6 +157,7 @@ def _run_dry_run(
     unchanged: list[str] = []
     would_change: list[dict[str, Any]] = []
     proposed_code_counts: Counter[str] = Counter()
+    proposed_warning_code_counts: Counter[str] = Counter()
     current_code_counts: Counter[str] = Counter()
 
     for bid in bags:
@@ -159,6 +175,10 @@ def _run_dry_run(
         code = proposed.get("exception_code")
         if code:
             proposed_code_counts[str(code)] += 1
+        from backend.rinse_bag_folding import parse_stored_warning_codes
+
+        for wc in parse_stored_warning_codes(proposed.get("warning_codes")):
+            proposed_warning_code_counts[str(wc)] += 1
 
         old_status = str((existing or {}).get("status") or "").upper()
         old_scoring = _effective_scoring_status(existing)
@@ -227,6 +247,7 @@ def _run_dry_run(
             c: proposed_code_counts.get(c, 0) for c in EXCEPTION_CODES_REPORT
         },
         "proposed_exception_code_counts_all": dict(proposed_code_counts),
+        "proposed_warning_code_counts": dict(proposed_warning_code_counts),
         "safety": {
             "scan_timestamps_rewritten": False,
             "upload_staging_registry_rows_changed": False,

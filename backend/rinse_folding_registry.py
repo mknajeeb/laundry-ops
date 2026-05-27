@@ -98,6 +98,8 @@ def ensure_rinse_folding_v2_columns(cursor) -> None:
     for col, ddl in (
         ("scoring_status", "VARCHAR(24) NULL"),
         ("included_in_scoring", "TINYINT(1) NOT NULL DEFAULT 0"),
+        ("scoring_override", "VARCHAR(16) NULL"),
+        ("warning_codes", "TEXT NULL"),
         ("reviewed_at", "DATETIME NULL"),
         ("reviewed_by_user_id", "INT NULL"),
         ("exception_review_note", "TEXT NULL"),
@@ -193,12 +195,14 @@ def _upsert_performance_row(
     reviewed_at = None
     reviewed_by = None
     review_note = None
+    scoring_override = None
     if existing and preserve_excluded:
         excluded = int(existing.get("excluded_from_performance") or 0)
         admin_notes = existing.get("admin_notes")
         reviewed_at = existing.get("reviewed_at")
         reviewed_by = existing.get("reviewed_by_user_id")
         review_note = existing.get("exception_review_note")
+        scoring_override = existing.get("scoring_override")
 
     from backend.rinse_folding_scoring import scoring_fields_from_compute
 
@@ -216,8 +220,8 @@ def _upsert_performance_row(
     cursor.execute(
         """
         INSERT INTO rinse_folding_performance (
-            organization_id, bag_id, status, exception_code,
-            scoring_status, included_in_scoring,
+            organization_id, bag_id, status, exception_code, warning_codes,
+            scoring_status, included_in_scoring, scoring_override,
             folding_start_at, folding_end_at, duration_seconds,
             folding_start_event_id, folding_end_event_id,
             folding_start_rack, folding_end_rack,
@@ -228,8 +232,8 @@ def _upsert_performance_row(
             folding_scan_count, clean_scan_count,
             source_recompute_kind, computed_at
         ) VALUES (
-            %s, %s, %s, %s,
-            %s, %s,
+            %s, %s, %s, %s, %s,
+            %s, %s, %s,
             %s, %s, %s,
             %s, %s,
             %s, %s,
@@ -243,8 +247,10 @@ def _upsert_performance_row(
         ON DUPLICATE KEY UPDATE
             status = VALUES(status),
             exception_code = VALUES(exception_code),
+            warning_codes = VALUES(warning_codes),
             scoring_status = VALUES(scoring_status),
             included_in_scoring = VALUES(included_in_scoring),
+            scoring_override = COALESCE(scoring_override, VALUES(scoring_override)),
             folding_start_at = VALUES(folding_start_at),
             folding_end_at = VALUES(folding_end_at),
             duration_seconds = VALUES(duration_seconds),
@@ -268,8 +274,10 @@ def _upsert_performance_row(
             bid,
             fields["status"],
             fields.get("exception_code"),
+            fields.get("warning_codes"),
             scoring["scoring_status"],
             scoring["included_in_scoring"],
+            scoring_override,
             fields.get("folding_start_at"),
             fields.get("folding_end_at"),
             fields.get("duration_seconds"),
@@ -945,6 +953,169 @@ def apply_performance_override(
     }
 
 
+def apply_scoring_override(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    action: str,
+    note: str | None = None,
+    actor_user_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    Record-level scoring override (beats rule engine until cleared).
+
+    action: include | exclude | clear
+    """
+    from backend.rinse_folding_scoring import (
+        SCORING_EXCLUDED,
+        SCORING_INCLUDED_OVERRIDE,
+        SCORING_OVERRIDE_EXCLUDE,
+        SCORING_OVERRIDE_INCLUDE,
+        scoring_override_label,
+    )
+
+    ensure_rinse_folding_tables(cursor)
+    org = int(organization_id)
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        raise ValueError("Invalid bag id")
+
+    act = str(action or "").strip().lower()
+    if act not in ("include", "exclude", "clear"):
+        raise ValueError("action must be include, exclude, or clear")
+
+    row = get_folding_performance_row(cursor, org, bid)
+    if not row:
+        raise ValueError("Performance row not found; recompute folding for this bag first")
+
+    if act == "clear":
+        cursor.execute(
+            """
+            UPDATE rinse_folding_performance
+            SET scoring_override = NULL, updated_at = NOW()
+            WHERE organization_id = %s AND bag_id = %s
+            """,
+            (org, bid),
+        )
+        payload = apply_folding_performance_for_bag(
+            cursor, org, bid, source_recompute_kind="scoring_override_clear"
+        )
+        updated = get_folding_performance_row(cursor, org, bid)
+        perf_id = int(updated["id"]) if updated else int(row["id"])
+        cursor.execute(
+            """
+            INSERT INTO rinse_folding_performance_overrides (
+                organization_id, performance_id, bag_id,
+                field_name, old_value, new_value, actor_user_id, notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                org,
+                perf_id,
+                bid,
+                "scoring_override_clear",
+                _serialize_override_value(row.get("scoring_override")),
+                None,
+                actor_user_id,
+                note,
+            ),
+        )
+        return {
+            "bag_id": bid,
+            "action": act,
+            "row": updated,
+            "recomputed": payload,
+            "scoring_label": scoring_override_label(updated),
+        }
+
+    new_override = (
+        SCORING_OVERRIDE_INCLUDE if act == "include" else SCORING_OVERRIDE_EXCLUDE
+    )
+    new_scoring_status = (
+        SCORING_INCLUDED_OVERRIDE if act == "include" else SCORING_EXCLUDED
+    )
+    new_included = 1 if act == "include" else 0
+    old_status = row.get("scoring_status")
+    old_included = row.get("included_in_scoring")
+    old_override = row.get("scoring_override")
+
+    cursor.execute(
+        """
+        UPDATE rinse_folding_performance
+        SET scoring_override = %s,
+            scoring_status = %s,
+            included_in_scoring = %s,
+            updated_at = NOW()
+        WHERE organization_id = %s AND bag_id = %s
+        """,
+        (new_override, new_scoring_status, new_included, org, bid),
+    )
+    perf_id = int(row["id"])
+    audit_note = note or f"Scoring override: {act}"
+    cursor.execute(
+        """
+        INSERT INTO rinse_folding_performance_overrides (
+            organization_id, performance_id, bag_id,
+            field_name, old_value, new_value, actor_user_id, notes
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            org,
+            perf_id,
+            bid,
+            "scoring_override",
+            _serialize_override_value(old_override),
+            new_override,
+            actor_user_id,
+            audit_note,
+        ),
+    )
+    cursor.execute(
+        """
+        INSERT INTO rinse_folding_performance_overrides (
+            organization_id, performance_id, bag_id,
+            field_name, old_value, new_value, actor_user_id, notes
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            org,
+            perf_id,
+            bid,
+            "included_in_scoring",
+            _serialize_override_value(old_included),
+            new_included,
+            actor_user_id,
+            audit_note,
+        ),
+    )
+    cursor.execute(
+        """
+        INSERT INTO rinse_folding_performance_overrides (
+            organization_id, performance_id, bag_id,
+            field_name, old_value, new_value, actor_user_id, notes
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            org,
+            perf_id,
+            bid,
+            "scoring_status",
+            _serialize_override_value(old_status),
+            new_scoring_status,
+            actor_user_id,
+            audit_note,
+        ),
+    )
+    updated = get_folding_performance_row(cursor, org, bid)
+    return {
+        "bag_id": bid,
+        "action": act,
+        "row": updated,
+        "scoring_label": scoring_override_label(updated),
+    }
+
+
 def aggregate_user_folding_stats(
     cursor,
     organization_id: int,
@@ -1558,6 +1729,16 @@ def aggregate_folding_leaderboard(
     previous_team = aggregate_team_folding_stats(cursor, org, prev_start, prev_end)
     prev_team_available = int(previous_team.get("bag_count") or 0) > 0
 
+    from backend.rinse_folding_rules_impact import stored_rules_impact
+
+    period_bag_summary = stored_rules_impact(
+        cursor,
+        org,
+        period_start=period_start,
+        period_end=period_end,
+        date_field=date_field,
+    )
+
     generated_at = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
     return {
         "generated_at": generated_at,
@@ -1571,6 +1752,7 @@ def aggregate_folding_leaderboard(
         "anchor_date": anchor_day.isoformat(),
         "benchmarks": benchmarks,
         "team": team,
+        "period_bag_summary": period_bag_summary,
         "previous_team": {
             **previous_team,
             "available": prev_team_available,

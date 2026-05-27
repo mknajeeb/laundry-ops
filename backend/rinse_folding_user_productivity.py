@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import Any
 
 from backend.rinse_bag_completion import COMPLETION_COMPLETED
+from backend.rinse_bag_folding import parse_stored_warning_codes
 from backend.rinse_folding_et import (
     eastern_now,
     naive_et_day_end_exclusive,
@@ -112,6 +113,7 @@ def build_gaming_record_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, A
                 "duration_minutes": dur_min,
                 "status": st,
                 "exception_code": code,
+                "warning_codes": parse_stored_warning_codes(row.get("warning_codes")),
                 "is_warning": is_warning,
                 "included_in_scoring": included,
                 "scoring_status": row.get("scoring_status"),

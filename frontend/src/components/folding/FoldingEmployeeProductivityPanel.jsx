@@ -28,7 +28,7 @@ import {
   formatLbs,
   formatRate,
 } from "../../utils/foldingFormat";
-import { foldingExceptionLabel } from "../../utils/foldingExceptionLabels";
+import FoldingExceptionCell from "./FoldingExceptionCell";
 import FoldingScoringOverrideMenu from "./FoldingScoringOverrideMenu";
 
 const timeCellSx = { whiteSpace: "nowrap", fontSize: 12, py: 1 };
@@ -369,7 +369,7 @@ export default function FoldingEmployeeProductivityPanel({
                         />
                       </TableCell>
                       <TableCell>
-                        {r.exception_code ? foldingExceptionLabel(r.exception_code) : "—"}
+                        <FoldingExceptionCell row={r} compact />
                       </TableCell>
                       <TableCell>{r.included_in_scoring ? "Yes" : "No"}</TableCell>
                       <TableCell>{r.scoring_status || "—"}</TableCell>

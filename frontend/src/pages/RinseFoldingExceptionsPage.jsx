@@ -35,6 +35,7 @@ import {
   overrideFoldingExceptionReview,
   searchFoldingExceptions,
 } from "../api";
+import FoldingExceptionCell from "../components/folding/FoldingExceptionCell";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import FoldingUserSelect from "../components/folding/FoldingUserSelect";
@@ -427,7 +428,7 @@ export default function RinseFoldingExceptionsPage() {
                   <Typography variant="caption" display="block">{formatDateTime(r.folding_end_at)}</Typography>
                 </TableCell>
                 <TableCell>{formatFoldingDuration(r.duration_seconds)}</TableCell>
-                <TableCell>{r.exception_code || "—"}</TableCell>
+                <TableCell><FoldingExceptionCell row={r} compact /></TableCell>
                 <TableCell sx={{ maxWidth: 200 }}>
                   {r.plain_english_reason || foldingExceptionLabel(r.exception_code)}
                 </TableCell>

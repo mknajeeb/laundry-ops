@@ -27,6 +27,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import FoldingExceptionCell from "../components/folding/FoldingExceptionCell";
 import {
   getFoldingBenchmarks,
   getFoldingEmployeeAnalysis,
@@ -702,7 +703,7 @@ function RinseFoldingDashboardPage({ user }) {
                     color={r.included_in_scoring ? "success" : "warning"}
                   />
                 </TableCell>
-                <TableCell>{r.exception_code || "—"}</TableCell>
+                <TableCell><FoldingExceptionCell row={r} compact /></TableCell>
                 <TableCell>{r.included_in_scoring ? "Yes" : "No"}</TableCell>
                 <TableCell><Button size="small" onClick={() => openDrawer(r.bag_id)}>Timeline</Button></TableCell>
               </TableRow>
@@ -719,7 +720,7 @@ function RinseFoldingDashboardPage({ user }) {
             {exceptions.map((r) => (
               <TableRow key={r.bag_id} hover>
                 <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
-                <TableCell>{r.exception_code}</TableCell>
+                <TableCell><FoldingExceptionCell row={r} compact /></TableCell>
                 <TableCell>{r.assigned_user_name || "—"}</TableCell>
                 <TableCell>
                   <Stack direction="row" spacing={0.5}>

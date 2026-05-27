@@ -21,6 +21,7 @@ from backend.rinse_folding_et import (
 from backend.rinse_folding_exception_rules import (
     MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION,
     MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST,
+    normalize_rules_api_dict,
     parse_exception_rules_payload,
 )
 from backend.rinse_folding_scoring import scoring_fields_from_compute
@@ -118,6 +119,20 @@ class TestMultipleFoldingBehavior:
     def test_parse_default_behavior_is_warning(self):
         rules = parse_exception_rules_payload({})
         assert rules.multiple_folding_scans_behavior == MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST
+
+    def test_normalize_prefers_behavior_over_legacy_bool(self):
+        out = normalize_rules_api_dict(
+            {
+                "rule_multiple_folding_scans": True,
+                "multiple_folding_scans_behavior": MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST,
+            }
+        )
+        assert out["multiple_folding_scans_behavior"] == MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST
+        assert out["rule_multiple_folding_scans"] is False
+
+    def test_normalize_legacy_bool_only_maps_to_exception(self):
+        out = normalize_rules_api_dict({"rule_multiple_folding_scans": True})
+        assert out["multiple_folding_scans_behavior"] == MULTIPLE_FOLDING_BEHAVIOR_EXCEPTION
 
 
 class TestApprovalsFlag:

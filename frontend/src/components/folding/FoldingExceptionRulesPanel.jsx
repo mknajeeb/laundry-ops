@@ -8,6 +8,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   FormControl,
   FormControlLabel,
   InputLabel,
@@ -25,6 +26,30 @@ import {
   getFoldingExceptionRules,
   putFoldingExceptionRules,
 } from "../../api";
+
+const MF_EARLIEST = "warning_use_earliest_folding";
+const MF_LATEST = "warning_use_latest_folding";
+const MF_EXCEPTION = "exception";
+const MC_EARLIEST = "warning_use_earliest_clean";
+const MC_LATEST = "warning_use_latest_clean";
+const MC_EXCEPTION = "exception";
+const MF_LEGACY = "warning_use_earliest_default";
+
+function normalizeMfBehavior(rules) {
+  const v = rules?.multiple_folding_scans_behavior;
+  if (v === MF_EXCEPTION || v === "exception") return MF_EXCEPTION;
+  if (v === MF_LATEST || v === "warning_use_latest_folding") return MF_LATEST;
+  if (v === MF_EARLIEST || v === MF_LEGACY) return MF_EARLIEST;
+  return rules?.rule_multiple_folding_scans ? MF_EXCEPTION : MF_EARLIEST;
+}
+
+function normalizeMcBehavior(rules) {
+  const v = rules?.multiple_clean_scans_behavior;
+  if (v === MC_EXCEPTION || v === "exception") return MC_EXCEPTION;
+  if (v === MC_LATEST) return MC_LATEST;
+  if (v === MC_EARLIEST) return MC_EARLIEST;
+  return rules?.multiple_clean_scans_as_exception ? MC_EXCEPTION : MC_EARLIEST;
+}
 
 export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
   const [rules, setRules] = useState(null);
@@ -103,15 +128,22 @@ export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
   }
 
   const pc = dryRunResult?.proposed_changes || {};
+  const mfVal = normalizeMfBehavior(rules);
+  const mcVal = normalizeMcBehavior(rules);
 
   return (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
         Exception rule thresholds
       </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+        Save settings updates thresholds only. Recompute rewrites stored folding performance
+        (status, exception_code, warning_codes, scoring) — not scan timestamps or registry.
+      </Typography>
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-        Save settings updates thresholds only. Recompute rewrites existing folding performance rows
-        (no upload, registry, staging, or scan timestamp changes).
+        Priority when multiple rules apply: (1) min duration (2) max duration (3) missing clean
+        (4) missing folding (5) clean before folding (6) multiple clean (7) multiple folding.
+        Lower-priority scan issues may appear as secondary warnings on the record.
       </Typography>
 
       {rules.recompute_needed ? (
@@ -135,46 +167,57 @@ export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
         </Alert>
       ) : null}
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" sx={{ mb: 2 }}>
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1, mb: 1 }}>
+        Duration
+      </Typography>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" sx={{ mb: 1 }}>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={rules.rule_min_duration_enabled !== false}
+              onChange={(e) => setRules({ ...rules, rule_min_duration_enabled: e.target.checked })}
+            />
+          }
+          label="Time less than minimum = exception"
+        />
         <TextField
           size="small"
           type="number"
-          label="Min folding duration (minutes)"
+          label="Minimum (minutes)"
           value={rules.min_duration_minutes ?? 10}
           onChange={(e) => setRules({ ...rules, min_duration_minutes: Number(e.target.value) })}
-          sx={{ width: 220 }}
+          sx={{ width: 160 }}
+          disabled={rules.rule_min_duration_enabled === false}
+        />
+      </Stack>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} flexWrap="wrap" sx={{ mb: 2 }}>
+        <FormControlLabel
+          control={
+            <Switch
+              checked={rules.rule_max_duration_enabled !== false}
+              onChange={(e) => setRules({ ...rules, rule_max_duration_enabled: e.target.checked })}
+            />
+          }
+          label="Time more than maximum = exception"
         />
         <TextField
           size="small"
           type="number"
-          label="Max folding duration (minutes, 0=off)"
+          label="Maximum (minutes, 0=off)"
           value={rules.max_duration_minutes ?? 240}
           onChange={(e) => setRules({ ...rules, max_duration_minutes: Number(e.target.value) })}
-          sx={{ width: 240 }}
-          helperText={rules.max_duration_help || "0 disables max duration check"}
+          sx={{ width: 200 }}
+          disabled={rules.rule_max_duration_enabled === false}
+          helperText={rules.max_duration_help || "0 disables max when enabled"}
         />
       </Stack>
-      <FormControl size="small" sx={{ minWidth: 360, mb: 2 }}>
-        <InputLabel>Multiple folding scans</InputLabel>
-        <Select
-          label="Multiple folding scans"
-          value={rules.multiple_folding_scans_behavior || "warning_use_earliest_default"}
-          onChange={(e) => {
-            const v = e.target.value;
-            setRules({
-              ...rules,
-              multiple_folding_scans_behavior: v,
-              rule_multiple_folding_scans: v === "exception",
-            });
-          }}
-        >
-          <MenuItem value="warning_use_earliest_default">
-            Warning — use earliest scan, keep in scoring (default)
-          </MenuItem>
-          <MenuItem value="exception">Exception — block scoring</MenuItem>
-        </Select>
-      </FormControl>
-      <Stack spacing={0.5}>
+
+      <Divider sx={{ my: 2 }} />
+
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+        Missing / timing
+      </Typography>
+      <Stack spacing={0.5} sx={{ mb: 2 }}>
         <FormControlLabel
           control={
             <Switch
@@ -205,14 +248,73 @@ export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
         <FormControlLabel
           control={
             <Switch
-              checked={!!rules.multiple_clean_scans_as_exception}
-              onChange={(e) => setRules({ ...rules, multiple_clean_scans_as_exception: e.target.checked })}
+              checked={!!rules.rule_overlap_invalid_timing}
+              onChange={(e) => setRules({ ...rules, rule_overlap_invalid_timing: e.target.checked })}
             />
           }
-          label="Multiple clean scans = exception (off = warning only, still counts in scoring)"
+          label="Overlap / invalid timing = exception"
         />
       </Stack>
-      <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 2 }}>
+
+      <Divider sx={{ my: 2 }} />
+
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+        Multiple scans
+      </Typography>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2} flexWrap="wrap" sx={{ mb: 2 }}>
+        <FormControl size="small" sx={{ minWidth: 360 }}>
+          <InputLabel>Multiple clean scans</InputLabel>
+          <Select
+            label="Multiple clean scans"
+            value={mcVal}
+            onChange={(e) => {
+              const v = e.target.value;
+              setRules({
+                ...rules,
+                multiple_clean_scans_behavior: v,
+                multiple_clean_scans_as_exception: v === MC_EXCEPTION,
+              });
+            }}
+          >
+            <MenuItem value={MC_EARLIEST}>
+              Warning only — use earliest clean scan, keep in scoring
+            </MenuItem>
+            <MenuItem value={MC_LATEST}>
+              Warning only — use latest clean scan, keep in scoring
+            </MenuItem>
+            <MenuItem value={MC_EXCEPTION}>
+              Exception — exclude from scoring
+            </MenuItem>
+          </Select>
+        </FormControl>
+        <FormControl size="small" sx={{ minWidth: 360 }}>
+          <InputLabel>Multiple folding scans</InputLabel>
+          <Select
+            label="Multiple folding scans"
+            value={mfVal}
+            onChange={(e) => {
+              const v = e.target.value;
+              setRules({
+                ...rules,
+                multiple_folding_scans_behavior: v,
+                rule_multiple_folding_scans: v === MF_EXCEPTION,
+              });
+            }}
+          >
+            <MenuItem value={MF_EARLIEST}>
+              Warning only — use earliest folding scan, keep in scoring (default)
+            </MenuItem>
+            <MenuItem value={MF_LATEST}>
+              Warning only — use latest folding scan, keep in scoring
+            </MenuItem>
+            <MenuItem value={MF_EXCEPTION}>
+              Exception — exclude from scoring
+            </MenuItem>
+          </Select>
+        </FormControl>
+      </Stack>
+
+      <Stack direction="row" spacing={1} flexWrap="wrap">
         <Button variant="contained" onClick={save} disabled={loading}>Save exception rules</Button>
         <Button variant="outlined" onClick={runDryRun} disabled={busy || loading}>Dry-run recompute</Button>
         <Button variant="outlined" color="warning" onClick={() => setApplyOpen(true)} disabled={busy || loading}>
@@ -231,10 +333,17 @@ export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
             {pc.exception_to_calculated ?? 0} · Warning-only: {pc.warning_only ?? 0} · Unchanged:{" "}
             {pc.unchanged ?? 0}
           </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-            Scan timestamps rewritten: {String(dryRunResult?.safety?.scan_timestamps_rewritten)} ·
-            Registry/upload changed: {String(dryRunResult?.safety?.upload_staging_registry_rows_changed)}
-          </Typography>
+          {dryRunResult?.proposed_exception_code_counts ? (
+            <Typography variant="caption" display="block" sx={{ mt: 1 }}>
+              Too short (primary): {dryRunResult.proposed_exception_code_counts.FOLDING_DURATION_TOO_SHORT ?? 0}
+              {" · "}
+              Multiple folding (primary exception):{" "}
+              {dryRunResult.proposed_exception_code_counts.MULTIPLE_FOLDING_SCANS ?? 0}
+              {" · "}
+              Multiple folding (secondary warning):{" "}
+              {dryRunResult.proposed_warning_code_counts?.MULTIPLE_FOLDING_SCANS ?? 0}
+            </Typography>
+          ) : null}
         </Box>
       </Collapse>
 
@@ -243,8 +352,7 @@ export default function FoldingExceptionRulesPanel({ onRecomputeApplied }) {
         <DialogContent>
           <Typography>
             Apply recompute for this organization using current rules? This updates folding performance
-            statuses and scoring only. It does not change uploads, registry, staging, or scan timestamps.
-            Reviewed/approved/excluded audit fields are preserved.
+            statuses and scoring only.
           </Typography>
         </DialogContent>
         <DialogActions>
