@@ -39,10 +39,13 @@ import {
   updateFoldingBenchmarks,
 } from "../api";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
+import FoldingExceptionCodeBreakdown from "../components/folding/FoldingExceptionCodeBreakdown";
 import FoldingMaintenancePanel from "../components/folding/FoldingMaintenancePanel";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import FoldingUserSelect from "../components/folding/FoldingUserSelect";
+import FoldingScoringOverrideMenu from "../components/folding/FoldingScoringOverrideMenu";
 import FoldingEmployeeProductivityPanel from "../components/folding/FoldingEmployeeProductivityPanel";
+import { formatFoldingWallDateTime } from "../utils/foldingFormat";
 import { defaultWeekRange, foldingRangeParams, todayRange } from "../utils/foldingDateRange";
 import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
@@ -436,8 +439,56 @@ function RinseFoldingDashboardPage({ user }) {
         {leaderboard?.data_source_note ? ` · ${leaderboard.data_source_note}` : ""}
       </Typography>
 
+      {leaderboard?.period_bag_summary ? (
+        <Grid container spacing={2} sx={{ mb: 2 }}>
+          <Grid item xs={6} sm={3}>
+            <SummaryCard
+              label="Total folded bags"
+              value={leaderboard.period_bag_summary.total_bags ?? 0}
+              sub="All completed bags in period"
+            />
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <SummaryCard
+              label="Bags in scoring"
+              value={leaderboard.period_bag_summary.included_in_scoring ?? 0}
+              sub="Leaderboard / TV use this set"
+            />
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <SummaryCard
+              label="Excluded (exceptions)"
+              value={leaderboard.period_bag_summary.excluded_from_scoring ?? 0}
+              sub="Not in scoring totals"
+            />
+          </Grid>
+          <Grid item xs={6} sm={3}>
+            <SummaryCard
+              label="Warnings (still in scoring)"
+              value={leaderboard.period_bag_summary.warning_in_scoring ?? 0}
+              sub="Has warning code, included_in_scoring=1"
+            />
+          </Grid>
+        </Grid>
+      ) : null}
+      {leaderboard?.period_bag_summary?.exception_code_counts ? (
+        <Box sx={{ mb: 2 }}>
+          <FoldingExceptionCodeBreakdown
+            title="Period exception codes (stored data)"
+            counts={leaderboard.period_bag_summary.exception_code_counts}
+            dense
+          />
+        </Box>
+      ) : null}
+
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={6} md={2}><SummaryCard label="Bags" value={team.bag_count ?? 0} sub={formatComparison(comp.bag_count)} /></Grid>
+        <Grid item xs={6} md={2}>
+          <SummaryCard
+            label="Scoring bags"
+            value={team.bag_count ?? 0}
+            sub={`Rates/leaderboard · ${formatComparison(comp.bag_count)}`}
+          />
+        </Grid>
         <Grid item xs={6} md={2}><SummaryCard label="Total lbs" value={formatLbs(team.total_lbs)} /></Grid>
         <Grid item xs={6} md={2}><SummaryCard label="Hours" value={formatFoldingHours(team.total_folding_seconds)} /></Grid>
         <Grid item xs={6} md={2}><SummaryCard label="Bags/hr" value={formatRate(team.bags_per_hour)} sub={`Target ${formatRate(bench.bags_per_hour_target)} · ${formatComparison(comp.bags_per_hour)}`} /></Grid>
@@ -513,7 +564,7 @@ function RinseFoldingDashboardPage({ user }) {
 
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1} flexWrap="wrap" gap={1}>
-          <Typography variant="subtitle1" fontWeight={700}>Employee performance</Typography>
+          <Typography variant="subtitle1" fontWeight={700}>Employee productivity</Typography>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
             <FoldingUserSelect
               label="Filter by employee"
@@ -577,7 +628,12 @@ function RinseFoldingDashboardPage({ user }) {
           appliedDateEnd={appliedDateEnd}
           appliedListDateField={appliedListDateField}
           searchTick={searchTick}
+          admin={admin}
           onOpenTimeline={openDrawer}
+          onMapUser={() => {
+            const el = document.getElementById("folding-user-mapping");
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+          }}
         />
       </Paper>
 
@@ -671,13 +727,14 @@ function RinseFoldingDashboardPage({ user }) {
               <TableCell>Status</TableCell>
               <TableCell>Exception / warning</TableCell>
               <TableCell>In scoring</TableCell>
+              {admin ? <TableCell>Scoring override</TableCell> : null}
               <TableCell />
             </TableRow>
           </TableHead>
           <TableBody>
             {records.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} align="center" sx={{ py: 3, color: "text.secondary" }}>
+                <TableCell colSpan={admin ? 12 : 11} align="center" sx={{ py: 3, color: "text.secondary" }}>
                   No folding records match the applied filters.
                 </TableCell>
               </TableRow>
@@ -687,8 +744,8 @@ function RinseFoldingDashboardPage({ user }) {
                 <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
                 <TableCell>{r.name_clean || "—"}</TableCell>
                 <TableCell align="right">{r.weight_lbs != null ? formatLbs(r.weight_lbs) : "—"}</TableCell>
-                <TableCell>{formatDateTime(r.folding_start_at)}</TableCell>
-                <TableCell>{formatDateTime(r.folding_end_at)}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFoldingWallDateTime(r.folding_start_at)}</TableCell>
+                <TableCell sx={{ whiteSpace: "nowrap", fontSize: 12 }}>{formatFoldingWallDateTime(r.folding_end_at)}</TableCell>
                 <TableCell>{formatFoldingDuration(r.duration_seconds)}</TableCell>
                 <TableCell>
                   <Chip
@@ -699,6 +756,16 @@ function RinseFoldingDashboardPage({ user }) {
                 </TableCell>
                 <TableCell>{r.exception_code || "—"}</TableCell>
                 <TableCell>{r.included_in_scoring ? "Yes" : "No"}</TableCell>
+                {admin ? (
+                  <TableCell>
+                    <FoldingScoringOverrideMenu bagId={r.bag_id} onDone={loadAll} />
+                    {r.scoring_override ? (
+                      <Typography variant="caption" display="block" color="text.secondary">
+                        {r.scoring_override === "INCLUDE" ? "Included by admin override" : r.scoring_override === "EXCLUDE" ? "Excluded by admin override" : r.scoring_override}
+                      </Typography>
+                    ) : null}
+                  </TableCell>
+                ) : null}
                 <TableCell><Button size="small" onClick={() => openDrawer(r.bag_id)}>Timeline</Button></TableCell>
               </TableRow>
             ))}

@@ -1,8 +1,8 @@
-"""Read-only 3-mode folding productivity (bag-wise, work-span, clock-hour)."""
+"""Employee folding productivity: clocked time vs gaming/scoring records."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 
 from backend.rinse_bag_completion import COMPLETION_COMPLETED
@@ -13,7 +13,7 @@ from backend.rinse_folding_et import (
 )
 from backend.rinse_folding_period import sql_period_filter_sql_and_args
 from backend.rinse_folding_registry import ensure_rinse_folding_tables
-from backend.rinse_folding_scoring import row_included_in_scoring, sql_scoring_included_predicate
+from backend.rinse_folding_scoring import row_included_in_scoring, scoring_override_label
 
 RINSE_SCAN_TZ = "America/New_York"
 
@@ -40,17 +40,6 @@ def _weight_lbs(row: dict[str, Any]) -> float | None:
         return v if v > 0 else None
     except (TypeError, ValueError):
         return None
-
-
-def _gap_from_previous(
-    prev_end: datetime | None, cur_start: datetime | None
-) -> tuple[float | None, str | None, bool, int]:
-    if prev_end is None or cur_start is None:
-        return None, "first_bag", False, 0
-    sec = int((cur_start - prev_end).total_seconds())
-    if sec < 0:
-        return 0.0, "overlap", True, 0
-    return round(sec / 60.0, 2), None, False, sec
 
 
 def load_user_performance_rows(
@@ -92,21 +81,28 @@ def load_user_performance_rows(
     return list(cursor.fetchall() or [])
 
 
-def build_sequence_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seq_rows: list[dict[str, Any]] = []
-    prev_end: datetime | None = None
-    for i, row in enumerate(raw_rows, start=1):
+def _record_reason(row: dict[str, Any]) -> str | None:
+    ov = scoring_override_label(row)
+    if ov:
+        return ov
+    code = str(row.get("exception_code") or "").strip()
+    if code:
+        return code
+    st = str(row.get("scoring_status") or row.get("status") or "").strip()
+    return st or None
+
+
+def build_gaming_record_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in raw_rows:
         dur_sec = _stored_duration_seconds(row)
         dur_min = round(dur_sec / 60.0, 2) if dur_sec else None
-        gap_min, gap_label, gap_overlap, gap_sec = _gap_from_previous(
-            prev_end, row.get("folding_start_at")
-        )
         included = row_included_in_scoring(row)
         code = str(row.get("exception_code") or "").strip() or None
         st = str(row.get("scoring_status") or row.get("status") or "").strip() or None
-        seq_rows.append(
+        is_warning = bool(code and included)
+        out.append(
             {
-                "sequence": i,
                 "bag_id": row.get("bag_id"),
                 "customer": row.get("name_clean"),
                 "weight_lbs": _weight_lbs(row),
@@ -114,134 +110,65 @@ def build_sequence_rows(raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "folding_end_at": row.get("folding_end_at"),
                 "duration_seconds": dur_sec,
                 "duration_minutes": dur_min,
-                "gap_minutes_from_previous": gap_min,
-                "gap_seconds_from_previous": gap_sec if i > 1 else None,
-                "gap_label": gap_label or ("First bag" if i == 1 else "Gap since previous bag"),
-                "gap_overlap": gap_overlap,
                 "status": st,
                 "exception_code": code,
+                "is_warning": is_warning,
                 "included_in_scoring": included,
                 "scoring_status": row.get("scoring_status"),
                 "scoring_override": row.get("scoring_override"),
+                "reason": _record_reason(row),
             }
         )
-        end = row.get("folding_end_at")
-        if isinstance(end, datetime):
-            prev_end = end
-    return seq_rows
+    return out
 
 
-def _aggregate_bag_totals(seq_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    total_bags = len(seq_rows)
-    scoring_bags = sum(1 for r in seq_rows if r.get("included_in_scoring"))
-    exception_bags = total_bags - scoring_bags
-    total_lbs = round(sum(float(r.get("weight_lbs") or 0) for r in seq_rows), 2)
+def _aggregate_bag_totals(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total_bags = len(rows)
+    scoring_bags = sum(1 for r in rows if r.get("included_in_scoring"))
+    not_in_scoring_bags = total_bags - scoring_bags
+    total_lbs = round(sum(float(r.get("weight_lbs") or 0) for r in rows), 2)
     scoring_lbs = round(
-        sum(float(r.get("weight_lbs") or 0) for r in seq_rows if r.get("included_in_scoring")),
+        sum(float(r.get("weight_lbs") or 0) for r in rows if r.get("included_in_scoring")),
         2,
     )
-    total_folding_sec = sum(int(r.get("duration_seconds") or 0) for r in seq_rows)
-    scoring_folding_sec = sum(
-        int(r.get("duration_seconds") or 0)
-        for r in seq_rows
-        if r.get("included_in_scoring")
+    scoring_dur = sum(
+        int(r.get("duration_seconds") or 0) for r in rows if r.get("included_in_scoring")
     )
-    total_gap_sec = sum(int(r.get("gap_seconds_from_previous") or 0) for r in seq_rows)
-    gap_count = sum(1 for r in seq_rows if (r.get("gap_seconds_from_previous") or 0) > 0)
-    folding_hours = total_folding_sec / 3600.0 if total_folding_sec > 0 else 0.0
+    warning_count = sum(1 for r in rows if r.get("is_warning"))
+    exception_count = sum(1 for r in rows if not r.get("included_in_scoring"))
     return {
         "total_bags": total_bags,
         "scoring_bags": scoring_bags,
-        "exception_bags": exception_bags,
+        "not_in_scoring_bags": not_in_scoring_bags,
+        "exception_bags": not_in_scoring_bags,
         "total_lbs": total_lbs,
         "scoring_lbs": scoring_lbs,
-        "total_folding_minutes": round(total_folding_sec / 60.0, 2),
-        "scoring_folding_minutes": round(scoring_folding_sec / 60.0, 2),
-        "avg_minutes_per_bag": round((total_folding_sec / 60.0) / total_bags, 2)
-        if total_bags > 0 and total_folding_sec > 0
+        "warning_count": warning_count,
+        "exception_count": exception_count,
+        "avg_minutes_per_scoring_bag": round((scoring_dur / 60.0) / scoring_bags, 2)
+        if scoring_bags > 0 and scoring_dur > 0
         else None,
-        "total_gap_minutes": round(total_gap_sec / 60.0, 2),
-        "avg_gap_minutes": round((total_gap_sec / 60.0) / gap_count, 2)
-        if gap_count > 0
+        "lbs_per_scoring_bag": round(scoring_lbs / scoring_bags, 2)
+        if scoring_bags > 0 and scoring_lbs
         else None,
-        "bags_per_folding_hour": round(total_bags / folding_hours, 4)
-        if folding_hours > 0
-        else None,
-        "lbs_per_folding_hour": round(total_lbs / folding_hours, 4)
-        if folding_hours > 0 and total_lbs
-        else None,
-        "total_folding_seconds": total_folding_sec,
-        "total_gap_seconds": total_gap_sec,
     }
 
 
-def build_mode_a_bag_wise(seq_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    totals = _aggregate_bag_totals(seq_rows)
+def build_gaming_scoring_view(
+    record_rows: list[dict[str, Any]], *, shift_id: int | None = None
+) -> dict[str, Any]:
+    summary = _aggregate_bag_totals(record_rows)
     return {
-        "label": "Bag-wise performance",
-        "denominator_note": "Rates use sum of stored bag duration_seconds (per folding hour).",
+        "label": "Gaming / scoring records",
+        "shift_id": shift_id,
         "summary": {
-            **totals,
+            **summary,
             "denominator_labels": {
-                "bags_per_folding_hour": "Bags per folding hour",
-                "lbs_per_folding_hour": "Lbs per folding hour",
+                "used_for_scoring": "Used for scoring",
+                "excluded_from_scoring": "Excluded from scoring",
             },
         },
-        "rows": seq_rows,
-    }
-
-
-def build_mode_b_work_span(seq_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    totals = _aggregate_bag_totals(seq_rows)
-    starts = [r.get("folding_start_at") for r in seq_rows if r.get("folding_start_at")]
-    ends = [r.get("folding_end_at") for r in seq_rows if r.get("folding_end_at")]
-    work_start = min(starts) if starts else None
-    work_end = max(ends) if ends else None
-    window_sec = (
-        int((work_end - work_start).total_seconds())
-        if isinstance(work_start, datetime) and isinstance(work_end, datetime)
-        else 0
-    )
-    window_min = round(window_sec / 60.0, 2) if window_sec > 0 else 0.0
-    folding_min = totals["total_folding_minutes"]
-    gap_min = totals["total_gap_minutes"]
-    idle_min = round(max(0.0, window_min - folding_min), 2) if window_min else 0.0
-    window_hours = window_sec / 3600.0 if window_sec > 0 else 0.0
-    folding_hours = totals["total_folding_seconds"] / 3600.0 if totals["total_folding_seconds"] > 0 else 0.0
-    return {
-        "label": "Work-span performance",
-        "span_note": (
-            "First recorded bag folding start → last recorded bag folding end "
-            "(stored rinse_folding_performance only)."
-        ),
-        "summary": {
-            "work_window_start": work_start,
-            "work_window_end": work_end,
-            "work_window_minutes": window_min,
-            "folding_minutes": folding_min,
-            "gap_minutes": gap_min,
-            "idle_minutes": idle_min,
-            "total_bags": totals["total_bags"],
-            "scoring_bags": totals["scoring_bags"],
-            "exception_bags": totals["exception_bags"],
-            "total_lbs": totals["total_lbs"],
-            "scoring_lbs": totals["scoring_lbs"],
-            "bags_per_work_span_hour": round(totals["total_bags"] / window_hours, 4)
-            if window_hours > 0
-            else None,
-            "lbs_per_work_span_hour": round(totals["total_lbs"] / window_hours, 4)
-            if window_hours > 0 and totals["total_lbs"]
-            else None,
-            "bags_per_folding_hour": totals["bags_per_folding_hour"],
-            "lbs_per_folding_hour": totals["lbs_per_folding_hour"],
-            "denominator_labels": {
-                "bags_per_work_span_hour": "Bags per work-span hour",
-                "lbs_per_work_span_hour": "Lbs per work-span hour",
-                "bags_per_folding_hour": "Bags per folding hour",
-                "lbs_per_folding_hour": "Lbs per folding hour",
-            },
-        },
-        "rows": seq_rows,
+        "rows": record_rows,
     }
 
 
@@ -291,7 +218,7 @@ def _shift_effective_clock_out(
         return (
             _as_naive_et(last_sync),
             True,
-            "Active shift estimate through last Rinse sync",
+            "Active shift estimate through last successful Rinse sync",
         )
     return (
         _as_naive_et(eastern_now()),
@@ -318,28 +245,60 @@ def _bag_overlaps_shift(
     return False
 
 
-def build_mode_c_clock_hours(
+def _shift_summary_from_bags(
+    *,
+    shift_id: int,
+    employee_name: str | None,
+    clock_in: datetime,
+    clock_out_raw: datetime | None,
+    effective_clock_out: datetime,
+    is_active_estimate: bool,
+    estimate_label: str | None,
+    clocked_sec: int,
+    bag_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    totals = _aggregate_bag_totals(bag_rows)
+    clocked_hours = clocked_sec / 3600.0 if clocked_sec > 0 else 0.0
+    total_bags = totals["total_bags"]
+    total_lbs = totals["total_lbs"]
+    return {
+        "shift_id": shift_id,
+        "employee_name": employee_name,
+        "clock_in_at": clock_in,
+        "clock_out_at": clock_out_raw,
+        "effective_clock_out_at": effective_clock_out,
+        "is_active": clock_out_raw is None,
+        "is_active_estimate": is_active_estimate,
+        "estimate_label": estimate_label,
+        "clocked_hours": round(clocked_hours, 4),
+        "clocked_minutes": round(clocked_sec / 60.0, 2),
+        "total_bags": total_bags,
+        "total_lbs": total_lbs,
+        "scoring_bags": totals["scoring_bags"],
+        "scoring_lbs": totals["scoring_lbs"],
+        "not_in_scoring_bags": totals["not_in_scoring_bags"],
+        "exception_bags": totals["not_in_scoring_bags"],
+        "bags_per_clocked_hour": round(total_bags / clocked_hours, 4)
+        if clocked_hours > 0
+        else None,
+        "lbs_per_clocked_hour": round(total_lbs / clocked_hours, 4)
+        if clocked_hours > 0 and total_lbs
+        else None,
+    }
+
+
+def _load_shift_sessions(
     cursor,
     organization_id: int,
-    *,
     user_id: int,
-    seq_rows: list[dict[str, Any]],
     period_start: date,
     period_end: date,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     from backend.ta_helpers import table_exists
 
     org = int(organization_id)
     if not table_exists(cursor, "shift_sessions"):
-        return {
-            "available": False,
-            "message": "shift_sessions table not available",
-            "summary": None,
-            "shifts": [],
-            "timeline": [],
-            "rows": [],
-        }
-
+        return []
     start_dt, end_incl = period_datetime_bounds_et(period_start, period_end)
     end_exclusive = naive_et_day_end_exclusive(period_end)
     cursor.execute(
@@ -353,172 +312,152 @@ def build_mode_c_clock_hours(
         """,
         (org, int(user_id), end_exclusive, start_dt),
     )
-    shifts_raw = list(cursor.fetchall() or [])
-    last_sync = _last_rinse_sync_naive(cursor, org)
+    return list(cursor.fetchall() or [])
 
-    shift_bag_rows: list[dict[str, Any]] = []
-    timeline: list[dict[str, Any]] = []
-    total_clocked_sec = 0
+
+def build_clocked_productivity(
+    cursor,
+    organization_id: int,
+    *,
+    user_id: int,
+    employee_name: str | None,
+    gaming_rows: list[dict[str, Any]],
+    period_start: date,
+    period_end: date,
+    shift_id: int | None = None,
+    shift_filter: str = "all",
+) -> dict[str, Any]:
+    from backend.ta_helpers import table_exists
+
+    if not table_exists(cursor, "shift_sessions"):
+        return {
+            "available": False,
+            "message": "shift_sessions table not available",
+            "shifts": [],
+            "summary": None,
+            "selected_shift_id": shift_id,
+        }
+
+    shifts_raw = _load_shift_sessions(
+        cursor, organization_id, user_id, period_start, period_end
+    )
+    last_sync = _last_rinse_sync_naive(cursor, organization_id)
+    start_dt, end_incl = period_datetime_bounds_et(period_start, period_end)
+
     shifts_out: list[dict[str, Any]] = []
-
     for sh in shifts_raw:
         cin = sh.get("clock_in_at")
         cout, is_est, est_label = _shift_effective_clock_out(sh, last_sync=last_sync)
         if not isinstance(cin, datetime) or cout is None:
+            continue
+        is_active = sh.get("clock_out_at") is None
+        if shift_filter == "active" and not is_active:
+            continue
+        if shift_filter == "completed" and is_active:
             continue
         overlap_start = max(cin, start_dt)
         overlap_end = min(cout, end_incl)
         if overlap_end <= overlap_start:
             continue
         clocked_sec = int((overlap_end - overlap_start).total_seconds())
-        total_clocked_sec += clocked_sec
-        ordered = [r for r in seq_rows if _bag_overlaps_shift(r, cin, cout)]
-        totals = _aggregate_bag_totals(ordered)
-        shift_bag_rows.extend(ordered)
+        bags = [r for r in gaming_rows if _bag_overlaps_shift(r, cin, cout)]
         shifts_out.append(
-            {
-                "shift_id": sh.get("id"),
-                "clock_in_at": cin,
-                "clock_out_at": sh.get("clock_out_at"),
-                "effective_clock_out_at": cout,
-                "is_active_estimate": is_est,
-                "estimate_label": est_label,
-                "clocked_minutes": round(clocked_sec / 60.0, 2),
-                "bags_in_shift": totals["total_bags"],
-                "scoring_bags_in_shift": totals["scoring_bags"],
-            }
-        )
-        timeline.append(
-            {
-                "type": "clock_in",
-                "at": cin,
-                "shift_id": sh.get("id"),
-                "label": est_label,
-            }
-        )
-        for r in ordered:
-            gap_sec = int(r.get("gap_seconds_from_previous") or 0)
-            if gap_sec > 0:
-                timeline.append(
-                    {
-                        "type": "gap",
-                        "minutes": r.get("gap_minutes_from_previous"),
-                    }
-                )
-            timeline.append(
-                {
-                    "type": "bag",
-                    "bag_id": r.get("bag_id"),
-                    "folding_start_at": r.get("folding_start_at"),
-                    "folding_end_at": r.get("folding_end_at"),
-                    "included_in_scoring": r.get("included_in_scoring"),
-                }
+            _shift_summary_from_bags(
+                shift_id=int(sh.get("id") or 0),
+                employee_name=employee_name,
+                clock_in=cin,
+                clock_out_raw=sh.get("clock_out_at"),
+                effective_clock_out=cout,
+                is_active_estimate=is_est,
+                estimate_label=est_label,
+                clocked_sec=clocked_sec,
+                bag_rows=bags,
             )
-        timeline.append(
-            {
-                "type": "clock_out",
-                "at": cout,
-                "shift_id": sh.get("id"),
-                "is_estimate": is_est,
-            }
         )
 
-    seen: dict[str, dict[str, Any]] = {}
-    for r in shift_bag_rows:
-        bid = str(r.get("bag_id") or "")
-        if bid:
-            seen[bid] = r
-    deduped = sorted(
-        seen.values(),
-        key=lambda x: (
-            x.get("folding_start_at") is None,
-            x.get("folding_start_at") or datetime.min,
-            x.get("bag_id") or "",
-        ),
-    )
-    all_shift_totals = _aggregate_bag_totals(deduped)
-    total_folding_sec = int(all_shift_totals["total_folding_seconds"])
-    total_gap_sec = int(all_shift_totals["total_gap_seconds"])
-    clocked_hours = total_clocked_sec / 3600.0 if total_clocked_sec > 0 else 0.0
-    folding_hours = total_folding_sec / 3600.0 if total_folding_sec > 0 else 0.0
-    non_folding_min = round(
-        max(0.0, total_clocked_sec / 60.0 - total_folding_sec / 60.0), 2
-    )
+    selected = None
+    if shift_id is not None:
+        selected = next((s for s in shifts_out if s["shift_id"] == int(shift_id)), None)
+    elif len(shifts_out) == 1:
+        selected = shifts_out[0]
 
-    return {
-        "available": True,
-        "summary": {
+    if selected:
+        summary = {k: v for k, v in selected.items() if k != "shift_id"}
+        summary["denominator_labels"] = {
+            "bags_per_clocked_hour": "Bags per clocked hour",
+            "lbs_per_clocked_hour": "Lbs per clocked hour",
+        }
+    elif shifts_out:
+        total_clocked_sec = 0
+        seen_bags: dict[str, dict[str, Any]] = {}
+        for s in shifts_out:
+            cin = s["clock_in_at"]
+            cout = s["effective_clock_out_at"]
+            if isinstance(cin, datetime) and isinstance(cout, datetime):
+                os = max(cin, start_dt)
+                oe = min(cout, end_incl)
+                if oe > os:
+                    total_clocked_sec += int((oe - os).total_seconds())
+            for r in gaming_rows:
+                if _bag_overlaps_shift(r, s["clock_in_at"], s["effective_clock_out_at"]):
+                    seen_bags[str(r.get("bag_id") or "")] = r
+        deduped = list(seen_bags.values())
+        totals = _aggregate_bag_totals(deduped)
+        clocked_hours = total_clocked_sec / 3600.0 if total_clocked_sec > 0 else 0.0
+        summary = {
+            "employee_name": employee_name,
+            "clocked_hours": round(clocked_hours, 4),
             "clocked_minutes": round(total_clocked_sec / 60.0, 2),
-            "folding_minutes_in_shift": round(total_folding_sec / 60.0, 2),
-            "gap_minutes_in_shift": round(total_gap_sec / 60.0, 2),
-            "non_folding_minutes_in_shift": non_folding_min,
-            "total_bags": all_shift_totals["total_bags"],
-            "scoring_bags": all_shift_totals["scoring_bags"],
-            "exception_bags": all_shift_totals["exception_bags"],
-            "total_lbs": all_shift_totals["total_lbs"],
-            "scoring_lbs": all_shift_totals["scoring_lbs"],
-            "bags_per_clocked_hour": round(all_shift_totals["total_bags"] / clocked_hours, 4)
+            "shift_count": len(shifts_out),
+            "total_bags": totals["total_bags"],
+            "total_lbs": totals["total_lbs"],
+            "scoring_bags": totals["scoring_bags"],
+            "scoring_lbs": totals["scoring_lbs"],
+            "not_in_scoring_bags": totals["not_in_scoring_bags"],
+            "exception_bags": totals["not_in_scoring_bags"],
+            "bags_per_clocked_hour": round(totals["total_bags"] / clocked_hours, 4)
             if clocked_hours > 0
             else None,
-            "lbs_per_clocked_hour": round(all_shift_totals["total_lbs"] / clocked_hours, 4)
-            if clocked_hours > 0 and all_shift_totals["total_lbs"]
-            else None,
-            "bags_per_folding_hour": round(all_shift_totals["total_bags"] / folding_hours, 4)
-            if folding_hours > 0
-            else None,
-            "lbs_per_folding_hour": round(all_shift_totals["total_lbs"] / folding_hours, 4)
-            if folding_hours > 0 and all_shift_totals["total_lbs"]
+            "lbs_per_clocked_hour": round(totals["total_lbs"] / clocked_hours, 4)
+            if clocked_hours > 0 and totals["total_lbs"]
             else None,
             "denominator_labels": {
                 "bags_per_clocked_hour": "Bags per clocked hour",
                 "lbs_per_clocked_hour": "Lbs per clocked hour",
-                "bags_per_folding_hour": "Bags per folding hour",
-                "lbs_per_folding_hour": "Lbs per folding hour",
             },
-        },
+        }
+    else:
+        summary = None
+
+    return {
+        "available": True,
+        "message": None,
         "shifts": shifts_out,
-        "timeline": timeline,
-        "rows": deduped,
+        "summary": summary,
+        "selected_shift_id": (
+            int(shift_id)
+            if shift_id is not None
+            else (selected.get("shift_id") if selected else None)
+        ),
     }
 
 
-def _diagnostics_short_bags(
-    cursor, organization_id: int, seq_rows: list[dict[str, Any]], *, user_name: str
+def _gaming_rows_for_shift(
+    gaming_rows: list[dict[str, Any]],
+    shifts: list[dict[str, Any]],
+    *,
+    shift_id: int | None,
 ) -> list[dict[str, Any]]:
-    incl_sql = sql_scoring_included_predicate("p")
-    out: list[dict[str, Any]] = []
-    for r in seq_rows:
-        dur = r.get("duration_seconds")
-        code = str(r.get("exception_code") or "")
-        if dur is not None and int(dur) < 600:
-            flagged = True
-        elif code == "FOLDING_DURATION_TOO_SHORT":
-            flagged = True
-        else:
-            flagged = False
-        if not flagged:
-            continue
-        bag_id = r.get("bag_id")
-        in_leaderboard = bool(r.get("included_in_scoring"))
-        out.append(
-            {
-                "bag_id": bag_id,
-                "duration_seconds": dur,
-                "duration_minutes": r.get("duration_minutes"),
-                "folding_start_at": r.get("folding_start_at"),
-                "folding_end_at": r.get("folding_end_at"),
-                "status": r.get("status"),
-                "exception_code": code or None,
-                "included_in_scoring": int(bool(r.get("included_in_scoring"))),
-                "in_leaderboard_scoring": in_leaderboard,
-                "visible_in_all_records": True,
-                "expected_rule": (
-                    "EXCEPTION / FOLDING_DURATION_TOO_SHORT / included_in_scoring=0 "
-                    "when below min duration"
-                ),
-            }
-        )
-    return out
+    if shift_id is None:
+        return gaming_rows
+    sh = next((s for s in shifts if s["shift_id"] == int(shift_id)), None)
+    if not sh:
+        return []
+    cin = sh["clock_in_at"]
+    cout = sh["effective_clock_out_at"]
+    if not isinstance(cin, datetime) or not isinstance(cout, datetime):
+        return []
+    return [r for r in gaming_rows if _bag_overlaps_shift(r, cin, cout)]
 
 
 # --- User map ---
@@ -628,10 +567,16 @@ def build_user_folding_productivity(
     period_start: date,
     period_end: date,
     date_field: str = "folding_work_date",
+    shift_id: int | None = None,
+    shift_filter: str = "all",
 ) -> dict[str, Any]:
     uname = str(user_name or "").strip()
     if not uname:
         raise ValueError("user_name required")
+    sf = str(shift_filter or "all").strip().lower()
+    if sf not in ("all", "active", "completed"):
+        sf = "all"
+
     raw_rows = load_user_performance_rows(
         cursor,
         organization_id,
@@ -640,44 +585,46 @@ def build_user_folding_productivity(
         period_end=period_end,
         date_field=date_field,
     )
-    seq_rows = build_sequence_rows(raw_rows)
-    mode_a = build_mode_a_bag_wise(seq_rows)
-    mode_b = build_mode_b_work_span(seq_rows)
+    gaming_rows = build_gaming_record_rows(raw_rows)
 
     mapping = get_user_map(cursor, organization_id, uname)
+    display = (mapping.get("display_name") or mapping.get("username")) if mapping else None
     employee_mapping = {
         "mapped": mapping is not None,
         "user_id": mapping.get("user_id") if mapping else None,
-        "display_name": (mapping.get("display_name") or mapping.get("username"))
-        if mapping
-        else None,
+        "display_name": display,
         "rinse_user_name": uname,
     }
 
     if mapping and mapping.get("user_id"):
-        mode_c = build_mode_c_clock_hours(
+        clocked = build_clocked_productivity(
             cursor,
             organization_id,
             user_id=int(mapping["user_id"]),
-            seq_rows=seq_rows,
+            employee_name=display or uname,
+            gaming_rows=gaming_rows,
             period_start=period_start,
             period_end=period_end,
+            shift_id=shift_id,
+            shift_filter=sf,
+        )
+        gaming_for_view = _gaming_rows_for_shift(
+            gaming_rows, clocked.get("shifts") or [], shift_id=shift_id
         )
     else:
-        mode_c = {
+        clocked = {
             "available": False,
             "message": "No employee clock mapping for this Rinse user.",
-            "summary": None,
             "shifts": [],
-            "timeline": [],
-            "rows": [],
+            "summary": None,
+            "selected_shift_id": None,
+            "map_user_hint": True,
         }
+        gaming_for_view = gaming_rows
 
-    diagnostics = {
-        "short_duration_bags": _diagnostics_short_bags(
-            cursor, organization_id, seq_rows, user_name=uname
-        ),
-    }
+    gaming = build_gaming_scoring_view(
+        gaming_for_view, shift_id=shift_id
+    )
 
     return {
         "user_name": uname,
@@ -686,8 +633,6 @@ def build_user_folding_productivity(
         "date_field": date_field,
         "timezone": RINSE_SCAN_TZ,
         "employee_mapping": employee_mapping,
-        "mode_a_bag_wise": mode_a,
-        "mode_b_work_span": mode_b,
-        "mode_c_clock_hours": mode_c,
-        "diagnostics": diagnostics,
+        "clocked_productivity": clocked,
+        "gaming_scoring": gaming,
     }

@@ -13,6 +13,7 @@ from backend.rinse_folding_registry import (
     aggregate_folding_leaderboard,
     apply_folding_performance_for_bag,
     apply_performance_override,
+    apply_scoring_override,
     aggregate_user_folding_stats,
     get_folding_performance_row,
     list_folding_performance_overrides,
@@ -251,6 +252,45 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 ), 400
             conn.commit()
             return jsonify(json_safe_rinse(payload))
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/folding/performance/<bag_id>/scoring-override", methods=["POST"])
+    def rinse_folding_scoring_override(bag_id: str):
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            bid = normalize_bag_id(bag_id)
+            if not bid:
+                return jsonify({"error": "Invalid bag id"}), 400
+            data = request.get_json(silent=True) or {}
+            action = (data.get("action") or "").strip().lower()
+            if not action:
+                return jsonify({"error": "action required (include, exclude, clear)"}), 400
+            payload = apply_scoring_override(
+                cursor,
+                tenant_oid,
+                bid,
+                action=action,
+                note=(data.get("note") or "").strip() or None,
+                actor_user_id=int(me.get("user_id") or 0) or None,
+            )
+            conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500
@@ -578,8 +618,8 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             conn.commit()
             out = get_folding_exception_rules_with_meta(cursor, tenant_oid)
             out["recompute_notice"] = (
-                "Settings saved. Existing folding records need to be recomputed "
-                "to reflect the new rules."
+                "Settings saved. Existing folding records have not been recomputed yet. "
+                "Run dry-run or apply recompute to update stored rows."
             )
             return jsonify(out)
         except Exception as e:
@@ -613,6 +653,10 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 return jsonify({"error": str(e)}), 400
             from backend.rinse_folding_user_productivity import build_user_folding_productivity
 
+            shift_id_raw = (request.args.get("shift_id") or "").strip()
+            shift_id = int(shift_id_raw) if shift_id_raw.isdigit() else None
+            shift_filter = (request.args.get("shift_filter") or "all").strip().lower()
+
             payload = build_user_folding_productivity(
                 cursor,
                 tenant_oid,
@@ -620,6 +664,8 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 period_start=period_start,
                 period_end=period_end,
                 date_field=date_field,
+                shift_id=shift_id,
+                shift_filter=shift_filter,
             )
             return jsonify(json_safe_rinse(payload))
         finally:
@@ -714,6 +760,41 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/folding/exception-rules/impact", methods=["GET"])
+    def rinse_folding_exception_rules_impact():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            from backend.rinse_folding_exception_rules import get_folding_exception_rules
+            from backend.rinse_folding_rules_impact import merge_impact_payload
+
+            rules = get_folding_exception_rules(cursor, tenant_oid)
+            dry_run_report = None
+            if request.args.get("include_dry_run") in ("1", "true", "yes"):
+                _, err_a, code_a = require_admin(cursor)
+                if err_a:
+                    return err_a, code_a
+                from scripts.dry_run_folding_exception_rules import _run_dry_run
+
+                dry_run_report = _run_dry_run(
+                    cursor,
+                    org=tenant_oid,
+                    from_batch=None,
+                    to_batch=None,
+                    label=f"Org {tenant_oid} — impact dry-run",
+                )
+            payload = merge_impact_payload(
+                cursor, tenant_oid, rules, dry_run_report=dry_run_report
+            )
+            return jsonify(json_safe_rinse(payload))
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/folding/exception-rules/dry-run", methods=["POST"])
     def rinse_folding_exception_rules_dry_run():
         conn = get_db()
@@ -734,6 +815,13 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 from_batch=None,
                 to_batch=None,
                 label=f"Org {tenant_oid} — dry-run (API)",
+            )
+            from backend.rinse_folding_exception_rules import get_folding_exception_rules
+            from backend.rinse_folding_rules_impact import merge_impact_payload
+
+            rules = get_folding_exception_rules(cursor, tenant_oid)
+            report["rules_impact"] = merge_impact_payload(
+                cursor, tenant_oid, rules, dry_run_report=report
             )
             return jsonify(json_safe_rinse(report))
         finally:

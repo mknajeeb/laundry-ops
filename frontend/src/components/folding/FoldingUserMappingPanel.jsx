@@ -90,7 +90,7 @@ export default function FoldingUserMappingPanel() {
   };
 
   return (
-    <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
+    <Paper id="folding-user-mapping" sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
         Rinse folder → clock user mapping
       </Typography>
