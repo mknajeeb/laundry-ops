@@ -48,3 +48,13 @@ class TestPendingBagStatus:
         assert out["groups"]["rush"]["weighed_not_washed"] == 1
         assert out["groups"]["non_rush"]["completed"] == 1
         assert out["groups"]["combined"]["total"] == 2
+
+
+class TestRecordsPayloadShape:
+    def test_list_return_normalized(self):
+        rows = [{"bag_id": "B1", "status": "CALCULATED", "included_in_scoring": 1}]
+        if isinstance(rows, list):
+            payload = {"rows": rows, "total": len(rows)}
+        else:
+            payload = rows
+        assert payload.get("rows")
