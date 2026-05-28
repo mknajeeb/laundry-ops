@@ -117,9 +117,16 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             if operational_filter:
                 target = period_end if isinstance(period_end, date) else None
                 if target:
+                    from backend.rinse_processing_settings import get_processing_settings
+
                     pending_payload = get_pending_bag_status(cursor, tenant_oid, target_date=target)
+                    proc_settings = get_processing_settings(cursor, tenant_oid)
+                    reject_limit = int(proc_settings.get("reject_no_start_cleaning_minutes") or 30)
                     operational = build_operational_dashboard_data(
-                        cursor, tenant_oid, pending_payload=pending_payload
+                        cursor,
+                        tenant_oid,
+                        pending_payload=pending_payload,
+                        reject_no_start_cleaning_minutes=reject_limit,
                     )
                     op_rows = filter_operational_records(
                         operational.get("records") or [],

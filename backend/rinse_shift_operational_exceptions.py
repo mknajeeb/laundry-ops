@@ -13,6 +13,7 @@ from backend.rinse_bag_gaming_performance import (
     evaluate_sorting_stage,
     gaming_events_from_records,
 )
+from backend.rinse_processing_settings import DEFAULT_REJECT_NO_START
 from backend.rinse_scan_purpose import (
     is_create_bulk_workitem_purpose,
     is_create_issue_purpose,
@@ -21,18 +22,19 @@ from backend.rinse_scan_purpose import (
     is_start_cleaning_purpose,
 )
 
-ORDER_REJECT_NO_START_CLEANING_30_MIN = "ORDER_REJECT_NO_START_CLEANING_30_MIN"
+ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT = "ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT"
 COMPLETED_WITHOUT_FINAL_CLEAN_SCAN = "COMPLETED_WITHOUT_FINAL_CLEAN_SCAN"
 
-ORDER_REJECT_WINDOW_MINUTES = 30
+# Legacy alias for stored filters / old clients
+ORDER_REJECT_NO_START_CLEANING_30_MIN = ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT
 
 OPERATIONAL_EXCEPTION_LABELS: dict[str, str] = {
-    ORDER_REJECT_NO_START_CLEANING_30_MIN: "Rejected — no washing started within 30 minutes",
+    ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT: "Rejected — no washing started within limit",
     COMPLETED_WITHOUT_FINAL_CLEAN_SCAN: "Completed without final scan",
 }
 
 OPERATIONAL_STAT_LABELS: dict[str, str] = {
-    "order_reject_no_start_cleaning_30_min": "Rejected — no wash started",
+    "order_reject_no_start_cleaning_after_limit": "Rejected — no wash started",
     "completed_without_final_clean_scan": "Completed without final scan",
     "bags_with_issues": "Bags with issues",
     "bags_with_workitems": "Bags with workitems",
@@ -57,15 +59,16 @@ def bag_workitem_issue_stats(timeline: Sequence[Mapping[str, Any]]) -> dict[str,
     }
 
 
-def evaluate_order_reject_no_start_cleaning_30_min(
+def evaluate_order_reject_no_start_cleaning_after_limit(
     timeline: Sequence[Mapping[str, Any]],
     *,
-    window_minutes: int = ORDER_REJECT_WINDOW_MINUTES,
+    window_minutes: int = DEFAULT_REJECT_NO_START,
 ) -> dict[str, Any] | None:
     """
     Reject when no create-issue exists, sorting/prep ended, and no start-cleaning
     within ``window_minutes`` after sorting end.
     """
+    limit = max(1, int(window_minutes or DEFAULT_REJECT_NO_START))
     tl = list(timeline)
     create_issue_present = any(is_create_issue_purpose(ev.get("purpose")) for ev in tl)
     if create_issue_present:
@@ -76,7 +79,7 @@ def evaluate_order_reject_no_start_cleaning_30_min(
         return None
 
     sorting_end = sorting.end_time
-    deadline = sorting_end + timedelta(minutes=int(window_minutes))
+    deadline = sorting_end + timedelta(minutes=limit)
 
     actual_start_cleaning: datetime | None = None
     for ev in tl:
@@ -91,13 +94,14 @@ def evaluate_order_reject_no_start_cleaning_30_min(
         return None
 
     reason = (
-        "No start-cleaning within 30 minutes after sorting/prep end"
+        f"No start-cleaning within {limit} minutes after sorting/prep end"
         if actual_start_cleaning is None
-        else "Start-cleaning occurred after the 30-minute window"
+        else f"Start-cleaning occurred after the {limit}-minute window"
     )
     return {
-        "exception_code": ORDER_REJECT_NO_START_CLEANING_30_MIN,
-        "exception_label": OPERATIONAL_EXCEPTION_LABELS[ORDER_REJECT_NO_START_CLEANING_30_MIN],
+        "exception_code": ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT,
+        "exception_label": OPERATIONAL_EXCEPTION_LABELS[ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT],
+        "configured_limit_minutes": limit,
         "sorting_prep_end_time": sorting_end,
         "expected_latest_start_cleaning_time": deadline,
         "actual_start_cleaning_time": actual_start_cleaning,
@@ -161,6 +165,7 @@ def evaluate_bag_operational_profile(
     events: Sequence[Mapping[str, Any]],
     *,
     bag_meta: Mapping[str, Any] | None = None,
+    reject_no_start_cleaning_minutes: int = DEFAULT_REJECT_NO_START,
 ) -> dict[str, Any]:
     """Full operational evaluation for one bag (exceptions + workitem stats)."""
     meta = dict(bag_meta or {})
@@ -168,7 +173,9 @@ def evaluate_bag_operational_profile(
     workitem_stats = bag_workitem_issue_stats(timeline)
 
     exceptions: list[dict[str, Any]] = []
-    reject = evaluate_order_reject_no_start_cleaning_30_min(timeline)
+    reject = evaluate_order_reject_no_start_cleaning_after_limit(
+        timeline, window_minutes=reject_no_start_cleaning_minutes
+    )
     if reject:
         exceptions.append(reject)
     missing_clean = evaluate_completed_without_final_clean_scan(timeline)
@@ -203,7 +210,7 @@ def evaluate_bag_operational_profile(
 
 def aggregate_operational_stats(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     stats = {
-        "order_reject_no_start_cleaning_30_min": 0,
+        "order_reject_no_start_cleaning_after_limit": 0,
         "completed_without_final_clean_scan": 0,
         "bags_with_issues": 0,
         "bags_with_workitems": 0,
@@ -214,8 +221,8 @@ def aggregate_operational_stats(records: Sequence[Mapping[str, Any]]) -> dict[st
     }
     for row in records:
         codes = row.get("exception_codes") or []
-        if ORDER_REJECT_NO_START_CLEANING_30_MIN in codes:
-            stats["order_reject_no_start_cleaning_30_min"] += 1
+        if ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT in codes:
+            stats["order_reject_no_start_cleaning_after_limit"] += 1
         if COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in codes:
             stats["completed_without_final_clean_scan"] += 1
         ws = row.get("workitem_stats") or {}
@@ -229,6 +236,29 @@ def aggregate_operational_stats(records: Sequence[Mapping[str, Any]]) -> dict[st
         stats["total_workitem_events"] += int(ws.get("create_workitem_count") or 0)
         stats["total_bulk_workitem_events"] += int(ws.get("create_bulk_workitem_count") or 0)
     return stats
+
+
+def _drill_filter_matches(filter_key: str, codes: list[str], ws: dict[str, Any]) -> bool:
+    if filter_key in (
+        "order_reject_no_start_cleaning_after_limit",
+        "order_reject_no_start_cleaning_30_min",
+    ):
+        return ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT in codes
+    if filter_key == "completed_without_final_clean_scan":
+        return COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in codes
+    if filter_key == "bags_with_issues":
+        return bool(ws.get("has_issue"))
+    if filter_key == "bags_with_workitems":
+        return bool(ws.get("has_workitem"))
+    if filter_key == "bags_with_bulk_workitems":
+        return bool(ws.get("has_bulk_workitem"))
+    if filter_key == "total_issue_events":
+        return int(ws.get("create_issue_count") or 0) > 0
+    if filter_key == "total_workitem_events":
+        return int(ws.get("create_workitem_count") or 0) > 0
+    if filter_key == "total_bulk_workitem_events":
+        return int(ws.get("create_bulk_workitem_count") or 0) > 0
+    return False
 
 
 def filter_operational_records(
@@ -259,23 +289,6 @@ def filter_operational_records(
             continue
         ws = row.get("workitem_stats") or {}
         codes = row.get("exception_codes") or []
-        match = False
-        if drill_filter == "order_reject_no_start_cleaning_30_min":
-            match = ORDER_REJECT_NO_START_CLEANING_30_MIN in codes
-        elif drill_filter == "completed_without_final_clean_scan":
-            match = COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in codes
-        elif drill_filter == "bags_with_issues":
-            match = bool(ws.get("has_issue"))
-        elif drill_filter == "bags_with_workitems":
-            match = bool(ws.get("has_workitem"))
-        elif drill_filter == "bags_with_bulk_workitems":
-            match = bool(ws.get("has_bulk_workitem"))
-        elif drill_filter == "total_issue_events":
-            match = int(ws.get("create_issue_count") or 0) > 0
-        elif drill_filter == "total_workitem_events":
-            match = int(ws.get("create_workitem_count") or 0) > 0
-        elif drill_filter == "total_bulk_workitem_events":
-            match = int(ws.get("create_bulk_workitem_count") or 0) > 0
-        if match:
+        if _drill_filter_matches(drill_filter, codes, ws):
             out.append(row)
     return out

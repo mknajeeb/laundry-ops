@@ -1,5 +1,26 @@
 import { formatRinseApiDateTime, hasExplicitTzOffset } from "./rinseTimeFormat";
 
+export function formatLaborHours(hours, digits = 1) {
+  if (hours == null || hours === "") return "—";
+  const n = Number(hours);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  return n.toFixed(digits);
+}
+
+export function formatPercent(val, digits = 1) {
+  if (val == null || val === "") return "—";
+  const n = Number(val);
+  if (!Number.isFinite(n)) return "—";
+  return `${n.toFixed(digits)}%`;
+}
+
+export function formatCount(val) {
+  if (val == null || val === "") return "—";
+  const n = Number(val);
+  if (!Number.isFinite(n)) return "—";
+  return String(Math.round(n));
+}
+
 export function formatFoldingDuration(seconds) {
   const s = Number(seconds);
   if (!Number.isFinite(s) || s <= 0) return "—";

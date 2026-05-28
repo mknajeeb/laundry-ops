@@ -76,7 +76,8 @@ def _folding_list_kwargs(request, parse_date_value) -> dict:
     }
 
 
-def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_id, parse_date_value):
+def register_rinse_folding_routes(app, *, require_user, require_admin, require_admin_or_ops=None, user_org_id, parse_date_value):
+    perf_admin = require_admin_or_ops or require_admin
     @app.route("/rinse/folding/performance", methods=["GET"])
     def list_rinse_folding_performance():
         conn = get_db()
@@ -496,7 +497,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_a, code_a = require_admin(cursor)
+            _, err_a, code_a = perf_admin(cursor)
             if err_a:
                 return err_a, code_a
             tenant_oid = user_org_id(me)
@@ -525,7 +526,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             me, err_resp, err_code = require_user(cursor)
             if err_resp:
                 return err_resp, err_code
-            _, err_a, code_a = require_admin(cursor)
+            _, err_a, code_a = perf_admin(cursor)
             if err_a:
                 return err_a, code_a
             tenant_oid = user_org_id(me)
@@ -605,7 +606,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 )
 
                 return jsonify(get_folding_exception_rules_with_meta(cursor, tenant_oid))
-            _, err_a, code_a = require_admin(cursor)
+            _, err_a, code_a = perf_admin(cursor)
             if err_a:
                 return err_a, code_a
             data = request.get_json(silent=True) or {}
@@ -691,7 +692,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
                 return jsonify(
                     json_safe_rinse({"mappings": list_user_maps(cursor, tenant_oid)})
                 )
-            _, err_a, code_a = require_admin(cursor)
+            _, err_a, code_a = perf_admin(cursor)
             if err_a:
                 return err_a, code_a
             if request.method == "PUT":
@@ -1114,7 +1115,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, user_org_
             tenant_oid = user_org_id(me)
             if request.method == "GET":
                 return jsonify(get_rinse_folding_benchmarks(cursor, tenant_oid))
-            _, err_a, code_a = require_admin(cursor)
+            _, err_a, code_a = perf_admin(cursor)
             if err_a:
                 return err_a, code_a
             data = request.get_json(silent=True) or {}

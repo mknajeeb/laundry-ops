@@ -70,6 +70,7 @@ export default function ProcessingSettingsPanel() {
         sort: secondsToMinSec(d.processing_sort_seconds_per_bag),
         wash: secondsToMinSec(d.processing_wash_seconds_per_bag),
         dry: secondsToMinSec(d.processing_dry_seconds_per_bag),
+        rejectMinutes: d.reject_no_start_cleaning_minutes ?? 30,
         totalMinutes: d.total_minutes_per_bag,
       });
     } catch (e) {
@@ -91,6 +92,7 @@ export default function ProcessingSettingsPanel() {
         processing_sort_seconds_per_bag: minSecToSeconds(fields.sort.minutes, fields.sort.seconds),
         processing_wash_seconds_per_bag: minSecToSeconds(fields.wash.minutes, fields.wash.seconds),
         processing_dry_seconds_per_bag: minSecToSeconds(fields.dry.minutes, fields.dry.seconds),
+        reject_no_start_cleaning_minutes: Math.max(1, Number(fields.rejectMinutes) || 30),
       };
       const res = await putProcessingSettings(body);
       const d = res.data || {};
@@ -99,6 +101,7 @@ export default function ProcessingSettingsPanel() {
         sort: secondsToMinSec(d.processing_sort_seconds_per_bag),
         wash: secondsToMinSec(d.processing_wash_seconds_per_bag),
         dry: secondsToMinSec(d.processing_dry_seconds_per_bag),
+        rejectMinutes: d.reject_no_start_cleaning_minutes ?? 30,
         totalMinutes: d.total_minutes_per_bag,
       });
       setMessage("Processing time settings saved.");
@@ -174,6 +177,16 @@ export default function ProcessingSettingsPanel() {
           />
         </Grid>
       </Grid>
+      <TextField
+        size="small"
+        type="number"
+        label="Reject if washing not started after X minutes"
+        helperText="If a bag has no create-issue and start-cleaning does not occur within this many minutes after sorting/prep end, mark it rejected."
+        value={fields.rejectMinutes ?? 30}
+        onChange={(e) => setFields({ ...fields, rejectMinutes: e.target.value })}
+        inputProps={{ min: 1 }}
+        sx={{ mb: 2, maxWidth: 360 }}
+      />
       <Typography variant="body2" sx={{ mb: 2 }}>
         Total estimated per bag: {Math.floor(totalSec / 60)} min {totalSec % 60} sec
         {" "}({(totalSec / 60).toFixed(2)} minutes)

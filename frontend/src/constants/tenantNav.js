@@ -63,6 +63,12 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
+    to: "/performance/user-mapping",
+    labelKey: "nav.performanceUserMapping",
+    roles: ["ADMIN", "OPS"],
+    moduleKey: "scoreboard",
+  },
+  {
     to: "/rinse/order-search",
     labelKey: "nav.rinseOrderSearch",
     roles: ["ADMIN"],

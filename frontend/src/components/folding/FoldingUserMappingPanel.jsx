@@ -26,7 +26,7 @@ import {
 
 export default function FoldingUserMappingPanel() {
   const [mappings, setMappings] = useState([]);
-  const [rinseUsers, setRinseUsers] = useState([]);
+  const [userOptions, setUserOptions] = useState([]);
   const [taUsers, setTaUsers] = useState([]);
   const [rinseName, setRinseName] = useState("");
   const [userId, setUserId] = useState("");
@@ -43,7 +43,7 @@ export default function FoldingUserMappingPanel() {
         getTaUsers(),
       ]);
       setMappings(mapRes.data?.mappings || []);
-      setRinseUsers(rinseRes.data?.users || []);
+      setUserOptions(rinseRes.data?.user_options || []);
       setTaUsers(taRes.data || []);
     } catch (e) {
       setMessage(e?.response?.data?.error || e?.message || "Failed to load mappings");
@@ -104,8 +104,8 @@ export default function FoldingUserMappingPanel() {
           <InputLabel>Rinse user name</InputLabel>
           <Select label="Rinse user name" value={rinseName} onChange={(e) => setRinseName(e.target.value)}>
             <MenuItem value=""><em>Select…</em></MenuItem>
-            {rinseUsers.map((u) => (
-              <MenuItem key={u} value={u}>{u}</MenuItem>
+            {userOptions.map((o) => (
+              <MenuItem key={o.user_name} value={o.user_name}>{o.label || o.user_name}</MenuItem>
             ))}
           </Select>
         </FormControl>

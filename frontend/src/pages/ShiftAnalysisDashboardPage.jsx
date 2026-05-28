@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -42,32 +42,58 @@ import {
 import { defaultWeekRange, foldingRangeParams, todayRange } from "../utils/foldingDateRange";
 import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import {
+  formatCount,
   formatDateTime,
   formatFoldingDuration,
-  formatFoldingHours,
+  formatLaborHours,
   formatLbs,
+  formatPercent,
   formatRate,
 } from "../utils/foldingFormat";
 
-function SummaryCard({ label, value, sub, onClick, clickable }) {
-  const canClick = clickable && onClick && value != null && value !== "—" && Number(value) !== 0;
+function KpiLine({ label, value, onClick }) {
+  const clickable = onClick && value != null && value !== "—" && value !== 0 && value !== "0";
+  return (
+    <Typography variant="body2" sx={{ display: "flex", justifyContent: "space-between", gap: 1 }}>
+      <span>{label}</span>
+      {clickable ? (
+        <Link component="button" variant="body2" onClick={onClick} sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>
+          {value}
+        </Link>
+      ) : (
+        <span style={{ fontWeight: 600 }}>{value ?? "—"}</span>
+      )}
+    </Typography>
+  );
+}
+
+function KpiCard({ title, children }) {
+  return (
+    <Paper variant="outlined" sx={{ p: 2, height: "100%" }}>
+      <Typography variant="subtitle2" fontWeight={700} gutterBottom>{title}</Typography>
+      <Stack spacing={0.75}>{children}</Stack>
+    </Paper>
+  );
+}
+
+function StatChip({ label, value, onClick }) {
+  const n = Number(value);
+  const clickable = onClick && Number.isFinite(n) && n > 0;
   return (
     <Paper
+      variant="outlined"
       sx={{
-        p: 2,
-        height: "100%",
-        cursor: canClick ? "pointer" : "default",
-        "&:hover": canClick ? { bgcolor: "action.hover" } : undefined,
+        p: 1.5,
+        textAlign: "center",
+        cursor: clickable ? "pointer" : "default",
+        "&:hover": clickable ? { bgcolor: "action.hover" } : undefined,
       }}
-      onClick={canClick ? onClick : undefined}
+      onClick={clickable ? onClick : undefined}
     >
-      <Typography variant="caption" color="text.secondary">{label}</Typography>
-      {canClick ? (
-        <Link component="span" variant="h5" fontWeight={700} underline="hover">{value}</Link>
-      ) : (
-        <Typography variant="h5" fontWeight={700}>{value ?? "—"}</Typography>
-      )}
-      {sub ? <Typography variant="caption" color="text.secondary">{sub}</Typography> : null}
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ lineHeight: 1.2, mb: 0.5 }}>
+        {label}
+      </Typography>
+      <Typography variant="h6" fontWeight={700}>{value ?? 0}</Typography>
     </Paper>
   );
 }
@@ -78,8 +104,10 @@ function filterOperationalRecordsClient(rows, filter) {
     const ws = row.workitem_stats || {};
     const codes = row.exception_codes || [];
     switch (filter) {
+      case "order_reject_no_start_cleaning_after_limit":
       case "order_reject_no_start_cleaning_30_min":
-        return codes.includes("ORDER_REJECT_NO_START_CLEANING_30_MIN");
+        return codes.includes("ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT")
+          || codes.includes("ORDER_REJECT_NO_START_CLEANING_30_MIN");
       case "completed_without_final_clean_scan":
         return codes.includes("COMPLETED_WITHOUT_FINAL_CLEAN_SCAN");
       case "bags_with_issues":
@@ -102,7 +130,7 @@ function filterOperationalRecordsClient(rows, filter) {
 
 function OperationalDetailPanel({ row }) {
   const details = row?.exception_details || {};
-  const reject = details.ORDER_REJECT_NO_START_CLEANING_30_MIN;
+  const reject = details.ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT || details.ORDER_REJECT_NO_START_CLEANING_30_MIN;
   const missingClean = details.COMPLETED_WITHOUT_FINAL_CLEAN_SCAN;
   return (
     <Stack spacing={2} sx={{ mb: 2 }}>
@@ -115,6 +143,7 @@ function OperationalDetailPanel({ row }) {
       {reject ? (
         <Paper variant="outlined" sx={{ p: 1.5 }}>
           <Typography variant="subtitle2" fontWeight={700}>{reject.exception_label}</Typography>
+          <Typography variant="body2">Configured limit: {reject.configured_limit_minutes ?? "—"} min</Typography>
           <Typography variant="body2">Sorting/prep end: {formatDateTime(reject.sorting_prep_end_time)}</Typography>
           <Typography variant="body2">Expected latest start-cleaning: {formatDateTime(reject.expected_latest_start_cleaning_time)}</Typography>
           <Typography variant="body2">Actual start-cleaning: {formatDateTime(reject.actual_start_cleaning_time) || "None"}</Typography>
@@ -409,6 +438,11 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   }, [summary, rushFilter, recordDrill]);
 
   const displayRecords = useMemo(() => {
+    if (recordDrill?.source === "all") {
+      const seen = new Set(records.map((r) => r.bag_id));
+      const extraOps = operationalRecords.filter((r) => !seen.has(r.bag_id));
+      return [...records, ...extraOps];
+    }
     if (recordDrill?.source === "employee" && recordDrill.user_name) {
       return records.filter((r) => r.assigned_user_name === recordDrill.user_name);
     }
@@ -494,6 +528,8 @@ export default function ShiftAnalysisDashboardPage({ user }) {
             onDateFieldChange={setListDateField}
           />
           <Stack direction="row" spacing={1} flexWrap="wrap">
+            <Button variant="outlined" size="small" component={RouterLink} to="/performance/settings">Settings</Button>
+            <Button variant="outlined" size="small" component={RouterLink} to="/performance/user-mapping">User mapping</Button>
             <Button variant="contained" size="small" onClick={handleSearch} disabled={loading}>Search</Button>
             <Button variant="outlined" size="small" onClick={clearFilters} disabled={loading}>Clear filters</Button>
             <Button variant="outlined" size="small" onClick={() => setSearchTick((t) => t + 1)} disabled={loading}>Refresh</Button>
@@ -545,9 +581,9 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       </Paper>
 
       <Typography variant="subtitle1" fontWeight={700} gutterBottom>Operational exceptions &amp; workitems</Typography>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
+      <Grid container spacing={1.5} sx={{ mb: 3 }}>
         {[
-          "order_reject_no_start_cleaning_30_min",
+          "order_reject_no_start_cleaning_after_limit",
           "completed_without_final_clean_scan",
           "bags_with_issues",
           "bags_with_workitems",
@@ -556,108 +592,137 @@ export default function ShiftAnalysisDashboardPage({ user }) {
           "total_workitem_events",
           "total_bulk_workitem_events",
         ].map((key) => (
-          <Grid item xs={6} md={3} key={key}>
-            <SummaryCard
+          <Grid item xs={6} sm={4} md={3} key={key}>
+            <StatChip
               label={operationalLabels[key] || key}
               value={operationalStats[key] ?? 0}
-              clickable
               onClick={() => onOperationalDrill(key, operationalLabels[key] || key)}
             />
           </Grid>
         ))}
       </Grid>
 
-      <Typography variant="subtitle1" fontWeight={700} gutterBottom>Team shift summary</Typography>
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={6} md={3}><SummaryCard label="Clocked labor hours" value={formatFoldingHours((overall.clocked_labor_hours || 0) * 3600)} /></Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Processing labor hours" value={overall.processing_labor_hours} /></Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Folding labor hours" value={overall.folding_labor_hours} /></Grid>
-        <Grid item xs={6} md={3}>
-          <SummaryCard
-            label="Bags completed"
-            value={overall.total_bags_completed}
-            sub={`Processed: ${overall.total_bags_processed ?? "—"}`}
-            clickable
-            onClick={() => applyRecordDrill({ source: "scoring", inScoring: true, label: "Scoring bags (completed folding)" })}
-          />
+      <Grid container spacing={2} sx={{ mb: 2 }}>
+        <Grid item xs={12} md={4}>
+          <KpiCard title="Overall Production">
+            <KpiLine
+              label="Bags"
+              value={formatCount(overall.total_bags_completed)}
+              onClick={() => applyRecordDrill({ source: "all", label: "All completed bags" })}
+            />
+            <KpiLine label="Lbs" value={formatLbs(overall.total_lbs_folded)} />
+            <KpiLine label="Labor hrs" value={formatLaborHours(overall.clocked_labor_hours, 1)} />
+            <KpiLine
+              label="Processing speed"
+              value={overall.processing_bags_per_hour != null ? `${formatRate(overall.processing_bags_per_hour)} bags/hr` : "—"}
+            />
+            <KpiLine
+              label="Folding speed"
+              value={overall.folding_bags_per_hour != null ? `${formatRate(overall.folding_bags_per_hour)} bags/hr` : "—"}
+            />
+          </KpiCard>
         </Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Lbs folded" value={formatLbs(overall.total_lbs_folded)} sub={`Processed: ${formatLbs(overall.total_lbs_processed)}`} /></Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Processing people" value={overall.processing_people_count} /></Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Folding people" value={overall.folding_people_count} /></Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Avg folding speed" value={formatRate(overall.folding_bags_per_hour)} sub="bags/hr" /></Grid>
-      </Grid>
-
-      <FormGroup row sx={{ mb: 2 }}>
-        <Typography variant="body2" sx={{ mr: 2, alignSelf: "center" }}>Processing activities:</Typography>
-        {PROCESSING_ACTIVITIES.map(({ id, label }) => (
-          <FormControlLabel
-            key={id}
-            control={
-              <Checkbox
-                checked={processingActs.includes(id)}
-                onChange={(e) => {
-                  setProcessingActs((prev) =>
-                    e.target.checked ? [...prev, id] : prev.filter((x) => x !== id)
-                  );
-                }}
-              />
-            }
-            label={label}
-          />
-        ))}
-      </FormGroup>
-
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={12} md={6}>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle2" fontWeight={700} gutterBottom>Overall Production</Typography>
-            <Typography variant="body2">All bags: {overall.total_bags_completed ?? "—"} · All lbs: {formatLbs(overall.total_lbs_folded)}</Typography>
-            <Typography variant="body2">All hours: {formatFoldingHours((overall.clocked_labor_hours || 0) * 3600)}</Typography>
-            <Typography variant="body2">Processing speed: {formatRate(overall.processing_bags_per_hour)} bags/hr</Typography>
-            <Typography variant="body2">Folding speed: {formatRate(overall.folding_bags_per_hour)} bags/hr</Typography>
-          </Paper>
+        <Grid item xs={12} md={4}>
+          <KpiCard title="Scoring Data">
+            <KpiLine
+              label="Bags scored"
+              value={formatCount(scoring.scoring_bags)}
+              onClick={() => applyRecordDrill({ source: "scoring", inScoring: true, label: "Scoring records" })}
+            />
+            <KpiLine label="Lbs scored" value={formatLbs(scoring.scoring_lbs)} />
+            <KpiLine
+              label="Excluded"
+              value={formatCount(scoring.excluded_records)}
+              onClick={() => applyRecordDrill({ source: "scoring", inScoring: false, label: "Not-scoring records" })}
+            />
+            <KpiLine
+              label="Exceptions not counted"
+              value={formatCount(scoring.exception_records_not_counted)}
+              onClick={() => applyRecordDrill({ source: "exceptions", label: "Exceptions not counted" })}
+            />
+            <KpiLine label="Quality" value={formatPercent(scoring.scoring_quality_percent)} />
+          </KpiCard>
         </Grid>
-        <Grid item xs={12} md={6}>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="subtitle2" fontWeight={700} gutterBottom>Scoring Data</Typography>
-            <Typography variant="body2">
-              Scoring bags:{" "}
-              <Link component="button" variant="body2" onClick={() => applyRecordDrill({ source: "scoring", inScoring: true, label: "Scoring records" })}>
-                {scoring.scoring_bags ?? "—"}
-              </Link>
-            </Typography>
-            <Typography variant="body2">Scoring lbs: {formatLbs(scoring.scoring_lbs)}</Typography>
-            <Typography variant="body2">
-              Excluded records:{" "}
-              <Link component="button" variant="body2" onClick={() => applyRecordDrill({ source: "scoring", inScoring: false, label: "Not-scoring records" })}>
-                {scoring.excluded_records ?? "—"}
-              </Link>
-            </Typography>
-            <Typography variant="body2">
-              Exceptions not counted:{" "}
-              <Link component="button" variant="body2" onClick={() => applyRecordDrill({ source: "exceptions", label: "All exceptions" })}>
-                {scoring.exception_records_not_counted ?? "—"}
-              </Link>
-            </Typography>
-            <Typography variant="body2">Scoring quality %: {scoring.scoring_quality_percent != null ? `${scoring.scoring_quality_percent}%` : "—"}</Typography>
-          </Paper>
+        <Grid item xs={12} md={4}>
+          <KpiCard title="Labor summary">
+            <KpiLine label="Clocked hrs" value={formatLaborHours(overall.clocked_labor_hours, 1)} />
+            <KpiLine label="Processing hrs" value={formatLaborHours(overall.processing_labor_hours, 1)} />
+            <KpiLine label="Folding hrs" value={formatLaborHours(overall.folding_labor_hours, 1)} />
+            <KpiLine
+              label="Processing people"
+              value={formatCount(overall.processing_people_count)}
+              onClick={() => { setEmployeeView("processing"); scrollToRecords(); }}
+            />
+            <KpiLine
+              label="Folding people"
+              value={formatCount(overall.folding_people_count)}
+              onClick={() => { setEmployeeView("folding"); scrollToRecords(); }}
+            />
+          </KpiCard>
         </Grid>
       </Grid>
+
+      <Paper variant="outlined" sx={{ p: 1.5, mb: 2 }}>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+          Processing activities included
+        </Typography>
+        <FormGroup row sx={{ mb: 0.5 }}>
+          {PROCESSING_ACTIVITIES.map(({ id, label }) => (
+            <FormControlLabel
+              key={id}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={processingActs.includes(id)}
+                  onChange={(e) => {
+                    setProcessingActs((prev) =>
+                      e.target.checked ? [...prev, id] : prev.filter((x) => x !== id)
+                    );
+                  }}
+                />
+              }
+              label={<Typography variant="body2">{label}</Typography>}
+            />
+          ))}
+        </FormGroup>
+        <Typography variant="caption" color="text.secondary">
+          Controls processing speed and processing activity-hour calculations.
+        </Typography>
+      </Paper>
 
       <Typography variant="subtitle1" fontWeight={700} gutterBottom>Team speed</Typography>
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        {["processing", "folding", "combined"].map((key) => (
-          <Grid item xs={12} md={4} key={key}>
-            <Paper sx={{ p: 2 }}>
-              <Typography variant="subtitle2" fontWeight={700} textTransform="capitalize">{key}</Typography>
-              <Typography variant="body2">Bags/hr: {formatRate(speed[key]?.bags_per_hour)}</Typography>
-              <Typography variant="body2">Lbs/hr: {formatRate(speed[key]?.lbs_per_hour)}</Typography>
-              <Typography variant="body2">Min/bag: {formatRate(speed[key]?.minutes_per_bag, 1)}</Typography>
-              <Typography variant="body2">People: {speed[key]?.people_count ?? "—"}</Typography>
-              <Typography variant="body2">Labor hours: {speed[key]?.labor_hours ?? "—"}</Typography>
-            </Paper>
-          </Grid>
-        ))}
+        <Grid item xs={12} md={4}>
+          <KpiCard title="Processing">
+            <KpiLine label="Bags/hr" value={formatRate(speed.processing?.bags_per_hour)} />
+            <KpiLine label="Lbs/hr" value={formatRate(speed.processing?.lbs_per_hour)} />
+            <KpiLine label="Labor hrs" value={formatLaborHours(speed.processing?.labor_hours, 1)} />
+            <KpiLine label="People" value={formatCount(speed.processing?.people_count)} />
+          </KpiCard>
+        </Grid>
+        <Grid item xs={12} md={4}>
+          <KpiCard title="Folding">
+            <KpiLine label="Bags/hr" value={formatRate(speed.folding?.bags_per_hour)} />
+            <KpiLine label="Lbs/hr" value={formatRate(speed.folding?.lbs_per_hour)} />
+            <KpiLine label="Labor hrs" value={formatLaborHours(speed.folding?.labor_hours, 1)} />
+            <KpiLine label="People" value={formatCount(speed.folding?.people_count)} />
+            <KpiLine label="Min/bag" value={formatRate(speed.folding?.minutes_per_bag, 1)} />
+          </KpiCard>
+        </Grid>
+        <Grid item xs={12} md={4}>
+          <KpiCard title="Combined">
+            {speed.combined?.bags_per_hour != null || speed.combined?.lbs_per_hour != null ? (
+              <>
+                <KpiLine label="Bags/hr" value={formatRate(speed.combined?.bags_per_hour)} />
+                <KpiLine label="Lbs/hr" value={formatRate(speed.combined?.lbs_per_hour)} />
+              </>
+            ) : (
+              <Typography variant="body2" color="text.secondary">Combined metrics pending</Typography>
+            )}
+            <KpiLine label="Total labor hrs" value={formatLaborHours(speed.combined?.labor_hours ?? overall.clocked_labor_hours, 1)} />
+            <KpiLine label="Total people" value={formatCount(speed.combined?.people_count)} />
+          </KpiCard>
+        </Grid>
       </Grid>
 
       <Paper sx={{ p: 2, mb: 3 }}>

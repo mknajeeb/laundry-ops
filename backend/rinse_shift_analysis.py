@@ -62,11 +62,15 @@ def build_operational_dashboard_data(
     organization_id: int,
     *,
     pending_payload: dict[str, Any],
+    reject_no_start_cleaning_minutes: int | None = None,
 ) -> dict[str, Any]:
     """Evaluate operational exceptions and workitem stats for pending WF bags."""
+    from backend.rinse_processing_settings import DEFAULT_REJECT_NO_START
+
     pending_rows = pending_payload.get("rows") or []
     if not isinstance(pending_rows, list):
         pending_rows = []
+    reject_limit = int(reject_no_start_cleaning_minutes or DEFAULT_REJECT_NO_START)
     bag_ids = [
         str(r.get("bag_id") or "").strip()
         for r in pending_rows
@@ -85,6 +89,7 @@ def build_operational_dashboard_data(
             evaluate_bag_operational_profile(
                 events_by_bag.get(bid) or [],
                 bag_meta=prow,
+                reject_no_start_cleaning_minutes=reject_limit,
             )
         )
 
@@ -93,8 +98,9 @@ def build_operational_dashboard_data(
         "stats": stats,
         "stat_labels": OPERATIONAL_STAT_LABELS,
         "records": records,
+        "reject_no_start_cleaning_minutes": reject_limit,
         "total_operational_exceptions": (
-            stats.get("order_reject_no_start_cleaning_30_min", 0)
+            stats.get("order_reject_no_start_cleaning_after_limit", 0)
             + stats.get("completed_without_final_clean_scan", 0)
         ),
     }
@@ -507,7 +513,13 @@ def build_shift_analysis_summary(
         )
 
     pending = get_pending_bag_status(cursor, org, target_date=period_end)
-    operational = build_operational_dashboard_data(cursor, org, pending_payload=pending)
+    reject_limit = int(proc_settings.get("reject_no_start_cleaning_minutes") or 30)
+    operational = build_operational_dashboard_data(
+        cursor,
+        org,
+        pending_payload=pending,
+        reject_no_start_cleaning_minutes=reject_limit,
+    )
 
     return {
         "period_start": period_start.isoformat(),

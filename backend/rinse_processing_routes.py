@@ -12,7 +12,8 @@ from backend.rinse_processing_settings import get_processing_settings, put_proce
 from backend.rinse_scan_time import json_safe_rinse
 
 
-def register_rinse_processing_routes(app, *, require_user, require_admin, user_org_id, parse_date_value):
+def register_rinse_processing_routes(app, *, require_user, require_admin, require_admin_or_ops=None, user_org_id, parse_date_value):
+    perf_admin = require_admin_or_ops or require_admin
     @app.route("/rinse/processing/productivity", methods=["GET"])
     def rinse_processing_productivity():
         conn = get_db()
@@ -62,7 +63,7 @@ def register_rinse_processing_routes(app, *, require_user, require_admin, user_o
             tenant_oid = user_org_id(me)
             if request.method == "GET":
                 return jsonify(json_safe_rinse(get_processing_settings(cursor, tenant_oid)))
-            _, err_a, code_a = require_admin(cursor)
+            _, err_a, code_a = perf_admin(cursor)
             if err_a:
                 return err_a, code_a
             data = request.get_json(silent=True) or {}

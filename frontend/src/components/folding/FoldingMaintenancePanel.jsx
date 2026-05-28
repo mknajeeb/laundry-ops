@@ -29,7 +29,7 @@ import ProcessingSettingsPanel from "./ProcessingSettingsPanel";
 export default function FoldingMaintenancePanel({ onChanged, sections }) {
   const show = (name) => !sections || sections.includes(name);
   const [excluded, setExcluded] = useState([]);
-  const [users, setUsers] = useState([]);
+  const [userOptions, setUserOptions] = useState([]);
   const [pickUser, setPickUser] = useState("");
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
@@ -43,7 +43,7 @@ export default function FoldingMaintenancePanel({ onChanged, sections }) {
         listFoldingUsers(),
       ]);
       setExcluded(exRes.data || []);
-      setUsers(uRes.data?.users || []);
+      setUserOptions(uRes.data?.user_options || []);
     } catch (e) {
       setMessage(e?.response?.data?.error || e?.message || "Failed to load excluded users");
     } finally {
@@ -77,8 +77,8 @@ export default function FoldingMaintenancePanel({ onChanged, sections }) {
     }
   };
 
-  const available = users.filter(
-    (u) => !excluded.some((e) => String(e.user_name || "").trim() === String(u).trim())
+  const available = userOptions.filter(
+    (o) => !excluded.some((e) => String(e.user_name || "").trim() === String(o.user_name || "").trim())
   );
 
   return (
@@ -100,8 +100,8 @@ export default function FoldingMaintenancePanel({ onChanged, sections }) {
           <InputLabel>User from folding data</InputLabel>
           <Select label="User from folding data" value={pickUser} onChange={(e) => setPickUser(e.target.value)}>
             <MenuItem value=""><em>Select…</em></MenuItem>
-            {available.map((u) => (
-              <MenuItem key={u} value={u}>{u}</MenuItem>
+            {available.map((o) => (
+              <MenuItem key={o.user_name} value={o.user_name}>{o.label || o.user_name}</MenuItem>
             ))}
           </Select>
         </FormControl>

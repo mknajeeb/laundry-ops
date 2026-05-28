@@ -1076,6 +1076,19 @@ def require_admin(cursor):
     return me, None, None
 
 
+def require_admin_or_ops(cursor):
+    """Performance settings / user mapping — ADMIN, OPS, or platform admins."""
+    me = current_user_from_token(cursor)
+    if not me:
+        return None, jsonify({"error": "Unauthorized"}), 401
+    roles = fetch_user_roles(cursor, me["user_id"])
+    rs = {str(r).upper() for r in roles}
+    if not (rs & {"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN"}):
+        return None, jsonify({"error": "Forbidden"}), 403
+    me["roles"] = roles
+    return me, None, None
+
+
 def require_admin_or_perm(conn, cursor, perm_key: str):
     """
     Tenant ADMIN / SUPER_ADMIN / PLATFORM_ADMIN, OR a Washpro role permission
@@ -10873,6 +10886,7 @@ register_rinse_folding_routes(
     app,
     require_user=require_user,
     require_admin=require_admin,
+    require_admin_or_ops=require_admin_or_ops,
     user_org_id=user_org_id,
     parse_date_value=parse_date_value,
 )
@@ -10880,6 +10894,7 @@ register_rinse_processing_routes(
     app,
     require_user=require_user,
     require_admin=require_admin,
+    require_admin_or_ops=require_admin_or_ops,
     user_org_id=user_org_id,
     parse_date_value=parse_date_value,
 )

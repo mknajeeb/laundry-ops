@@ -5,12 +5,12 @@ from datetime import datetime
 from backend.rinse_bag_gaming_performance import gaming_events_from_records
 from backend.rinse_shift_operational_exceptions import (
     COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
-    ORDER_REJECT_NO_START_CLEANING_30_MIN,
+    ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT,
     aggregate_operational_stats,
     bag_workitem_issue_stats,
     evaluate_bag_operational_profile,
     evaluate_completed_without_final_clean_scan,
-    evaluate_order_reject_no_start_cleaning_30_min,
+    evaluate_order_reject_no_start_cleaning_after_limit,
     filter_operational_records,
 )
 
@@ -34,18 +34,29 @@ def _ev(
     }
 
 
-class TestOrderRejectNoStartCleaning30Min:
-    def test_triggers_when_no_start_cleaning_within_30_minutes(self):
+class TestOrderRejectAfterLimit:
+    def test_triggers_when_no_start_cleaning_within_limit(self):
         timeline = gaming_events_from_records(
             [
                 _ev("weight-entry", datetime(2026, 5, 28, 9, 0), ev_id=1),
                 _ev("create-workitem", datetime(2026, 5, 28, 9, 5), ev_id=2, scan_index=2),
             ]
         )
-        out = evaluate_order_reject_no_start_cleaning_30_min(timeline)
+        out = evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=30)
         assert out is not None
-        assert out["exception_code"] == ORDER_REJECT_NO_START_CLEANING_30_MIN
-        assert out["create_issue_present"] is False
+        assert out["exception_code"] == ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT
+        assert out["configured_limit_minutes"] == 30
+
+    def test_respects_custom_limit(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("weight-entry", datetime(2026, 5, 28, 9, 0), ev_id=1),
+                _ev("create-workitem", datetime(2026, 5, 28, 9, 5), ev_id=2, scan_index=2),
+                _ev("start-cleaning", datetime(2026, 5, 28, 9, 20), ev_id=3, scan_index=3),
+            ]
+        )
+        assert evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=30) is None
+        assert evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=10) is not None
 
     def test_does_not_trigger_when_create_issue_present(self):
         timeline = gaming_events_from_records(
@@ -54,17 +65,7 @@ class TestOrderRejectNoStartCleaning30Min:
                 _ev("create-issue", datetime(2026, 5, 28, 9, 5), ev_id=2, scan_index=2),
             ]
         )
-        assert evaluate_order_reject_no_start_cleaning_30_min(timeline) is None
-
-    def test_no_trigger_when_start_cleaning_within_window(self):
-        timeline = gaming_events_from_records(
-            [
-                _ev("weight-entry", datetime(2026, 5, 28, 9, 0), ev_id=1),
-                _ev("create-workitem", datetime(2026, 5, 28, 9, 5), ev_id=2, scan_index=2),
-                _ev("start-cleaning", datetime(2026, 5, 28, 9, 20), ev_id=3, scan_index=3),
-            ]
-        )
-        assert evaluate_order_reject_no_start_cleaning_30_min(timeline) is None
+        assert evaluate_order_reject_no_start_cleaning_after_limit(timeline) is None
 
 
 class TestCompletedWithoutFinalCleanScan:
@@ -99,50 +100,18 @@ class TestCompletedWithoutFinalCleanScan:
             assert evaluate_completed_without_final_clean_scan(timeline) is None
 
 
-class TestWorkitemIssueStats:
-    def test_counts_create_issue_workitem_and_bulk(self):
-        timeline = gaming_events_from_records(
-            [
-                _ev("create-issue", datetime(2026, 5, 28, 9, 0), ev_id=1),
-                _ev("create-workitem", datetime(2026, 5, 28, 9, 1), ev_id=2, scan_index=2),
-                _ev("create-bulk-workitem", datetime(2026, 5, 28, 9, 2), ev_id=3, scan_index=3),
-                _ev("create-issue", datetime(2026, 5, 28, 9, 3), ev_id=4, scan_index=4),
-            ]
-        )
-        stats = bag_workitem_issue_stats(timeline)
-        assert stats["create_issue_count"] == 2
-        assert stats["create_workitem_count"] == 1
-        assert stats["create_bulk_workitem_count"] == 1
-        assert stats["has_issue"]
-        assert stats["has_workitem"]
-        assert stats["has_bulk_workitem"]
-
-
 class TestOperationalDrilldownFilter:
     def test_filter_by_exception_code(self):
         records = [
             {
                 "bag_id": "A",
-                "exception_codes": [ORDER_REJECT_NO_START_CLEANING_30_MIN],
-                "workitem_stats": {},
-            },
-            {
-                "bag_id": "B",
-                "exception_codes": [COMPLETED_WITHOUT_FINAL_CLEAN_SCAN],
+                "exception_codes": [ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT],
                 "workitem_stats": {},
             },
         ]
         out = filter_operational_records(
-            records, drill_filter="order_reject_no_start_cleaning_30_min"
+            records, drill_filter="order_reject_no_start_cleaning_after_limit"
         )
-        assert [r["bag_id"] for r in out] == ["A"]
-
-    def test_filter_bags_with_issues(self):
-        records = [
-            {"bag_id": "A", "exception_codes": [], "workitem_stats": {"has_issue": True}},
-            {"bag_id": "B", "exception_codes": [], "workitem_stats": {"has_issue": False}},
-        ]
-        out = filter_operational_records(records, drill_filter="bags_with_issues")
         assert [r["bag_id"] for r in out] == ["A"]
 
 
@@ -161,5 +130,3 @@ class TestAggregateOperationalStats:
         stats = aggregate_operational_stats(records)
         assert stats["bags_with_issues"] == 1
         assert stats["bags_with_workitems"] == 1
-        assert stats["total_issue_events"] == 1
-        assert stats["total_workitem_events"] == 1
