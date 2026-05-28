@@ -5642,5 +5642,43 @@ def payroll_accountant_ytd():
         conn.close()
 
 
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/pto/<int:user_id>", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_employee_pto(user_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_accrual import get_sick_leave_balance, manual_sick_adjustment
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(get_sick_leave_balance(conn, oid, int(user_id)))
+        body = request.get_json(silent=True) or {}
+        hours_delta = float(body.get("hours_delta") or 0)
+        note = str(body.get("admin_note") or "").strip()
+        out = manual_sick_adjustment(
+            conn,
+            oid,
+            int(user_id),
+            hours_delta=hours_delta,
+            admin_note=note,
+            created_by=int(g.ta_user["id"]),
+        )
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_employee_pto failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 def register_ta_routes(app):
     app.register_blueprint(ta_bp, url_prefix="/api/ta")

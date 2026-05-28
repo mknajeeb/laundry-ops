@@ -112,8 +112,25 @@ export default function AccountantReportsPanel() {
           "profile_incomplete_fields",
           "estimated_withholding_notice",
           "Payment status",
+          "Sick hours used",
+          "Sick pay",
+          "Health credit",
         ]
-      : ["Worker", "Type", "Hours", "Rate", "Gross", "Net/Total", "Payment status", "Paid date"];
+      : [
+          "Worker",
+          "Worker type",
+          "Hours",
+          "Rate",
+          "Base pay",
+          "Bonus/tip",
+          "Health credit",
+          "Reimbursements",
+          "Gross payout",
+          "Net/Total",
+          "Payment status",
+          "Paid date",
+          "Notes",
+        ];
     const lines = batch.lines.map((ln) => {
       const incomplete = isLineTaxIncomplete(ln);
       const profileFields = Array.isArray(ln.profile_incomplete_fields)
@@ -146,6 +163,9 @@ export default function AccountantReportsPanel() {
             csvCell(profileFields),
             ln.estimated_withholding_notice || (incomplete ? "" : ESTIMATE_DISCLAIMER),
             ln.payment_status_label || ln.payment_status,
+            ln.sick_hours_used ?? "",
+            ln.sick_pay_amount ?? "",
+            ln.health_credit_amount ?? "",
           ].join(",")
         : [
             ln.worker_name_snapshot,
@@ -153,9 +173,14 @@ export default function AccountantReportsPanel() {
             ln.approved_hours,
             ln.rate,
             ln.gross_amount,
+            ln.bonus_tip_amount ?? "",
+            ln.health_credit_amount ?? "",
+            ln.reimbursement_amount ?? "",
+            ln.gross_amount ?? ln.total_amount,
             ln.total_amount,
             ln.payment_status_label || ln.payment_status,
             ln.payment_date || "",
+            csvCell(ln.notes || ln.admin_note || ""),
           ].join(",");
     });
     const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });

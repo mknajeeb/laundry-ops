@@ -795,6 +795,9 @@ def delete_payout_batch(conn, organization_id: int, batch_id: int) -> bool:
         return False
     if str(batch.get("status") or "") not in ("draft",):
         raise ValueError("Only draft batches can be deleted")
+    from backend.payroll_accrual import reverse_ledger_entries_for_batch
+
+    reverse_ledger_entries_for_batch(conn, organization_id, int(batch_id))
     c = conn.cursor()
     c.execute(
         "DELETE FROM payout_batches WHERE id=%s AND organization_id=%s",
@@ -824,29 +827,161 @@ def delete_payout_batch_line(conn, organization_id: int, line_id: int) -> bool:
     return True
 
 
+def _compute_payout_line_amounts(
+    conn,
+    organization_id: int,
+    batch: dict,
+    body: dict,
+    *,
+    user_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+    line_id: Optional[int] = None,
+    created_by: Optional[int] = None,
+) -> dict[str, Any]:
+    """Compute gross/total with sick leave (W-2) or health credit (1099/temp)."""
+    from backend.payroll_accrual import (
+        process_contractor_line_health_credit,
+        process_w2_line_accruals,
+    )
+    from backend.payroll_workflow import ensure_payout_batch_line_extensions
+
+    ensure_payout_batch_line_extensions(conn.cursor())
+    cat = str(batch.get("worker_category") or "")
+    regular = float(_money(body.get("approved_hours") or body.get("hours") or 0))
+    ot = float(_money(body.get("ot_hours") or 0))
+    rate = float(_money(body.get("rate")))
+    adj = float(_money(body.get("adjustments")))
+    bonus = float(_money(body.get("bonus_tip_amount") or 0))
+    reimb = float(_money(body.get("reimbursement_amount") or 0))
+    uid = user_id or body.get("user_id")
+    period_start = batch.get("pay_period_start")
+    period_end = batch.get("pay_period_end")
+
+    out: dict[str, Any] = {
+        "approved_hours": regular,
+        "ot_hours": ot,
+        "rate": rate,
+        "adjustments": adj,
+        "bonus_tip_amount": bonus,
+        "reimbursement_amount": reimb,
+        "sick_hours_accrued": 0,
+        "sick_hours_used": float(_money(body.get("sick_hours_used") or 0)),
+        "sick_pay_amount": 0,
+        "health_credit_amount": 0,
+        "gross_amount": 0,
+        "total_amount": 0,
+        "line_type": str(body.get("line_type") or "REGULAR"),
+    }
+
+    if cat == "w2" and uid and batch_id and line_id:
+        from backend.payroll_accrual import reverse_ledger_entries_for_line
+
+        reverse_ledger_entries_for_line(conn, organization_id, int(line_id), created_by=created_by)
+        acc = process_w2_line_accruals(
+            conn,
+            organization_id,
+            user_id=int(uid),
+            batch_id=int(batch_id),
+            line_id=int(line_id),
+            regular_hours=_money(regular),
+            ot_hours=_money(ot),
+            sick_hours_used=_money(out["sick_hours_used"]),
+            hourly_rate=_money(rate),
+            period_start=str(period_start) if period_start else None,
+            period_end=str(period_end) if period_end else None,
+            allow_sick_over_balance=bool(body.get("allow_sick_over_balance")),
+            sick_override_note=body.get("sick_override_note"),
+            created_by=created_by,
+        )
+        out.update(acc)
+        out["gross_amount"] = acc["gross_wages"]
+        out["total_amount"] = float(_money(acc["gross_wages"] + adj + bonus + reimb))
+        return out
+
+    eligible_hours = _money(regular + ot)
+    if cat in ("contractor_1099", "temp") and uid and batch_id and line_id:
+        from backend.payroll_accrual import reverse_ledger_entries_for_line
+
+        reverse_ledger_entries_for_line(conn, organization_id, int(line_id), created_by=created_by)
+        manual_hc = body.get("health_credit_amount")
+        hc = process_contractor_line_health_credit(
+            conn,
+            organization_id,
+            user_id=int(uid),
+            worker_category=cat,
+            batch_id=int(batch_id),
+            line_id=int(line_id),
+            eligible_hours=eligible_hours,
+            manual_health_credit=_money(manual_hc) if manual_hc is not None else None,
+            manual_note=body.get("health_credit_note"),
+            period_start=str(period_start) if period_start else None,
+            period_end=str(period_end) if period_end else None,
+            created_by=created_by,
+        )
+        out["health_credit_amount"] = hc["health_credit_amount"]
+        if cat == "contractor_1099":
+            legacy_hc_hours = float(body.get("health_safety_credit_hours") or 0)
+            amounts = compute_payment_summary_amounts(regular, rate, legacy_hc_hours, 0)
+            base = amounts["service_amount"]
+            out["gross_amount"] = base
+            out["total_amount"] = float(
+                _money(base + hc["health_credit_amount"] + adj + bonus + reimb)
+            )
+        else:
+            base = float(_money(regular * rate))
+            out["gross_amount"] = base
+            out["total_amount"] = float(
+                _money(base + hc["health_credit_amount"] + adj + bonus + reimb)
+            )
+        return out
+
+    if cat == "contractor_1099":
+        amounts = compute_payment_summary_amounts(
+            regular, rate, body.get("health_safety_credit_hours") or 0, adj
+        )
+        out["gross_amount"] = amounts["service_amount"]
+        out["total_amount"] = amounts["total_payment"] + bonus + reimb
+    else:
+        base = float(_money((regular + ot) * rate))
+        out["gross_amount"] = base
+        out["total_amount"] = base + adj + bonus + reimb
+    return out
+
+
 def update_payout_batch_line(
     conn, organization_id: int, batch_id: int, line_id: int, body: dict
 ) -> dict:
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
-    hours = float(_money(body.get("approved_hours", body.get("hours"))))
-    rate = float(_money(body.get("rate")))
-    adj = float(_money(body.get("adjustments")))
-    if batch["worker_category"] == "contractor_1099":
-        amounts = compute_payment_summary_amounts(
-            hours, rate, body.get("health_safety_credit_hours") or 0, adj
-        )
-        gross = amounts["service_amount"]
-        total = amounts["total_payment"]
-    else:
-        gross = float(_money(hours * rate))
-        total = gross + adj
+    cuid = conn.cursor(dictionary=True)
+    cuid.execute(
+        "SELECT user_id FROM payout_batch_lines WHERE id=%s AND batch_id=%s",
+        (int(line_id), int(batch_id)),
+    )
+    u = cuid.fetchone() or {}
+    uid = u.get("user_id")
+    amounts = _compute_payout_line_amounts(
+        conn,
+        organization_id,
+        batch,
+        body,
+        user_id=int(uid) if uid else None,
+        batch_id=int(batch_id),
+        line_id=int(line_id),
+    )
+    hours = amounts["approved_hours"]
+    rate = amounts["rate"]
+    adj = amounts["adjustments"]
+    gross = amounts["gross_amount"]
+    total = amounts["total_amount"]
     c = conn.cursor()
     c.execute(
         """
         UPDATE payout_batch_lines SET
           approved_hours=%s, rate=%s, gross_amount=%s, adjustments=%s, total_amount=%s,
+          ot_hours=%s, sick_hours_accrued=%s, sick_hours_used=%s, sick_pay_amount=%s,
+          health_credit_amount=%s, bonus_tip_amount=%s, reimbursement_amount=%s,
           line_status=%s, notes=%s
         WHERE id=%s AND batch_id=%s AND organization_id=%s
         """,
@@ -856,6 +991,13 @@ def update_payout_batch_line(
             gross,
             adj,
             total,
+            amounts.get("ot_hours") or 0,
+            amounts.get("sick_hours_accrued") or 0,
+            amounts.get("sick_hours_used") or 0,
+            amounts.get("sick_pay_amount") or 0,
+            amounts.get("health_credit_amount") or 0,
+            amounts.get("bonus_tip_amount") or 0,
+            amounts.get("reimbursement_amount") or 0,
             str(body.get("line_status") or "pending_approval"),
             body.get("notes"),
             int(line_id),
@@ -864,19 +1006,18 @@ def update_payout_batch_line(
         ),
     )
     _recompute_batch_totals(conn, batch_id)
-    conn.commit()
-    if batch["worker_category"] == "w2":
+    if batch["worker_category"] == "w2" and uid:
         from backend.payroll_workflow import persist_w2_line_taxes
 
-        c3 = conn.cursor(dictionary=True)
-        c3.execute("SELECT user_id FROM payout_batch_lines WHERE id=%s", (int(line_id),))
-        urow = c3.fetchone() or {}
-        uid = urow.get("user_id")
-        if uid:
-            persist_w2_line_taxes(
-                conn, organization_id, int(line_id), int(uid), gross, pay_period_start=None
-            )
-            conn.commit()
+        persist_w2_line_taxes(
+            conn,
+            organization_id,
+            int(line_id),
+            int(uid),
+            gross,
+            pay_period_start=str(batch.get("pay_period_start") or "") or None,
+        )
+    conn.commit()
     c2 = conn.cursor(dictionary=True)
     c2.execute("SELECT * FROM payout_batch_lines WHERE id=%s", (int(line_id),))
     return json_safe(c2.fetchone() or {})
@@ -919,18 +1060,6 @@ def add_payout_batch_line(
         uid = int(uid)
         if worker_category_for_user(conn, uid) != batch["worker_category"]:
             raise ValueError("Worker category does not match batch")
-    hours = float(_money(body.get("approved_hours")))
-    rate = float(_money(body.get("rate")))
-    adj = float(_money(body.get("adjustments")))
-    if batch["worker_category"] == "contractor_1099":
-        amounts = compute_payment_summary_amounts(
-            hours, rate, body.get("health_safety_credit_hours") or 0, adj
-        )
-        gross = amounts["service_amount"]
-        total = amounts["total_payment"]
-    else:
-        gross = float(_money(hours * rate))
-        total = gross + adj
     name = (body.get("worker_name_snapshot") or body.get("worker_name") or "").strip()
     if not name and uid:
         u = fetch_payroll_profile_row(conn, uid)
@@ -942,8 +1071,11 @@ def add_payout_batch_line(
 
     ensure_payout_batch_line_extensions(conn.cursor())
     w2_extra = {}
+    stub_gross = float(_money(body.get("approved_hours") or 0) * _money(body.get("rate") or 0))
     if uid and batch["worker_category"] == "w2":
-        w2_extra = apply_w2_fields_on_line_insert(conn, int(uid), batch["worker_category"], gross, organization_id)
+        w2_extra = apply_w2_fields_on_line_insert(
+            conn, int(uid), batch["worker_category"], stub_gross, organization_id
+        )
     payment_status = str(body.get("payment_status") or "pending")
     tax_calc_status = w2_extra.get("tax_calc_status") or (
         "not_applicable" if batch["worker_category"] != "w2" else "pending"
@@ -965,11 +1097,11 @@ def add_payout_batch_line(
             uid,
             name[:255],
             line_cat,
-            hours,
-            rate,
-            gross,
-            adj,
-            total,
+            float(_money(body.get("approved_hours") or 0)),
+            float(_money(body.get("rate") or 0)),
+            stub_gross,
+            float(_money(body.get("adjustments") or 0)),
+            stub_gross,
             (body.get("payment_method") or "")[:64] or None,
             (body.get("payment_reference") or "")[:255] or None,
             body.get("payment_date"),
@@ -985,12 +1117,57 @@ def add_payout_batch_line(
             tax_calc_status,
         ),
     )
-    _recompute_batch_totals(conn, batch_id)
     line_id = int(c.lastrowid)
+    amounts = _compute_payout_line_amounts(
+        conn,
+        organization_id,
+        batch,
+        body,
+        user_id=int(uid) if uid else None,
+        batch_id=int(batch_id),
+        line_id=line_id,
+    )
+    gross = amounts["gross_amount"]
+    total = amounts["total_amount"]
+    c.execute(
+        """
+        UPDATE payout_batch_lines SET
+          approved_hours=%s, rate=%s, gross_amount=%s, adjustments=%s, total_amount=%s,
+          ot_hours=%s, sick_hours_accrued=%s, sick_hours_used=%s, sick_pay_amount=%s,
+          health_credit_amount=%s, bonus_tip_amount=%s, reimbursement_amount=%s,
+          gross_wages=%s
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            amounts["approved_hours"],
+            amounts["rate"],
+            gross,
+            amounts["adjustments"],
+            total,
+            amounts.get("ot_hours") or 0,
+            amounts.get("sick_hours_accrued") or 0,
+            amounts.get("sick_hours_used") or 0,
+            amounts.get("sick_pay_amount") or 0,
+            amounts.get("health_credit_amount") or 0,
+            amounts.get("bonus_tip_amount") or 0,
+            amounts.get("reimbursement_amount") or 0,
+            gross if batch["worker_category"] == "w2" else None,
+            line_id,
+            int(organization_id),
+        ),
+    )
+    _recompute_batch_totals(conn, batch_id)
     if uid and batch["worker_category"] == "w2":
         from backend.payroll_workflow import persist_w2_line_taxes
 
-        persist_w2_line_taxes(conn, organization_id, line_id, int(uid), gross)
+        persist_w2_line_taxes(
+            conn,
+            organization_id,
+            line_id,
+            int(uid),
+            gross,
+            pay_period_start=str(batch.get("pay_period_start") or "") or None,
+        )
     conn.commit()
     c2 = conn.cursor(dictionary=True)
     c2.execute("SELECT * FROM payout_batch_lines WHERE id=%s", (line_id,))

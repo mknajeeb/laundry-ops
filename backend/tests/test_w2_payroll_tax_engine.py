@@ -57,20 +57,28 @@ def test_calculate_estimated_has_disclaimer():
                 "additional_medicare_threshold": 200000,
                 "futa_rate": 0.006,
                 "futa_wage_base": 7000,
-                "ny_suta_rate": 0.025,
-                "ny_suta_wage_base": 12500,
+                "ny_suta_rate": 0.041,
+                "ny_suta_wage_base": 17600,
                 "ny_reemployment_service_fund_rate": 0.00075,
                 "nyc_mctmt_enabled": False,
                 "workers_comp_rate": 0,
-                "federal_standard_deduction_single": 15750,
-                "federal_standard_deduction_mfj": 31500,
-                "federal_standard_deduction_hoh": 23625,
+                "federal_standard_deduction_single": 16100,
+                "federal_standard_deduction_mfj": 32200,
+                "federal_standard_deduction_hoh": 24150,
+                "ny_pfl_employee_rate": 0.00432,
+                "ny_pfl_employee_annual_cap": 411.91,
+                "ny_dbl_employee_enabled": False,
                 "ny_withholding_estimate_rate": 0.045,
                 "nyc_resident_estimate_rate": 0.035,
                 "nyc_nonresident_estimate_rate": 0.01,
             }
             with patch("backend.w2_payroll_tax_engine.get_w2_ytd_gross", return_value=Decimal("0")):
-                out = calculate_w2_line_taxes(conn, 1, 99, gross_pay=1000.0)
+                with patch("backend.w2_payroll_tax_engine.get_w2_ytd_deduction", return_value=Decimal("0")):
+                    with patch(
+                        "backend.w2_payroll_tax_engine.get_org_quarterly_w2_gross",
+                        return_value=Decimal("0"),
+                    ):
+                        out = calculate_w2_line_taxes(conn, 1, 99, gross_pay=1000.0)
     assert out["tax_calc_status"] == "estimated"
     assert out["net_pay"] is not None
     assert out["net_pay"] < 1000.0

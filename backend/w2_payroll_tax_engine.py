@@ -9,6 +9,7 @@ NY/NYC: simplified effective-rate estimates — verify with accountant.
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
 
@@ -203,6 +204,90 @@ def get_w2_ytd_gross(conn, organization_id: int, user_id: int, year: int) -> Dec
     return _d(row.get("ytd"))
 
 
+def get_org_quarterly_w2_gross(
+    conn, organization_id: int, *, year: int, quarter: int
+) -> Decimal:
+    q = max(1, min(4, int(quarter)))
+    start_month = (q - 1) * 3 + 1
+    end_month = start_month + 2
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT COALESCE(SUM(COALESCE(pbl.gross_wages, pbl.gross_amount, 0)), 0) AS qtd
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id=%s AND pb.worker_category='w2'
+          AND YEAR(COALESCE(pbl.payment_date, pb.pay_period_end))=%s
+          AND MONTH(COALESCE(pbl.payment_date, pb.pay_period_end)) BETWEEN %s AND %s
+        """,
+        (int(organization_id), int(year), start_month, end_month),
+    )
+    row = c.fetchone() or {}
+    return _d(row.get("qtd"))
+
+
+def _quarter_from_date_str(d: Optional[str]) -> tuple[int, int]:
+    if not d:
+        today = date.today()
+        return today.year, (today.month - 1) // 3 + 1
+    try:
+        parts = str(d)[:10].split("-")
+        y, m = int(parts[0]), int(parts[1])
+        return y, (m - 1) // 3 + 1
+    except (ValueError, IndexError):
+        today = date.today()
+        return today.year, (today.month - 1) // 3 + 1
+
+
+def _mctmt_tax_on_quarterly_payroll(qpe: Decimal, settings: dict) -> Decimal:
+    threshold = _d(settings.get("nyc_mctmt_quarterly_payroll_threshold") or 312500)
+    if qpe <= threshold:
+        return Decimal("0")
+    t1 = _d(settings.get("nyc_mctmt_tier1_cap") or 375000)
+    t2 = _d(settings.get("nyc_mctmt_tier2_cap") or 437500)
+    t3 = _d(settings.get("nyc_mctmt_tier3_cap") or 2500000)
+    r1 = _d(settings.get("nyc_mctmt_tier1_rate") or 0.00055)
+    r2 = _d(settings.get("nyc_mctmt_tier2_rate") or 0.00115)
+    r3 = _d(settings.get("nyc_mctmt_tier3_rate") or 0.006)
+    r4 = _d(settings.get("nyc_mctmt_tier4_rate") or 0.00895)
+    tax = min(qpe, t1) * r1
+    if qpe > t1:
+        tax += min(qpe - t1, t2 - t1) * r2
+    if qpe > t2:
+        tax += min(qpe - t2, t3 - t2) * r3
+    if qpe > t3:
+        tax += (qpe - t3) * r4
+    return tax
+
+
+def _incremental_mctmt(qtd_before: Decimal, increment: Decimal, settings: dict) -> Decimal:
+    if increment <= 0:
+        return Decimal("0")
+    after = _mctmt_tax_on_quarterly_payroll(qtd_before + increment, settings)
+    before = _mctmt_tax_on_quarterly_payroll(qtd_before, settings)
+    return max(Decimal("0"), after - before)
+
+
+def get_w2_ytd_deduction(
+    conn, organization_id: int, user_id: int, year: int, column: str
+) -> Decimal:
+    if column not in ("ny_pfl_deduction", "ny_dbl_deduction"):
+        return Decimal("0")
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        f"""
+        SELECT COALESCE(SUM(COALESCE(pbl.{column}, 0)), 0) AS ytd
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id=%s AND pbl.user_id=%s AND pb.worker_category='w2'
+          AND YEAR(COALESCE(pbl.payment_date, pb.pay_period_end))=%s
+        """,
+        (int(organization_id), int(user_id), int(year)),
+    )
+    row = c.fetchone() or {}
+    return _d(row.get("ytd"))
+
+
 def calculate_w2_line_taxes(
     conn,
     organization_id: int,
@@ -300,6 +385,30 @@ def calculate_w2_line_taxes(
     total_employee = federal + ny_state + nyc + ss_employee + medicare_employee + addl_medicare + _d(
         profile.get("post_tax_deductions")
     )
+
+    # NY Paid Family Leave (employee estimate)
+    ny_pfl = Decimal("0")
+    if profile.get("work_state") == "NY":
+        pfl_rate = _d(settings.get("ny_pfl_employee_rate") or 0)
+        pfl_cap = _d(settings.get("ny_pfl_employee_annual_cap") or 411.91)
+        ytd_pfl = get_w2_ytd_deduction(conn, organization_id, user_id, year, "ny_pfl_deduction")
+        period_pfl = taxable_gross * pfl_rate
+        ny_pfl = min(period_pfl, max(Decimal("0"), pfl_cap - ytd_pfl))
+        total_employee += ny_pfl
+        notes.append("NY PFL: estimated employee deduction — verify with payroll provider.")
+
+    # NY Disability Benefits (optional employee estimate)
+    ny_dbl = Decimal("0")
+    if profile.get("work_state") == "NY" and settings.get("ny_dbl_employee_enabled"):
+        dbl_rate = _d(settings.get("ny_dbl_employee_rate") or 0.005)
+        weekly_cap = _d(settings.get("ny_dbl_employee_weekly_cap") or 0.60)
+        periods = int(profile["pay_periods_per_year"])
+        weeks_in_period = Decimal("52") / Decimal(str(periods))
+        period_cap = weekly_cap * weeks_in_period
+        ny_dbl = min(taxable_gross * dbl_rate, period_cap)
+        total_employee += ny_dbl
+        notes.append("NY DBL: estimated employee deduction — verify with payroll provider.")
+
     net = max(Decimal("0"), gross - total_employee)
 
     # --- Employer taxes ---
@@ -314,12 +423,29 @@ def calculate_w2_line_taxes(
     suta_base = _d(settings["ny_suta_wage_base"])
     suta_remaining = max(Decimal("0"), suta_base - ytd_gross)
     suta_wages = min(taxable_gross, suta_remaining)
-    ny_suta = suta_wages * _d(settings["ny_suta_rate"])
+    suta_rate_raw = settings.get("ny_suta_rate")
+    ny_suta = Decimal("0")
+    if suta_rate_raw is not None and str(suta_rate_raw).strip() != "":
+        ny_suta = suta_wages * _d(suta_rate_raw)
+    else:
+        notes.append(
+            "NY SUTA: rate not configured — set employer's assigned NY DOL UI rate in Tax Settings."
+        )
     ny_reemployment = suta_wages * _d(settings.get("ny_reemployment_service_fund_rate") or 0)
 
     mctmt = Decimal("0")
     if settings.get("nyc_mctmt_enabled") and work_in_nyc:
-        mctmt = taxable_gross * _d(settings["nyc_mctmt_rate"])
+        yr, qtr = _quarter_from_date_str(pay_period_start)
+        qtd_before = get_org_quarterly_w2_gross(conn, organization_id, year=yr, quarter=qtr)
+        mctmt = _incremental_mctmt(qtd_before, taxable_gross, settings)
+        if mctmt <= 0:
+            notes.append(
+                "MCTMT: $0 — quarterly MCTD payroll below threshold or Zone 1 tier estimate."
+            )
+        else:
+            notes.append(
+                "MCTMT: Zone 1 tiered estimate on quarterly payroll expense — verify with accountant."
+            )
 
     wc_rate = _d(settings.get("workers_comp_rate") or 0)
     workers_comp = taxable_gross * wc_rate
@@ -335,7 +461,11 @@ def calculate_w2_line_taxes(
         "social_security_employee": _money_json(ss_employee),
         "medicare_employee": _money_json(medicare_employee),
         "additional_medicare_employee": _money_json(addl_medicare),
-        "total_employee_taxes": _money_json(total_employee - _d(profile.get("post_tax_deductions"))),
+        "ny_pfl_deduction": _money_json(ny_pfl),
+        "ny_dbl_deduction": _money_json(ny_dbl),
+        "total_employee_taxes": _money_json(
+            total_employee - _d(profile.get("post_tax_deductions"))
+        ),
         "net_pay": _money_json(net),
         "employer_social_security": _money_json(er_ss),
         "employer_medicare": _money_json(er_medicare),

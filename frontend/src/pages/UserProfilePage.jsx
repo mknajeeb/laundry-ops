@@ -45,6 +45,7 @@ import {
   getTaTaxFormYearSettings,
   putTaUserHrProfile,
 } from "../api";
+import PayrollPtoSection from "../components/PayrollPtoSection";
 import I9DetailsForm, {
   emptyI9,
   emptyPreparer,
@@ -2131,6 +2132,9 @@ export default function UserProfilePage({ user: sessionUser }) {
               }
               label={t("profile.payrollRecordActive")}
             />
+            {hasPayroll && !showPayrollTaxIdField && !Number.isNaN(uid) ? (
+              <PayrollPtoSection userId={uid} canEdit={canEditPayrollRecords} />
+            ) : null}
             <FormControlLabel
               control={
                 <Checkbox

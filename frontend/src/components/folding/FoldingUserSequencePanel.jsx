@@ -21,10 +21,14 @@ import {
 import { getFoldingUserSequence } from "../../api";
 import { foldingRangeParams } from "../../utils/foldingDateRange";
 import {
-  formatDateTime,
   formatFoldingDuration,
+  formatFoldingWallDateTime,
   formatLbs,
 } from "../../utils/foldingFormat";
+import { foldingExceptionLabel } from "../../utils/foldingExceptionLabels";
+
+const timeCellSx = { whiteSpace: "nowrap", fontSize: 12, py: 1 };
+const statusCellSx = { whiteSpace: "normal", maxWidth: 120, verticalAlign: "top" };
 
 function SummaryCard({ label, value, sub }) {
   return (
@@ -34,6 +38,22 @@ function SummaryCard({ label, value, sub }) {
       {sub ? <Typography variant="caption" color="text.secondary">{sub}</Typography> : null}
     </Paper>
   );
+}
+
+function formatFoldDuration(r, minMinutes) {
+  const mins = r.duration_minutes;
+  const text = mins != null ? `${mins}m` : formatFoldingDuration(r.duration_seconds);
+  if (r.below_min_duration) {
+    return (
+      <Stack spacing={0.25}>
+        <Typography variant="body2" fontWeight={700} color="error.main">{text}</Typography>
+        <Typography variant="caption" color="error.main">
+          Below {minMinutes} min min.
+        </Typography>
+      </Stack>
+    );
+  }
+  return text;
 }
 
 export default function FoldingUserSequencePanel({
@@ -83,12 +103,15 @@ export default function FoldingUserSequencePanel({
   if (!userName) return null;
 
   const s = data?.summary || {};
+  const rules = data?.rules || {};
+  const minMinutes = rules.min_duration_minutes ?? 10;
   const allRows = data?.rows || [];
   const filtered = allRows.filter((r) => {
-    if (filter === "scoring") return r.included_in_scoring;
-    if (filter === "exceptions") return !r.included_in_scoring;
+    if (filter === "scoring") return r.included_in_scoring && !r.below_min_duration;
+    if (filter === "exceptions") return !r.included_in_scoring || r.below_min_duration;
     return true;
   });
+  const belowMinInScoring = allRows.filter((r) => r.below_min_duration && r.included_in_scoring);
 
   return (
     <Box mt={3}>
@@ -113,10 +136,18 @@ export default function FoldingUserSequencePanel({
 
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
 
+      {belowMinInScoring.length > 0 ? (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          {belowMinInScoring.length} bag(s) under the {minMinutes}-minute minimum are still marked in scoring.
+          Run Apply recompute in exception rules to fix stored status.
+        </Alert>
+      ) : null}
+
       {data ? (
         <>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-            Sorted by folding start → end (ET). Gap = time between previous bag end and this bag start.
+            Sorted by folding start → end (ET). Gap = idle time between bags (not fold duration).
+            Min fold duration rule: {minMinutes} minutes.
           </Typography>
           <Grid container spacing={1.5} sx={{ mb: 2 }}>
             <Grid item xs={6} md={3}>
@@ -141,39 +172,41 @@ export default function FoldingUserSequencePanel({
               <SummaryCard
                 label="Exceptions / not in scoring"
                 value={`${s.not_in_scoring_bags ?? 0}`}
-                sub={`Too short: ${s.too_short_count ?? 0} · Multi-fold warn: ${s.multiple_folding_scans_count ?? 0}`}
+                sub={`Too short (<${minMinutes}m): ${s.below_min_duration_count ?? s.too_short_count ?? 0}`}
               />
             </Grid>
             <Grid item xs={6} md={3}>
               <SummaryCard
-                label="Avg gap"
-                value={s.avg_gap_minutes != null ? `${s.avg_gap_minutes}m` : "—"}
-                sub={`Total gap time: ${s.total_gap_minutes ?? 0}m`}
+                label="Multiple folding scans"
+                value={`${s.multiple_folding_scans_count ?? 0}`}
+                sub={`Warnings (in scoring): ${s.multiple_folding_scans_warnings ?? 0} · Blocked: ${s.multiple_folding_scans_exceptions ?? 0}`}
               />
             </Grid>
           </Grid>
 
-          <Table size="small">
+          <Table size="small" sx={{ tableLayout: "auto" }}>
             <TableHead>
               <TableRow>
-                <TableCell>#</TableCell>
-                <TableCell>Start (ET)</TableCell>
-                <TableCell>End (ET)</TableCell>
-                <TableCell>Duration</TableCell>
-                <TableCell>Gap</TableCell>
+                <TableCell sx={timeCellSx}>#</TableCell>
+                <TableCell sx={timeCellSx}>Start ET</TableCell>
+                <TableCell sx={timeCellSx}>End ET</TableCell>
+                <TableCell>Fold duration</TableCell>
+                <TableCell>Gap since prev</TableCell>
                 <TableCell>Bag</TableCell>
                 <TableCell>Customer</TableCell>
                 <TableCell align="right">Weight</TableCell>
-                <TableCell>Status</TableCell>
+                <TableCell sx={statusCellSx}>Status</TableCell>
                 <TableCell>Scoring</TableCell>
-                <TableCell>Exception / warning</TableCell>
+                <TableCell>Duration rule</TableCell>
+                <TableCell>Multiple folding scans</TableCell>
+                <TableCell>Other exception</TableCell>
                 <TableCell />
               </TableRow>
             </TableHead>
             <TableBody>
               {filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={12} align="center" sx={{ py: 2, color: "text.secondary" }}>
+                  <TableCell colSpan={14} align="center" sx={{ py: 2, color: "text.secondary" }}>
                     {loading ? "Loading…" : "No rows for this filter."}
                   </TableCell>
                 </TableRow>
@@ -181,36 +214,59 @@ export default function FoldingUserSequencePanel({
                 <TableRow
                   key={r.bag_id}
                   sx={{
-                    bgcolor: r.included_in_scoring ? undefined : "rgba(255, 152, 0, 0.08)",
+                    bgcolor: r.below_min_duration
+                      ? "rgba(211, 47, 47, 0.1)"
+                      : r.included_in_scoring
+                        ? undefined
+                        : "rgba(255, 152, 0, 0.08)",
                   }}
                 >
-                  <TableCell>{r.sequence}</TableCell>
-                  <TableCell>{formatDateTime(r.folding_start_at)}</TableCell>
-                  <TableCell>{formatDateTime(r.folding_end_at)}</TableCell>
-                  <TableCell>
-                    {r.duration_minutes != null ? `${r.duration_minutes}m` : formatFoldingDuration(r.duration_seconds)}
-                  </TableCell>
-                  <TableCell>
+                  <TableCell sx={timeCellSx}>{r.sequence}</TableCell>
+                  <TableCell sx={timeCellSx}>{formatFoldingWallDateTime(r.folding_start_at)}</TableCell>
+                  <TableCell sx={timeCellSx}>{formatFoldingWallDateTime(r.folding_end_at)}</TableCell>
+                  <TableCell>{formatFoldDuration(r, minMinutes)}</TableCell>
+                  <TableCell sx={{ fontSize: 12 }}>
                     {r.gap_minutes_from_previous == null
-                      ? "First bag"
+                      ? "First"
                       : r.gap_overlap
                         ? "Overlap"
-                        : `${r.gap_minutes_from_previous}m`}
+                        : `${r.gap_minutes_from_previous}m idle`}
                   </TableCell>
                   <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>{r.bag_id}</TableCell>
                   <TableCell>{r.customer || "—"}</TableCell>
                   <TableCell align="right">{r.weight_lbs != null ? formatLbs(r.weight_lbs) : "—"}</TableCell>
-                  <TableCell>
+                  <TableCell sx={statusCellSx}>
                     <Chip
                       size="small"
                       label={r.status}
-                      color={r.included_in_scoring ? "success" : "warning"}
+                      color={
+                        r.below_min_duration
+                          ? "error"
+                          : r.included_in_scoring
+                            ? "success"
+                            : "warning"
+                      }
+                      sx={{ height: "auto", "& .MuiChip-label": { whiteSpace: "normal", py: 0.25 } }}
                     />
                   </TableCell>
                   <TableCell>{r.included_in_scoring ? "Yes" : "No"}</TableCell>
-                  <TableCell>{r.exception_code || "—"}</TableCell>
                   <TableCell>
-                    <Stack direction="row" spacing={0.5}>
+                    {r.duration_exception_code || r.below_min_duration
+                      ? foldingExceptionLabel(r.duration_exception_code || "FOLDING_DURATION_TOO_SHORT")
+                      : "—"}
+                  </TableCell>
+                  <TableCell>
+                    {r.multiple_folding_scans
+                      ? (r.multiple_folding_scans_label || "Yes")
+                      : "—"}
+                  </TableCell>
+                  <TableCell>
+                    {r.other_exception_code
+                      ? foldingExceptionLabel(r.other_exception_code)
+                      : "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap">
                       {onOpenTimeline ? (
                         <Button size="small" onClick={() => onOpenTimeline(r.bag_id)}>Timeline</Button>
                       ) : null}

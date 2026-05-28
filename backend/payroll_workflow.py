@@ -49,8 +49,10 @@ BATCH_ACTIONS = (
 
 def ensure_payout_batch_line_extensions(cursor) -> None:
     from backend.payroll_operations import ensure_payout_batches_tables
+    from backend.payroll_accrual import ensure_payout_line_accrual_columns
 
     ensure_payout_batches_tables(cursor)
+    ensure_payout_line_accrual_columns(cursor)
     extras = [
         ("payment_status", "VARCHAR(32) NOT NULL DEFAULT 'pending'"),
         ("tax_calc_status", "VARCHAR(32) NULL"),
@@ -229,6 +231,7 @@ def persist_w2_line_taxes(
           federal_withholding=%s, state_withholding=%s, city_withholding=%s,
           social_security_withholding=%s, medicare_withholding=%s,
           additional_medicare_withholding=%s, total_employee_taxes=%s, net_pay=%s,
+          ny_pfl_deduction=%s, ny_dbl_deduction=%s,
           employer_social_security=%s, employer_medicare=%s, futa_estimate=%s,
           ny_suta_estimate=%s, employer_other_tax_estimate=%s, workers_comp_estimate=%s,
           total_employer_taxes=%s, total_employer_cost=%s,
@@ -247,6 +250,8 @@ def persist_w2_line_taxes(
             calc.get("additional_medicare_employee"),
             calc.get("total_employee_taxes"),
             calc.get("net_pay"),
+            calc.get("ny_pfl_deduction"),
+            calc.get("ny_dbl_deduction"),
             calc.get("employer_social_security"),
             calc.get("employer_medicare"),
             calc.get("futa_estimate"),
@@ -257,7 +262,7 @@ def persist_w2_line_taxes(
             calc.get("total_employer_cost"),
             calc.get("tax_calc_status"),
             calc.get("tax_calc_notes"),
-            calc.get("net_pay"),
+            calc.get("gross_pay"),
             int(line_id),
             int(organization_id),
         ),
@@ -555,6 +560,12 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
                             "missing_fields": profile.get("missing_fields") or [],
                         }
                     )
+                from backend.payroll_accrual import get_sick_leave_balance
+
+                sb = get_sick_leave_balance(conn, organization_id, int(uid))
+                row["sick_balance_hours"] = sb.get("balance_hours")
+                row["sick_hours_accrued_ytd"] = sb.get("ytd_accrued_hours")
+                row["sick_hours_used_ytd"] = sb.get("ytd_used_hours")
                 _mask_incomplete_w2_line_taxes(row)
         ps = str(row.get("payment_status") or "pending")
         row["payment_status_label"] = _line_payment_status_label(ps)

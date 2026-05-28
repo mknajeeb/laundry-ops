@@ -1,0 +1,26 @@
+-- Payroll accrual audit ledger (sick leave W-2, health credit 1099/temp).
+CREATE TABLE IF NOT EXISTS payroll_accrual_ledger (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    organization_id INT NOT NULL,
+    user_id INT NOT NULL,
+    worker_type VARCHAR(32) NOT NULL,
+    accrual_type VARCHAR(32) NOT NULL,
+    payroll_batch_id INT NULL,
+    payout_batch_line_id INT NULL,
+    attendance_record_id BIGINT NULL,
+    period_start DATE NULL,
+    period_end DATE NULL,
+    hours_worked_basis DECIMAL(10,2) NULL,
+    amount_or_hours_accrued DECIMAL(10,4) NULL,
+    amount_or_hours_used DECIMAL(10,4) NULL,
+    balance_after DECIMAL(10,4) NULL,
+    manual_adjustment TINYINT(1) NOT NULL DEFAULT 0,
+    reversed TINYINT(1) NOT NULL DEFAULT 0,
+    reversal_of_id BIGINT NULL,
+    admin_note TEXT NULL,
+    created_by INT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_pal_org_user_type (organization_id, user_id, accrual_type),
+    INDEX idx_pal_batch (payroll_batch_id),
+    INDEX idx_pal_line (payout_batch_line_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

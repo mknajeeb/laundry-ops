@@ -356,8 +356,14 @@ export default function PayoutBatchesPanel({
         action: "update_line",
         line_id: lineEdit.id,
         approved_hours: lineEdit.approved_hours,
+        ot_hours: lineEdit.ot_hours,
         rate: lineEdit.rate,
         adjustments: lineEdit.adjustments,
+        sick_hours_used: lineEdit.sick_hours_used,
+        allow_sick_over_balance: lineEdit.allow_sick_over_balance,
+        sick_override_note: lineEdit.sick_override_note,
+        health_credit_amount: lineEdit.health_credit_amount,
+        health_credit_note: lineEdit.health_credit_note,
       });
       setLineEdit(null);
       await loadDetail(selectedId);
@@ -641,6 +647,13 @@ export default function PayoutBatchesPanel({
                 </Stack>
               </Stack>
 
+              {isGrossOnly ? (
+                <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+                  Health / attendance credit is an internal discretionary payment tracking field.
+                  It does not classify the worker as a W-2 employee and should be verified with
+                  accountant/legal advisor.
+                </Alert>
+              ) : null}
               <Paper variant="outlined" sx={{ p: 1.5, mb: 2 }}>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
                   Batch summary — {detail.worker_category_label}
@@ -796,11 +809,16 @@ export default function PayoutBatchesPanel({
                   <TableHead>
                     <TableRow>
                       <TableCell>Worker</TableCell>
-                      <TableCell align="right">Hours</TableCell>
+                      <TableCell align="right">Reg hrs</TableCell>
+                      {isW2 ? <TableCell align="right">OT</TableCell> : null}
                       <TableCell align="right">Rate</TableCell>
                       <TableCell align="right">Total</TableCell>
                       {isW2 ? (
                         <>
+                          <TableCell align="right">Sick +</TableCell>
+                          <TableCell align="right">Sick used</TableCell>
+                          <TableCell align="right">Sick bal</TableCell>
+                          <TableCell align="right">Sick pay</TableCell>
                           <TableCell align="right">Gross</TableCell>
                           <TableCell align="right">
                             Taxes (est.)
@@ -815,6 +833,8 @@ export default function PayoutBatchesPanel({
                             </Typography>
                           </TableCell>
                         </>
+                      ) : isGrossOnly ? (
+                        <TableCell align="right">Health credit</TableCell>
                       ) : null}
                       <TableCell>Payment</TableCell>
                       <TableCell>Status</TableCell>
@@ -826,6 +846,9 @@ export default function PayoutBatchesPanel({
                       <TableRow key={ln.id} hover>
                         <TableCell>{ln.worker_name_snapshot}</TableCell>
                         <TableCell align="right">{Number(ln.approved_hours || 0).toFixed(2)}</TableCell>
+                        {isW2 ? (
+                          <TableCell align="right">{Number(ln.ot_hours || 0).toFixed(2)}</TableCell>
+                        ) : null}
                         <TableCell align="right">
                           {Number(ln.rate || 0) <= 0 ? (
                             <Typography component="span" color="warning.main" variant="body2">
@@ -841,6 +864,18 @@ export default function PayoutBatchesPanel({
                         <TableCell align="right">${Number(ln.total_amount || 0).toFixed(2)}</TableCell>
                         {isW2 ? (
                           <>
+                            <TableCell align="right">
+                              {Number(ln.sick_hours_accrued || 0).toFixed(2)}
+                            </TableCell>
+                            <TableCell align="right">
+                              {Number(ln.sick_hours_used || 0).toFixed(2)}
+                            </TableCell>
+                            <TableCell align="right">
+                              {Number(ln.sick_balance_hours ?? ln.sick_balance_after ?? 0).toFixed(2)}
+                            </TableCell>
+                            <TableCell align="right">
+                              ${Number(ln.sick_pay_amount || 0).toFixed(2)}
+                            </TableCell>
                             <TableCell align="right">
                               ${Number(ln.gross_wages || ln.gross_amount || 0).toFixed(2)}
                             </TableCell>
@@ -863,6 +898,10 @@ export default function PayoutBatchesPanel({
                               </Typography>
                             </TableCell>
                           </>
+                        ) : isGrossOnly ? (
+                          <TableCell align="right">
+                            ${Number(ln.health_credit_amount || 0).toFixed(2)}
+                          </TableCell>
                         ) : null}
                         <TableCell>
                           <Chip
@@ -908,7 +947,7 @@ export default function PayoutBatchesPanel({
                     ))}
                     {!detail.lines?.length ? (
                       <TableRow>
-                        <TableCell colSpan={isW2 ? 10 : 7}>
+                        <TableCell colSpan={isW2 ? 15 : isGrossOnly ? 8 : 7}>
                           <Typography variant="body2" color="text.secondary">
                             No workers in this batch yet. Approve time on Time Records for this pay period,
                             then refresh.
@@ -1004,6 +1043,47 @@ export default function PayoutBatchesPanel({
               value={lineEdit?.approved_hours ?? ""}
               onChange={(e) => setLineEdit({ ...lineEdit, approved_hours: e.target.value })}
             />
+            {isW2 ? (
+              <>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="OT hours"
+                  value={lineEdit?.ot_hours ?? ""}
+                  onChange={(e) => setLineEdit({ ...lineEdit, ot_hours: e.target.value })}
+                />
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Sick hours used"
+                  value={lineEdit?.sick_hours_used ?? ""}
+                  onChange={(e) => setLineEdit({ ...lineEdit, sick_hours_used: e.target.value })}
+                />
+                <TextField
+                  size="small"
+                  label="Sick override note (if over balance)"
+                  value={lineEdit?.sick_override_note ?? ""}
+                  onChange={(e) => setLineEdit({ ...lineEdit, sick_override_note: e.target.value })}
+                />
+              </>
+            ) : null}
+            {isGrossOnly ? (
+              <>
+                <TextField
+                  size="small"
+                  type="number"
+                  label="Health credit $"
+                  value={lineEdit?.health_credit_amount ?? ""}
+                  onChange={(e) => setLineEdit({ ...lineEdit, health_credit_amount: e.target.value })}
+                />
+                <TextField
+                  size="small"
+                  label="Health credit note"
+                  value={lineEdit?.health_credit_note ?? ""}
+                  onChange={(e) => setLineEdit({ ...lineEdit, health_credit_note: e.target.value })}
+                />
+              </>
+            ) : null}
             <TextField
               size="small"
               type="number"

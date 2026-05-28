@@ -4,7 +4,31 @@ from datetime import date, datetime
 
 import pytest
 
+from backend.rinse_folding_exception_rules import (
+    MULTIPLE_CLEAN_WARNING_EARLIEST,
+    MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST,
+    FoldingExceptionRules,
+)
 from backend.rinse_folding_user_sequence import build_user_folding_sequence
+
+
+def _patch_default_rules(monkeypatch, *, min_minutes=10):
+    rules = FoldingExceptionRules(
+        rule_missing_clean=True,
+        rule_missing_folding=True,
+        rule_clean_before_folding=True,
+        rule_min_duration_enabled=True,
+        rule_max_duration_enabled=True,
+        min_duration_minutes=min_minutes,
+        max_duration_minutes=240,
+        multiple_clean_scans_behavior=MULTIPLE_CLEAN_WARNING_EARLIEST,
+        rule_overlap_invalid_timing=True,
+        multiple_folding_scans_behavior=MULTIPLE_FOLDING_BEHAVIOR_WARNING_EARLIEST,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_folding_user_sequence.get_folding_exception_rules_typed",
+        lambda c, o: rules,
+    )
 
 
 class FakeCursor:
@@ -60,6 +84,7 @@ def test_sequence_sorts_by_folding_start(monkeypatch):
         "backend.rinse_folding_user_sequence.sql_period_filter_sql_and_args",
         lambda *a, **k: (" AND 1=1", []),
     )
+    _patch_default_rules(monkeypatch)
     out = build_user_folding_sequence(
         cur,
         3,
@@ -85,6 +110,7 @@ def test_gap_first_row_null_second_calculated(monkeypatch):
         "backend.rinse_folding_user_sequence.sql_period_filter_sql_and_args",
         lambda *a, **k: (" AND 1=1", []),
     )
+    _patch_default_rules(monkeypatch)
     out = build_user_folding_sequence(
         cur,
         3,
@@ -115,6 +141,7 @@ def test_overlap_gap_zero(monkeypatch):
         "backend.rinse_folding_user_sequence.sql_period_filter_sql_and_args",
         lambda *a, **k: (" AND 1=1", []),
     )
+    _patch_default_rules(monkeypatch)
     out = build_user_folding_sequence(
         cur,
         3,
@@ -147,6 +174,7 @@ def test_total_bags_includes_exceptions(monkeypatch):
         "backend.rinse_folding_user_sequence.sql_period_filter_sql_and_args",
         lambda *a, **k: (" AND 1=1", []),
     )
+    _patch_default_rules(monkeypatch)
     out = build_user_folding_sequence(
         cur,
         3,
@@ -179,6 +207,7 @@ def test_two_minute_bag_not_in_scoring(monkeypatch):
         "backend.rinse_folding_user_sequence.sql_period_filter_sql_and_args",
         lambda *a, **k: (" AND 1=1", []),
     )
+    _patch_default_rules(monkeypatch)
     out = build_user_folding_sequence(
         cur,
         3,
@@ -190,6 +219,42 @@ def test_two_minute_bag_not_in_scoring(monkeypatch):
     assert r["status"] == "EXCEPTION"
     assert r["exception_code"] == "FOLDING_DURATION_TOO_SHORT"
     assert r["included_in_scoring"] is False
+    assert r["below_min_duration"] is True
+
+
+def test_five_minute_bag_flagged_below_min_even_if_calculated(monkeypatch):
+    rows = [
+        _row(
+            "FIVE",
+            start=datetime(2026, 5, 26, 10, 0),
+            end=datetime(2026, 5, 26, 10, 5),
+            status="CALCULATED",
+            exception_code=None,
+            included=1,
+        ),
+    ]
+    cur = FakeCursor(rows)
+    monkeypatch.setattr(
+        "backend.rinse_folding_user_sequence.ensure_rinse_folding_tables",
+        lambda c: None,
+    )
+    monkeypatch.setattr(
+        "backend.rinse_folding_user_sequence.sql_period_filter_sql_and_args",
+        lambda *a, **k: (" AND 1=1", []),
+    )
+    _patch_default_rules(monkeypatch)
+    out = build_user_folding_sequence(
+        cur,
+        3,
+        user_name="Jennifer",
+        period_start=date(2026, 5, 26),
+        period_end=date(2026, 5, 26),
+    )
+    r = out["rows"][0]
+    assert r["duration_minutes"] == 5.0
+    assert r["below_min_duration"] is True
+    assert r["duration_exception_code"] == "FOLDING_DURATION_TOO_SHORT"
+    assert out["summary"]["below_min_duration_count"] == 1
 
 
 def test_recompute_needed_when_rules_saved_after_recompute():
