@@ -185,34 +185,53 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   );
 
   const loadData = useCallback(async () => {
+    setLoading(true);
+    setMessage({ type: "", text: "" });
+    const scoringFilter =
+      recordTab === "scoring" ? "scoring" : recordTab === "not_scoring" ? "not_scoring" : undefined;
+    const status = recordTab === "exceptions" ? "EXCEPTION" : undefined;
+    const recordParams = {
+      ...rangeParams,
+      limit: 500,
+      user_name: selectedEmployee || recordFiltersApplied.user_name || undefined,
+      bag_id: recordFiltersApplied.bag_id || undefined,
+      customer: recordFiltersApplied.customer || undefined,
+      scoring_filter: scoringFilter,
+      status,
+    };
+
+    let summaryError = "";
+    let recordsError = "";
+
     try {
-      setLoading(true);
-      setMessage({ type: "", text: "" });
-      const scoringFilter =
-        recordTab === "scoring" ? "scoring" : recordTab === "not_scoring" ? "not_scoring" : undefined;
-      const status = recordTab === "exceptions" ? "EXCEPTION" : undefined;
-      const [sumRes, recRes] = await Promise.all([
-        getShiftAnalysisSummary({
-          ...rangeParams,
-          processing_activities: processingActs.join(","),
-        }),
-        getShiftAnalysisRecords({
-          ...rangeParams,
-          limit: 500,
-          user_name: selectedEmployee || recordFiltersApplied.user_name || undefined,
-          bag_id: recordFiltersApplied.bag_id || undefined,
-          customer: recordFiltersApplied.customer || undefined,
-          scoring_filter: scoringFilter,
-          status,
-        }),
-      ]);
+      const sumRes = await getShiftAnalysisSummary({
+        ...rangeParams,
+        processing_activities: processingActs.join(","),
+      });
       setSummary(sumRes.data);
+    } catch (e) {
+      summaryError = e?.response?.data?.error || e?.message || "Failed to load shift summary";
+      setSummary(null);
+    }
+
+    try {
+      const recRes = await getShiftAnalysisRecords(recordParams);
       setRecords(recRes.data?.rows || []);
     } catch (e) {
-      setMessage({ type: "error", text: e?.response?.data?.error || e?.message || "Failed to load shift analysis" });
-    } finally {
-      setLoading(false);
+      recordsError = e?.response?.data?.error || e?.message || "Failed to load records";
+      setRecords([]);
     }
+
+    if (summaryError && recordsError) {
+      setMessage({ type: "error", text: summaryError });
+    } else if (summaryError || recordsError) {
+      setMessage({
+        type: "warning",
+        text: summaryError || recordsError,
+      });
+    }
+
+    setLoading(false);
   }, [rangeParams, processingActs, recordTab, selectedEmployee, recordFiltersApplied]);
 
   const handleSearch = () => {

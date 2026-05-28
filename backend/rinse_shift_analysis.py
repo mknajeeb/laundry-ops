@@ -229,10 +229,14 @@ def build_shift_analysis_summary(
         period_start=period_start,
         period_end=period_end,
     )
+    if not isinstance(processing, dict):
+        processing = {}
     proc_settings = get_processing_settings(cursor, org)
     clock_hours = _sum_shift_clock_hours(cursor, org, period_start, period_end)
 
-    lb_rows = leaderboard.get("users") or []
+    lb_rows = leaderboard.get("users") if isinstance(leaderboard, dict) else []
+    if not isinstance(lb_rows, list):
+        lb_rows = []
     team = leaderboard.get("team") if isinstance(leaderboard.get("team"), dict) else {}
     rules_impact = leaderboard.get("period_bag_summary")
     if not isinstance(rules_impact, dict):
@@ -279,6 +283,8 @@ def build_shift_analysis_summary(
 
     employees: list[dict[str, Any]] = []
     for row in lb_rows:
+        if not isinstance(row, dict):
+            continue
         uname = str(row.get("user_name") or "").strip()
         if not uname:
             continue
