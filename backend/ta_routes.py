@@ -5642,11 +5642,6 @@ def payroll_accountant_ytd():
         conn.close()
 
 
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-
 @ta_bp.route("/payroll/pto/<int:user_id>", methods=["GET", "POST"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")
