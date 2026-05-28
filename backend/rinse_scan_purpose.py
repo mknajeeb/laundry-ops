@@ -41,6 +41,15 @@ def is_create_workitem_or_issue_purpose(raw: str | None) -> bool:
     return p in ("create-workitem", "create-issue")
 
 
+def is_create_bulk_workitem_purpose(raw: str | None) -> bool:
+    return normalize_scan_purpose(raw) == "create-bulk-workitem"
+
+
+def is_processed_by_vendor_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "processed-by-vendor" or "processed-by-vendor" in p
+
+
 def is_drying_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "drying"
 
@@ -61,6 +70,7 @@ def is_cleaning_related_purpose(raw: str | None) -> bool:
         "add-photos",
         "create-workitem",
         "create-issue",
+        "create-bulk-workitem",
     ):
         return False
     return "clean" in p

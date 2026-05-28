@@ -49,13 +49,100 @@ import {
   formatRate,
 } from "../utils/foldingFormat";
 
-function SummaryCard({ label, value, sub }) {
+function SummaryCard({ label, value, sub, onClick, clickable }) {
+  const canClick = clickable && onClick && value != null && value !== "—" && Number(value) !== 0;
   return (
-    <Paper sx={{ p: 2, height: "100%" }}>
+    <Paper
+      sx={{
+        p: 2,
+        height: "100%",
+        cursor: canClick ? "pointer" : "default",
+        "&:hover": canClick ? { bgcolor: "action.hover" } : undefined,
+      }}
+      onClick={canClick ? onClick : undefined}
+    >
       <Typography variant="caption" color="text.secondary">{label}</Typography>
-      <Typography variant="h5" fontWeight={700}>{value ?? "—"}</Typography>
+      {canClick ? (
+        <Link component="span" variant="h5" fontWeight={700} underline="hover">{value}</Link>
+      ) : (
+        <Typography variant="h5" fontWeight={700}>{value ?? "—"}</Typography>
+      )}
       {sub ? <Typography variant="caption" color="text.secondary">{sub}</Typography> : null}
     </Paper>
+  );
+}
+
+function filterOperationalRecordsClient(rows, filter) {
+  if (!filter) return rows;
+  return (rows || []).filter((row) => {
+    const ws = row.workitem_stats || {};
+    const codes = row.exception_codes || [];
+    switch (filter) {
+      case "order_reject_no_start_cleaning_30_min":
+        return codes.includes("ORDER_REJECT_NO_START_CLEANING_30_MIN");
+      case "completed_without_final_clean_scan":
+        return codes.includes("COMPLETED_WITHOUT_FINAL_CLEAN_SCAN");
+      case "bags_with_issues":
+        return ws.has_issue;
+      case "bags_with_workitems":
+        return ws.has_workitem;
+      case "bags_with_bulk_workitems":
+        return ws.has_bulk_workitem;
+      case "total_issue_events":
+        return (ws.create_issue_count || 0) > 0;
+      case "total_workitem_events":
+        return (ws.create_workitem_count || 0) > 0;
+      case "total_bulk_workitem_events":
+        return (ws.create_bulk_workitem_count || 0) > 0;
+      default:
+        return true;
+    }
+  });
+}
+
+function OperationalDetailPanel({ row }) {
+  const details = row?.exception_details || {};
+  const reject = details.ORDER_REJECT_NO_START_CLEANING_30_MIN;
+  const missingClean = details.COMPLETED_WITHOUT_FINAL_CLEAN_SCAN;
+  return (
+    <Stack spacing={2} sx={{ mb: 2 }}>
+      <Typography variant="body2"><strong>Bag ID:</strong> {row.bag_id}</Typography>
+      <Typography variant="body2"><strong>Customer:</strong> {row.customer || row.name_clean || "—"}</Typography>
+      <Typography variant="body2"><strong>Rush:</strong> {row.rush_label || "—"}</Typography>
+      <Typography variant="body2"><strong>Status:</strong> {row.status || "—"}</Typography>
+      <Typography variant="body2"><strong>In scoring:</strong> {row.in_scoring ? "Yes" : "No"}</Typography>
+      <Typography variant="body2"><strong>Reason not scoring:</strong> {row.reason_not_scoring || "—"}</Typography>
+      {reject ? (
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
+          <Typography variant="subtitle2" fontWeight={700}>{reject.exception_label}</Typography>
+          <Typography variant="body2">Sorting/prep end: {formatDateTime(reject.sorting_prep_end_time)}</Typography>
+          <Typography variant="body2">Expected latest start-cleaning: {formatDateTime(reject.expected_latest_start_cleaning_time)}</Typography>
+          <Typography variant="body2">Actual start-cleaning: {formatDateTime(reject.actual_start_cleaning_time) || "None"}</Typography>
+          <Typography variant="body2">Create-issue present: {reject.create_issue_present ? "Yes" : "No"}</Typography>
+          <Typography variant="body2">Reason: {reject.reason}</Typography>
+        </Paper>
+      ) : null}
+      {missingClean ? (
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
+          <Typography variant="subtitle2" fontWeight={700}>{missingClean.exception_label}</Typography>
+          <Typography variant="body2">PROCESSED BY VENDOR: {formatDateTime(missingClean.processed_by_vendor_at)}</Typography>
+          <Typography variant="body2">CLEAN rack after processed: {missingClean.has_clean_rack_after_processed ? "Yes" : "No"}</Typography>
+          <Typography variant="body2">Reason: {missingClean.reason}</Typography>
+          {(missingClean.rack_scans_after_processed || []).length ? (
+            <Typography variant="body2" component="div">
+              Rack scans after processed:
+              <ul style={{ margin: "4px 0 0 16px" }}>
+                {missingClean.rack_scans_after_processed.map((s, i) => (
+                  <li key={i}>{s.rack} @ {formatDateTime(s.scanned_at)} {s.contains_clean ? "(CLEAN)" : ""}</li>
+                ))}
+              </ul>
+            </Typography>
+          ) : (
+            <Typography variant="body2">No rack scans after PROCESSED BY VENDOR</Typography>
+          )}
+        </Paper>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -67,9 +154,26 @@ function PendingTable({ groups, onDrilldown }) {
   ];
   const cell = (group, field, bucket) => {
     const val = groups?.[group]?.[field] ?? 0;
-    if (!onDrilldown || field === "total" || field === "completed" || val === 0) return val;
+    if (!onDrilldown || val === 0) return val;
     return (
-      <Link component="button" variant="body2" onClick={() => onDrilldown({ group, bucket: field === "pending" ? null : bucket || field })}>
+      <Link
+        component="button"
+        variant="body2"
+        onClick={() =>
+          onDrilldown({
+            group,
+            bucket:
+              field === "pending"
+                ? "pending"
+                : field === "completed"
+                  ? "completed"
+                  : field === "total"
+                    ? null
+                    : bucket || field,
+            pendingField: field,
+          })
+        }
+      >
         {val}
       </Link>
     );
@@ -91,8 +195,8 @@ function PendingTable({ groups, onDrilldown }) {
         {rows.map(({ key, label }) => (
           <TableRow key={key}>
             <TableCell>{label}</TableCell>
-            <TableCell align="right">{groups?.[key]?.total ?? 0}</TableCell>
-            <TableCell align="right">{groups?.[key]?.completed ?? 0}</TableCell>
+            <TableCell align="right">{cell(key, "total", null)}</TableCell>
+            <TableCell align="right">{cell(key, "completed", "completed")}</TableCell>
             <TableCell align="right">{cell(key, "pending", null)}</TableCell>
             <TableCell align="right">{cell(key, "not_weighed", "not_weighed")}</TableCell>
             <TableCell align="right">{cell(key, "weighed_not_washed", "weighed_not_washed")}</TableCell>
@@ -160,7 +264,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const [employeeView, setEmployeeView] = useState(searchParams.get("activity") === "folding" ? "folding" : "processing");
   const [selectedEmployee, setSelectedEmployee] = useState(searchParams.get("user") || "");
   const [rushFilter, setRushFilter] = useState("combined");
-  const [pendingDrill, setPendingDrill] = useState(null);
+  const [recordDrill, setRecordDrill] = useState(null);
   const [recordTab, setRecordTab] = useState(
     searchParams.get("status") === "exception" ? "exceptions" : "all"
   );
@@ -171,6 +275,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: "", text: "" });
   const [drawerBagId, setDrawerBagId] = useState(null);
+  const [drawerRow, setDrawerRow] = useState(null);
   const [drawerDetail, setDrawerDetail] = useState(null);
   const [searchTick, setSearchTick] = useState(0);
   const initialSearch = useRef(false);
@@ -244,9 +349,22 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     setRecordSearch({ bag_id: "", customer: "", user_name: "" });
     setRecordFiltersApplied({ bag_id: "", customer: "", user_name: "" });
     setSelectedEmployee("");
-    setPendingDrill(null);
+    setRecordDrill(null);
     setRushFilter("combined");
     setSearchTick((t) => t + 1);
+  };
+
+  const scrollToRecords = () => {
+    document.getElementById("shift-records-section")?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const operationalRecords = summary?.operational?.records || [];
+  const operationalStats = summary?.operational?.stats || {};
+  const operationalLabels = summary?.operational?.stat_labels || {};
+
+  const applyRecordDrill = (drill) => {
+    setRecordDrill(drill);
+    scrollToRecords();
   };
 
   useEffect(() => {
@@ -266,32 +384,61 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     loadData();
   }, [searchTick, loadData]);
 
+  const overall = summary?.overall_production || {};
+  const scoring = summary?.scoring_data || {};
+  const speed = summary?.speed || {};
+  const pendingGroups = summary?.pending?.groups || {};
+
   const pendingRows = useMemo(() => {
     const rows = summary?.pending?.rows || [];
     return rows.filter((r) => {
       if (rushFilter === "rush" && !r.rush) return false;
       if (rushFilter === "non_rush" && r.rush) return false;
-      if (!pendingDrill) return true;
-      if (pendingDrill.group && pendingDrill.group !== "combined") {
-        const g = pendingDrill.group === "rush" ? r.rush : !r.rush;
+      if (recordDrill?.source !== "pending") return true;
+      if (recordDrill.group && recordDrill.group !== "combined") {
+        const g = recordDrill.group === "rush" ? r.rush : !r.rush;
         if (!g) return false;
       }
-      if (pendingDrill.bucket === "not_weighed") return r.pending_bucket === "not_weighed";
-      if (pendingDrill.bucket === "weighed_not_washed") return r.pending_bucket === "weighed_not_washed";
-      if (pendingDrill.bucket === "in_washing") return r.pending_bucket === "in_washing";
-      if (pendingDrill.bucket === "pending") return !r.is_completed;
+      if (recordDrill.bucket === "not_weighed") return r.pending_bucket === "not_weighed";
+      if (recordDrill.bucket === "weighed_not_washed") return r.pending_bucket === "weighed_not_washed";
+      if (recordDrill.bucket === "in_washing") return r.pending_bucket === "in_washing";
+      if (recordDrill.bucket === "completed") return r.is_completed;
+      if (recordDrill.bucket === "pending") return !r.is_completed;
       return true;
     });
-  }, [summary, rushFilter, pendingDrill]);
+  }, [summary, rushFilter, recordDrill]);
 
   const displayRecords = useMemo(() => {
-    if (!pendingDrill?.bag_ids) return records;
-    const ids = new Set(pendingDrill.bag_ids);
-    return records.filter((r) => ids.has(r.bag_id));
-  }, [records, pendingDrill]);
+    if (recordDrill?.source === "employee" && recordDrill.user_name) {
+      return records.filter((r) => r.assigned_user_name === recordDrill.user_name);
+    }
+    if (recordDrill?.source === "operational") {
+      return filterOperationalRecordsClient(operationalRecords, recordDrill.filter);
+    }
+    if (recordDrill?.source === "scoring") {
+      return records.filter((r) => (recordDrill.inScoring ? r.in_scoring : !r.in_scoring));
+    }
+    if (recordDrill?.source === "exceptions") {
+      const foldEx = records.filter((r) => r.status === "EXCEPTION");
+      const opEx = operationalRecords.filter((r) => (r.exception_codes || []).length > 0);
+      const seen = new Set(foldEx.map((r) => r.bag_id));
+      return [...foldEx, ...opEx.filter((r) => !seen.has(r.bag_id))];
+    }
+    if (recordDrill?.bag_ids?.length) {
+      const ids = new Set(recordDrill.bag_ids);
+      const fromFolding = records.filter((r) => ids.has(r.bag_id));
+      const fromOps = operationalRecords.filter((r) => ids.has(r.bag_id));
+      const seen = new Set(fromFolding.map((r) => r.bag_id));
+      return [...fromFolding, ...fromOps.filter((r) => !seen.has(r.bag_id))];
+    }
+    const seen = new Set(records.map((r) => r.bag_id));
+    const extraOps = operationalRecords.filter((r) => (r.exception_codes || []).length && !seen.has(r.bag_id));
+    return [...records, ...extraOps];
+  }, [records, operationalRecords, recordDrill]);
 
-  const openDrawer = async (bagId) => {
+  const openDrawer = async (bagId, row = null) => {
     setDrawerBagId(bagId);
+    setDrawerRow(row);
     setDrawerDetail(null);
     try {
       const res = await getFoldingPerformanceDetail(bagId);
@@ -301,13 +448,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     }
   };
 
-  const overall = summary?.overall_production || {};
-  const scoring = summary?.scoring_data || {};
-  const speed = summary?.speed || {};
-  const pendingGroups = summary?.pending?.groups || {};
-
   const onPendingDrill = ({ group, bucket }) => {
-    setPendingDrill({ group, bucket });
     setRushFilter(group === "non_rush" ? "non_rush" : group === "rush" ? "rush" : "combined");
     const rows = (summary?.pending?.rows || []).filter((r) => {
       if (group === "rush" && !r.rush) return false;
@@ -315,11 +456,21 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       if (bucket === "not_weighed") return r.pending_bucket === "not_weighed";
       if (bucket === "weighed_not_washed") return r.pending_bucket === "weighed_not_washed";
       if (bucket === "in_washing") return r.pending_bucket === "in_washing";
+      if (bucket === "completed") return r.is_completed;
       if (bucket === "pending") return !r.is_completed;
       return true;
     });
-    setPendingDrill({ group, bucket, bag_ids: rows.map((r) => r.bag_id) });
-    document.getElementById("shift-records-section")?.scrollIntoView({ behavior: "smooth" });
+    applyRecordDrill({
+      source: "pending",
+      group,
+      bucket,
+      bag_ids: rows.map((r) => r.bag_id),
+      label: `Pending ${group || "combined"} / ${bucket || "all"}`,
+    });
+  };
+
+  const onOperationalDrill = (filter, label) => {
+    applyRecordDrill({ source: "operational", filter, label });
   };
 
   return (
@@ -366,7 +517,17 @@ export default function ShiftAnalysisDashboardPage({ user }) {
 
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
-          <Typography variant="h6" fontWeight={700}>Pending order / bag status</Typography>
+          <Box>
+            <Typography variant="h6" fontWeight={700}>Pending order / bag status</Typography>
+            {summary?.pending?.service_scope ? (
+              <Typography variant="caption" color="text.secondary">
+                {summary.pending.service_scope}
+                {summary.pending.portal_alignment?.hd_excluded
+                  ? ` · ${summary.pending.portal_alignment.hd_excluded} HD excluded (${summary.pending.portal_alignment.portal_active_total} active in portal)`
+                  : null}
+              </Typography>
+            ) : null}
+          </Box>
           <ToggleButtonGroup size="small" value={rushFilter} exclusive onChange={(_, v) => v && setRushFilter(v)}>
             <ToggleButton value="rush">Rush</ToggleButton>
             <ToggleButton value="non_rush">Non-Rush</ToggleButton>
@@ -374,21 +535,52 @@ export default function ShiftAnalysisDashboardPage({ user }) {
           </ToggleButtonGroup>
         </Stack>
         <PendingTable groups={pendingGroups} onDrilldown={onPendingDrill} />
-        {pendingDrill ? (
+        {recordDrill ? (
           <Chip
             sx={{ mt: 1 }}
-            label={`Pending drilldown: ${pendingDrill.group || "combined"} / ${pendingDrill.bucket || "all"} (${pendingRows.length} bags)`}
-            onDelete={() => setPendingDrill(null)}
+            label={`Drilldown: ${recordDrill.label || `${recordDrill.source} / ${recordDrill.filter || recordDrill.bucket || "all"}`} (${displayRecords.length} records)`}
+            onDelete={() => setRecordDrill(null)}
           />
         ) : null}
       </Paper>
+
+      <Typography variant="subtitle1" fontWeight={700} gutterBottom>Operational exceptions &amp; workitems</Typography>
+      <Grid container spacing={2} sx={{ mb: 3 }}>
+        {[
+          "order_reject_no_start_cleaning_30_min",
+          "completed_without_final_clean_scan",
+          "bags_with_issues",
+          "bags_with_workitems",
+          "bags_with_bulk_workitems",
+          "total_issue_events",
+          "total_workitem_events",
+          "total_bulk_workitem_events",
+        ].map((key) => (
+          <Grid item xs={6} md={3} key={key}>
+            <SummaryCard
+              label={operationalLabels[key] || key}
+              value={operationalStats[key] ?? 0}
+              clickable
+              onClick={() => onOperationalDrill(key, operationalLabels[key] || key)}
+            />
+          </Grid>
+        ))}
+      </Grid>
 
       <Typography variant="subtitle1" fontWeight={700} gutterBottom>Team shift summary</Typography>
       <Grid container spacing={2} sx={{ mb: 3 }}>
         <Grid item xs={6} md={3}><SummaryCard label="Clocked labor hours" value={formatFoldingHours((overall.clocked_labor_hours || 0) * 3600)} /></Grid>
         <Grid item xs={6} md={3}><SummaryCard label="Processing labor hours" value={overall.processing_labor_hours} /></Grid>
         <Grid item xs={6} md={3}><SummaryCard label="Folding labor hours" value={overall.folding_labor_hours} /></Grid>
-        <Grid item xs={6} md={3}><SummaryCard label="Bags completed" value={overall.total_bags_completed} sub={`Processed: ${overall.total_bags_processed ?? "—"}`} /></Grid>
+        <Grid item xs={6} md={3}>
+          <SummaryCard
+            label="Bags completed"
+            value={overall.total_bags_completed}
+            sub={`Processed: ${overall.total_bags_processed ?? "—"}`}
+            clickable
+            onClick={() => applyRecordDrill({ source: "scoring", inScoring: true, label: "Scoring bags (completed folding)" })}
+          />
+        </Grid>
         <Grid item xs={6} md={3}><SummaryCard label="Lbs folded" value={formatLbs(overall.total_lbs_folded)} sub={`Processed: ${formatLbs(overall.total_lbs_processed)}`} /></Grid>
         <Grid item xs={6} md={3}><SummaryCard label="Processing people" value={overall.processing_people_count} /></Grid>
         <Grid item xs={6} md={3}><SummaryCard label="Folding people" value={overall.folding_people_count} /></Grid>
@@ -428,9 +620,25 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         <Grid item xs={12} md={6}>
           <Paper sx={{ p: 2 }}>
             <Typography variant="subtitle2" fontWeight={700} gutterBottom>Scoring Data</Typography>
-            <Typography variant="body2">Scoring bags: {scoring.scoring_bags ?? "—"} · Scoring lbs: {formatLbs(scoring.scoring_lbs)}</Typography>
-            <Typography variant="body2">Excluded records: {scoring.excluded_records ?? "—"}</Typography>
-            <Typography variant="body2">Exceptions not counted: {scoring.exception_records_not_counted ?? "—"}</Typography>
+            <Typography variant="body2">
+              Scoring bags:{" "}
+              <Link component="button" variant="body2" onClick={() => applyRecordDrill({ source: "scoring", inScoring: true, label: "Scoring records" })}>
+                {scoring.scoring_bags ?? "—"}
+              </Link>
+            </Typography>
+            <Typography variant="body2">Scoring lbs: {formatLbs(scoring.scoring_lbs)}</Typography>
+            <Typography variant="body2">
+              Excluded records:{" "}
+              <Link component="button" variant="body2" onClick={() => applyRecordDrill({ source: "scoring", inScoring: false, label: "Not-scoring records" })}>
+                {scoring.excluded_records ?? "—"}
+              </Link>
+            </Typography>
+            <Typography variant="body2">
+              Exceptions not counted:{" "}
+              <Link component="button" variant="body2" onClick={() => applyRecordDrill({ source: "exceptions", label: "All exceptions" })}>
+                {scoring.exception_records_not_counted ?? "—"}
+              </Link>
+            </Typography>
             <Typography variant="body2">Scoring quality %: {scoring.scoring_quality_percent != null ? `${scoring.scoring_quality_percent}%` : "—"}</Typography>
           </Paper>
         </Grid>
@@ -486,8 +694,8 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                   setRecordSearch((s) => ({ ...s, user_name: row.user_name }));
                   setRecordFiltersApplied((s) => ({ ...s, user_name: row.user_name }));
                   setSearchParams({ user: row.user_name, activity: employeeView });
+                  applyRecordDrill({ source: "employee", bag_ids: null, label: `Employee: ${row.user_name}`, user_name: row.user_name });
                   setSearchTick((t) => t + 1);
-                  document.getElementById("shift-records-section")?.scrollIntoView({ behavior: "smooth" });
                 }}
               >
                 <TableCell>{row.user_name}</TableCell>
@@ -498,7 +706,25 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                 <TableCell align="right">{formatLbs(row.scoring_lbs)}</TableCell>
                 <TableCell align="right">{formatRate(row.overall_bags_per_hour)}</TableCell>
                 <TableCell align="right">{formatRate(row.scoring_bags_per_hour)}</TableCell>
-                <TableCell align="right">{row.exceptions ?? 0}</TableCell>
+                <TableCell align="right">
+                  {(row.exceptions ?? 0) > 0 ? (
+                    <Link
+                      component="button"
+                      variant="body2"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedEmployee(row.user_name);
+                        setRecordFiltersApplied((s) => ({ ...s, user_name: row.user_name }));
+                        applyRecordDrill({ source: "exceptions", label: `Exceptions: ${row.user_name}` });
+                        setSearchTick((t) => t + 1);
+                      }}
+                    >
+                      {row.exceptions}
+                    </Link>
+                  ) : (
+                    row.exceptions ?? 0
+                  )}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -554,19 +780,19 @@ export default function ShiftAnalysisDashboardPage({ user }) {
           </TableHead>
           <TableBody>
             {displayRecords.map((row) => (
-              <TableRow key={row.bag_id} hover>
-                <TableCell>folding</TableCell>
+              <TableRow key={`${row.activity || "folding"}-${row.bag_id}`} hover sx={{ cursor: "pointer" }} onClick={() => openDrawer(row.bag_id, row)}>
+                <TableCell>{row.activity || "folding"}</TableCell>
                 <TableCell>{row.bag_id}</TableCell>
                 <TableCell>{row.name_clean || row.customer}</TableCell>
                 <TableCell>{row.weight_lbs ?? row.registry_weight_num}</TableCell>
                 <TableCell>{formatDateTime(row.folding_start_at)}</TableCell>
                 <TableCell>{formatDateTime(row.folding_end_at)}</TableCell>
                 <TableCell>{formatFoldingDuration(row.duration_seconds)}</TableCell>
-                <TableCell>{row.assigned_user_name}</TableCell>
-                <TableCell><FoldingExceptionCell row={row} /></TableCell>
+                <TableCell>{row.assigned_user_name || "—"}</TableCell>
+                <TableCell>{row.exception_label || (row.status === "EXCEPTION" ? <FoldingExceptionCell row={row} /> : row.status)}</TableCell>
                 <TableCell>{row.in_scoring ? "Yes" : "No"}</TableCell>
                 <TableCell>{row.reason_not_scoring || "—"}</TableCell>
-                <TableCell><Button size="small" onClick={() => openDrawer(row.bag_id)}>Timeline</Button></TableCell>
+                <TableCell><Button size="small" onClick={(e) => { e.stopPropagation(); openDrawer(row.bag_id, row); }}>Timeline</Button></TableCell>
               </TableRow>
             ))}
             {!displayRecords.length ? (
@@ -576,9 +802,10 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         </Table>
       </Paper>
 
-      <Drawer anchor="right" open={!!drawerBagId} onClose={() => setDrawerBagId(null)} PaperProps={{ sx: { width: { xs: "100%", sm: 480 } } }}>
+      <Drawer anchor="right" open={!!drawerBagId} onClose={() => { setDrawerBagId(null); setDrawerRow(null); }} PaperProps={{ sx: { width: { xs: "100%", sm: 480 } } }}>
         <Box sx={{ p: 2 }}>
           <Typography variant="h6" gutterBottom>Bag {drawerBagId}</Typography>
+          {drawerRow?.activity === "operational" ? <OperationalDetailPanel row={drawerRow} /> : null}
           {drawerDetail ? <FoldingScanEventsTable events={drawerDetail.scan_events || []} /> : <Typography variant="body2">Loading…</Typography>}
         </Box>
       </Drawer>

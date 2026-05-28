@@ -5,14 +5,99 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from backend.rinse_bag_completion import COMPLETION_COMPLETED
 from backend.rinse_folding_registry import aggregate_folding_leaderboard
 from backend.rinse_folding_scoring import row_included_in_scoring
-from backend.rinse_operations_dashboard import effective_rush_expr
+from backend.rinse_operations_dashboard import (
+    _completed_expr,
+    _service_expr,
+    effective_rush_expr,
+)
+from backend.rinse_order_search import _active_staging_where_sql
 from backend.rinse_processing_productivity import build_processing_productivity
 from backend.rinse_processing_settings import get_processing_settings
 from backend.rinse_scan_purpose import is_start_cleaning_purpose, is_weight_entry_purpose
+from backend.rinse_shift_operational_exceptions import (
+    OPERATIONAL_STAT_LABELS,
+    aggregate_operational_stats,
+    evaluate_bag_operational_profile,
+)
 from backend.ta_helpers import table_exists, table_has_column
+
+
+def _load_scan_events_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    org = int(organization_id)
+    out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids if bid}
+    if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return out
+    chunk = 100
+    for i in range(0, len(bag_ids), chunk):
+        part = [b for b in bag_ids[i : i + chunk] if b]
+        if not part:
+            continue
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND bag_id IN ({placeholders})
+            ORDER BY bag_id, scanned_at_parsed, scan_index, id
+            """,
+            (org, *part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip()
+            if bid:
+                out.setdefault(bid, []).append(row)
+    return out
+
+
+def build_operational_dashboard_data(
+    cursor,
+    organization_id: int,
+    *,
+    pending_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate operational exceptions and workitem stats for pending WF bags."""
+    pending_rows = pending_payload.get("rows") or []
+    if not isinstance(pending_rows, list):
+        pending_rows = []
+    bag_ids = [
+        str(r.get("bag_id") or "").strip()
+        for r in pending_rows
+        if isinstance(r, dict) and r.get("bag_id")
+    ]
+    events_by_bag = _load_scan_events_for_bags(cursor, int(organization_id), bag_ids)
+
+    records: list[dict[str, Any]] = []
+    for prow in pending_rows:
+        if not isinstance(prow, dict):
+            continue
+        bid = str(prow.get("bag_id") or "").strip()
+        if not bid:
+            continue
+        records.append(
+            evaluate_bag_operational_profile(
+                events_by_bag.get(bid) or [],
+                bag_meta=prow,
+            )
+        )
+
+    stats = aggregate_operational_stats(records)
+    return {
+        "stats": stats,
+        "stat_labels": OPERATIONAL_STAT_LABELS,
+        "records": records,
+        "total_operational_exceptions": (
+            stats.get("order_reject_no_start_cleaning_30_min", 0)
+            + stats.get("completed_without_final_clean_scan", 0)
+        ),
+    }
 
 
 def _empty_pending_group() -> dict[str, int]:
@@ -87,6 +172,138 @@ def _bag_purpose_flags(cursor, organization_id: int, bag_ids: list[str]) -> dict
     return flags
 
 
+def _load_pending_bag_rows(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Portal-aligned WF bags: active orders_staging (same population as GET /dashboard),
+    excluding HD service type, with registry completion when available. Also includes
+    registry-only WF rows for target_date not already counted.
+    """
+    org = int(organization_id)
+    td = target_date
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    portal_active_total = 0
+    hd_excluded = 0
+
+    has_staging = table_exists(cursor, "orders_staging") and table_has_column(
+        cursor, "orders_staging", "ticket_id"
+    )
+    has_reg = table_exists(cursor, "rinse_bag_registry")
+
+    if has_staging:
+        active_where = _active_staging_where_sql(cursor)
+        has_org = table_has_column(cursor, "orders_staging", "organization_id")
+        has_rush = table_has_column(cursor, "orders_staging", "rush_type")
+        has_name = table_has_column(cursor, "orders_staging", "name_clean")
+        has_weight = table_has_column(cursor, "orders_staging", "weight_num")
+        rush_s = (
+            effective_rush_expr("s", date_col="date_clean")
+            if has_rush
+            else "CASE WHEN s.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
+        )
+        svc_s = _service_expr("s")
+        org_clause = " AND s.organization_id = %s" if has_org else ""
+        st_args: list[Any] = [org] if has_org else []
+
+        if has_reg:
+            reg_join = (
+                "LEFT JOIN rinse_bag_registry r ON r.bag_id = s.ticket_id AND r.organization_id = s.organization_id"
+                if has_org
+                else "LEFT JOIN rinse_bag_registry r ON r.bag_id = s.ticket_id"
+            )
+            rush_final = f"COALESCE(NULLIF({effective_rush_expr('r')}, ''), UPPER({rush_s}))"
+            name_expr = (
+                "COALESCE(r.name_clean, s.name_clean)"
+                if has_name
+                else "r.name_clean"
+            )
+            weight_expr = (
+                "COALESCE(r.weight_num, s.weight_num)"
+                if has_weight
+                else "r.weight_num"
+            )
+            completed_expr = f"CASE WHEN {_completed_expr('r')} THEN 1 ELSE 0 END"
+        else:
+            reg_join = ""
+            rush_final = f"UPPER({rush_s})"
+            name_expr = "s.name_clean" if has_name else "NULL"
+            weight_expr = "s.weight_num" if has_weight else "NULL"
+            completed_expr = "0"
+
+        cursor.execute(
+            f"""
+            SELECT
+                s.ticket_id AS bag_id,
+                {svc_s} AS service_type,
+                {rush_final} AS effective_rush,
+                {completed_expr} AS is_completed,
+                {name_expr} AS name_clean,
+                {weight_expr} AS weight_num
+            FROM orders_staging s
+            {reg_join}
+            WHERE ({active_where}){org_clause}
+              AND s.ticket_id IS NOT NULL AND TRIM(s.ticket_id) != ''
+            """,
+            tuple(st_args),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            portal_active_total += 1
+            svc = str(row.get("service_type") or "WF").upper()
+            if svc != "WF":
+                hd_excluded += 1
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if not bid or bid in seen:
+                continue
+            seen.add(bid)
+            rows.append(row)
+
+    if has_reg:
+        rush_r = effective_rush_expr("r")
+        svc_r = _service_expr("r")
+        done_r = _completed_expr("r")
+        cursor.execute(
+            f"""
+            SELECT
+                r.bag_id,
+                {svc_r} AS service_type,
+                {rush_r} AS effective_rush,
+                CASE WHEN {done_r} THEN 1 ELSE 0 END AS is_completed,
+                r.name_clean,
+                r.weight_num
+            FROM rinse_bag_registry r
+            WHERE r.organization_id = %s AND r.date_clean = %s
+            """,
+            (org, td),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            svc = str(row.get("service_type") or "WF").upper()
+            if svc != "WF":
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if not bid or bid in seen:
+                continue
+            seen.add(bid)
+            rows.append(row)
+
+    meta = {
+        "scope": "active_portal_wf",
+        "portal_active_total": portal_active_total,
+        "hd_excluded": hd_excluded,
+        "wf_total": len(rows),
+    }
+    return rows, meta
+
+
 def get_pending_bag_status(
     cursor,
     organization_id: int,
@@ -94,8 +311,8 @@ def get_pending_bag_status(
     target_date: date,
 ) -> dict[str, Any]:
     """
-    Pending/completed bag counts by rush group using registry completion_status
-    and purpose-based processing buckets.
+    Pending/completed WF bag counts by rush group. Population matches vendor portal
+    active orders (GET /dashboard) with HD excluded; completion from registry when present.
     """
     org = int(organization_id)
     td = target_date
@@ -104,30 +321,11 @@ def get_pending_bag_status(
     combined = _empty_pending_group()
     drilldown_rows: list[dict[str, Any]] = []
 
-    if not table_exists(cursor, "rinse_bag_registry"):
-        return {
-            "date": td.isoformat(),
-            "completion_field": "registry.completion_status",
-            "groups": {"rush": rush, "non_rush": non_rush, "combined": combined},
-            "rows": [],
-        }
-
-    rush_expr = effective_rush_expr("r")
-    done_expr = f"UPPER(COALESCE(r.completion_status, '')) = '{COMPLETION_COMPLETED}'"
-    cursor.execute(
-        f"""
-        SELECT r.bag_id, r.name_clean, r.weight_num, {rush_expr} AS effective_rush,
-               CASE WHEN {done_expr} THEN 1 ELSE 0 END AS is_completed
-        FROM rinse_bag_registry r
-        WHERE r.organization_id = %s AND r.date_clean = %s
-        """,
-        (org, td),
-    )
-    registry_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
-    bag_ids = [str(r.get("bag_id") or "").strip() for r in registry_rows if r.get("bag_id")]
+    bag_rows, portal_meta = _load_pending_bag_rows(cursor, org, target_date=td)
+    bag_ids = [str(r.get("bag_id") or "").strip() for r in bag_rows if r.get("bag_id")]
     purpose_flags = _bag_purpose_flags(cursor, org, bag_ids)
 
-    for row in registry_rows:
+    for row in bag_rows:
         bid = str(row.get("bag_id") or "").strip()
         if not bid:
             continue
@@ -160,6 +358,8 @@ def get_pending_bag_status(
     return {
         "date": td.isoformat(),
         "completion_field": "registry.completion_status (COMPLETED = done)",
+        "service_scope": "WF only (HD excluded)",
+        "portal_alignment": portal_meta,
         "groups": {"rush": rush, "non_rush": non_rush, "combined": combined},
         "rows": drilldown_rows,
     }
@@ -307,6 +507,7 @@ def build_shift_analysis_summary(
         )
 
     pending = get_pending_bag_status(cursor, org, target_date=period_end)
+    operational = build_operational_dashboard_data(cursor, org, pending_payload=pending)
 
     return {
         "period_start": period_start.isoformat(),
@@ -339,6 +540,7 @@ def build_shift_analysis_summary(
         },
         "employees": employees,
         "pending": pending,
+        "operational": operational,
         "processing_settings": proc_settings,
     }
 

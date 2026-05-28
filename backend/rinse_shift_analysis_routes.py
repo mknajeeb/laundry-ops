@@ -8,7 +8,9 @@ from flask import jsonify, request
 
 from backend.db import get_db
 from backend.rinse_folding_period import parse_range_from_request
+from backend.rinse_shift_operational_exceptions import filter_operational_records
 from backend.rinse_shift_analysis import (
+    build_operational_dashboard_data,
     build_shift_analysis_summary,
     enrich_record_scoring_fields,
     get_pending_bag_status,
@@ -110,6 +112,21 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             raw_rows = payload.get("rows") if isinstance(payload, dict) else payload
             rows = [enrich_record_scoring_fields(r) for r in (raw_rows or [])]
             out = payload if isinstance(payload, dict) else {"rows": rows, "total": len(rows), "limit": limit, "offset": 0}
+
+            operational_filter = (request.args.get("operational_filter") or "").strip()
+            if operational_filter:
+                target = period_end if isinstance(period_end, date) else None
+                if target:
+                    pending_payload = get_pending_bag_status(cursor, tenant_oid, target_date=target)
+                    operational = build_operational_dashboard_data(
+                        cursor, tenant_oid, pending_payload=pending_payload
+                    )
+                    op_rows = filter_operational_records(
+                        operational.get("records") or [],
+                        drill_filter=operational_filter,
+                    )
+                    return jsonify(json_safe_rinse({**out, "rows": op_rows, "total": len(op_rows), "activity": "operational"}))
+
             return jsonify(json_safe_rinse({**out, "rows": rows, "activity": "folding"}))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
