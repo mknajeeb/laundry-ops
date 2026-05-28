@@ -335,7 +335,7 @@ function Dashboard() {
                 label="Folding exceptions"
                 value={sum.folding_exceptions}
                 color="#ea580c"
-                onClick={() => navigate("/rinse/folding-exceptions")}
+                onClick={() => navigate("/performance?activity=folding&status=exception")}
               />
             </Grid>
           </Grid>

@@ -34,7 +34,10 @@ import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
-import RinseFoldingExceptionsPage from "./pages/RinseFoldingExceptionsPage";
+import ShiftAnalysisDashboardPage from "./pages/ShiftAnalysisDashboardPage";
+import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
+import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
+import PerformanceBackfillPage from "./pages/PerformanceBackfillPage";
 import RinseFoldingTvPage from "./pages/RinseFoldingTvPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import RinseBagLookupPage from "./pages/RinseBagLookupPage";
@@ -821,21 +824,59 @@ function AppShell() {
             <Route path="/production" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ProductionPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/scoreboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><ScoreboardPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route
-              path="/rinse/folding-dashboard"
+              path="/performance"
               element={
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
-                    <RinseFoldingDashboardPage user={user} />
+                    <ShiftAnalysisDashboardPage user={user} />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
             />
             <Route
-              path="/rinse/folding-exceptions"
+              path="/performance/settings"
               element={
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
-                    <RinseFoldingExceptionsPage />
+                    <PerformanceSettingsPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/user-mapping"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <PerformanceUserMappingPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/backfill"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN"]}>
+                    <PerformanceBackfillPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/rinse/folding-dashboard"
+              element={<Navigate to="/performance" replace />}
+            />
+            <Route
+              path="/rinse/folding-exceptions"
+              element={<Navigate to="/performance?activity=folding&status=exception" replace />}
+            />
+            <Route
+              path="/rinse/folding-dashboard-legacy"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <RinseFoldingDashboardPage user={user} />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

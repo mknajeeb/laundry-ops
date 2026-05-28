@@ -51,14 +51,14 @@ export const TENANT_NAV_ITEMS = [
   { to: "/production", labelKey: "nav.production", roles: OPS, moduleKey: "production" },
   { to: "/scoreboard", labelKey: "nav.scoreboard", roles: OPS, moduleKey: "scoreboard" },
   {
-    to: "/rinse/folding-dashboard",
-    labelKey: "nav.foldingDashboard",
+    to: "/performance",
+    labelKey: "nav.shiftAnalysis",
     roles: ["ADMIN", "OPS"],
     moduleKey: "scoreboard",
   },
   {
-    to: "/rinse/folding-exceptions",
-    labelKey: "nav.foldingExceptions",
+    to: "/performance/settings",
+    labelKey: "nav.performanceSettings",
     roles: ["ADMIN", "OPS"],
     moduleKey: "scoreboard",
   },

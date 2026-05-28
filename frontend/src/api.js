@@ -514,6 +514,15 @@ export const getFoldingLeaderboard = (params = {}) =>
 export const getFoldingEmployeeAnalysis = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/employee-analysis`, { params, timeout: 30000 });
 
+export const getShiftAnalysisSummary = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
+
+export const getShiftAnalysisPending = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/pending`, { params, timeout: 30000 });
+
+export const getShiftAnalysisRecords = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/records`, { params, timeout: 60000 });
+
 export const listFoldingUsers = () =>
   axios.get(`${API_BASE}/rinse/folding/users`, { timeout: 30000 });
 

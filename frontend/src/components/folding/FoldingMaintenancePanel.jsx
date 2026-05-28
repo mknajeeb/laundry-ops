@@ -26,7 +26,8 @@ import FoldingExceptionRulesPanel from "./FoldingExceptionRulesPanel";
 import FoldingUserMappingPanel from "./FoldingUserMappingPanel";
 import ProcessingSettingsPanel from "./ProcessingSettingsPanel";
 
-export default function FoldingMaintenancePanel({ onChanged }) {
+export default function FoldingMaintenancePanel({ onChanged, sections }) {
+  const show = (name) => !sections || sections.includes(name);
   const [excluded, setExcluded] = useState([]);
   const [users, setUsers] = useState([]);
   const [pickUser, setPickUser] = useState("");
@@ -82,9 +83,10 @@ export default function FoldingMaintenancePanel({ onChanged }) {
 
   return (
     <>
-      <FoldingExceptionRulesPanel onRecomputeApplied={onChanged} />
-      <ProcessingSettingsPanel />
-      <FoldingUserMappingPanel />
+      {show("exception_rules") ? <FoldingExceptionRulesPanel onRecomputeApplied={onChanged} /> : null}
+      {show("processing_settings") ? <ProcessingSettingsPanel /> : null}
+      {show("user_mapping") ? <FoldingUserMappingPanel /> : null}
+    {show("excluded_users") ? (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
         Excluded users (leaderboard / TV scoring)
@@ -131,6 +133,7 @@ export default function FoldingMaintenancePanel({ onChanged }) {
         </TableBody>
       </Table>
     </Paper>
+    ) : null}
     </>
   );
 }
