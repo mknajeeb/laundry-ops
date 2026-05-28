@@ -63,6 +63,12 @@ def list_folding_user_options(cursor, organization_id: int) -> list[dict[str, An
     """Users for dropdowns: performance, exceptions, scan-only, excluded."""
     org = int(organization_id)
     excluded = excluded_user_names_set(cursor, org)
+    org_label = "VeeWash"
+    if table_exists(cursor, "organizations"):
+        cursor.execute("SELECT name FROM organizations WHERE id = %s LIMIT 1", (org,))
+        org_row = cursor.fetchone()
+        if org_row and isinstance(org_row, dict) and org_row.get("name"):
+            org_label = str(org_row.get("name")).strip() or org_label
     seen: dict[str, dict[str, Any]] = {}
 
     def add(name: str, *, source: str, has_exception: bool = False, has_calculated: bool = False) -> None:
@@ -122,6 +128,50 @@ def list_folding_user_options(cursor, organization_id: int) -> list[dict[str, An
         for r in cursor.fetchall() or []:
             un = str(r.get("user_name") if isinstance(r, dict) else r[0] or "").strip()
             add(un, source="scan_events")
+
+    mapped: dict[str, dict[str, Any]] = {}
+    if table_exists(cursor, "rinse_folding_user_map"):
+        cursor.execute(
+            """
+            SELECT m.rinse_user_name, m.user_id, m.active,
+                   u.display_name, u.username
+            FROM rinse_folding_user_map m
+            LEFT JOIN users u ON u.id = m.user_id
+            WHERE m.organization_id = %s
+            """,
+            (org,),
+        )
+        for r in cursor.fetchall() or []:
+            if not isinstance(r, dict):
+                continue
+            rn = str(r.get("rinse_user_name") or "").strip()
+            if rn:
+                mapped[rn] = r
+                add(rn, source="user_mapping")
+
+    for name, row in list(seen.items()):
+        mp = mapped.get(name)
+        is_mapped = mp is not None and int(mp.get("active") or 0) == 1
+        display = (mp.get("display_name") or mp.get("username")) if mp else None
+        suffix_parts: list[str] = []
+        if display and display.casefold() != name.casefold():
+            suffix_parts.append(str(display))
+        if name in excluded:
+            suffix_parts.append("excluded")
+        elif not is_mapped:
+            label = f"{name} ({org_label}) — Unmapped"
+            row["label"] = label
+            row["is_mapped"] = is_mapped
+            row["mapped_user_id"] = mp.get("user_id") if mp else None
+            row["mapped_display_name"] = display
+            continue
+        label = name
+        if suffix_parts:
+            label = f"{name} ({', '.join(suffix_parts)})"
+        row["label"] = label
+        row["is_mapped"] = is_mapped
+        row["mapped_user_id"] = mp.get("user_id") if mp else None
+        row["mapped_display_name"] = display
 
     out = sorted(seen.values(), key=lambda x: str(x.get("user_name") or "").lower())
     return out
