@@ -173,16 +173,21 @@ def _sum_shift_clock_hours(cursor, organization_id: int, period_start: date, per
     org = int(organization_id)
     start_dt, end_incl = period_datetime_bounds_et(period_start, period_end)
     end_exclusive = naive_et_day_end_exclusive(period_end)
+    org_clause = ""
+    args: list[Any] = [end_exclusive, start_dt]
+    if table_has_column(cursor, "shift_sessions", "organization_id"):
+        org_clause = " AND organization_id = %s"
+        args = [org, end_exclusive, start_dt]
     cursor.execute(
-        """
+        f"""
         SELECT clock_in_at, clock_out_at
         FROM shift_sessions
-        WHERE organization_id = %s
-          AND clock_in_at < %s
+        WHERE clock_in_at < %s
           AND (clock_out_at IS NULL OR clock_out_at >= %s)
           AND status IN ('completed', 'active', 'auto_closed')
+          {org_clause}
         """,
-        (org, end_exclusive, start_dt),
+        tuple(args),
     )
     total_sec = 0
     for sh in cursor.fetchall() or []:

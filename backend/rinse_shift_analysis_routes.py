@@ -26,8 +26,8 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             if err_resp:
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
-            period_start, period_end, date_field = parse_range_from_request(
-                request, parse_date_value, default_date_field="folding_work_date"
+            period_start, period_end, _period_label, date_field = parse_range_from_request(
+                request, parse_date_value
             )
             if not isinstance(period_start, date) or not isinstance(period_end, date):
                 return jsonify({"error": "date_start and date_end required"}), 400
@@ -42,6 +42,8 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                 processing_activities=acts,
             )
             return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
             conn.close()
@@ -76,8 +78,8 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             if err_resp:
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
-            period_start, period_end, date_field = parse_range_from_request(
-                request, parse_date_value, default_date_field="folding_work_date"
+            period_start, period_end, _period_label, date_field = parse_range_from_request(
+                request, parse_date_value
             )
             try:
                 limit = min(500, max(1, int(request.args.get("limit", 200))))
@@ -106,6 +108,8 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             )
             rows = [enrich_record_scoring_fields(r) for r in (payload.get("rows") or [])]
             return jsonify(json_safe_rinse({**payload, "rows": rows, "activity": "folding"}))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
             conn.close()
