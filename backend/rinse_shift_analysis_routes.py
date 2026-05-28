@@ -27,7 +27,7 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
             period_start, period_end, _period_label, date_field = parse_range_from_request(
-                request, parse_date_value
+                request.args, parse_date_value
             )
             if not isinstance(period_start, date) or not isinstance(period_end, date):
                 return jsonify({"error": "date_start and date_end required"}), 400
@@ -79,7 +79,7 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                 return err_resp, err_code
             tenant_oid = user_org_id(me)
             period_start, period_end, _period_label, date_field = parse_range_from_request(
-                request, parse_date_value
+                request.args, parse_date_value
             )
             try:
                 limit = min(500, max(1, int(request.args.get("limit", 200))))
