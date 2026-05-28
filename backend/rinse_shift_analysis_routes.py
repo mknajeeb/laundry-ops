@@ -105,9 +105,12 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                 included_in_scoring=included,
                 limit=limit,
                 offset=0,
+                include_total=True,
             )
-            rows = [enrich_record_scoring_fields(r) for r in (payload.get("rows") or [])]
-            return jsonify(json_safe_rinse({**payload, "rows": rows, "activity": "folding"}))
+            raw_rows = payload.get("rows") if isinstance(payload, dict) else payload
+            rows = [enrich_record_scoring_fields(r) for r in (raw_rows or [])]
+            out = payload if isinstance(payload, dict) else {"rows": rows, "total": len(rows), "limit": limit, "offset": 0}
+            return jsonify(json_safe_rinse({**out, "rows": rows, "activity": "folding"}))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:

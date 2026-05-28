@@ -233,15 +233,19 @@ def build_shift_analysis_summary(
     clock_hours = _sum_shift_clock_hours(cursor, org, period_start, period_end)
 
     lb_rows = leaderboard.get("users") or []
-    team = leaderboard.get("team") or {}
-    rules_impact = leaderboard.get("rules_impact") or leaderboard.get("period_bag_summary") or {}
-    scoring_bags = int(rules_impact.get("scoring_bags") or team.get("bag_count") or 0)
-    scoring_lbs = float(rules_impact.get("scoring_lbs") or team.get("total_lbs") or 0)
+    team = leaderboard.get("team") if isinstance(leaderboard.get("team"), dict) else {}
+    rules_impact = leaderboard.get("period_bag_summary")
+    if not isinstance(rules_impact, dict):
+        rules_impact = {}
+    scoring_bags = int(rules_impact.get("included_in_scoring") or team.get("bag_count") or 0)
+    scoring_lbs = float(team.get("total_lbs") or 0)
     total_bags = int(team.get("bag_count") or 0)
     total_lbs = float(team.get("total_lbs") or 0)
     fold_hours = float(team.get("total_folding_seconds") or 0) / 3600.0
 
-    proc_summary = processing.get("summary_all_users") or {}
+    proc_summary = processing.get("summary_all_users")
+    if not isinstance(proc_summary, dict):
+        proc_summary = {}
     proc_bags = int(proc_summary.get("total_bags") or 0)
     proc_hours = float(proc_summary.get("clocked_hours") or proc_summary.get("estimated_hours") or 0)
     proc_people = len(processing.get("users") or [])
@@ -269,8 +273,8 @@ def build_shift_analysis_summary(
         "scoring_folding_bags_per_hour": team.get("bags_per_hour"),
         "scoring_folding_lbs_per_hour": team.get("lbs_per_hour"),
         "scoring_quality_percent": team.get("issue_free_percent"),
-        "excluded_records": int(rules_impact.get("excluded_bags") or rules_impact.get("not_in_scoring_bags") or 0),
-        "exception_records_not_counted": int(rules_impact.get("exception_bags") or 0),
+        "excluded_records": int(rules_impact.get("excluded_from_scoring") or 0),
+        "exception_records_not_counted": int(rules_impact.get("excluded_from_scoring") or 0),
     }
 
     employees: list[dict[str, Any]] = []
