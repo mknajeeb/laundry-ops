@@ -5,6 +5,25 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
+from backend.rinse_bag_lifecycle_status import (
+    ASSIGNED_NOT_SENT_TO_VENDOR,
+    CHECKOUT_STATUS_CHECKED_OUT,
+    CHECKOUT_STATUS_NEEDS_REVIEW,
+    CHECKOUT_STATUS_NOT_CHECKED_OUT,
+    FOLDED_COMPLETED,
+    IN_DRYING,
+    IN_WASHING,
+    LIFECYCLE_UNKNOWN,
+    LOAD_DRYER,
+    LOAD_WASHER,
+    PENDING_WEIGHING,
+    SENT_TO_RINSE,
+    SENT_TO_VENDOR,
+    SORTED_READY_FOR_WASH,
+    WEIGHED_NOT_STARTED,
+    derive_bag_lifecycle_status,
+)
+
 from backend.rinse_folding_registry import aggregate_folding_leaderboard
 from backend.rinse_folding_scoring import row_included_in_scoring
 from backend.rinse_operations_dashboard import (
@@ -22,6 +41,255 @@ from backend.rinse_shift_operational_exceptions import (
     evaluate_bag_operational_profile,
 )
 from backend.ta_helpers import table_exists, table_has_column
+
+STATUS_MODEL_LIFECYCLE_V1 = "lifecycle_v1"
+
+LIFECYCLE_COMPLETED_STATUSES = frozenset({FOLDED_COMPLETED, SENT_TO_RINSE})
+
+LIFECYCLE_GROUP_PENDING_WEIGHING = "pending_weighing"
+LIFECYCLE_GROUP_WEIGHED_NOT_STARTED = "weighed_not_started"
+LIFECYCLE_GROUP_SORTED_READY = "sorted_ready"
+LIFECYCLE_GROUP_WASH_DRY = "wash_dry"
+LIFECYCLE_GROUP_FOLDED = "folded"
+LIFECYCLE_GROUP_SENT_TO_RINSE = "sent_to_rinse"
+LIFECYCLE_GROUP_UNKNOWN = "unknown"
+LIFECYCLE_GROUP_EARLY = "early_lifecycle"
+
+LIFECYCLE_STATUS_TO_GROUP: dict[str, str] = {
+    PENDING_WEIGHING: LIFECYCLE_GROUP_PENDING_WEIGHING,
+    WEIGHED_NOT_STARTED: LIFECYCLE_GROUP_WEIGHED_NOT_STARTED,
+    SORTED_READY_FOR_WASH: LIFECYCLE_GROUP_SORTED_READY,
+    LOAD_WASHER: LIFECYCLE_GROUP_WASH_DRY,
+    IN_WASHING: LIFECYCLE_GROUP_WASH_DRY,
+    LOAD_DRYER: LIFECYCLE_GROUP_WASH_DRY,
+    IN_DRYING: LIFECYCLE_GROUP_WASH_DRY,
+    FOLDED_COMPLETED: LIFECYCLE_GROUP_FOLDED,
+    SENT_TO_RINSE: LIFECYCLE_GROUP_SENT_TO_RINSE,
+    LIFECYCLE_UNKNOWN: LIFECYCLE_GROUP_UNKNOWN,
+    ASSIGNED_NOT_SENT_TO_VENDOR: LIFECYCLE_GROUP_EARLY,
+    SENT_TO_VENDOR: LIFECYCLE_GROUP_EARLY,
+}
+
+LIFECYCLE_GROUP_TO_STATUSES: dict[str, frozenset[str]] = {
+    LIFECYCLE_GROUP_PENDING_WEIGHING: frozenset({PENDING_WEIGHING}),
+    LIFECYCLE_GROUP_WEIGHED_NOT_STARTED: frozenset({WEIGHED_NOT_STARTED}),
+    LIFECYCLE_GROUP_SORTED_READY: frozenset({SORTED_READY_FOR_WASH}),
+    LIFECYCLE_GROUP_WASH_DRY: frozenset({LOAD_WASHER, IN_WASHING, LOAD_DRYER, IN_DRYING}),
+    LIFECYCLE_GROUP_FOLDED: frozenset({FOLDED_COMPLETED}),
+    LIFECYCLE_GROUP_SENT_TO_RINSE: frozenset({SENT_TO_RINSE}),
+    LIFECYCLE_GROUP_UNKNOWN: frozenset({LIFECYCLE_UNKNOWN}),
+    LIFECYCLE_GROUP_EARLY: frozenset({ASSIGNED_NOT_SENT_TO_VENDOR, SENT_TO_VENDOR}),
+}
+
+LIFECYCLE_STATUS_LABELS: dict[str, str] = {
+    ASSIGNED_NOT_SENT_TO_VENDOR: "Assigned — not sent to vendor",
+    SENT_TO_VENDOR: "Sent to vendor",
+    PENDING_WEIGHING: "Pending weighing",
+    WEIGHED_NOT_STARTED: "Weighed — not started",
+    SORTED_READY_FOR_WASH: "Sorted — ready for wash",
+    LOAD_WASHER: "Load washer",
+    IN_WASHING: "In washing",
+    LOAD_DRYER: "Load dryer",
+    IN_DRYING: "In drying",
+    FOLDED_COMPLETED: "Folded / completed",
+    SENT_TO_RINSE: "Sent to Rinse",
+    LIFECYCLE_UNKNOWN: "Unknown lifecycle",
+}
+
+LIFECYCLE_GROUP_LABELS: dict[str, str] = {
+    LIFECYCLE_GROUP_PENDING_WEIGHING: "Pending Weighing",
+    LIFECYCLE_GROUP_WEIGHED_NOT_STARTED: "Weighed / Not Started",
+    LIFECYCLE_GROUP_SORTED_READY: "Sorted / Ready",
+    LIFECYCLE_GROUP_WASH_DRY: "Wash / Dry",
+    LIFECYCLE_GROUP_FOLDED: "Folded",
+    LIFECYCLE_GROUP_SENT_TO_RINSE: "Sent to Rinse",
+    LIFECYCLE_GROUP_UNKNOWN: "Unknown lifecycle",
+    LIFECYCLE_GROUP_EARLY: "Early lifecycle",
+    "completed": "Completed",
+    "pending": "Pending",
+    "needs_review": "Needs Review",
+    "exceptions": "Exceptions",
+}
+
+
+def _parse_evaluation_time(raw: str | datetime | None) -> datetime | None:
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def lifecycle_group_for_status(status: str | None) -> str:
+    st = str(status or LIFECYCLE_UNKNOWN).strip().upper()
+    if st == "UNKNOWN":
+        st = LIFECYCLE_UNKNOWN
+    return LIFECYCLE_STATUS_TO_GROUP.get(st, LIFECYCLE_GROUP_UNKNOWN)
+
+
+def _empty_lifecycle_group_dict() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "completed": 0,
+        "pending": 0,
+        "needs_review": 0,
+        "with_exceptions": 0,
+        "by_lifecycle_status": {},
+        "by_lifecycle_group": {key: 0 for key in LIFECYCLE_GROUP_TO_STATUSES},
+    }
+
+
+def _empty_checkout_rush_summary() -> dict[str, int]:
+    return {
+        "checkout_pending": 0,
+        "checked_out": 0,
+        "checkout_needs_review": 0,
+    }
+
+
+def _accumulate_lifecycle_group(
+    group: dict[str, Any],
+    *,
+    lifecycle_status: str,
+    lifecycle_group: str,
+    is_completed: bool,
+    needs_review: bool,
+    has_exceptions: bool,
+) -> None:
+    group["total"] += 1
+    if is_completed:
+        group["completed"] += 1
+    else:
+        group["pending"] += 1
+    if needs_review:
+        group["needs_review"] += 1
+    if has_exceptions:
+        group["with_exceptions"] += 1
+    by_status = group.setdefault("by_lifecycle_status", {})
+    by_status[lifecycle_status] = int(by_status.get(lifecycle_status) or 0) + 1
+    by_group = group.setdefault("by_lifecycle_group", {})
+    by_group[lifecycle_group] = int(by_group.get(lifecycle_group) or 0) + 1
+
+
+def _sum_lifecycle_groups(
+    rush: dict[str, Any], non_rush: dict[str, Any]
+) -> dict[str, Any]:
+    combined = _empty_lifecycle_group_dict()
+    for key in ("total", "completed", "pending", "needs_review", "with_exceptions"):
+        combined[key] = int(rush.get(key) or 0) + int(non_rush.get(key) or 0)
+    for st, cnt in (rush.get("by_lifecycle_status") or {}).items():
+        combined["by_lifecycle_status"][st] = int(combined["by_lifecycle_status"].get(st) or 0) + int(cnt)
+    for st, cnt in (non_rush.get("by_lifecycle_status") or {}).items():
+        combined["by_lifecycle_status"][st] = int(combined["by_lifecycle_status"].get(st) or 0) + int(cnt)
+    for grp in LIFECYCLE_GROUP_TO_STATUSES:
+        combined["by_lifecycle_group"][grp] = int(
+            (rush.get("by_lifecycle_group") or {}).get(grp) or 0
+        ) + int((non_rush.get("by_lifecycle_group") or {}).get(grp) or 0)
+    return combined
+
+
+def _sum_legacy_groups(rush: dict[str, int], non_rush: dict[str, int]) -> dict[str, int]:
+    combined = _empty_pending_group()
+    for key in combined:
+        combined[key] = int(rush.get(key) or 0) + int(non_rush.get(key) or 0)
+    return combined
+
+
+def filter_lifecycle_pending_rows(
+    rows: list[dict[str, Any]],
+    *,
+    rush_group: str | None = None,
+    lifecycle_group: str | None = None,
+    lifecycle_status: str | None = None,
+    filter_kind: str | None = None,
+) -> list[dict[str, Any]]:
+    """Filter lifecycle pending rows for dashboard drilldown."""
+    out: list[dict[str, Any]] = []
+    allowed_statuses = LIFECYCLE_GROUP_TO_STATUSES.get(str(lifecycle_group or "").strip())
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if rush_group == "rush" and not row.get("rush"):
+            continue
+        if rush_group == "non_rush" and row.get("rush"):
+            continue
+        st = str(row.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN).strip()
+        grp = str(row.get("lifecycle_group") or lifecycle_group_for_status(st))
+        if lifecycle_status and st != lifecycle_status:
+            continue
+        if allowed_statuses is not None and st not in allowed_statuses:
+            continue
+        kind = str(filter_kind or "").strip().lower()
+        if kind == "needs_review" and not row.get("needs_review"):
+            continue
+        if kind == "exceptions" and not (row.get("exception_flags") or []):
+            continue
+        if kind == "completed" and st not in LIFECYCLE_COMPLETED_STATUSES:
+            continue
+        if kind == "pending" and st in LIFECYCLE_COMPLETED_STATUSES:
+            continue
+        out.append(row)
+    return out
+
+
+def _load_mapped_internal_scan_users(cursor, organization_id: int) -> list[str]:
+    if not table_exists(cursor, "rinse_folding_user_map"):
+        return []
+    active_clause = ""
+    if table_has_column(cursor, "rinse_folding_user_map", "active"):
+        active_clause = " AND active = 1"
+    cursor.execute(
+        f"""
+        SELECT DISTINCT TRIM(rinse_user_name) AS rinse_user_name
+        FROM rinse_folding_user_map
+        WHERE organization_id = %s{active_clause}
+          AND rinse_user_name IS NOT NULL AND TRIM(rinse_user_name) != ''
+        """,
+        (int(organization_id),),
+    )
+    names: list[str] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        n = str(row.get("rinse_user_name") or "").strip()
+        if n:
+            names.append(n)
+    return names
+
+
+def _staging_logistics_expr(cursor, alias: str = "s") -> str:
+    has_logistics = table_has_column(cursor, "orders_staging", "logistics_status")
+    has_status = table_has_column(cursor, "orders_staging", "status")
+    if has_logistics:
+        if has_status:
+            return f"""
+                COALESCE(
+                    {alias}.logistics_status,
+                    CASE
+                        WHEN {alias}.status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                        WHEN {alias}.status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                        ELSE 'AT_WASHPRO'
+                    END
+                )
+            """
+        return f"COALESCE({alias}.logistics_status, 'AT_WASHPRO')"
+    if has_status:
+        return f"""
+            CASE
+                WHEN {alias}.status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                WHEN {alias}.status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                ELSE 'AT_WASHPRO'
+            END
+        """
+    return "'AT_WASHPRO'"
 
 
 def _load_scan_events_for_bags(
@@ -207,6 +475,7 @@ def _load_pending_bag_rows(
         has_rush = table_has_column(cursor, "orders_staging", "rush_type")
         has_name = table_has_column(cursor, "orders_staging", "name_clean")
         has_weight = table_has_column(cursor, "orders_staging", "weight_num")
+        logistics_expr = _staging_logistics_expr(cursor, "s")
         rush_s = (
             effective_rush_expr("s", date_col="date_clean")
             if has_rush
@@ -249,7 +518,8 @@ def _load_pending_bag_rows(
                 {rush_final} AS effective_rush,
                 {completed_expr} AS is_completed,
                 {name_expr} AS name_clean,
-                {weight_expr} AS weight_num
+                {weight_expr} AS weight_num,
+                {logistics_expr} AS logistics_status
             FROM orders_staging s
             {reg_join}
             WHERE ({active_where}){org_clause}
@@ -283,7 +553,8 @@ def _load_pending_bag_rows(
                 {rush_r} AS effective_rush,
                 CASE WHEN {done_r} THEN 1 ELSE 0 END AS is_completed,
                 r.name_clean,
-                r.weight_num
+                r.weight_num,
+                NULL AS logistics_status
             FROM rinse_bag_registry r
             WHERE r.organization_id = %s AND r.date_clean = %s
             """,
@@ -310,16 +581,206 @@ def _load_pending_bag_rows(
     return rows, meta
 
 
+def _build_legacy_pending_payload(
+    bag_rows: list[dict[str, Any]],
+    purpose_flags: dict[str, dict[str, bool]],
+) -> dict[str, dict[str, int]]:
+    rush = _empty_pending_group()
+    non_rush = _empty_pending_group()
+    for row in bag_rows:
+        bid = str(row.get("bag_id") or "").strip()
+        if not bid:
+            continue
+        is_rush = str(row.get("effective_rush") or "").upper() == "RUSH"
+        is_completed = int(row.get("is_completed") or 0) == 1
+        pf = purpose_flags.get(bid, {})
+        bucket = _classify_pending_bucket(
+            is_completed=is_completed,
+            has_weight_entry=bool(pf.get("weight_entry")),
+            has_start_cleaning=bool(pf.get("start_cleaning")),
+        )
+        target = rush if is_rush else non_rush
+        _accumulate_group(target, completed=is_completed, bucket=bucket)
+    return {
+        "rush": rush,
+        "non_rush": non_rush,
+        "combined": _sum_legacy_groups(rush, non_rush),
+    }
+
+
+def build_lifecycle_pending_payload(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+    evaluation_time: datetime | None = None,
+) -> dict[str, Any]:
+    """Lifecycle-based pending/completed counts for active portal WF bags."""
+    org = int(organization_id)
+    td = target_date
+    eval_at = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+
+    bag_rows, portal_meta = _load_pending_bag_rows(cursor, org, target_date=td)
+    bag_ids = [str(r.get("bag_id") or "").strip() for r in bag_rows if r.get("bag_id")]
+    purpose_flags = _bag_purpose_flags(cursor, org, bag_ids)
+    events_by_bag = _load_scan_events_for_bags(cursor, org, bag_ids)
+    proc_settings = get_processing_settings(cursor, org)
+    mapped_users = _load_mapped_internal_scan_users(cursor, org)
+
+    rush = _empty_lifecycle_group_dict()
+    non_rush = _empty_lifecycle_group_dict()
+    checkout_rush = _empty_checkout_rush_summary()
+    drilldown_rows: list[dict[str, Any]] = []
+
+    for row in bag_rows:
+        bid = str(row.get("bag_id") or "").strip()
+        if not bid:
+            continue
+        is_rush = str(row.get("effective_rush") or "").upper() == "RUSH"
+        pf = purpose_flags.get(bid, {})
+        legacy_bucket = _classify_pending_bucket(
+            is_completed=int(row.get("is_completed") or 0) == 1,
+            has_weight_entry=bool(pf.get("weight_entry")),
+            has_start_cleaning=bool(pf.get("start_cleaning")),
+        )
+        lifecycle_fallback = False
+        try:
+            lifecycle = derive_bag_lifecycle_status(
+                events_by_bag.get(bid) or [],
+                bag_id=bid,
+                logistics_status=row.get("logistics_status"),
+                mapped_internal_users=mapped_users,
+                washing_minutes=int(proc_settings.get("washing_minutes") or 30),
+                drying_minutes=int(proc_settings.get("drying_minutes") or 40),
+                reject_after_create_issue_minutes=int(
+                    proc_settings.get("reject_after_create_issue_minutes") or 45
+                ),
+                evaluation_time=eval_at,
+            )
+        except Exception:
+            lifecycle = {
+                "current_lifecycle_status": LIFECYCLE_UNKNOWN,
+                "checkout_status": CHECKOUT_STATUS_NOT_CHECKED_OUT,
+                "status_timestamp": None,
+                "status_source_event": None,
+                "operational_flags": {},
+                "exception_flags": [],
+                "needs_review": True,
+                "stage_detail": {},
+            }
+            lifecycle_fallback = True
+
+        lifecycle_status = str(
+            lifecycle.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN
+        ).strip()
+        lifecycle_group = lifecycle_group_for_status(lifecycle_status)
+        is_completed = lifecycle_status in LIFECYCLE_COMPLETED_STATUSES
+        exception_flags = list(lifecycle.get("exception_flags") or [])
+        needs_review = bool(lifecycle.get("needs_review")) or lifecycle_fallback
+        has_exceptions = len(exception_flags) > 0
+        checkout_status = str(lifecycle.get("checkout_status") or CHECKOUT_STATUS_NOT_CHECKED_OUT)
+
+        group_key = "rush" if is_rush else "non_rush"
+        target = rush if is_rush else non_rush
+        _accumulate_lifecycle_group(
+            target,
+            lifecycle_status=lifecycle_status,
+            lifecycle_group=lifecycle_group,
+            is_completed=is_completed,
+            needs_review=needs_review,
+            has_exceptions=has_exceptions,
+        )
+
+        if is_rush:
+            if checkout_status == CHECKOUT_STATUS_NOT_CHECKED_OUT:
+                checkout_rush["checkout_pending"] += 1
+            elif checkout_status == CHECKOUT_STATUS_CHECKED_OUT:
+                checkout_rush["checked_out"] += 1
+            elif checkout_status == CHECKOUT_STATUS_NEEDS_REVIEW:
+                checkout_rush["checkout_needs_review"] += 1
+
+        drilldown_rows.append(
+            {
+                "bag_id": bid,
+                "customer": row.get("name_clean"),
+                "weight_lbs": row.get("weight_num"),
+                "rush": is_rush,
+                "rush_label": "Rush" if is_rush else "Non-Rush",
+                "group": group_key,
+                "current_lifecycle_status": lifecycle_status,
+                "lifecycle_group": lifecycle_group,
+                "lifecycle_status_label": LIFECYCLE_STATUS_LABELS.get(
+                    lifecycle_status, lifecycle_status
+                ),
+                "lifecycle_group_label": LIFECYCLE_GROUP_LABELS.get(
+                    lifecycle_group, lifecycle_group
+                ),
+                "status_timestamp": lifecycle.get("status_timestamp"),
+                "status_source_event": lifecycle.get("status_source_event"),
+                "needs_review": needs_review,
+                "exception_flags": exception_flags,
+                "operational_flags": lifecycle.get("operational_flags") or {},
+                "checkout_status": checkout_status,
+                "stage_detail": lifecycle.get("stage_detail") or {},
+                "lifecycle_fallback": lifecycle_fallback,
+                "legacy_pending_bucket": legacy_bucket,
+                "is_completed": is_completed,
+                "pending_bucket": legacy_bucket,
+            }
+        )
+
+    legacy_buckets = _build_legacy_pending_payload(bag_rows, purpose_flags)
+    combined = _sum_lifecycle_groups(rush, non_rush)
+
+    return {
+        "date": td.isoformat(),
+        "status_model": STATUS_MODEL_LIFECYCLE_V1,
+        "evaluation_time": eval_at.isoformat(),
+        "completion_field": "lifecycle: FOLDED_COMPLETED or SENT_TO_RINSE",
+        "service_scope": "WF only (HD excluded)",
+        "portal_alignment": portal_meta,
+        "lifecycle_status_labels": LIFECYCLE_STATUS_LABELS,
+        "lifecycle_group_labels": LIFECYCLE_GROUP_LABELS,
+        "groups": {"rush": rush, "non_rush": non_rush, "combined": combined},
+        "legacy_buckets": legacy_buckets,
+        "checkout_summary": {
+            "rush": checkout_rush,
+            "labels": {
+                "checkout_pending": "Rush checkout pending",
+                "checked_out": "Rush checked out",
+                "checkout_needs_review": "Checkout needs review",
+            },
+        },
+        "rows": drilldown_rows,
+    }
+
+
 def get_pending_bag_status(
     cursor,
     organization_id: int,
     *,
     target_date: date,
+    evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
     """
-    Pending/completed WF bag counts by rush group. Population matches vendor portal
-    active orders (GET /dashboard) with HD excluded; completion from registry when present.
+    Lifecycle-based pending/completed WF bag counts by rush group.
+    Legacy 3-bucket counts are retained under ``legacy_buckets`` for validation.
     """
+    return build_lifecycle_pending_payload(
+        cursor,
+        organization_id,
+        target_date=target_date,
+        evaluation_time=evaluation_time,
+    )
+
+
+def _get_pending_bag_status_legacy_only(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+) -> dict[str, Any]:
+    """Previous 3-bucket pending model (kept for tests)."""
     org = int(organization_id)
     td = target_date
     rush = _empty_pending_group()
@@ -417,6 +878,7 @@ def build_shift_analysis_summary(
     period_end: date,
     date_field: str = "folding_work_date",
     processing_activities: list[str] | None = None,
+    evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
     """Team/day summary combining clock hours, processing, and folding metrics."""
     org = int(organization_id)
@@ -512,7 +974,12 @@ def build_shift_analysis_summary(
             }
         )
 
-    pending = get_pending_bag_status(cursor, org, target_date=period_end)
+    pending = get_pending_bag_status(
+        cursor,
+        org,
+        target_date=period_end,
+        evaluation_time=evaluation_time,
+    )
     reject_limit = int(proc_settings.get("reject_no_start_cleaning_minutes") or 30)
     operational = build_operational_dashboard_data(
         cursor,

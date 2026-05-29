@@ -13,7 +13,9 @@ from backend.rinse_shift_analysis import (
     build_operational_dashboard_data,
     build_shift_analysis_summary,
     enrich_record_scoring_fields,
+    filter_lifecycle_pending_rows,
     get_pending_bag_status,
+    _parse_evaluation_time,
 )
 from backend.rinse_scan_time import json_safe_rinse
 
@@ -35,6 +37,7 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                 return jsonify({"error": "date_start and date_end required"}), 400
             raw_acts = request.args.get("processing_activities") or ""
             acts = [a.strip().lower() for a in raw_acts.split(",") if a.strip()] or None
+            eval_at = _parse_evaluation_time(request.args.get("evaluation_time"))
             payload = build_shift_analysis_summary(
                 cursor,
                 tenant_oid,
@@ -42,6 +45,7 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                 period_end=period_end,
                 date_field=date_field,
                 processing_activities=acts,
+                evaluation_time=eval_at,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -63,7 +67,13 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             target = parse_date_value(target_raw) if target_raw else None
             if not isinstance(target, date):
                 return jsonify({"error": "date required"}), 400
-            payload = get_pending_bag_status(cursor, tenant_oid, target_date=target)
+            eval_at = _parse_evaluation_time(request.args.get("evaluation_time"))
+            payload = get_pending_bag_status(
+                cursor,
+                tenant_oid,
+                target_date=target,
+                evaluation_time=eval_at,
+            )
             return jsonify(json_safe_rinse(payload))
         finally:
             cursor.close()
@@ -114,6 +124,39 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
             out = payload if isinstance(payload, dict) else {"rows": rows, "total": len(rows), "limit": limit, "offset": 0}
 
             operational_filter = (request.args.get("operational_filter") or "").strip()
+            lifecycle_group = (request.args.get("lifecycle_group") or "").strip() or None
+            lifecycle_filter = (request.args.get("lifecycle_filter") or "").strip().lower() or None
+            lifecycle_status = (request.args.get("lifecycle_status") or "").strip().upper() or None
+            rush_group = (request.args.get("rush_group") or "").strip().lower() or None
+            if lifecycle_group or lifecycle_filter or lifecycle_status or rush_group:
+                target = period_end if isinstance(period_end, date) else None
+                if target:
+                    eval_at = _parse_evaluation_time(request.args.get("evaluation_time"))
+                    pending_payload = get_pending_bag_status(
+                        cursor,
+                        tenant_oid,
+                        target_date=target,
+                        evaluation_time=eval_at,
+                    )
+                    life_rows = filter_lifecycle_pending_rows(
+                        pending_payload.get("rows") or [],
+                        rush_group=rush_group,
+                        lifecycle_group=lifecycle_group,
+                        lifecycle_status=lifecycle_status,
+                        filter_kind=lifecycle_filter,
+                    )
+                    return jsonify(
+                        json_safe_rinse(
+                            {
+                                **out,
+                                "rows": life_rows,
+                                "total": len(life_rows),
+                                "activity": "lifecycle",
+                                "status_model": pending_payload.get("status_model"),
+                            }
+                        )
+                    )
+
             if operational_filter:
                 target = period_end if isinstance(period_end, date) else None
                 if target:

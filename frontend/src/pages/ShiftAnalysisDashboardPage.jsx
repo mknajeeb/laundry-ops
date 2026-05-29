@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -29,6 +32,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FoldingExceptionCell from "../components/folding/FoldingExceptionCell";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
@@ -175,38 +179,102 @@ function OperationalDetailPanel({ row }) {
   );
 }
 
-function PendingTable({ groups, onDrilldown }) {
-  const rows = [
-    { key: "rush", label: "Rush" },
-    { key: "non_rush", label: "Non-Rush" },
-    { key: "combined", label: "Combined" },
-  ];
-  const cell = (group, field, bucket) => {
-    const val = groups?.[group]?.[field] ?? 0;
-    if (!onDrilldown || val === 0) return val;
+const LIFECYCLE_TABLE_ROWS = [
+  { key: "rush", label: "Rush" },
+  { key: "non_rush", label: "Non-Rush" },
+  { key: "combined", label: "Combined" },
+];
+
+const LIFECYCLE_GROUP_COLUMNS = [
+  { field: "pending_weighing", filter: { lifecycle_group: "pending_weighing" }, label: "Pending Weighing" },
+  { field: "weighed_not_started", filter: { lifecycle_group: "weighed_not_started" }, label: "Weighed / Not Started" },
+  { field: "sorted_ready", filter: { lifecycle_group: "sorted_ready" }, label: "Sorted / Ready" },
+  { field: "wash_dry", filter: { lifecycle_group: "wash_dry" }, label: "Wash / Dry" },
+  { field: "folded", filter: { lifecycle_group: "folded" }, label: "Folded" },
+  { field: "sent_to_rinse", filter: { lifecycle_group: "sent_to_rinse" }, label: "Sent to Rinse" },
+  { field: "needs_review", filter: { lifecycle_filter: "needs_review" }, label: "Needs Review", topLevel: true },
+  { field: "with_exceptions", filter: { lifecycle_filter: "exceptions" }, label: "Exceptions", topLevel: true },
+];
+
+function formatExceptionFlags(flags, labels = {}) {
+  const list = Array.isArray(flags) ? flags : [];
+  if (!list.length) return "—";
+  return list.map((c) => labels[c] || c.replace(/_/g, " ")).join(", ");
+}
+
+function formatOperationalFlags(flags) {
+  const f = flags || {};
+  const parts = [];
+  if (f.has_create_issue) parts.push("create-issue");
+  if (f.has_create_workitem) parts.push("workitem");
+  if (f.has_create_bulk_workitem) parts.push("bulk workitem");
+  if (f.has_workitem) parts.push("workitem (any)");
+  return parts.length ? parts.join(", ") : "—";
+}
+
+function LifecyclePendingTable({ groups, groupLabels, onDrilldown, showUnknownColumn }) {
+  const cell = (groupKey, val, filterExtra) => {
+    if (!onDrilldown || !val) return val ?? 0;
     return (
       <Link
         component="button"
         variant="body2"
-        onClick={() =>
-          onDrilldown({
-            group,
-            bucket:
-              field === "pending"
-                ? "pending"
-                : field === "completed"
-                  ? "completed"
-                  : field === "total"
-                    ? null
-                    : bucket || field,
-            pendingField: field,
-          })
-        }
+        onClick={() => onDrilldown({ group: groupKey, ...filterExtra })}
       >
         {val}
       </Link>
     );
   };
+
+  const groupCell = (groupKey, field, filterExtra, topLevel = false) => {
+    const g = groups?.[groupKey] || {};
+    const val = topLevel ? (g[field] ?? 0) : (g.by_lifecycle_group?.[field] ?? 0);
+    return cell(groupKey, val, filterExtra);
+  };
+
+  return (
+    <Box sx={{ overflowX: "auto" }}>
+      <Table size="small" sx={{ minWidth: 1100 }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>Group</TableCell>
+            <TableCell align="right">Total</TableCell>
+            <TableCell align="right">Completed</TableCell>
+            <TableCell align="right">Pending</TableCell>
+            {LIFECYCLE_GROUP_COLUMNS.map((col) => (
+              <TableCell key={col.field} align="right">{col.label}</TableCell>
+            ))}
+            {showUnknownColumn ? <TableCell align="right">Unknown lifecycle</TableCell> : null}
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {LIFECYCLE_TABLE_ROWS.map(({ key, label }) => (
+            <TableRow key={key}>
+              <TableCell>{label}</TableCell>
+              <TableCell align="right">{cell(key, groups?.[key]?.total ?? 0, { lifecycle_filter: null })}</TableCell>
+              <TableCell align="right">{cell(key, groups?.[key]?.completed ?? 0, { lifecycle_filter: "completed" })}</TableCell>
+              <TableCell align="right">{cell(key, groups?.[key]?.pending ?? 0, { lifecycle_filter: "pending" })}</TableCell>
+              {LIFECYCLE_GROUP_COLUMNS.map((col) => (
+                <TableCell key={col.field} align="right">
+                  {groupCell(key, col.field, col.filter, col.topLevel)}
+                </TableCell>
+              ))}
+              {showUnknownColumn ? (
+                <TableCell align="right">
+                  {groupCell(key, "unknown", { lifecycle_group: "unknown" })}
+                </TableCell>
+              ) : null}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Box>
+  );
+}
+
+function LegacyPendingTable({ legacyBuckets }) {
+  const groups = legacyBuckets || {};
+  const rows = LIFECYCLE_TABLE_ROWS;
   return (
     <Table size="small">
       <TableHead>
@@ -224,16 +292,39 @@ function PendingTable({ groups, onDrilldown }) {
         {rows.map(({ key, label }) => (
           <TableRow key={key}>
             <TableCell>{label}</TableCell>
-            <TableCell align="right">{cell(key, "total", null)}</TableCell>
-            <TableCell align="right">{cell(key, "completed", "completed")}</TableCell>
-            <TableCell align="right">{cell(key, "pending", null)}</TableCell>
-            <TableCell align="right">{cell(key, "not_weighed", "not_weighed")}</TableCell>
-            <TableCell align="right">{cell(key, "weighed_not_washed", "weighed_not_washed")}</TableCell>
-            <TableCell align="right">{cell(key, "in_washing", "in_washing")}</TableCell>
+            <TableCell align="right">{groups?.[key]?.total ?? 0}</TableCell>
+            <TableCell align="right">{groups?.[key]?.completed ?? 0}</TableCell>
+            <TableCell align="right">{groups?.[key]?.pending ?? 0}</TableCell>
+            <TableCell align="right">{groups?.[key]?.not_weighed ?? 0}</TableCell>
+            <TableCell align="right">{groups?.[key]?.weighed_not_washed ?? 0}</TableCell>
+            <TableCell align="right">{groups?.[key]?.in_washing ?? 0}</TableCell>
           </TableRow>
         ))}
       </TableBody>
     </Table>
+  );
+}
+
+function LifecycleDetailPanel({ row }) {
+  const reject = row?.stage_detail?.reject_after_create_issue;
+  return (
+    <Stack spacing={1.5} sx={{ mb: 2 }}>
+      <Typography variant="body2"><strong>Bag ID:</strong> {row.bag_id}</Typography>
+      <Typography variant="body2"><strong>Customer:</strong> {row.customer || "—"}</Typography>
+      <Typography variant="body2"><strong>Lifecycle:</strong> {row.lifecycle_status_label || row.current_lifecycle_status}</Typography>
+      <Typography variant="body2"><strong>Checkout:</strong> {row.checkout_status || "—"}</Typography>
+      <Typography variant="body2"><strong>Status time:</strong> {formatDateTime(row.status_timestamp)}</Typography>
+      <Typography variant="body2"><strong>Exceptions:</strong> {formatExceptionFlags(row.exception_flags)}</Typography>
+      {reject ? (
+        <Paper variant="outlined" sx={{ p: 1.5 }}>
+          <Typography variant="subtitle2" fontWeight={700}>Reject after create-issue</Typography>
+          <Typography variant="body2">Rejected: {reject.order_rejected_full ? "Yes" : "No"}</Typography>
+          <Typography variant="body2">Create-issue: {formatDateTime(reject.create_issue_time)}</Typography>
+          <Typography variant="body2">Deadline: {formatDateTime(reject.reject_deadline)}</Typography>
+          <Typography variant="body2">Evaluation: {formatDateTime(reject.evaluation_time)}</Typography>
+        </Paper>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -243,29 +334,52 @@ const PROCESSING_ACTIVITIES = [
   { id: "wash_load", label: "Wash/load" },
 ];
 
-function exportRecordsCsv(rows, filename = "shift-analysis-records.csv") {
-  const headers = [
-    "activity", "bag_id", "customer", "weight_lbs", "start", "end", "duration_seconds",
-    "operator", "status", "in_scoring", "reason_not_scoring", "exception_code",
-  ];
+function exportRecordsCsv(rows, filename = "shift-analysis-records.csv", { lifecycle = false } = {}) {
+  const headers = lifecycle
+    ? [
+        "activity", "bag_id", "customer", "rush_label", "lifecycle_group", "current_lifecycle_status",
+        "status_timestamp", "needs_review", "exception_flags", "checkout_status", "legacy_pending_bucket",
+      ]
+    : [
+        "activity", "bag_id", "customer", "weight_lbs", "start", "end", "duration_seconds",
+        "operator", "status", "in_scoring", "reason_not_scoring", "exception_code",
+      ];
   const lines = [headers.join(",")];
   for (const r of rows) {
-    lines.push(
-      [
-        "folding",
-        JSON.stringify(r.bag_id || ""),
-        JSON.stringify(r.name_clean || r.customer || ""),
-        r.weight_lbs ?? r.registry_weight_num ?? "",
-        r.folding_start_at ?? "",
-        r.folding_end_at ?? "",
-        r.duration_seconds ?? "",
-        JSON.stringify(r.assigned_user_name || ""),
-        JSON.stringify(r.status || ""),
-        r.in_scoring ? "yes" : "no",
-        JSON.stringify(r.reason_not_scoring || ""),
-        JSON.stringify(r.exception_code || ""),
-      ].join(",")
-    );
+    if (lifecycle) {
+      lines.push(
+        [
+          "lifecycle",
+          JSON.stringify(r.bag_id || ""),
+          JSON.stringify(r.customer || ""),
+          JSON.stringify(r.rush_label || ""),
+          JSON.stringify(r.lifecycle_group || ""),
+          JSON.stringify(r.current_lifecycle_status || ""),
+          r.status_timestamp ?? "",
+          r.needs_review ? "yes" : "no",
+          JSON.stringify((r.exception_flags || []).join(";")),
+          JSON.stringify(r.checkout_status || ""),
+          JSON.stringify(r.legacy_pending_bucket || ""),
+        ].join(",")
+      );
+    } else {
+      lines.push(
+        [
+          "folding",
+          JSON.stringify(r.bag_id || ""),
+          JSON.stringify(r.name_clean || r.customer || ""),
+          r.weight_lbs ?? r.registry_weight_num ?? "",
+          r.folding_start_at ?? "",
+          r.folding_end_at ?? "",
+          r.duration_seconds ?? "",
+          JSON.stringify(r.assigned_user_name || ""),
+          JSON.stringify(r.status || ""),
+          r.in_scoring ? "yes" : "no",
+          JSON.stringify(r.reason_not_scoring || ""),
+          JSON.stringify(r.exception_code || ""),
+        ].join(",")
+      );
+    }
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -417,27 +531,38 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const scoring = summary?.scoring_data || {};
   const speed = summary?.speed || {};
   const pendingGroups = summary?.pending?.groups || {};
+  const lifecycleGroupLabels = summary?.pending?.lifecycle_group_labels || {};
+  const showUnknownColumn = (pendingGroups.combined?.by_lifecycle_group?.unknown ?? 0) > 0;
+  const checkoutRush = summary?.pending?.checkout_summary?.rush || {};
+  const checkoutLabels = summary?.pending?.checkout_summary?.labels || {};
 
-  const pendingRows = useMemo(() => {
-    const rows = summary?.pending?.rows || [];
-    return rows.filter((r) => {
-      if (rushFilter === "rush" && !r.rush) return false;
-      if (rushFilter === "non_rush" && r.rush) return false;
-      if (recordDrill?.source !== "pending") return true;
-      if (recordDrill.group && recordDrill.group !== "combined") {
-        const g = recordDrill.group === "rush" ? r.rush : !r.rush;
-        if (!g) return false;
+  const filterLifecycleRows = useCallback((rows, drill) => {
+    if (!drill || drill.source !== "lifecycle") return rows;
+    return (rows || []).filter((r) => {
+      if (drill.group === "rush" && !r.rush) return false;
+      if (drill.group === "non_rush" && r.rush) return false;
+      if (drill.lifecycle_group && r.lifecycle_group !== drill.lifecycle_group) return false;
+      if (drill.lifecycle_filter === "needs_review" && !r.needs_review) return false;
+      if (drill.lifecycle_filter === "exceptions" && !(r.exception_flags || []).length) return false;
+      if (drill.lifecycle_filter === "completed") {
+        return ["FOLDED_COMPLETED", "SENT_TO_RINSE"].includes(r.current_lifecycle_status);
       }
-      if (recordDrill.bucket === "not_weighed") return r.pending_bucket === "not_weighed";
-      if (recordDrill.bucket === "weighed_not_washed") return r.pending_bucket === "weighed_not_washed";
-      if (recordDrill.bucket === "in_washing") return r.pending_bucket === "in_washing";
-      if (recordDrill.bucket === "completed") return r.is_completed;
-      if (recordDrill.bucket === "pending") return !r.is_completed;
+      if (drill.lifecycle_filter === "pending") {
+        return !["FOLDED_COMPLETED", "SENT_TO_RINSE"].includes(r.current_lifecycle_status);
+      }
       return true;
     });
-  }, [summary, rushFilter, recordDrill]);
+  }, []);
+
+  const lifecycleRows = useMemo(
+    () => filterLifecycleRows(summary?.pending?.rows || [], recordDrill),
+    [summary, recordDrill, filterLifecycleRows]
+  );
 
   const displayRecords = useMemo(() => {
+    if (recordDrill?.source === "lifecycle") {
+      return lifecycleRows.map((r) => ({ ...r, activity: "lifecycle" }));
+    }
     if (recordDrill?.source === "all") {
       const seen = new Set(records.map((r) => r.bag_id));
       const extraOps = operationalRecords.filter((r) => !seen.has(r.bag_id));
@@ -468,7 +593,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     const seen = new Set(records.map((r) => r.bag_id));
     const extraOps = operationalRecords.filter((r) => (r.exception_codes || []).length && !seen.has(r.bag_id));
     return [...records, ...extraOps];
-  }, [records, operationalRecords, recordDrill]);
+  }, [records, operationalRecords, recordDrill, lifecycleRows]);
 
   const openDrawer = async (bagId, row = null) => {
     setDrawerBagId(bagId);
@@ -482,24 +607,23 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     }
   };
 
-  const onPendingDrill = ({ group, bucket }) => {
+  const onLifecycleDrill = ({ group, lifecycle_group: lifecycleGroup, lifecycle_filter: lifecycleFilter }) => {
+    const groupLabel = group === "rush" ? "Rush" : group === "non_rush" ? "Non-Rush" : "Combined";
+    let columnLabel = "All";
+    if (lifecycleGroup) {
+      columnLabel = lifecycleGroupLabels[lifecycleGroup] || lifecycleGroup;
+    } else if (lifecycleFilter === "completed") columnLabel = "Completed";
+    else if (lifecycleFilter === "pending") columnLabel = "Pending";
+    else if (lifecycleFilter === "needs_review") columnLabel = "Needs Review";
+    else if (lifecycleFilter === "exceptions") columnLabel = "Exceptions";
+
     setRushFilter(group === "non_rush" ? "non_rush" : group === "rush" ? "rush" : "combined");
-    const rows = (summary?.pending?.rows || []).filter((r) => {
-      if (group === "rush" && !r.rush) return false;
-      if (group === "non_rush" && r.rush) return false;
-      if (bucket === "not_weighed") return r.pending_bucket === "not_weighed";
-      if (bucket === "weighed_not_washed") return r.pending_bucket === "weighed_not_washed";
-      if (bucket === "in_washing") return r.pending_bucket === "in_washing";
-      if (bucket === "completed") return r.is_completed;
-      if (bucket === "pending") return !r.is_completed;
-      return true;
-    });
     applyRecordDrill({
-      source: "pending",
+      source: "lifecycle",
       group,
-      bucket,
-      bag_ids: rows.map((r) => r.bag_id),
-      label: `Pending ${group || "combined"} / ${bucket || "all"}`,
+      lifecycle_group: lifecycleGroup,
+      lifecycle_filter: lifecycleFilter,
+      label: `${groupLabel} — ${columnLabel}`,
     });
   };
 
@@ -533,7 +657,16 @@ export default function ShiftAnalysisDashboardPage({ user }) {
             <Button variant="contained" size="small" onClick={handleSearch} disabled={loading}>Search</Button>
             <Button variant="outlined" size="small" onClick={clearFilters} disabled={loading}>Clear filters</Button>
             <Button variant="outlined" size="small" onClick={() => setSearchTick((t) => t + 1)} disabled={loading}>Refresh</Button>
-            <Button variant="outlined" size="small" onClick={() => exportRecordsCsv(displayRecords, `shift-analysis-${applied.dateStart}.csv`)} disabled={!displayRecords.length}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => exportRecordsCsv(
+                displayRecords,
+                `shift-analysis-${applied.dateStart}.csv`,
+                { lifecycle: recordDrill?.source === "lifecycle" }
+              )}
+              disabled={!displayRecords.length}
+            >
               Export
             </Button>
           </Stack>
@@ -554,13 +687,20 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       <Paper sx={{ p: 2, mb: 3 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1}>
           <Box>
-            <Typography variant="h6" fontWeight={700}>Pending order / bag status</Typography>
+            <Typography variant="h6" fontWeight={700}>Lifecycle bag status</Typography>
+            {summary?.pending?.status_model ? (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Model: {summary.pending.status_model}
+                {summary.pending.evaluation_time ? ` · Eval: ${formatDateTime(summary.pending.evaluation_time)}` : ""}
+              </Typography>
+            ) : null}
             {summary?.pending?.service_scope ? (
               <Typography variant="caption" color="text.secondary">
                 {summary.pending.service_scope}
                 {summary.pending.portal_alignment?.hd_excluded
                   ? ` · ${summary.pending.portal_alignment.hd_excluded} HD excluded (${summary.pending.portal_alignment.portal_active_total} active in portal)`
                   : null}
+                {summary?.pending?.completion_field ? ` · ${summary.pending.completion_field}` : ""}
               </Typography>
             ) : null}
           </Box>
@@ -570,15 +710,98 @@ export default function ShiftAnalysisDashboardPage({ user }) {
             <ToggleButton value="combined">Combined</ToggleButton>
           </ToggleButtonGroup>
         </Stack>
-        <PendingTable groups={pendingGroups} onDrilldown={onPendingDrill} />
-        {recordDrill ? (
-          <Chip
-            sx={{ mt: 1 }}
-            label={`Drilldown: ${recordDrill.label || `${recordDrill.source} / ${recordDrill.filter || recordDrill.bucket || "all"}`} (${displayRecords.length} records)`}
-            onDelete={() => setRecordDrill(null)}
-          />
+        <LifecyclePendingTable
+          groups={pendingGroups}
+          groupLabels={lifecycleGroupLabels}
+          onDrilldown={onLifecycleDrill}
+          showUnknownColumn={showUnknownColumn}
+        />
+        {recordDrill?.source === "lifecycle" ? (
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1 }}>
+            <Chip
+              label={`Drilldown: ${recordDrill.label || "Lifecycle"} (${lifecycleRows.length} records)`}
+              onDelete={() => setRecordDrill(null)}
+            />
+            <Button size="small" onClick={() => setRecordDrill(null)}>Clear drilldown</Button>
+          </Stack>
         ) : null}
+
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 2, mb: 1 }}>
+          Facility checkout (Rush only — operational)
+        </Typography>
+        <Grid container spacing={1.5} sx={{ mb: 1 }}>
+          {[
+            ["checkout_pending", checkoutLabels.checkout_pending || "Rush checkout pending"],
+            ["checked_out", checkoutLabels.checked_out || "Rush checked out"],
+            ["checkout_needs_review", checkoutLabels.checkout_needs_review || "Checkout needs review"],
+          ].map(([key, label]) => (
+            <Grid item xs={12} sm={4} key={key}>
+              <StatChip label={label} value={checkoutRush[key] ?? 0} />
+            </Grid>
+          ))}
+        </Grid>
+
+        <Accordion disableGutters elevation={0} sx={{ mt: 1, border: "1px solid", borderColor: "divider" }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="body2" fontWeight={600}>Legacy bucket comparison (debug)</Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <LegacyPendingTable legacyBuckets={summary?.pending?.legacy_buckets} />
+          </AccordionDetails>
+        </Accordion>
       </Paper>
+
+      {recordDrill?.source === "lifecycle" ? (
+        <Paper sx={{ p: 2, mb: 3 }} id="shift-lifecycle-records-section">
+          <Typography variant="h6" fontWeight={700} gutterBottom>Lifecycle records</Typography>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Bag ID</TableCell>
+                <TableCell>Customer</TableCell>
+                <TableCell>Rush / Non-Rush</TableCell>
+                <TableCell>Lifecycle Group</TableCell>
+                <TableCell>Current Lifecycle Status</TableCell>
+                <TableCell>Status Time</TableCell>
+                <TableCell>Needs Review</TableCell>
+                <TableCell>Exception Flags</TableCell>
+                <TableCell>Operational Flags</TableCell>
+                <TableCell>Checkout Status</TableCell>
+                <TableCell />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {lifecycleRows.map((row) => (
+                <TableRow
+                  key={row.bag_id}
+                  hover
+                  sx={{ cursor: "pointer" }}
+                  onClick={() => openDrawer(row.bag_id, { ...row, activity: "lifecycle" })}
+                >
+                  <TableCell>{row.bag_id}</TableCell>
+                  <TableCell>{row.customer}</TableCell>
+                  <TableCell>{row.rush_label}</TableCell>
+                  <TableCell>{row.lifecycle_group_label || row.lifecycle_group}</TableCell>
+                  <TableCell>{row.lifecycle_status_label || row.current_lifecycle_status}</TableCell>
+                  <TableCell>{formatDateTime(row.status_timestamp)}</TableCell>
+                  <TableCell>{row.needs_review ? "Yes" : "No"}</TableCell>
+                  <TableCell>{formatExceptionFlags(row.exception_flags)}</TableCell>
+                  <TableCell>{formatOperationalFlags(row.operational_flags)}</TableCell>
+                  <TableCell>{row.checkout_status || "—"}</TableCell>
+                  <TableCell>
+                    <Button size="small" onClick={(e) => { e.stopPropagation(); openDrawer(row.bag_id, { ...row, activity: "lifecycle" }); }}>
+                      Detail
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!lifecycleRows.length ? (
+                <TableRow><TableCell colSpan={11} align="center">No lifecycle records for this drilldown</TableCell></TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </Paper>
+      ) : null}
 
       <Typography variant="subtitle1" fontWeight={700} gutterBottom>Operational exceptions &amp; workitems</Typography>
       <Grid container spacing={1.5} sx={{ mb: 3 }}>
@@ -870,6 +1093,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       <Drawer anchor="right" open={!!drawerBagId} onClose={() => { setDrawerBagId(null); setDrawerRow(null); }} PaperProps={{ sx: { width: { xs: "100%", sm: 480 } } }}>
         <Box sx={{ p: 2 }}>
           <Typography variant="h6" gutterBottom>Bag {drawerBagId}</Typography>
+          {drawerRow?.activity === "lifecycle" ? <LifecycleDetailPanel row={drawerRow} /> : null}
           {drawerRow?.activity === "operational" ? <OperationalDetailPanel row={drawerRow} /> : null}
           {drawerDetail ? <FoldingScanEventsTable events={drawerDetail.scan_events || []} /> : <Typography variant="body2">Loading…</Typography>}
         </Box>
