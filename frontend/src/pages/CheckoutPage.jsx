@@ -421,7 +421,7 @@ function CheckoutPage() {
         <>
           <TaOperationalBanner message={bannerMessage} />
           <StandardScreenHeader
-            title={isMobile ? undefined : "Checkout"}
+            title={isMobile ? undefined : t("nav.checkout")}
             titleRight={
               isMobile ? undefined : (
                 <Typography sx={{ fontSize: 12, fontWeight: 600, color: "text.secondary", whiteSpace: "nowrap" }}>

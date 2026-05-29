@@ -39,10 +39,10 @@ from backend.rinse_scan_purpose import (
     purpose_contains_workitem,
 )
 from backend.rinse_shift_operational_exceptions import (
+    CHECKOUT_WITHOUT_CLEAN_RACK,
     COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
     NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN,
     ORDER_REJECTED_FULL,
-    SENT_TO_RINSE_WITHOUT_CLEAN_RACK,
     evaluate_completed_without_final_clean_scan,
     evaluate_order_rejected_full,
 )
@@ -80,9 +80,12 @@ ALL_LIFECYCLE_STATUSES = (
 
 SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE = "MISSING_FROM_NEXT_PORTAL_SCRAPE"
 SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN = "EXTERNAL_USER_SCAN_AFTER_CLEAN"
-SENT_TO_RINSE_CHECKOUT = "CHECKOUT_SENT_TO_RINSE"
 
-_LOGISTICS_SENT_TO_RINSE = frozenset({"SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT"})
+CHECKOUT_STATUS_NOT_CHECKED_OUT = "NOT_CHECKED_OUT"
+CHECKOUT_STATUS_CHECKED_OUT = "CHECKED_OUT"
+CHECKOUT_STATUS_NEEDS_REVIEW = "CHECKOUT_NEEDS_REVIEW"
+
+_LOGISTICS_CHECKED_OUT = frozenset({"SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT"})
 
 
 def _operator_name(ev: Mapping[str, Any]) -> str:
@@ -276,42 +279,35 @@ def _is_internal_operator(name: str, mapped_users: set[str]) -> bool:
     return user_is_internal(name) or _is_mapped_internal_operator(name, mapped_users)
 
 
+def _derive_checkout_status(
+    logistics_status: str | None,
+    *,
+    has_clean_rack: bool,
+) -> tuple[str, bool, bool]:
+    """
+    Facility checkout signal — separate from production lifecycle status.
+
+    Returns (checkout_status, needs_review, checkout_without_clean).
+    """
+    logistics = str(logistics_status or "").strip().upper()
+    if logistics not in _LOGISTICS_CHECKED_OUT:
+        return CHECKOUT_STATUS_NOT_CHECKED_OUT, False, False
+    if has_clean_rack:
+        return CHECKOUT_STATUS_CHECKED_OUT, False, False
+    return CHECKOUT_STATUS_NEEDS_REVIEW, True, True
+
+
 def _evaluate_sent_to_rinse(
     timeline: Sequence[Mapping[str, Any]],
     *,
     clean_ev: Mapping[str, Any] | None,
     clean_at: datetime | None,
-    logistics_status: str | None,
     missing_from_next_portal_scrape: bool,
     mapped_users: set[str],
-) -> tuple[bool, str | None, datetime | None, dict[str, Any] | None, bool, bool]:
-    """Returns (is_sent, reason, timestamp, source, needs_review, checkout_without_clean)."""
-    logistics = str(logistics_status or "").strip().upper()
-    if logistics in _LOGISTICS_SENT_TO_RINSE:
-        if clean_ev is not None and clean_at is not None:
-            return (
-                True,
-                SENT_TO_RINSE_CHECKOUT,
-                clean_at,
-                {
-                    "source_kind": "logistics_status",
-                    "logistics_status": logistics,
-                    "clean_rack_scan": _status_source_from_event(clean_ev),
-                },
-                False,
-                False,
-            )
-        return (
-            True,
-            SENT_TO_RINSE_CHECKOUT,
-            None,
-            {"source_kind": "logistics_status", "logistics_status": logistics},
-            False,
-            True,
-        )
-
+) -> tuple[bool, str | None, datetime | None, dict[str, Any] | None, bool]:
+    """Returns (is_sent, reason, timestamp, source, needs_review)."""
     if clean_ev is None or clean_at is None:
-        return False, None, None, None, False, False
+        return False, None, None, None, False
 
     if missing_from_next_portal_scrape:
         return (
@@ -319,7 +315,6 @@ def _evaluate_sent_to_rinse(
             SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
             clean_at,
             _status_source_from_event(clean_ev),
-            False,
             False,
         )
 
@@ -341,10 +336,9 @@ def _evaluate_sent_to_rinse(
             _event_ts(ev),
             _status_source_from_event(ev),
             True,
-            False,
         )
 
-    return False, None, None, None, False, False
+    return False, None, None, None, False
 
 
 def _collect_exception_flags(
@@ -376,7 +370,7 @@ def _collect_exception_flags(
         flags.append(NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN)
 
     if checkout_without_clean:
-        flags.append(SENT_TO_RINSE_WITHOUT_CLEAN_RACK)
+        flags.append(CHECKOUT_WITHOUT_CLEAN_RACK)
 
     return flags, reject_detail
 
@@ -403,6 +397,9 @@ def derive_bag_lifecycle_status(
     ``ready_for_vendor_presence`` / ``at_vendor_presence`` are optional portal inputs.
     ``missing_from_next_portal_scrape`` indicates bag absent from next portal snapshot
     after CLEAN rack scan.
+
+    ``logistics_status`` is used only for ``checkout_status`` (facility checkout), not
+    for ``current_lifecycle_status``.
     """
     bid = str(bag_id or "").strip()
     oid = str(order_id or bid).strip() or bid
@@ -416,15 +413,17 @@ def derive_bag_lifecycle_status(
     clean_ev, clean_at = _first_clean_rack_event(timeline)
     folded_completed = clean_ev is not None
 
-    sent_to_rinse, str_reason, str_ts, str_source, external_review, checkout_no_clean = (
-        _evaluate_sent_to_rinse(
-            timeline,
-            clean_ev=clean_ev,
-            clean_at=clean_at,
-            logistics_status=logistics_status,
-            missing_from_next_portal_scrape=missing_from_next_portal_scrape,
-            mapped_users=mapped_users,
-        )
+    checkout_status, checkout_review, checkout_no_clean = _derive_checkout_status(
+        logistics_status,
+        has_clean_rack=folded_completed,
+    )
+
+    sent_to_rinse, str_reason, str_ts, str_source, external_review = _evaluate_sent_to_rinse(
+        timeline,
+        clean_ev=clean_ev,
+        clean_at=clean_at,
+        missing_from_next_portal_scrape=missing_from_next_portal_scrape,
+        mapped_users=mapped_users,
     )
 
     exception_flags, reject_detail = _collect_exception_flags(
@@ -437,7 +436,7 @@ def derive_bag_lifecycle_status(
         evaluation_time=evaluation_time,
     )
 
-    needs_review = external_review or checkout_no_clean
+    needs_review = external_review or checkout_review
     status: str
     status_timestamp: datetime | None = None
     status_source_event: dict[str, Any] | None = None
@@ -539,6 +538,7 @@ def derive_bag_lifecycle_status(
         "bag_id": bid,
         "order_id": oid,
         "current_lifecycle_status": status,
+        "checkout_status": checkout_status,
         "status_timestamp": status_timestamp,
         "status_source_event": status_source_event,
         "operational_flags": operational_flags,
@@ -550,5 +550,9 @@ def derive_bag_lifecycle_status(
             "at_vendor_presence": bool(at_vendor_presence),
             "logistics_status": logistics_status,
             "missing_from_next_portal_scrape": bool(missing_from_next_portal_scrape),
+        },
+        "checkout_inputs": {
+            "logistics_status": logistics_status,
+            "has_clean_rack": folded_completed,
         },
     }

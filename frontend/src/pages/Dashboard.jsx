@@ -279,7 +279,7 @@ function Dashboard() {
                 label="WF total"
                 value={sum.wf_total ?? safe.wf_total}
                 color="#f59e0b"
-                onClick={() => navigate("/orders?service=WF")}
+                onClick={() => drillOrderSearch({ service_type: "WF" })}
               />
             </Grid>
             <Grid item xs={6} sm={3} md={2}>
@@ -303,7 +303,7 @@ function Dashboard() {
                 label="HD total"
                 value={sum.hd_total ?? safe.hd_total}
                 color="#a855f7"
-                onClick={() => navigate("/orders?service=HD")}
+                onClick={() => drillOrderSearch({ service_type: "HD" })}
               />
             </Grid>
             <Grid item xs={6} sm={3} md={2}>

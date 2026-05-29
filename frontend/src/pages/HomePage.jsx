@@ -4,7 +4,6 @@ import {
   AccessTime,
   BuildCircle,
   CloudUpload,
-  Inventory2,
   LocalShipping,
   PrecisionManufacturing,
   Checklist,
@@ -142,18 +141,6 @@ function HomePage({ user }) {
       },
     },
     {
-      path: "/orders",
-      label: "Orders",
-      icon: <Inventory2 />,
-      sx: {
-        ...TILE_BASE,
-        bgcolor: "#f8fafc",
-        color: "#111827",
-        border: "1px solid #e5e7eb",
-        "&:hover": { bgcolor: "#f1f5f9" },
-      },
-    },
-    {
       path: "/inventory",
       label: "Inventory",
       icon: <Checklist />,
@@ -167,7 +154,7 @@ function HomePage({ user }) {
     },
     {
       path: "/checkout",
-      label: "Checkout",
+      label: "Rush Bag Checkout",
       icon: <PointOfSale />,
       sx: {
         ...TILE_BASE,

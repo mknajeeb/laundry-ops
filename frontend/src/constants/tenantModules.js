@@ -2,7 +2,6 @@
 export const TENANT_MODULES = [
   { key: "home", labelKey: "nav.home", path: "/" },
   { key: "dashboard", labelKey: "nav.dashboard", path: "/dashboard" },
-  { key: "orders", labelKey: "nav.orders", path: "/orders" },
   { key: "checkout", labelKey: "nav.checkout", path: "/checkout" },
   { key: "upload", labelKey: "nav.upload", path: "/upload" },
   { key: "discrepancies", labelKey: "nav.discrepancies", path: "/discrepancies" },

@@ -30,7 +30,6 @@ import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
 import { hasPlatformAdminRole, isPlatformOnlyUser, userSatisfiesRoleGate } from "./utils/platformAccess";
 
-import OrdersPage from "./pages/OrdersPage";
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
@@ -47,7 +46,6 @@ import IssuePage from "./pages/IssuePage";
 import PeoplePage from "./pages/PeoplePage";
 import ClockPage from "./pages/ClockPage";
 import CheckoutPage from "./pages/CheckoutPage";
-import OrderDryerFlowPage from "./pages/OrderDryerFlowPage";
 import CheckoutHistoryPage from "./pages/CheckoutHistoryPage";
 import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
@@ -212,7 +210,6 @@ function LoginWithOrgSlugRoute({ user, setUser }) {
 function hideOpsMobileTopBar(pathname) {
   const p = pathname || "";
   if (p === "/checkout" || p.startsWith("/checkout/")) return true;
-  if (p === "/orders" || p.startsWith("/orders/")) return true;
   if (p === "/rinse/folding-tv") return true;
   return false;
 }
@@ -604,53 +601,7 @@ function AppShell() {
                   <IconButton size="medium" onClick={() => setMobileNavOpen(true)} aria-label="Menu" sx={{ color: "#0f172a" }}>
                     <Menu sx={{ fontSize: 26 }} />
                   </IconButton>
-                  {pathname === "/orders" ? (
-                    <>
-                      <Typography
-                        component="span"
-                        sx={{
-                          fontWeight: 800,
-                          fontSize: "1.02rem",
-                          color: "#0f172a",
-                          letterSpacing: 0.02,
-                          flex: 1,
-                          minWidth: 0,
-                          lineHeight: 1.2,
-                        }}
-                      >
-                        {t("ops.mobileBarOrdersTitle")}
-                      </Typography>
-                      <Typography
-                        component="span"
-                        sx={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          color: "#64748b",
-                          whiteSpace: "nowrap",
-                          flexShrink: 0,
-                          lineHeight: 1.2,
-                          textAlign: "right",
-                          maxWidth: "42%",
-                        }}
-                      >
-                        {formatSystemDateLong()}
-                      </Typography>
-                    </>
-                  ) : pathname.startsWith("/orders/") && pathname.includes("dryer-flow") ? (
-                    <Typography
-                      component="span"
-                      sx={{
-                        fontWeight: 800,
-                        fontSize: "1.02rem",
-                        color: "#0f172a",
-                        flex: 1,
-                        minWidth: 0,
-                        lineHeight: 1.2,
-                      }}
-                    >
-                      {t("ops.dryerFlowTitle")}
-                    </Typography>
-                  ) : pathname === "/checkout" ? (
+                  {pathname === "/checkout" ? (
                     <>
                       <Typography
                         component="span"
@@ -722,17 +673,7 @@ function AppShell() {
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
             <Route path="/" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><HomePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
-            <Route
-              path="/orders/:orderId/dryer-flow"
-              element={
-                <TenantOnlyRoute user={user}>
-                  <GuardedRoute user={user}>
-                    <OrderDryerFlowPage user={user} />
-                  </GuardedRoute>
-                </TenantOnlyRoute>
-              }
-            />
-            <Route path="/orders" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><OrdersPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
+            <Route path="/orders/*" element={<Navigate to="/checkout" replace />} />
             <Route path="/checkout" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><CheckoutPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route
               path="/checkout-history"

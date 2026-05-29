@@ -4,13 +4,15 @@ from datetime import datetime, timedelta
 
 from backend.rinse_bag_lifecycle_status import (
     ASSIGNED_NOT_SENT_TO_VENDOR,
+    CHECKOUT_STATUS_CHECKED_OUT,
+    CHECKOUT_STATUS_NEEDS_REVIEW,
+    CHECKOUT_STATUS_NOT_CHECKED_OUT,
     FOLDED_COMPLETED,
     IN_DRYING,
     IN_WASHING,
     LOAD_WASHER,
     PENDING_WEIGHING,
     SENT_TO_RINSE,
-    SENT_TO_RINSE_CHECKOUT,
     SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN,
     SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
     SENT_TO_VENDOR,
@@ -29,10 +31,10 @@ from backend.rinse_processing_settings import (
 )
 from backend.rinse_scan_purpose import is_ghost_cleaning_purpose
 from backend.rinse_shift_operational_exceptions import (
+    CHECKOUT_WITHOUT_CLEAN_RACK,
     COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
     NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN,
     ORDER_REJECTED_FULL,
-    SENT_TO_RINSE_WITHOUT_CLEAN_RACK,
     evaluate_order_rejected_full,
 )
 
@@ -201,28 +203,40 @@ class TestFoldedAndSentToRinse:
         assert out["stage_detail"]["sent_to_rinse_reason"] == SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN
         assert NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN in out["exception_flags"]
 
-    def test_sent_to_rinse_checkout_without_clean_rack(self):
+class TestCheckoutSeparateFromLifecycle:
+    def test_logistics_checkout_alone_does_not_set_sent_to_rinse(self):
         out = derive_bag_lifecycle_status(
             [],
             bag_id="F4",
             logistics_status="SENT_TO_RINSE",
         )
-        assert out["current_lifecycle_status"] == SENT_TO_RINSE
-        assert out["stage_detail"]["sent_to_rinse_reason"] == SENT_TO_RINSE_CHECKOUT
+        assert out["current_lifecycle_status"] != SENT_TO_RINSE
+        assert out["checkout_status"] == CHECKOUT_STATUS_NEEDS_REVIEW
         assert out["needs_review"] is True
-        assert SENT_TO_RINSE_WITHOUT_CLEAN_RACK in out["exception_flags"]
+        assert CHECKOUT_WITHOUT_CLEAN_RACK in out["exception_flags"]
+        assert NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN not in out["exception_flags"]
 
-    def test_sent_to_rinse_checkout_with_clean_rack(self):
+    def test_logistics_checkout_with_clean_rack_keeps_folded_lifecycle(self):
         events = [_ev("", datetime(2026, 5, 28, 12, 0), ev_id=1, rack="CLEAN")]
         out = derive_bag_lifecycle_status(
             events,
             bag_id="F5",
             logistics_status="SENT_TO_RINSE",
         )
-        assert out["current_lifecycle_status"] == SENT_TO_RINSE
-        assert out["stage_detail"]["sent_to_rinse_reason"] == SENT_TO_RINSE_CHECKOUT
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert out["checkout_status"] == CHECKOUT_STATUS_CHECKED_OUT
         assert out["needs_review"] is False
-        assert SENT_TO_RINSE_WITHOUT_CLEAN_RACK not in out["exception_flags"]
+        assert CHECKOUT_WITHOUT_CLEAN_RACK not in out["exception_flags"]
+
+    def test_not_checked_out_when_logistics_at_washpro(self):
+        events = [_ev("", datetime(2026, 5, 28, 12, 0), ev_id=1, rack="CLEAN")]
+        out = derive_bag_lifecycle_status(
+            events,
+            bag_id="F6",
+            logistics_status="AT_WASHPRO",
+        )
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert out["checkout_status"] == CHECKOUT_STATUS_NOT_CHECKED_OUT
 
 
 class TestOrderRejectedFullTiming:

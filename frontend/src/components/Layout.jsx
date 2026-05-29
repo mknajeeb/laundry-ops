@@ -17,8 +17,8 @@ return (
 <LayoutDashboard size={18}/> Dashboard
 </Link>
 
-<Link className="menu-item" to="/orders">
-<Package size={18}/> Orders
+<Link className="menu-item" to="/checkout">
+<Package size={18}/> Rush Bag Checkout
 </Link>
 
 <Link className="menu-item" to="/upload">
