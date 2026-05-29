@@ -13,7 +13,10 @@ from backend.rinse_bag_gaming_performance import (
     evaluate_sorting_stage,
     gaming_events_from_records,
 )
-from backend.rinse_processing_settings import DEFAULT_REJECT_NO_START
+from backend.rinse_processing_settings import (
+    DEFAULT_REJECT_AFTER_CREATE_ISSUE,
+    DEFAULT_REJECT_NO_START,
+)
 from backend.rinse_scan_purpose import (
     is_create_bulk_workitem_purpose,
     is_create_issue_purpose,
@@ -23,14 +26,20 @@ from backend.rinse_scan_purpose import (
 )
 
 ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT = "ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT"
+ORDER_REJECTED_FULL = "ORDER_REJECTED_FULL"
 COMPLETED_WITHOUT_FINAL_CLEAN_SCAN = "COMPLETED_WITHOUT_FINAL_CLEAN_SCAN"
+NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN = "NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN"
+SENT_TO_RINSE_WITHOUT_CLEAN_RACK = "SENT_TO_RINSE_WITHOUT_CLEAN_RACK"
 
 # Legacy alias for stored filters / old clients
 ORDER_REJECT_NO_START_CLEANING_30_MIN = ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT
 
 OPERATIONAL_EXCEPTION_LABELS: dict[str, str] = {
     ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT: "Rejected — no washing started within limit",
+    ORDER_REJECTED_FULL: "Order rejected — washing not started after create-issue",
     COMPLETED_WITHOUT_FINAL_CLEAN_SCAN: "Completed without final scan",
+    NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN: "External scan after CLEAN — review",
+    SENT_TO_RINSE_WITHOUT_CLEAN_RACK: "Sent to Rinse without CLEAN rack scan",
 }
 
 OPERATIONAL_STAT_LABELS: dict[str, str] = {
@@ -106,6 +115,106 @@ def evaluate_order_reject_no_start_cleaning_after_limit(
         "expected_latest_start_cleaning_time": deadline,
         "actual_start_cleaning_time": actual_start_cleaning,
         "create_issue_present": False,
+        "reason": reason,
+    }
+
+
+def _resolve_evaluation_time(
+    timeline: Sequence[Mapping[str, Any]],
+    evaluation_time: datetime | None,
+) -> datetime:
+    if evaluation_time is not None and _ts_valid(evaluation_time):
+        return evaluation_time
+    latest: datetime | None = None
+    for ev in timeline:
+        ts = _event_ts(ev)
+        if _ts_valid(ts) and (latest is None or ts > latest):
+            latest = ts
+    return latest if latest is not None else datetime.utcnow()
+
+
+def evaluate_order_rejected_full(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    window_minutes: int = DEFAULT_REJECT_AFTER_CREATE_ISSUE,
+    after: datetime | None = None,
+    evaluation_time: datetime | None = None,
+) -> dict[str, Any] | None:
+    """
+    Time-gated full-order reject when create-issue exists and washing did not start
+    within ``window_minutes`` after create-issue, evaluated only once
+    ``evaluation_time`` is past the reject deadline.
+    """
+    limit = max(1, int(window_minutes or DEFAULT_REJECT_AFTER_CREATE_ISSUE))
+    issue_ev: Mapping[str, Any] | None = None
+    issue_at: datetime | None = None
+    for ev in timeline:
+        if not is_create_issue_purpose(ev.get("purpose")):
+            continue
+        ts = _event_ts(ev)
+        if not _ts_valid(ts):
+            continue
+        if after is not None and _ts_valid(after) and ts < after:
+            continue
+        if issue_at is None or ts < issue_at:
+            issue_ev = ev
+            issue_at = ts
+    if issue_ev is None or issue_at is None:
+        return None
+
+    deadline = issue_at + timedelta(minutes=limit)
+    eval_at = _resolve_evaluation_time(timeline, evaluation_time)
+
+    actual_start: datetime | None = None
+    for ev in timeline:
+        if not is_start_cleaning_purpose(ev.get("purpose")):
+            continue
+        ts = _event_ts(ev)
+        if not _ts_valid(ts) or ts <= issue_at:
+            continue
+        if actual_start is None or ts < actual_start:
+            actual_start = ts
+
+    if actual_start is not None and actual_start <= deadline:
+        return {
+            "exception_code": None,
+            "order_rejected_full": False,
+            "configured_limit_minutes": limit,
+            "create_issue_time": issue_at,
+            "reject_deadline": deadline,
+            "evaluation_time": eval_at,
+            "actual_start_cleaning_after_issue": actual_start,
+            "reason": "Start-cleaning occurred within the configured window after create-issue",
+        }
+
+    if eval_at <= deadline:
+        return {
+            "exception_code": None,
+            "order_rejected_full": False,
+            "configured_limit_minutes": limit,
+            "create_issue_time": issue_at,
+            "reject_deadline": deadline,
+            "evaluation_time": eval_at,
+            "actual_start_cleaning_after_issue": actual_start,
+            "reason": "Reject deadline not yet reached at evaluation time",
+        }
+
+    reason = (
+        "No start-cleaning within limit after create-issue"
+        if actual_start is None
+        else "Start-cleaning occurred after the configured window"
+    )
+    return {
+        "exception_code": ORDER_REJECTED_FULL,
+        "exception_label": OPERATIONAL_EXCEPTION_LABELS[ORDER_REJECTED_FULL],
+        "order_rejected_full": True,
+        "configured_limit_minutes": limit,
+        "create_issue_time": issue_at,
+        "reject_deadline": deadline,
+        "evaluation_time": eval_at,
+        "actual_start_cleaning_after_issue": actual_start,
+        "expected_latest_start_cleaning_time": deadline,
+        "actual_start_cleaning_time": actual_start,
         "reason": reason,
     }
 

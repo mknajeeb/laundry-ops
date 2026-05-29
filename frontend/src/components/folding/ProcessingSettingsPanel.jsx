@@ -71,6 +71,9 @@ export default function ProcessingSettingsPanel() {
         wash: secondsToMinSec(d.processing_wash_seconds_per_bag),
         dry: secondsToMinSec(d.processing_dry_seconds_per_bag),
         rejectMinutes: d.reject_no_start_cleaning_minutes ?? 30,
+        washingMinutes: d.washing_minutes ?? 30,
+        dryingMinutes: d.drying_minutes ?? 40,
+        rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         totalMinutes: d.total_minutes_per_bag,
       });
     } catch (e) {
@@ -93,6 +96,9 @@ export default function ProcessingSettingsPanel() {
         processing_wash_seconds_per_bag: minSecToSeconds(fields.wash.minutes, fields.wash.seconds),
         processing_dry_seconds_per_bag: minSecToSeconds(fields.dry.minutes, fields.dry.seconds),
         reject_no_start_cleaning_minutes: Math.max(1, Number(fields.rejectMinutes) || 30),
+        washing_minutes: Math.max(1, Number(fields.washingMinutes) || 30),
+        drying_minutes: Math.max(1, Number(fields.dryingMinutes) || 40),
+        reject_after_create_issue_minutes: Math.max(1, Number(fields.rejectAfterIssueMinutes) || 45),
       };
       const res = await putProcessingSettings(body);
       const d = res.data || {};
@@ -102,6 +108,9 @@ export default function ProcessingSettingsPanel() {
         wash: secondsToMinSec(d.processing_wash_seconds_per_bag),
         dry: secondsToMinSec(d.processing_dry_seconds_per_bag),
         rejectMinutes: d.reject_no_start_cleaning_minutes ?? 30,
+        washingMinutes: d.washing_minutes ?? 30,
+        dryingMinutes: d.drying_minutes ?? 40,
+        rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         totalMinutes: d.total_minutes_per_bag,
       });
       setMessage("Processing time settings saved.");
@@ -181,11 +190,41 @@ export default function ProcessingSettingsPanel() {
         size="small"
         type="number"
         label="Reject if washing not started after X minutes"
-        helperText="If a bag has no create-issue and start-cleaning does not occur within this many minutes after sorting/prep end, mark it rejected."
+        helperText="Legacy rule: no create-issue and start-cleaning does not occur within this many minutes after sorting/prep end."
         value={fields.rejectMinutes ?? 30}
         onChange={(e) => setFields({ ...fields, rejectMinutes: e.target.value })}
         inputProps={{ min: 1 }}
         sx={{ mb: 2, maxWidth: 360 }}
+      />
+      <TextField
+        size="small"
+        type="number"
+        label="Default washing duration minutes"
+        helperText="Expected IN_WASHING duration after LOAD_WASHER completes."
+        value={fields.washingMinutes ?? 30}
+        onChange={(e) => setFields({ ...fields, washingMinutes: e.target.value })}
+        inputProps={{ min: 1 }}
+        sx={{ mb: 2, maxWidth: 360 }}
+      />
+      <TextField
+        size="small"
+        type="number"
+        label="Default drying duration minutes"
+        helperText="Expected IN_DRYING duration after drying scan."
+        value={fields.dryingMinutes ?? 40}
+        onChange={(e) => setFields({ ...fields, dryingMinutes: e.target.value })}
+        inputProps={{ min: 1 }}
+        sx={{ mb: 2, maxWidth: 360 }}
+      />
+      <TextField
+        size="small"
+        type="number"
+        label="Reject order if washing not started after create-issue within X minutes"
+        helperText="ORDER_REJECTED_FULL: create-issue with no start-cleaning within this window."
+        value={fields.rejectAfterIssueMinutes ?? 45}
+        onChange={(e) => setFields({ ...fields, rejectAfterIssueMinutes: e.target.value })}
+        inputProps={{ min: 1 }}
+        sx={{ mb: 2, maxWidth: 420 }}
       />
       <Typography variant="body2" sx={{ mb: 2 }}>
         Total estimated per bag: {Math.floor(totalSec / 60)} min {totalSec % 60} sec

@@ -77,6 +77,41 @@ def is_drying_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "drying"
 
 
+def is_ghost_cleaning_purpose(raw: str | None) -> bool:
+    """Exact normalized purpose ``cleaning`` only — ignored in lifecycle/timing."""
+    return normalize_scan_purpose(raw) == "cleaning"
+
+
+def purpose_contains_workitem(raw: str | None) -> bool:
+    return "workitem" in normalize_scan_purpose(raw)
+
+
+def is_ready_washer_purpose(raw: str | None) -> bool:
+    return "ready-washer" in normalize_scan_purpose(raw)
+
+
+def is_washer_settings_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "washer-settings" or "washer-settings" in p
+
+
+def is_load_washer_end_purpose(raw: str | None) -> bool:
+    return is_ready_washer_purpose(raw) or is_washer_settings_purpose(raw)
+
+
+def is_lifecycle_sorting_progress_marker_purpose(raw: str | None) -> bool:
+    """Sorting/progress markers for lifecycle (excludes ghost ``cleaning``)."""
+    if is_ghost_cleaning_purpose(raw):
+        return False
+    if is_create_issue_purpose(raw):
+        return True
+    if purpose_contains_workitem(raw):
+        return True
+    if is_split_load_purpose(raw) or is_add_photos_purpose(raw):
+        return True
+    return False
+
+
 def is_cleaning_related_purpose(raw: str | None) -> bool:
     """
     Purpose labels indicating cleaning/prep activity (gaming stages only).

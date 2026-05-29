@@ -11,12 +11,18 @@ KEY_SORT = "processing_sort_seconds_per_bag"
 KEY_WASH = "processing_wash_seconds_per_bag"
 KEY_DRY = "processing_dry_seconds_per_bag"
 KEY_REJECT_NO_START = "reject_no_start_cleaning_minutes"
+KEY_WASHING_MINUTES = "washing_minutes"
+KEY_DRYING_MINUTES = "drying_minutes"
+KEY_REJECT_AFTER_CREATE_ISSUE = "reject_after_create_issue_minutes"
 
 DEFAULT_WEIGH = 30
 DEFAULT_SORT = 180
 DEFAULT_WASH = 120
 DEFAULT_DRY = 120
 DEFAULT_REJECT_NO_START = 30
+DEFAULT_WASHING_MINUTES = 30
+DEFAULT_DRYING_MINUTES = 40
+DEFAULT_REJECT_AFTER_CREATE_ISSUE = 45
 
 
 def _get_setting(cursor, organization_id: int, key: str) -> str | None:
@@ -64,6 +70,16 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
     reject_no_start = _int_setting(
         _get_setting(cursor, org, KEY_REJECT_NO_START), DEFAULT_REJECT_NO_START
     )
+    washing_minutes = _int_setting(
+        _get_setting(cursor, org, KEY_WASHING_MINUTES), DEFAULT_WASHING_MINUTES
+    )
+    drying_minutes = _int_setting(
+        _get_setting(cursor, org, KEY_DRYING_MINUTES), DEFAULT_DRYING_MINUTES
+    )
+    reject_after_issue = _int_setting(
+        _get_setting(cursor, org, KEY_REJECT_AFTER_CREATE_ISSUE),
+        DEFAULT_REJECT_AFTER_CREATE_ISSUE,
+    )
     total = weigh + sort + wash + dry
     return {
         "processing_weigh_seconds_per_bag": weigh,
@@ -71,6 +87,9 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
         "processing_wash_seconds_per_bag": wash,
         "processing_dry_seconds_per_bag": dry,
         "reject_no_start_cleaning_minutes": reject_no_start,
+        "washing_minutes": washing_minutes,
+        "drying_minutes": drying_minutes,
+        "reject_after_create_issue_minutes": reject_after_issue,
         "total_seconds_per_bag": total,
         "total_minutes_per_bag": round(total / 60.0, 2),
     }
@@ -85,6 +104,9 @@ def put_processing_settings(cursor, organization_id: int, payload: dict[str, Any
         (KEY_WASH, "processing_wash_seconds_per_bag"),
         (KEY_DRY, "processing_dry_seconds_per_bag"),
         (KEY_REJECT_NO_START, "reject_no_start_cleaning_minutes"),
+        (KEY_WASHING_MINUTES, "washing_minutes"),
+        (KEY_DRYING_MINUTES, "drying_minutes"),
+        (KEY_REJECT_AFTER_CREATE_ISSUE, "reject_after_create_issue_minutes"),
     ):
         if field in data and data[field] is not None:
             _set_setting(cursor, org, key, str(_int_setting(data[field], 0)))
