@@ -306,7 +306,7 @@ def _evaluate_sent_to_rinse(
             SENT_TO_RINSE_CHECKOUT,
             None,
             {"source_kind": "logistics_status", "logistics_status": logistics},
-            True,
+            False,
             True,
         )
 
