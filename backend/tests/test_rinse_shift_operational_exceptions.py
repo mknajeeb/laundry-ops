@@ -67,6 +67,17 @@ class TestOrderRejectAfterLimit:
         )
         assert evaluate_order_reject_no_start_cleaning_after_limit(timeline) is None
 
+    def test_create_bulk_workitem_does_not_suppress_reject(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("weight-entry", datetime(2026, 5, 28, 9, 0), ev_id=1),
+                _ev("create-bulk-workitem", datetime(2026, 5, 28, 9, 5), ev_id=2, scan_index=2),
+            ]
+        )
+        out = evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=30)
+        assert out is not None
+        assert out["exception_code"] == ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT
+
 
 class TestCompletedWithoutFinalCleanScan:
     def test_no_exception_when_clean_rack_after_processed_by_vendor(self):

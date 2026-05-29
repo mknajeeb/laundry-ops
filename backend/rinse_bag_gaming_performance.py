@@ -20,7 +20,7 @@ from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_cleaning_related_purpose,
     is_create_issue_purpose,
-    is_create_workitem_or_issue_purpose,
+    is_create_workitem_issue_or_bulk_purpose,
     is_create_workitem_purpose,
     is_drying_purpose,
     is_split_load_purpose,
@@ -242,7 +242,7 @@ def _first_sorting_phase_boundary(
         if not _ts_valid(ts) or ts <= after:
             continue
         if (
-            is_create_workitem_or_issue_purpose(ev.get("purpose"))
+            is_create_workitem_issue_or_bulk_purpose(ev.get("purpose"))
             or is_split_load_purpose(ev.get("purpose"))
             or is_add_photos_purpose(ev.get("purpose"))
             or is_start_cleaning_purpose(ev.get("purpose"))
@@ -277,9 +277,11 @@ def _pick_sorting_end(
 ) -> tuple[datetime | None, str | None, Mapping[str, Any] | None]:
     after = [ev for ev in timeline if _ts_valid(_event_ts(ev)) and _event_ts(ev) > sorting_start]
 
-    workitem_issue = [ev for ev in after if is_create_workitem_or_issue_purpose(ev.get("purpose"))]
-    if workitem_issue:
-        ev = max(workitem_issue, key=_sort_key_ev)
+    workitem_issue_bulk = [
+        ev for ev in after if is_create_workitem_issue_or_bulk_purpose(ev.get("purpose"))
+    ]
+    if workitem_issue_bulk:
+        ev = max(workitem_issue_bulk, key=_sort_key_ev)
         return _event_ts(ev), normalize_scan_purpose(ev.get("purpose")), ev
 
     for pred, purpose_label in (

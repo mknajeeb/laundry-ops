@@ -140,6 +140,27 @@ class TestSortingEndWorkitemIssue:
         assert sorting.end_event_purpose == "create-workitem"
         assert sorting.end_time == datetime(2026, 5, 27, 9, 6)
 
+    def test_create_bulk_workitem_ends_sorting_without_exception(self):
+        events = [
+            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), scan_index=1, ev_id=1),
+            _ev("create-bulk-workitem", datetime(2026, 5, 27, 9, 3), scan_index=2, ev_id=2),
+        ]
+        sorting = evaluate_sorting_stage(gaming_events_from_records(events))
+        assert sorting.status == STAGE_COMPLETED
+        assert sorting.exception_codes == ()
+        assert sorting.end_event_purpose == "create-bulk-workitem"
+
+    def test_last_bulk_workitem_wins_over_issue_and_workitem(self):
+        events = [
+            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), scan_index=1, ev_id=1),
+            _ev("create-issue", datetime(2026, 5, 27, 9, 2), scan_index=2, ev_id=2),
+            _ev("create-workitem", datetime(2026, 5, 27, 9, 4), scan_index=3, ev_id=3),
+            _ev("create-bulk-workitem", datetime(2026, 5, 27, 9, 7), scan_index=4, ev_id=4),
+        ]
+        sorting = evaluate_sorting_stage(gaming_events_from_records(events))
+        assert sorting.end_event_purpose == "create-bulk-workitem"
+        assert sorting.end_time == datetime(2026, 5, 27, 9, 7)
+
     def test_no_sorting_interrupted_exception_codes(self):
         events = [
             _ev("weight-entry", datetime(2026, 5, 27, 9, 0)),

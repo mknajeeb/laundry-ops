@@ -36,13 +36,36 @@ def is_create_issue_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "create-issue"
 
 
+def is_create_bulk_workitem_purpose(raw: str | None) -> bool:
+    return normalize_scan_purpose(raw) == "create-bulk-workitem"
+
+
+def is_create_workitem_issue_or_bulk_purpose(raw: str | None) -> bool:
+    """create-issue, create-workitem, or create-bulk-workitem (sorting prep end pool)."""
+    p = normalize_scan_purpose(raw)
+    return p in ("create-workitem", "create-issue", "create-bulk-workitem")
+
+
 def is_create_workitem_or_issue_purpose(raw: str | None) -> bool:
     p = normalize_scan_purpose(raw)
     return p in ("create-workitem", "create-issue")
 
 
-def is_create_bulk_workitem_purpose(raw: str | None) -> bool:
-    return normalize_scan_purpose(raw) == "create-bulk-workitem"
+def is_sorting_prep_end_marker_purpose(raw: str | None) -> bool:
+    """Sorting/prep end markers for lifecycle (excludes start-cleaning)."""
+    return (
+        is_create_workitem_issue_or_bulk_purpose(raw)
+        or is_split_load_purpose(raw)
+        or is_add_photos_purpose(raw)
+    )
+
+
+def is_sent_to_vendor_purpose(raw: str | None) -> bool:
+    return "sent-to-vendor" in normalize_scan_purpose(raw)
+
+
+def is_received_from_vendor_purpose(raw: str | None) -> bool:
+    return "received-from-vendor" in normalize_scan_purpose(raw)
 
 
 def is_processed_by_vendor_purpose(raw: str | None) -> bool:

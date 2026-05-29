@@ -52,7 +52,7 @@ If a cleaning-related purpose exists after weight-entry and before the first sor
 
 Sorting end priority (after sorting start):
 
-1. **Last** `create-workitem` or `create-issue`
+1. **Last** `create-workitem`, `create-issue`, or `create-bulk-workitem`
 2. `split-load`
 3. `add-photos`
 4. `start-cleaning`, then other cleaning-related purpose fallback
