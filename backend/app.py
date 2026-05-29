@@ -54,6 +54,7 @@ from backend.ta_helpers import hash_password, json_safe, verify_password
 from backend.notification_routes import register_notification_routes
 from backend.rinse_export_routes import register_rinse_export_routes
 from backend.rinse_admin_routes import register_rinse_admin_routes
+from backend.rinse_presence_routes import register_rinse_presence_routes
 from backend.rinse_folding_routes import register_rinse_folding_routes
 from backend.rinse_processing_routes import register_rinse_processing_routes
 from backend.rinse_shift_analysis_routes import register_rinse_shift_analysis_routes
@@ -10913,4 +10914,10 @@ register_rinse_admin_routes(
     orders_status_capabilities=orders_status_capabilities,
     where_not_sent_or_forced_sql=where_not_sent_or_forced_sql,
     get_upload_batch_rows_pk=get_upload_batch_rows_pk,
+)
+register_rinse_presence_routes(
+    app,
+    require_user=require_user,
+    require_admin=require_admin,
+    user_org_id=user_org_id,
 )

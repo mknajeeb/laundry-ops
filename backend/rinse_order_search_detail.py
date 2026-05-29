@@ -591,10 +591,45 @@ def build_order_lifecycle_detail(
         [],
     )
 
+    detail["lifecycle_status_detail"] = _safe_section(
+        section_errors,
+        "lifecycle_status_detail",
+        lambda: _build_lifecycle_status_detail(
+            cursor,
+            org,
+            bid,
+            staging=detail.get("staging_active"),
+            scan_events=detail.get("scan_events") or [],
+        ),
+        None,
+    )
+
     if section_errors:
         detail["section_errors"] = section_errors
 
     return detail
+
+
+def _build_lifecycle_status_detail(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    staging: dict[str, Any] | None,
+    scan_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from backend.rinse_cleaner_ticket_presence import build_lifecycle_status_for_bag
+
+    logistics = None
+    if isinstance(staging, dict):
+        logistics = staging.get("logistics_status") or staging.get("status")
+    return build_lifecycle_status_for_bag(
+        cursor,
+        organization_id,
+        bag_id,
+        scan_events=scan_events,
+        logistics_status=logistics,
+    )
 
 
 def _fetch_folding_row(cursor, org: int, bid: str) -> dict[str, Any] | None:

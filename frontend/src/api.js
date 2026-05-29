@@ -484,6 +484,12 @@ export const getFoldingPerformanceDetail = (bagId) =>
 export const recomputeFoldingPerformance = (body) =>
   axios.post(`${API_BASE}/rinse/folding/recompute`, body, { timeout: 120000 });
 
+export const runCleanerTicketPresenceScrape = (body) =>
+  axios.post(`${API_BASE}/api/rinse/cleaner-ticket-presence/scrape`, body, { timeout: 600000 });
+
+export const getCleanerTicketPresenceSummary = () =>
+  axios.get(`${API_BASE}/api/rinse/cleaner-ticket-presence/summary`, { timeout: 30000 });
+
 export const overrideFoldingPerformance = (bagId, body) =>
   axios.post(`${API_BASE}/rinse/folding/performance/${encodeURIComponent(bagId)}/override`, body, {
     timeout: 30000,
