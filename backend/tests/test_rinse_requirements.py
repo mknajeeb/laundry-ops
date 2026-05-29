@@ -15,6 +15,7 @@ from backend.rinse_bag_folding import (
 )
 from backend.rinse_folding_excluded_users import (
     is_user_excluded_from_scoring,
+    list_folding_user_options,
     sql_exclude_scoring_users_clause,
 )
 from backend.rinse_folding_registry import aggregate_folding_leaderboard
@@ -223,6 +224,36 @@ class TestTimezoneSerialization(unittest.TestCase):
     def test_system_utc_2337_serializes_to_1937_et(self):
         api = serialize_system_datetime_for_api(datetime(2026, 5, 24, 23, 37, 0))
         self.assertEqual(api, "2026-05-24T19:37:00-04:00")
+
+
+class TestFoldingUserOptions(unittest.TestCase):
+    def test_org_label_uses_display_name_not_name_column(self):
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [
+            None,  # excluded_user_names_set
+            {"org_label": "Acme Laundry"},
+        ]
+        cursor.fetchall.side_effect = [[], []]
+        with (
+            patch(
+                "backend.rinse_folding_excluded_users.table_exists",
+                side_effect=lambda _c, table: table
+                in ("organizations", "rinse_folding_performance"),
+            ),
+            patch(
+                "backend.rinse_folding_excluded_users.table_has_column",
+                side_effect=lambda _c, table, col: table == "organizations"
+                and col == "display_name",
+            ),
+            patch(
+                "backend.rinse_folding_excluded_users.excluded_user_names_set",
+                return_value=set(),
+            ),
+        ):
+            list_folding_user_options(cursor, 1)
+        org_sql = cursor.execute.call_args_list[0][0][0]
+        self.assertIn("display_name", org_sql)
+        self.assertNotIn("SELECT name FROM", org_sql)
 
 
 class TestOrderSearchModule(unittest.TestCase):

@@ -65,10 +65,18 @@ def list_folding_user_options(cursor, organization_id: int) -> list[dict[str, An
     excluded = excluded_user_names_set(cursor, org)
     org_label = "VeeWash"
     if table_exists(cursor, "organizations"):
-        cursor.execute("SELECT name FROM organizations WHERE id = %s LIMIT 1", (org,))
+        name_col = (
+            "display_name"
+            if table_has_column(cursor, "organizations", "display_name")
+            else "slug"
+        )
+        cursor.execute(
+            f"SELECT {name_col} AS org_label FROM organizations WHERE id = %s LIMIT 1",
+            (org,),
+        )
         org_row = cursor.fetchone()
-        if org_row and isinstance(org_row, dict) and org_row.get("name"):
-            org_label = str(org_row.get("name")).strip() or org_label
+        if org_row and isinstance(org_row, dict) and org_row.get("org_label"):
+            org_label = str(org_row.get("org_label")).strip() or org_label
     seen: dict[str, dict[str, Any]] = {}
 
     def add(name: str, *, source: str, has_exception: bool = False, has_calculated: bool = False) -> None:
