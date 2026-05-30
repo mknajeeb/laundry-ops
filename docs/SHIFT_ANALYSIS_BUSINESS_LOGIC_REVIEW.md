@@ -1,48 +1,62 @@
-# Shift Analysis & Lifecycle — Business Logic Review (Current State)
+# Shift Analysis & Lifecycle — Business Logic Review
 
-Review-only snapshot from `rinse_bag_lifecycle_status.py`, `rinse_shift_analysis.py`, `rinse_shift_operational_exceptions.py`, `rinse_bag_gaming_performance.py`, settings modules, and `docs/RINSE_BAG_LIFECYCLE_STATUS.md`.
+Review snapshot for business sign-off before implementation. Source modules: `rinse_bag_lifecycle_status.py`, `rinse_shift_analysis.py`, `rinse_bag_gaming_performance.py`, settings modules.
 
 **Status:** Documentation only — no code, dashboard, staff performance, or UI changes implied by this file.
+
+**Related:** [`SHIFT_ANALYSIS_STAGE_TIMING_MODEL_REVIEW.md`](./SHIFT_ANALYSIS_STAGE_TIMING_MODEL_REVIEW.md) (detailed stage/timing model)
 
 ---
 
 ## 1. Lifecycle statuses (`current_lifecycle_status`)
 
-Single forward progression per bag. Derived from scan timeline + optional portal presence + evaluation time. **Separate from checkout and folding scoring.**
+Single forward progression per bag. Derived from scan timeline + optional portal presence + evaluation time. **Separate from checkout, folding scoring, and performance-only task stages.**
+
+> **Important:** `LOAD_WASHER` and `LOAD_DRYER` are **not** lifecycle statuses. They are **performance/task stages only** (see §2). Current code in `rinse_bag_lifecycle_status.py` still emits them as lifecycle values — **to be removed on implementation**.
+
+### Approved lifecycle status list (10 values)
 
 | Status | Friendly label | Typical meaning | Dashboard group |
 |--------|----------------|-----------------|-----------------|
-| `ASSIGNED_NOT_SENT_TO_VENDOR` | Assigned — not sent | Rinse assigned bag; `ready_for_vendor` presence; no sent-to-vendor scan | Early lifecycle |
-| `SENT_TO_VENDOR` | Sent to vendor | `at_vendor` presence or in portal queue; no post-anchor weight yet | Early lifecycle |
-| `PENDING_WEIGHING` | Pending weighing | Sent-to-vendor anchor exists; no weight-entry after anchor | Pending Weighing |
-| `WEIGHED_NOT_STARTED` | Weighed — not started | Weight after anchor; no further events after weight | Weighed / Not Started |
-| `SORTED_READY_FOR_WASH` | Sorted — ready for wash | Events after weight; no start-cleaning yet | Sorted / Ready |
-| `LOAD_WASHER` | Load washer | start-cleaning through last ready-washer / washer-settings | Wash / Dry |
-| `IN_WASHING` | In washing | After load-washer end; expected end = load end + `washing_minutes` | Wash / Dry |
-| `LOAD_DRYER` | Load dryer | Drying scan timestamp (instantaneous) | Wash / Dry |
-| `IN_DRYING` | In drying | Drying purpose seen; expected end = dry + `drying_minutes` | Wash / Dry |
-| `FOLDED_COMPLETED` | Folded / completed | CLEAN rack scan | Folded |
+| `ASSIGNED_NOT_SENT_TO_VENDOR` | Assigned — not sent | Rinse assigned bag; `ready_for_vendor` presence; not yet sent | Early lifecycle |
+| `SENT_TO_VENDOR` | Sent to vendor | `at_vendor` presence or sent-to-vendor; no post-anchor weight yet | Early lifecycle |
+| `PENDING_WEIGHING` | Pending weighing | Sent-to-vendor / at_vendor anchor; no post-anchor weight-entry yet | Pending Weighing |
+| `WEIGHED_NOT_STARTED` | Weighed — not started | Valid post-anchor weight; no further non-ghost events after weight | Weighed / Not Started |
+| `SORTED_READY_FOR_WASH` | Sorted — ready for wash | Events after weight; no `start-cleaning` yet | Sorted / Ready |
+| `IN_WASHING` | In washing | After load-washer **performance** step completes; until `drying` seen | Wash / Dry |
+| `IN_DRYING` | In drying | `drying` purpose seen; until CLEAN rack | Wash / Dry |
+| `FOLDED_COMPLETED` | Folded / completed | CLEAN rack scan (case-insensitive contains) | Folded |
 | `SENT_TO_RINSE` | Sent to Rinse | Missing from next portal scrape after CLEAN, **or** external/non-employee scan after CLEAN | Sent to Rinse |
 | `UNKNOWN` | Unknown lifecycle | Fallback when rules cannot classify | Unknown lifecycle |
 
+**Not lifecycle statuses (performance only):** `LOAD_WASHER`, `LOAD_DRYER`
+
 **Completed (dashboard):** `FOLDED_COMPLETED`, `SENT_TO_RINSE`  
-**Pending:** all others among active WF staging bags
+**Pending:** all other lifecycle statuses among active WF staging bags
 
-**Key rules**
+### Lifecycle transition rules
 
-- Anchor = first `sent-to-vendor` scan; only post-anchor events count for processing lifecycle.
-- Ghost purpose: exact `cleaning` only (ignored for timing).
-- `SENT_TO_RINSE` lifecycle **≠** facility checkout `logistics_status = SENT_TO_RINSE`.
+| Transition | Rule |
+|------------|------|
+| Anchor | First `sent-to-vendor` scan (or `at_vendor` presence when scan missing). Only **post-anchor** events count. |
+| Ghost purpose (lifecycle) | Exact normalized `purpose = cleaning` only — **ignored** for lifecycle progression and sorting |
+| Valid weight | **First `weight-entry` after anchor** — ignore pre-anchor weight scans |
+| Sorting window | First non-ghost purpose after valid weight → last non-ghost purpose **before** `start-cleaning` |
+| `start-cleaning` | Ends sorting; **not** part of sorting |
+| `IN_WASHING` | Starts after **load-washer performance end** (latest `ready-washer` / `washer-settings` after `start-cleaning`). Stays until `drying`. Expected end = load end + **Wash Time** (`wash_time_minutes`, default **30**) |
+| `IN_DRYING` | Starts at `drying` purpose. Stays until CLEAN rack. Expected end = drying + **Dryer Time** (`dryer_time_minutes`, default **45**) |
+| `FOLDED_COMPLETED` | CLEAN rack — case-insensitive **contains** match (e.g. `CLEAN`, `CLEAN-01`, `FINAL CLEAN`, `ABC-CLEAN-XYZ`) |
+| Checkout vs lifecycle | `logistics_status = SENT_TO_RINSE` (facility checkout) **≠** lifecycle `SENT_TO_RINSE` |
 
-**Portal presence (implemented, not dashboard-wired yet)**
+### Portal presence (implemented, not dashboard-wired yet)
 
 | Input | Effect |
 |-------|--------|
-| `ready_for_vendor_presence` | Can yield `ASSIGNED_NOT_SENT_TO_VENDOR` (no scans) |
-| `at_vendor_presence` | Can yield `SENT_TO_VENDOR` (no sent-to-vendor scan yet) |
+| `ready_for_vendor_presence` | Can yield `ASSIGNED_NOT_SENT_TO_VENDOR` |
+| `at_vendor_presence` | Can yield `SENT_TO_VENDOR` when no sent-to-vendor scan yet |
 | `missing_from_next_portal_scrape` | Can yield lifecycle `SENT_TO_RINSE` after CLEAN |
 
-**Separate channel — facility checkout (`checkout_status`, not lifecycle)**
+### Facility checkout (`checkout_status`, not lifecycle)
 
 | Value | Meaning |
 |-------|---------|
@@ -52,67 +66,49 @@ Single forward progression per bag. Derived from scan timeline + optional portal
 
 ---
 
-## 2. Processing stages (performance / gaming — not lifecycle status)
+## 2. Performance stages (not `current_lifecycle_status`)
 
-> **⚠️ PENDING REVISION — NOT FINAL**
->
-> This section documents **current implemented code** in `rinse_bag_gaming_performance.py`. It **conflicts** with the newer lifecycle rules in §1 and must **not** be treated as approved business logic until revised and signed off.
->
-> **Do not implement dashboard, staff performance, or UI changes based on this section until revision is complete.**
+Performance/task stages measure **operator time and productivity**. They may overlap lifecycle milestones but are **not** stored as `current_lifecycle_status`.
 
-Two layers for **employee timing & productivity**, distinct from `current_lifecycle_status`.
+### Lifecycle vs performance — dual role of `purpose = cleaning`
 
-### Pending revision — conflict with lifecycle rules
+| Context | `purpose = cleaning` |
+|---------|------------------------|
+| **Lifecycle** | Ghost — ignored |
+| **Sorting** | Ghost — ignored |
+| **Weighing performance only** | **Valid start marker** — start of operator weigh task |
 
-**Current code (Layer 1 — bag-level stages):**
+### Approved performance stages
 
-| Stage | Current start → end (implemented) |
-|-------|-----------------------------------|
-| **Weighing** | Last cleaning-related purpose before weight-entry → weight-entry |
-| **Sorting** | weight-entry (or first cleaning-related after weight) → sorting end marker |
+| Stage | Start | End | Notes |
+|-------|-------|-----|-------|
+| **Incoming wait** | `ready_for_vendor` `portal_status_first_seen_at` | `at_vendor` `portal_status_first_seen_at` or sent-to-vendor | Portal timing |
+| **Pending weighing** (queue) | sent-to-vendor / at_vendor anchor | First post-anchor `weight-entry` | Wait time, not operator task |
+| **Weighing** (operator task) | **`purpose = cleaning`** (before valid weight) | Post-anchor **`weight-entry`** | Operator = weight-entry assignee. Exception if weight without prior `cleaning`: `WEIGHING_START_CLEANING_MISSING` or relabeled `WEIGHING_START_SCAN_MISSING` |
+| **Sorting / prep** | First non-ghost purpose after valid post-anchor weight | Last non-ghost purpose before `start-cleaning` | workitem/issue/split-load/add-photos = **operational markers inside** sorting, not sole end |
+| **Waiting for washer** | Sorting end | `start-cleaning` | Queue wait (performance) |
+| **LOAD_WASHER** | `start-cleaning` | Latest `ready-washer` or `washer-settings` after start | **Performance only** — not lifecycle status |
+| **IN_WASHING** | Load-washer performance end | `drying` (or expected end) | Also a **lifecycle status** while machine runs |
+| **LOAD_DRYER** | `drying` | `drying` (instantaneous) | **Performance only** — tracks who triggered dryer load; duration 0 |
+| **IN_DRYING** | `drying` | CLEAN rack (or expected end) | Also a **lifecycle status** |
+| **Folding performance** | FOLDING rack (existing module) | CLEAN rack | **Separate** from lifecycle `FOLDED_COMPLETED` |
+| **Post-completion handoff** | CLEAN rack | Portal absence / external scan / sent-to-rinse signal | Maps to lifecycle `SENT_TO_RINSE` |
 
-This uses **cleaning-related purpose** anchors and does **not** require post–sent-to-vendor evaluation for weight-entry. That contradicts lifecycle §1, which anchors processing on the sent-to-vendor sequence and treats ghost vs valid purposes differently.
+### Current code (still to change)
 
-**Correct direction — pending final approval (not yet implemented):**
-
-| Rule | Intended meaning |
-|------|------------------|
-| `purpose = cleaning` | **Only** ghost purpose (ignored for timing) |
-| `purpose = start-cleaning` | Valid purpose (not ghost) |
-| Rack contains `CLEAN` | Completed (folded) |
-| `weight-entry` | Evaluated **after** sent-to-vendor anchor |
-| Processing stages | Anchored to the **lifecycle sequence**, not cleaning-related purpose heuristics |
-
-Until this revision is approved and coded, Layer 1 timings in production code may disagree with lifecycle status for the same bag.
-
-### Layer 1 — Bag-level stages (`rinse_bag_gaming_performance.py`) — *as implemented today*
-
-| Stage | Start | End | Detection |
-|-------|-------|-----|-----------|
-| **Weighing** | Last cleaning-related purpose before weight-entry | weight-entry | Purpose labels only |
-| **Sorting** | weight-entry (or first cleaning-related after weight) | Last workitem/issue/bulk, split-load, add-photos, or start-cleaning | Purpose labels only |
-| **Wash / load** | start-cleaning | drying | Purpose labels only |
-| **Folding** | Existing folding engine | CLEAN rack / folding rules | Rack + folding exception rules |
-
-Stage outcome: `COMPLETED` or `EXCEPTION` per stage.
-
-See also: `docs/RINSE_BAG_GAMING_PERFORMANCE.md`.
+`rinse_bag_gaming_performance.py` still uses cleaning-**related** purpose heuristics and does not split lifecycle vs performance stages. See conflicts in stage timing review doc.
 
 ### Layer 2 — Shift / person gaming (`rinse_shift_gaming_performance.py`)
 
-Activities (selectable on dashboard): **weighing**, **sorting**, **wash_load**, **folding**
+Inherits Layer 1 boundaries. Must remap when performance stages are implemented. **No dashboard/staff-performance UI until backend aligned.**
 
-Per bag × activity slice: assigned user, duration, `needs_review`, review reasons (e.g. ambiguous operator).
-
-**Note:** Layer 2 inherits Layer 1 stage boundaries. When Layer 1 is revised, Layer 2 assignment and shift-window metrics must be updated accordingly.
-
-### Lifecycle vs processing — intentional split
+### Module ownership
 
 | Concept | Module | Used for |
 |---------|--------|----------|
-| Lifecycle status | `rinse_bag_lifecycle_status` | Where is the bag in production pipeline? |
-| Processing stages | `rinse_bag_gaming_performance` | How long did each step take? Who did it? |
-| Folding performance | `rinse_bag_folding` | Scoring, exceptions, leaderboard |
+| Lifecycle status | `rinse_bag_lifecycle_status.py` | Where is the bag in the pipeline? |
+| Performance stages | `rinse_bag_gaming_performance.py` (to revise) | Task durations, operator assignment |
+| Folding scoring | `rinse_bag_folding.py` | Leaderboard, exceptions, scoring |
 
 ---
 
@@ -187,20 +183,19 @@ Legacy/parallel evaluator for dashboard operational section (may overlap lifecyc
 | `OVERLAP_OR_INVALID_TIMING` | Overlap / invalid timing |
 | `MULTIPLE_CLEAN_SCANS` | Multiple CLEAN scans (configurable) |
 
-### D. Gaming stage exceptions (weighing / sorting / wash-load only)
+### D. Gaming / performance stage exceptions
 
-| Code | Stage |
-|------|-------|
-| `WEIGHT_ENTRY_MISSING` | Weighing |
-| `WEIGHING_START_SCAN_MISSING` | Weighing |
-| `WEIGHING_DURATION_INVALID` | Weighing |
-| `MISSING_SORTING_END` | Sorting |
-| `INVALID_SORTING_TIMESTAMPS` | Sorting |
-| `START_CLEANING_MISSING` | Wash/load |
-| `DRYING_PURPOSE_MISSING` | Wash/load |
-| `WASH_LOAD_DURATION_INVALID` | Wash/load |
-| `WASH_LOAD_DURATION_TOO_SHORT` | Wash/load |
-| `WASH_LOAD_DURATION_TOO_LONG` | Wash/load |
+| Code | Stage | Notes |
+|------|-------|-------|
+| `WEIGHT_ENTRY_MISSING` | Weighing | No post-anchor weight-entry |
+| `WEIGHING_START_SCAN_MISSING` | Weighing | Relabel meaning: missing **`purpose = cleaning`** before weight (or use `WEIGHING_START_CLEANING_MISSING`) |
+| `WEIGHING_START_CLEANING_MISSING` | Weighing | **Proposed** — weight-entry without prior `cleaning` purpose for weigh task |
+| `WEIGHING_DURATION_INVALID` | Weighing | Bad timestamps |
+| `MISSING_SORTING_END` | Sorting | No boundary before start-cleaning |
+| `INVALID_SORTING_TIMESTAMPS` | Sorting | Bad timestamps |
+| `START_CLEANING_MISSING` | Wash performance | No start-cleaning when expected |
+| `DRYING_PURPOSE_MISSING` | Wash/dry performance | Legacy combined wash/load |
+| `WASH_LOAD_DURATION_*` | Wash performance | Legacy combined stage — split on implementation |
 
 ---
 
@@ -208,16 +203,18 @@ Legacy/parallel evaluator for dashboard operational section (may overlap lifecyc
 
 ### Processing & lifecycle timing (`/performance/settings` → ProcessingSettingsPanel)
 
-| Key | Default | Used for |
-|-----|---------|----------|
-| `processing_weigh_seconds_per_bag` | 30s | Processing productivity estimates |
-| `processing_sort_seconds_per_bag` | 180s | Processing productivity estimates |
-| `processing_wash_seconds_per_bag` | 120s | Processing productivity estimates |
-| `processing_dry_seconds_per_bag` | 120s | Processing productivity estimates |
-| `washing_minutes` | 30 | Lifecycle `IN_WASHING` expected duration |
-| `drying_minutes` | 40 | Lifecycle `IN_DRYING` expected duration |
-| `reject_after_create_issue_minutes` | 45 | Lifecycle `ORDER_REJECTED_FULL` time gate |
-| `reject_no_start_cleaning_minutes` | 30 | Operational reject after sorting (legacy module) |
+| Business label | Setting key (target) | Current code key | Default | Used for |
+|----------------|----------------------|------------------|---------|----------|
+| **Wash Time** | `wash_time_minutes` | `washing_minutes` | **30** min | Lifecycle `IN_WASHING` expected duration; load-washer performance end → expected wash complete |
+| **Dryer Time** | `dryer_time_minutes` | `drying_minutes` | **45** min | Lifecycle `IN_DRYING` expected duration |
+| — | `processing_weigh_seconds_per_bag` | (same) | 30s | Productivity estimates |
+| — | `processing_sort_seconds_per_bag` | (same) | 180s | Productivity estimates |
+| — | `processing_wash_seconds_per_bag` | (same) | 120s | Productivity estimates |
+| — | `processing_dry_seconds_per_bag` | (same) | 120s | Productivity estimates |
+| — | `reject_after_create_issue_minutes` | (same) | 45 | Sorting reject time gate |
+| — | `reject_no_start_cleaning_minutes` | (same) | 30 | Operational reject (legacy module) |
+
+**Implementation note:** On code change, either rename keys to `wash_time_minutes` / `dryer_time_minutes` **or** keep internal `washing_minutes` / `drying_minutes` with UI labels **Wash Time** / **Dryer Time**. Values must remain **tenant-configurable** — do not hardcode 30/45 in business logic. Current code default for drying is **40** — update to **45** on implementation.
 
 ### Folding benchmarks (`FoldingBenchmarksPanel`)
 
@@ -330,19 +327,22 @@ Rows found/inserted/updated; per-bag `first_seen_at`, `portal_status_first_seen_
 
 ---
 
-## Open review items (for business sign-off)
+## Open review items
 
-| Topic | Question |
-|-------|----------|
-| **Processing/gaming stages** | Approve lifecycle-anchored Layer 1 revision (§2 pending direction) before dashboard or staff-performance work |
-| Early lifecycle | Should `ASSIGNED_NOT_SENT_TO_VENDOR` / `SENT_TO_VENDOR` appear on main dashboard KPIs or detail-only? |
-| Dual exception systems | Lifecycle vs operational evaluator overlap — consolidate or keep both? |
-| Checkout naming | `logistics_status = SENT_TO_RINSE` vs lifecycle `SENT_TO_RINSE` — rename checkout channel? |
-| Presence → dashboard | When to wire `rinse_cleaner_ticket_presence` into pending counts? |
-| Employee performance | Processing vs folding vs combined — separate API rows needed? |
-| `UNKNOWN` lifecycle | When should it appear vs hidden in “Unknown lifecycle” column? |
-| Transition metrics | Use `portal_status_first_seen_at` / `previous_portal_status` for “assigned but not sent” duration? |
+| Topic | Status |
+|-------|--------|
+| Lifecycle vs performance split (`LOAD_WASHER` / `LOAD_DRYER`) | **Decided** — performance only; remove from `current_lifecycle_status` on implementation |
+| Weighing performance (`cleaning` → weight-entry) | **Decided** — see §2 dual-role table |
+| Sorting boundaries | **Decided** — lifecycle end before `start-cleaning` |
+| Folding lifecycle vs scoring | **Decided** — CLEAN = lifecycle; FOLDING→CLEAN = scoring module |
+| Wash / dryer time settings | **Decided** — Wash Time 30, Dryer Time 45, tenant-configurable |
+| Early lifecycle on dashboard KPIs | Open |
+| Dual exception systems (lifecycle vs operational) | Open |
+| Checkout naming vs lifecycle `SENT_TO_RINSE` | Open |
+| Presence → dashboard aggregation | Open |
+| Employee performance activity mapping | Open |
+| `UNKNOWN` lifecycle display | Open |
 
 ---
 
-*Last updated: 2026-05-24 — review snapshot; processing/gaming stage logic marked pending revision.*
+*Last updated: 2026-05-24 — final status/stage corrections documented; implementation pending.*
