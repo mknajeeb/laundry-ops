@@ -19,6 +19,46 @@ PORTAL_STATUS_READY = "ready_for_vendor"
 PORTAL_STATUS_AT_VENDOR = "at_vendor"
 VALID_PORTAL_STATUSES = frozenset({PORTAL_STATUS_READY, PORTAL_STATUS_AT_VENDOR})
 
+_TRANSITION_COLUMNS = (
+    ("previous_portal_status", "VARCHAR(32) NULL AFTER portal_status"),
+    ("portal_status_first_seen_at", "DATETIME(6) NULL AFTER last_seen_at"),
+    ("portal_status_changed_at", "DATETIME(6) NULL AFTER portal_status_first_seen_at"),
+)
+
+
+def _presence_table_has_column(cursor, col_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS c FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'rinse_cleaner_ticket_presence'
+          AND COLUMN_NAME = %s
+        """,
+        (col_name,),
+    )
+    row = cursor.fetchone()
+    n = int(row["c"] if isinstance(row, dict) else row[0])
+    return n > 0
+
+
+def ensure_presence_transition_columns(cursor) -> None:
+    """Add portal status transition columns to existing deployments."""
+    ensure_rinse_cleaner_ticket_presence_table(cursor)
+    for col_name, col_def in _TRANSITION_COLUMNS:
+        if not _presence_table_has_column(cursor, col_name):
+            cursor.execute(
+                f"ALTER TABLE rinse_cleaner_ticket_presence ADD COLUMN {col_name} {col_def}"
+            )
+    cursor.execute(
+        """
+        UPDATE rinse_cleaner_ticket_presence
+        SET
+          portal_status_first_seen_at = COALESCE(portal_status_first_seen_at, first_seen_at),
+          portal_status_changed_at = COALESCE(portal_status_changed_at, first_seen_at)
+        WHERE portal_status_first_seen_at IS NULL OR portal_status_changed_at IS NULL
+        """
+    )
+
 
 def ensure_rinse_cleaner_ticket_presence_table(cursor) -> None:
     cursor.execute(
@@ -28,9 +68,12 @@ def ensure_rinse_cleaner_ticket_presence_table(cursor) -> None:
             organization_id INT NOT NULL,
             bag_id VARCHAR(64) NOT NULL,
             portal_status VARCHAR(32) NOT NULL,
+            previous_portal_status VARCHAR(32) NULL,
             active TINYINT(1) NOT NULL DEFAULT 1,
             first_seen_at DATETIME(6) NOT NULL,
             last_seen_at DATETIME(6) NOT NULL,
+            portal_status_first_seen_at DATETIME(6) NULL,
+            portal_status_changed_at DATETIME(6) NULL,
             source_batch_id VARCHAR(64) NULL,
             customer_name VARCHAR(255) NULL,
             estimated_delivery_date DATE NULL,
@@ -73,6 +116,7 @@ def ensure_rinse_cleaner_ticket_presence_runs_table(cursor) -> None:
 def ensure_presence_tables(cursor) -> None:
     ensure_rinse_cleaner_ticket_presence_table(cursor)
     ensure_rinse_cleaner_ticket_presence_runs_table(cursor)
+    ensure_presence_transition_columns(cursor)
 
 
 def build_tickets_url_for_portal_status(base_url: str, portal_status: str) -> str:
@@ -228,16 +272,19 @@ def apply_presence_scrape(
                 cursor.execute(
                     """
                     INSERT INTO rinse_cleaner_ticket_presence (
-                        organization_id, bag_id, portal_status, active,
-                        first_seen_at, last_seen_at, source_batch_id,
+                        organization_id, bag_id, portal_status, previous_portal_status, active,
+                        first_seen_at, last_seen_at, portal_status_first_seen_at,
+                        portal_status_changed_at, source_batch_id,
                         customer_name, estimated_delivery_date, rush_flag,
                         service_type, raw_row_json
-                    ) VALUES (%s,%s,%s,1,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ) VALUES (%s,%s,%s,NULL,1,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         org,
                         bag_id,
                         ps,
+                        now,
+                        now,
                         now,
                         now,
                         batch_id,
@@ -249,38 +296,71 @@ def apply_presence_scrape(
                     ),
                 )
         else:
-            changed = (
-                str(existing.get("portal_status") or "") != ps
-                or int(existing.get("active") or 0) != 1
+            existing_status = str(existing.get("portal_status") or "")
+            status_changed = existing_status != ps
+            was_inactive = int(existing.get("active") or 0) != 1
+            metadata_changed = (
+                was_inactive
                 or str(existing.get("source_batch_id") or "") != batch_id
                 or (existing.get("customer_name") or None) != payload["customer_name"]
+                or (existing.get("estimated_delivery_date") or None) != payload["estimated_delivery_date"]
+                or (existing.get("rush_flag") or None) != payload["rush_flag"]
+                or (existing.get("service_type") or None) != payload["service_type"]
             )
+            changed = status_changed or metadata_changed
             if changed:
                 stats["rows_updated"] += 1
             else:
                 stats["rows_unchanged"] += 1
             if not dry_run and changed:
-                cursor.execute(
-                    """
-                    UPDATE rinse_cleaner_ticket_presence
-                    SET portal_status=%s, active=1, last_seen_at=%s, source_batch_id=%s,
-                        customer_name=%s, estimated_delivery_date=%s, rush_flag=%s,
-                        service_type=%s, raw_row_json=%s
-                    WHERE organization_id=%s AND bag_id=%s
-                    """,
-                    (
-                        ps,
-                        now,
-                        batch_id,
-                        payload["customer_name"],
-                        payload["estimated_delivery_date"],
-                        payload["rush_flag"],
-                        payload["service_type"],
-                        payload["raw_row_json"],
-                        org,
-                        bag_id,
-                    ),
-                )
+                if status_changed:
+                    cursor.execute(
+                        """
+                        UPDATE rinse_cleaner_ticket_presence
+                        SET portal_status=%s, previous_portal_status=%s, active=1,
+                            last_seen_at=%s, portal_status_first_seen_at=%s,
+                            portal_status_changed_at=%s, source_batch_id=%s,
+                            customer_name=%s, estimated_delivery_date=%s, rush_flag=%s,
+                            service_type=%s, raw_row_json=%s
+                        WHERE organization_id=%s AND bag_id=%s
+                        """,
+                        (
+                            ps,
+                            existing_status or None,
+                            now,
+                            now,
+                            now,
+                            batch_id,
+                            payload["customer_name"],
+                            payload["estimated_delivery_date"],
+                            payload["rush_flag"],
+                            payload["service_type"],
+                            payload["raw_row_json"],
+                            org,
+                            bag_id,
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        UPDATE rinse_cleaner_ticket_presence
+                        SET active=1, last_seen_at=%s, source_batch_id=%s,
+                            customer_name=%s, estimated_delivery_date=%s, rush_flag=%s,
+                            service_type=%s, raw_row_json=%s
+                        WHERE organization_id=%s AND bag_id=%s
+                        """,
+                        (
+                            now,
+                            batch_id,
+                            payload["customer_name"],
+                            payload["estimated_delivery_date"],
+                            payload["rush_flag"],
+                            payload["service_type"],
+                            payload["raw_row_json"],
+                            org,
+                            bag_id,
+                        ),
+                    )
 
     if mark_missing:
         cursor.execute(
