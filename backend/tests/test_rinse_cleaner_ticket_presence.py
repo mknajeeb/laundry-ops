@@ -1,5 +1,6 @@
 """Tests for rinse_cleaner_ticket_presence (portal ready_for_vendor / at_vendor)."""
 
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_bag_lifecycle_status import (
@@ -237,6 +238,55 @@ class TestPortalStatusTransitions:
         assert row["previous_portal_status"] == PORTAL_STATUS_READY
         assert row["portal_status_first_seen_at"] == t2
         assert row["portal_status_changed_at"] == t2
+
+
+class TestLoadWfPresenceIncomingRows:
+    def test_workitem_before_anchor_not_applicable_here(self):
+        from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {
+                "bag_id": "PRE1",
+                "portal_status": PORTAL_STATUS_READY,
+                "customer_name": "Pre vendor",
+                "estimated_delivery_date": date(2026, 5, 31),
+                "rush_flag": None,
+                "service_type": "WF",
+                "portal_status_first_seen_at": datetime(2026, 5, 28, 21, 22),
+            }
+        ]
+        with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
+            rows, meta = load_wf_presence_incoming_rows(
+                cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
+            )
+        assert len(rows) == 1
+        assert rows[0]["ready_for_vendor_presence"] is True
+        assert meta["wf_ready_for_vendor_presence"] == 1
+
+    def test_hd_excluded(self):
+        from datetime import date
+
+        from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {
+                "bag_id": "HDX",
+                "portal_status": PORTAL_STATUS_READY,
+                "customer_name": "HD",
+                "estimated_delivery_date": date(2026, 5, 31),
+                "rush_flag": None,
+                "service_type": "HD",
+                "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+            }
+        ]
+        with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
+            rows, meta = load_wf_presence_incoming_rows(
+                cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
+            )
+        assert rows == []
+        assert meta["hd_presence_excluded"] == 1
 
 
 class TestLifecycleIntegration:

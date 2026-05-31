@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_bag_lifecycle_status import (
+    ASSIGNED_NOT_SENT_TO_VENDOR,
     CHECKOUT_STATUS_CHECKED_OUT,
     CHECKOUT_STATUS_NEEDS_REVIEW,
     CHECKOUT_STATUS_NOT_CHECKED_OUT,
@@ -40,8 +41,9 @@ class TestPendingBucket:
         assert _classify_pending_bucket(is_completed=True, has_weight_entry=True, has_start_cleaning=True) is None
 
 
-def _staging_execute_side_effect(cursor, bag_rows, scan_events=None):
+def _staging_execute_side_effect(cursor, bag_rows, scan_events=None, presence_rows=None):
     scan_events = scan_events or []
+    presence_rows = presence_rows or []
 
     def execute_side_effect(sql, args=None):
         s = " ".join(sql.split())
@@ -49,6 +51,16 @@ def _staging_execute_side_effect(cursor, bag_rows, scan_events=None):
             cursor.fetchall.return_value = bag_rows
         elif "FROM rinse_bag_registry r" in s and "date_clean" in s:
             cursor.fetchall.return_value = []
+        elif "FROM rinse_cleaner_ticket_presence" in s:
+            cursor.fetchall.return_value = presence_rows
+        elif "FROM upload_batches" in s or "FROM upload_batch_rows" in s:
+            cursor.fetchall.return_value = []
+        elif "orders_staging WHERE organization_id" in s and "ticket_id" in s:
+            cursor.fetchone.return_value = None
+        elif "rinse_bag_registry WHERE organization_id" in s and "bag_id" in s:
+            cursor.fetchone.return_value = None
+        elif "rinse_bag_scan_events" in s and "COUNT" in s:
+            cursor.fetchone.return_value = {"cnt": 0}
         elif "rinse_bag_scan_events" in s and "purpose" in s:
             cursor.fetchall.return_value = scan_events
         elif "rinse_bag_scan_events" in s:
@@ -590,3 +602,132 @@ class TestOperationalWorkitemDashboardStats:
         assert by_bag["EARLY"]["workitem_stats"]["has_workitem"] is False
         assert by_bag["VALID"]["workitem_stats"]["has_workitem"] is True
         assert by_bag["VALID"]["workitem_stats"]["create_workitem_count"] == 1
+
+
+class TestPresenceIncomingLifecycle:
+    def test_ready_for_vendor_without_registry_appears_assigned_not_sent(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [],
+            presence_rows=[
+                {
+                    "bag_id": "READY1",
+                    "portal_status": "ready_for_vendor",
+                    "customer_name": "Incoming Customer",
+                    "estimated_delivery_date": date(2026, 5, 31),
+                    "rush_flag": "NON-RUSH",
+                    "service_type": "WF",
+                    "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+                }
+            ],
+        )
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
+
+        assert out["portal_alignment"]["wf_ready_for_vendor_presence"] == 1
+        assert out["groups"]["combined"]["by_lifecycle_status"][ASSIGNED_NOT_SENT_TO_VENDOR] == 1
+        row = out["rows"][0]
+        assert row["bag_id"] == "READY1"
+        assert row["current_lifecycle_status"] == ASSIGNED_NOT_SENT_TO_VENDOR
+        assert row["presence_source"] is True
+
+    def test_at_vendor_presence_without_scans_is_sent_to_vendor(self):
+        from backend.rinse_bag_lifecycle_status import SENT_TO_VENDOR
+
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [],
+            presence_rows=[
+                {
+                    "bag_id": "ATV1",
+                    "portal_status": "at_vendor",
+                    "customer_name": "At Vendor",
+                    "estimated_delivery_date": date(2026, 5, 31),
+                    "rush_flag": "RUSH",
+                    "service_type": "WF",
+                    "portal_status_first_seen_at": datetime(2026, 5, 30, 10, 0),
+                }
+            ],
+        )
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
+
+        assert out["portal_alignment"]["wf_at_vendor_presence_only"] == 1
+        assert out["rows"][0]["current_lifecycle_status"] == SENT_TO_VENDOR
+
+    def test_hd_presence_excluded_from_wf_lifecycle(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [],
+            presence_rows=[
+                {
+                    "bag_id": "HD1",
+                    "portal_status": "ready_for_vendor",
+                    "customer_name": "HD Customer",
+                    "estimated_delivery_date": date(2026, 5, 31),
+                    "rush_flag": None,
+                    "service_type": "HD",
+                    "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+                }
+            ],
+        )
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
+
+        assert out["portal_alignment"]["hd_presence_excluded"] == 1
+        assert out["groups"]["combined"]["total"] == 0
+
+    def test_assigned_count_matches_ready_for_vendor_presence(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [],
+            presence_rows=[
+                {
+                    "bag_id": "R1",
+                    "portal_status": "ready_for_vendor",
+                    "customer_name": "A",
+                    "estimated_delivery_date": date(2026, 5, 31),
+                    "rush_flag": "RUSH",
+                    "service_type": "WF",
+                    "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+                },
+                {
+                    "bag_id": "R2",
+                    "portal_status": "ready_for_vendor",
+                    "customer_name": "B",
+                    "estimated_delivery_date": date(2026, 5, 31),
+                    "rush_flag": "NON-RUSH",
+                    "service_type": "WF",
+                    "portal_status_first_seen_at": datetime(2026, 5, 30, 10, 0),
+                },
+            ],
+        )
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
+
+        assert out["portal_alignment"]["wf_ready_for_vendor_presence"] == 2
+        assert out["groups"]["combined"]["by_lifecycle_status"][ASSIGNED_NOT_SENT_TO_VENDOR] == 2

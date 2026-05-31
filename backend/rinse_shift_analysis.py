@@ -29,6 +29,7 @@ from backend.rinse_operations_dashboard import (
     _service_expr,
     effective_rush_expr,
 )
+from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
 from backend.rinse_order_search import _active_staging_where_sql
 from backend.rinse_processing_productivity import build_processing_productivity
 from backend.rinse_processing_settings import get_processing_settings
@@ -475,8 +476,12 @@ def _build_portal_reconciliation_meta(
         "entity_type": "bags",
         "count_basis": {
             "lifecycle_scope": (
-                "active orders_staging WF bags + registry-only WF rows "
-                "(date_clean=target, not in active staging)"
+                "active orders_staging WF + registry supplement + incoming "
+                "ready_for_vendor/at_vendor presence (not in staging)"
+            ),
+            "incoming_presence_scope": (
+                "rinse_cleaner_ticket_presence active rows; ready_for_vendor "
+                "counts as Assigned/Not Sent; not mixed into at-vendor staging"
             ),
             "portal_batch_scope": "latest confirmed upload_batch_rows (CleanerTickets CSV)",
             "portal_active_staging_scope": (
@@ -780,6 +785,16 @@ def _load_pending_bag_rows(
             wf_registry_supplement += 1
             rows.append(row)
 
+    presence_rows, presence_meta = load_wf_presence_incoming_rows(
+        cursor, org, target_date=td, exclude_bag_ids=seen
+    )
+    for row in presence_rows:
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid or bid in seen:
+            continue
+        seen.add(bid)
+        rows.append(row)
+
     meta = {
         "scope": "wf_lifecycle",
         "portal_active_total": portal_active_total,
@@ -788,6 +803,7 @@ def _load_pending_bag_rows(
         "wf_due_today_staging": wf_due_today_staging,
         "wf_not_due_today_staging": wf_not_due_today_staging,
         "wf_registry_supplement": wf_registry_supplement,
+        **presence_meta,
         "wf_lifecycle_total": len(rows),
         "wf_total": len(rows),
     }
@@ -861,6 +877,8 @@ def build_lifecycle_pending_payload(
             lifecycle = derive_bag_lifecycle_status(
                 events_by_bag.get(bid) or [],
                 bag_id=bid,
+                ready_for_vendor_presence=bool(row.get("ready_for_vendor_presence")),
+                at_vendor_presence=bool(row.get("at_vendor_presence")),
                 logistics_status=row.get("logistics_status"),
                 mapped_internal_users=mapped_users,
                 washing_minutes=int(proc_settings.get("washing_minutes") or 30),
@@ -889,7 +907,11 @@ def build_lifecycle_pending_payload(
         lifecycle_group = lifecycle_group_for_status(lifecycle_status)
         is_completed = lifecycle_status in LIFECYCLE_COMPLETED_STATUSES
         exception_flags = list(lifecycle.get("exception_flags") or [])
-        needs_review = bool(lifecycle.get("needs_review")) or lifecycle_fallback
+        needs_review = (
+            bool(lifecycle.get("needs_review"))
+            or lifecycle_fallback
+            or bool(row.get("needs_review_presence_svc"))
+        )
         has_exceptions = len(exception_flags) > 0
         checkout_status = str(lifecycle.get("checkout_status") or CHECKOUT_STATUS_NOT_CHECKED_OUT)
 
@@ -939,6 +961,8 @@ def build_lifecycle_pending_payload(
                 "legacy_pending_bucket": legacy_bucket,
                 "is_completed": is_completed,
                 "pending_bucket": legacy_bucket,
+                "presence_source": bool(row.get("presence_source")),
+                "presence_portal_status": row.get("presence_portal_status"),
             }
         )
 

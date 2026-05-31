@@ -211,6 +211,105 @@ def get_presence_flags(cursor, organization_id: int, bag_id: str) -> tuple[bool,
     return False, False
 
 
+def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
+    rf = str(row.get("rush_flag") or "").strip().upper()
+    if rf in ("RUSH", "NON-RUSH"):
+        return rf
+    dc = row.get("estimated_delivery_date")
+    if isinstance(dc, date):
+        return "RUSH" if dc < target_date else "NON-RUSH"
+    return "NON-RUSH"
+
+
+def load_wf_presence_incoming_rows(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+    exclude_bag_ids: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Active portal presence rows not already in staging/registry lifecycle scope.
+
+    ready_for_vendor → incoming ASSIGNED_NOT_SENT (no registry required).
+    at_vendor → SENT_TO_VENDOR when bag is not already in active staging.
+    HD presence rows are counted in meta but excluded from WF lifecycle rows.
+    """
+    meta = {
+        "wf_ready_for_vendor_presence": 0,
+        "wf_at_vendor_presence_only": 0,
+        "hd_presence_excluded": 0,
+        "presence_service_type_unknown": 0,
+    }
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return [], meta
+
+    org = int(organization_id)
+    td = target_date
+    excluded = {str(b or "").strip().upper() for b in exclude_bag_ids if str(b or "").strip()}
+    cursor.execute(
+        """
+        SELECT
+            bag_id,
+            portal_status,
+            customer_name,
+            estimated_delivery_date,
+            rush_flag,
+            service_type,
+            portal_status_first_seen_at
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s
+          AND active = 1
+          AND portal_status IN (%s, %s)
+        """,
+        (org, PORTAL_STATUS_READY, PORTAL_STATUS_AT_VENDOR),
+    )
+    rows: list[dict[str, Any]] = []
+    for raw in cursor.fetchall() or []:
+        if not isinstance(raw, dict):
+            continue
+        bid = str(raw.get("bag_id") or "").strip().upper()
+        if not bid or bid in excluded:
+            continue
+        ps = str(raw.get("portal_status") or "").strip()
+        svc_raw = str(raw.get("service_type") or "").strip().upper()
+        if svc_raw == "HD":
+            meta["hd_presence_excluded"] += 1
+            continue
+        if svc_raw and svc_raw != "WF":
+            meta["hd_presence_excluded"] += 1
+            continue
+        if not svc_raw:
+            meta["presence_service_type_unknown"] += 1
+
+        ready = ps == PORTAL_STATUS_READY
+        at_vendor = ps == PORTAL_STATUS_AT_VENDOR
+        if ready:
+            meta["wf_ready_for_vendor_presence"] += 1
+        elif at_vendor:
+            meta["wf_at_vendor_presence_only"] += 1
+
+        rows.append(
+            {
+                "bag_id": bid,
+                "service_type": "WF",
+                "effective_rush": _presence_effective_rush(raw, td),
+                "is_completed": 0,
+                "name_clean": raw.get("customer_name"),
+                "weight_num": None,
+                "logistics_status": None,
+                "date_clean": raw.get("estimated_delivery_date"),
+                "ready_for_vendor_presence": ready,
+                "at_vendor_presence": at_vendor,
+                "presence_source": True,
+                "presence_portal_status": ps,
+                "needs_review_presence_svc": not bool(svc_raw),
+                "presence_first_seen_at": raw.get("portal_status_first_seen_at"),
+            }
+        )
+    return rows, meta
+
+
 def apply_presence_scrape(
     cursor,
     organization_id: int,

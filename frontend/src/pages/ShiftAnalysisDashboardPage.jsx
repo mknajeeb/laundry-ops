@@ -895,10 +895,13 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         <Box sx={{ mb: 1.5 }}>
           <Typography variant="h6" fontWeight={700}>Production lifecycle</Typography>
           <Typography variant="caption" color="text.secondary" display="block">
-            WF production scope ({formatCount(portalAlignment.wf_lifecycle_total ?? pendingGroups.combined?.total ?? 0)} bags)
+            Production + incoming WF lifecycle ({formatCount(portalAlignment.wf_lifecycle_total ?? pendingGroups.combined?.total ?? 0)} bags)
             {portalAlignment.wf_at_vendor_staging != null
-              ? ` · ${formatCount(portalAlignment.wf_at_vendor_staging)} WF bags at vendor (active staging)`
-              : " · WF bags at vendor"}
+              ? ` · ${formatCount(portalAlignment.wf_at_vendor_staging)} at vendor (staging)`
+              : ""}
+            {portalAlignment.wf_ready_for_vendor_presence != null
+              ? ` · ${formatCount(portalAlignment.wf_ready_for_vendor_presence)} ready for vendor (presence)`
+              : ""}
             {summary?.pending?.status_model ? ` · ${summary.pending.status_model}` : ""}
             {summary?.pending?.evaluation_time ? ` · ${formatDateTime(summary.pending.evaluation_time)}` : ""}
           </Typography>
@@ -945,6 +948,10 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                 ["wf_not_due_today_staging", "Staging WF not due today", "#64748b"],
                 ["hd_excluded", "HD excluded", "#94a3b8"],
                 ["wf_registry_supplement", "Registry supplement", "#7c3aed"],
+                ["wf_ready_for_vendor_presence", "Ready for vendor (presence)", "#6366f1"],
+                ["wf_at_vendor_presence_only", "At vendor (presence only)", "#4f46e5"],
+                ["hd_presence_excluded", "HD presence excluded", "#94a3b8"],
+                ["presence_service_type_unknown", "Presence svc unknown", "#cbd5e1"],
               ].map(([key, label, color]) => (
                 portalAlignment[key] != null ? (
                   <Grid item xs={6} sm={4} md={3} key={key}>
