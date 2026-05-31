@@ -982,6 +982,33 @@ def build_shift_analysis_summary(
         reject_no_start_cleaning_minutes=reject_limit,
     )
 
+    from backend.rinse_shift_monitor import (
+        build_live_monitor_payload,
+        build_staff_performance_payload,
+        get_monitor_settings,
+    )
+    from backend.tenant_feature_flags import get_tenant_feature_flags
+
+    eval_at = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    pending_rows = pending.get("rows") or []
+    bag_ids = [str(r.get("bag_id") or "").strip() for r in pending_rows if isinstance(r, dict) and r.get("bag_id")]
+    events_by_bag = _load_scan_events_for_bags(cursor, org, bag_ids)
+    monitor_settings = get_monitor_settings(cursor, org, proc_settings)
+    feature_flags = get_tenant_feature_flags(cursor, org)
+
+    live_monitor = build_live_monitor_payload(
+        pending_rows,
+        events_by_bag=events_by_bag,
+        monitor_settings=monitor_settings,
+        evaluation_time=eval_at,
+        proc_settings=proc_settings,
+    )
+    staff_performance = build_staff_performance_payload(
+        pending_rows,
+        events_by_bag=events_by_bag,
+        folding_rows=lb_rows,
+    )
+
     return {
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
@@ -1015,6 +1042,10 @@ def build_shift_analysis_summary(
         "pending": pending,
         "operational": operational,
         "processing_settings": proc_settings,
+        "monitor_settings": monitor_settings,
+        "live_monitor": live_monitor,
+        "staff_performance": staff_performance,
+        "feature_flags": feature_flags,
     }
 
 
