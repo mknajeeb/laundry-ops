@@ -10,7 +10,6 @@ from backend.rinse_bag_lifecycle_status import (
     FOLDED_COMPLETED,
     IN_DRYING,
     IN_WASHING,
-    LOAD_WASHER,
     PENDING_WEIGHING,
     SENT_TO_RINSE,
     SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN,
@@ -139,14 +138,15 @@ class TestSortingLifecycle:
 
 
 class TestWashDryStages:
-    def test_load_washer_before_ready_washer(self):
+    def test_load_washer_before_ready_washer_is_in_washing(self):
         events = [
             _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
             _ev("weight-entry", datetime(2026, 5, 28, 8, 10), ev_id=2, scan_index=2),
             _ev("start-cleaning", datetime(2026, 5, 28, 9, 0), ev_id=3, scan_index=3),
         ]
         out = derive_bag_lifecycle_status(events, bag_id="W1")
-        assert out["current_lifecycle_status"] == LOAD_WASHER
+        assert out["current_lifecycle_status"] == IN_WASHING
+        assert out["stage_detail"]["LOAD_WASHER"]["end_time"] is None
 
     def test_in_washing_after_ready_washer(self):
         events = [
@@ -168,11 +168,28 @@ class TestWashDryStages:
             _ev("start-cleaning", datetime(2026, 5, 28, 9, 0), ev_id=2, scan_index=2),
             _ev("drying", datetime(2026, 5, 28, 10, 0), ev_id=3, scan_index=3),
         ]
-        out = derive_bag_lifecycle_status(events, bag_id="D1", drying_minutes=40)
+        out = derive_bag_lifecycle_status(events, bag_id="D1", drying_minutes=45)
         assert out["current_lifecycle_status"] == IN_DRYING
         assert out["stage_detail"]["in_drying"]["expected_end_time"] == datetime(
-            2026, 5, 28, 10, 40
+            2026, 5, 28, 10, 45
         )
+
+    def test_never_emits_load_washer_or_load_dryer_lifecycle(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+            _ev("start-cleaning", datetime(2026, 5, 28, 9, 0), ev_id=2, scan_index=2),
+            _ev("ready-washer", datetime(2026, 5, 28, 9, 10), ev_id=3, scan_index=3),
+            _ev("drying", datetime(2026, 5, 28, 10, 0), ev_id=4, scan_index=4),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="STAGE1")
+        assert out["current_lifecycle_status"] == IN_DRYING
+        assert out["current_lifecycle_status"] not in ("LOAD_WASHER", "LOAD_DRYER")
+
+    def test_clean_rack_variants_folded_completed(self):
+        for rack in ("CLEAN", "CLEAN-01", "FINAL CLEAN", "ABC-CLEAN-XYZ"):
+            events = [_ev("", datetime(2026, 5, 28, 12, 0), ev_id=1, rack=rack)]
+            out = derive_bag_lifecycle_status(events, bag_id=f"R-{rack}")
+            assert out["current_lifecycle_status"] == FOLDED_COMPLETED
 
 
 class TestFoldedAndSentToRinse:

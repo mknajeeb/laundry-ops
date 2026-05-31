@@ -5,7 +5,7 @@ Rules:
 - Ghost only exact normalized purpose ``cleaning`` (not start-cleaning, not CLEAN rack).
 - Lifecycle is anchored at first ``sent-to-vendor``; events before anchor are ignored.
 - ``CLEAN`` rack scan means FOLDED_COMPLETED (case-insensitive contains).
-- Lifecycle status is separate from operational_flags and exception_flags.
+- ``LOAD_WASHER`` / ``LOAD_DRYER`` are performance stages only — not ``current_lifecycle_status``.
 """
 
 from __future__ import annotations
@@ -14,11 +14,20 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_completion import rack_contains_clean, user_is_internal
-from backend.rinse_bag_gaming_performance import (
-    _event_ts,
-    _sort_key_ev,
-    _ts_valid,
+from backend.rinse_bag_stage_bounds import (
+    event_ts as _event_ts,
+    events_after_ts as _events_after_ts,
+    events_on_or_after as _events_on_or_after,
+    first_drying_after as _first_drying_after,
+    first_start_cleaning_after as _first_start_cleaning_after,
+    first_weight_after_anchor as _first_weight_after_anchor,
     gaming_events_from_records,
+    lifecycle_anchor as _lifecycle_anchor,
+    load_washer_bounds as _load_washer_bounds,
+    sort_key_ev as _sort_key_ev,
+    sorting_bounds_after_weight as _sorting_bounds_after_weight,
+    ts_valid as _ts_valid,
+    visible_timeline as _visible_timeline,
 )
 from backend.rinse_processing_settings import (
     DEFAULT_DRYING_MINUTES,
@@ -29,12 +38,7 @@ from backend.rinse_scan_purpose import (
     is_create_bulk_workitem_purpose,
     is_create_issue_purpose,
     is_create_workitem_purpose,
-    is_drying_purpose,
     is_ghost_cleaning_purpose,
-    is_load_washer_end_purpose,
-    is_sent_to_vendor_purpose,
-    is_start_cleaning_purpose,
-    is_weight_entry_purpose,
     normalize_scan_purpose,
     purpose_contains_workitem,
 )
@@ -52,13 +56,15 @@ SENT_TO_VENDOR = "SENT_TO_VENDOR"
 PENDING_WEIGHING = "PENDING_WEIGHING"
 WEIGHED_NOT_STARTED = "WEIGHED_NOT_STARTED"
 SORTED_READY_FOR_WASH = "SORTED_READY_FOR_WASH"
-LOAD_WASHER = "LOAD_WASHER"
 IN_WASHING = "IN_WASHING"
-LOAD_DRYER = "LOAD_DRYER"
 IN_DRYING = "IN_DRYING"
 FOLDED_COMPLETED = "FOLDED_COMPLETED"
 SENT_TO_RINSE = "SENT_TO_RINSE"
 LIFECYCLE_UNKNOWN = "UNKNOWN"
+
+# Performance stage keys — not lifecycle statuses
+LOAD_WASHER = "LOAD_WASHER"
+LOAD_DRYER = "LOAD_DRYER"
 
 # Legacy alias
 RETURNED_TO_RINSE = SENT_TO_RINSE
@@ -69,9 +75,7 @@ ALL_LIFECYCLE_STATUSES = (
     PENDING_WEIGHING,
     WEIGHED_NOT_STARTED,
     SORTED_READY_FOR_WASH,
-    LOAD_WASHER,
     IN_WASHING,
-    LOAD_DRYER,
     IN_DRYING,
     FOLDED_COMPLETED,
     SENT_TO_RINSE,
@@ -112,40 +116,6 @@ def _presence_source(*, kind: str, present: bool) -> dict[str, Any] | None:
     return {"source_kind": kind, "present": True}
 
 
-def _visible_timeline(timeline: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [ev for ev in timeline if not is_ghost_cleaning_purpose(ev.get("purpose"))]
-
-
-def _lifecycle_anchor(
-    timeline: Sequence[Mapping[str, Any]],
-) -> tuple[datetime | None, Mapping[str, Any] | None]:
-    """First sent-to-vendor timestamp anchors lifecycle processing."""
-    candidates: list[Mapping[str, Any]] = []
-    for ev in timeline:
-        if not is_sent_to_vendor_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if _ts_valid(ts):
-            candidates.append(ev)
-    if not candidates:
-        return None, None
-    ev = min(candidates, key=_sort_key_ev)
-    return _event_ts(ev), ev
-
-
-def _events_on_or_after(
-    timeline: Sequence[Mapping[str, Any]], anchor_ts: datetime | None
-) -> list[dict[str, Any]]:
-    visible = _visible_timeline(timeline)
-    if anchor_ts is None:
-        return visible
-    return [
-        ev
-        for ev in visible
-        if _ts_valid(_event_ts(ev)) and _event_ts(ev) >= anchor_ts
-    ]
-
-
 def operational_flags_from_timeline(timeline: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     visible = _visible_timeline(timeline)
     issues = [ev for ev in visible if is_create_issue_purpose(ev.get("purpose"))]
@@ -164,64 +134,6 @@ def operational_flags_from_timeline(timeline: Sequence[Mapping[str, Any]]) -> di
     }
 
 
-def _first_weight_after_anchor(
-    anchored: Sequence[Mapping[str, Any]],
-) -> tuple[Mapping[str, Any] | None, datetime | None]:
-    for ev in anchored:
-        if not is_weight_entry_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if _ts_valid(ts):
-            return ev, ts
-    return None, None
-
-
-def _events_after_ts(
-    anchored: Sequence[Mapping[str, Any]], after_ts: datetime
-) -> list[dict[str, Any]]:
-    return [
-        ev
-        for ev in anchored
-        if _ts_valid(_event_ts(ev)) and _event_ts(ev) > after_ts
-    ]
-
-
-def _first_start_cleaning_after(
-    anchored: Sequence[Mapping[str, Any]], *, after_ts: datetime | None = None
-) -> Mapping[str, Any] | None:
-    for ev in anchored:
-        if not is_start_cleaning_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if not _ts_valid(ts):
-            continue
-        if after_ts is not None and _ts_valid(after_ts) and ts <= after_ts:
-            continue
-        return ev
-    return None
-
-
-def _sorting_bounds_after_weight(
-    anchored: Sequence[Mapping[str, Any]], weight_ts: datetime
-) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
-    after_weight = _events_after_ts(anchored, weight_ts)
-    if not after_weight:
-        return None, None
-    sorting_start_ev = after_weight[0]
-    start_cleaning_ev = _first_start_cleaning_after(anchored, after_ts=weight_ts)
-    if start_cleaning_ev is not None:
-        sc_ts = _event_ts(start_cleaning_ev)
-        before_sc = [
-            ev
-            for ev in after_weight
-            if _ts_valid(_event_ts(ev)) and _event_ts(ev) < sc_ts
-        ]
-        sorting_end_ev = max(before_sc, key=_sort_key_ev) if before_sc else None
-    else:
-        sorting_end_ev = max(after_weight, key=_sort_key_ev)
-    return sorting_start_ev, sorting_end_ev
-
-
 def _first_clean_rack_event(
     timeline: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any] | None, datetime | None]:
@@ -231,41 +143,6 @@ def _first_clean_rack_event(
             if _ts_valid(ts):
                 return ev, ts
     return None, None
-
-
-def _load_washer_bounds(
-    anchored: Sequence[Mapping[str, Any]],
-) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None, datetime | None]:
-    start_ev = _first_start_cleaning_after(anchored)
-    if start_ev is None:
-        return None, None, None
-    start_ts = _event_ts(start_ev)
-    end_candidates = [
-        ev
-        for ev in anchored
-        if _ts_valid(_event_ts(ev))
-        and _event_ts(ev) >= start_ts
-        and is_load_washer_end_purpose(ev.get("purpose"))
-    ]
-    if not end_candidates:
-        return start_ev, None, start_ts
-    end_ev = max(end_candidates, key=_sort_key_ev)
-    return start_ev, end_ev, _event_ts(end_ev)
-
-
-def _first_drying_after(
-    anchored: Sequence[Mapping[str, Any]], *, after_ts: datetime | None = None
-) -> Mapping[str, Any] | None:
-    for ev in anchored:
-        if not is_drying_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if not _ts_valid(ts):
-            continue
-        if after_ts is not None and _ts_valid(after_ts) and ts < after_ts:
-            continue
-        return ev
-    return None
 
 
 def _is_mapped_internal_operator(name: str, mapped_users: set[str]) -> bool:
@@ -284,11 +161,6 @@ def _derive_checkout_status(
     *,
     has_clean_rack: bool,
 ) -> tuple[str, bool, bool]:
-    """
-    Facility checkout signal — separate from production lifecycle status.
-
-    Returns (checkout_status, needs_review, checkout_without_clean).
-    """
     logistics = str(logistics_status or "").strip().upper()
     if logistics not in _LOGISTICS_CHECKED_OUT:
         return CHECKOUT_STATUS_NOT_CHECKED_OUT, False, False
@@ -305,7 +177,6 @@ def _evaluate_sent_to_rinse(
     missing_from_next_portal_scrape: bool,
     mapped_users: set[str],
 ) -> tuple[bool, str | None, datetime | None, dict[str, Any] | None, bool]:
-    """Returns (is_sent, reason, timestamp, source, needs_review)."""
     if clean_ev is None or clean_at is None:
         return False, None, None, None, False
 
@@ -391,16 +262,6 @@ def derive_bag_lifecycle_status(
     evaluation_time: datetime | None = None,
     folding_result: Any = None,
 ) -> dict[str, Any]:
-    """
-    Derive normalized lifecycle status for one bag.
-
-    ``ready_for_vendor_presence`` / ``at_vendor_presence`` are optional portal inputs.
-    ``missing_from_next_portal_scrape`` indicates bag absent from next portal snapshot
-    after CLEAN rack scan.
-
-    ``logistics_status`` is used only for ``checkout_status`` (facility checkout), not
-    for ``current_lifecycle_status``.
-    """
     bid = str(bag_id or "").strip()
     oid = str(order_id or bid).strip() or bid
     timeline = gaming_events_from_records(events)
@@ -471,7 +332,7 @@ def derive_bag_lifecycle_status(
             status = IN_DRYING
             status_timestamp = dry_ts
             status_source_event = _status_source_from_event(drying_ev)
-            stage_detail["load_dryer"] = {
+            stage_detail[LOAD_DRYER] = {
                 "start_time": dry_ts,
                 "end_time": dry_ts,
             }
@@ -479,31 +340,24 @@ def derive_bag_lifecycle_status(
                 "start_time": dry_ts,
                 "expected_end_time": dry_ts + timedelta(minutes=int(drying_minutes)),
             }
-        elif load_end is not None and load_end_ts is not None:
+        elif start_cleaning_ev is not None or load_start is not None:
+            sc_ev = load_start or start_cleaning_ev
+            in_wash_start_ts = load_end_ts if load_end_ts is not None else _event_ts(sc_ev)
             status = IN_WASHING
-            status_timestamp = load_end_ts
-            status_source_event = _status_source_from_event(load_end)
-            stage_detail["load_washer"] = {
-                "start_time": _event_ts(load_start),
-                "end_time": load_end_ts,
-                "end_purpose": normalize_scan_purpose(load_end.get("purpose")),
+            status_timestamp = in_wash_start_ts
+            status_source_event = _status_source_from_event(load_end or sc_ev)
+            stage_detail[LOAD_WASHER] = {
+                "start_time": _event_ts(sc_ev),
+                "end_time": _event_ts(load_end) if load_end else None,
+                "end_purpose": normalize_scan_purpose(load_end.get("purpose"))
+                if load_end
+                else None,
             }
             stage_detail["in_washing"] = {
-                "start_time": load_end_ts,
-                "expected_end_time": load_end_ts + timedelta(minutes=int(washing_minutes)),
+                "start_time": in_wash_start_ts,
+                "expected_end_time": in_wash_start_ts
+                + timedelta(minutes=int(washing_minutes)),
             }
-        elif load_start is not None:
-            status = LOAD_WASHER
-            status_timestamp = _event_ts(load_start)
-            status_source_event = _status_source_from_event(load_start)
-            stage_detail["load_washer"] = {
-                "start_time": status_timestamp,
-                "end_time": None,
-            }
-        elif start_cleaning_ev is not None:
-            status = LOAD_WASHER
-            status_timestamp = _event_ts(start_cleaning_ev)
-            status_source_event = _status_source_from_event(start_cleaning_ev)
         elif weight_ev is not None and weight_ts is not None:
             sorting_start, sorting_end = _sorting_bounds_after_weight(anchored, weight_ts)
             after_weight = _events_after_ts(anchored, weight_ts)

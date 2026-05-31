@@ -439,7 +439,7 @@ def build_lifecycle_status_for_bag(
         logistics_status=logistics_status,
         mapped_internal_users=mapped_internal_users,
         washing_minutes=int(proc.get("washing_minutes") or 30),
-        drying_minutes=int(proc.get("drying_minutes") or 40),
+        drying_minutes=int(proc.get("drying_minutes") or 45),
         reject_after_create_issue_minutes=int(proc.get("reject_after_create_issue_minutes") or 45),
     )
     return {
