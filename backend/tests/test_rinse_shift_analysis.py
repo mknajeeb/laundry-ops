@@ -493,3 +493,100 @@ class TestOperationalRecordsLifecycleMapping:
         assert rec["current_lifecycle_status"] == FOLDED_COMPLETED
         assert rec["lifecycle_group"] == "folded"
         assert rec["exception_codes"] == []
+
+
+class TestOperationalWorkitemDashboardStats:
+    def test_workitem_stats_match_eligible_events(self):
+        from backend.rinse_shift_analysis import build_operational_dashboard_data
+
+        cursor = MagicMock()
+        pending = {
+            "rows": [
+                {"bag_id": "EARLY", "name_clean": "Early", "rush": False},
+                {"bag_id": "VALID", "name_clean": "Valid", "rush": True},
+            ]
+        }
+
+        all_events = {
+            "EARLY": [
+                {
+                    "bag_id": "EARLY",
+                    "id": 1,
+                    "rack": "",
+                    "user_name": "Alex",
+                    "purpose": "workitems-added",
+                    "scanned_at_parsed": datetime(2026, 5, 28, 21, 22),
+                    "scan_index": 1,
+                },
+                {
+                    "bag_id": "EARLY",
+                    "id": 2,
+                    "rack": "VeeWash Dirty",
+                    "user_name": "Alex",
+                    "purpose": "sent-to-vendor",
+                    "scanned_at_parsed": datetime(2026, 5, 29, 18, 47),
+                    "scan_index": 2,
+                },
+                {
+                    "bag_id": "EARLY",
+                    "id": 3,
+                    "rack": "",
+                    "user_name": "Alex",
+                    "purpose": "weight-entry",
+                    "scanned_at_parsed": datetime(2026, 5, 30, 11, 2),
+                    "scan_index": 3,
+                },
+            ],
+            "VALID": [
+                {
+                    "bag_id": "VALID",
+                    "id": 4,
+                    "rack": "VeeWash Dirty",
+                    "user_name": "Alex",
+                    "purpose": "sent-to-vendor",
+                    "scanned_at_parsed": datetime(2026, 5, 29, 18, 47),
+                    "scan_index": 1,
+                },
+                {
+                    "bag_id": "VALID",
+                    "id": 5,
+                    "rack": "",
+                    "user_name": "Alex",
+                    "purpose": "weight-entry",
+                    "scanned_at_parsed": datetime(2026, 5, 30, 11, 2),
+                    "scan_index": 2,
+                },
+                {
+                    "bag_id": "VALID",
+                    "id": 6,
+                    "rack": "",
+                    "user_name": "Alex",
+                    "purpose": "create-workitem",
+                    "scanned_at_parsed": datetime(2026, 5, 30, 11, 15),
+                    "scan_index": 3,
+                },
+            ],
+        }
+
+        def execute_side_effect(sql, args=None):
+            s = " ".join(sql.split())
+            if "FROM rinse_bag_scan_events" in s and "scanned_at_parsed" in s:
+                bag_ids = [str(a).strip() for a in (args or [])[1:]]
+                rows = []
+                for bid in bag_ids:
+                    rows.extend(all_events.get(bid, []))
+                cursor.fetchall.return_value = rows
+            elif "FROM rinse_bag_scan_events" in s:
+                cursor.fetchall.return_value = []
+
+        cursor.execute.side_effect = execute_side_effect
+
+        out = build_operational_dashboard_data(cursor, 1, pending_payload=pending)
+        stats = out["stats"]
+        by_bag = {r["bag_id"]: r for r in out["records"]}
+
+        assert stats["bags_with_workitems"] == 1
+        assert stats["total_workitem_events"] == 1
+        assert by_bag["EARLY"]["workitem_stats"]["has_workitem"] is False
+        assert by_bag["VALID"]["workitem_stats"]["has_workitem"] is True
+        assert by_bag["VALID"]["workitem_stats"]["create_workitem_count"] == 1

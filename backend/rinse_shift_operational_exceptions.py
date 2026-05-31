@@ -13,6 +13,7 @@ from backend.rinse_bag_gaming_performance import (
     evaluate_sorting_stage,
     gaming_events_from_records,
 )
+from backend.rinse_bag_stage_bounds import workitem_eligible_events
 from backend.rinse_processing_settings import (
     DEFAULT_REJECT_AFTER_CREATE_ISSUE,
     DEFAULT_REJECT_NO_START,
@@ -83,9 +84,10 @@ def _has_washing_completion_evidence(
 
 
 def bag_workitem_issue_stats(timeline: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    workitems = [ev for ev in timeline if is_create_workitem_purpose(ev.get("purpose"))]
+    eligible = workitem_eligible_events(timeline)
+    workitems = [ev for ev in eligible if is_create_workitem_purpose(ev.get("purpose"))]
+    bulk = [ev for ev in eligible if is_create_bulk_workitem_purpose(ev.get("purpose"))]
     issues = [ev for ev in timeline if is_create_issue_purpose(ev.get("purpose"))]
-    bulk = [ev for ev in timeline if is_create_bulk_workitem_purpose(ev.get("purpose"))]
     return {
         "create_workitem_count": len(workitems),
         "create_issue_count": len(issues),

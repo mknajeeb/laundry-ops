@@ -106,6 +106,25 @@ def first_weight_after_anchor(
     return None, None
 
 
+def workitem_eligible_events(
+    timeline: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Scan events eligible for workitem operational counts.
+
+    Requires sent-to-vendor anchor and first post-anchor weight-entry; only
+    events strictly after that weight-entry are included.
+    """
+    anchor_ts, _ = lifecycle_anchor(timeline)
+    if anchor_ts is None:
+        return []
+    anchored = events_on_or_after(timeline, anchor_ts)
+    _, weight_ts = first_weight_after_anchor(anchored)
+    if weight_ts is None:
+        return []
+    return events_after_ts(anchored, weight_ts)
+
+
 def last_exact_cleaning_before(
     timeline: Sequence[Mapping[str, Any]], *, before: datetime
 ) -> Mapping[str, Any] | None:

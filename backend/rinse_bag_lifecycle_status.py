@@ -28,6 +28,7 @@ from backend.rinse_bag_stage_bounds import (
     sorting_bounds_after_weight as _sorting_bounds_after_weight,
     ts_valid as _ts_valid,
     visible_timeline as _visible_timeline,
+    workitem_eligible_events,
 )
 from backend.rinse_processing_settings import (
     DEFAULT_DRYING_MINUTES,
@@ -118,10 +119,11 @@ def _presence_source(*, kind: str, present: bool) -> dict[str, Any] | None:
 
 def operational_flags_from_timeline(timeline: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     visible = _visible_timeline(timeline)
+    eligible = workitem_eligible_events(timeline)
     issues = [ev for ev in visible if is_create_issue_purpose(ev.get("purpose"))]
-    workitems = [ev for ev in visible if is_create_workitem_purpose(ev.get("purpose"))]
-    bulk = [ev for ev in visible if is_create_bulk_workitem_purpose(ev.get("purpose"))]
-    all_workitem = [ev for ev in visible if purpose_contains_workitem(ev.get("purpose"))]
+    workitems = [ev for ev in eligible if is_create_workitem_purpose(ev.get("purpose"))]
+    bulk = [ev for ev in eligible if is_create_bulk_workitem_purpose(ev.get("purpose"))]
+    all_workitem = [ev for ev in eligible if purpose_contains_workitem(ev.get("purpose"))]
     return {
         "has_create_issue": len(issues) > 0,
         "has_create_workitem": len(workitems) > 0,

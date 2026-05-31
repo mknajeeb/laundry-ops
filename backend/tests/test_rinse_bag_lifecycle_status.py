@@ -136,6 +136,36 @@ class TestSortingLifecycle:
         assert flags["has_workitem"] is True
         assert flags["workitem_count"] == 1
 
+    def test_workitem_before_sent_to_vendor_not_counted(self):
+        events = [
+            _ev("workitems-added", datetime(2026, 5, 28, 21, 22), ev_id=1),
+            _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=3, scan_index=3),
+        ]
+        flags = operational_flags_from_timeline(gaming_events_from_records(events))
+        assert flags["has_workitem"] is False
+        assert flags["workitem_count"] == 0
+
+    def test_workitem_after_vendor_before_weight_not_counted(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=1),
+            _ev("create-workitem", datetime(2026, 5, 29, 19, 0), ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=3, scan_index=3),
+        ]
+        flags = operational_flags_from_timeline(gaming_events_from_records(events))
+        assert flags["has_workitem"] is False
+        assert flags["has_create_workitem"] is False
+
+    def test_workitem_after_valid_weight_counted_in_operational_flags(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=1),
+            _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=2, scan_index=2),
+            _ev("create-bulk-workitem", datetime(2026, 5, 30, 11, 20), ev_id=3, scan_index=3),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="W1")
+        assert out["operational_flags"]["has_create_bulk_workitem"] is True
+        assert out["operational_flags"]["create_bulk_workitem_count"] == 1
+
 
 class TestWashDryStages:
     def test_load_washer_before_ready_washer_is_in_washing(self):

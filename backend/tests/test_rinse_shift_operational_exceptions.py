@@ -183,6 +183,59 @@ class TestBag00CY9RP1K6Regression:
         assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN not in flags
 
 
+class TestWorkitemEligibleAfterValidWeightEntry:
+    """Workitem counts only after first post-anchor weight-entry."""
+
+    def test_workitem_before_sent_to_vendor_ignored(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("workitems-added", datetime(2026, 5, 28, 21, 22), ev_id=1),
+                _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=2, scan_index=2),
+                _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=3, scan_index=3, rack=""),
+            ]
+        )
+        stats = bag_workitem_issue_stats(timeline)
+        assert stats["has_workitem"] is False
+        assert stats["create_workitem_count"] == 0
+
+    def test_workitem_after_vendor_before_weight_ignored(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=1),
+                _ev("create-workitem", datetime(2026, 5, 29, 19, 0), ev_id=2, scan_index=2),
+                _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=3, scan_index=3, rack=""),
+            ]
+        )
+        stats = bag_workitem_issue_stats(timeline)
+        assert stats["has_workitem"] is False
+        assert stats["create_workitem_count"] == 0
+
+    def test_workitem_after_valid_weight_entry_counted(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("workitems-added", datetime(2026, 5, 28, 21, 22), ev_id=1),
+                _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=2, scan_index=2),
+                _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=3, scan_index=3, rack=""),
+                _ev("create-workitem", datetime(2026, 5, 30, 11, 15), ev_id=4, scan_index=4),
+            ]
+        )
+        stats = bag_workitem_issue_stats(timeline)
+        assert stats["has_workitem"] is True
+        assert stats["create_workitem_count"] == 1
+
+    def test_create_bulk_workitem_after_valid_weight_entry_counted(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("sent-to-vendor", datetime(2026, 5, 29, 18, 47), ev_id=1),
+                _ev("weight-entry", datetime(2026, 5, 30, 11, 2), ev_id=2, scan_index=2, rack=""),
+                _ev("create-bulk-workitem", datetime(2026, 5, 30, 11, 20), ev_id=3, scan_index=3),
+            ]
+        )
+        stats = bag_workitem_issue_stats(timeline)
+        assert stats["has_bulk_workitem"] is True
+        assert stats["create_bulk_workitem_count"] == 1
+
+
 class TestOperationalDrilldownFilter:
     def test_filter_by_exception_code(self):
         records = [
@@ -203,9 +256,10 @@ class TestAggregateOperationalStats:
         records = [
             evaluate_bag_operational_profile(
                 [
-                    _ev("weight-entry", datetime(2026, 5, 28, 9, 0), ev_id=1),
-                    _ev("create-workitem", datetime(2026, 5, 28, 9, 5), ev_id=2, scan_index=2),
-                    _ev("create-issue", datetime(2026, 5, 28, 9, 6), ev_id=3, scan_index=3),
+                    _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+                    _ev("weight-entry", datetime(2026, 5, 28, 9, 0), ev_id=2, scan_index=2),
+                    _ev("create-workitem", datetime(2026, 5, 28, 9, 5), ev_id=3, scan_index=3),
+                    _ev("create-issue", datetime(2026, 5, 28, 9, 6), ev_id=4, scan_index=4),
                 ],
                 bag_meta={"bag_id": "B1", "rush": True},
             )
