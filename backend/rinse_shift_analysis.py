@@ -347,13 +347,33 @@ def build_operational_dashboard_data(
         bid = str(prow.get("bag_id") or "").strip()
         if not bid:
             continue
-        records.append(
-            evaluate_bag_operational_profile(
-                events_by_bag.get(bid) or [],
-                bag_meta=prow,
-                reject_no_start_cleaning_minutes=reject_limit,
-            )
+        rec = evaluate_bag_operational_profile(
+            events_by_bag.get(bid) or [],
+            bag_meta=prow,
+            reject_no_start_cleaning_minutes=reject_limit,
         )
+        for key in (
+            "lifecycle_group",
+            "lifecycle_group_label",
+            "current_lifecycle_status",
+            "lifecycle_status_label",
+            "status_timestamp",
+            "status_source_event",
+            "needs_review",
+            "exception_flags",
+            "operational_flags",
+            "checkout_status",
+            "stage_detail",
+            "rush",
+            "rush_label",
+            "customer",
+            "weight_lbs",
+        ):
+            if prow.get(key) is not None:
+                rec[key] = prow[key]
+        if prow.get("current_lifecycle_status"):
+            rec["activity"] = "lifecycle"
+        records.append(rec)
 
     stats = aggregate_operational_stats(records)
     return {
@@ -440,6 +460,186 @@ def _bag_purpose_flags(cursor, organization_id: int, bag_ids: list[str]) -> dict
     return flags
 
 
+def _build_portal_reconciliation_meta(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+    lifecycle_bag_ids: set[str],
+    wf_meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare lifecycle WF scope against latest portal CSV batch (CleanerTickets upload)."""
+    org = int(organization_id)
+    td = target_date
+    out: dict[str, Any] = {
+        "entity_type": "bags",
+        "count_basis": {
+            "lifecycle_scope": (
+                "active orders_staging WF bags + registry-only WF rows "
+                "(date_clean=target, not in active staging)"
+            ),
+            "portal_batch_scope": "latest confirmed upload_batch_rows (CleanerTickets CSV)",
+            "portal_active_staging_scope": (
+                "orders_staging rows matching active portal filter (excludes "
+                "SENT_TO_RINSE, FORCE_CHECKOUT, CHECKED_OUT)"
+            ),
+            "hd_handling": "HD excluded from WF lifecycle; counted in hd_excluded",
+            "completed_exclusion": (
+                "FORCE_CHECKOUT / CHECKED_OUT staging rows excluded from wf_at_vendor_staging"
+            ),
+        },
+        **wf_meta,
+        "portal_batch_wf": None,
+        "portal_batch_hd": None,
+        "portal_batch_total": None,
+        "portal_batch_wf_due_today": None,
+        "portal_batch_gaps": [],
+        "net_gap_vs_portal_batch_wf": None,
+    }
+    if not table_exists(cursor, "upload_batches") or not table_exists(cursor, "upload_batch_rows"):
+        return out
+
+    batch_pk = "batch_id"
+    if table_has_column(cursor, "upload_batches", "id") and not table_has_column(
+        cursor, "upload_batches", "batch_id"
+    ):
+        batch_pk = "id"
+    row_batch_col = (
+        "upload_batch_id"
+        if table_has_column(cursor, "upload_batch_rows", "upload_batch_id")
+        else "batch_id"
+    )
+    org_clause = ""
+    args: list[Any] = []
+    if table_has_column(cursor, "upload_batches", "organization_id"):
+        org_clause = " AND organization_id = %s"
+        args.append(org)
+
+    cursor.execute(
+        f"""
+        SELECT {batch_pk} AS batch_id
+        FROM upload_batches
+        WHERE confirmed_at IS NOT NULL{org_clause}
+        ORDER BY confirmed_at DESC, {batch_pk} DESC
+        LIMIT 1
+        """,
+        tuple(args),
+    )
+    batch_row = cursor.fetchone()
+    if not batch_row or not isinstance(batch_row, dict):
+        return out
+    batch_id = batch_row.get("batch_id")
+    if batch_id is None:
+        return out
+
+    cursor.execute(
+        f"""
+        SELECT ticket_id, service_type, date_clean, name_clean, row_status, reason, rush_type
+        FROM upload_batch_rows
+        WHERE {row_batch_col} = %s
+        """,
+        (batch_id,),
+    )
+    batch_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    batch_wf = [
+        r
+        for r in batch_rows
+        if str(r.get("service_type") or "WF").upper() == "WF" and str(r.get("ticket_id") or "").strip()
+    ]
+    batch_hd = [r for r in batch_rows if str(r.get("service_type") or "WF").upper() != "WF"]
+    batch_wf_ids = {str(r.get("ticket_id") or "").strip().upper() for r in batch_wf}
+    lifecycle_ids = {str(b or "").strip().upper() for b in lifecycle_bag_ids if str(b or "").strip()}
+
+    gaps: list[dict[str, Any]] = []
+    for row in batch_wf:
+        bid = str(row.get("ticket_id") or "").strip().upper()
+        if not bid or bid in lifecycle_ids:
+            continue
+        cursor.execute(
+            """
+            SELECT status, logistics_status
+            FROM orders_staging
+            WHERE organization_id = %s AND ticket_id = %s
+            LIMIT 1
+            """,
+            (org, bid),
+        )
+        staging = cursor.fetchone() if table_exists(cursor, "orders_staging") else None
+        staging_present = isinstance(staging, dict)
+        active_staging = False
+        if staging_present:
+            active_where = _active_staging_where_sql(cursor)
+            cursor.execute(
+                f"""
+                SELECT 1 AS ok FROM orders_staging
+                WHERE organization_id = %s AND ticket_id = %s AND ({active_where})
+                LIMIT 1
+                """,
+                (org, bid),
+            )
+            active_staging = bool(cursor.fetchone())
+        cursor.execute(
+            "SELECT 1 AS ok FROM rinse_bag_registry WHERE organization_id = %s AND bag_id = %s LIMIT 1",
+            (org, bid),
+        )
+        registry_present = bool(cursor.fetchone())
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM rinse_bag_scan_events WHERE organization_id = %s AND bag_id = %s",
+            (org, bid),
+        )
+        scan_row = cursor.fetchone()
+        scan_count = int((scan_row or {}).get("cnt") or 0) if isinstance(scan_row, dict) else 0
+        rush = str(row.get("rush_type") or "").strip().upper()
+        if not rush:
+            dc = row.get("date_clean")
+            rush = "RUSH" if isinstance(dc, date) and dc < td else "NON-RUSH"
+        reason_excluded = "Not in lifecycle scope"
+        if str(row.get("row_status") or "").upper() == "REJECTED_DUPLICATE":
+            reason_excluded = f"Portal row rejected ({row.get('reason') or 'duplicate'})"
+        elif staging_present and not active_staging:
+            reason_excluded = (
+                f"Staging inactive (status={staging.get('status')}, "
+                f"logistics={staging.get('logistics_status')})"
+            )
+        elif not staging_present:
+            reason_excluded = "Absent from orders_staging"
+        elif row.get("date_clean") != td and not registry_present:
+            reason_excluded = "date_clean != target_date and not in registry supplement"
+        gaps.append(
+            {
+                "bag_id": bid,
+                "customer": row.get("name_clean"),
+                "rush_label": rush,
+                "date_clean": row.get("date_clean").isoformat()
+                if isinstance(row.get("date_clean"), date)
+                else row.get("date_clean"),
+                "portal_row_status": row.get("row_status"),
+                "portal_reason": row.get("reason"),
+                "orders_staging_present": staging_present,
+                "orders_staging_active": active_staging,
+                "registry_present": registry_present,
+                "scan_events_present": scan_count > 0,
+                "scan_event_count": scan_count,
+                "reason_excluded_from_dashboard": reason_excluded,
+            }
+        )
+
+    wf_due_today = sum(1 for r in batch_wf if r.get("date_clean") == td)
+    lifecycle_total = int(wf_meta.get("wf_lifecycle_total") or wf_meta.get("wf_total") or 0)
+    out.update(
+        {
+            "portal_batch_id": batch_id,
+            "portal_batch_wf": len(batch_wf),
+            "portal_batch_hd": len(batch_hd),
+            "portal_batch_total": len(batch_rows),
+            "portal_batch_wf_due_today": wf_due_today,
+            "portal_batch_gaps": gaps,
+            "net_gap_vs_portal_batch_wf": len(batch_wf) - lifecycle_total,
+        }
+    )
+    return out
+
+
 def _load_pending_bag_rows(
     cursor,
     organization_id: int,
@@ -447,7 +647,7 @@ def _load_pending_bag_rows(
     target_date: date,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Portal-aligned WF bags: active orders_staging (same population as GET /dashboard),
+    WF lifecycle bag rows: active orders_staging (same population as GET /dashboard),
     excluding HD service type, with registry completion when available. Also includes
     registry-only WF rows for target_date not already counted.
     """
@@ -457,6 +657,10 @@ def _load_pending_bag_rows(
     seen: set[str] = set()
     portal_active_total = 0
     hd_excluded = 0
+    wf_at_vendor_staging = 0
+    wf_due_today_staging = 0
+    wf_not_due_today_staging = 0
+    wf_registry_supplement = 0
 
     has_staging = table_exists(cursor, "orders_staging") and table_has_column(
         cursor, "orders_staging", "ticket_id"
@@ -504,6 +708,8 @@ def _load_pending_bag_rows(
             weight_expr = "s.weight_num" if has_weight else "NULL"
             completed_expr = "0"
 
+        has_date_clean = table_has_column(cursor, "orders_staging", "date_clean")
+        date_clean_expr = "s.date_clean" if has_date_clean else "NULL"
         cursor.execute(
             f"""
             SELECT
@@ -513,7 +719,8 @@ def _load_pending_bag_rows(
                 {completed_expr} AS is_completed,
                 {name_expr} AS name_clean,
                 {weight_expr} AS weight_num,
-                {logistics_expr} AS logistics_status
+                {logistics_expr} AS logistics_status,
+                {date_clean_expr} AS date_clean
             FROM orders_staging s
             {reg_join}
             WHERE ({active_where}){org_clause}
@@ -533,6 +740,12 @@ def _load_pending_bag_rows(
             if not bid or bid in seen:
                 continue
             seen.add(bid)
+            wf_at_vendor_staging += 1
+            dc = row.get("date_clean")
+            if dc == td:
+                wf_due_today_staging += 1
+            else:
+                wf_not_due_today_staging += 1
             rows.append(row)
 
     if has_reg:
@@ -564,12 +777,18 @@ def _load_pending_bag_rows(
             if not bid or bid in seen:
                 continue
             seen.add(bid)
+            wf_registry_supplement += 1
             rows.append(row)
 
     meta = {
-        "scope": "active_portal_wf",
+        "scope": "wf_lifecycle",
         "portal_active_total": portal_active_total,
         "hd_excluded": hd_excluded,
+        "wf_at_vendor_staging": wf_at_vendor_staging,
+        "wf_due_today_staging": wf_due_today_staging,
+        "wf_not_due_today_staging": wf_not_due_today_staging,
+        "wf_registry_supplement": wf_registry_supplement,
+        "wf_lifecycle_total": len(rows),
         "wf_total": len(rows),
     }
     return rows, meta
@@ -725,14 +944,22 @@ def build_lifecycle_pending_payload(
 
     legacy_buckets = _build_legacy_pending_payload(bag_rows, purpose_flags)
     combined = _sum_lifecycle_groups(rush, non_rush)
+    lifecycle_ids = {str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")}
+    portal_alignment = _build_portal_reconciliation_meta(
+        cursor,
+        org,
+        target_date=td,
+        lifecycle_bag_ids=lifecycle_ids,
+        wf_meta=portal_meta,
+    )
 
     return {
         "date": td.isoformat(),
         "status_model": STATUS_MODEL_LIFECYCLE_V1,
         "evaluation_time": eval_at.isoformat(),
         "completion_field": "lifecycle: FOLDED_COMPLETED or SENT_TO_RINSE",
-        "service_scope": "WF only (HD excluded)",
-        "portal_alignment": portal_meta,
+        "service_scope": "WF bags only (HD excluded from lifecycle)",
+        "portal_alignment": portal_alignment,
         "lifecycle_status_labels": LIFECYCLE_STATUS_LABELS,
         "lifecycle_group_labels": LIFECYCLE_GROUP_LABELS,
         "groups": {"rush": rush, "non_rush": non_rush, "combined": combined},

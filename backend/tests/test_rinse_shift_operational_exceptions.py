@@ -56,7 +56,7 @@ class TestOrderRejectAfterLimit:
             ]
         )
         assert evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=30) is None
-        assert evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=10) is not None
+        assert evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=10) is None
 
     def test_does_not_trigger_when_create_issue_present(self):
         timeline = gaming_events_from_records(
@@ -89,6 +89,16 @@ class TestCompletedWithoutFinalCleanScan:
         )
         assert evaluate_completed_without_final_clean_scan(timeline) is None
 
+    def test_no_exception_when_clean_rack_before_processed_by_vendor(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("move-bag", datetime(2026, 5, 28, 13, 50), ev_id=1, rack="VeeWash Clean"),
+                _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=2, scan_index=2),
+                _ev("move-bag", datetime(2026, 5, 28, 14, 10), ev_id=3, scan_index=3, rack="Folding-4-VW"),
+            ]
+        )
+        assert evaluate_completed_without_final_clean_scan(timeline) is None
+
     def test_exception_when_no_clean_rack_after_processed_by_vendor(self):
         timeline = gaming_events_from_records(
             [
@@ -109,6 +119,68 @@ class TestCompletedWithoutFinalCleanScan:
                 ]
             )
             assert evaluate_completed_without_final_clean_scan(timeline) is None
+
+
+class TestBag00CY9RP1K6Regression:
+    """Late start-cleaning after sorting window but full wash/completion path."""
+
+    def _timeline(self):
+        return gaming_events_from_records(
+            [
+                _ev("sent-to-vendor", datetime(2026, 5, 31, 0, 30), ev_id=1, rack="VeeWash Dirty"),
+                _ev("weight-entry", datetime(2026, 5, 31, 7, 13), ev_id=2, scan_index=2, rack=""),
+                _ev("add-photos", datetime(2026, 5, 31, 8, 23), ev_id=3, scan_index=3, rack=""),
+                _ev("ready-washer", datetime(2026, 5, 31, 8, 23), ev_id=4, scan_index=4, rack=""),
+                _ev("start-cleaning", datetime(2026, 5, 31, 11, 51), ev_id=5, scan_index=5, rack="W26-30-VW"),
+                _ev("drying", datetime(2026, 5, 31, 11, 52), ev_id=6, scan_index=6, rack="D37-50-VW"),
+                _ev("complete-cleaning", datetime(2026, 5, 31, 13, 30), ev_id=7, scan_index=7, rack="Folding-5-VW"),
+                _ev("garments-reviewed", datetime(2026, 5, 31, 13, 30), ev_id=8, scan_index=8, rack=""),
+                _ev("assembly-printed-ct", datetime(2026, 5, 31, 14, 4), ev_id=9, scan_index=9, rack=""),
+                _ev("processed-by-vendor", datetime(2026, 5, 31, 14, 11), ev_id=10, scan_index=10, rack=""),
+                _ev("move-bag", datetime(2026, 5, 31, 14, 12), ev_id=11, scan_index=11, rack="VeeWash Clean"),
+            ]
+        )
+
+    def test_no_reject_operational_exceptions(self):
+        timeline = self._timeline()
+        assert evaluate_order_reject_no_start_cleaning_after_limit(timeline, window_minutes=30) is None
+        profile = evaluate_bag_operational_profile(timeline, bag_meta={"bag_id": "00CY9RP1K6"})
+        assert profile["exception_codes"] == []
+        assert evaluate_completed_without_final_clean_scan(timeline) is None
+
+    def test_lifecycle_folded_completed(self):
+        from backend.rinse_bag_lifecycle_status import (
+            FOLDED_COMPLETED,
+            ORDER_REJECTED_FULL,
+            derive_bag_lifecycle_status,
+        )
+        from backend.rinse_shift_operational_exceptions import (
+            COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
+            ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT,
+        )
+
+        events = [
+            {"purpose": p, "rack": r, "scanned_at_parsed": t, "user_name": "Staff", "id": i, "scan_index": i}
+            for i, (p, r, t) in enumerate(
+                [
+                    ("sent-to-vendor", "VeeWash Dirty", datetime(2026, 5, 31, 0, 30)),
+                    ("weight-entry", None, datetime(2026, 5, 31, 7, 13)),
+                    ("ready-washer", None, datetime(2026, 5, 31, 8, 23)),
+                    ("start-cleaning", "W26-30-VW", datetime(2026, 5, 31, 11, 51)),
+                    ("drying", "D37-50-VW", datetime(2026, 5, 31, 11, 52)),
+                    ("complete-cleaning", "Folding-5-VW", datetime(2026, 5, 31, 13, 30)),
+                    ("processed-by-vendor", None, datetime(2026, 5, 31, 14, 11)),
+                    ("move-bag", "VeeWash Clean", datetime(2026, 5, 31, 14, 12)),
+                ],
+                start=1,
+            )
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="00CY9RP1K6")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        flags = out["exception_flags"]
+        assert ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT not in flags
+        assert ORDER_REJECTED_FULL not in flags
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN not in flags
 
 
 class TestOperationalDrilldownFilter:

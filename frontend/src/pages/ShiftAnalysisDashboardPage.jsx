@@ -632,6 +632,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const lifecycleGroupLabels = summary?.pending?.lifecycle_group_labels || {};
   const showUnknownColumn = (pendingGroups.combined?.by_lifecycle_group?.unknown ?? 0) > 0;
   const checkoutRush = summary?.pending?.checkout_summary?.rush || {};
+  const portalAlignment = summary?.pending?.portal_alignment || {};
   const lifecycleStatusLabels = summary?.pending?.lifecycle_status_labels || {};
   const liveMonitor = summary?.live_monitor || {};
   const staffPerformance = summary?.staff_performance || {};
@@ -893,8 +894,12 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       <Paper sx={SECTION_PAPER}>
         <Box sx={{ mb: 1.5 }}>
           <Typography variant="h6" fontWeight={700}>Production lifecycle</Typography>
-          <Typography variant="caption" color="text.secondary">
-            WF bags at vendor · {summary?.pending?.status_model || "lifecycle"}
+          <Typography variant="caption" color="text.secondary" display="block">
+            WF production scope ({formatCount(portalAlignment.wf_lifecycle_total ?? pendingGroups.combined?.total ?? 0)} bags)
+            {portalAlignment.wf_at_vendor_staging != null
+              ? ` · ${formatCount(portalAlignment.wf_at_vendor_staging)} WF bags at vendor (active staging)`
+              : " · WF bags at vendor"}
+            {summary?.pending?.status_model ? ` · ${summary.pending.status_model}` : ""}
             {summary?.pending?.evaluation_time ? ` · ${formatDateTime(summary.pending.evaluation_time)}` : ""}
           </Typography>
         </Box>
@@ -924,6 +929,75 @@ export default function ShiftAnalysisDashboardPage({ user }) {
             </Grid>
           ))}
         </Grid>
+
+        <Accordion disableGutters elevation={0} sx={{ mt: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="caption" fontWeight={600}>Portal reconciliation (Rinse CSV vs dashboard)</Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Grid container spacing={1.25} sx={{ mb: 1.5 }}>
+              {[
+                ["portal_batch_wf", "Portal CSV WF bags", "#0f766e"],
+                ["wf_at_vendor_staging", "WF at vendor (staging)", "#0097b2"],
+                ["wf_lifecycle_total", "WF lifecycle scope", "#334155"],
+                ["portal_batch_wf_due_today", "Portal WF due today", "#b45309"],
+                ["wf_due_today_staging", "Staging WF due today", "#b45309"],
+                ["wf_not_due_today_staging", "Staging WF not due today", "#64748b"],
+                ["hd_excluded", "HD excluded", "#94a3b8"],
+                ["wf_registry_supplement", "Registry supplement", "#7c3aed"],
+              ].map(([key, label, color]) => (
+                portalAlignment[key] != null ? (
+                  <Grid item xs={6} sm={4} md={3} key={key}>
+                    <CompactKpi label={label} value={formatCount(portalAlignment[key])} accent={color} />
+                  </Grid>
+                ) : null
+              ))}
+            </Grid>
+            {portalAlignment.net_gap_vs_portal_batch_wf != null ? (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                Net gap vs portal CSV WF: {formatCount(portalAlignment.net_gap_vs_portal_batch_wf)}
+                {portalAlignment.entity_type ? ` · Counting ${portalAlignment.entity_type} (ticket_id)` : ""}
+              </Typography>
+            ) : null}
+            {(portalAlignment.portal_batch_gaps || []).length ? (
+              <>
+                <Typography variant="caption" fontWeight={600} display="block" sx={{ mb: 0.5 }}>
+                  Portal CSV WF bags not in lifecycle scope ({portalAlignment.portal_batch_gaps.length})
+                </Typography>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Bag ID</TableCell>
+                      <TableCell>Customer</TableCell>
+                      <TableCell>Rush</TableCell>
+                      <TableCell>Due</TableCell>
+                      <TableCell>Staging</TableCell>
+                      <TableCell>Registry</TableCell>
+                      <TableCell>Scans</TableCell>
+                      <TableCell>Excluded because</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {(portalAlignment.portal_batch_gaps || []).slice(0, 20).map((row) => (
+                      <TableRow key={row.bag_id}>
+                        <TableCell>{row.bag_id}</TableCell>
+                        <TableCell>{row.customer || "—"}</TableCell>
+                        <TableCell>{row.rush_label || "—"}</TableCell>
+                        <TableCell>{row.date_clean || "—"}</TableCell>
+                        <TableCell>{row.orders_staging_active ? "active" : row.orders_staging_present ? "inactive" : "no"}</TableCell>
+                        <TableCell>{row.registry_present ? "yes" : "no"}</TableCell>
+                        <TableCell>{row.scan_events_present ? "yes" : "no"}</TableCell>
+                        <TableCell>{row.reason_excluded_from_dashboard || "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </>
+            ) : (
+              <Typography variant="caption" color="text.secondary">No portal CSV gaps for the latest confirmed batch.</Typography>
+            )}
+          </AccordionDetails>
+        </Accordion>
 
         <Accordion disableGutters elevation={0} sx={{ mt: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -1156,7 +1230,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                 {displayRecords.map((row) => {
                   const rowKey = `${row.activity || "folding"}-${row.bag_id}`;
                   const isOpen = expandedRows.has(rowKey);
-                  const isLifecycle = row.activity === "lifecycle";
+                  const isLifecycle = row.activity === "lifecycle" || Boolean(row.current_lifecycle_status);
                   const isStaff = row.activity === "staff";
                   return (
                     <Fragment key={rowKey}>

@@ -309,17 +309,14 @@ class TestOrderRejectedFullTiming:
         assert detail["order_rejected_full"] is False
         assert detail["actual_start_cleaning_after_issue"] == datetime(2026, 5, 28, 8, 30)
 
-    def test_start_cleaning_after_deadline_rejects(self):
+    def test_start_cleaning_after_deadline_no_reject(self):
         out = derive_bag_lifecycle_status(
             self._base_events(start_cleaning_at=datetime(2026, 5, 28, 9, 10)),
             bag_id="RT4",
             reject_after_create_issue_minutes=45,
             evaluation_time=datetime(2026, 5, 28, 9, 15),
         )
-        assert ORDER_REJECTED_FULL in out["exception_flags"]
-        detail = out["stage_detail"]["reject_after_create_issue"]
-        assert detail["order_rejected_full"] is True
-        assert detail["actual_start_cleaning_after_issue"] == datetime(2026, 5, 28, 9, 10)
+        assert ORDER_REJECTED_FULL not in out["exception_flags"]
 
 
 class TestRejectAndSeparation:
@@ -406,7 +403,7 @@ class TestProcessingSettings:
             timeline, window_minutes=30, evaluation_time=eval_after
         )
         assert after_window is not None
-        assert after_window["order_rejected_full"] is True
+        assert after_window["order_rejected_full"] is False
 
 
 class TestDefaults:

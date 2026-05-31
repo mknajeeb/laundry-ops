@@ -21,6 +21,7 @@ from backend.rinse_scan_purpose import (
     is_create_bulk_workitem_purpose,
     is_create_issue_purpose,
     is_create_workitem_purpose,
+    is_drying_purpose,
     is_processed_by_vendor_purpose,
     is_start_cleaning_purpose,
 )
@@ -55,6 +56,30 @@ OPERATIONAL_STAT_LABELS: dict[str, str] = {
     "total_workitem_events": "Total workitem events",
     "total_bulk_workitem_events": "Total bulk workitem events",
 }
+
+
+def _has_washing_completion_evidence(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    after: datetime | None = None,
+) -> bool:
+    """True when scan timeline shows washing/completion after an optional anchor."""
+    for ev in timeline:
+        ts = _event_ts(ev)
+        if after is not None:
+            if not _ts_valid(ts) or not _ts_valid(after) or ts <= after:
+                continue
+        purpose = ev.get("purpose")
+        if is_start_cleaning_purpose(purpose):
+            return True
+        if is_drying_purpose(purpose):
+            return True
+        if is_processed_by_vendor_purpose(purpose):
+            return True
+        rack = str(ev.get("rack") or "").strip()
+        if rack and rack_contains_clean(rack):
+            return True
+    return False
 
 
 def bag_workitem_issue_stats(timeline: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -93,6 +118,9 @@ def evaluate_order_reject_no_start_cleaning_after_limit(
     sorting_end = sorting.end_time
     deadline = sorting_end + timedelta(minutes=limit)
 
+    if _has_washing_completion_evidence(tl, after=sorting_end):
+        return None
+
     actual_start_cleaning: datetime | None = None
     for ev in tl:
         if not is_start_cleaning_purpose(ev.get("purpose")):
@@ -102,14 +130,10 @@ def evaluate_order_reject_no_start_cleaning_after_limit(
             actual_start_cleaning = ts
             break
 
-    if actual_start_cleaning is not None and actual_start_cleaning <= deadline:
+    if actual_start_cleaning is not None:
         return None
 
-    reason = (
-        f"No start-cleaning within {limit} minutes after sorting/prep end"
-        if actual_start_cleaning is None
-        else f"Start-cleaning occurred after the {limit}-minute window"
-    )
+    reason = f"No start-cleaning within {limit} minutes after sorting/prep end"
     return {
         "exception_code": ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT,
         "exception_label": OPERATIONAL_EXCEPTION_LABELS[ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT],
@@ -178,7 +202,7 @@ def evaluate_order_rejected_full(
         if actual_start is None or ts < actual_start:
             actual_start = ts
 
-    if actual_start is not None and actual_start <= deadline:
+    if actual_start is not None:
         return {
             "exception_code": None,
             "order_rejected_full": False,
@@ -187,8 +211,30 @@ def evaluate_order_rejected_full(
             "reject_deadline": deadline,
             "evaluation_time": eval_at,
             "actual_start_cleaning_after_issue": actual_start,
-            "reason": "Start-cleaning occurred within the configured window after create-issue",
+            "reason": "Start-cleaning occurred after create-issue",
         }
+
+    for ev in timeline:
+        ts = _event_ts(ev)
+        if not _ts_valid(ts) or ts <= issue_at:
+            continue
+        purpose = ev.get("purpose")
+        rack = str(ev.get("rack") or "").strip()
+        if (
+            is_drying_purpose(purpose)
+            or is_processed_by_vendor_purpose(purpose)
+            or (rack and rack_contains_clean(rack))
+        ):
+            return {
+                "exception_code": None,
+                "order_rejected_full": False,
+                "configured_limit_minutes": limit,
+                "create_issue_time": issue_at,
+                "reject_deadline": deadline,
+                "evaluation_time": eval_at,
+                "actual_start_cleaning_after_issue": None,
+                "reason": "Washing/completion evidence after create-issue",
+            }
 
     if eval_at <= deadline:
         return {
@@ -202,11 +248,7 @@ def evaluate_order_rejected_full(
             "reason": "Reject deadline not yet reached at evaluation time",
         }
 
-    reason = (
-        "No start-cleaning within limit after create-issue"
-        if actual_start is None
-        else "Start-cleaning occurred after the configured window"
-    )
+    reason = "No start-cleaning within limit after create-issue"
     return {
         "exception_code": ORDER_REJECTED_FULL,
         "exception_label": OPERATIONAL_EXCEPTION_LABELS[ORDER_REJECTED_FULL],
@@ -225,7 +267,7 @@ def evaluate_order_rejected_full(
 def evaluate_completed_without_final_clean_scan(
     timeline: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    """Exception when PROCESSED BY VENDOR exists but no later rack contains CLEAN."""
+    """Exception when PROCESSED BY VENDOR exists but no rack scan contains CLEAN."""
     tl = list(timeline)
     processed_ev: Mapping[str, Any] | None = None
     processed_at: datetime | None = None
@@ -241,11 +283,11 @@ def evaluate_completed_without_final_clean_scan(
     if processed_ev is None or processed_at is None:
         return None
 
+    clean_racks: list[dict[str, Any]] = []
     rack_scans_after: list[dict[str, Any]] = []
-    has_clean_rack = False
     for ev in tl:
         ts = _event_ts(ev)
-        if not _ts_valid(ts) or ts <= processed_at:
+        if not _ts_valid(ts):
             continue
         rack = str(ev.get("rack") or "").strip()
         if not rack:
@@ -256,11 +298,12 @@ def evaluate_completed_without_final_clean_scan(
             "user_name": ev.get("user") or ev.get("user_name"),
             "contains_clean": rack_contains_clean(rack),
         }
-        rack_scans_after.append(entry)
         if entry["contains_clean"]:
-            has_clean_rack = True
+            clean_racks.append(entry)
+        if ts > processed_at:
+            rack_scans_after.append(entry)
 
-    if has_clean_rack:
+    if clean_racks:
         return None
 
     return {
@@ -269,7 +312,7 @@ def evaluate_completed_without_final_clean_scan(
         "processed_by_vendor_at": processed_at,
         "rack_scans_after_processed": rack_scans_after,
         "has_clean_rack_after_processed": False,
-        "reason": "No rack scan containing CLEAN after PROCESSED BY VENDOR",
+        "reason": "No rack scan containing CLEAN when PROCESSED BY VENDOR is present",
     }
 
 

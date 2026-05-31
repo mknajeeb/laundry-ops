@@ -427,3 +427,69 @@ class TestRecordsPayloadShape:
     def test_lifecycle_group_mapping(self):
         assert lifecycle_group_for_status(SORTED_READY_FOR_WASH) == "sorted_ready"
         assert lifecycle_group_for_status(LIFECYCLE_UNKNOWN) == "unknown"
+
+
+class TestOperationalRecordsLifecycleMapping:
+    def test_operational_records_use_lifecycle_fields_from_pending(self):
+        from backend.rinse_shift_analysis import build_operational_dashboard_data
+
+        cursor = MagicMock()
+        pending = {
+            "rows": [
+                {
+                    "bag_id": "00CY9RP1K6",
+                    "name_clean": "Customer",
+                    "rush": True,
+                    "rush_label": "Rush",
+                    "current_lifecycle_status": FOLDED_COMPLETED,
+                    "lifecycle_group": "folded",
+                    "lifecycle_group_label": "Folded",
+                    "lifecycle_status_label": "Folded / completed",
+                    "exception_flags": [],
+                }
+            ]
+        }
+
+        def execute_side_effect(sql, args=None):
+            s = " ".join(sql.split())
+            if "rinse_bag_scan_events" in s and "purpose" in s:
+                cursor.fetchall.return_value = []
+            elif "rinse_bag_scan_events" in s:
+                cursor.fetchall.return_value = [
+                    {
+                        "bag_id": "00CY9RP1K6",
+                        "id": 1,
+                        "rack": "W26-30-VW",
+                        "user_name": "Alex",
+                        "purpose": "start-cleaning",
+                        "scanned_at_parsed": datetime(2026, 5, 31, 11, 51),
+                        "scan_index": 1,
+                    },
+                    {
+                        "bag_id": "00CY9RP1K6",
+                        "id": 2,
+                        "rack": "D37-50-VW",
+                        "user_name": "Alex",
+                        "purpose": "drying",
+                        "scanned_at_parsed": datetime(2026, 5, 31, 11, 52),
+                        "scan_index": 2,
+                    },
+                    {
+                        "bag_id": "00CY9RP1K6",
+                        "id": 3,
+                        "rack": "VeeWash Clean",
+                        "user_name": "Alex",
+                        "purpose": "move-bag",
+                        "scanned_at_parsed": datetime(2026, 5, 31, 14, 12),
+                        "scan_index": 3,
+                    },
+                ]
+
+        cursor.execute.side_effect = execute_side_effect
+
+        out = build_operational_dashboard_data(cursor, 1, pending_payload=pending)
+        rec = out["records"][0]
+        assert rec["activity"] == "lifecycle"
+        assert rec["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert rec["lifecycle_group"] == "folded"
+        assert rec["exception_codes"] == []
