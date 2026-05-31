@@ -31,36 +31,40 @@ def _bag(bag_id, events):
     return {"bag_id": bag_id, "events": events}
 
 
+def _sv(*events):
+    return [_ev("sent-to-vendor", datetime(2026, 5, 27, 8, 0), ev_id=1, scan_index=1)] + list(events)
+
+
 CLOCK_IN = datetime(2026, 5, 27, 8, 0)
 CLOCK_OUT = datetime(2026, 5, 27, 12, 0)
 
 
 class TestBagActivitySlices:
     def test_weighing_assigned_to_weight_entry_user(self):
-        events = [
-            _ev("pre-cleaning", datetime(2026, 5, 27, 8, 50), user="Alice"),
-            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice"),
-        ]
+        events = _sv(
+            _ev("cleaning", datetime(2026, 5, 27, 8, 50), user="Alice", ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice", ev_id=3, scan_index=3),
+        )
         slices = build_bag_activity_slices("B1", events)
         weighing = next(s for s in slices if s.activity == ACTIVITY_WEIGHING)
         assert weighing.assigned_user == "Alice"
         assert weighing.needs_review is False
 
     def test_wash_load_ambiguous_when_start_and_dry_users_differ(self):
-        events = [
-            _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Carl"),
-            _ev("drying", datetime(2026, 5, 27, 9, 45), user="Dana"),
-        ]
+        events = _sv(
+            _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Carl", ev_id=2, scan_index=2),
+            _ev("drying", datetime(2026, 5, 27, 9, 45), user="Dana", ev_id=3, scan_index=3),
+        )
         wl = next(s for s in build_bag_activity_slices("B1", events) if s.activity == ACTIVITY_WASH_LOAD)
         assert wl.needs_review is True
         assert REVIEW_USER_AMBIGUOUS in wl.review_reasons
         assert wl.assigned_user == "Carl"
 
     def test_weighing_flags_operator_mismatch_but_assigns_weight_entry_user(self):
-        events = [
-            _ev("pre-cleaning", datetime(2026, 5, 27, 8, 50), user="Other"),
-            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice"),
-        ]
+        events = _sv(
+            _ev("cleaning", datetime(2026, 5, 27, 8, 50), user="Other", ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice", ev_id=3, scan_index=3),
+        )
         weighing = next(
             s for s in build_bag_activity_slices("B1", events) if s.activity == ACTIVITY_WEIGHING
         )
@@ -69,10 +73,12 @@ class TestBagActivitySlices:
         assert REVIEW_USER_AMBIGUOUS in weighing.review_reasons
 
     def test_sorting_flags_operator_mismatch_but_assigns_end_user(self):
-        events = [
-            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice"),
-            _ev("add-photos", datetime(2026, 5, 27, 9, 10), user="Bob"),
-        ]
+        events = _sv(
+            _ev("cleaning", datetime(2026, 5, 27, 8, 55), user="Alice", ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice", ev_id=3, scan_index=3),
+            _ev("create-workitem", datetime(2026, 5, 27, 9, 5), user="Alice", ev_id=4, scan_index=4),
+            _ev("add-photos", datetime(2026, 5, 27, 9, 10), user="Bob", ev_id=5, scan_index=5),
+        )
         sorting = next(
             s for s in build_bag_activity_slices("B1", events) if s.activity == "sorting"
         )
@@ -110,23 +116,23 @@ class TestScenarioAOnePersonAllActivities:
         bags = [
             _bag(
                 "B1",
-                [
-                    _ev("pre-cleaning", datetime(2026, 5, 27, 8, 30), user="Alex"),
-                    _ev("weight-entry", datetime(2026, 5, 27, 8, 35), user="Alex"),
-                    _ev("add-photos", datetime(2026, 5, 27, 8, 45), user="Alex"),
-                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Alex"),
-                    _ev("drying", datetime(2026, 5, 27, 9, 40), user="Alex"),
-                ],
+                _sv(
+                    _ev("cleaning", datetime(2026, 5, 27, 8, 30), user="Alex", ev_id=2, scan_index=2),
+                    _ev("weight-entry", datetime(2026, 5, 27, 8, 35), user="Alex", ev_id=3, scan_index=3),
+                    _ev("add-photos", datetime(2026, 5, 27, 8, 45), user="Alex", ev_id=4, scan_index=4),
+                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Alex", ev_id=5, scan_index=5),
+                    _ev("drying", datetime(2026, 5, 27, 9, 40), user="Alex", ev_id=6, scan_index=6),
+                ),
             ),
             _bag(
                 "B2",
-                [
-                    _ev("pre-cleaning", datetime(2026, 5, 27, 9, 50), user="Alex"),
-                    _ev("weight-entry", datetime(2026, 5, 27, 10, 0), user="Alex"),
-                    _ev("split-load", datetime(2026, 5, 27, 10, 10), user="Alex"),
-                    _ev("start-cleaning", datetime(2026, 5, 27, 10, 20), user="Alex"),
-                    _ev("drying", datetime(2026, 5, 27, 11, 0), user="Alex"),
-                ],
+                _sv(
+                    _ev("cleaning", datetime(2026, 5, 27, 9, 50), user="Alex", ev_id=2, scan_index=2),
+                    _ev("weight-entry", datetime(2026, 5, 27, 10, 0), user="Alex", ev_id=3, scan_index=3),
+                    _ev("split-load", datetime(2026, 5, 27, 10, 10), user="Alex", ev_id=4, scan_index=4),
+                    _ev("start-cleaning", datetime(2026, 5, 27, 10, 20), user="Alex", ev_id=5, scan_index=5),
+                    _ev("drying", datetime(2026, 5, 27, 11, 0), user="Alex", ev_id=6, scan_index=6),
+                ),
             ),
         ]
         out = evaluate_person_shift_gaming(
@@ -160,13 +166,13 @@ class TestScenarioBSplitOperators:
         bags = [
             _bag(
                 "B1",
-                [
-                    _ev("pre-cleaning", datetime(2026, 5, 27, 8, 30), user="Alice"),
-                    _ev("weight-entry", datetime(2026, 5, 27, 8, 35), user="Alice"),
-                    _ev("add-photos", datetime(2026, 5, 27, 8, 45), user="Bob"),
-                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Carol"),
-                    _ev("drying", datetime(2026, 5, 27, 9, 40), user="Carol"),
-                ],
+                _sv(
+                    _ev("cleaning", datetime(2026, 5, 27, 8, 30), user="Alice", ev_id=2, scan_index=2),
+                    _ev("weight-entry", datetime(2026, 5, 27, 8, 35), user="Alice", ev_id=3, scan_index=3),
+                    _ev("add-photos", datetime(2026, 5, 27, 8, 45), user="Bob", ev_id=4, scan_index=4),
+                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Carol", ev_id=5, scan_index=5),
+                    _ev("drying", datetime(2026, 5, 27, 9, 40), user="Carol", ev_id=6, scan_index=6),
+                ),
             ),
         ]
         alice = evaluate_person_shift_gaming(
@@ -210,13 +216,13 @@ class TestScenarioCMixedOperators:
         bags = [
             _bag(
                 "B1",
-                [
-                    _ev("pre-cleaning", datetime(2026, 5, 27, 8, 30), user="Alice"),
-                    _ev("weight-entry", datetime(2026, 5, 27, 8, 35), user="Alice"),
-                    _ev("add-photos", datetime(2026, 5, 27, 8, 45), user="Alice"),
-                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Bob"),
-                    _ev("drying", datetime(2026, 5, 27, 9, 40), user="Bob"),
-                ],
+                _sv(
+                    _ev("cleaning", datetime(2026, 5, 27, 8, 30), user="Alice", ev_id=2, scan_index=2),
+                    _ev("weight-entry", datetime(2026, 5, 27, 8, 35), user="Alice", ev_id=3, scan_index=3),
+                    _ev("add-photos", datetime(2026, 5, 27, 8, 45), user="Alice", ev_id=4, scan_index=4),
+                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Bob", ev_id=5, scan_index=5),
+                    _ev("drying", datetime(2026, 5, 27, 9, 40), user="Bob", ev_id=6, scan_index=6),
+                ),
             ),
         ]
         alice = evaluate_person_shift_gaming(
@@ -250,16 +256,16 @@ class TestWashLoadShiftEnd:
         bags = [
             _bag(
                 "B1",
-                [
-                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Alex"),
-                    _ev("drying", datetime(2026, 5, 27, 9, 30), user="Alex"),
-                ],
+                _sv(
+                    _ev("start-cleaning", datetime(2026, 5, 27, 9, 0), user="Alex", ev_id=2, scan_index=2),
+                    _ev("drying", datetime(2026, 5, 27, 9, 30), user="Alex", ev_id=3, scan_index=3),
+                ),
             ),
             _bag(
                 "B2",
-                [
-                    _ev("start-cleaning", datetime(2026, 5, 27, 10, 30), user="Alex"),
-                ],
+                _sv(
+                    _ev("start-cleaning", datetime(2026, 5, 27, 10, 30), user="Alex", ev_id=2, scan_index=2),
+                ),
             ),
         ]
         out = evaluate_person_shift_gaming(

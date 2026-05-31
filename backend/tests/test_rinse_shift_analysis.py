@@ -95,7 +95,7 @@ class TestLegacyPendingBagStatus:
             "backend.rinse_shift_analysis.table_has_column", return_value=True
         ), patch(
             "backend.rinse_shift_analysis.get_processing_settings",
-            return_value={"washing_minutes": 30, "drying_minutes": 40, "reject_after_create_issue_minutes": 45},
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
         ):
             out = _get_pending_bag_status_legacy_only(cursor, 1, target_date=date(2026, 5, 27))
 
@@ -159,7 +159,7 @@ class TestLifecyclePendingPayload:
             "backend.rinse_shift_analysis.table_has_column", return_value=True
         ), patch(
             "backend.rinse_shift_analysis.get_processing_settings",
-            return_value={"washing_minutes": 30, "drying_minutes": 40, "reject_after_create_issue_minutes": 45},
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
         ), patch(
             "backend.rinse_shift_analysis.derive_bag_lifecycle_status",
             side_effect=fake_derive,
@@ -232,7 +232,7 @@ class TestLifecyclePendingPayload:
             "backend.rinse_shift_analysis.table_has_column", return_value=True
         ), patch(
             "backend.rinse_shift_analysis.get_processing_settings",
-            return_value={"washing_minutes": 30, "drying_minutes": 40, "reject_after_create_issue_minutes": 45},
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
         ), patch(
             "backend.rinse_shift_analysis.derive_bag_lifecycle_status",
             side_effect=fake_derive,
@@ -266,7 +266,7 @@ class TestLifecyclePendingPayload:
             "backend.rinse_shift_analysis.table_has_column", return_value=True
         ), patch(
             "backend.rinse_shift_analysis.get_processing_settings",
-            return_value={"washing_minutes": 30, "drying_minutes": 40, "reject_after_create_issue_minutes": 45},
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
         ):
             out = get_pending_bag_status(cursor, 1, target_date=date(2026, 5, 28))
 
@@ -324,7 +324,7 @@ class TestLifecyclePendingPayload:
             "backend.rinse_shift_analysis.table_has_column", return_value=True
         ), patch(
             "backend.rinse_shift_analysis.get_processing_settings",
-            return_value={"washing_minutes": 30, "drying_minutes": 40, "reject_after_create_issue_minutes": 45},
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
         ):
             before = get_pending_bag_status(
                 cursor,
@@ -362,7 +362,7 @@ class TestLifecyclePendingPayload:
             "backend.rinse_shift_analysis.table_has_column", return_value=True
         ), patch(
             "backend.rinse_shift_analysis.get_processing_settings",
-            return_value={"washing_minutes": 30, "drying_minutes": 40, "reject_after_create_issue_minutes": 45},
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
         ), patch(
             "backend.rinse_shift_analysis.derive_bag_lifecycle_status",
             side_effect=RuntimeError("boom"),
