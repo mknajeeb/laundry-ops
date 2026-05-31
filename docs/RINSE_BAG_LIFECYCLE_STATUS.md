@@ -2,6 +2,8 @@
 
 Module: `backend/rinse_bag_lifecycle_status.py`
 
+Shared timeline helpers: `backend/rinse_bag_stage_bounds.py`
+
 Lifecycle status is **separate** from `operational_flags` and `exception_flags`.
 
 ---
@@ -21,10 +23,12 @@ Do **not** ghost:
 **CLEAN rack** (case-insensitive contains) is still the completion signal for `FOLDED_COMPLETED`.
 
 ```text
-purpose = cleaning  -> ghost / ignore
+purpose = cleaning  -> ghost / ignore (lifecycle + sorting only)
 rack contains CLEAN -> folded/completed
 purpose = start-cleaning -> valid wash signal
 ```
+
+Weighing **performance** uses exact `purpose = cleaning` as task start (see gaming doc).
 
 ---
 
@@ -34,7 +38,7 @@ purpose = start-cleaning -> valid wash signal
 lifecycle_anchor_time = first sent-to-vendor timestamp
 ```
 
-Only events **on or after** the anchor are used for processing lifecycle.
+Only events **on or after** the anchor are used for processing lifecycle and performance bounds.
 
 `weight-entry` **before** sent-to-vendor is ignored.
 
@@ -49,16 +53,20 @@ Only events **on or after** the anchor are used for processing lifecycle.
 | `PENDING_WEIGHING` | sent-to-vendor, no weight after anchor |
 | `WEIGHED_NOT_STARTED` | weight after anchor, no events after weight |
 | `SORTED_READY_FOR_WASH` | events after weight, no start-cleaning |
-| `LOAD_WASHER` | start-cleaning until last ready-washer/washer-settings |
-| `IN_WASHING` | after LOAD_WASHER end |
-| `LOAD_DRYER` | (detail) drying timestamp |
-| `IN_DRYING` | drying purpose seen |
+| `IN_WASHING` | start-cleaning seen, no drying yet |
+| `IN_DRYING` | drying purpose seen, no CLEAN rack yet |
 | `FOLDED_COMPLETED` | CLEAN rack scan |
 | `SENT_TO_RINSE` | missing from next portal scrape after CLEAN, or external/non-employee scan after CLEAN |
+| `UNKNOWN` | fallback |
+
+**Not lifecycle statuses** (performance / `stage_detail` only):
+
+- `LOAD_WASHER` — start-cleaning until last ready-washer/washer-settings
+- `LOAD_DRYER` — drying timestamp (instantaneous)
 
 ---
 
-## Sorting after weight
+## Sorting after weight (lifecycle boundary)
 
 ```text
 sorting_start = first non-ghost purpose after post-anchor weight-entry
@@ -66,27 +74,22 @@ sorting_end   = last non-ghost purpose before start-cleaning
                 (or last after weight if no start-cleaning)
 ```
 
----
-
-## LOAD_WASHER / IN_WASHING
-
-```text
-LOAD_WASHER start = start-cleaning
-LOAD_WASHER end   = last ready-washer OR washer-settings after start-cleaning
-
-IN_WASHING starts after LOAD_WASHER end
-IN_WASHING expected end = load_washer_end + washing_minutes (configurable)
-```
+Workitem, issue, split-load, and add-photos remain operational markers **inside** sorting.
 
 ---
 
-## LOAD_DRYER / IN_DRYING
+## IN_WASHING / IN_DRYING lifecycle
 
 ```text
-LOAD_DRYER start/end = drying timestamp (instantaneous)
+IN_WASHING: start-cleaning with no drying yet
+            (stage_detail may include LOAD_WASHER performance bounds)
 
-IN_DRYING starts at drying
-IN_DRYING expected end = drying + drying_minutes (configurable)
+IN_WASHING expected end = load_washer_end or start-cleaning + washing_minutes
+
+IN_DRYING: drying with no CLEAN rack yet
+           (stage_detail may include LOAD_DRYER performance bounds)
+
+IN_DRYING expected end = drying + drying_minutes
 ```
 
 ---
@@ -96,7 +99,7 @@ IN_DRYING expected end = drying + drying_minutes (configurable)
 | Key | Default | Label |
 |-----|---------|-------|
 | `washing_minutes` | 30 | Default washing duration minutes |
-| `drying_minutes` | 40 | Default drying duration minutes |
+| `drying_minutes` | 45 | Default drying duration minutes |
 | `reject_after_create_issue_minutes` | 45 | Reject if washing not started within limit after create-issue (time-gated at evaluation) |
 | `reject_no_start_cleaning_minutes` | 30 | Legacy sorting-end reject (operational module) |
 

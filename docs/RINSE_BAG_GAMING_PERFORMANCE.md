@@ -7,6 +7,7 @@ Two layers:
 
 **Modules:**
 
+- `backend/rinse_bag_stage_bounds.py` — shared anchor, ghost filter, stage bounds
 - `backend/rinse_bag_gaming_performance.py` — Layer 1 + bag activity slices
 - `backend/rinse_shift_gaming_performance.py` — Layer 2 shift aggregation
 
@@ -16,62 +17,94 @@ Two layers:
 
 | Stage | Detection |
 |-------|-----------|
-| Weighing | **Purpose labels only** |
-| Sorting | **Purpose labels only** |
-| Wash/load | **Purpose labels only** |
-| Folding | **Existing logic as-is** (may use rack-based rules today) |
+| Weighing | **Exact `cleaning` purpose** → first post-anchor `weight-entry` |
+| Sorting | **Purpose labels only** (lifecycle bounds) |
+| Wash/load stages | **Purpose labels only** |
+| Folding | **Existing logic as-is** (`evaluate_folding_performance_for_bag`) |
 
 Do not use rack name/type for weighing, sorting, or wash/load.
 
 ---
 
+## Sent-to-vendor anchor
+
+Same as lifecycle: first `sent-to-vendor` timestamp. Events before anchor are ignored for performance bounds.
+
+---
+
 ## Layer 1: Bag-level stage timing
 
-### Cleaning-related purpose
-
-Helper: `is_cleaning_related_purpose()` — normalized purpose contains `"clean"`, excluding `weight-entry`, `drying`, `split-load`, `add-photos`, `create-workitem`, `create-issue`.
-
-### Weighing
+### Weighing (performance only)
 
 ```text
-weighing_start = last cleaning-related purpose event before weight-entry
-weighing_end   = weight-entry purpose
-weighing_time  = weight_entry_time − last_cleaning_purpose_before_weight_entry
+weighing_start = exact normalized purpose cleaning (before anchor OK)
+weighing_end   = first weight-entry on or after sent-to-vendor anchor
+weighing_time  = weight_entry_time − cleaning_purpose_time
 ```
 
-Exceptions: `WEIGHT_ENTRY_MISSING`, `WEIGHING_START_SCAN_MISSING`, `WEIGHING_DURATION_INVALID`
+Do **not** use broad `is_cleaning_related_purpose()` for weighing.
+
+Exceptions: `WEIGHT_ENTRY_MISSING`, `WEIGHING_START_SCAN_MISSING` / `WEIGHING_START_CLEANING_MISSING`, `WEIGHING_DURATION_INVALID`
 
 ### Sorting
 
 ```text
-sorting_start = weight-entry by default
-
-If a cleaning-related purpose exists after weight-entry and before the first sorting-phase end marker:
-    sorting_start = first such cleaning-related purpose after weight-entry
+sorting_start = first non-ghost purpose after post-anchor weight-entry
+sorting_end   = last non-ghost purpose before start-cleaning
 ```
 
-Sorting end priority (after sorting start):
+Only exact `purpose = cleaning` is ghosted. Workitem, issue, split-load, and add-photos remain inside sorting.
 
-1. **Last** `create-workitem`, `create-issue`, or `create-bulk-workitem`
-2. `split-load`
-3. `add-photos`
-4. `start-cleaning`, then other cleaning-related purpose fallback
+Exceptions: `MISSING_SORTING_END`, `INVALID_SORTING_TIMESTAMPS`
 
-Workitem/issue are end markers only, not exceptions.
-
-### Wash / load
+### LOAD_WASHER (performance only)
 
 ```text
-wash_load_start = start-cleaning purpose
-wash_load_end   = drying purpose
+LOAD_WASHER start = start-cleaning
+LOAD_WASHER end   = latest ready-washer OR washer-settings after start-cleaning
+```
+
+Not emitted as `current_lifecycle_status`.
+
+### IN_WASHING (performance)
+
+```text
+IN_WASHING start = LOAD_WASHER end if available, else start-cleaning
+IN_WASHING end   = drying if available
+expected end     = start + washing_minutes (default 30)
+```
+
+### LOAD_DRYER (performance only)
+
+```text
+LOAD_DRYER start = drying
+LOAD_DRYER end   = drying
+duration         = 0
+```
+
+Not emitted as `current_lifecycle_status`.
+
+### IN_DRYING (performance)
+
+```text
+IN_DRYING start = drying
+IN_DRYING end   = CLEAN rack if available
+expected end    = drying + drying_minutes (default 45)
+```
+
+### Legacy wash/load
+
+```text
+wash_load_start = start-cleaning
+wash_load_end   = drying
 wash_load_time  = drying − start-cleaning
 ```
 
-Exceptions: `START_CLEANING_MISSING`, `DRYING_PURPOSE_MISSING`, duration invalid/too short/too long.
+Kept for backward-compatible reporting.
 
 ### Folding
 
-Use `evaluate_folding_performance_for_bag` **as-is**. Do not change folding rules in this module.
+Use `evaluate_folding_performance_for_bag` **as-is**. Lifecycle `FOLDED_COMPLETED` uses CLEAN rack contains; folding scoring is unchanged.
 
 ---
 
@@ -159,5 +192,6 @@ distinct_bag_count   = distinct bags touched across selected activities
 
 ## Tests
 
-- `backend/tests/test_rinse_bag_gaming_performance.py` — Layer 1
+- `backend/tests/test_rinse_bag_lifecycle_status.py` — lifecycle (no LOAD_WASHER/LOAD_DRYER in status)
+- `backend/tests/test_rinse_bag_gaming_performance.py` — Layer 1 stage bounds
 - `backend/tests/test_rinse_shift_gaming_performance.py` — Layer 2 (scenarios A/B/C, wash end logic, folding)
