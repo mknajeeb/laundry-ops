@@ -38,6 +38,8 @@ import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import FoldingUserSelect from "../components/folding/FoldingUserSelect";
 import EmployeeProductivitySection from "../components/folding/EmployeeProductivitySection";
+import ShiftLiveMonitorSection from "../components/folding/ShiftLiveMonitorSection";
+import ShiftStaffPerformanceSection from "../components/folding/ShiftStaffPerformanceSection";
 import {
   getFoldingPerformanceDetail,
   getShiftAnalysisRecords,
@@ -165,6 +167,33 @@ function KpiCard({ title, children }) {
 
 function StatChip({ label, value, onClick, accent }) {
   return <CompactKpi label={label} value={value ?? 0} onClick={onClick} accent={accent} />;
+}
+
+function filterMonitorRecordsClient(pendingRows, staffRecords, drill) {
+  if (!drill || drill.source !== "monitor") return [];
+  const bagIds = new Set(drill.bag_ids || []);
+  if (drill.bag_id) bagIds.add(drill.bag_id);
+  if (drill.step || drill.employee_name || drill.task || drill.scoring_filter) {
+    return (staffRecords || []).filter((rec) => {
+      if (drill.step && rec.task !== drill.step) return false;
+      if (drill.task && rec.task !== drill.task) return false;
+      if (drill.employee_name && rec.employee_name !== drill.employee_name) return false;
+      if (drill.scoring_filter === "scoring" && !rec.in_scoring) return false;
+      if (drill.scoring_filter === "not_scoring" && rec.in_scoring !== false) return false;
+      if (drill.scoring_filter === "needs_review" && !rec.needs_review) return false;
+      return true;
+    }).map((r) => ({ ...r, activity: "staff" }));
+  }
+  return (pendingRows || []).filter((row) => {
+    const bid = row.bag_id;
+    if (bagIds.size && !bagIds.has(bid)) return false;
+    if (drill.lifecycle_status && row.current_lifecycle_status !== drill.lifecycle_status) return false;
+    const ops = row.operational_flags || {};
+    if (drill.alert_type === "HAS_CREATE_ISSUE" && !ops.has_create_issue) return false;
+    if (drill.alert_type === "HAS_WORKITEM" && !(ops.has_create_workitem || ops.has_workitem || ops.has_create_bulk_workitem)) return false;
+    if (drill.alert_type === "CHECKOUT_NEEDS_REVIEW" && row.checkout_status !== "CHECKOUT_NEEDS_REVIEW") return false;
+    return true;
+  }).map((r) => ({ ...r, activity: "lifecycle" }));
 }
 
 function filterOperationalRecordsClient(rows, filter) {
@@ -482,6 +511,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const [drawerRow, setDrawerRow] = useState(null);
   const [drawerDetail, setDrawerDetail] = useState(null);
   const [expandedRows, setExpandedRows] = useState(() => new Set());
+  const [mainSection, setMainSection] = useState("lifecycle");
   const [searchTick, setSearchTick] = useState(0);
   const initialSearch = useRef(false);
 
@@ -603,6 +633,11 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const showUnknownColumn = (pendingGroups.combined?.by_lifecycle_group?.unknown ?? 0) > 0;
   const checkoutRush = summary?.pending?.checkout_summary?.rush || {};
   const lifecycleStatusLabels = summary?.pending?.lifecycle_status_labels || {};
+  const liveMonitor = summary?.live_monitor || {};
+  const staffPerformance = summary?.staff_performance || {};
+  const featureFlags = summary?.feature_flags || {};
+  const showLiveMonitor = liveMonitor?.alerts != null;
+  const showStaffPerformance = featureFlags.enable_shift_user_performance !== false || (staffPerformance?.tasks || []).length > 0;
 
   const filterLifecycleRows = useCallback((rows, drill) => {
     if (!drill || drill.source !== "lifecycle") return rows;
@@ -639,6 +674,13 @@ export default function ShiftAnalysisDashboardPage({ user }) {
 
   const displayRecords = useMemo(() => {
     if (!recordDrill) return [];
+    if (recordDrill?.source === "monitor") {
+      return filterMonitorRecordsClient(
+        summary?.pending?.rows || [],
+        staffPerformance?.records || [],
+        recordDrill,
+      );
+    }
     if (recordDrill?.source === "lifecycle") {
       return lifecycleRows.map((r) => ({ ...r, activity: "lifecycle" }));
     }
@@ -670,7 +712,32 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       return [...fromFolding, ...fromOps.filter((r) => !seen.has(r.bag_id))];
     }
     return [];
-  }, [records, operationalRecords, recordDrill, lifecycleRows]);
+  }, [records, operationalRecords, recordDrill, lifecycleRows, summary, staffPerformance]);
+
+  const onMonitorAlertDrill = (alert) => {
+    applyRecordDrill({
+      source: "monitor",
+      label: alert.label,
+      ...(alert.drilldown_filter || {}),
+    });
+  };
+
+  const onMonitorStepDrill = (step) => {
+    applyRecordDrill({
+      source: "monitor",
+      label: `${step.label} records`,
+      step: step.step,
+    });
+  };
+
+  const onStaffTaskDrill = (task) => {
+    applyRecordDrill({
+      source: "monitor",
+      label: `${task.employee_name} — ${task.task_label || task.task}`,
+      employee_name: task.employee_name,
+      task: task.task,
+    });
+  };
 
   const toggleRowExpanded = (rowKey) => {
     setExpandedRows((prev) => {
@@ -786,6 +853,42 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         </Alert>
       ) : null}
 
+      <Paper sx={{ ...SECTION_PAPER, p: 1, mb: 2 }}>
+        <Tabs value={mainSection} onChange={(_, v) => v && setMainSection(v)} sx={{ minHeight: 40 }}>
+          <Tab value="lifecycle" label="Lifecycle Summary" sx={{ minHeight: 40, textTransform: "none", fontWeight: 600 }} />
+          {showLiveMonitor ? (
+            <Tab value="live" label="Live Monitor" sx={{ minHeight: 40, textTransform: "none", fontWeight: 600 }} />
+          ) : null}
+          {showStaffPerformance ? (
+            <Tab value="staff" label="Staff Performance" sx={{ minHeight: 40, textTransform: "none", fontWeight: 600 }} />
+          ) : null}
+        </Tabs>
+      </Paper>
+
+      {mainSection === "live" && showLiveMonitor ? (
+        <Paper sx={SECTION_PAPER}>
+          <ShiftLiveMonitorSection
+            liveMonitor={liveMonitor}
+            onAlertDrill={onMonitorAlertDrill}
+            onStepDrill={onMonitorStepDrill}
+          />
+        </Paper>
+      ) : null}
+
+      {mainSection === "staff" && showStaffPerformance ? (
+        <Paper sx={SECTION_PAPER}>
+          <ShiftStaffPerformanceSection
+            staffPerformance={staffPerformance}
+            lifecycleStatusLabels={lifecycleStatusLabels}
+            onTaskDrill={onStaffTaskDrill}
+            onEmployeeDrill={onStaffTaskDrill}
+            onRecordDrill={(r) => openDrawer(r.bag_id, { ...r, activity: "staff" })}
+          />
+        </Paper>
+      ) : null}
+
+      {mainSection === "lifecycle" ? (
+      <>
       {/* Layer 2 — Lifecycle summary */}
       <Paper sx={SECTION_PAPER}>
         <Box sx={{ mb: 1.5 }}>
@@ -997,6 +1100,9 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         </Paper>
       ) : null}
 
+      </>
+      ) : null}
+
       {/* Layer 5 — Records drilldown */}
       <Paper sx={SECTION_PAPER} id="shift-records-section">
         <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }} gap={1} mb={1}>
@@ -1021,7 +1127,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
               <FoldingUserSelect label="Employee" value={recordSearch.user_name} onChange={(v) => setRecordSearch((s) => ({ ...s, user_name: v }))} />
               <TextField size="small" label="Bag ID" value={recordSearch.bag_id} onChange={(e) => setRecordSearch((s) => ({ ...s, bag_id: e.target.value }))} />
               <TextField size="small" label="Customer" value={recordSearch.customer} onChange={(e) => setRecordSearch((s) => ({ ...s, customer: e.target.value }))} />
-              {recordDrill.source !== "lifecycle" ? (
+              {recordDrill.source !== "lifecycle" && recordDrill.source !== "monitor" ? (
                 <Tabs value={recordTab} onChange={(_, v) => setRecordTab(v)} sx={{ minHeight: 36 }}>
                   <Tab value="all" label="All" sx={{ minHeight: 36, py: 0.5 }} />
                   <Tab value="scoring" label="Scoring" sx={{ minHeight: 36, py: 0.5 }} />
@@ -1051,6 +1157,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                   const rowKey = `${row.activity || "folding"}-${row.bag_id}`;
                   const isOpen = expandedRows.has(rowKey);
                   const isLifecycle = row.activity === "lifecycle";
+                  const isStaff = row.activity === "staff";
                   return (
                     <Fragment key={rowKey}>
                       <TableRow hover>
@@ -1062,16 +1169,16 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                         <TableCell>{row.bag_id}</TableCell>
                         <TableCell>{row.customer || row.name_clean || "—"}</TableCell>
                         <TableCell>{row.rush_label || "—"}</TableCell>
-                        <TableCell>{isLifecycle ? (row.lifecycle_group_label || lifecycleGroupLabels[row.lifecycle_group] || row.lifecycle_group) : (row.activity || "folding")}</TableCell>
+                        <TableCell>{isLifecycle ? (row.lifecycle_group_label || lifecycleGroupLabels[row.lifecycle_group] || row.lifecycle_group) : isStaff ? (row.task_label || row.task) : (row.activity || "folding")}</TableCell>
                         <TableCell>
-                          {isLifecycle
-                            ? lifecycleStatusLabel(row.current_lifecycle_status, lifecycleStatusLabels)
+                          {isLifecycle || isStaff
+                            ? lifecycleStatusLabel(row.current_lifecycle_status || row.lifecycle_status, lifecycleStatusLabels)
                             : (row.exception_label || row.status || "—")}
                         </TableCell>
-                        <TableCell>{formatDateTime(isLifecycle ? row.status_timestamp : row.folding_start_at)}</TableCell>
+                        <TableCell>{formatDateTime(isLifecycle ? row.status_timestamp : isStaff ? row.start_time : row.folding_start_at)}</TableCell>
                         <TableCell>{row.needs_review ? "Yes" : "No"}</TableCell>
                         <TableCell>
-                          {isLifecycle
+                          {isLifecycle || isStaff
                             ? formatExceptionFlags(row.exception_flags, lifecycleStatusLabels)
                             : (row.exception_code ? exceptionLabel(row.exception_code) : "—")}
                         </TableCell>
@@ -1105,6 +1212,13 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                                   {row.stage_detail?.reject_after_create_issue ? (
                                     <Typography variant="body2"><strong>Reject detail:</strong> {row.stage_detail.reject_after_create_issue.reason || "—"}</Typography>
                                   ) : null}
+                                </Stack>
+                              ) : isStaff ? (
+                                <Stack spacing={0.75}>
+                                  <Typography variant="body2"><strong>Employee:</strong> {row.employee_name || "—"}</Typography>
+                                  <Typography variant="body2"><strong>Task:</strong> {row.task_label || row.task}</Typography>
+                                  <Typography variant="body2"><strong>End:</strong> {formatDateTime(row.end_time)}</Typography>
+                                  <Typography variant="body2"><strong>Operational flags:</strong> {formatOperationalFlags(row.operational_flags)}</Typography>
                                 </Stack>
                               ) : (
                                 <Stack spacing={0.75}>
