@@ -1,8 +1,8 @@
 """
 Wash & Fold bag gaming / performance stage timings from Rinse scan events.
 
-Weighing, sorting, and wash/load use **purpose labels only** (not rack detection).
-Folding uses existing evaluate_folding_performance_for_bag unchanged (may use rack logic).
+Weighing and sorting use post–sent-to-vendor anchor and shared stage bounds.
+Folding uses existing evaluate_folding_performance_for_bag unchanged.
 """
 
 from __future__ import annotations
@@ -11,147 +11,58 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
-from backend.rinse_bag_completion import (
-    _parsed_scan_datetime,
-    _progressive_timeline_sort_key,
-)
+from backend.rinse_bag_completion import rack_contains_clean
 from backend.rinse_bag_folding import FoldingResult, evaluate_folding_performance_for_bag
+from backend.rinse_bag_stage_bounds import (
+    event_ts as _event_ts,
+    events_on_or_after as _events_on_or_after,
+    first_drying_after as _first_drying_after,
+    first_start_cleaning_after as _first_start_cleaning_after,
+    first_weight_after_anchor as _first_weight_after_anchor,
+    gaming_events_from_records,
+    lifecycle_anchor as _lifecycle_anchor,
+    load_washer_bounds as _load_washer_bounds,
+    sort_key_ev as _sort_key_ev,
+    sorting_bounds_after_weight as _sorting_bounds_after_weight,
+    ts_valid as _ts_valid,
+    weighing_performance_bounds as _weighing_performance_bounds,
+)
+from backend.rinse_processing_settings import DEFAULT_DRYING_MINUTES, DEFAULT_WASHING_MINUTES
 from backend.rinse_scan_purpose import (
-    is_add_photos_purpose,
-    is_cleaning_related_purpose,
     is_create_issue_purpose,
-    is_create_workitem_issue_or_bulk_purpose,
     is_create_workitem_purpose,
-    is_drying_purpose,
-    is_split_load_purpose,
     is_start_cleaning_purpose,
-    is_weight_entry_purpose,
     normalize_scan_purpose,
 )
 
 STAGE_COMPLETED = "COMPLETED"
 STAGE_EXCEPTION = "EXCEPTION"
 
-# Deprecated — do not emit (timing markers only).
 SORTING_INTERRUPTED_BY_WORKITEM = "SORTING_INTERRUPTED_BY_WORKITEM"
 SORTING_INTERRUPTED_BY_ISSUE = "SORTING_INTERRUPTED_BY_ISSUE"
 
-# Weighing
 WEIGHT_ENTRY_MISSING = "WEIGHT_ENTRY_MISSING"
 WEIGHING_START_SCAN_MISSING = "WEIGHING_START_SCAN_MISSING"
+WEIGHING_START_CLEANING_MISSING = "WEIGHING_START_CLEANING_MISSING"
 WEIGHING_DURATION_INVALID = "WEIGHING_DURATION_INVALID"
 
-# Sorting
 EXCEPTION_MISSING_SORTING_END = "MISSING_SORTING_END"
 EXCEPTION_INVALID_SORTING_TIMESTAMPS = "INVALID_SORTING_TIMESTAMPS"
 
-# Wash/load
 START_CLEANING_MISSING = "START_CLEANING_MISSING"
 DRYING_PURPOSE_MISSING = "DRYING_PURPOSE_MISSING"
 WASH_LOAD_DURATION_INVALID = "WASH_LOAD_DURATION_INVALID"
 WASH_LOAD_DURATION_TOO_SHORT = "WASH_LOAD_DURATION_TOO_SHORT"
 WASH_LOAD_DURATION_TOO_LONG = "WASH_LOAD_DURATION_TOO_LONG"
 
+PERF_STAGE_LOAD_WASHER = "LOAD_WASHER"
+PERF_STAGE_LOAD_DRYER = "LOAD_DRYER"
+
 
 @dataclass(frozen=True)
 class WashLoadLimits:
-    """Optional tenant thresholds; None disables min/max checks."""
-
     min_seconds: int | None = None
     max_seconds: int | None = None
-
-
-def gaming_events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Timeline events with purpose for gaming stage evaluation."""
-    out: list[dict[str, Any]] = []
-    for r in records:
-        out.append(
-            {
-                "id": r.get("id"),
-                "rack": r.get("rack") if "rack" in r else r.get("Rack"),
-                "user": r.get("user_name") if "user_name" in r else r.get("User"),
-                "scanned_at_parsed": r.get("scanned_at_parsed"),
-                "scan_index": r.get("scan_index") if "scan_index" in r else r.get("Scan Index"),
-                "purpose": r.get("purpose") if "purpose" in r else r.get("Purpose"),
-            }
-        )
-    return sorted(out, key=_progressive_timeline_sort_key)
-
-
-def _ts_valid(ts: datetime | None) -> bool:
-    return ts is not None and ts != datetime.min
-
-
-def _event_ts(ev: Mapping[str, Any]) -> datetime | None:
-    return _parsed_scan_datetime(ev)
-
-
-def _sort_key_ev(ev: Mapping[str, Any]) -> tuple:
-    ts = _event_ts(ev)
-    return (
-        ts is None,
-        ts or datetime.min,
-        int(ev.get("scan_index") or 0),
-        int(ev.get("id") or 0),
-    )
-
-
-def _duration_seconds(start: datetime | None, end: datetime | None) -> int | None:
-    if not _ts_valid(start) or not _ts_valid(end):
-        return None
-    sec = int((end - start).total_seconds())
-    return sec if sec >= 0 else None
-
-
-def _last_cleaning_purpose_before(
-    timeline: Sequence[Mapping[str, Any]], *, before: datetime
-) -> Mapping[str, Any] | None:
-    candidates = [
-        ev
-        for ev in timeline
-        if is_cleaning_related_purpose(ev.get("purpose"))
-        and _ts_valid(_event_ts(ev))
-        and _event_ts(ev) < before
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=_sort_key_ev)
-
-
-def _first_cleaning_purpose_after(
-    timeline: Sequence[Mapping[str, Any]], *, after: datetime, before: datetime | None
-) -> Mapping[str, Any] | None:
-    for ev in timeline:
-        if not is_cleaning_related_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if not _ts_valid(ts) or ts <= after:
-            continue
-        if before is not None and ts >= before:
-            continue
-        return ev
-    return None
-
-
-def _first_start_cleaning(
-    timeline: Sequence[Mapping[str, Any]],
-) -> Mapping[str, Any] | None:
-    for ev in timeline:
-        if is_start_cleaning_purpose(ev.get("purpose")):
-            return ev
-    return None
-
-
-def _first_drying_after(
-    timeline: Sequence[Mapping[str, Any]], *, after: datetime
-) -> Mapping[str, Any] | None:
-    for ev in timeline:
-        if not is_drying_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if _ts_valid(ts) and ts > after:
-            return ev
-    return None
 
 
 @dataclass(frozen=True)
@@ -177,9 +88,21 @@ class StageTiming:
         }
 
 
+def _duration_seconds(start: datetime | None, end: datetime | None) -> int | None:
+    if not _ts_valid(start) or not _ts_valid(end):
+        return None
+    sec = int((end - start).total_seconds())
+    return sec if sec >= 0 else None
+
+
+def _anchored_timeline(timeline: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    anchor_ts, _ = _lifecycle_anchor(timeline)
+    return _events_on_or_after(timeline, anchor_ts)
+
+
 def evaluate_weighing_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming:
-    weight_ev = next((ev for ev in timeline if is_weight_entry_purpose(ev.get("purpose"))), None)
-    if not weight_ev:
+    cleaning_ev, weight_ev = _weighing_performance_bounds(timeline)
+    if weight_ev is None:
         return StageTiming(
             start_time=None,
             end_time=None,
@@ -198,19 +121,19 @@ def evaluate_weighing_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTimin
             status=STAGE_EXCEPTION,
             exception_codes=(WEIGHT_ENTRY_MISSING, WEIGHING_DURATION_INVALID),
         )
-
-    start_ev = _last_cleaning_purpose_before(timeline, before=end_at)
-    if start_ev is None:
+    if cleaning_ev is None:
         return StageTiming(
             start_time=None,
             end_time=end_at,
             end_event_purpose="weight-entry",
             duration_seconds=None,
             status=STAGE_EXCEPTION,
-            exception_codes=(WEIGHING_START_SCAN_MISSING,),
+            exception_codes=(
+                WEIGHING_START_CLEANING_MISSING,
+                WEIGHING_START_SCAN_MISSING,
+            ),
         )
-
-    start_at = _event_ts(start_ev)
+    start_at = _event_ts(cleaning_ev)
     dur = _duration_seconds(start_at, end_at)
     if dur is None:
         return StageTiming(
@@ -221,7 +144,6 @@ def evaluate_weighing_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTimin
             status=STAGE_EXCEPTION,
             exception_codes=(WEIGHING_DURATION_INVALID,),
         )
-
     return StageTiming(
         start_time=start_at,
         end_time=end_at,
@@ -232,80 +154,10 @@ def evaluate_weighing_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTimin
     )
 
 
-def _first_sorting_phase_boundary(
-    timeline: Sequence[Mapping[str, Any]], *, after: datetime
-) -> datetime | None:
-    """Earliest sorting-end-class purpose marker after ``after`` (caps sorting-start window)."""
-    bounds: list[datetime] = []
-    for ev in timeline:
-        ts = _event_ts(ev)
-        if not _ts_valid(ts) or ts <= after:
-            continue
-        if (
-            is_create_workitem_issue_or_bulk_purpose(ev.get("purpose"))
-            or is_split_load_purpose(ev.get("purpose"))
-            or is_add_photos_purpose(ev.get("purpose"))
-            or is_start_cleaning_purpose(ev.get("purpose"))
-        ):
-            bounds.append(ts)
-    return min(bounds) if bounds else None
-
-
-def _resolve_sorting_start(
-    timeline: Sequence[Mapping[str, Any]],
-) -> tuple[datetime | None, Mapping[str, Any] | None]:
-    weight_ev = next((ev for ev in timeline if is_weight_entry_purpose(ev.get("purpose"))), None)
-    if not weight_ev:
-        return None, None
-    weight_at = _event_ts(weight_ev)
-    if not _ts_valid(weight_at):
-        return None, weight_ev
-
-    phase_end = _first_sorting_phase_boundary(timeline, after=weight_at)
-
-    cleaning_ev = _first_cleaning_purpose_after(
-        timeline, after=weight_at, before=phase_end
-    )
-
-    if cleaning_ev is not None:
-        return _event_ts(cleaning_ev), cleaning_ev
-    return weight_at, weight_ev
-
-
-def _pick_sorting_end(
-    timeline: Sequence[Mapping[str, Any]], *, sorting_start: datetime
-) -> tuple[datetime | None, str | None, Mapping[str, Any] | None]:
-    after = [ev for ev in timeline if _ts_valid(_event_ts(ev)) and _event_ts(ev) > sorting_start]
-
-    workitem_issue_bulk = [
-        ev for ev in after if is_create_workitem_issue_or_bulk_purpose(ev.get("purpose"))
-    ]
-    if workitem_issue_bulk:
-        ev = max(workitem_issue_bulk, key=_sort_key_ev)
-        return _event_ts(ev), normalize_scan_purpose(ev.get("purpose")), ev
-
-    for pred, purpose_label in (
-        (is_split_load_purpose, "split-load"),
-        (is_add_photos_purpose, "add-photos"),
-    ):
-        for ev in after:
-            if pred(ev.get("purpose")):
-                return _event_ts(ev), purpose_label, ev
-
-    for ev in after:
-        if is_start_cleaning_purpose(ev.get("purpose")):
-            return _event_ts(ev), normalize_scan_purpose(ev.get("purpose")), ev
-
-    for ev in after:
-        if is_cleaning_related_purpose(ev.get("purpose")):
-            return _event_ts(ev), normalize_scan_purpose(ev.get("purpose")), ev
-
-    return None, None, None
-
-
 def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming:
-    start_at, _start_ev = _resolve_sorting_start(timeline)
-    if start_at is None:
+    anchored = _anchored_timeline(timeline)
+    weight_ev, weight_ts = _first_weight_after_anchor(anchored)
+    if weight_ev is None or weight_ts is None:
         return StageTiming(
             start_time=None,
             end_time=None,
@@ -314,9 +166,18 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
             status=STAGE_EXCEPTION,
             exception_codes=(WEIGHT_ENTRY_MISSING,),
         )
-
-    end_at, end_purpose, _end_ev = _pick_sorting_end(timeline, sorting_start=start_at)
-    if end_at is None:
+    start_ev, end_ev = _sorting_bounds_after_weight(anchored, weight_ts)
+    if start_ev is None:
+        return StageTiming(
+            start_time=None,
+            end_time=None,
+            end_event_purpose=None,
+            duration_seconds=None,
+            status=STAGE_EXCEPTION,
+            exception_codes=(WEIGHT_ENTRY_MISSING,),
+        )
+    start_at = _event_ts(start_ev)
+    if end_ev is None:
         return StageTiming(
             start_time=start_at,
             end_time=None,
@@ -325,7 +186,8 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
             status=STAGE_EXCEPTION,
             exception_codes=(EXCEPTION_MISSING_SORTING_END,),
         )
-
+    end_at = _event_ts(end_ev)
+    end_purpose = normalize_scan_purpose(end_ev.get("purpose"))
     dur = _duration_seconds(start_at, end_at)
     if dur is None:
         return StageTiming(
@@ -336,7 +198,6 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
             status=STAGE_EXCEPTION,
             exception_codes=(EXCEPTION_INVALID_SORTING_TIMESTAMPS,),
         )
-
     return StageTiming(
         start_time=start_at,
         end_time=end_at,
@@ -347,12 +208,9 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
     )
 
 
-def evaluate_wash_load_stage(
-    timeline: Sequence[Mapping[str, Any]],
-    *,
-    limits: WashLoadLimits | None = None,
-) -> StageTiming:
-    start_ev = _first_start_cleaning(timeline)
+def evaluate_load_washer_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming:
+    anchored = _anchored_timeline(timeline)
+    start_ev, end_ev, _load_end_ts = _load_washer_bounds(anchored)
     if start_ev is None:
         return StageTiming(
             start_time=None,
@@ -362,7 +220,137 @@ def evaluate_wash_load_stage(
             status=STAGE_EXCEPTION,
             exception_codes=(START_CLEANING_MISSING,),
         )
+    start_at = _event_ts(start_ev)
+    if end_ev is None:
+        return StageTiming(
+            start_time=start_at,
+            end_time=None,
+            end_event_purpose=None,
+            duration_seconds=None,
+            status=STAGE_EXCEPTION,
+            exception_codes=(START_CLEANING_MISSING,),
+        )
+    end_at = _event_ts(end_ev)
+    dur = _duration_seconds(start_at, end_at)
+    return StageTiming(
+        start_time=start_at,
+        end_time=end_at,
+        end_event_purpose=normalize_scan_purpose(end_ev.get("purpose")),
+        duration_seconds=dur,
+        status=STAGE_COMPLETED if dur is not None else STAGE_EXCEPTION,
+        exception_codes=() if dur is not None else (WASH_LOAD_DURATION_INVALID,),
+    )
 
+
+def evaluate_in_washing_stage(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    washing_minutes: int = DEFAULT_WASHING_MINUTES,
+) -> StageTiming:
+    del washing_minutes
+    anchored = _anchored_timeline(timeline)
+    load_start, load_end, load_end_ts = _load_washer_bounds(anchored)
+    start_cleaning_ev = _first_start_cleaning_after(anchored)
+    start_ev = load_start or start_cleaning_ev
+    if start_ev is None:
+        return StageTiming(
+            start_time=None,
+            end_time=None,
+            end_event_purpose=None,
+            duration_seconds=None,
+            status=STAGE_EXCEPTION,
+            exception_codes=(START_CLEANING_MISSING,),
+        )
+    in_wash_start = load_end_ts if load_end_ts is not None else _event_ts(start_ev)
+    dry_ev = _first_drying_after(anchored, after_ts=in_wash_start)
+    end_at = _event_ts(dry_ev) if dry_ev else None
+    dur = _duration_seconds(in_wash_start, end_at) if end_at else None
+    return StageTiming(
+        start_time=in_wash_start,
+        end_time=end_at,
+        end_event_purpose="drying" if dry_ev else None,
+        duration_seconds=dur,
+        status=STAGE_COMPLETED if end_at else STAGE_EXCEPTION,
+        exception_codes=() if end_at else (DRYING_PURPOSE_MISSING,),
+    )
+
+
+def evaluate_load_dryer_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming:
+    anchored = _anchored_timeline(timeline)
+    dry_ev = _first_drying_after(anchored)
+    if dry_ev is None:
+        return StageTiming(
+            start_time=None,
+            end_time=None,
+            end_event_purpose=None,
+            duration_seconds=0,
+            status=STAGE_EXCEPTION,
+            exception_codes=(DRYING_PURPOSE_MISSING,),
+        )
+    dry_ts = _event_ts(dry_ev)
+    return StageTiming(
+        start_time=dry_ts,
+        end_time=dry_ts,
+        end_event_purpose="drying",
+        duration_seconds=0,
+        status=STAGE_COMPLETED,
+        exception_codes=(),
+    )
+
+
+def evaluate_in_drying_stage(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    drying_minutes: int = DEFAULT_DRYING_MINUTES,
+) -> StageTiming:
+    del drying_minutes
+    anchored = _anchored_timeline(timeline)
+    dry_ev = _first_drying_after(anchored)
+    if dry_ev is None:
+        return StageTiming(
+            start_time=None,
+            end_time=None,
+            end_event_purpose=None,
+            duration_seconds=None,
+            status=STAGE_EXCEPTION,
+            exception_codes=(DRYING_PURPOSE_MISSING,),
+        )
+    start_at = _event_ts(dry_ev)
+    clean_at: datetime | None = None
+    for ev in timeline:
+        if rack_contains_clean(ev.get("rack")):
+            ts = _event_ts(ev)
+            if _ts_valid(ts) and ts >= start_at:
+                clean_at = ts
+                break
+    dur = _duration_seconds(start_at, clean_at) if clean_at else None
+    return StageTiming(
+        start_time=start_at,
+        end_time=clean_at,
+        end_event_purpose="clean-rack" if clean_at else None,
+        duration_seconds=dur,
+        status=STAGE_COMPLETED if clean_at else STAGE_EXCEPTION,
+        exception_codes=() if clean_at else (DRYING_PURPOSE_MISSING,),
+    )
+
+
+def evaluate_wash_load_stage(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    limits: WashLoadLimits | None = None,
+) -> StageTiming:
+    """Legacy combined wash/load stage (start-cleaning → drying) on anchored timeline."""
+    anchored = _anchored_timeline(timeline)
+    start_ev = _first_start_cleaning_after(anchored)
+    if start_ev is None:
+        return StageTiming(
+            start_time=None,
+            end_time=None,
+            end_event_purpose=None,
+            duration_seconds=None,
+            status=STAGE_EXCEPTION,
+            exception_codes=(START_CLEANING_MISSING,),
+        )
     start_at = _event_ts(start_ev)
     if not _ts_valid(start_at):
         return StageTiming(
@@ -373,8 +361,7 @@ def evaluate_wash_load_stage(
             status=STAGE_EXCEPTION,
             exception_codes=(START_CLEANING_MISSING, WASH_LOAD_DURATION_INVALID),
         )
-
-    dry_ev = _first_drying_after(timeline, after=start_at)
+    dry_ev = _first_drying_after(anchored, after_ts=start_at)
     if dry_ev is None:
         return StageTiming(
             start_time=start_at,
@@ -384,7 +371,6 @@ def evaluate_wash_load_stage(
             status=STAGE_EXCEPTION,
             exception_codes=(DRYING_PURPOSE_MISSING,),
         )
-
     end_at = _event_ts(dry_ev)
     dur = _duration_seconds(start_at, end_at)
     if dur is None:
@@ -396,14 +382,12 @@ def evaluate_wash_load_stage(
             status=STAGE_EXCEPTION,
             exception_codes=(WASH_LOAD_DURATION_INVALID,),
         )
-
     codes: list[str] = []
     lim = limits or WashLoadLimits()
     if lim.min_seconds is not None and lim.min_seconds > 0 and dur < lim.min_seconds:
         codes.append(WASH_LOAD_DURATION_TOO_SHORT)
     if lim.max_seconds is not None and lim.max_seconds > 0 and dur > lim.max_seconds:
         codes.append(WASH_LOAD_DURATION_TOO_LONG)
-
     return StageTiming(
         start_time=start_at,
         end_time=end_at,
@@ -449,7 +433,6 @@ def aggregate_daily_workitem_issue_indicators(
 
 
 def folding_stage_from_result(result: FoldingResult) -> dict[str, Any]:
-    """Expose existing folding result without changing folding rules."""
     return {
         "start_time": result.folding_start_at,
         "end_time": result.folding_end_at,
@@ -470,13 +453,16 @@ def evaluate_bag_gaming_performance(
     registry_row: Mapping[str, Any] | None = None,
     rules: Any = None,
     wash_load_limits: WashLoadLimits | None = None,
+    washing_minutes: int = DEFAULT_WASHING_MINUTES,
+    drying_minutes: int = DEFAULT_DRYING_MINUTES,
 ) -> dict[str, Any]:
-    """
-    Per-bag gaming/performance timings: weighing, sorting, wash_load, folding (existing).
-    """
     timeline = gaming_events_from_records(events)
     weighing = evaluate_weighing_stage(timeline)
     sorting = evaluate_sorting_stage(timeline)
+    load_washer = evaluate_load_washer_stage(timeline)
+    in_washing = evaluate_in_washing_stage(timeline, washing_minutes=washing_minutes)
+    load_dryer = evaluate_load_dryer_stage(timeline)
+    in_drying = evaluate_in_drying_stage(timeline, drying_minutes=drying_minutes)
     wash_load = evaluate_wash_load_stage(timeline, limits=wash_load_limits)
     folding_result = evaluate_folding_performance_for_bag(
         events, registry_row=registry_row, rules=rules
@@ -485,14 +471,16 @@ def evaluate_bag_gaming_performance(
     return {
         "weighing": weighing.to_dict(),
         "sorting": sorting.to_dict(),
+        "load_washer": load_washer.to_dict(),
+        "in_washing": in_washing.to_dict(),
+        "load_dryer": load_dryer.to_dict(),
+        "in_drying": in_drying.to_dict(),
         "wash_load": wash_load.to_dict(),
         "folding": folding_stage_from_result(folding_result),
         "indicators": indicators,
         "folding_result": folding_result,
     }
 
-
-# --- Layer 2: per-bag activity slices for person/shift aggregation ---
 
 ACTIVITY_WEIGHING = "weighing"
 ACTIVITY_SORTING = "sorting"
@@ -530,8 +518,6 @@ def _users_match(a: str | None, b: str | None) -> bool:
 
 @dataclass(frozen=True)
 class BagActivitySlice:
-    """One bag's activity assignment for shift-level gaming aggregation."""
-
     bag_id: str
     activity: str
     start_time: datetime | None
@@ -559,38 +545,30 @@ class BagActivitySlice:
 def _weighing_boundary_events(
     timeline: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
-    weight_ev = next((ev for ev in timeline if is_weight_entry_purpose(ev.get("purpose"))), None)
-    if not weight_ev:
-        return None, None
-    end_at = _event_ts(weight_ev)
-    if not _ts_valid(end_at):
-        return None, weight_ev
-    start_ev = _last_cleaning_purpose_before(timeline, before=end_at)
-    return start_ev, weight_ev
+    return _weighing_performance_bounds(timeline)
 
 
 def _sorting_boundary_events(
     timeline: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
-    start_at, start_ev = _resolve_sorting_start(timeline)
-    if start_at is None:
+    anchored = _anchored_timeline(timeline)
+    weight_ev, weight_ts = _first_weight_after_anchor(anchored)
+    if weight_ev is None or weight_ts is None:
         return None, None
-    end_at, _end_purpose, end_ev = _pick_sorting_end(timeline, sorting_start=start_at)
-    if end_at is None:
-        return start_ev, None
-    return start_ev, end_ev
+    return _sorting_bounds_after_weight(anchored, weight_ts)
 
 
 def _wash_load_boundary_events(
     timeline: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
-    start_ev = _first_start_cleaning(timeline)
+    anchored = _anchored_timeline(timeline)
+    start_ev = _first_start_cleaning_after(anchored)
     if start_ev is None:
         return None, None
     start_at = _event_ts(start_ev)
     if not _ts_valid(start_at):
         return start_ev, None
-    dry_ev = _first_drying_after(timeline, after=start_at)
+    dry_ev = _first_drying_after(anchored, after_ts=start_at)
     return start_ev, dry_ev
 
 
@@ -630,15 +608,6 @@ def build_bag_activity_slices(
     rules: Any = None,
     wash_load_limits: WashLoadLimits | None = None,
 ) -> list[BagActivitySlice]:
-    """
-    Per-bag activity assignments for shift-level gaming.
-
-    User assignment rules (purpose-based for weighing/sorting/wash_load):
-    - weighing: weight-entry operator (flag if start/end operators differ)
-    - sorting: sorting end-marker operator (flag if start/end operators differ)
-    - wash_load: start-cleaning operator (flag if drying operator differs)
-    - folding: existing folding assigned_user_name
-    """
     bid = str(bag_id or "").strip()
     timeline = gaming_events_from_records(events)
     slices: list[BagActivitySlice] = []
@@ -686,11 +655,7 @@ def build_bag_activity_slices(
     wl_start_user = _event_user(wl_start_ev)
     wl_end_user = _event_user(wl_end_ev)
     wl_review: list[str] = []
-    if (
-        wl_start_user
-        and wl_end_user
-        and not _users_match(wl_start_user, wl_end_user)
-    ):
+    if wl_start_user and wl_end_user and not _users_match(wl_start_user, wl_end_user):
         wl_review.append(REVIEW_USER_AMBIGUOUS)
     wl_assigned = wl_start_user or wl_end_user
     slices.append(
@@ -737,7 +702,6 @@ def build_bag_activity_slices_for_bags(
     *,
     wash_load_limits: WashLoadLimits | None = None,
 ) -> list[BagActivitySlice]:
-    """Build activity slices for many bags. Each bag dict needs ``bag_id`` and ``events``."""
     out: list[BagActivitySlice] = []
     for bag in bags:
         bid = str(bag.get("bag_id") or "").strip()
