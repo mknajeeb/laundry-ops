@@ -72,7 +72,7 @@ export default function ProcessingSettingsPanel() {
         dry: secondsToMinSec(d.processing_dry_seconds_per_bag),
         rejectMinutes: d.reject_no_start_cleaning_minutes ?? 30,
         washingMinutes: d.washing_minutes ?? 30,
-        dryingMinutes: d.drying_minutes ?? 40,
+        dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         totalMinutes: d.total_minutes_per_bag,
       });
@@ -97,7 +97,7 @@ export default function ProcessingSettingsPanel() {
         processing_dry_seconds_per_bag: minSecToSeconds(fields.dry.minutes, fields.dry.seconds),
         reject_no_start_cleaning_minutes: Math.max(1, Number(fields.rejectMinutes) || 30),
         washing_minutes: Math.max(1, Number(fields.washingMinutes) || 30),
-        drying_minutes: Math.max(1, Number(fields.dryingMinutes) || 40),
+        drying_minutes: Math.max(1, Number(fields.dryingMinutes) || 45),
         reject_after_create_issue_minutes: Math.max(1, Number(fields.rejectAfterIssueMinutes) || 45),
       };
       const res = await putProcessingSettings(body);
@@ -109,7 +109,7 @@ export default function ProcessingSettingsPanel() {
         dry: secondsToMinSec(d.processing_dry_seconds_per_bag),
         rejectMinutes: d.reject_no_start_cleaning_minutes ?? 30,
         washingMinutes: d.washing_minutes ?? 30,
-        dryingMinutes: d.drying_minutes ?? 40,
+        dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         totalMinutes: d.total_minutes_per_bag,
       });
@@ -137,11 +137,10 @@ export default function ProcessingSettingsPanel() {
   return (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-        Processing time assumptions
+        Lifecycle timing
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-        Estimated processing minutes per bag (weigh, sort, wash handling, dry handling). Stored in seconds;
-        defaults total 7 min 30 sec per bag.
+        Default expected durations and reject windows for wash &amp; fold lifecycle stages.
       </Typography>
       {message ? (
         <Alert
@@ -152,6 +151,63 @@ export default function ProcessingSettingsPanel() {
           {message}
         </Alert>
       ) : null}
+      <Grid container spacing={2} sx={{ mb: 3 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <TextField
+            size="small"
+            type="number"
+            label="Wash Time (minutes)"
+            helperText="Expected IN_WASHING duration (default 30)."
+            value={fields.washingMinutes ?? 30}
+            onChange={(e) => setFields({ ...fields, washingMinutes: e.target.value })}
+            inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <TextField
+            size="small"
+            type="number"
+            label="Dryer Time (minutes)"
+            helperText="Expected IN_DRYING duration (default 45)."
+            value={fields.dryingMinutes ?? 45}
+            onChange={(e) => setFields({ ...fields, dryingMinutes: e.target.value })}
+            inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <TextField
+            size="small"
+            type="number"
+            label="Reject after Create-Issue (minutes)"
+            helperText="ORDER_REJECTED_FULL window after create-issue (default 45)."
+            value={fields.rejectAfterIssueMinutes ?? 45}
+            onChange={(e) => setFields({ ...fields, rejectAfterIssueMinutes: e.target.value })}
+            inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <TextField
+            size="small"
+            type="number"
+            label="Legacy: Reject if Washing Not Started (minutes)"
+            helperText="Legacy sorting-end rule for review only (default 30)."
+            value={fields.rejectMinutes ?? 30}
+            onChange={(e) => setFields({ ...fields, rejectMinutes: e.target.value })}
+            inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+      </Grid>
+
+      <Typography variant="subtitle1" fontWeight={800} gutterBottom>
+        Per-bag processing estimates
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
+        Estimated operator time per bag for productivity calculations (stored in seconds).
+      </Typography>
       <Grid container spacing={2} sx={{ mb: 2 }}>
         <Grid item xs={12} sm={6} md={3}>
           <DurationField
@@ -186,46 +242,6 @@ export default function ProcessingSettingsPanel() {
           />
         </Grid>
       </Grid>
-      <TextField
-        size="small"
-        type="number"
-        label="Reject if washing not started after X minutes"
-        helperText="Legacy rule: no create-issue and start-cleaning does not occur within this many minutes after sorting/prep end."
-        value={fields.rejectMinutes ?? 30}
-        onChange={(e) => setFields({ ...fields, rejectMinutes: e.target.value })}
-        inputProps={{ min: 1 }}
-        sx={{ mb: 2, maxWidth: 360 }}
-      />
-      <TextField
-        size="small"
-        type="number"
-        label="Default washing duration minutes"
-        helperText="Expected IN_WASHING duration after LOAD_WASHER completes."
-        value={fields.washingMinutes ?? 30}
-        onChange={(e) => setFields({ ...fields, washingMinutes: e.target.value })}
-        inputProps={{ min: 1 }}
-        sx={{ mb: 2, maxWidth: 360 }}
-      />
-      <TextField
-        size="small"
-        type="number"
-        label="Default drying duration minutes"
-        helperText="Expected IN_DRYING duration after drying scan."
-        value={fields.dryingMinutes ?? 40}
-        onChange={(e) => setFields({ ...fields, dryingMinutes: e.target.value })}
-        inputProps={{ min: 1 }}
-        sx={{ mb: 2, maxWidth: 360 }}
-      />
-      <TextField
-        size="small"
-        type="number"
-        label="Reject order if washing not started after create-issue within X minutes"
-        helperText="ORDER_REJECTED_FULL: create-issue with no start-cleaning within this window."
-        value={fields.rejectAfterIssueMinutes ?? 45}
-        onChange={(e) => setFields({ ...fields, rejectAfterIssueMinutes: e.target.value })}
-        inputProps={{ min: 1 }}
-        sx={{ mb: 2, maxWidth: 420 }}
-      />
       <Typography variant="body2" sx={{ mb: 2 }}>
         Total estimated per bag: {Math.floor(totalSec / 60)} min {totalSec % 60} sec
         {" "}({(totalSec / 60).toFixed(2)} minutes)
