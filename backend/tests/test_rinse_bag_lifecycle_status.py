@@ -250,6 +250,31 @@ class TestFoldedAndSentToRinse:
         assert out["stage_detail"]["sent_to_rinse_reason"] == SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN
         assert NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN in out["exception_flags"]
 
+    def test_sent_to_rinse_missing_scrape_without_clean_rack(self):
+        events = [
+            _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=1),
+        ]
+        out = derive_bag_lifecycle_status(
+            events,
+            bag_id="F3B",
+            missing_from_next_portal_scrape=True,
+        )
+        assert out["current_lifecycle_status"] == SENT_TO_RINSE
+        assert out["stage_detail"]["sent_to_rinse_reason"] == SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
+        assert NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN not in out["exception_flags"]
+
+    def test_missing_scrape_without_completion_not_sent_to_rinse(self):
+        events = [
+            _ev("start-cleaning", datetime(2026, 5, 28, 9, 0), ev_id=1),
+        ]
+        out = derive_bag_lifecycle_status(
+            events,
+            bag_id="F3C",
+            missing_from_next_portal_scrape=True,
+        )
+        assert out["current_lifecycle_status"] != SENT_TO_RINSE
+
 class TestCheckoutSeparateFromLifecycle:
     def test_logistics_checkout_alone_does_not_set_sent_to_rinse(self):
         out = derive_bag_lifecycle_status(
@@ -384,7 +409,9 @@ class TestRejectAndSeparation:
             _ev("processed by vendor", datetime(2026, 5, 28, 14, 0), ev_id=5, scan_index=5),
             _ev("", datetime(2026, 5, 28, 14, 5), ev_id=6, scan_index=6, rack="FOLDING"),
         ]
-        out = derive_bag_lifecycle_status(events, bag_id="R3")
+        out = derive_bag_lifecycle_status(
+            events, bag_id="R3", mapped_internal_users=["Alex"]
+        )
         assert out["current_lifecycle_status"] == FOLDED_COMPLETED
         assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
         assert out["needs_review"] is True
@@ -394,7 +421,9 @@ class TestRejectAndSeparation:
             _ev("processed by vendor", datetime(2026, 5, 28, 14, 0), ev_id=1),
             _ev("", datetime(2026, 5, 28, 14, 5), ev_id=2, scan_index=2, rack="FOLDING"),
         ]
-        out = derive_bag_lifecycle_status(events, bag_id="R3B")
+        out = derive_bag_lifecycle_status(
+            events, bag_id="R3B", mapped_internal_users=["Alex"]
+        )
         assert out["current_lifecycle_status"] == FOLDED_COMPLETED
         assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
         assert out["needs_review"] is True
@@ -406,7 +435,9 @@ class TestRejectAndSeparation:
             _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=3, scan_index=3),
             _ev("weight-entry", datetime(2026, 5, 28, 14, 30), ev_id=4, scan_index=4),
         ]
-        out = derive_bag_lifecycle_status(events, bag_id="R3C")
+        out = derive_bag_lifecycle_status(
+            events, bag_id="R3C", mapped_internal_users=["Alex"]
+        )
         assert out["current_lifecycle_status"] == FOLDED_COMPLETED
         assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
 

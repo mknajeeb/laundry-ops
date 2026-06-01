@@ -26,7 +26,7 @@ export const EXCEPTION_LABELS = {
   ORDER_REJECTED_FULL: "Rejected Full Order",
   ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT: "Rejected — no wash started",
   ORDER_REJECT_NO_START_CLEANING_30_MIN: "Rejected — no wash started",
-  COMPLETED_WITHOUT_FINAL_CLEAN_SCAN: "Completed without final scan",
+  COMPLETED_WITHOUT_FINAL_CLEAN_SCAN: "Completed without final CLEAN rack scan",
   NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN: "External scan after CLEAN",
   CHECKOUT_WITHOUT_CLEAN_RACK: "Checked out without CLEAN scan",
   SENT_TO_RINSE_WITHOUT_CLEAN_RACK: "Checked out without CLEAN scan",
@@ -38,6 +38,16 @@ export const CHECKOUT_STATUS_LABELS = {
   CHECKED_OUT: "Checked Out",
   CHECKOUT_NEEDS_REVIEW: "Checkout Needs Review",
 };
+
+export const SENT_TO_RINSE_REASON_LABELS = {
+  MISSING_FROM_NEXT_PORTAL_SCRAPE: "Missing from confirmed portal scrape after completion",
+  EXTERNAL_USER_SCAN_AFTER_CLEAN: "External scan after CLEAN",
+};
+
+export function sentToRinseReasonLabel(code, backendLabels = {}) {
+  if (!code) return "—";
+  return backendLabels[code] || SENT_TO_RINSE_REASON_LABELS[code] || code.replace(/_/g, " ");
+}
 
 export function lifecycleStatusLabel(code, backendLabels = {}) {
   if (!code) return "—";

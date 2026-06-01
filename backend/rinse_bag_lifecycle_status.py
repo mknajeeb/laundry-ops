@@ -50,6 +50,7 @@ from backend.rinse_shift_operational_exceptions import (
     ORDER_REJECTED_FULL,
     evaluate_completed_without_final_clean_scan,
     evaluate_order_rejected_full,
+    find_strong_completion_evidence,
 )
 
 ASSIGNED_NOT_SENT_TO_VENDOR = "ASSIGNED_NOT_SENT_TO_VENDOR"
@@ -85,6 +86,13 @@ ALL_LIFECYCLE_STATUSES = (
 
 SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE = "MISSING_FROM_NEXT_PORTAL_SCRAPE"
 SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN = "EXTERNAL_USER_SCAN_AFTER_CLEAN"
+
+SENT_TO_RINSE_REASON_LABELS: dict[str, str] = {
+    SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE: (
+        "Missing from confirmed portal scrape after completion"
+    ),
+    SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN: "External scan after CLEAN",
+}
 
 CHECKOUT_STATUS_NOT_CHECKED_OUT = "NOT_CHECKED_OUT"
 CHECKOUT_STATUS_CHECKED_OUT = "CHECKED_OUT"
@@ -171,6 +179,23 @@ def _derive_checkout_status(
     return CHECKOUT_STATUS_NEEDS_REVIEW, True, True
 
 
+def _completion_anchor_for_sent_to_rinse(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    clean_ev: Mapping[str, Any] | None,
+    clean_at: datetime | None,
+) -> tuple[Mapping[str, Any] | None, datetime | None]:
+    if clean_ev is not None and _ts_valid(clean_at):
+        return clean_ev, clean_at
+    evidence = find_strong_completion_evidence(timeline)
+    if evidence is None:
+        return None, None
+    ev, ts, _kind = evidence
+    if not _ts_valid(ts):
+        return None, None
+    return ev, ts
+
+
 def _evaluate_sent_to_rinse(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -179,22 +204,25 @@ def _evaluate_sent_to_rinse(
     missing_from_next_portal_scrape: bool,
     mapped_users: set[str],
 ) -> tuple[bool, str | None, datetime | None, dict[str, Any] | None, bool]:
-    if clean_ev is None or clean_at is None:
+    completion_ev, completion_at = _completion_anchor_for_sent_to_rinse(
+        timeline, clean_ev=clean_ev, clean_at=clean_at
+    )
+    if completion_ev is None or completion_at is None:
         return False, None, None, None, False
 
     if missing_from_next_portal_scrape:
         return (
             True,
             SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
-            clean_at,
-            _status_source_from_event(clean_ev),
+            completion_at,
+            _status_source_from_event(completion_ev),
             False,
         )
 
     external_after: list[Mapping[str, Any]] = []
     for ev in timeline:
         ts = _event_ts(ev)
-        if not _ts_valid(ts) or ts <= clean_at:
+        if not _ts_valid(ts) or ts <= completion_at:
             continue
         op = _operator_name(ev)
         if not op or _is_internal_operator(op, mapped_users):
@@ -320,6 +348,9 @@ def derive_bag_lifecycle_status(
         status_timestamp = str_ts or clean_at
         status_source_event = str_source
         stage_detail["sent_to_rinse_reason"] = str_reason
+        stage_detail["sent_to_rinse_reason_label"] = SENT_TO_RINSE_REASON_LABELS.get(
+            str(str_reason or ""), str_reason
+        )
         stage_detail["sent_to_rinse_timestamp"] = status_timestamp
         stage_detail["sent_to_rinse_source"] = str_source
     elif folded_completed or completed_without_clean_rack:

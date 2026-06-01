@@ -63,6 +63,7 @@ import {
   formatOperationalFlags,
   formatStageDetail,
   lifecycleStatusLabel,
+  sentToRinseReasonLabel,
 } from "../utils/shiftAnalysisLabels";
 
 const SECTION_PAPER = {
@@ -1289,6 +1290,16 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                                   <Typography variant="body2"><strong>Stage detail:</strong> {formatStageDetail(row.stage_detail)}</Typography>
                                   <Typography variant="body2"><strong>Operational flags:</strong> {formatOperationalFlags(row.operational_flags)}</Typography>
                                   <Typography variant="body2"><strong>Exception flags:</strong> {formatExceptionFlags(row.exception_flags, lifecycleStatusLabels)}</Typography>
+                                  {row.current_lifecycle_status === "SENT_TO_RINSE" && row.stage_detail?.sent_to_rinse_reason ? (
+                                    <Typography variant="body2">
+                                      <strong>Sent to Rinse reason:</strong>{" "}
+                                      {row.stage_detail.sent_to_rinse_reason_label
+                                        || sentToRinseReasonLabel(
+                                          row.stage_detail.sent_to_rinse_reason,
+                                          summary?.pending?.sent_to_rinse_reason_labels
+                                        )}
+                                    </Typography>
+                                  ) : null}
                                   <Typography variant="body2"><strong>Checkout detail:</strong> {CHECKOUT_STATUS_LABELS[row.checkout_status] || row.checkout_status || "—"}</Typography>
                                   {row.stage_detail?.reject_after_create_issue ? (
                                     <Typography variant="body2"><strong>Reject detail:</strong> {row.stage_detail.reject_after_create_issue.reason || "—"}</Typography>

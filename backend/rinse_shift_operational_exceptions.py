@@ -269,7 +269,7 @@ def evaluate_order_rejected_full(
     }
 
 
-def _find_strong_completion_evidence(
+def find_strong_completion_evidence(
     timeline: Sequence[Mapping[str, Any]],
 ) -> tuple[Mapping[str, Any], datetime, str] | None:
     """
@@ -319,7 +319,7 @@ def evaluate_completed_without_final_clean_scan(
     timeline: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
     """Exception when strong completion evidence exists but no rack scan contains CLEAN."""
-    evidence = _find_strong_completion_evidence(timeline)
+    evidence = find_strong_completion_evidence(timeline)
     if evidence is None:
         return None
 

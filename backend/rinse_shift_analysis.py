@@ -16,6 +16,7 @@ from backend.rinse_bag_lifecycle_status import (
     LIFECYCLE_UNKNOWN,
     PENDING_WEIGHING,
     SENT_TO_RINSE,
+    SENT_TO_RINSE_REASON_LABELS,
     SENT_TO_VENDOR,
     SORTED_READY_FOR_WASH,
     WEIGHED_NOT_STARTED,
@@ -30,6 +31,8 @@ from backend.rinse_operations_dashboard import (
     effective_rush_expr,
 )
 from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
+from backend.rinse_lifecycle_portal_scrape import compute_missing_from_confirmed_portal_scrape
+from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_order_search import _active_staging_where_sql
 from backend.rinse_processing_productivity import build_processing_productivity
 from backend.rinse_processing_settings import get_processing_settings
@@ -859,6 +862,9 @@ def build_lifecycle_pending_payload(
     events_by_bag = _load_scan_events_for_bags(cursor, org, bag_ids)
     proc_settings = get_processing_settings(cursor, org)
     mapped_users = _load_mapped_internal_scan_users(cursor, org)
+    missing_from_scrape = compute_missing_from_confirmed_portal_scrape(
+        cursor, org, bag_ids, events_by_bag
+    )
 
     rush = _empty_lifecycle_group_dict()
     non_rush = _empty_lifecycle_group_dict()
@@ -889,6 +895,9 @@ def build_lifecycle_pending_payload(
                 drying_minutes=int(proc_settings.get("drying_minutes") or 45),
                 reject_after_create_issue_minutes=int(
                     proc_settings.get("reject_after_create_issue_minutes") or 45
+                ),
+                missing_from_next_portal_scrape=bool(
+                    missing_from_scrape.get(normalize_bag_id(bid))
                 ),
                 evaluation_time=eval_at,
             )
@@ -990,6 +999,7 @@ def build_lifecycle_pending_payload(
         "portal_alignment": portal_alignment,
         "lifecycle_status_labels": LIFECYCLE_STATUS_LABELS,
         "lifecycle_group_labels": LIFECYCLE_GROUP_LABELS,
+        "sent_to_rinse_reason_labels": SENT_TO_RINSE_REASON_LABELS,
         "groups": {"rush": rush, "non_rush": non_rush, "combined": combined},
         "legacy_buckets": legacy_buckets,
         "checkout_summary": {
