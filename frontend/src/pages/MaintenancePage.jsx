@@ -653,6 +653,45 @@ function MaintenancePage() {
           }
           label="Require portal order CSV and Rinse scan-events CSV before confirming upload batch"
         />
+        <FormControl sx={{ display: "block", mt: 1.5 }} disabled={saving}>
+          <FormLabel sx={{ fontWeight: 600, color: "text.primary", mb: 0.5 }}>
+            Checkout batch source
+          </FormLabel>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>
+            Controls which confirmed batch drives Rush Bag Checkout card subtitles. Washpro manual upload: Manual.
+            VeeWash scheduled scrape: Auto. Switch to Auto when Washpro moves to scheduled scrape.
+          </Typography>
+          <RadioGroup
+            row
+            value={opsUi?.checkout_batch_source === "auto" ? "auto" : "manual"}
+            onChange={async (e) => {
+              const v = e.target.value === "auto" ? "auto" : "manual";
+              try {
+                setSaving(true);
+                await putOpsUiFlags({ checkout_batch_source: v });
+                await refreshMe();
+                setMessage({
+                  type: "success",
+                  text:
+                    v === "auto"
+                      ? "Checkout cards now use the latest auto-scrape batch."
+                      : "Checkout cards now use the latest manual upload batch.",
+                });
+              } catch (err) {
+                console.error(err);
+                setMessage({
+                  type: "error",
+                  text: err?.response?.data?.error || "Could not save checkout batch source (admin only).",
+                });
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            <FormControlLabel value="manual" control={<Radio />} label="Manual upload" />
+            <FormControlLabel value="auto" control={<Radio />} label="Auto scrape" />
+          </RadioGroup>
+        </FormControl>
       </Paper>
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>

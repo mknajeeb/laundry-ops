@@ -2260,6 +2260,8 @@ def checkout_batch_summary_route():
     """Latest upload batch rush/non-rush totals vs active checkout queue."""
     from backend.checkout_batch_summary import build_checkout_batch_summary
 
+    from backend.checkout_batch_source import get_checkout_batch_source
+
     conn = get_db()
     cursor = conn.cursor(dictionary=True)
     try:
@@ -2267,7 +2269,8 @@ def checkout_batch_summary_route():
         if err_resp:
             return err_resp, err_code
         tenant_oid = user_org_id(me)
-        return jsonify(build_checkout_batch_summary(cursor, tenant_oid))
+        source = get_checkout_batch_source(cursor, tenant_oid)
+        return jsonify(build_checkout_batch_summary(cursor, tenant_oid, source=source))
     finally:
         cursor.close()
         conn.close()

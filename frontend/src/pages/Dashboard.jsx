@@ -192,9 +192,7 @@ function Dashboard() {
         </Alert>
       ) : (
         <Stack spacing={1.5} sx={{ mt: 1.5 }}>
-          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>
-            {activeBatch?.id ? `Order status (batch #${activeBatch.id} upload)` : "Order status (registry)"}
-          </Typography>
+          <Typography sx={{ fontSize: 13, fontWeight: 700, color: "#374151" }}>Order status (registry)</Typography>
           <Grid container spacing={1}>
             <Grid item xs={6} sm={4} md={2.4}>
               <StatCard

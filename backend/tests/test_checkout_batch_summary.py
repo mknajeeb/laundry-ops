@@ -1,7 +1,7 @@
 """Tests for checkout batch summary (upload batch vs staging queue)."""
 
 from datetime import date
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from backend.checkout_batch_summary import build_checkout_batch_summary
 
@@ -21,11 +21,19 @@ def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None, checked
             "upload_batch_rows",
             "orders_staging",
             "checkout_log",
+            "rinse_scrape_runs",
         )
 
     def table_has_column_side_effect(_c, table, col):
         cols = {
-            "upload_batches": {"batch_id", "organization_id", "confirmed_at", "batch_date"},
+            "upload_batches": {
+                "batch_id",
+                "organization_id",
+                "confirmed_at",
+                "batch_date",
+                "portal_scrape_meta",
+                "file_name",
+            },
             "upload_batch_rows": {
                 "upload_batch_id",
                 "ticket_id",
@@ -49,6 +57,7 @@ def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None, checked
                 "weight_num",
             },
             "checkout_log": {"order_id"},
+            "rinse_scrape_runs": {"imported_batch_id", "organization_id"},
         }
         return col in cols.get(table, set())
 
@@ -58,13 +67,10 @@ def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None, checked
         calls["n"] += 1
         calls["last"] = " ".join(str(sql).split())
 
-    def fetchone_side_effect():
-        if "FROM upload_batches" in calls.get("last", ""):
-            return batch_meta
-        return None
-
     def fetchall_side_effect():
         sql = calls.get("last", "")
+        if "FROM upload_batches" in sql and "upload_batch_rows" not in sql:
+            return [batch_meta]
         if "FROM upload_batch_rows" in sql:
             return batch_rows
         if "FROM orders_staging o" in sql:
@@ -76,7 +82,6 @@ def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None, checked
         return []
 
     cursor.execute.side_effect = execute_side_effect
-    cursor.fetchone.side_effect = fetchone_side_effect
     cursor.fetchall.side_effect = fetchall_side_effect
 
     import backend.checkout_batch_summary as mod
@@ -85,7 +90,12 @@ def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None, checked
     orig_thc = mod.table_has_column
     mod.table_exists = table_exists_side_effect
     mod.table_has_column = table_has_column_side_effect
-    return cursor, mod, orig_te, orig_thc
+    auto_patch = patch(
+        "backend.checkout_batch_source.upload_batch_is_auto_scrape",
+        return_value=False,
+    )
+    auto_patch.start()
+    return cursor, mod, orig_te, orig_thc, auto_patch
 
 
 class TestCheckoutBatchSummary:
@@ -132,14 +142,15 @@ class TestCheckoutBatchSummary:
             {"ticket_id": f"BAG{i}"}
             for i in range(40, 49)
         ]
-        cursor, mod, orig_te, orig_thc = _mock_summary_cursor(
+        cursor, mod, orig_te, orig_thc, auto_patch = _mock_summary_cursor(
             batch_rows=batch_rows,
             active_staging=active_staging,
             checked_out_staging=checked_out_staging,
         )
         try:
-            out = build_checkout_batch_summary(cursor, 1)
+            out = build_checkout_batch_summary(cursor, 1, source="manual")
         finally:
+            auto_patch.stop()
             mod.table_exists = orig_te
             mod.table_has_column = orig_thc
 
@@ -176,12 +187,13 @@ class TestCheckoutBatchSummary:
                 "weight_num": 3,
             }
         ]
-        cursor, mod, orig_te, orig_thc = _mock_summary_cursor(
+        cursor, mod, orig_te, orig_thc, auto_patch = _mock_summary_cursor(
             batch_rows=batch_rows, active_staging=active_staging
         )
         try:
-            out = build_checkout_batch_summary(cursor, 1)
+            out = build_checkout_batch_summary(cursor, 1, source="manual")
         finally:
+            auto_patch.stop()
             mod.table_exists = orig_te
             mod.table_has_column = orig_thc
 
@@ -201,12 +213,13 @@ class TestCheckoutBatchSummary:
                 "weight_num": None,
             }
         ]
-        cursor, mod, orig_te, orig_thc = _mock_summary_cursor(
+        cursor, mod, orig_te, orig_thc, auto_patch = _mock_summary_cursor(
             batch_rows=batch_rows, active_staging=[], checked_out_staging=[]
         )
         try:
-            out = build_checkout_batch_summary(cursor, 1)
+            out = build_checkout_batch_summary(cursor, 1, source="manual")
         finally:
+            auto_patch.stop()
             mod.table_exists = orig_te
             mod.table_has_column = orig_thc
 

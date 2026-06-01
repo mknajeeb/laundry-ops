@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
+from backend.checkout_batch_source import (
+    KEY_CHECKOUT_BATCH_SOURCE,
+    get_checkout_batch_source,
+    normalize_checkout_batch_source,
+)
+
 from backend.ta_helpers import table_exists
 
 
@@ -53,7 +59,7 @@ def _set_setting(cursor, organization_id: int, key: str, value: str) -> None:
     )
 
 
-def get_ops_ui_flags(cursor, organization_id: int) -> dict[str, bool]:
+def get_ops_ui_flags(cursor, organization_id: int) -> dict[str, bool | str]:
     """Defaults keep current behaviour when settings are missing."""
     return {
         "scan_lookup_enabled": _truthy(_get_setting(cursor, organization_id, KEY_SCAN), True),
@@ -62,10 +68,11 @@ def get_ops_ui_flags(cursor, organization_id: int) -> dict[str, bool]:
         "upload_batch_require_both_csv": _truthy(
             _get_setting(cursor, organization_id, KEY_UPLOAD_BOTH_CSV), True
         ),
+        "checkout_batch_source": get_checkout_batch_source(cursor, organization_id),
     }
 
 
-def put_ops_ui_flags(cursor, organization_id: int, payload: Mapping[str, Any]) -> dict[str, bool]:
+def put_ops_ui_flags(cursor, organization_id: int, payload: Mapping[str, Any]) -> dict[str, bool | str]:
     """Persist known keys; omit absent keys."""
     if "scan_lookup_enabled" in payload:
         _set_setting(
@@ -95,4 +102,7 @@ def put_ops_ui_flags(cursor, organization_id: int, payload: Mapping[str, Any]) -
             KEY_UPLOAD_BOTH_CSV,
             "1" if _truthy(payload.get("upload_batch_require_both_csv"), True) else "0",
         )
+    if "checkout_batch_source" in payload:
+        source = normalize_checkout_batch_source(payload.get("checkout_batch_source"))
+        _set_setting(cursor, organization_id, KEY_CHECKOUT_BATCH_SOURCE, source)
     return get_ops_ui_flags(cursor, organization_id)

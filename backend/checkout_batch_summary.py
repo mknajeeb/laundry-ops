@@ -39,7 +39,15 @@ def _norm_rush(value: str | None) -> str:
     return "RUSH" if raw == "RUSH" else "NON-RUSH"
 
 
-def _latest_confirmed_batch(cursor, organization_id: int) -> dict[str, Any] | None:
+def _latest_confirmed_batch(
+    cursor,
+    organization_id: int,
+    *,
+    source: str = "manual",
+) -> dict[str, Any] | None:
+    """Latest confirmed batch matching checkout source (manual upload vs auto scrape)."""
+    from backend.checkout_batch_source import upload_batch_is_auto_scrape
+
     if not table_exists(cursor, "upload_batches"):
         return None
     batch_pk = "batch_id"
@@ -52,18 +60,26 @@ def _latest_confirmed_batch(cursor, organization_id: int) -> dict[str, Any] | No
     if table_has_column(cursor, "upload_batches", "organization_id"):
         org_clause = " AND organization_id = %s"
         args.append(int(organization_id))
+    want_auto = str(source or "manual").strip().lower() == "auto"
     cursor.execute(
         f"""
         SELECT {batch_pk} AS batch_id, batch_date, confirmed_at
         FROM upload_batches
         WHERE confirmed_at IS NOT NULL{org_clause}
         ORDER BY confirmed_at DESC, {batch_pk} DESC
-        LIMIT 1
+        LIMIT 50
         """,
         tuple(args),
     )
-    row = cursor.fetchone()
-    return row if isinstance(row, dict) else None
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict) or row.get("batch_id") is None:
+            continue
+        is_auto = upload_batch_is_auto_scrape(
+            cursor, int(row["batch_id"]), int(organization_id)
+        )
+        if want_auto == is_auto:
+            return row
+    return None
 
 
 def _batch_row_col(cursor, table: str, candidates: tuple[str, ...]) -> str | None:
@@ -73,23 +89,32 @@ def _batch_row_col(cursor, table: str, candidates: tuple[str, ...]) -> str | Non
     return None
 
 
-def build_checkout_batch_summary(cursor, organization_id: int) -> dict[str, Any]:
+def build_checkout_batch_summary(
+    cursor,
+    organization_id: int,
+    *,
+    source: str = "manual",
+) -> dict[str, Any]:
     """
     Compare latest confirmed upload batch rows to active checkout queue (orders_staging).
 
-    Rush/non-rush totals come from upload_batch_rows (service + rush_type).
-    Remaining counts come from active-at-Washpro staging rows (checkout action list).
+    source=manual: latest confirmed manual upload (Washpro Excel).
+    source=auto: latest confirmed auto-scrape batch (VeeWash scheduled scrape).
     """
     org = int(organization_id)
+    batch_source = str(source or "manual").strip().lower()
+    if batch_source not in ("manual", "auto"):
+        batch_source = "manual"
     out: dict[str, Any] = {
         "batch_id": None,
         "batch_date": None,
         "confirmed_at": None,
+        "checkout_batch_source": batch_source,
         "rush": _empty_bucket(),
         "non_rush": _empty_bucket(),
         "missing_rush_rows": [],
     }
-    batch = _latest_confirmed_batch(cursor, org)
+    batch = _latest_confirmed_batch(cursor, org, source=batch_source)
     if not batch or batch.get("batch_id") is None:
         return out
 

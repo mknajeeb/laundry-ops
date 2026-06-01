@@ -249,6 +249,8 @@ function CheckoutPage() {
     });
   }, [checkedRows]);
 
+  const batchSourceLabel = batchSummary?.checkout_batch_source === "auto" ? "scraped" : "uploaded";
+
   const counters = useMemo(() => {
     const rushInQueue = searchFilteredRows.filter((r) => rushOf(r) === "RUSH").length;
     const nonRushInQueue = searchFilteredRows.filter((r) => rushOf(r) === "NON-RUSH").length;
@@ -574,8 +576,8 @@ function CheckoutPage() {
                 key: "RUSH",
                 label: "Rush",
                 count: counters.rushInQueue,
-                detail: batchSummary?.rush?.total != null
-                  ? `${counters.rushTotal} uploaded · ${counters.rushCheckedOut} sent · ${counters.rushExcluded} excluded`
+                detail: batchSummary?.batch_id != null && batchSummary?.rush?.total != null
+                  ? `${counters.rushTotal} ${batchSourceLabel} · ${counters.rushCheckedOut} sent · ${counters.rushExcluded} excluded`
                   : undefined,
                 Icon: Bolt,
                 accent: "#b91c1c",
@@ -584,8 +586,8 @@ function CheckoutPage() {
                 key: "NON-RUSH",
                 label: "Non-Rush",
                 count: counters.nonRushInQueue,
-                detail: batchSummary?.non_rush?.total != null
-                  ? `${counters.nonRushTotal} uploaded · ${counters.nonRushCheckedOut} sent · ${counters.nonRushExcluded} excluded`
+                detail: batchSummary?.batch_id != null && batchSummary?.non_rush?.total != null
+                  ? `${counters.nonRushTotal} ${batchSourceLabel} · ${counters.nonRushCheckedOut} sent · ${counters.nonRushExcluded} excluded`
                   : undefined,
                 Icon: CheckCircle,
                 accent: "#0f766e",

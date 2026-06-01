@@ -18,6 +18,7 @@ const DEFAULT_OPS_UI = {
   browse_list_enabled: true,
   dryer_qr_scan_enabled: true,
   upload_batch_require_both_csv: true,
+  checkout_batch_source: "manual",
 };
 
 export function AuthProvider({ children }) {
@@ -55,6 +56,8 @@ export function AuthProvider({ children }) {
         browse_list_enabled: ou.browse_list_enabled !== false,
         dryer_qr_scan_enabled: ou.dryer_qr_scan_enabled !== false,
         upload_batch_require_both_csv: ou.upload_batch_require_both_csv !== false,
+        checkout_batch_source:
+          String(ou.checkout_batch_source || "manual").toLowerCase() === "auto" ? "auto" : "manual",
       });
     } catch {
       localStorage.removeItem("ta_token");
