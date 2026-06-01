@@ -36,8 +36,10 @@ from backend.rinse_operations_dashboard import (
 )
 from backend.rinse_cleaner_ticket_presence import (
     PRESENCE_RUSH_UNKNOWN,
+    _presence_effective_rush,
+    load_incoming_unassigned_presence_rows,
     load_presence_portal_snapshot_counts,
-    load_wf_presence_incoming_rows,
+    load_wf_presence_at_vendor_rows,
 )
 from backend.rinse_lifecycle_portal_scrape import compute_missing_from_confirmed_portal_scrape
 from backend.rinse_bag_completion import normalize_bag_id
@@ -139,6 +141,198 @@ def lifecycle_group_for_status(status: str | None) -> str:
     if st == "UNKNOWN":
         st = LIFECYCLE_UNKNOWN
     return LIFECYCLE_STATUS_TO_GROUP.get(st, LIFECYCLE_GROUP_UNKNOWN)
+
+
+def _empty_incoming_group_dict() -> dict[str, int]:
+    return {
+        "total": 0,
+        "wf": 0,
+        "hd": 0,
+        "ready_for_vendor": 0,
+        "ready_for_mark_in": 0,
+        "needs_review": 0,
+    }
+
+
+def _empty_hd_lifecycle_group_dict() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "pending": 0,
+        "completed": 0,
+        "at_vendor": 0,
+        "processed_completed": 0,
+        "sent_to_rinse": 0,
+        "needs_review": 0,
+        "with_exceptions": 0,
+        "unreconciled": 0,
+    }
+
+
+def _rush_bucket_key(effective_rush: str) -> str:
+    er = str(effective_rush or "").upper()
+    if er == "RUSH":
+        return "rush"
+    if er == "NON-RUSH":
+        return "non_rush"
+    return "unknown_rush"
+
+
+def _accumulate_incoming_group(group: dict[str, int], row: Mapping[str, Any]) -> None:
+    group["total"] += 1
+    svc = str(row.get("service_type") or "").upper()
+    if svc == "WF":
+        group["wf"] += 1
+    elif svc == "HD":
+        group["hd"] += 1
+    ps = str(row.get("portal_status") or "").strip()
+    if ps == "ready_for_vendor":
+        group["ready_for_vendor"] += 1
+    elif ps == "ready_for_mark_in":
+        group["ready_for_mark_in"] += 1
+    if row.get("needs_review"):
+        group["needs_review"] += 1
+
+
+def _wf_lifecycle_bucket_sum(group: dict[str, Any]) -> int:
+    bs = group.get("by_lifecycle_status") or {}
+    bg = group.get("by_lifecycle_group") or {}
+    return (
+        int(bs.get(SENT_TO_VENDOR) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_PENDING_WEIGHING) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_WEIGHED_NOT_STARTED) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_SORTED_READY) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_WASH_DRY) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_FOLDED) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_SENT_TO_RINSE) or 0)
+        + int(bg.get(LIFECYCLE_GROUP_UNKNOWN) or 0)
+    )
+
+
+def _attach_wf_bucket_reconciliation(groups: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, group in groups.items():
+        g = dict(group)
+        total = int(g.get("total") or 0)
+        bucket_sum = _wf_lifecycle_bucket_sum(g)
+        g["bucket_sum"] = bucket_sum
+        g["unreconciled"] = total - bucket_sum
+        out[key] = g
+    return out
+
+
+def _derive_hd_basic_status(
+    row: Mapping[str, Any],
+    lifecycle: Mapping[str, Any],
+) -> str:
+    """Basic HD lifecycle status when full WF scan flow does not apply."""
+    status = str(lifecycle.get("current_lifecycle_status") or "").strip()
+    if status in LIFECYCLE_COMPLETED_STATUSES:
+        if status == SENT_TO_RINSE:
+            return "sent_to_rinse"
+        return "processed_completed"
+    if status == SENT_TO_VENDOR or row.get("at_vendor_presence"):
+        return "at_vendor"
+    if int(row.get("is_completed") or 0) == 1:
+        return "processed_completed"
+    return "pending"
+
+
+def _accumulate_hd_lifecycle_group(group: dict[str, Any], *, hd_status: str, needs_review: bool, has_exceptions: bool) -> None:
+    group["total"] += 1
+    if hd_status == "pending":
+        group["pending"] += 1
+    elif hd_status == "at_vendor":
+        group["at_vendor"] += 1
+        group["pending"] += 1
+    elif hd_status == "sent_to_rinse":
+        group["sent_to_rinse"] += 1
+        group["completed"] += 1
+    elif hd_status == "processed_completed":
+        group["processed_completed"] += 1
+        group["completed"] += 1
+    if needs_review:
+        group["needs_review"] += 1
+    if has_exceptions:
+        group["with_exceptions"] += 1
+
+
+def _build_incoming_section(
+    incoming_rows: list[dict[str, Any]],
+    incoming_meta: dict[str, Any],
+) -> dict[str, Any]:
+    groups = {
+        "rush": _empty_incoming_group_dict(),
+        "non_rush": _empty_incoming_group_dict(),
+        "unknown_rush": _empty_incoming_group_dict(),
+    }
+    for row in incoming_rows:
+        key = _rush_bucket_key(str(row.get("effective_rush") or ""))
+        _accumulate_incoming_group(groups[key], row)
+    combined = _empty_incoming_group_dict()
+    for g in groups.values():
+        for k in combined:
+            combined[k] += int(g.get(k) or 0)
+    return {
+        "title": "Incoming / Unassigned",
+        "summary": incoming_meta,
+        "groups": {**groups, "combined": combined},
+        "rows": incoming_rows,
+    }
+
+
+def _build_exceptions_section(
+    wf_rows: list[dict[str, Any]],
+    hd_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    from backend.rinse_shift_operational_exceptions import (
+        COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
+        NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN,
+        ORDER_REJECTED_FULL,
+    )
+
+    def _count(rows, predicate):
+        return sum(1 for r in rows if predicate(r))
+
+    wf_exc_rows = [r for r in wf_rows if r.get("exception_flags") or r.get("needs_review")]
+    hd_exc_rows = [r for r in hd_rows if r.get("exception_flags") or r.get("needs_review")]
+
+    wf_stats = {
+        "completed_without_final_clean_scan": _count(
+            wf_rows, lambda r: COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in (r.get("exception_flags") or [])
+        ),
+        "external_scan_after_clean": _count(
+            wf_rows, lambda r: NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN in (r.get("exception_flags") or [])
+        ),
+        "order_reject_no_start": _count(
+            wf_rows, lambda r: ORDER_REJECTED_FULL in (r.get("exception_flags") or [])
+        ),
+        "bags_with_issues": _count(wf_rows, lambda r: (r.get("operational_flags") or {}).get("has_create_issue")),
+        "bags_with_workitems": _count(
+            wf_rows,
+            lambda r: (r.get("operational_flags") or {}).get("has_create_workitem")
+            or (r.get("operational_flags") or {}).get("has_workitem"),
+        ),
+        "bags_with_bulk_workitems": _count(
+            wf_rows, lambda r: (r.get("operational_flags") or {}).get("has_create_bulk_workitem")
+        ),
+        "needs_review": _count(wf_rows, lambda r: r.get("needs_review")),
+    }
+    hd_stats = {
+        "needs_review": _count(hd_rows, lambda r: r.get("needs_review")),
+        "with_exceptions": _count(hd_rows, lambda r: r.get("exception_flags")),
+    }
+    all_exc = wf_exc_rows + hd_exc_rows
+    return {
+        "title": "Exceptions / Issues / Workitems",
+        "wf": wf_stats,
+        "hd": hd_stats,
+        "rows": all_exc,
+        "drilldown_match": {
+            k: {"count": v, "drilldown": v}
+            for k, v in wf_stats.items()
+            if isinstance(v, int)
+        },
+    }
 
 
 def _empty_lifecycle_group_dict() -> dict[str, Any]:
@@ -288,7 +482,7 @@ def _build_shift_reconciliation(
 ) -> dict[str, Any]:
     presence = load_presence_portal_snapshot_counts(cursor, organization_id, target_date=target_date)
     by_status = combined.get("by_lifecycle_status") or {}
-    assigned_lifecycle = int(by_status.get(ASSIGNED_NOT_SENT_TO_VENDOR) or 0)
+    incoming_wf = int(portal_meta.get("incoming_wf") or portal_meta.get("wf_ready_for_vendor_presence") or 0)
     sent_rows = [r for r in drilldown_rows if r.get("current_lifecycle_status") == SENT_TO_RINSE]
     ext = sum(
         1
@@ -312,10 +506,12 @@ def _build_shift_reconciliation(
         "hd_excluded_from_lifecycle": hd_excluded,
         "unknown_service_excluded": int(presence.get("ready_for_vendor_unknown_service") or 0),
         "lifecycle_wf_total": lifecycle_total,
-        "assigned_not_sent_lifecycle": assigned_lifecycle,
-        "assigned_not_sent_presence_wf": int(portal_meta.get("wf_ready_for_vendor_presence") or 0),
-        "assigned_count_delta": assigned_lifecycle
-        - int(portal_meta.get("wf_ready_for_vendor_presence") or 0),
+        "incoming_wf_dashboard": incoming_wf,
+        "incoming_wf_presence_snapshot": portal_wf_incoming,
+        "incoming_wf_delta": incoming_wf - portal_wf_incoming,
+        "assigned_not_sent_lifecycle": 0,
+        "assigned_not_sent_presence_wf": incoming_wf,
+        "assigned_count_delta": incoming_wf - portal_wf_incoming,
     }
     return {
         "portal_snapshot": presence,
@@ -343,7 +539,8 @@ def _build_shift_reconciliation(
             "pending": int(combined.get("pending") or 0),
             "needs_review": int(combined.get("needs_review") or 0),
             "with_exceptions": int(combined.get("with_exceptions") or 0),
-            "assigned_not_sent": assigned_lifecycle,
+            "assigned_not_sent": 0,
+            "incoming_wf": incoming_wf,
             "sent_to_rinse": int(by_status.get(SENT_TO_RINSE) or 0),
             "sent_to_rinse_external_scan": ext,
             "sent_to_rinse_missing_from_scrape": miss,
@@ -379,6 +576,11 @@ def filter_lifecycle_pending_rows(
     lifecycle_group: str | None = None,
     lifecycle_status: str | None = None,
     filter_kind: str | None = None,
+    record_scope: str | None = None,
+    hd_lifecycle_status: str | None = None,
+    incoming_filter: str | None = None,
+    incoming_only: bool = False,
+    unreconciled_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Filter lifecycle pending rows for dashboard drilldown."""
     out: list[dict[str, Any]] = []
@@ -386,6 +588,15 @@ def filter_lifecycle_pending_rows(
     for row in rows:
         if not isinstance(row, dict):
             continue
+        if incoming_only or record_scope == "incoming":
+            if row.get("record_scope") != "incoming":
+                continue
+        elif record_scope:
+            if row.get("record_scope") != record_scope:
+                continue
+        elif record_scope is None and filter_kind not in ("exceptions",) and not incoming_only:
+            if row.get("record_scope") == "incoming":
+                continue
         if rush_group == "rush":
             if row.get("group") is not None:
                 if row.get("group") != "rush":
@@ -400,6 +611,22 @@ def filter_lifecycle_pending_rows(
                 continue
         if rush_group == "unknown_rush" and row.get("group") != "unknown_rush":
             continue
+        if hd_lifecycle_status and row.get("hd_lifecycle_status") != hd_lifecycle_status:
+            continue
+        inc = str(incoming_filter or "").strip().lower()
+        if inc == "wf" and str(row.get("service_type") or "").upper() != "WF":
+            continue
+        if inc == "hd" and str(row.get("service_type") or "").upper() != "HD":
+            continue
+        if inc == "ready_for_vendor" and not row.get("ready_for_vendor"):
+            continue
+        if inc == "ready_for_mark_in" and str(row.get("portal_status") or "") != "ready_for_mark_in":
+            continue
+        if unreconciled_only and row.get("record_scope") == "wf_lifecycle":
+            st = str(row.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN).strip()
+            grp = str(row.get("lifecycle_group") or lifecycle_group_for_status(st))
+            if grp != LIFECYCLE_GROUP_UNKNOWN and st not in (LIFECYCLE_UNKNOWN, ASSIGNED_NOT_SENT_TO_VENDOR):
+                continue
         st = str(row.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN).strip()
         grp = str(row.get("lifecycle_group") or lifecycle_group_for_status(st))
         if lifecycle_status and st != lifecycle_status:
@@ -411,6 +638,10 @@ def filter_lifecycle_pending_rows(
             continue
         if kind == "exceptions" and not (row.get("exception_flags") or []):
             continue
+        if kind == "completed_without_final_clean_scan":
+            from backend.rinse_shift_operational_exceptions import COMPLETED_WITHOUT_FINAL_CLEAN_SCAN
+            if COMPLETED_WITHOUT_FINAL_CLEAN_SCAN not in (row.get("exception_flags") or []):
+                continue
         if kind == "completed" and st not in LIFECYCLE_COMPLETED_STATUSES:
             continue
         if kind == "pending" and st in LIFECYCLE_COMPLETED_STATUSES:
@@ -973,7 +1204,7 @@ def _load_pending_bag_rows(
             wf_registry_supplement += 1
             rows.append(row)
 
-    presence_rows, presence_meta = load_wf_presence_incoming_rows(
+    presence_rows, presence_meta = load_wf_presence_at_vendor_rows(
         cursor, org, target_date=td, exclude_bag_ids=seen
     )
     for row in presence_rows:
@@ -993,7 +1224,126 @@ def _load_pending_bag_rows(
         "wf_registry_supplement": wf_registry_supplement,
         **presence_meta,
         "wf_lifecycle_total": len(rows),
+        "wf_production_total": len(rows),
         "wf_total": len(rows),
+    }
+    return rows, meta
+
+
+def _load_hd_production_bag_rows(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """HD bags in active staging + registry supplement + HD at_vendor presence."""
+    org = int(organization_id)
+    td = target_date
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    hd_staging = 0
+    hd_registry = 0
+    hd_presence = 0
+
+    has_staging = table_exists(cursor, "orders_staging") and table_has_column(
+        cursor, "orders_staging", "ticket_id"
+    )
+    has_reg = table_exists(cursor, "rinse_bag_registry")
+
+    if has_staging:
+        active_where = _active_staging_where_sql(cursor)
+        has_org = table_has_column(cursor, "orders_staging", "organization_id")
+        svc_s = _service_expr("s")
+        org_clause = " AND s.organization_id = %s" if has_org else ""
+        st_args: list[Any] = [org] if has_org else []
+        rush_s = (
+            effective_rush_expr("s", date_col="date_clean")
+            if table_has_column(cursor, "orders_staging", "rush_type")
+            else "CASE WHEN s.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
+        )
+        cursor.execute(
+            f"""
+            SELECT s.ticket_id AS bag_id, {svc_s} AS service_type, UPPER({rush_s}) AS effective_rush,
+                   0 AS is_completed, s.name_clean, s.weight_num, NULL AS logistics_status
+            FROM orders_staging s
+            WHERE ({active_where}){org_clause}
+              AND s.ticket_id IS NOT NULL AND TRIM(s.ticket_id) != ''
+              AND UPPER({svc_s}) = 'HD'
+            """,
+            tuple(st_args),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if not bid or bid in seen:
+                continue
+            seen.add(bid)
+            hd_staging += 1
+            rows.append(row)
+
+    if has_reg:
+        svc_r = _service_expr("r")
+        done_r = _completed_expr("r")
+        rush_r = effective_rush_expr("r")
+        cursor.execute(
+            f"""
+            SELECT r.bag_id, {svc_r} AS service_type, {rush_r} AS effective_rush,
+                   CASE WHEN {done_r} THEN 1 ELSE 0 END AS is_completed,
+                   r.name_clean, r.weight_num, NULL AS logistics_status
+            FROM rinse_bag_registry r
+            WHERE r.organization_id = %s AND r.date_clean = %s AND UPPER({svc_r}) = 'HD'
+            """,
+            (org, td),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if not bid or bid in seen:
+                continue
+            seen.add(bid)
+            hd_registry += 1
+            rows.append(row)
+
+    if table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        cursor.execute(
+            """
+            SELECT bag_id, customer_name, estimated_delivery_date, rush_flag, service_type,
+                   portal_status, last_seen_at, raw_row_json
+            FROM rinse_cleaner_ticket_presence
+            WHERE organization_id = %s AND active = 1 AND portal_status = %s
+              AND UPPER(COALESCE(service_type, '')) = 'HD'
+            """,
+            (org, "at_vendor"),
+        )
+        for raw in cursor.fetchall() or []:
+            if not isinstance(raw, dict):
+                continue
+            bid = str(raw.get("bag_id") or "").strip().upper()
+            if not bid or bid in seen:
+                continue
+            seen.add(bid)
+            hd_presence += 1
+            rows.append(
+                {
+                    "bag_id": bid,
+                    "service_type": "HD",
+                    "effective_rush": _presence_effective_rush(raw, td),
+                    "is_completed": 0,
+                    "name_clean": raw.get("customer_name"),
+                    "weight_num": None,
+                    "logistics_status": None,
+                    "at_vendor_presence": True,
+                    "presence_source": True,
+                }
+            )
+
+    meta = {
+        "hd_staging": hd_staging,
+        "hd_registry_supplement": hd_registry,
+        "hd_at_vendor_presence": hd_presence,
+        "hd_lifecycle_total": len(rows),
     }
     return rows, meta
 
@@ -1032,28 +1382,41 @@ def build_lifecycle_pending_payload(
     target_date: date,
     evaluation_time: datetime | None = None,
 ) -> dict[str, Any]:
-    """Lifecycle-based pending/completed counts for active portal WF bags."""
+    """Structured lifecycle payload: Incoming, WF lifecycle, HD lifecycle, Exceptions."""
     org = int(organization_id)
     td = target_date
     eval_at = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
 
-    bag_rows, portal_meta = _load_pending_bag_rows(cursor, org, target_date=td)
-    bag_ids = [str(r.get("bag_id") or "").strip() for r in bag_rows if r.get("bag_id")]
-    purpose_flags = _bag_purpose_flags(cursor, org, bag_ids)
-    events_by_bag = _load_scan_events_for_bags(cursor, org, bag_ids)
+    wf_bag_rows, portal_meta = _load_pending_bag_rows(cursor, org, target_date=td)
+    hd_bag_rows, hd_meta = _load_hd_production_bag_rows(cursor, org, target_date=td)
+    wf_seen = {str(r.get("bag_id") or "").strip().upper() for r in wf_bag_rows if r.get("bag_id")}
+    incoming_rows, incoming_meta = load_incoming_unassigned_presence_rows(
+        cursor, org, target_date=td, exclude_bag_ids=wf_seen
+    )
+    incoming_section = _build_incoming_section(incoming_rows, incoming_meta)
+
+    all_wf_ids = [str(r.get("bag_id") or "").strip() for r in wf_bag_rows if r.get("bag_id")]
+    all_hd_ids = [str(r.get("bag_id") or "").strip() for r in hd_bag_rows if r.get("bag_id")]
+    all_ids = all_wf_ids + all_hd_ids
+    purpose_flags = _bag_purpose_flags(cursor, org, all_ids)
+    events_by_bag = _load_scan_events_for_bags(cursor, org, all_ids)
     proc_settings = get_processing_settings(cursor, org)
     mapped_users = _load_mapped_internal_scan_users(cursor, org)
     missing_from_scrape = compute_missing_from_confirmed_portal_scrape(
-        cursor, org, bag_ids, events_by_bag
+        cursor, org, all_wf_ids, events_by_bag
     )
 
-    rush = _empty_lifecycle_group_dict()
-    non_rush = _empty_lifecycle_group_dict()
-    unknown_rush = _empty_lifecycle_group_dict()
+    wf_rush = _empty_lifecycle_group_dict()
+    wf_non_rush = _empty_lifecycle_group_dict()
+    wf_unknown_rush = _empty_lifecycle_group_dict()
+    hd_rush = _empty_hd_lifecycle_group_dict()
+    hd_non_rush = _empty_hd_lifecycle_group_dict()
+    hd_unknown_rush = _empty_hd_lifecycle_group_dict()
     checkout_rush = _empty_checkout_rush_summary()
-    drilldown_rows: list[dict[str, Any]] = []
+    wf_drilldown: list[dict[str, Any]] = []
+    hd_drilldown: list[dict[str, Any]] = []
 
-    for row in bag_rows:
+    for row in wf_bag_rows:
         bid = str(row.get("bag_id") or "").strip()
         if not bid:
             continue
@@ -1069,7 +1432,7 @@ def build_lifecycle_pending_payload(
             lifecycle = derive_bag_lifecycle_status(
                 events_by_bag.get(bid) or [],
                 bag_id=bid,
-                ready_for_vendor_presence=bool(row.get("ready_for_vendor_presence")),
+                ready_for_vendor_presence=False,
                 at_vendor_presence=bool(row.get("at_vendor_presence")),
                 logistics_status=row.get("logistics_status"),
                 mapped_internal_users=mapped_users,
@@ -1099,23 +1462,21 @@ def build_lifecycle_pending_payload(
         lifecycle_status = str(
             lifecycle.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN
         ).strip()
+        if lifecycle_status == ASSIGNED_NOT_SENT_TO_VENDOR:
+            continue
         lifecycle_group = lifecycle_group_for_status(lifecycle_status)
         is_completed = lifecycle_status in LIFECYCLE_COMPLETED_STATUSES
         exception_flags = list(lifecycle.get("exception_flags") or [])
-        needs_review = (
-            bool(lifecycle.get("needs_review"))
-            or lifecycle_fallback
-            or bool(row.get("needs_review_presence_svc"))
-        )
+        needs_review = bool(lifecycle.get("needs_review")) or lifecycle_fallback
         has_exceptions = len(exception_flags) > 0
         checkout_status = str(lifecycle.get("checkout_status") or CHECKOUT_STATUS_NOT_CHECKED_OUT)
 
         if group_key == "rush":
-            target = rush
+            target = wf_rush
         elif group_key == "non_rush":
-            target = non_rush
+            target = wf_non_rush
         else:
-            target = unknown_rush
+            target = wf_unknown_rush
         _accumulate_lifecycle_group(
             target,
             lifecycle_status=lifecycle_status,
@@ -1125,23 +1486,24 @@ def build_lifecycle_pending_payload(
             has_exceptions=has_exceptions,
         )
 
-        if is_rush:
-            if checkout_status == CHECKOUT_STATUS_NOT_CHECKED_OUT:
-                checkout_rush["checkout_pending"] += 1
-            elif checkout_status == CHECKOUT_STATUS_CHECKED_OUT:
-                checkout_rush["checked_out"] += 1
-            elif checkout_status == CHECKOUT_STATUS_NEEDS_REVIEW:
-                checkout_rush["checkout_needs_review"] += 1
+        if is_rush and is_completed and checkout_status == CHECKOUT_STATUS_NOT_CHECKED_OUT:
+            checkout_rush["checkout_pending"] += 1
+        elif is_rush and checkout_status == CHECKOUT_STATUS_CHECKED_OUT:
+            checkout_rush["checked_out"] += 1
+        elif is_rush and checkout_status == CHECKOUT_STATUS_NEEDS_REVIEW:
+            checkout_rush["checkout_needs_review"] += 1
 
-        drilldown_rows.append(
+        wf_drilldown.append(
             {
                 "bag_id": bid,
                 "customer": row.get("name_clean"),
                 "weight_lbs": row.get("weight_num"),
+                "service_type": "WF",
                 "rush": is_rush,
                 "effective_rush": str(row.get("effective_rush") or "").upper() or PRESENCE_RUSH_UNKNOWN,
                 "rush_label": rush_label,
                 "group": group_key,
+                "record_scope": "wf_lifecycle",
                 "current_lifecycle_status": lifecycle_status,
                 "lifecycle_group": lifecycle_group,
                 "lifecycle_status_label": LIFECYCLE_STATUS_LABELS.get(
@@ -1166,9 +1528,108 @@ def build_lifecycle_pending_payload(
             }
         )
 
-    legacy_buckets = _build_legacy_pending_payload(bag_rows, purpose_flags)
-    combined = _sum_lifecycle_groups(rush, non_rush, unknown_rush)
-    lifecycle_ids = {str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")}
+    for row in hd_bag_rows:
+        bid = str(row.get("bag_id") or "").strip()
+        if not bid:
+            continue
+        group_key, is_rush, rush_label = _rush_group_for_row(row)
+        lifecycle_fallback = False
+        try:
+            lifecycle = derive_bag_lifecycle_status(
+                events_by_bag.get(bid) or [],
+                bag_id=bid,
+                at_vendor_presence=bool(row.get("at_vendor_presence")),
+                logistics_status=row.get("logistics_status"),
+                mapped_internal_users=mapped_users,
+                washing_minutes=int(proc_settings.get("washing_minutes") or 30),
+                drying_minutes=int(proc_settings.get("drying_minutes") or 45),
+                reject_after_create_issue_minutes=int(
+                    proc_settings.get("reject_after_create_issue_minutes") or 45
+                ),
+                evaluation_time=eval_at,
+            )
+        except Exception:
+            lifecycle = {
+                "current_lifecycle_status": LIFECYCLE_UNKNOWN,
+                "exception_flags": [],
+                "needs_review": True,
+                "operational_flags": {},
+                "stage_detail": {},
+            }
+            lifecycle_fallback = True
+        hd_status = _derive_hd_basic_status(row, lifecycle)
+        exception_flags = list(lifecycle.get("exception_flags") or [])
+        needs_review = bool(lifecycle.get("needs_review")) or lifecycle_fallback
+        has_exceptions = len(exception_flags) > 0
+        if group_key == "rush":
+            hd_target = hd_rush
+        elif group_key == "non_rush":
+            hd_target = hd_non_rush
+        else:
+            hd_target = hd_unknown_rush
+        _accumulate_hd_lifecycle_group(
+            hd_target,
+            hd_status=hd_status,
+            needs_review=needs_review,
+            has_exceptions=has_exceptions,
+        )
+        hd_drilldown.append(
+            {
+                "bag_id": bid,
+                "customer": row.get("name_clean"),
+                "service_type": "HD",
+                "rush": is_rush,
+                "effective_rush": str(row.get("effective_rush") or "").upper() or PRESENCE_RUSH_UNKNOWN,
+                "rush_label": rush_label,
+                "group": group_key,
+                "record_scope": "hd_lifecycle",
+                "hd_lifecycle_status": hd_status,
+                "current_lifecycle_status": lifecycle.get("current_lifecycle_status"),
+                "needs_review": needs_review,
+                "exception_flags": exception_flags,
+                "operational_flags": lifecycle.get("operational_flags") or {},
+                "is_completed": hd_status in ("processed_completed", "sent_to_rinse"),
+            }
+        )
+
+    wf_groups_raw = {
+        "rush": wf_rush,
+        "non_rush": wf_non_rush,
+        "unknown_rush": wf_unknown_rush,
+    }
+    wf_groups = _attach_wf_bucket_reconciliation(
+        {**wf_groups_raw, "combined": _sum_lifecycle_groups(wf_rush, wf_non_rush, wf_unknown_rush)}
+    )
+    hd_groups = {
+        "rush": hd_rush,
+        "non_rush": hd_non_rush,
+        "unknown_rush": hd_unknown_rush,
+    }
+    hd_combined = _empty_hd_lifecycle_group_dict()
+    for g in hd_groups.values():
+        for k in hd_combined:
+            hd_combined[k] += int(g.get(k) or 0)
+    hd_groups["combined"] = hd_combined
+
+    exceptions_section = _build_exceptions_section(wf_drilldown, hd_drilldown)
+    all_drilldown = incoming_rows + wf_drilldown + hd_drilldown
+
+    legacy_buckets = _build_legacy_pending_payload(wf_bag_rows, purpose_flags)
+    combined = wf_groups["combined"]
+    lifecycle_ids = {str(r.get("bag_id") or "").strip().upper() for r in wf_bag_rows if r.get("bag_id")}
+    portal_meta = {
+        **portal_meta,
+        **hd_meta,
+        "incoming_total": incoming_meta.get("incoming_total"),
+        "incoming_wf": incoming_meta.get("incoming_wf"),
+        "incoming_hd": incoming_meta.get("incoming_hd"),
+        "incoming_unknown_service": incoming_meta.get("incoming_unknown_service"),
+        "wf_ready_for_vendor_presence": incoming_meta.get("incoming_wf"),
+        "ready_for_vendor_rush": incoming_meta.get("incoming_rush"),
+        "ready_for_vendor_non_rush": incoming_meta.get("incoming_non_rush"),
+        "ready_for_vendor_unknown_rush": incoming_meta.get("incoming_unknown_rush"),
+        "last_presence_refresh_at": incoming_meta.get("last_presence_refresh_at"),
+    }
     portal_alignment = _build_portal_reconciliation_meta(
         cursor,
         org,
@@ -1176,7 +1637,7 @@ def build_lifecycle_pending_payload(
         lifecycle_bag_ids=lifecycle_ids,
         wf_meta=portal_meta,
     )
-    count_integrity = _build_count_integrity(combined, drilldown_rows)
+    count_integrity = _build_count_integrity(combined, wf_drilldown)
     reconciliation = _build_shift_reconciliation(
         cursor,
         org,
@@ -1184,28 +1645,45 @@ def build_lifecycle_pending_payload(
         portal_meta=portal_meta,
         portal_alignment=portal_alignment,
         combined=combined,
-        drilldown_rows=drilldown_rows,
+        drilldown_rows=wf_drilldown,
     )
+    reconciliation["incoming"] = incoming_section["summary"]
+    reconciliation["wf_lifecycle"] = {
+        "total": combined.get("total"),
+        "pending": combined.get("pending"),
+        "completed": combined.get("completed"),
+        "unreconciled": combined.get("unreconciled"),
+    }
+    reconciliation["hd_lifecycle"] = hd_combined
 
     return {
         "date": td.isoformat(),
         "status_model": STATUS_MODEL_LIFECYCLE_V1,
         "evaluation_time": eval_at.isoformat(),
         "completion_field": "lifecycle: FOLDED_COMPLETED or SENT_TO_RINSE",
-        "service_scope": "WF bags only (HD excluded from lifecycle)",
+        "service_scope": "WF production lifecycle; HD separate; Incoming unassigned separate",
         "portal_alignment": portal_alignment,
         "reconciliation": reconciliation,
         "count_integrity": count_integrity,
+        "incoming": incoming_section,
+        "wf_lifecycle": {
+            "title": "Wash & Fold lifecycle",
+            "mode": "full",
+            "groups": wf_groups,
+            "rows": wf_drilldown,
+        },
+        "hd_lifecycle": {
+            "title": "Hang Dry lifecycle — basic status only",
+            "mode": "basic",
+            "groups": hd_groups,
+            "rows": hd_drilldown,
+        },
+        "exceptions": exceptions_section,
         "lifecycle_status_labels": LIFECYCLE_STATUS_LABELS,
         "lifecycle_group_labels": LIFECYCLE_GROUP_LABELS,
         "sent_to_rinse_reason_labels": SENT_TO_RINSE_REASON_LABELS,
         "checkout_status_labels": CHECKOUT_STATUS_LABELS,
-        "groups": {
-            "rush": rush,
-            "non_rush": non_rush,
-            "unknown_rush": unknown_rush,
-            "combined": combined,
-        },
+        "groups": wf_groups,
         "legacy_buckets": legacy_buckets,
         "checkout_summary": {
             "rush": checkout_rush,
@@ -1215,7 +1693,7 @@ def build_lifecycle_pending_payload(
                 "checkout_needs_review": "Checkout needs review",
             },
         },
-        "rows": drilldown_rows,
+        "rows": all_drilldown,
     }
 
 

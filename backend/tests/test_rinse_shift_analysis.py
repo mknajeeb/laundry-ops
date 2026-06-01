@@ -8,6 +8,7 @@ from backend.rinse_bag_lifecycle_status import (
     CHECKOUT_STATUS_CHECKED_OUT,
     CHECKOUT_STATUS_NEEDS_REVIEW,
     CHECKOUT_STATUS_NOT_CHECKED_OUT,
+    CHECKOUT_STATUS_NOT_RECORDED,
     FOLDED_COMPLETED,
     LIFECYCLE_UNKNOWN,
     PENDING_WEIGHING,
@@ -52,7 +53,16 @@ def _staging_execute_side_effect(cursor, bag_rows, scan_events=None, presence_ro
         elif "FROM rinse_bag_registry r" in s and "date_clean" in s:
             cursor.fetchall.return_value = []
         elif "FROM rinse_cleaner_ticket_presence" in s:
-            cursor.fetchall.return_value = presence_rows
+            portal_filter = None
+            if args and len(args) >= 2:
+                portal_filter = str(args[1] or "").strip()
+            filtered = presence_rows
+            if portal_filter:
+                filtered = [
+                    r for r in presence_rows
+                    if str(r.get("portal_status") or "").strip() == portal_filter
+                ]
+            cursor.fetchall.return_value = filtered
         elif "FROM upload_batches" in s or "FROM upload_batch_rows" in s:
             cursor.fetchall.return_value = []
         elif "orders_staging WHERE organization_id" in s and "ticket_id" in s:
@@ -259,7 +269,8 @@ class TestLifecyclePendingPayload:
         assert rush["by_lifecycle_group"][LIFECYCLE_GROUP_WASH_DRY] == 1
         assert rush["needs_review"] == 1
         assert rush["with_exceptions"] == 1
-        assert out["checkout_summary"]["rush"]["checkout_pending"] == 1
+        assert out["exceptions"]["wf"]["needs_review"] == 1
+        assert out["checkout_summary"]["rush"]["checkout_pending"] == 0
         assert out["checkout_summary"]["rush"]["checkout_needs_review"] == 1
 
     def test_checkout_does_not_change_lifecycle_status(self):
@@ -635,11 +646,14 @@ class TestPresenceIncomingLifecycle:
             out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
 
         assert out["portal_alignment"]["wf_ready_for_vendor_presence"] == 1
-        assert out["groups"]["combined"]["by_lifecycle_status"][ASSIGNED_NOT_SENT_TO_VENDOR] == 1
-        row = out["rows"][0]
+        assert out["incoming"]["groups"]["combined"]["total"] == 1
+        assert out["incoming"]["groups"]["combined"]["ready_for_vendor"] == 1
+        assert out["groups"]["combined"]["total"] == 0
+        row = out["incoming"]["rows"][0]
         assert row["bag_id"] == "READY1"
-        assert row["current_lifecycle_status"] == ASSIGNED_NOT_SENT_TO_VENDOR
+        assert row["record_scope"] == "incoming"
         assert row["presence_source"] is True
+        assert ASSIGNED_NOT_SENT_TO_VENDOR not in (out["groups"]["combined"].get("by_lifecycle_status") or {})
 
     def test_at_vendor_presence_without_scans_is_sent_to_vendor(self):
         from backend.rinse_bag_lifecycle_status import SENT_TO_VENDOR
@@ -696,8 +710,10 @@ class TestPresenceIncomingLifecycle:
         ):
             out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
 
-        assert out["portal_alignment"]["hd_presence_excluded"] == 1
+        assert out["incoming"]["groups"]["combined"]["hd"] == 1
+        assert out["incoming"]["groups"]["combined"]["total"] == 1
         assert out["groups"]["combined"]["total"] == 0
+        assert out["hd_lifecycle"]["groups"]["combined"]["total"] == 0
 
     def test_assigned_count_matches_ready_for_vendor_presence(self):
         cursor = MagicMock()
@@ -734,7 +750,10 @@ class TestPresenceIncomingLifecycle:
             out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
 
         assert out["portal_alignment"]["wf_ready_for_vendor_presence"] == 2
-        assert out["groups"]["combined"]["by_lifecycle_status"][ASSIGNED_NOT_SENT_TO_VENDOR] == 2
+        assert out["incoming"]["groups"]["combined"]["total"] == 2
+        assert out["incoming"]["groups"]["rush"]["total"] == 1
+        assert out["incoming"]["groups"]["non_rush"]["total"] == 1
+        assert out["groups"]["combined"]["total"] == 0
 
 
 class TestCompletedWithoutFinalCleanScanLifecycleSummary:
@@ -848,3 +867,151 @@ class TestCompletedWithoutFinalCleanScanLifecycleSummary:
         ]
         assert len(filter_lifecycle_pending_rows(rows, filter_kind="completed")) == 1
         assert len(filter_lifecycle_pending_rows(rows, filter_kind="pending")) == 0
+
+
+class TestLifecycleSectionSplit:
+    def test_wf_lifecycle_bucket_reconciliation(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [
+                {
+                    "bag_id": "W1",
+                    "name_clean": "A",
+                    "weight_num": 10,
+                    "service_type": "WF",
+                    "effective_rush": "RUSH",
+                    "is_completed": 0,
+                    "logistics_status": "AT_WASHPRO",
+                },
+            ],
+        )
+
+        def fake_derive(events, *, bag_id, **kwargs):
+            return {
+                "current_lifecycle_status": PENDING_WEIGHING,
+                "checkout_status": CHECKOUT_STATUS_NOT_CHECKED_OUT,
+                "status_timestamp": datetime(2026, 5, 28, 8, 0),
+                "status_source_event": None,
+                "operational_flags": {},
+                "exception_flags": [],
+                "needs_review": False,
+                "stage_detail": {},
+            }
+
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ), patch(
+            "backend.rinse_shift_analysis.derive_bag_lifecycle_status",
+            side_effect=fake_derive,
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 28))
+
+        combined = out["wf_lifecycle"]["groups"]["combined"]
+        assert combined["total"] == 1
+        assert combined["pending"] == 1
+        assert combined["completed"] == 0
+        assert combined["unreconciled"] == 0
+        assert combined["bucket_sum"] == combined["total"]
+
+    def test_completed_equals_folded_plus_sent_to_rinse(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [
+                {"bag_id": "F1", "name_clean": "F", "weight_num": 10, "service_type": "WF", "effective_rush": "RUSH", "is_completed": 0, "logistics_status": "AT_WASHPRO"},
+                {"bag_id": "S1", "name_clean": "S", "weight_num": 10, "service_type": "WF", "effective_rush": "NON-RUSH", "is_completed": 0, "logistics_status": "SENT_TO_RINSE"},
+            ],
+        )
+
+        def fake_derive(events, *, bag_id, **kwargs):
+            if bag_id == "F1":
+                return {
+                    "current_lifecycle_status": FOLDED_COMPLETED,
+                    "checkout_status": CHECKOUT_STATUS_CHECKED_OUT,
+                    "status_timestamp": datetime(2026, 5, 28, 12, 0),
+                    "status_source_event": None,
+                    "operational_flags": {},
+                    "exception_flags": [],
+                    "needs_review": False,
+                    "stage_detail": {},
+                }
+            return {
+                "current_lifecycle_status": SENT_TO_RINSE,
+                "checkout_status": CHECKOUT_STATUS_NOT_RECORDED,
+                "status_timestamp": datetime(2026, 5, 28, 13, 0),
+                "status_source_event": None,
+                "operational_flags": {},
+                "exception_flags": [],
+                "needs_review": False,
+                "stage_detail": {},
+            }
+
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ), patch(
+            "backend.rinse_shift_analysis.derive_bag_lifecycle_status",
+            side_effect=fake_derive,
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 28))
+
+        combined = out["wf_lifecycle"]["groups"]["combined"]
+        folded = combined["by_lifecycle_group"]["folded"]
+        sent = combined["by_lifecycle_group"]["sent_to_rinse"]
+        assert combined["completed"] == folded + sent
+        assert combined["pending"] == combined["total"] - combined["completed"]
+
+    def test_incoming_drilldown_matches_count(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [],
+            presence_rows=[
+                {
+                    "bag_id": "R1",
+                    "portal_status": "ready_for_vendor",
+                    "customer_name": "A",
+                    "estimated_delivery_date": date(2026, 5, 31),
+                    "rush_flag": "RUSH",
+                    "service_type": "WF",
+                    "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+                },
+            ],
+        )
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 5, 31))
+
+        count = out["incoming"]["groups"]["rush"]["wf"]
+        filtered = filter_lifecycle_pending_rows(
+            out["rows"],
+            rush_group="rush",
+            record_scope="incoming",
+            incoming_filter="wf",
+        )
+        assert count == len(filtered) == 1
+
+    def test_exceptions_count_matches_drilldown(self):
+        rows = [
+            {
+                "bag_id": "E1",
+                "record_scope": "wf_lifecycle",
+                "service_type": "WF",
+                "needs_review": True,
+                "exception_flags": ["CHECKOUT_WITHOUT_CLEAN_RACK"],
+                "operational_flags": {"has_create_workitem": True},
+                "current_lifecycle_status": PENDING_WEIGHING,
+            }
+        ]
+        assert len(filter_lifecycle_pending_rows(rows, filter_kind="needs_review")) == 1
+        assert len(filter_lifecycle_pending_rows(rows, filter_kind="exceptions")) == 1

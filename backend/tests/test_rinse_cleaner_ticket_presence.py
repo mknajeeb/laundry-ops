@@ -309,7 +309,7 @@ class TestPortalStatusTransitions:
 
 class TestLoadWfPresenceIncomingRows:
     def test_workitem_before_anchor_not_applicable_here(self):
-        from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
+        from backend.rinse_cleaner_ticket_presence import load_incoming_unassigned_presence_rows
 
         cursor = MagicMock()
         cursor.fetchall.return_value = [
@@ -326,15 +326,16 @@ class TestLoadWfPresenceIncomingRows:
             }
         ]
         with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
-            rows, meta = load_wf_presence_incoming_rows(
+            rows, meta = load_incoming_unassigned_presence_rows(
                 cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
             )
         assert len(rows) == 1
-        assert rows[0]["ready_for_vendor_presence"] is True
-        assert meta["wf_ready_for_vendor_presence"] == 1
+        assert rows[0]["record_scope"] == "incoming"
+        assert meta["incoming_wf"] == 1
+        assert meta["incoming_unknown_rush"] == 1
 
-    def test_hd_excluded(self):
-        from datetime import date
+    def test_hd_included_in_incoming(self):
+        from backend.rinse_cleaner_ticket_presence import load_incoming_unassigned_presence_rows
 
         cursor = MagicMock()
         cursor.fetchall.return_value = [
@@ -351,13 +352,18 @@ class TestLoadWfPresenceIncomingRows:
             }
         ]
         with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
-            rows, meta = load_wf_presence_incoming_rows(
+            rows, meta = load_incoming_unassigned_presence_rows(
                 cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
             )
-        assert rows == []
-        assert meta["hd_presence_excluded"] == 1
+        assert len(rows) == 1
+        assert meta["incoming_hd"] == 1
 
-    def test_unknown_service_excluded_from_lifecycle(self):
+    def test_unknown_service_in_incoming_not_wf_lifecycle(self):
+        from backend.rinse_cleaner_ticket_presence import (
+            load_incoming_unassigned_presence_rows,
+            load_wf_presence_incoming_rows,
+        )
+
         cursor = MagicMock()
         cursor.fetchall.return_value = [
             {
@@ -373,12 +379,15 @@ class TestLoadWfPresenceIncomingRows:
             }
         ]
         with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
-            rows, meta = load_wf_presence_incoming_rows(
+            rows, meta = load_incoming_unassigned_presence_rows(
                 cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
             )
-        assert rows == []
-        assert meta["wf_unknown_service_excluded"] == 1
-        assert meta["wf_ready_for_vendor_presence"] == 0
+            wf_rows, wf_meta = load_wf_presence_incoming_rows(
+                cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
+            )
+        assert len(rows) == 1
+        assert meta["incoming_unknown_service"] == 1
+        assert wf_rows == []
 
 
 class TestLifecycleIntegration:

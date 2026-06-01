@@ -372,7 +372,7 @@ def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
     return PRESENCE_RUSH_UNKNOWN
 
 
-def load_wf_presence_incoming_rows(
+def load_wf_presence_at_vendor_rows(
     cursor,
     organization_id: int,
     *,
@@ -380,21 +380,13 @@ def load_wf_presence_incoming_rows(
     exclude_bag_ids: set[str],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Active portal presence rows not already in staging/registry lifecycle scope.
+    WF at_vendor presence rows not already in staging — supplements WF production lifecycle.
 
-    ready_for_vendor → incoming ASSIGNED_NOT_SENT (no registry required).
-    at_vendor → SENT_TO_VENDOR when bag is not already in active staging.
-    HD presence rows are counted in meta but excluded from WF lifecycle rows.
+    ready_for_vendor rows belong in Incoming / Unassigned, not WF lifecycle.
     """
     meta = {
-        "wf_ready_for_vendor_presence": 0,
         "wf_at_vendor_presence_only": 0,
         "hd_presence_excluded": 0,
-        "presence_service_type_unknown": 0,
-        "wf_unknown_service_excluded": 0,
-        "ready_for_vendor_rush": 0,
-        "ready_for_vendor_non_rush": 0,
-        "ready_for_vendor_unknown_rush": 0,
     }
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return [], meta
@@ -405,21 +397,12 @@ def load_wf_presence_incoming_rows(
     cursor.execute(
         """
         SELECT
-            bag_id,
-            portal_status,
-            customer_name,
-            estimated_delivery_date,
-            rush_flag,
-            service_type,
-            portal_status_first_seen_at,
-            last_seen_at,
-            raw_row_json
+            bag_id, portal_status, customer_name, estimated_delivery_date,
+            rush_flag, service_type, portal_status_first_seen_at, last_seen_at, raw_row_json
         FROM rinse_cleaner_ticket_presence
-        WHERE organization_id = %s
-          AND active = 1
-          AND portal_status IN (%s, %s)
+        WHERE organization_id = %s AND active = 1 AND portal_status = %s
         """,
-        (org, PORTAL_STATUS_READY, PORTAL_STATUS_AT_VENDOR),
+        (org, PORTAL_STATUS_AT_VENDOR),
     )
     rows: list[dict[str, Any]] = []
     for raw in cursor.fetchall() or []:
@@ -428,7 +411,6 @@ def load_wf_presence_incoming_rows(
         bid = str(raw.get("bag_id") or "").strip().upper()
         if not bid or bid in excluded:
             continue
-        ps = str(raw.get("portal_status") or "").strip()
         svc_raw = str(raw.get("service_type") or "").strip().upper()
         if svc_raw == "HD":
             meta["hd_presence_excluded"] += 1
@@ -437,44 +419,142 @@ def load_wf_presence_incoming_rows(
             meta["hd_presence_excluded"] += 1
             continue
         if not svc_raw:
-            meta["presence_service_type_unknown"] += 1
-            meta["wf_unknown_service_excluded"] += 1
             continue
-
-        ready = ps == PORTAL_STATUS_READY
-        at_vendor = ps == PORTAL_STATUS_AT_VENDOR
-        eff_rush = _presence_effective_rush(raw, td)
-        if ready:
-            meta["wf_ready_for_vendor_presence"] += 1
-            if eff_rush == "RUSH":
-                meta["ready_for_vendor_rush"] += 1
-            elif eff_rush == "NON-RUSH":
-                meta["ready_for_vendor_non_rush"] += 1
-            else:
-                meta["ready_for_vendor_unknown_rush"] += 1
-        elif at_vendor:
-            meta["wf_at_vendor_presence_only"] += 1
-
+        meta["wf_at_vendor_presence_only"] += 1
         rows.append(
             {
                 "bag_id": bid,
                 "service_type": "WF",
-                "effective_rush": eff_rush,
+                "effective_rush": _presence_effective_rush(raw, td),
                 "is_completed": 0,
                 "name_clean": raw.get("customer_name"),
                 "weight_num": None,
                 "logistics_status": None,
                 "date_clean": raw.get("estimated_delivery_date"),
-                "ready_for_vendor_presence": ready,
-                "at_vendor_presence": at_vendor,
+                "ready_for_vendor_presence": False,
+                "at_vendor_presence": True,
                 "presence_source": True,
-                "presence_portal_status": ps,
-                "needs_review_presence_svc": False,
+                "presence_portal_status": PORTAL_STATUS_AT_VENDOR,
                 "presence_first_seen_at": raw.get("portal_status_first_seen_at"),
                 "presence_last_seen_at": raw.get("last_seen_at"),
             }
         )
     return rows, meta
+
+
+def load_incoming_unassigned_presence_rows(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+    exclude_bag_ids: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """All active ready_for_vendor presence rows (WF, HD, unknown) — Incoming / Unassigned scope."""
+    meta = {
+        "incoming_total": 0,
+        "incoming_wf": 0,
+        "incoming_hd": 0,
+        "incoming_unknown_service": 0,
+        "incoming_rush": 0,
+        "incoming_non_rush": 0,
+        "incoming_unknown_rush": 0,
+        "last_presence_refresh_at": None,
+    }
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return [], meta
+
+    org = int(organization_id)
+    td = target_date
+    excluded = {str(b or "").strip().upper() for b in (exclude_bag_ids or set()) if str(b or "").strip()}
+    cursor.execute(
+        """
+        SELECT
+            bag_id, portal_status, customer_name, estimated_delivery_date,
+            rush_flag, service_type, portal_status_first_seen_at, last_seen_at, raw_row_json
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND active = 1 AND portal_status = %s
+        ORDER BY last_seen_at DESC
+        """,
+        (org, PORTAL_STATUS_READY),
+    )
+    rows: list[dict[str, Any]] = []
+    latest_seen: datetime | None = None
+    for raw in cursor.fetchall() or []:
+        if not isinstance(raw, dict):
+            continue
+        bid = str(raw.get("bag_id") or "").strip().upper()
+        if not bid or bid in excluded:
+            continue
+        ls = raw.get("last_seen_at")
+        if isinstance(ls, datetime) and (latest_seen is None or ls > latest_seen):
+            latest_seen = ls
+        svc_raw = str(raw.get("service_type") or "").strip().upper()
+        eff_rush = _presence_effective_rush(raw, td)
+        needs_review = not svc_raw or eff_rush == PRESENCE_RUSH_UNKNOWN
+
+        meta["incoming_total"] += 1
+        if svc_raw == "WF":
+            meta["incoming_wf"] += 1
+        elif svc_raw == "HD":
+            meta["incoming_hd"] += 1
+        else:
+            meta["incoming_unknown_service"] += 1
+        if eff_rush == "RUSH":
+            meta["incoming_rush"] += 1
+        elif eff_rush == "NON-RUSH":
+            meta["incoming_non_rush"] += 1
+        else:
+            meta["incoming_unknown_rush"] += 1
+
+        rj = raw.get("raw_row_json")
+        if isinstance(rj, str):
+            try:
+                rj = json.loads(rj)
+            except (json.JSONDecodeError, TypeError):
+                rj = {}
+        group_key = (
+            "rush"
+            if eff_rush == "RUSH"
+            else ("non_rush" if eff_rush == "NON-RUSH" else "unknown_rush")
+        )
+        rows.append(
+            {
+                "bag_id": bid,
+                "customer": raw.get("customer_name"),
+                "service_type": svc_raw or None,
+                "effective_rush": eff_rush,
+                "rush": eff_rush == "RUSH",
+                "group": group_key,
+                "rush_label": (
+                    "Rush"
+                    if eff_rush == "RUSH"
+                    else ("Non-Rush" if eff_rush == "NON-RUSH" else "Unknown speed")
+                ),
+                "portal_status": PORTAL_STATUS_READY,
+                "estimated_delivery_date": raw.get("estimated_delivery_date"),
+                "estimated_delivery_text": (rj or {}).get("estimated_delivery_text"),
+                "needs_review": needs_review,
+                "presence_source": True,
+                "record_scope": "incoming",
+                "ready_for_vendor": True,
+            }
+        )
+    meta["last_presence_refresh_at"] = latest_seen.isoformat() if latest_seen else None
+    return rows, meta
+
+
+# Backward-compatible alias used in tests
+def load_wf_presence_incoming_rows(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+    exclude_bag_ids: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Deprecated name — returns at_vendor WF rows for production lifecycle supplement only."""
+    return load_wf_presence_at_vendor_rows(
+        cursor, organization_id, target_date=target_date, exclude_bag_ids=exclude_bag_ids
+    )
 
 
 def load_presence_portal_snapshot_counts(

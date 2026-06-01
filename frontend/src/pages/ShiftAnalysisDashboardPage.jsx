@@ -275,11 +275,217 @@ function OperationalDetailPanel({ row }) {
   );
 }
 
-const LIFECYCLE_TABLE_ROWS = [
+const RUSH_GROUP_ROWS = [
   { key: "rush", label: "Rush" },
   { key: "non_rush", label: "Non-Rush" },
+  { key: "unknown_rush", label: "Unknown" },
   { key: "combined", label: "Combined" },
 ];
+
+const INCOMING_COLUMNS = [
+  { field: "total", filter: {}, label: "Total" },
+  { field: "wf", filter: { incoming_filter: "wf" }, label: "WF" },
+  { field: "hd", filter: { incoming_filter: "hd" }, label: "HD" },
+  { field: "ready_for_vendor", filter: { incoming_filter: "ready_for_vendor" }, label: "Ready for Vendor" },
+  { field: "ready_for_mark_in", filter: { incoming_filter: "ready_for_mark_in" }, label: "Ready for Mark-In" },
+  { field: "needs_review", filter: { lifecycle_filter: "needs_review" }, label: "Needs Review" },
+];
+
+const WF_LIFECYCLE_COLUMNS = [
+  { field: "SENT_TO_VENDOR", filter: { lifecycle_status: "SENT_TO_VENDOR" }, label: "Sent to Vendor", statusKey: true },
+  { field: "pending_weighing", filter: { lifecycle_group: "pending_weighing" }, label: "Pending Weighing" },
+  { field: "weighed_not_started", filter: { lifecycle_group: "weighed_not_started" }, label: "Weighed / Not Started" },
+  { field: "sorted_ready", filter: { lifecycle_group: "sorted_ready" }, label: "Sorted / Ready" },
+  { field: "wash_dry", filter: { lifecycle_group: "wash_dry" }, label: "Wash / Dry" },
+  { field: "folded", filter: { lifecycle_group: "folded" }, label: "Folded / Completed" },
+  { field: "sent_to_rinse", filter: { lifecycle_group: "sent_to_rinse" }, label: "Sent to Rinse" },
+];
+
+const HD_LIFECYCLE_COLUMNS = [
+  { field: "pending", filter: { hd_lifecycle_status: "pending" }, label: "Pending" },
+  { field: "at_vendor", filter: { hd_lifecycle_status: "at_vendor" }, label: "At Vendor" },
+  { field: "processed_completed", filter: { hd_lifecycle_status: "processed_completed" }, label: "Processed / Completed" },
+  { field: "sent_to_rinse", filter: { hd_lifecycle_status: "sent_to_rinse" }, label: "Sent to Rinse" },
+  { field: "needs_review", filter: { lifecycle_filter: "needs_review" }, label: "Needs Review", topLevel: true },
+  { field: "with_exceptions", filter: { lifecycle_filter: "exceptions" }, label: "Exceptions", topLevel: true },
+];
+
+const EXCEPTION_STAT_KEYS = [
+  ["completed_without_final_clean_scan", "Completed without final CLEAN rack scan"],
+  ["external_scan_after_clean", "External scan after CLEAN"],
+  ["order_reject_no_start", "Rejected — no wash started"],
+  ["bags_with_issues", "Bags with create-issue"],
+  ["bags_with_workitems", "Bags with workitems"],
+  ["bags_with_bulk_workitems", "Bags with bulk workitems"],
+  ["needs_review", "Needs review"],
+];
+
+function CountCell({ value, onClick }) {
+  if (!onClick || !value) return value ?? 0;
+  return (
+    <Link component="button" variant="body2" onClick={onClick}>
+      {value}
+    </Link>
+  );
+}
+
+function RushGroupTable({ groups, columns, onDrilldown, showUnreconciled, totalLabel = "Total", hideCompletedPending = false }) {
+  const cell = (groupKey, val, filterExtra) => {
+    if (!onDrilldown || !val) return val ?? 0;
+    return (
+      <CountCell
+        value={val}
+        onClick={() => onDrilldown({ group: groupKey, ...filterExtra })}
+      />
+    );
+  };
+
+  const groupCell = (groupKey, col) => {
+    const g = groups?.[groupKey] || {};
+    let val = 0;
+    if (col.topLevel) {
+      val = g[col.field] ?? 0;
+    } else if (col.statusKey) {
+      val = g.by_lifecycle_status?.[col.field] ?? 0;
+    } else if (col.field === "total" || col.field === "wf" || col.field === "hd" || col.field === "ready_for_vendor" || col.field === "ready_for_mark_in") {
+      val = g[col.field] ?? 0;
+    } else if (["pending", "at_vendor", "processed_completed", "sent_to_rinse"].includes(col.field)) {
+      val = g[col.field] ?? 0;
+    } else {
+      val = g.by_lifecycle_group?.[col.field] ?? 0;
+    }
+    return cell(groupKey, val, col.filter);
+  };
+
+  return (
+    <Box sx={{ overflowX: "auto" }}>
+      <Table size="small" sx={{ minWidth: 900 }}>
+        <TableHead>
+          <TableRow>
+            <TableCell>Group</TableCell>
+            <TableCell align="right">{totalLabel}</TableCell>
+            {!hideCompletedPending ? (
+              <>
+                <TableCell align="right">Completed</TableCell>
+                <TableCell align="right">Pending</TableCell>
+              </>
+            ) : null}
+            {columns.map((col) => (
+              <TableCell key={col.field} align="right">{col.label}</TableCell>
+            ))}
+            {showUnreconciled ? (
+              <TableCell align="right" sx={{ color: "warning.main" }}>Unreconciled</TableCell>
+            ) : null}
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {RUSH_GROUP_ROWS.map(({ key, label }) => (
+            <TableRow key={key}>
+              <TableCell>{label}</TableCell>
+              <TableCell align="right">{cell(key, groups?.[key]?.total ?? 0, { lifecycle_filter: null })}</TableCell>
+              {!hideCompletedPending ? (
+                <>
+                  <TableCell align="right">{cell(key, groups?.[key]?.completed ?? 0, { lifecycle_filter: "completed" })}</TableCell>
+                  <TableCell align="right">{cell(key, groups?.[key]?.pending ?? 0, { lifecycle_filter: "pending" })}</TableCell>
+                </>
+              ) : null}
+              {columns.map((col) => (
+                <TableCell key={col.field} align="right">
+                  {groupCell(key, col)}
+                </TableCell>
+              ))}
+              {showUnreconciled ? (
+                <TableCell align="right" sx={{ color: (groups?.[key]?.unreconciled ?? 0) !== 0 ? "error.main" : "text.secondary" }}>
+                  {cell(key, groups?.[key]?.unreconciled ?? 0, { unreconciled_only: true })}
+                </TableCell>
+              ) : null}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </Box>
+  );
+}
+
+function IncomingTable({ section, onDrilldown }) {
+  const groups = section?.groups || {};
+  const summary = section?.summary || {};
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+        Total ready for vendor: {formatCount(summary.incoming_total ?? 0)}
+        {" · "}WF: {formatCount(summary.incoming_wf ?? 0)}
+        {" · "}HD: {formatCount(summary.incoming_hd ?? 0)}
+        {" · "}Rush: {formatCount(summary.incoming_rush ?? 0)}
+        {" · "}Non-Rush: {formatCount(summary.incoming_non_rush ?? 0)}
+        {" · "}Unknown speed: {formatCount(summary.incoming_unknown_rush ?? 0)}
+        {summary.last_presence_refresh_at ? ` · Last presence refresh: ${formatDateTime(summary.last_presence_refresh_at)}` : ""}
+      </Typography>
+      <RushGroupTable
+        groups={groups}
+        columns={INCOMING_COLUMNS}
+        onDrilldown={(args) => onDrilldown({ ...args, record_scope: "incoming", sectionTitle: "Incoming" })}
+        totalLabel="Incoming total"
+        hideCompletedPending
+      />
+    </Box>
+  );
+}
+
+function ExceptionsSection({ section, onDrilldown }) {
+  const wf = section?.wf || {};
+  const hd = section?.hd || {};
+  return (
+    <Grid container spacing={1.25}>
+      <Grid item xs={12} md={6}>
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>Wash & Fold</Typography>
+        <Stack spacing={0.5}>
+          {EXCEPTION_STAT_KEYS.map(([key, label]) => (
+            <Stack key={key} direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="body2">{label}</Typography>
+              <CountCell
+                value={wf[key] ?? 0}
+                onClick={(wf[key] ?? 0) > 0 ? () => onDrilldown({
+                  record_scope: "wf_lifecycle",
+                  service_scope: "WF",
+                  exception_filter: key,
+                  label,
+                  sectionTitle: "Exceptions",
+                }) : undefined}
+              />
+            </Stack>
+          ))}
+        </Stack>
+      </Grid>
+      <Grid item xs={12} md={6}>
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>Hang Dry</Typography>
+        <Stack spacing={0.5}>
+          {[
+            ["needs_review", "Needs review"],
+            ["with_exceptions", "Exceptions"],
+          ].map(([key, label]) => (
+            <Stack key={key} direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="body2">{label}</Typography>
+              <CountCell
+                value={hd[key] ?? 0}
+                onClick={(hd[key] ?? 0) > 0 ? () => onDrilldown({
+                  record_scope: "hd_lifecycle",
+                  service_scope: "HD",
+                  exception_filter: key,
+                  label,
+                  sectionTitle: "Exceptions",
+                }) : undefined}
+              />
+            </Stack>
+          ))}
+        </Stack>
+      </Grid>
+    </Grid>
+  );
+}
+
+/** @deprecated legacy single-table layout */
+const LIFECYCLE_TABLE_ROWS = RUSH_GROUP_ROWS.filter((r) => r.key !== "unknown_rush");
 
 const LIFECYCLE_GROUP_COLUMNS = [
   { field: "ASSIGNED_NOT_SENT_TO_VENDOR", filter: { lifecycle_status: "ASSIGNED_NOT_SENT_TO_VENDOR" }, label: "Assigned / Not Sent", statusKey: true },
@@ -630,9 +836,16 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const overall = summary?.overall_production || {};
   const scoring = summary?.scoring_data || {};
   const speed = summary?.speed || {};
-  const pendingGroups = summary?.pending?.groups || {};
+  const incomingSection = summary?.pending?.incoming || {};
+  const wfLifecycleSection = summary?.pending?.wf_lifecycle || {};
+  const hdLifecycleSection = summary?.pending?.hd_lifecycle || {};
+  const exceptionsSection = summary?.pending?.exceptions || {};
+  const pendingGroups = wfLifecycleSection.groups || summary?.pending?.groups || {};
+  const incomingGroups = incomingSection.groups || {};
+  const hdGroups = hdLifecycleSection.groups || {};
   const lifecycleGroupLabels = summary?.pending?.lifecycle_group_labels || {};
-  const showUnknownColumn = (pendingGroups.combined?.by_lifecycle_group?.unknown ?? 0) > 0;
+  const showWfUnreconciled = (pendingGroups.combined?.unreconciled ?? 0) !== 0;
+  const showHdUnreconciled = (hdGroups.combined?.unreconciled ?? 0) !== 0;
   const checkoutRush = summary?.pending?.checkout_summary?.rush || {};
   const portalAlignment = summary?.pending?.portal_alignment || {};
   const lifecycleStatusLabels = summary?.pending?.lifecycle_status_labels || {};
@@ -647,6 +860,10 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const filterLifecycleRows = useCallback((rows, drill) => {
     if (!drill || drill.source !== "lifecycle") return rows;
     return (rows || []).filter((r) => {
+      if (drill.record_scope && r.record_scope !== drill.record_scope) return false;
+      if (!drill.record_scope && r.record_scope === "incoming") return false;
+      if (drill.service_scope === "WF" && String(r.service_type || "").toUpperCase() !== "WF") return false;
+      if (drill.service_scope === "HD" && String(r.service_type || "").toUpperCase() !== "HD") return false;
       if (drill.group === "rush") {
         if (r.group != null) { if (r.group !== "rush") return false; }
         else if (!r.rush) return false;
@@ -656,18 +873,56 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         else if (r.rush) return false;
       }
       if (drill.group === "unknown_rush" && r.group !== "unknown_rush") return false;
+      if (drill.incoming_filter === "wf" && String(r.service_type || "").toUpperCase() !== "WF") return false;
+      if (drill.incoming_filter === "hd" && String(r.service_type || "").toUpperCase() !== "HD") return false;
+      if (drill.incoming_filter === "ready_for_vendor" && !r.ready_for_vendor) return false;
+      if (drill.incoming_filter === "ready_for_mark_in" && r.portal_status !== "ready_for_mark_in") return false;
+      if (drill.hd_lifecycle_status && r.hd_lifecycle_status !== drill.hd_lifecycle_status) return false;
+      if (drill.unreconciled_only && r.record_scope === "wf_lifecycle") {
+        const st = r.current_lifecycle_status || "UNKNOWN";
+        const grp = r.lifecycle_group || st;
+        if (grp !== "unknown" && st !== "UNKNOWN") return false;
+      }
       if (drill.lifecycle_group && r.lifecycle_group !== drill.lifecycle_group) return false;
       if (drill.lifecycle_status && r.current_lifecycle_status !== drill.lifecycle_status) return false;
       if (drill.lifecycle_filter === "needs_review" && !r.needs_review) return false;
       if (drill.lifecycle_filter === "exceptions" && !(r.exception_flags || []).length) return false;
+      if (drill.exception_filter === "completed_without_final_clean_scan") {
+        if (!(r.exception_flags || []).includes("COMPLETED_WITHOUT_FINAL_CLEAN_SCAN")) return false;
+      }
+      if (drill.exception_filter === "external_scan_after_clean") {
+        if (!(r.exception_flags || []).includes("NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN")) return false;
+      }
+      if (drill.exception_filter === "order_reject_no_start") {
+        if (!(r.exception_flags || []).includes("ORDER_REJECTED_FULL")) return false;
+      }
+      if (drill.exception_filter === "bags_with_issues") {
+        if (!(r.operational_flags || {}).has_create_issue) return false;
+      }
+      if (drill.exception_filter === "bags_with_workitems") {
+        const f = r.operational_flags || {};
+        if (!f.has_create_workitem && !f.has_workitem) return false;
+      }
+      if (drill.exception_filter === "bags_with_bulk_workitems") {
+        if (!(r.operational_flags || {}).has_create_bulk_workitem) return false;
+      }
+      if (drill.exception_filter === "needs_review" && !r.needs_review) return false;
+      if (drill.exception_filter === "with_exceptions" && !(r.exception_flags || []).length) return false;
       if (drill.lifecycle_filter === "completed") {
+        if (drill.record_scope === "hd_lifecycle") {
+          return ["processed_completed", "sent_to_rinse"].includes(r.hd_lifecycle_status);
+        }
         return ["FOLDED_COMPLETED", "SENT_TO_RINSE"].includes(r.current_lifecycle_status);
       }
       if (drill.lifecycle_filter === "pending") {
+        if (drill.record_scope === "hd_lifecycle") {
+          return !["processed_completed", "sent_to_rinse"].includes(r.hd_lifecycle_status);
+        }
         return !["FOLDED_COMPLETED", "SENT_TO_RINSE"].includes(r.current_lifecycle_status);
       }
       if (drill.checkout_filter === "checkout_pending") {
-        return r.rush && r.checkout_status === "NOT_CHECKED_OUT";
+        return r.rush && r.checkout_status === "NOT_CHECKED_OUT"
+          && ["FOLDED_COMPLETED", "SENT_TO_RINSE"].includes(r.current_lifecycle_status);
       }
       if (drill.checkout_filter === "checked_out") {
         return r.rush && r.checkout_status === "CHECKED_OUT";
@@ -778,26 +1033,55 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     }
   };
 
-  const onLifecycleDrill = ({ group, lifecycle_group: lifecycleGroup, lifecycle_status: lifecycleStatus, lifecycle_filter: lifecycleFilter }) => {
-    const groupLabel = group === "rush" ? "Rush" : group === "non_rush" ? "Non-Rush" : "Combined";
-    let columnLabel = "All";
-    if (lifecycleStatus) {
-      columnLabel = lifecycleStatusLabel(lifecycleStatus, lifecycleStatusLabels);
-    } else if (lifecycleGroup) {
-      columnLabel = lifecycleGroupLabels[lifecycleGroup] || lifecycleGroup;
-      if (lifecycleGroup === "folded") columnLabel = "Folded / Completed";
-    } else if (lifecycleFilter === "completed") columnLabel = "Completed";
-    else if (lifecycleFilter === "pending") columnLabel = "Pending";
-    else if (lifecycleFilter === "needs_review") columnLabel = "Needs Review";
-    else if (lifecycleFilter === "exceptions") columnLabel = "Exceptions";
+  const onLifecycleDrill = ({
+    group,
+    lifecycle_group: lifecycleGroup,
+    lifecycle_status: lifecycleStatus,
+    lifecycle_filter: lifecycleFilter,
+    record_scope: recordScope,
+    incoming_filter: incomingFilter,
+    hd_lifecycle_status: hdLifecycleStatus,
+    unreconciled_only: unreconciledOnly,
+    exception_filter: exceptionFilter,
+    service_scope: serviceScope,
+    sectionTitle,
+    label: presetLabel,
+  }) => {
+    const groupLabel = group === "rush" ? "Rush" : group === "non_rush" ? "Non-Rush" : group === "unknown_rush" ? "Unknown" : "Combined";
+    let columnLabel = presetLabel || "All";
+    if (!presetLabel) {
+      if (lifecycleStatus) {
+        columnLabel = lifecycleStatusLabel(lifecycleStatus, lifecycleStatusLabels);
+      } else if (lifecycleGroup) {
+        columnLabel = lifecycleGroupLabels[lifecycleGroup] || lifecycleGroup;
+        if (lifecycleGroup === "folded") columnLabel = "Folded / Completed";
+      } else if (hdLifecycleStatus) {
+        columnLabel = HD_LIFECYCLE_COLUMNS.find((c) => c.field === hdLifecycleStatus)?.label || hdLifecycleStatus;
+      } else if (incomingFilter === "wf") columnLabel = "WF";
+      else if (incomingFilter === "hd") columnLabel = "HD";
+      else if (incomingFilter === "ready_for_vendor") columnLabel = "Ready for Vendor";
+      else if (incomingFilter === "ready_for_mark_in") columnLabel = "Ready for Mark-In";
+      else if (lifecycleFilter === "completed") columnLabel = "Completed";
+      else if (lifecycleFilter === "pending") columnLabel = "Pending";
+      else if (lifecycleFilter === "needs_review") columnLabel = "Needs Review";
+      else if (unreconciledOnly) columnLabel = "Unreconciled";
+    }
+    const section = sectionTitle
+      || (recordScope === "incoming" ? "Incoming" : recordScope === "hd_lifecycle" ? "Hang Dry" : recordScope === "exceptions" ? "Exceptions" : "Wash & Fold");
 
     applyRecordDrill({
       source: "lifecycle",
       group,
+      record_scope: recordScope || (sectionTitle === "Incoming" ? "incoming" : "wf_lifecycle"),
       lifecycle_group: lifecycleGroup,
       lifecycle_status: lifecycleStatus,
       lifecycle_filter: lifecycleFilter,
-      label: `${groupLabel} — ${columnLabel}`,
+      incoming_filter: incomingFilter,
+      hd_lifecycle_status: hdLifecycleStatus,
+      unreconciled_only: unreconciledOnly,
+      exception_filter: exceptionFilter,
+      service_scope: serviceScope,
+      label: `${section} — ${groupLabel}${groupLabel !== "Combined" ? " " : ""}${columnLabel !== "All" ? columnLabel : ""}`.replace(/\s+/g, " ").trim(),
     });
   };
 
@@ -903,26 +1187,47 @@ export default function ShiftAnalysisDashboardPage({ user }) {
       <>
       {/* Layer 2 — Lifecycle summary */}
       <Paper sx={SECTION_PAPER}>
-        <Box sx={{ mb: 1.5 }}>
-          <Typography variant="h6" fontWeight={700}>Production lifecycle</Typography>
-          <Typography variant="caption" color="text.secondary" display="block">
-            Production + incoming WF lifecycle ({formatCount(portalAlignment.wf_lifecycle_total ?? pendingGroups.combined?.total ?? 0)} bags)
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="h6" fontWeight={700}>{incomingSection.title || "Incoming / Unassigned"}</Typography>
+          <IncomingTable section={incomingSection} onDrilldown={onLifecycleDrill} />
+        </Box>
+
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="h6" fontWeight={700}>{wfLifecycleSection.title || "Wash & Fold lifecycle"}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+            WF lifecycle total ({formatCount(pendingGroups.combined?.total ?? 0)} bags)
             {portalAlignment.wf_at_vendor_staging != null
               ? ` · ${formatCount(portalAlignment.wf_at_vendor_staging)} at vendor (staging)`
               : ""}
-            {portalAlignment.wf_ready_for_vendor_presence != null
-              ? ` · ${formatCount(portalAlignment.wf_ready_for_vendor_presence)} ready for vendor (presence)`
-              : ""}
-            {summary?.pending?.status_model ? ` · ${summary.pending.status_model}` : ""}
             {summary?.pending?.evaluation_time ? ` · ${formatDateTime(summary.pending.evaluation_time)}` : ""}
           </Typography>
+          <RushGroupTable
+            groups={pendingGroups}
+            columns={WF_LIFECYCLE_COLUMNS}
+            onDrilldown={(args) => onLifecycleDrill({ ...args, record_scope: "wf_lifecycle", sectionTitle: "Wash & Fold" })}
+            showUnreconciled={showWfUnreconciled || (pendingGroups.combined?.unreconciled ?? 0) !== 0}
+            totalLabel="WF lifecycle total"
+          />
         </Box>
 
-        <LifecyclePendingTable
-          groups={pendingGroups}
-          onDrilldown={onLifecycleDrill}
-          showUnknownColumn={showUnknownColumn}
-        />
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="h6" fontWeight={700}>{hdLifecycleSection.title || "Hang Dry lifecycle"}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+            HD lifecycle total ({formatCount(hdGroups.combined?.total ?? 0)} bags)
+          </Typography>
+          <RushGroupTable
+            groups={hdGroups}
+            columns={HD_LIFECYCLE_COLUMNS}
+            onDrilldown={(args) => onLifecycleDrill({ ...args, record_scope: "hd_lifecycle", sectionTitle: "Hang Dry" })}
+            showUnreconciled={showHdUnreconciled}
+            totalLabel="HD lifecycle total"
+          />
+        </Box>
+
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="h6" fontWeight={700}>{exceptionsSection.title || "Exceptions / Issues / Workitems"}</Typography>
+          <ExceptionsSection section={exceptionsSection} onDrilldown={onLifecycleDrill} />
+        </Box>
 
         <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 2, mb: 1 }}>
           Rush facility checkout (operational)
