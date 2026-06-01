@@ -374,6 +374,10 @@ def build_operational_dashboard_data(
                 rec[key] = prow[key]
         if prow.get("current_lifecycle_status"):
             rec["activity"] = "lifecycle"
+        if prow.get("is_completed") is not None:
+            rec["is_completed"] = bool(prow.get("is_completed"))
+        elif str(prow.get("current_lifecycle_status") or "") in LIFECYCLE_COMPLETED_STATUSES:
+            rec["is_completed"] = True
         records.append(rec)
 
     stats = aggregate_operational_stats(records)

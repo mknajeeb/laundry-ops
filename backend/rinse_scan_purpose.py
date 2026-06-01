@@ -73,6 +73,11 @@ def is_processed_by_vendor_purpose(raw: str | None) -> bool:
     return p == "processed-by-vendor" or "processed-by-vendor" in p
 
 
+def is_quality_control_completed_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "quality-control-completed" or "quality-control-completed" in p
+
+
 def is_drying_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "drying"
 

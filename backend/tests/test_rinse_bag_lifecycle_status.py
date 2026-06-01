@@ -375,13 +375,57 @@ class TestRejectAndSeparation:
         out = derive_bag_lifecycle_status(events, bag_id="R2", reject_after_create_issue_minutes=45)
         assert ORDER_REJECTED_FULL not in out["exception_flags"]
 
-    def test_processed_by_vendor_not_completion(self):
+    def test_processed_by_vendor_without_clean_is_folded_completed(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+            _ev("weight-entry", datetime(2026, 5, 28, 8, 10), ev_id=2, scan_index=2),
+            _ev("start-cleaning", datetime(2026, 5, 28, 9, 0), ev_id=3, scan_index=3),
+            _ev("drying", datetime(2026, 5, 28, 10, 0), ev_id=4, scan_index=4),
+            _ev("processed by vendor", datetime(2026, 5, 28, 14, 0), ev_id=5, scan_index=5),
+            _ev("", datetime(2026, 5, 28, 14, 5), ev_id=6, scan_index=6, rack="FOLDING"),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="R3")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
+        assert out["needs_review"] is True
+
+    def test_processed_by_vendor_only_is_folded_completed_with_exception(self):
         events = [
             _ev("processed by vendor", datetime(2026, 5, 28, 14, 0), ev_id=1),
             _ev("", datetime(2026, 5, 28, 14, 5), ev_id=2, scan_index=2, rack="FOLDING"),
         ]
-        out = derive_bag_lifecycle_status(events, bag_id="R3")
-        assert out["current_lifecycle_status"] != FOLDED_COMPLETED
+        out = derive_bag_lifecycle_status(events, bag_id="R3B")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
+        assert out["needs_review"] is True
+
+    def test_weight_after_processed_without_clean_is_folded_completed(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+            _ev("weight-entry", datetime(2026, 5, 28, 8, 10), ev_id=2, scan_index=2),
+            _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=3, scan_index=3),
+            _ev("weight-entry", datetime(2026, 5, 28, 14, 30), ev_id=4, scan_index=4),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="R3C")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
+
+    def test_received_from_vendor_without_clean_is_folded_completed(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+            _ev("received-from-vendor", datetime(2026, 5, 28, 16, 0), ev_id=2, scan_index=2),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="R3D")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
+
+    def test_quality_control_completed_without_clean_is_folded_completed(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+            _ev("quality-control-completed", datetime(2026, 5, 28, 15, 0), ev_id=2, scan_index=2),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="R3E")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
         assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
 
 

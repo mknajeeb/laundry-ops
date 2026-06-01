@@ -24,7 +24,10 @@ from backend.rinse_scan_purpose import (
     is_create_workitem_purpose,
     is_drying_purpose,
     is_processed_by_vendor_purpose,
+    is_quality_control_completed_purpose,
+    is_received_from_vendor_purpose,
     is_start_cleaning_purpose,
+    is_weight_entry_purpose,
 )
 
 ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT = "ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT"
@@ -41,7 +44,7 @@ ORDER_REJECT_NO_START_CLEANING_30_MIN = ORDER_REJECT_NO_START_CLEANING_AFTER_LIM
 OPERATIONAL_EXCEPTION_LABELS: dict[str, str] = {
     ORDER_REJECT_NO_START_CLEANING_AFTER_LIMIT: "Rejected — no washing started within limit",
     ORDER_REJECTED_FULL: "Order rejected — washing not started after create-issue",
-    COMPLETED_WITHOUT_FINAL_CLEAN_SCAN: "Completed without final scan",
+    COMPLETED_WITHOUT_FINAL_CLEAN_SCAN: "Completed without final CLEAN rack scan",
     NEEDS_REVIEW_EXTERNAL_SCAN_AFTER_CLEAN: "External scan after CLEAN — review",
     CHECKOUT_WITHOUT_CLEAN_RACK: "Checked out without CLEAN rack scan",
     SENT_TO_RINSE_WITHOUT_CLEAN_RACK: "Checked out without CLEAN rack scan",
@@ -266,28 +269,68 @@ def evaluate_order_rejected_full(
     }
 
 
+def _find_strong_completion_evidence(
+    timeline: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], datetime, str] | None:
+    """
+    Earliest strong completion signal without requiring a CLEAN rack.
+
+    Evidence: processed-by-vendor, received-from-vendor, quality-control-completed,
+    or post-process weight-entry after processed-by-vendor.
+    """
+    tl = list(timeline)
+    processed_at: datetime | None = None
+    best: tuple[datetime, Mapping[str, Any], str] | None = None
+
+    def _consider(ts: datetime, ev: Mapping[str, Any], kind: str) -> None:
+        nonlocal best
+        if best is None or ts < best[0]:
+            best = (ts, ev, kind)
+
+    for ev in tl:
+        ts = _event_ts(ev)
+        if not _ts_valid(ts):
+            continue
+        purpose = ev.get("purpose")
+        if is_processed_by_vendor_purpose(purpose):
+            processed_at = ts
+            _consider(ts, ev, "processed-by-vendor")
+        elif is_received_from_vendor_purpose(purpose):
+            _consider(ts, ev, "received-from-vendor")
+        elif is_quality_control_completed_purpose(purpose):
+            _consider(ts, ev, "quality-control-completed")
+
+    if processed_at is not None:
+        for ev in tl:
+            ts = _event_ts(ev)
+            if not _ts_valid(ts) or ts <= processed_at:
+                continue
+            if is_weight_entry_purpose(ev.get("purpose")):
+                _consider(ts, ev, "weight-entry-after-processed-by-vendor")
+                break
+
+    if best is None:
+        return None
+    ts, ev, kind = best
+    return ev, ts, kind
+
+
 def evaluate_completed_without_final_clean_scan(
     timeline: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any] | None:
-    """Exception when PROCESSED BY VENDOR exists but no rack scan contains CLEAN."""
-    tl = list(timeline)
-    processed_ev: Mapping[str, Any] | None = None
-    processed_at: datetime | None = None
-    for ev in tl:
-        if not is_processed_by_vendor_purpose(ev.get("purpose")):
-            continue
-        ts = _event_ts(ev)
-        if _ts_valid(ts):
-            processed_ev = ev
-            processed_at = ts
-            break
-
-    if processed_ev is None or processed_at is None:
+    """Exception when strong completion evidence exists but no rack scan contains CLEAN."""
+    evidence = _find_strong_completion_evidence(timeline)
+    if evidence is None:
         return None
 
-    clean_racks: list[dict[str, Any]] = []
+    evidence_ev, evidence_at, evidence_kind = evidence
+
+    for ev in timeline:
+        if rack_contains_clean(ev.get("rack")):
+            return None
+
     rack_scans_after: list[dict[str, Any]] = []
-    for ev in tl:
+    for ev in timeline:
         ts = _event_ts(ev)
         if not _ts_valid(ts):
             continue
@@ -300,21 +343,20 @@ def evaluate_completed_without_final_clean_scan(
             "user_name": ev.get("user") or ev.get("user_name"),
             "contains_clean": rack_contains_clean(rack),
         }
-        if entry["contains_clean"]:
-            clean_racks.append(entry)
-        if ts > processed_at:
+        if ts > evidence_at:
             rack_scans_after.append(entry)
-
-    if clean_racks:
-        return None
 
     return {
         "exception_code": COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
         "exception_label": OPERATIONAL_EXCEPTION_LABELS[COMPLETED_WITHOUT_FINAL_CLEAN_SCAN],
-        "processed_by_vendor_at": processed_at,
+        "completion_evidence_at": evidence_at,
+        "completion_evidence_kind": evidence_kind,
+        "processed_by_vendor_at": evidence_at if evidence_kind == "processed-by-vendor" else None,
         "rack_scans_after_processed": rack_scans_after,
         "has_clean_rack_after_processed": False,
-        "reason": "No rack scan containing CLEAN when PROCESSED BY VENDOR is present",
+        "reason": (
+            f"Strong completion evidence ({evidence_kind}) without any rack scan containing CLEAN"
+        ),
     }
 
 

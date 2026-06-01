@@ -731,3 +731,116 @@ class TestPresenceIncomingLifecycle:
 
         assert out["portal_alignment"]["wf_ready_for_vendor_presence"] == 2
         assert out["groups"]["combined"]["by_lifecycle_status"][ASSIGNED_NOT_SENT_TO_VENDOR] == 2
+
+
+class TestCompletedWithoutFinalCleanScanLifecycleSummary:
+    def test_counts_as_completed_not_pending(self):
+        from backend.rinse_bag_gaming_performance import gaming_events_from_records
+        from backend.rinse_bag_lifecycle_status import IN_DRYING, derive_bag_lifecycle_status
+        from backend.rinse_shift_operational_exceptions import (
+            COMPLETED_WITHOUT_FINAL_CLEAN_SCAN,
+            filter_operational_records,
+        )
+        from backend.rinse_shift_analysis import build_operational_dashboard_data
+
+        events = gaming_events_from_records(
+            [
+                {
+                    "purpose": "sent-to-vendor",
+                    "scanned_at_parsed": datetime(2026, 6, 1, 8, 0),
+                    "id": 1,
+                    "scan_index": 1,
+                },
+                {
+                    "purpose": "weight-entry",
+                    "scanned_at_parsed": datetime(2026, 6, 1, 8, 10),
+                    "id": 2,
+                    "scan_index": 2,
+                },
+                {
+                    "purpose": "start-cleaning",
+                    "scanned_at_parsed": datetime(2026, 6, 1, 9, 0),
+                    "id": 3,
+                    "scan_index": 3,
+                },
+                {
+                    "purpose": "drying",
+                    "scanned_at_parsed": datetime(2026, 6, 1, 10, 0),
+                    "id": 4,
+                    "scan_index": 4,
+                },
+                {
+                    "purpose": "processed-by-vendor",
+                    "scanned_at_parsed": datetime(2026, 6, 1, 14, 0),
+                    "id": 5,
+                    "scan_index": 5,
+                },
+            ]
+        )
+        lifecycle = derive_bag_lifecycle_status(events, bag_id="0E0EVEA9I3")
+        assert lifecycle["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert lifecycle["current_lifecycle_status"] != IN_DRYING
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in lifecycle["exception_flags"]
+        assert lifecycle["needs_review"] is True
+
+        pending = {
+            "rows": [
+                {
+                    "bag_id": "0E0EVEA9I3",
+                    "name_clean": "Customer",
+                    "rush": False,
+                    "rush_label": "Non-Rush",
+                    "is_completed": True,
+                    **lifecycle,
+                    "lifecycle_group": "folded",
+                    "lifecycle_group_label": "Folded",
+                    "lifecycle_status_label": "Folded / completed",
+                }
+            ]
+        }
+        cursor = MagicMock()
+
+        def execute_side_effect(sql, args=None):
+            s = " ".join(sql.split())
+            if "rinse_bag_scan_events" in s:
+                cursor.fetchall.return_value = [
+                    {
+                        "bag_id": "0E0EVEA9I3",
+                        "id": i,
+                        "rack": "",
+                        "user_name": "Staff",
+                        "purpose": ev["purpose"],
+                        "scanned_at_parsed": ev["scanned_at_parsed"],
+                        "scan_index": i,
+                    }
+                    for i, ev in enumerate(events, start=1)
+                ]
+
+        cursor.execute.side_effect = execute_side_effect
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True):
+            op = build_operational_dashboard_data(cursor, 1, pending_payload=pending)
+
+        rec = op["records"][0]
+        assert rec["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert rec["is_completed"] is True
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in rec["exception_codes"]
+
+        filtered = filter_operational_records(
+            op["records"],
+            drill_filter="completed_without_final_clean_scan",
+        )
+        assert len(filtered) == 1
+        assert filtered[0]["current_lifecycle_status"] == FOLDED_COMPLETED
+
+        rows = [
+            {
+                "bag_id": "0E0EVEA9I3",
+                "rush": False,
+                "current_lifecycle_status": FOLDED_COMPLETED,
+                "lifecycle_group": "folded",
+                "needs_review": True,
+                "exception_flags": [COMPLETED_WITHOUT_FINAL_CLEAN_SCAN],
+            }
+        ]
+        assert len(filter_lifecycle_pending_rows(rows, filter_kind="completed")) == 1
+        assert len(filter_lifecycle_pending_rows(rows, filter_kind="pending")) == 0

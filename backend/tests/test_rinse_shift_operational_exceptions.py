@@ -109,6 +109,38 @@ class TestCompletedWithoutFinalCleanScan:
         out = evaluate_completed_without_final_clean_scan(timeline)
         assert out is not None
         assert out["exception_code"] == COMPLETED_WITHOUT_FINAL_CLEAN_SCAN
+        assert out["completion_evidence_kind"] == "processed-by-vendor"
+
+    def test_exception_received_from_vendor_without_clean(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("received-from-vendor", datetime(2026, 5, 28, 16, 0), ev_id=1),
+            ]
+        )
+        out = evaluate_completed_without_final_clean_scan(timeline)
+        assert out is not None
+        assert out["completion_evidence_kind"] == "received-from-vendor"
+
+    def test_exception_weight_after_processed_without_clean(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=1),
+                _ev("weight-entry", datetime(2026, 5, 28, 14, 30), ev_id=2, scan_index=2),
+            ]
+        )
+        out = evaluate_completed_without_final_clean_scan(timeline)
+        assert out is not None
+        assert out["completion_evidence_kind"] == "processed-by-vendor"
+
+    def test_exception_quality_control_completed_without_clean(self):
+        timeline = gaming_events_from_records(
+            [
+                _ev("quality-control-completed", datetime(2026, 5, 28, 15, 0), ev_id=1),
+            ]
+        )
+        out = evaluate_completed_without_final_clean_scan(timeline)
+        assert out is not None
+        assert out["completion_evidence_kind"] == "quality-control-completed"
 
     def test_rack_match_case_insensitive_with_prefix_suffix(self):
         for rack in ("CLEAN", "CLEAN-01", "FINAL CLEAN", "RACK CLEAN A", "ABC-CLEAN-XYZ"):

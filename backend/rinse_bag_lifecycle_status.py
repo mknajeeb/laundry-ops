@@ -223,7 +223,7 @@ def _collect_exception_flags(
     needs_review_external: bool,
     checkout_without_clean: bool,
     evaluation_time: datetime | None,
-) -> tuple[list[str], dict[str, Any] | None]:
+) -> tuple[list[str], dict[str, Any] | None, dict[str, Any] | None]:
     flags: list[str] = []
 
     reject_detail = evaluate_order_rejected_full(
@@ -245,7 +245,7 @@ def _collect_exception_flags(
     if checkout_without_clean:
         flags.append(CHECKOUT_WITHOUT_CLEAN_RACK)
 
-    return flags, reject_detail
+    return flags, reject_detail, missing_clean
 
 
 def derive_bag_lifecycle_status(
@@ -289,7 +289,7 @@ def derive_bag_lifecycle_status(
         mapped_users=mapped_users,
     )
 
-    exception_flags, reject_detail = _collect_exception_flags(
+    exception_flags, reject_detail, missing_clean_detail = _collect_exception_flags(
         anchored,
         timeline,
         anchor_ts=anchor_ts,
@@ -299,7 +299,8 @@ def derive_bag_lifecycle_status(
         evaluation_time=evaluation_time,
     )
 
-    needs_review = external_review or checkout_review
+    completed_without_clean_rack = missing_clean_detail is not None
+    needs_review = external_review or checkout_review or completed_without_clean_rack
     status: str
     status_timestamp: datetime | None = None
     status_source_event: dict[str, Any] | None = None
@@ -311,6 +312,8 @@ def derive_bag_lifecycle_status(
     }
     if reject_detail is not None:
         stage_detail["reject_after_create_issue"] = reject_detail
+    if missing_clean_detail is not None:
+        stage_detail["completed_without_final_clean_scan"] = missing_clean_detail
 
     if sent_to_rinse:
         status = SENT_TO_RINSE
@@ -319,10 +322,26 @@ def derive_bag_lifecycle_status(
         stage_detail["sent_to_rinse_reason"] = str_reason
         stage_detail["sent_to_rinse_timestamp"] = status_timestamp
         stage_detail["sent_to_rinse_source"] = str_source
-    elif folded_completed:
+    elif folded_completed or completed_without_clean_rack:
         status = FOLDED_COMPLETED
-        status_timestamp = clean_at
-        status_source_event = _status_source_from_event(clean_ev)
+        if folded_completed:
+            status_timestamp = clean_at
+            status_source_event = _status_source_from_event(clean_ev)
+        else:
+            status_timestamp = missing_clean_detail.get("completion_evidence_at")
+            stage_detail["completion_evidence_kind"] = missing_clean_detail.get(
+                "completion_evidence_kind"
+            )
+            for ev in timeline:
+                ts = _event_ts(ev)
+                if _ts_valid(ts) and ts == status_timestamp:
+                    status_source_event = _status_source_from_event(ev)
+                    break
+            if status_source_event is None:
+                status_source_event = {
+                    "source_kind": missing_clean_detail.get("completion_evidence_kind"),
+                    "scanned_at": status_timestamp,
+                }
     else:
         weight_ev, weight_ts = _first_weight_after_anchor(anchored)
         start_cleaning_ev = _first_start_cleaning_after(anchored)
