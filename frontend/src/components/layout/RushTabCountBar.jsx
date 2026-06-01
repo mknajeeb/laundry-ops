@@ -76,9 +76,9 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
                   {label}
                 </Typography>
                 <Typography sx={{ fontSize: 13, fontWeight: 600, opacity: 0.92 }}>{count}</Typography>
-                {tab.detail ? (
+                {detail ? (
                   <Typography sx={{ fontSize: 10, fontWeight: 500, opacity: 0.85, lineHeight: 1.25, px: 0.25 }}>
-                    {tab.detail}
+                    {detail}
                   </Typography>
                 ) : null}
               </Stack>
