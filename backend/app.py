@@ -2255,6 +2255,24 @@ def checkout_bulk():
 # Get Checkout Log
 # ---------------------------------------------------
 
+@app.route("/checkout/batch_summary", methods=["GET"])
+def checkout_batch_summary_route():
+    """Latest upload batch rush/non-rush totals vs active checkout queue."""
+    from backend.checkout_batch_summary import build_checkout_batch_summary
+
+    conn = get_db()
+    cursor = conn.cursor(dictionary=True)
+    try:
+        me, err_resp, err_code = require_user(cursor)
+        if err_resp:
+            return err_resp, err_code
+        tenant_oid = user_org_id(me)
+        return jsonify(build_checkout_batch_summary(cursor, tenant_oid))
+    finally:
+        cursor.close()
+        conn.close()
+
+
 @app.route("/checkout_log", methods=["GET"])
 def get_checkout_log():
 

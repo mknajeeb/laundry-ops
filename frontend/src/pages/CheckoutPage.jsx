@@ -29,7 +29,7 @@ import {
   SortByAlpha,
   Undo,
 } from "@mui/icons-material";
-import { checkoutOrder, getCheckoutLog, getOrders, undoCheckout } from "../api";
+import { checkoutOrder, getCheckoutBatchSummary, getCheckoutLog, getOrders, undoCheckout } from "../api";
 import TaOperationalBanner from "../components/TaOperationalBanner";
 import { useTaOperationalGate } from "../hooks/useTaOperationalGate";
 import StandardScreenHeader from "../components/layout/StandardScreenHeader";
@@ -89,13 +89,15 @@ function CheckoutPage() {
   const [nameConfirmDialog, setNameConfirmDialog] = useState(null);
   const [nameConfirmSelectedId, setNameConfirmSelectedId] = useState(null);
   const [undoRow, setUndoRow] = useState(null);
+  const [batchSummary, setBatchSummary] = useState(null);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const [ordersRes, checkedRes] = await Promise.allSettled([
+      const [ordersRes, checkedRes, summaryRes] = await Promise.allSettled([
         getOrders({ include_all: true }),
         getCheckoutLog(),
+        getCheckoutBatchSummary(),
       ]);
 
       if (ordersRes.status === "fulfilled") {
@@ -109,6 +111,12 @@ function CheckoutPage() {
 
       if (checkedRes.status === "fulfilled") {
         setCheckedRows(Array.isArray(checkedRes.value?.data) ? checkedRes.value.data : []);
+      }
+
+      if (summaryRes.status === "fulfilled") {
+        setBatchSummary(summaryRes.value?.data || null);
+      } else {
+        setBatchSummary(null);
       }
     } catch (error) {
       console.error(error);
@@ -244,13 +252,27 @@ function CheckoutPage() {
   const counters = useMemo(() => {
     const rushCount = searchFilteredRows.filter((r) => rushOf(r) === "RUSH").length;
     const nonRushCount = searchFilteredRows.filter((r) => rushOf(r) === "NON-RUSH").length;
+    const batchRush = batchSummary?.rush || {};
+    const batchNonRush = batchSummary?.non_rush || {};
+    const rushTotal = batchRush.total != null ? Number(batchRush.total) : rushCount;
+    const nonRushTotal = batchNonRush.total != null ? Number(batchNonRush.total) : nonRushCount;
+    const rushRemaining = batchRush.remaining != null ? Number(batchRush.remaining) : rushCount;
+    const nonRushRemaining = batchNonRush.remaining != null ? Number(batchNonRush.remaining) : nonRushCount;
+    const rushCheckedOut = Number(batchRush.checked_out || 0);
+    const nonRushCheckedOut = Number(batchNonRush.checked_out || 0);
     return {
       allCount: searchFilteredRows.length,
       rushCount,
       nonRushCount,
+      rushTotal,
+      nonRushTotal,
+      rushRemaining,
+      nonRushRemaining,
+      rushCheckedOut,
+      nonRushCheckedOut,
       sentCount: checkedRows.length,
     };
-  }, [searchFilteredRows, checkedRows.length]);
+  }, [searchFilteredRows, checkedRows.length, batchSummary]);
 
   /** Narrows scan lookup to the dominant batch in the current queue (faster, fewer collisions). */
   const lookupBatchDate = useMemo(() => {
@@ -546,8 +568,26 @@ function CheckoutPage() {
             }}
             tabs={[
               { key: "ALL", label: "All", count: counters.allCount, Icon: GridView, accent: "#4338ca" },
-              { key: "RUSH", label: "Rush", count: counters.rushCount, Icon: Bolt, accent: "#b91c1c" },
-              { key: "NON-RUSH", label: "Non-Rush", count: counters.nonRushCount, Icon: CheckCircle, accent: "#0f766e" },
+              {
+                key: "RUSH",
+                label: "Rush",
+                count: counters.rushTotal,
+                detail: batchSummary?.rush?.total != null
+                  ? `${counters.rushRemaining} remaining · ${counters.rushCheckedOut} checked out`
+                  : undefined,
+                Icon: Bolt,
+                accent: "#b91c1c",
+              },
+              {
+                key: "NON-RUSH",
+                label: "Non-Rush",
+                count: counters.nonRushTotal,
+                detail: batchSummary?.non_rush?.total != null
+                  ? `${counters.nonRushRemaining} remaining · ${counters.nonRushCheckedOut} checked out`
+                  : undefined,
+                Icon: CheckCircle,
+                accent: "#0f766e",
+              },
             ]}
           />
 

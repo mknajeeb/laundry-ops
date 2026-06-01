@@ -357,6 +357,9 @@ export const getCheckoutLog = (dateValue = "") =>
     params: dateValue ? { date: dateValue } : {}
   });
 
+export const getCheckoutBatchSummary = () =>
+  axios.get(`${API_BASE}/checkout/batch_summary`, { timeout: 30000 });
+
 export const undoCheckout = (order_id) =>
   axios.post(`${API_BASE}/checkout_undo`, {
     order_id: order_id

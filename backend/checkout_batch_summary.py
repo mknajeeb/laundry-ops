@@ -1,0 +1,244 @@
+"""Checkout rush/non-rush counts from latest confirmed upload batch vs active staging queue."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any
+
+from backend.rinse_bag_completion import normalize_bag_id
+from backend.ta_helpers import table_exists, table_has_column
+
+
+def _orders_status_capabilities(cursor) -> dict[str, bool]:
+    return {
+        "has_logistics": table_has_column(cursor, "orders_staging", "logistics_status"),
+        "has_processing": table_has_column(cursor, "orders_staging", "processing_status"),
+        "has_status": table_has_column(cursor, "orders_staging", "status"),
+        "has_ticket_id": table_has_column(cursor, "orders_staging", "ticket_id"),
+    }
+
+
+def _where_active_at_washpro_sql(cap: dict[str, bool]) -> str:
+    if cap["has_logistics"]:
+        if cap["has_status"]:
+            return """
+                COALESCE(logistics_status, CASE
+                    WHEN status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE'
+                    WHEN status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT'
+                    ELSE 'AT_WASHPRO'
+                END) NOT IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT')
+            """
+        return "COALESCE(logistics_status, 'AT_WASHPRO') NOT IN ('SENT_TO_RINSE', 'FORCE_CHECKOUT', 'CHECKED_OUT')"
+    if cap["has_status"]:
+        return "status NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')"
+    return "1 = 1"
+
+
+def _norm_rush(value: str | None) -> str:
+    raw = str(value or "").strip().upper()
+    return "RUSH" if raw == "RUSH" else "NON-RUSH"
+
+
+def _latest_confirmed_batch(cursor, organization_id: int) -> dict[str, Any] | None:
+    if not table_exists(cursor, "upload_batches"):
+        return None
+    batch_pk = "batch_id"
+    if table_has_column(cursor, "upload_batches", "id") and not table_has_column(
+        cursor, "upload_batches", "batch_id"
+    ):
+        batch_pk = "id"
+    org_clause = ""
+    args: list[Any] = []
+    if table_has_column(cursor, "upload_batches", "organization_id"):
+        org_clause = " AND organization_id = %s"
+        args.append(int(organization_id))
+    cursor.execute(
+        f"""
+        SELECT {batch_pk} AS batch_id, batch_date, confirmed_at
+        FROM upload_batches
+        WHERE confirmed_at IS NOT NULL{org_clause}
+        ORDER BY confirmed_at DESC, {batch_pk} DESC
+        LIMIT 1
+        """,
+        tuple(args),
+    )
+    row = cursor.fetchone()
+    return row if isinstance(row, dict) else None
+
+
+def _batch_row_col(cursor, table: str, candidates: tuple[str, ...]) -> str | None:
+    for col in candidates:
+        if table_has_column(cursor, table, col):
+            return col
+    return None
+
+
+def build_checkout_batch_summary(cursor, organization_id: int) -> dict[str, Any]:
+    """
+    Compare latest confirmed upload batch rows to active checkout queue (orders_staging).
+
+    Rush/non-rush totals come from upload_batch_rows (service + rush_type).
+    Remaining counts come from active-at-Washpro staging rows (checkout action list).
+    """
+    org = int(organization_id)
+    out: dict[str, Any] = {
+        "batch_id": None,
+        "batch_date": None,
+        "confirmed_at": None,
+        "rush": _empty_bucket(),
+        "non_rush": _empty_bucket(),
+        "missing_rush_rows": [],
+    }
+    batch = _latest_confirmed_batch(cursor, org)
+    if not batch or batch.get("batch_id") is None:
+        return out
+
+    batch_id = batch["batch_id"]
+    batch_date = batch.get("batch_date")
+    out["batch_id"] = batch_id
+    if isinstance(batch_date, date):
+        out["batch_date"] = batch_date.isoformat()
+    elif batch_date is not None:
+        out["batch_date"] = str(batch_date)
+    confirmed_at = batch.get("confirmed_at")
+    if isinstance(confirmed_at, datetime):
+        out["confirmed_at"] = confirmed_at.isoformat()
+
+    if not table_exists(cursor, "upload_batch_rows"):
+        return out
+
+    row_batch_col = _batch_row_col(cursor, "upload_batch_rows", ("upload_batch_id", "batch_id"))
+    if not row_batch_col:
+        return out
+
+    cursor.execute(
+        f"""
+        SELECT ticket_id, date_clean, name_clean, service_type, rush_type,
+               row_status, reason, weight_num
+        FROM upload_batch_rows
+        WHERE {row_batch_col} = %s
+        """,
+        (batch_id,),
+    )
+    batch_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+
+    cap = _orders_status_capabilities(cursor)
+    active_where = _where_active_at_washpro_sql(cap)
+    has_org = table_has_column(cursor, "orders_staging", "organization_id")
+    has_rush = table_has_column(cursor, "orders_staging", "rush_type")
+    has_ticket = table_has_column(cursor, "orders_staging", "ticket_id")
+    date_rush = "CASE WHEN o.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
+    rush_expr = (
+        f"UPPER(COALESCE(NULLIF(TRIM(o.rush_type), ''), {date_rush}))"
+        if has_rush
+        else date_rush
+    )
+    org_clause = " AND o.organization_id = %s" if has_org else ""
+    cursor.execute(
+        f"""
+        SELECT o.id, o.ticket_id, o.name_clean, o.date_clean, o.service_type,
+               {rush_expr} AS effective_rush,
+               o.status, o.logistics_status, o.weight_num
+        FROM orders_staging o
+        WHERE ({active_where}){org_clause}
+        """,
+        (org,) if has_org else (),
+    )
+    active_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    active_by_ticket: dict[str, dict[str, Any]] = {}
+    if has_ticket:
+        for row in active_rows:
+            tid = normalize_bag_id(row.get("ticket_id"))
+            if tid:
+                active_by_ticket[tid] = row
+
+    checked_out_tickets: set[str] = set()
+    if has_ticket and table_exists(cursor, "checkout_log"):
+        join_org = " AND o.organization_id = %s" if has_org else ""
+        args: list[Any] = [org] if has_org else []
+        cursor.execute(
+            f"""
+            SELECT DISTINCT UPPER(TRIM(o.ticket_id)) AS ticket_id
+            FROM checkout_log c
+            INNER JOIN orders_staging o ON o.id = c.order_id{join_org}
+            WHERE o.ticket_id IS NOT NULL AND TRIM(o.ticket_id) != ''
+            """,
+            tuple(args),
+        )
+        for row in cursor.fetchall() or []:
+            if isinstance(row, dict) and row.get("ticket_id"):
+                checked_out_tickets.add(str(row["ticket_id"]).strip().upper())
+
+    def classify_batch_row(row: dict[str, Any]) -> str:
+        svc = str(row.get("service_type") or "WF").strip().upper()
+        rush = _norm_rush(row.get("rush_type"))
+        if svc == "HD":
+            return "non_rush"
+        return "rush" if rush == "RUSH" else "non_rush"
+
+    buckets = {"rush": _empty_bucket(), "non_rush": _empty_bucket()}
+    missing_rush: list[dict[str, Any]] = []
+
+    for row in batch_rows:
+        bucket_key = classify_batch_row(row)
+        bucket = buckets[bucket_key]
+        bucket["total"] += 1
+
+        tid = normalize_bag_id(row.get("ticket_id"))
+        row_status = str(row.get("row_status") or "").strip().upper()
+        reason = str(row.get("reason") or "").strip().upper()
+        active = active_by_ticket.get(tid) if tid else None
+
+        if active:
+            bucket["remaining"] += 1
+            continue
+
+        if tid and tid in checked_out_tickets:
+            bucket["checked_out"] += 1
+            continue
+
+        if row_status == "REJECTED_DUPLICATE" and reason == "ALREADY_COMPLETED":
+            bucket["excluded_already_completed"] += 1
+            exclude_reason = "ALREADY_COMPLETED (batch rejected duplicate)"
+        elif row_status in ("ACCEPTED", "OVERRIDDEN"):
+            bucket["excluded_not_staged"] += 1
+            exclude_reason = "ACCEPTED but not in active staging (identity or confirm skip)"
+        else:
+            bucket["excluded_other"] += 1
+            exclude_reason = f"batch {row_status or 'unknown'} / {reason or 'unknown'}"
+
+        if bucket_key == "rush":
+            missing_rush.append(
+                {
+                    "bag_id": tid or row.get("ticket_id"),
+                    "customer": row.get("name_clean"),
+                    "delivery_date": (
+                        row["date_clean"].isoformat()
+                        if isinstance(row.get("date_clean"), date)
+                        else row.get("date_clean")
+                    ),
+                    "service_type": row.get("service_type"),
+                    "rush_type": row.get("rush_type"),
+                    "row_status": row.get("row_status"),
+                    "reason": row.get("reason"),
+                    "weight_num": row.get("weight_num"),
+                    "checkout_status": "checked_out" if tid in checked_out_tickets else None,
+                    "reason_excluded": exclude_reason,
+                }
+            )
+
+    out["rush"] = buckets["rush"]
+    out["non_rush"] = buckets["non_rush"]
+    out["missing_rush_rows"] = missing_rush
+    return out
+
+
+def _empty_bucket() -> dict[str, int]:
+    return {
+        "total": 0,
+        "remaining": 0,
+        "checked_out": 0,
+        "excluded_already_completed": 0,
+        "excluded_not_staged": 0,
+        "excluded_other": 0,
+    }

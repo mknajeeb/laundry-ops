@@ -16,7 +16,7 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
           pb: 0.25,
         }}
       >
-        {tabs.map(({ key, label, count, Icon, accent }) => {
+        {tabs.map(({ key, label, count, Icon, accent, detail }) => {
           const selected = value === key;
           const empty = Number(count || 0) === 0;
           const base = accent || "#0f172a";
@@ -76,6 +76,11 @@ export default function RushTabCountBar({ value, onChange, tabs, fullWidth = fal
                   {label}
                 </Typography>
                 <Typography sx={{ fontSize: 13, fontWeight: 600, opacity: 0.92 }}>{count}</Typography>
+                {tab.detail ? (
+                  <Typography sx={{ fontSize: 10, fontWeight: 500, opacity: 0.85, lineHeight: 1.25, px: 0.25 }}>
+                    {tab.detail}
+                  </Typography>
+                ) : null}
               </Stack>
             </Paper>
           );
