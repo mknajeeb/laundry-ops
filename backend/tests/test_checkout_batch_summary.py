@@ -6,13 +6,14 @@ from unittest.mock import MagicMock
 from backend.checkout_batch_summary import build_checkout_batch_summary
 
 
-def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None):
+def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None, checked_out_staging=None):
     cursor = MagicMock()
     batch_meta = batch_meta or {
         "batch_id": 500,
         "batch_date": date(2026, 6, 1),
         "confirmed_at": None,
     }
+    checked_out_staging = checked_out_staging or []
 
     def table_exists_side_effect(_c, name):
         return name in (
@@ -68,6 +69,8 @@ def _mock_summary_cursor(*, batch_rows, active_staging, batch_meta=None):
             return batch_rows
         if "FROM orders_staging o" in sql:
             return active_staging
+        if "FROM orders_staging" in sql and "ticket_id" in sql:
+            return checked_out_staging
         if "FROM checkout_log" in sql:
             return []
         return []
@@ -125,8 +128,14 @@ class TestCheckoutBatchSummary:
             }
             for i in range(40)
         ]
+        checked_out_staging = [
+            {"ticket_id": f"BAG{i}"}
+            for i in range(40, 49)
+        ]
         cursor, mod, orig_te, orig_thc = _mock_summary_cursor(
-            batch_rows=batch_rows, active_staging=active_staging
+            batch_rows=batch_rows,
+            active_staging=active_staging,
+            checked_out_staging=checked_out_staging,
         )
         try:
             out = build_checkout_batch_summary(cursor, 1)
@@ -136,8 +145,10 @@ class TestCheckoutBatchSummary:
 
         assert out["rush"]["total"] == 50
         assert out["rush"]["remaining"] == 40
+        assert out["rush"]["checked_out"] == 9
         assert out["rush"]["excluded_already_completed"] == 1
-        assert len(out["missing_rush_rows"]) == 10
+        assert out["rush"]["excluded_not_staged"] == 0
+        assert len(out["missing_rush_rows"]) == 1
 
     def test_hd_counts_as_non_rush_batch_total(self):
         batch_rows = [
@@ -176,3 +187,31 @@ class TestCheckoutBatchSummary:
 
         assert out["non_rush"]["total"] == 1
         assert out["non_rush"]["remaining"] == 1
+
+    def test_accepted_not_in_queue_counts_as_not_staged_when_not_sent(self):
+        batch_rows = [
+            {
+                "ticket_id": "SKIP1",
+                "date_clean": date(2026, 6, 1),
+                "name_clean": "Skip",
+                "service_type": "WF",
+                "rush_type": "RUSH",
+                "row_status": "ACCEPTED",
+                "reason": "OK",
+                "weight_num": None,
+            }
+        ]
+        cursor, mod, orig_te, orig_thc = _mock_summary_cursor(
+            batch_rows=batch_rows, active_staging=[], checked_out_staging=[]
+        )
+        try:
+            out = build_checkout_batch_summary(cursor, 1)
+        finally:
+            mod.table_exists = orig_te
+            mod.table_has_column = orig_thc
+
+        assert out["rush"]["total"] == 1
+        assert out["rush"]["remaining"] == 0
+        assert out["rush"]["checked_out"] == 0
+        assert out["rush"]["excluded_not_staged"] == 1
+        assert len(out["missing_rush_rows"]) == 1

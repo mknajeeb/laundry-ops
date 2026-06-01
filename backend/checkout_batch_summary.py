@@ -145,6 +145,25 @@ def build_checkout_batch_summary(cursor, organization_id: int) -> dict[str, Any]
         (org,) if has_org else (),
     )
     active_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+
+    def _staging_bucket(row: dict[str, Any]) -> str:
+        svc = str(row.get("service_type") or "WF").strip().upper()
+        if svc == "HD":
+            return "non_rush"
+        rush = str(row.get("effective_rush") or "").strip().upper()
+        return "rush" if rush == "RUSH" else "non_rush"
+
+    queue_remaining = {"rush": 0, "non_rush": 0}
+    for row in active_rows:
+        queue_remaining[_staging_bucket(row)] += 1
+
+    def classify_batch_row(row: dict[str, Any]) -> str:
+        svc = str(row.get("service_type") or "WF").strip().upper()
+        rush = _norm_rush(row.get("rush_type"))
+        if svc == "HD":
+            return "non_rush"
+        return "rush" if rush == "RUSH" else "non_rush"
+
     active_by_ticket: dict[str, dict[str, Any]] = {}
     if has_ticket:
         for row in active_rows:
@@ -153,28 +172,38 @@ def build_checkout_batch_summary(cursor, organization_id: int) -> dict[str, Any]
                 active_by_ticket[tid] = row
 
     checked_out_tickets: set[str] = set()
-    if has_ticket and table_exists(cursor, "checkout_log"):
-        join_org = " AND o.organization_id = %s" if has_org else ""
-        args: list[Any] = [org] if has_org else []
-        cursor.execute(
-            f"""
-            SELECT DISTINCT UPPER(TRIM(o.ticket_id)) AS ticket_id
-            FROM checkout_log c
-            INNER JOIN orders_staging o ON o.id = c.order_id{join_org}
-            WHERE o.ticket_id IS NOT NULL AND TRIM(o.ticket_id) != ''
-            """,
-            tuple(args),
-        )
-        for row in cursor.fetchall() or []:
-            if isinstance(row, dict) and row.get("ticket_id"):
-                checked_out_tickets.add(str(row["ticket_id"]).strip().upper())
-
-    def classify_batch_row(row: dict[str, Any]) -> str:
-        svc = str(row.get("service_type") or "WF").strip().upper()
-        rush = _norm_rush(row.get("rush_type"))
-        if svc == "HD":
-            return "non_rush"
-        return "rush" if rush == "RUSH" else "non_rush"
+    if has_ticket and table_exists(cursor, "orders_staging"):
+        sent_statuses = ("SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT", "FORCED_CHECKOUT")
+        if cap["has_logistics"]:
+            sent_clause = (
+                f"COALESCE(logistics_status, CASE "
+                f"WHEN status = 'CHECKED_OUT' THEN 'SENT_TO_RINSE' "
+                f"WHEN status = 'FORCED_CHECKOUT' THEN 'FORCE_CHECKOUT' "
+                f"ELSE 'AT_WASHPRO' END) IN ({', '.join('%s' for _ in sent_statuses)})"
+            )
+        elif cap["has_status"]:
+            sent_clause = f"status IN ({', '.join('%s' for _ in sent_statuses)})"
+        else:
+            sent_clause = None
+        if sent_clause:
+            org_args: list[Any] = list(sent_statuses)
+            sent_org = ""
+            if has_org:
+                sent_org = " AND organization_id = %s"
+                org_args.append(org)
+            cursor.execute(
+                f"""
+                SELECT ticket_id
+                FROM orders_staging
+                WHERE ticket_id IS NOT NULL AND ({sent_clause}){sent_org}
+                """,
+                tuple(org_args),
+            )
+            for row in cursor.fetchall() or []:
+                if isinstance(row, dict):
+                    tid = normalize_bag_id(row.get("ticket_id"))
+                    if tid:
+                        checked_out_tickets.add(tid)
 
     buckets = {"rush": _empty_bucket(), "non_rush": _empty_bucket()}
     missing_rush: list[dict[str, Any]] = []
@@ -187,27 +216,25 @@ def build_checkout_batch_summary(cursor, organization_id: int) -> dict[str, Any]
         tid = normalize_bag_id(row.get("ticket_id"))
         row_status = str(row.get("row_status") or "").strip().upper()
         reason = str(row.get("reason") or "").strip().upper()
-        active = active_by_ticket.get(tid) if tid else None
+        in_queue = bool(tid and tid in active_by_ticket)
+        exclude_reason = None
 
-        if active:
-            bucket["remaining"] += 1
-            continue
-
-        if tid and tid in checked_out_tickets:
-            bucket["checked_out"] += 1
-            continue
-
-        if row_status == "REJECTED_DUPLICATE" and reason == "ALREADY_COMPLETED":
+        if in_queue:
+            pass
+        elif row_status == "REJECTED_DUPLICATE" and reason == "ALREADY_COMPLETED":
             bucket["excluded_already_completed"] += 1
             exclude_reason = "ALREADY_COMPLETED (batch rejected duplicate)"
         elif row_status in ("ACCEPTED", "OVERRIDDEN"):
-            bucket["excluded_not_staged"] += 1
-            exclude_reason = "ACCEPTED but not in active staging (identity or confirm skip)"
+            if tid and tid in checked_out_tickets:
+                bucket["checked_out"] += 1
+            else:
+                bucket["excluded_not_staged"] += 1
+                exclude_reason = "ACCEPTED but not in active staging (identity or confirm skip)"
         else:
             bucket["excluded_other"] += 1
-            exclude_reason = f"batch {row_status or 'unknown'} / {reason or 'unknown'}"
+            exclude_reason = f"Batch row status {row_status or 'UNKNOWN'}"
 
-        if bucket_key == "rush":
+        if bucket_key == "rush" and exclude_reason:
             missing_rush.append(
                 {
                     "bag_id": tid or row.get("ticket_id"),
@@ -222,10 +249,12 @@ def build_checkout_batch_summary(cursor, organization_id: int) -> dict[str, Any]
                     "row_status": row.get("row_status"),
                     "reason": row.get("reason"),
                     "weight_num": row.get("weight_num"),
-                    "checkout_status": "checked_out" if tid in checked_out_tickets else None,
                     "reason_excluded": exclude_reason,
                 }
             )
+
+    for key in ("rush", "non_rush"):
+        buckets[key]["remaining"] = int(queue_remaining.get(key) or 0)
 
     out["rush"] = buckets["rush"]
     out["non_rush"] = buckets["non_rush"]

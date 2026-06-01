@@ -250,26 +250,28 @@ function CheckoutPage() {
   }, [checkedRows]);
 
   const counters = useMemo(() => {
-    const rushCount = searchFilteredRows.filter((r) => rushOf(r) === "RUSH").length;
-    const nonRushCount = searchFilteredRows.filter((r) => rushOf(r) === "NON-RUSH").length;
+    const rushInQueue = searchFilteredRows.filter((r) => rushOf(r) === "RUSH").length;
+    const nonRushInQueue = searchFilteredRows.filter((r) => rushOf(r) === "NON-RUSH").length;
     const batchRush = batchSummary?.rush || {};
     const batchNonRush = batchSummary?.non_rush || {};
-    const rushTotal = batchRush.total != null ? Number(batchRush.total) : rushCount;
-    const nonRushTotal = batchNonRush.total != null ? Number(batchNonRush.total) : nonRushCount;
-    const rushRemaining = batchRush.remaining != null ? Number(batchRush.remaining) : rushCount;
-    const nonRushRemaining = batchNonRush.remaining != null ? Number(batchNonRush.remaining) : nonRushCount;
+    const rushTotal = batchRush.total != null ? Number(batchRush.total) : rushInQueue;
+    const nonRushTotal = batchNonRush.total != null ? Number(batchNonRush.total) : nonRushInQueue;
     const rushCheckedOut = Number(batchRush.checked_out || 0);
     const nonRushCheckedOut = Number(batchNonRush.checked_out || 0);
+    const rushExcluded =
+      Number(batchRush.excluded_already_completed || 0) + Number(batchRush.excluded_not_staged || 0);
+    const nonRushExcluded =
+      Number(batchNonRush.excluded_already_completed || 0) + Number(batchNonRush.excluded_not_staged || 0);
     return {
       allCount: searchFilteredRows.length,
-      rushCount,
-      nonRushCount,
+      rushInQueue,
+      nonRushInQueue,
       rushTotal,
       nonRushTotal,
-      rushRemaining,
-      nonRushRemaining,
       rushCheckedOut,
       nonRushCheckedOut,
+      rushExcluded,
+      nonRushExcluded,
       sentCount: checkedRows.length,
     };
   }, [searchFilteredRows, checkedRows.length, batchSummary]);
@@ -571,9 +573,9 @@ function CheckoutPage() {
               {
                 key: "RUSH",
                 label: "Rush",
-                count: counters.rushTotal,
+                count: counters.rushInQueue,
                 detail: batchSummary?.rush?.total != null
-                  ? `${counters.rushRemaining} remaining · ${counters.rushCheckedOut} checked out`
+                  ? `${counters.rushTotal} uploaded · ${counters.rushCheckedOut} sent · ${counters.rushExcluded} excluded`
                   : undefined,
                 Icon: Bolt,
                 accent: "#b91c1c",
@@ -581,9 +583,9 @@ function CheckoutPage() {
               {
                 key: "NON-RUSH",
                 label: "Non-Rush",
-                count: counters.nonRushTotal,
+                count: counters.nonRushInQueue,
                 detail: batchSummary?.non_rush?.total != null
-                  ? `${counters.nonRushRemaining} remaining · ${counters.nonRushCheckedOut} checked out`
+                  ? `${counters.nonRushTotal} uploaded · ${counters.nonRushCheckedOut} sent · ${counters.nonRushExcluded} excluded`
                   : undefined,
                 Icon: CheckCircle,
                 accent: "#0f766e",
