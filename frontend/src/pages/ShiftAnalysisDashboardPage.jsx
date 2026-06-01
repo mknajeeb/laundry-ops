@@ -1278,12 +1278,14 @@ export default function ShiftAnalysisDashboardPage({ user }) {
             </Grid>
             {reconciliation?.math_bridge ? (
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                Assigned / Not Sent: lifecycle {formatCount(reconciliation.lifecycle_scope_counts?.assigned_not_sent)}
+                Incoming WF: dashboard {formatCount(reconciliation.lifecycle_scope_counts?.incoming_wf)}
                 {" · "}
-                presence WF {formatCount(reconciliation.math_bridge?.assigned_not_sent_presence_wf)}
-                {reconciliation.math_bridge?.assigned_count_delta ? (
-                  <> · delta {formatCount(reconciliation.math_bridge.assigned_count_delta)}</>
+                presence snapshot {formatCount(reconciliation.math_bridge?.incoming_wf_presence_snapshot)}
+                {reconciliation.math_bridge?.incoming_wf_delta ? (
+                  <> · delta {formatCount(reconciliation.math_bridge.incoming_wf_delta)}</>
                 ) : null}
+                {" · "}
+                WF lifecycle unreconciled {formatCount(reconciliation.wf_lifecycle?.unreconciled)}
                 {" · "}
                 Ready-for-vendor rush {formatCount(reconciliation.presence_counts?.ready_for_vendor_rush)}
                 / non-rush {formatCount(reconciliation.presence_counts?.ready_for_vendor_non_rush)}
