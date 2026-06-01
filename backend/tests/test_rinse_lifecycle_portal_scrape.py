@@ -11,7 +11,10 @@ from backend.rinse_bag_lifecycle_status import (
     SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN,
     SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
 )
-from backend.rinse_lifecycle_portal_scrape import compute_missing_from_confirmed_portal_scrape
+from backend.rinse_lifecycle_portal_scrape import (
+    _batch_is_trustworthy_full_portal_snapshot,
+    compute_missing_from_confirmed_portal_scrape,
+)
 
 
 def _ev(purpose: str, at: datetime, *, rack: str = "Scale", user: str = "Alex") -> dict:
@@ -23,6 +26,36 @@ def _ev(purpose: str, at: datetime, *, rack: str = "Scale", user: str = "Alex") 
         "scan_index": 1,
         "id": 1,
     }
+
+
+class TestTrustworthyFullPortalBatchSelection:
+    def test_small_incremental_batch_rejected_against_peer_peak(self):
+        assert not _batch_is_trustworthy_full_portal_snapshot(
+            meta=None,
+            full_snapshot=True,
+            wf_count=9,
+            peak_wf_count=55,
+        )
+
+    def test_peer_sized_batch_accepted(self):
+        assert _batch_is_trustworthy_full_portal_snapshot(
+            meta=None,
+            full_snapshot=True,
+            wf_count=40,
+            peak_wf_count=55,
+        )
+
+    def test_natural_stop_meta_accepted_even_when_small(self):
+        assert _batch_is_trustworthy_full_portal_snapshot(
+            meta={
+                "stopped_reason": "no_next_page_ui",
+                "reached_max_pages": False,
+                "pages_scraped": 2,
+            },
+            full_snapshot=True,
+            wf_count=9,
+            peak_wf_count=55,
+        )
 
 
 class TestComputeMissingFromConfirmedPortalScrape:

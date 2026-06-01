@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.rinse_portal_absence_completion import complete_bags_missing_from_latest_portal
 from backend.rinse_portal_scrape_meta import (
+    fetch_portal_scrape_meta_for_batch,
     load_portal_scrape_meta_file,
     meta_path_for_portal_csv,
     portal_scrape_meta_allows_absence_completion,
@@ -66,6 +67,23 @@ class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
             meta_path_for_portal_csv("/data/runs/portal.csv").name,
             "portal.csv.meta.json",
         )
+
+    def test_fetch_meta_none_for_legacy_full_snapshot_without_json(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {
+            "portal_scrape_meta": None,
+            "full_snapshot": 1,
+        }
+        with patch(
+            "backend.rinse_portal_scrape_meta.table_exists",
+            return_value=True,
+        ), patch(
+            "backend.rinse_portal_scrape_meta.table_has_column",
+            return_value=True,
+        ):
+            meta = fetch_portal_scrape_meta_for_batch(cursor, 493, 3)
+        self.assertIsNone(meta)
+        self.assertTrue(portal_scrape_meta_allows_absence_completion(meta))
 
 
 class TestPortalAbsenceSkippedOnMaxPages(unittest.TestCase):

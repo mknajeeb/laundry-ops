@@ -13,11 +13,16 @@ from backend.rinse_bag_completion import (
 from backend.rinse_bag_gaming_performance import gaming_events_from_records
 from backend.rinse_bag_stage_bounds import event_ts as _event_ts, ts_valid as _ts_valid
 from backend.rinse_portal_scrape_meta import (
+    NATURAL_STOP_REASONS,
     fetch_portal_scrape_meta_for_batch,
     portal_scrape_meta_allows_absence_completion,
 )
 from backend.rinse_shift_operational_exceptions import find_strong_completion_evidence
 from backend.ta_helpers import table_exists, table_has_column
+
+_RECENT_BATCH_LOOKBACK = 60
+_MIN_FULL_SNAPSHOT_WF_FRACTION = 0.70
+_ABSOLUTE_MIN_FULL_SNAPSHOT_WF = 20
 
 
 def _events_for_bag(
@@ -50,6 +55,61 @@ def _lifecycle_completion_time(
     return ts if _ts_valid(ts) else None
 
 
+def _load_wf_bag_ids_for_batch(
+    cursor,
+    batch_id: int,
+) -> set[str]:
+    if not table_exists(cursor, "upload_batch_rows"):
+        return set()
+
+    row_batch_col = (
+        "upload_batch_id"
+        if table_has_column(cursor, "upload_batch_rows", "upload_batch_id")
+        else "batch_id"
+    )
+    cursor.execute(
+        f"""
+        SELECT ticket_id, service_type
+        FROM upload_batch_rows
+        WHERE {row_batch_col} = %s
+        """,
+        (int(batch_id),),
+    )
+    wf_ids: set[str] = set()
+    for r in cursor.fetchall() or []:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("service_type") or "WF").upper() != "WF":
+            continue
+        bid = normalize_bag_id(r.get("ticket_id"))
+        if bid:
+            wf_ids.add(bid)
+    return wf_ids
+
+
+def _batch_is_trustworthy_full_portal_snapshot(
+    *,
+    meta: dict[str, Any] | None,
+    full_snapshot: bool,
+    wf_count: int,
+    peak_wf_count: int,
+) -> bool:
+    if not full_snapshot or wf_count <= 0:
+        return False
+    if meta is not None and not portal_scrape_meta_allows_absence_completion(meta):
+        return False
+
+    reason = str((meta or {}).get("stopped_reason") or "").strip()
+    if reason in NATURAL_STOP_REASONS:
+        return True
+
+    threshold = max(
+        _ABSOLUTE_MIN_FULL_SNAPSHOT_WF,
+        int(max(peak_wf_count, wf_count) * _MIN_FULL_SNAPSHOT_WF_FRACTION),
+    )
+    return wf_count >= threshold
+
+
 def fetch_latest_confirmed_full_portal_batch(
     cursor,
     organization_id: int,
@@ -75,75 +135,67 @@ def fetch_latest_confirmed_full_portal_batch(
         org_clause = " AND organization_id = %s"
         args.append(org)
 
+    has_full_snapshot = table_has_column(cursor, "upload_batches", "full_snapshot")
+    fs_select = ", full_snapshot" if has_full_snapshot else ""
+
     cursor.execute(
         f"""
-        SELECT {batch_pk} AS batch_id, confirmed_at
+        SELECT {batch_pk} AS batch_id, confirmed_at{fs_select}
         FROM upload_batches
         WHERE confirmed_at IS NOT NULL{org_clause}
         ORDER BY confirmed_at DESC, {batch_pk} DESC
-        LIMIT 1
+        LIMIT {_RECENT_BATCH_LOOKBACK}
         """,
         tuple(args),
     )
-    row = cursor.fetchone()
-    if not row or not isinstance(row, dict):
+    rows = cursor.fetchall() or []
+    if not rows:
         return None
 
-    batch_id = int(row.get("batch_id") or 0)
-    confirmed_at = row.get("confirmed_at")
-    if not batch_id or not isinstance(confirmed_at, datetime):
-        return None
-
-    meta = fetch_portal_scrape_meta_for_batch(cursor, batch_id, org)
-    if meta is not None and not portal_scrape_meta_allows_absence_completion(meta):
-        return None
-
-    if table_has_column(cursor, "upload_batches", "full_snapshot"):
-        cursor.execute(
-            f"""
-            SELECT full_snapshot FROM upload_batches
-            WHERE {batch_pk} = %s{org_clause}
-            LIMIT 1
-            """,
-            (batch_id, *([org] if org_clause else [])),
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        batch_id = int(row.get("batch_id") or 0)
+        confirmed_at = row.get("confirmed_at")
+        if not batch_id or not isinstance(confirmed_at, datetime):
+            continue
+        full_snapshot = True
+        if has_full_snapshot and row.get("full_snapshot") is not None:
+            full_snapshot = bool(int(row.get("full_snapshot") or 0))
+        wf_ids = _load_wf_bag_ids_for_batch(cursor, batch_id)
+        meta = fetch_portal_scrape_meta_for_batch(cursor, batch_id, org)
+        candidates.append(
+            {
+                "batch_id": batch_id,
+                "confirmed_at": confirmed_at,
+                "wf_bag_ids": wf_ids,
+                "wf_count": len(wf_ids),
+                "portal_scrape_meta": meta,
+                "full_snapshot": full_snapshot,
+            }
         )
-        fs_row = cursor.fetchone()
-        if isinstance(fs_row, dict) and fs_row.get("full_snapshot") is not None:
-            if not int(fs_row.get("full_snapshot") or 0):
-                return None
 
-    if not table_exists(cursor, "upload_batch_rows"):
+    if not candidates:
         return None
 
-    row_batch_col = (
-        "upload_batch_id"
-        if table_has_column(cursor, "upload_batch_rows", "upload_batch_id")
-        else "batch_id"
-    )
-    cursor.execute(
-        f"""
-        SELECT ticket_id, service_type
-        FROM upload_batch_rows
-        WHERE {row_batch_col} = %s
-        """,
-        (batch_id,),
-    )
-    wf_ids: set[str] = set()
-    for r in cursor.fetchall() or []:
-        if not isinstance(r, dict):
+    peak_wf = max(c["wf_count"] for c in candidates)
+    for candidate in candidates:
+        if not _batch_is_trustworthy_full_portal_snapshot(
+            meta=candidate["portal_scrape_meta"],
+            full_snapshot=bool(candidate["full_snapshot"]),
+            wf_count=int(candidate["wf_count"]),
+            peak_wf_count=peak_wf,
+        ):
             continue
-        if str(r.get("service_type") or "WF").upper() != "WF":
-            continue
-        bid = normalize_bag_id(r.get("ticket_id"))
-        if bid:
-            wf_ids.add(bid)
+        return {
+            "batch_id": candidate["batch_id"],
+            "confirmed_at": candidate["confirmed_at"],
+            "wf_bag_ids": candidate["wf_bag_ids"],
+            "portal_scrape_meta": candidate["portal_scrape_meta"],
+        }
 
-    return {
-        "batch_id": batch_id,
-        "confirmed_at": confirmed_at,
-        "wf_bag_ids": wf_ids,
-        "portal_scrape_meta": meta,
-    }
+    return None
 
 
 def _bag_in_prior_confirmed_portal_batch(

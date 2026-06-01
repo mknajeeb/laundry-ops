@@ -174,9 +174,12 @@ def fetch_portal_scrape_meta_for_batch(
         return normalize_portal_scrape_meta(raw)
     if row.get("full_snapshot") is not None:
         fs = bool(int(row.get("full_snapshot") or 0))
+        if fs:
+            # Legacy/manual full portal CSV confirm without scrape.mjs meta.
+            return None
         return {
             "stopped_reason": None,
-            "reached_max_pages": not fs,
+            "reached_max_pages": True,
             "pages_scraped": 0,
             "max_pages_limit": 0,
         }
