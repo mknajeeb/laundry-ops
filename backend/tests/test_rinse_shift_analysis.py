@@ -189,6 +189,10 @@ class TestLifecyclePendingPayload:
         assert combined["completed"] == rush["completed"] + non_rush["completed"]
         assert combined["by_lifecycle_group"]["pending_weighing"] == 1
         assert combined["by_lifecycle_group"]["folded"] == 1
+        assert out["count_integrity"]["unreconciled_difference"] == 0
+        assigned_check = out["count_integrity"]["checks"].get(ASSIGNED_NOT_SENT_TO_VENDOR)
+        if assigned_check:
+            assert assigned_check["match"] is True
         assert out["legacy_buckets"]["combined"]["total"] == 2
 
     def test_grouped_counts_and_needs_review_exceptions(self):

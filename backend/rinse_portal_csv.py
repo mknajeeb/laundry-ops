@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from typing import Any, Sequence
+
 import pandas as pd
 
 from etl.transform_orders import (
@@ -86,6 +88,19 @@ def _parse_portal_date(val: str | None):
     return None
 
 
+def parse_rush_flag_from_portal_cells(cells: Sequence[Any]) -> str | None:
+    """Return RUSH, NON-RUSH, or None when speed cannot be determined."""
+    if detect_rush_hint(cells):
+        return "RUSH"
+    for c in cells:
+        if c is None:
+            continue
+        u = str(c).upper()
+        if "NON-RUSH" in u or "NON RUSH" in u:
+            return "NON-RUSH"
+    return None
+
+
 def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
     raw = pd.read_csv(csv_path, encoding="utf-8-sig")
     raw.columns = [str(c).strip() for c in raw.columns]
@@ -152,7 +167,8 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
                 bag,
             ]
         )
-        rush = "RUSH" if detect_rush_hint(cells) else "NON-RUSH"
+        rush_parsed = parse_rush_flag_from_portal_cells(cells)
+        rush = rush_parsed if rush_parsed else "NON-RUSH"
         out_rows.append(
             {
                 "Date_Clean": d,

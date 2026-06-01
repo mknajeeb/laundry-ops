@@ -37,12 +37,18 @@ export const CHECKOUT_STATUS_LABELS = {
   NOT_CHECKED_OUT: "Checkout Pending",
   CHECKED_OUT: "Checked Out",
   CHECKOUT_NEEDS_REVIEW: "Checkout Needs Review",
+  CHECKOUT_NOT_RECORDED: "Checkout not recorded",
 };
 
 export const SENT_TO_RINSE_REASON_LABELS = {
   MISSING_FROM_NEXT_PORTAL_SCRAPE: "Missing from confirmed portal scrape after completion",
   EXTERNAL_USER_SCAN_AFTER_CLEAN: "External scan after CLEAN",
 };
+
+export function checkoutStatusLabel(code, backendLabels = {}) {
+  if (!code) return "—";
+  return backendLabels[code] || CHECKOUT_STATUS_LABELS[code] || code.replace(/_/g, " ");
+}
 
 export function sentToRinseReasonLabel(code, backendLabels = {}) {
   if (!code) return "—";

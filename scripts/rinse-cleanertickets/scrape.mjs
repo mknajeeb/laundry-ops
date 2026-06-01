@@ -1821,6 +1821,42 @@ async function main() {
     }
 
     if (allRows.length === 0) {
+      const allowEmpty =
+        String(process.env.RINSE_ALLOW_EMPTY_EXPORT || "").trim() === "1" ||
+        String(process.env.RINSE_ALLOW_EMPTY_EXPORT || "").toLowerCase() === "true";
+      if (allowEmpty) {
+        progressLine(
+          "\nExport produced zero data rows — writing header-only CSV (RINSE_ALLOW_EMPTY_EXPORT).",
+        );
+        let header;
+        if (layout === "portal") {
+          header = portalHeaderRow().map(csvEscape).join(",") + "\n";
+        } else {
+          header = "page,row_index,customer_snippet,bag_id,raw_line\n";
+        }
+        const dir = path.dirname(outCsvAbsolute);
+        if (dir && !fs.existsSync(dir)) {
+          fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(outCsvAbsolute, header, "utf8");
+        const portalScrapeMeta = {
+          stopped_reason: stoppedReason || "no_table_rows",
+          reached_max_pages: false,
+          pages_scraped: pagesScraped,
+          max_pages_limit: maxPages,
+          page_start: pageStart,
+          row_count: 0,
+          scraped_at: new Date().toISOString(),
+        };
+        const metaPath =
+          (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
+          `${outCsvAbsolute}.meta.json`;
+        fs.writeFileSync(metaPath, `${JSON.stringify(portalScrapeMeta, null, 2)}\n`, "utf8");
+        console.error("[rinse-scrape] wrote empty CSV:", outCsvAbsolute);
+        console.error("[rinse-scrape] portal scrape meta:", JSON.stringify(portalScrapeMeta));
+        await browser.close();
+        return;
+      }
       console.error(
         "\nExport produced zero data rows. Fix auth (rinse-auth.json + RINSE_STORAGE_STATE), confirm RINSE_TICKETS_URL, or set RINSE_EXTRA_ROW_SELECTORS / update bodyRowsSelector() in scrape.mjs — see messages above.",
       );

@@ -58,6 +58,7 @@ import {
 } from "../utils/foldingFormat";
 import {
   CHECKOUT_STATUS_LABELS,
+  checkoutStatusLabel,
   exceptionLabel,
   formatExceptionList,
   formatOperationalFlags,
@@ -404,7 +405,7 @@ function LifecycleDetailPanel({ row }) {
       <Typography variant="body2"><strong>Bag ID:</strong> {row.bag_id}</Typography>
       <Typography variant="body2"><strong>Customer:</strong> {row.customer || "—"}</Typography>
       <Typography variant="body2"><strong>Lifecycle:</strong> {lifecycleStatusLabel(row.current_lifecycle_status)}</Typography>
-      <Typography variant="body2"><strong>Checkout:</strong> {CHECKOUT_STATUS_LABELS[row.checkout_status] || row.checkout_status || "—"}</Typography>
+      <Typography variant="body2"><strong>Checkout:</strong> {checkoutStatusLabel(row.checkout_status, checkoutStatusLabels)}</Typography>
       <Typography variant="body2"><strong>Status time:</strong> {formatDateTime(row.status_timestamp)}</Typography>
       <Typography variant="body2"><strong>Exceptions:</strong> {formatExceptionFlags(row.exception_flags)}</Typography>
       {reject ? (
@@ -635,6 +636,8 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const checkoutRush = summary?.pending?.checkout_summary?.rush || {};
   const portalAlignment = summary?.pending?.portal_alignment || {};
   const lifecycleStatusLabels = summary?.pending?.lifecycle_status_labels || {};
+  const checkoutStatusLabels = summary?.pending?.checkout_status_labels || CHECKOUT_STATUS_LABELS;
+  const reconciliation = summary?.pending?.reconciliation || {};
   const liveMonitor = summary?.live_monitor || {};
   const staffPerformance = summary?.staff_performance || {};
   const featureFlags = summary?.feature_flags || {};
@@ -644,8 +647,15 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   const filterLifecycleRows = useCallback((rows, drill) => {
     if (!drill || drill.source !== "lifecycle") return rows;
     return (rows || []).filter((r) => {
-      if (drill.group === "rush" && !r.rush) return false;
-      if (drill.group === "non_rush" && r.rush) return false;
+      if (drill.group === "rush") {
+        if (r.group != null) { if (r.group !== "rush") return false; }
+        else if (!r.rush) return false;
+      }
+      if (drill.group === "non_rush") {
+        if (r.group != null) { if (r.group !== "non_rush") return false; }
+        else if (r.rush) return false;
+      }
+      if (drill.group === "unknown_rush" && r.group !== "unknown_rush") return false;
       if (drill.lifecycle_group && r.lifecycle_group !== drill.lifecycle_group) return false;
       if (drill.lifecycle_status && r.current_lifecycle_status !== drill.lifecycle_status) return false;
       if (drill.lifecycle_filter === "needs_review" && !r.needs_review) return false;
@@ -961,6 +971,20 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                 ) : null
               ))}
             </Grid>
+            {reconciliation?.math_bridge ? (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                Assigned / Not Sent: lifecycle {formatCount(reconciliation.lifecycle_scope_counts?.assigned_not_sent)}
+                {" · "}
+                presence WF {formatCount(reconciliation.math_bridge?.assigned_not_sent_presence_wf)}
+                {reconciliation.math_bridge?.assigned_count_delta ? (
+                  <> · delta {formatCount(reconciliation.math_bridge.assigned_count_delta)}</>
+                ) : null}
+                {" · "}
+                Ready-for-vendor rush {formatCount(reconciliation.presence_counts?.ready_for_vendor_rush)}
+                / non-rush {formatCount(reconciliation.presence_counts?.ready_for_vendor_non_rush)}
+                / unknown {formatCount(reconciliation.presence_counts?.ready_for_vendor_unknown_rush)}
+              </Typography>
+            ) : null}
             {portalAlignment.net_gap_vs_portal_batch_wf != null ? (
               <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
                 Net gap vs portal CSV WF: {formatCount(portalAlignment.net_gap_vs_portal_batch_wf)}
@@ -1266,7 +1290,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                         </TableCell>
                         <TableCell>
                           {isLifecycle
-                            ? (CHECKOUT_STATUS_LABELS[row.checkout_status] || row.checkout_status || "—")
+                            ? checkoutStatusLabel(row.checkout_status, checkoutStatusLabels)
                             : "—"}
                         </TableCell>
                         <TableCell align="right">
@@ -1300,7 +1324,7 @@ export default function ShiftAnalysisDashboardPage({ user }) {
                                         )}
                                     </Typography>
                                   ) : null}
-                                  <Typography variant="body2"><strong>Checkout detail:</strong> {CHECKOUT_STATUS_LABELS[row.checkout_status] || row.checkout_status || "—"}</Typography>
+                                  <Typography variant="body2"><strong>Checkout detail:</strong> {checkoutStatusLabel(row.checkout_status, checkoutStatusLabels)}</Typography>
                                   {row.stage_detail?.reject_after_create_issue ? (
                                     <Typography variant="body2"><strong>Reject detail:</strong> {row.stage_detail.reject_after_create_issue.reason || "—"}</Typography>
                                   ) : null}

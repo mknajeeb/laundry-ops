@@ -15,9 +15,11 @@ from backend.rinse_cleaner_ticket_presence import (
     PORTAL_STATUS_READY,
     VALID_PORTAL_STATUSES,
     apply_presence_scrape,
+    build_presence_scrape_debug,
     build_tickets_url_for_portal_status,
     ensure_presence_tables,
     parse_presence_rows_from_portal_csv,
+    read_portal_scrape_meta,
 )
 from backend.rinse_scan_time import json_safe_rinse
 from backend.rinse_vendor_config import rinse_scrape_env_for_organization
@@ -83,9 +85,15 @@ def register_rinse_presence_routes(app, *, require_user, require_admin, user_org
             extra_env = dict(vendor_env)
             extra_env["RINSE_TICKETS_URL"] = source_url
             extra_env["RINSE_CSV_LAYOUT"] = "portal"
+            extra_env["RINSE_ALLOW_EMPTY_EXPORT"] = "1"
+            extra_env.setdefault("RINSE_MAX_PAGES", "25")
+            extra_env.setdefault("RINSE_PAGE_SETTLE_MS", "2000")
+            extra_env.setdefault("RINSE_TABLE_WAIT_MS", "800")
 
             with tempfile.TemporaryDirectory(prefix="rinse-presence-") as tmp:
                 csv_path = Path(tmp) / f"presence-{portal_status}.csv"
+                meta_path = Path(str(csv_path) + ".meta.json")
+                extra_env["OUTPUT_PORTAL_SCRAPE_META"] = str(meta_path)
                 code, stdout, stderr = run_bag_export_csv(csv_path, extra_env=extra_env)
                 if code != 0:
                     return jsonify(
@@ -96,6 +104,13 @@ def register_rinse_presence_routes(app, *, require_user, require_admin, user_org
                             "stderr_tail": (stderr or "")[-4000:],
                             "source_url": source_url,
                             "rinse_vendor": vendor,
+                            "scrape_debug": build_presence_scrape_debug(
+                                portal_status=portal_status,
+                                source_url=source_url,
+                                rows=[],
+                                scrape_meta=read_portal_scrape_meta(str(meta_path)),
+                                exit_code=code,
+                            ),
                         }
                     ), 502
 
@@ -109,6 +124,15 @@ def register_rinse_presence_routes(app, *, require_user, require_admin, user_org
                             "rinse_vendor": vendor,
                         }
                     ), 422
+
+                scrape_meta = read_portal_scrape_meta(str(meta_path))
+                scrape_debug = build_presence_scrape_debug(
+                    portal_status=portal_status,
+                    source_url=source_url,
+                    rows=rows,
+                    scrape_meta=scrape_meta,
+                    exit_code=code,
+                )
 
                 ensure_presence_tables(cursor)
                 stats = apply_presence_scrape(
@@ -128,6 +152,7 @@ def register_rinse_presence_routes(app, *, require_user, require_admin, user_org
 
             stats["rinse_vendor"] = vendor
             stats["stdout_tail"] = (stdout or "")[-2000:]
+            stats["scrape_debug"] = scrape_debug
             return jsonify(json_safe_rinse(stats))
         except Exception as exc:
             conn.rollback()

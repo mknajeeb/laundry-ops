@@ -97,6 +97,14 @@ SENT_TO_RINSE_REASON_LABELS: dict[str, str] = {
 CHECKOUT_STATUS_NOT_CHECKED_OUT = "NOT_CHECKED_OUT"
 CHECKOUT_STATUS_CHECKED_OUT = "CHECKED_OUT"
 CHECKOUT_STATUS_NEEDS_REVIEW = "CHECKOUT_NEEDS_REVIEW"
+CHECKOUT_STATUS_NOT_RECORDED = "CHECKOUT_NOT_RECORDED"
+
+CHECKOUT_STATUS_LABELS: dict[str, str] = {
+    CHECKOUT_STATUS_NOT_CHECKED_OUT: "Checkout Pending",
+    CHECKOUT_STATUS_CHECKED_OUT: "Checked Out",
+    CHECKOUT_STATUS_NEEDS_REVIEW: "Checkout Needs Review",
+    CHECKOUT_STATUS_NOT_RECORDED: "Checkout not recorded",
+}
 
 _LOGISTICS_CHECKED_OUT = frozenset({"SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT"})
 
@@ -439,6 +447,27 @@ def derive_bag_lifecycle_status(
         else:
             status = LIFECYCLE_UNKNOWN
             status_source_event = None
+
+    _PENDING_WASH_DRY = frozenset(
+        {
+            PENDING_WEIGHING,
+            WEIGHED_NOT_STARTED,
+            SORTED_READY_FOR_WASH,
+            IN_WASHING,
+            IN_DRYING,
+        }
+    )
+    if (
+        COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in exception_flags
+        and status in _PENDING_WASH_DRY
+        and not sent_to_rinse
+    ):
+        status = FOLDED_COMPLETED
+        if status_timestamp is None and missing_clean_detail:
+            status_timestamp = missing_clean_detail.get("completion_evidence_at")
+
+    if status == SENT_TO_RINSE and checkout_status == CHECKOUT_STATUS_NOT_CHECKED_OUT:
+        checkout_status = CHECKOUT_STATUS_NOT_RECORDED
 
     return {
         "bag_id": bid,

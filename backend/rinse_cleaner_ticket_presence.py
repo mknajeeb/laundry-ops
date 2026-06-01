@@ -11,13 +11,45 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_bag_lifecycle_status import derive_bag_lifecycle_status
-from backend.rinse_portal_csv import portal_csv_to_orders_df
+from backend.rinse_portal_csv import parse_rush_flag_from_portal_cells, portal_csv_to_orders_df
 from backend.rinse_processing_settings import get_processing_settings
 from backend.ta_helpers import table_exists
 
 PORTAL_STATUS_READY = "ready_for_vendor"
 PORTAL_STATUS_AT_VENDOR = "at_vendor"
+PORTAL_STATUS_MARK_IN = "ready_for_mark_in"
 VALID_PORTAL_STATUSES = frozenset({PORTAL_STATUS_READY, PORTAL_STATUS_AT_VENDOR})
+# Status values accepted when building portal filter URLs (presence apply uses VALID_PORTAL_STATUSES only).
+PORTAL_URL_STATUSES = frozenset({PORTAL_STATUS_READY, PORTAL_STATUS_AT_VENDOR, PORTAL_STATUS_MARK_IN})
+
+PRESENCE_RUSH_UNKNOWN = "UNKNOWN"
+
+PORTAL_TICKETS_ORIGIN = "https://www.rinse.com/cleanertickets/"
+# Rinse requires the full filter query string — a bare ?status=… often returns an empty table.
+PORTAL_FILTER_PARAM_ORDER: tuple[tuple[str, str], ...] = (
+    ("q", ""),
+    ("estimated_delivery_date_start", ""),
+    ("estimated_delivery_date_end", ""),
+    ("status", ""),
+    ("speed", ""),
+    ("transactionality", ""),
+    ("service_types", ""),
+    ("extra_qc", ""),
+    ("rfd", ""),
+    ("corporate_account", ""),
+    ("vip", ""),
+    ("assembled", ""),
+    ("bagged", ""),
+    ("steps_in_cleaning_process", ""),
+    ("has_post_clean_weight", ""),
+    ("pickup_date_start", ""),
+    ("pickup_date_end", ""),
+    ("ship_to_vendor_date_start", ""),
+    ("ship_to_vendor_date_end", ""),
+    ("receive_from_vendor_date_start", ""),
+    ("receive_from_vendor_date_end", ""),
+    ("page", "1"),
+)
 
 _TRANSITION_COLUMNS = (
     ("previous_portal_status", "VARCHAR(32) NULL AFTER portal_status"),
@@ -119,37 +151,114 @@ def ensure_presence_tables(cursor) -> None:
     ensure_presence_transition_columns(cursor)
 
 
-def build_tickets_url_for_portal_status(base_url: str, portal_status: str) -> str:
+def build_tickets_url_for_portal_status(
+    base_url: str,
+    portal_status: str,
+    *,
+    page: int = 1,
+) -> str:
+    """
+    Build the full Rinse cleaner-tickets filter URL for a portal status.
+
+    Empty filter parameters are required — ``?status=ready_for_vendor`` alone often
+    yields zero table rows even when the sidebar filter shows many tickets.
+    """
     ps = str(portal_status or "").strip()
-    if ps not in VALID_PORTAL_STATUSES:
-        raise ValueError(f"portal_status must be one of {sorted(VALID_PORTAL_STATUSES)}")
-    raw = (base_url or "").strip()
-    if not raw:
-        raw = (
-            "https://www.rinse.com/cleanertickets/?q=&estimated_delivery_date_start="
-            "&estimated_delivery_date_end=&status=at_vendor&speed=&transactionality="
-            "&service_types=&extra_qc=&rfd=&corporate_account=&vip=&assembled=&bagged="
-            "&steps_in_cleaning_process=&has_post_clean_weight=&pickup_date_start="
-            "&pickup_date_end=&ship_to_vendor_date_start=&ship_to_vendor_date_end="
-            "&receive_from_vendor_date_start=&receive_from_vendor_date_end="
-        )
+    if ps not in PORTAL_URL_STATUSES:
+        raise ValueError(f"portal_status must be one of {sorted(PORTAL_URL_STATUSES)}")
+    page_num = max(1, int(page))
+
+    raw = (base_url or "").strip() or PORTAL_TICKETS_ORIGIN
     parsed = urlparse(raw)
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    replaced = False
-    out_pairs: list[tuple[str, str]] = []
-    for k, v in pairs:
-        if k == "status":
-            out_pairs.append(("status", ps))
-            replaced = True
-        else:
-            out_pairs.append((k, v))
-    if not replaced:
-        out_pairs.insert(0, ("status", ps))
+    base_pairs = dict(parse_qsl(parsed.query, keep_blank_values=True))
+
+    param_map: dict[str, str] = {k: v for k, v in PORTAL_FILTER_PARAM_ORDER}
+    # Preserve tenant-specific non-filter overrides from configured base URL (e.g. q=).
+    for key in param_map:
+        if key in base_pairs and key not in ("status", "page"):
+            param_map[key] = base_pairs[key]
+    if base_pairs.get("q"):
+        param_map["q"] = base_pairs["q"]
+
+    param_map["status"] = ps
+    param_map["page"] = str(page_num)
+
+    ordered_keys = [k for k, _ in PORTAL_FILTER_PARAM_ORDER]
+    out_pairs = [(k, param_map[k]) for k in ordered_keys]
     query = urlencode(out_pairs)
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, query, parsed.fragment))
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or "www.rinse.com"
+    path = parsed.path or "/cleanertickets/"
+    return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def read_portal_scrape_meta(meta_path: str) -> dict[str, Any]:
+    """Load scrape.mjs portal meta JSON (pages scraped, stop reason, row_count)."""
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {}
+
+
+def build_presence_scrape_debug(
+    *,
+    portal_status: str,
+    source_url: str,
+    rows: Sequence[Mapping[str, Any]],
+    scrape_meta: Mapping[str, Any] | None = None,
+    exit_code: int = 0,
+) -> dict[str, Any]:
+    """Debug block returned by presence scrape API."""
+    meta = dict(scrape_meta or {})
+    parsed_preview = [
+        {
+            "bag_id": r.get("bag_id"),
+            "customer_name": r.get("customer_name"),
+            "estimated_delivery_date": (
+                r.get("estimated_delivery_date").isoformat()
+                if hasattr(r.get("estimated_delivery_date"), "isoformat")
+                else r.get("estimated_delivery_date")
+            ),
+            "rush_flag": r.get("rush_flag"),
+            "service_type": r.get("service_type"),
+        }
+        for r in list(rows)[:5]
+    ]
+    return {
+        "portal_status_requested": portal_status,
+        "resolved_url": source_url,
+        "scrape_exit_code": exit_code,
+        "pages_visited": meta.get("pages_scraped"),
+        "rows_per_page_meta": meta.get("rows_per_page"),
+        "row_count_exported": meta.get("row_count"),
+        "row_count_parsed": len(rows),
+        "stopped_reason": meta.get("stopped_reason"),
+        "max_pages_limit": meta.get("max_pages_limit"),
+        "first_parsed_rows": parsed_preview,
+        "rows_without_bag_id": sum(1 for r in rows if not r.get("bag_id")),
+    }
 
 
 def parse_presence_rows_from_portal_csv(csv_path: str) -> list[dict[str, Any]]:
+    import pandas as pd
+
+    raw_df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    raw_df.columns = [str(c).strip() for c in raw_df.columns]
+    raw_by_bag: dict[str, dict[str, Any]] = {}
+    for _, raw_r in raw_df.iterrows():
+        from backend.rinse_portal_csv import _ticket_id_from_bag, _cell
+
+        bag = _cell(raw_r, "Bag ID")
+        bid = _ticket_id_from_bag(bag)
+        if bid:
+            raw_by_bag[bid] = {
+                "date_raw": _cell(raw_r, "Date"),
+                "customer": _cell(raw_r, "Customer"),
+                "service_type_raw": _cell(raw_r, "Service Type"),
+            }
+
     df = portal_csv_to_orders_df(csv_path)
     rows: list[dict[str, Any]] = []
     for _, r in df.iterrows():
@@ -157,19 +266,40 @@ def parse_presence_rows_from_portal_csv(csv_path: str) -> list[dict[str, Any]]:
         if not bag_id:
             continue
         d_clean = r.get("Date_Clean")
-        est_delivery = d_clean.isoformat() if hasattr(d_clean, "isoformat") else None
-        rush = str(r.get("rush_type") or r.get("Rush_Type") or "").strip() or None
+        raw = raw_by_bag.get(bag_id, {})
+        date_raw = raw.get("date_raw")
+        cells = [
+            x
+            for x in (
+                date_raw,
+                raw.get("customer"),
+                raw.get("service_type_raw"),
+                r.get("Name_Clean"),
+                r.get("ServiceType"),
+            )
+            if x
+        ]
+        rush_parsed = parse_rush_flag_from_portal_cells(cells)
+        rush_from_df = str(r.get("RushType") or r.get("rush_type") or "").strip().upper()
+        if rush_parsed in ("RUSH", "NON-RUSH"):
+            rush = rush_parsed
+        elif rush_from_df in ("RUSH", "NON-RUSH"):
+            rush = rush_from_df
+        else:
+            rush = None
+        svc = str(r.get("ServiceType") or raw.get("service_type_raw") or "").strip().upper() or None
         rows.append(
             {
                 "bag_id": bag_id,
-                "customer_name": (r.get("Name_Clean") or r.get("Customer") or "").strip() or None,
+                "customer_name": (r.get("Name_Clean") or raw.get("customer") or "").strip() or None,
                 "estimated_delivery_date": d_clean if isinstance(d_clean, date) else None,
                 "rush_flag": rush,
-                "service_type": (r.get("service_type") or r.get("Service_Type") or "").strip() or None,
+                "service_type": svc,
                 "raw_row_json": {
-                    "Date_Clean": est_delivery,
+                    "Date_Clean": d_clean.isoformat() if hasattr(d_clean, "isoformat") else None,
+                    "estimated_delivery_text": date_raw,
                     "Name_Clean": r.get("Name_Clean"),
-                    "service_type": r.get("service_type"),
+                    "service_type": svc,
                     "rush_type": rush,
                     "ticket_id": bag_id,
                 },
@@ -211,14 +341,35 @@ def get_presence_flags(cursor, organization_id: int, bag_id: str) -> tuple[bool,
     return False, False
 
 
+def _rush_from_raw_row_json(raw_json: Any) -> str | None:
+    if isinstance(raw_json, str):
+        try:
+            raw_json = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(raw_json, dict):
+        return None
+    text = raw_json.get("estimated_delivery_text") or raw_json.get("Date_Clean") or ""
+    if text and parse_rush_flag_from_portal_cells([text]) == "RUSH":
+        return "RUSH"
+    rt = str(raw_json.get("rush_type") or "").strip().upper()
+    if rt in ("RUSH", "NON-RUSH"):
+        return rt
+    return None
+
+
 def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
     rf = str(row.get("rush_flag") or "").strip().upper()
-    if rf in ("RUSH", "NON-RUSH"):
-        return rf
-    dc = row.get("estimated_delivery_date")
-    if isinstance(dc, date):
-        return "RUSH" if dc < target_date else "NON-RUSH"
-    return "NON-RUSH"
+    if rf == "RUSH":
+        return "RUSH"
+    if rf == "NON-RUSH":
+        return "NON-RUSH"
+    parsed = _rush_from_raw_row_json(row.get("raw_row_json"))
+    if parsed == "RUSH":
+        return "RUSH"
+    if parsed == "NON-RUSH":
+        return "NON-RUSH"
+    return PRESENCE_RUSH_UNKNOWN
 
 
 def load_wf_presence_incoming_rows(
@@ -240,6 +391,10 @@ def load_wf_presence_incoming_rows(
         "wf_at_vendor_presence_only": 0,
         "hd_presence_excluded": 0,
         "presence_service_type_unknown": 0,
+        "wf_unknown_service_excluded": 0,
+        "ready_for_vendor_rush": 0,
+        "ready_for_vendor_non_rush": 0,
+        "ready_for_vendor_unknown_rush": 0,
     }
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return [], meta
@@ -256,7 +411,9 @@ def load_wf_presence_incoming_rows(
             estimated_delivery_date,
             rush_flag,
             service_type,
-            portal_status_first_seen_at
+            portal_status_first_seen_at,
+            last_seen_at,
+            raw_row_json
         FROM rinse_cleaner_ticket_presence
         WHERE organization_id = %s
           AND active = 1
@@ -281,11 +438,20 @@ def load_wf_presence_incoming_rows(
             continue
         if not svc_raw:
             meta["presence_service_type_unknown"] += 1
+            meta["wf_unknown_service_excluded"] += 1
+            continue
 
         ready = ps == PORTAL_STATUS_READY
         at_vendor = ps == PORTAL_STATUS_AT_VENDOR
+        eff_rush = _presence_effective_rush(raw, td)
         if ready:
             meta["wf_ready_for_vendor_presence"] += 1
+            if eff_rush == "RUSH":
+                meta["ready_for_vendor_rush"] += 1
+            elif eff_rush == "NON-RUSH":
+                meta["ready_for_vendor_non_rush"] += 1
+            else:
+                meta["ready_for_vendor_unknown_rush"] += 1
         elif at_vendor:
             meta["wf_at_vendor_presence_only"] += 1
 
@@ -293,7 +459,7 @@ def load_wf_presence_incoming_rows(
             {
                 "bag_id": bid,
                 "service_type": "WF",
-                "effective_rush": _presence_effective_rush(raw, td),
+                "effective_rush": eff_rush,
                 "is_completed": 0,
                 "name_clean": raw.get("customer_name"),
                 "weight_num": None,
@@ -303,11 +469,104 @@ def load_wf_presence_incoming_rows(
                 "at_vendor_presence": at_vendor,
                 "presence_source": True,
                 "presence_portal_status": ps,
-                "needs_review_presence_svc": not bool(svc_raw),
+                "needs_review_presence_svc": False,
                 "presence_first_seen_at": raw.get("portal_status_first_seen_at"),
+                "presence_last_seen_at": raw.get("last_seen_at"),
             }
         )
     return rows, meta
+
+
+def load_presence_portal_snapshot_counts(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+) -> dict[str, Any]:
+    """Active presence rows broken down for reconciliation (not lifecycle scope)."""
+    out: dict[str, Any] = {
+        "ready_for_vendor_total": 0,
+        "ready_for_vendor_wf": 0,
+        "ready_for_vendor_hd": 0,
+        "ready_for_vendor_unknown_service": 0,
+        "ready_for_vendor_rush": 0,
+        "ready_for_vendor_non_rush": 0,
+        "ready_for_vendor_unknown_rush": 0,
+        "at_vendor_wf": 0,
+        "at_vendor_hd": 0,
+        "last_presence_refresh_at": None,
+        "sample_ready_for_vendor_rows": [],
+    }
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return out
+
+    org = int(organization_id)
+    td = target_date
+    cursor.execute(
+        """
+        SELECT
+            bag_id, portal_status, customer_name, estimated_delivery_date,
+            rush_flag, service_type, last_seen_at, raw_row_json
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND active = 1
+          AND portal_status IN (%s, %s)
+        ORDER BY last_seen_at DESC
+        """,
+        (org, PORTAL_STATUS_READY, PORTAL_STATUS_AT_VENDOR),
+    )
+    rows = cursor.fetchall() or []
+    latest_seen: datetime | None = None
+    samples: list[dict[str, Any]] = []
+
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        ls = raw.get("last_seen_at")
+        if isinstance(ls, datetime) and (latest_seen is None or ls > latest_seen):
+            latest_seen = ls
+        ps = str(raw.get("portal_status") or "").strip()
+        svc = str(raw.get("service_type") or "").strip().upper()
+        eff_rush = _presence_effective_rush(raw, td)
+
+        if ps == PORTAL_STATUS_READY:
+            out["ready_for_vendor_total"] += 1
+            if svc == "HD":
+                out["ready_for_vendor_hd"] += 1
+            elif svc == "WF":
+                out["ready_for_vendor_wf"] += 1
+                if eff_rush == "RUSH":
+                    out["ready_for_vendor_rush"] += 1
+                elif eff_rush == "NON-RUSH":
+                    out["ready_for_vendor_non_rush"] += 1
+                else:
+                    out["ready_for_vendor_unknown_rush"] += 1
+            else:
+                out["ready_for_vendor_unknown_service"] += 1
+            if len(samples) < 10:
+                rj = raw.get("raw_row_json")
+                if isinstance(rj, str):
+                    try:
+                        rj = json.loads(rj)
+                    except (json.JSONDecodeError, TypeError):
+                        rj = {}
+                samples.append(
+                    {
+                        "bag_id": raw.get("bag_id"),
+                        "service_type": svc or None,
+                        "rush_flag": raw.get("rush_flag"),
+                        "effective_rush": eff_rush,
+                        "estimated_delivery_text": (rj or {}).get("estimated_delivery_text"),
+                    }
+                )
+        elif ps == PORTAL_STATUS_AT_VENDOR:
+            if svc == "HD":
+                out["at_vendor_hd"] += 1
+            elif svc == "WF" or not svc:
+                out["at_vendor_wf"] += 1
+
+    out["last_presence_refresh_at"] = latest_seen.isoformat() if latest_seen else None
+    out["sample_ready_for_vendor_rows"] = samples
+    return out
 
 
 def apply_presence_scrape(

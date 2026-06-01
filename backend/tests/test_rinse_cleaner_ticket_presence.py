@@ -5,29 +5,96 @@ from unittest.mock import MagicMock, patch
 
 from backend.rinse_bag_lifecycle_status import (
     ASSIGNED_NOT_SENT_TO_VENDOR,
+    CHECKOUT_STATUS_NOT_RECORDED,
+    SENT_TO_RINSE,
     SENT_TO_VENDOR,
     derive_bag_lifecycle_status,
 )
 from backend.rinse_cleaner_ticket_presence import (
     PORTAL_STATUS_AT_VENDOR,
     PORTAL_STATUS_READY,
+    PRESENCE_RUSH_UNKNOWN,
+    _presence_effective_rush,
     apply_presence_scrape,
     build_tickets_url_for_portal_status,
     get_presence_flags,
+    load_wf_presence_incoming_rows,
 )
+from backend.rinse_portal_csv import parse_rush_flag_from_portal_cells
+
+
+class TestRushParsing:
+    def test_rush_from_estimated_delivery_text(self):
+        assert parse_rush_flag_from_portal_cells(["Mon 06/01/2026 ⚡ RUSH"]) == "RUSH"
+
+    def test_unknown_when_no_rush_hint(self):
+        assert parse_rush_flag_from_portal_cells(["Mon 06/01/2026"]) is None
+
+    def test_presence_effective_rush_unknown_without_signal(self):
+        row = {"rush_flag": None, "estimated_delivery_date": None, "raw_row_json": {}}
+        assert _presence_effective_rush(row, date(2026, 6, 1)) == PRESENCE_RUSH_UNKNOWN
+
+    def test_presence_effective_rush_from_raw_json_text(self):
+        row = {
+            "rush_flag": None,
+            "estimated_delivery_date": date(2026, 6, 2),
+            "raw_row_json": {"estimated_delivery_text": "Mon 06/01/2026 ⚡ RUSH"},
+        }
+        assert _presence_effective_rush(row, date(2026, 6, 1)) == "RUSH"
 
 
 class TestTicketsUrlBuilder:
-    def test_replaces_status_param(self):
+    _FULL_PARAM_KEYS = (
+        "q",
+        "estimated_delivery_date_start",
+        "estimated_delivery_date_end",
+        "status",
+        "speed",
+        "transactionality",
+        "service_types",
+        "extra_qc",
+        "rfd",
+        "corporate_account",
+        "vip",
+        "assembled",
+        "bagged",
+        "steps_in_cleaning_process",
+        "has_post_clean_weight",
+        "pickup_date_start",
+        "pickup_date_end",
+        "ship_to_vendor_date_start",
+        "ship_to_vendor_date_end",
+        "receive_from_vendor_date_start",
+        "receive_from_vendor_date_end",
+        "page",
+    )
+
+    def test_replaces_status_param_with_full_filter(self):
         base = "https://www.rinse.com/cleanertickets/?status=at_vendor&page=1"
         url = build_tickets_url_for_portal_status(base, PORTAL_STATUS_READY)
         assert "status=ready_for_vendor" in url
         assert "status=at_vendor" not in url
+        for key in self._FULL_PARAM_KEYS:
+            assert f"{key}=" in url, f"missing param {key}"
+        assert "service_types=" in url
+        assert "service_type=" not in url
 
-    def test_adds_status_when_missing(self):
+    def test_short_base_expanded_to_full_filter(self):
         url = build_tickets_url_for_portal_status(
-            "https://www.rinse.com/cleanertickets/?page=1", PORTAL_STATUS_AT_VENDOR
+            "https://www.rinse.com/cleanertickets/?q=&status=at_vendor&page=1",
+            PORTAL_STATUS_READY,
         )
+        assert "status=ready_for_vendor" in url
+        assert "service_types=" in url
+        assert "estimated_delivery_date_start=" in url
+
+    def test_page_number(self):
+        url = build_tickets_url_for_portal_status(
+            "https://www.rinse.com/cleanertickets/?page=1",
+            PORTAL_STATUS_AT_VENDOR,
+            page=3,
+        )
+        assert "page=3" in url
         assert "status=at_vendor" in url
 
 
@@ -254,6 +321,8 @@ class TestLoadWfPresenceIncomingRows:
                 "rush_flag": None,
                 "service_type": "WF",
                 "portal_status_first_seen_at": datetime(2026, 5, 28, 21, 22),
+                "last_seen_at": datetime(2026, 5, 28, 21, 22),
+                "raw_row_json": None,
             }
         ]
         with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
@@ -267,8 +336,6 @@ class TestLoadWfPresenceIncomingRows:
     def test_hd_excluded(self):
         from datetime import date
 
-        from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
-
         cursor = MagicMock()
         cursor.fetchall.return_value = [
             {
@@ -279,6 +346,8 @@ class TestLoadWfPresenceIncomingRows:
                 "rush_flag": None,
                 "service_type": "HD",
                 "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+                "last_seen_at": datetime(2026, 5, 30, 9, 0),
+                "raw_row_json": None,
             }
         ]
         with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
@@ -287,6 +356,29 @@ class TestLoadWfPresenceIncomingRows:
             )
         assert rows == []
         assert meta["hd_presence_excluded"] == 1
+
+    def test_unknown_service_excluded_from_lifecycle(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {
+                "bag_id": "UNK1",
+                "portal_status": PORTAL_STATUS_READY,
+                "customer_name": "Unknown svc",
+                "estimated_delivery_date": date(2026, 5, 31),
+                "rush_flag": "RUSH",
+                "service_type": None,
+                "portal_status_first_seen_at": datetime(2026, 5, 30, 9, 0),
+                "last_seen_at": datetime(2026, 5, 30, 9, 0),
+                "raw_row_json": None,
+            }
+        ]
+        with patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True):
+            rows, meta = load_wf_presence_incoming_rows(
+                cursor, 3, target_date=date(2026, 5, 31), exclude_bag_ids=set()
+            )
+        assert rows == []
+        assert meta["wf_unknown_service_excluded"] == 1
+        assert meta["wf_ready_for_vendor_presence"] == 0
 
 
 class TestLifecycleIntegration:
@@ -297,3 +389,23 @@ class TestLifecycleIntegration:
     def test_sent_to_vendor_from_at_vendor_presence(self):
         out = derive_bag_lifecycle_status([], bag_id="X2", at_vendor_presence=True)
         assert out["current_lifecycle_status"] == SENT_TO_VENDOR
+
+    def test_sent_to_rinse_no_checkout_shows_not_recorded(self):
+        events = [
+            {
+                "purpose": "",
+                "scanned_at_parsed": datetime(2026, 5, 28, 12, 0),
+                "rack": "CLEAN",
+                "user_name": "Alex",
+                "scan_index": 1,
+                "id": 1,
+            },
+        ]
+        out = derive_bag_lifecycle_status(
+            events,
+            bag_id="STR1",
+            missing_from_next_portal_scrape=True,
+            mapped_internal_users=["Alex"],
+        )
+        assert out["current_lifecycle_status"] == SENT_TO_RINSE
+        assert out["checkout_status"] == CHECKOUT_STATUS_NOT_RECORDED

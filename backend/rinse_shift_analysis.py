@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Mapping
 
 from backend.rinse_bag_lifecycle_status import (
     ASSIGNED_NOT_SENT_TO_VENDOR,
     CHECKOUT_STATUS_CHECKED_OUT,
+    CHECKOUT_STATUS_LABELS,
     CHECKOUT_STATUS_NEEDS_REVIEW,
     CHECKOUT_STATUS_NOT_CHECKED_OUT,
+    CHECKOUT_STATUS_NOT_RECORDED,
     FOLDED_COMPLETED,
     IN_DRYING,
     IN_WASHING,
     LIFECYCLE_UNKNOWN,
     PENDING_WEIGHING,
     SENT_TO_RINSE,
+    SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN,
+    SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
     SENT_TO_RINSE_REASON_LABELS,
     SENT_TO_VENDOR,
     SORTED_READY_FOR_WASH,
@@ -30,7 +34,11 @@ from backend.rinse_operations_dashboard import (
     _service_expr,
     effective_rush_expr,
 )
-from backend.rinse_cleaner_ticket_presence import load_wf_presence_incoming_rows
+from backend.rinse_cleaner_ticket_presence import (
+    PRESENCE_RUSH_UNKNOWN,
+    load_presence_portal_snapshot_counts,
+    load_wf_presence_incoming_rows,
+)
 from backend.rinse_lifecycle_portal_scrape import compute_missing_from_confirmed_portal_scrape
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_order_search import _active_staging_where_sql
@@ -178,20 +186,183 @@ def _accumulate_lifecycle_group(
 
 
 def _sum_lifecycle_groups(
-    rush: dict[str, Any], non_rush: dict[str, Any]
+    rush: dict[str, Any],
+    non_rush: dict[str, Any],
+    unknown_rush: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    unknown_rush = unknown_rush or _empty_lifecycle_group_dict()
     combined = _empty_lifecycle_group_dict()
     for key in ("total", "completed", "pending", "needs_review", "with_exceptions"):
-        combined[key] = int(rush.get(key) or 0) + int(non_rush.get(key) or 0)
+        combined[key] = (
+            int(rush.get(key) or 0)
+            + int(non_rush.get(key) or 0)
+            + int(unknown_rush.get(key) or 0)
+        )
     for st, cnt in (rush.get("by_lifecycle_status") or {}).items():
         combined["by_lifecycle_status"][st] = int(combined["by_lifecycle_status"].get(st) or 0) + int(cnt)
     for st, cnt in (non_rush.get("by_lifecycle_status") or {}).items():
         combined["by_lifecycle_status"][st] = int(combined["by_lifecycle_status"].get(st) or 0) + int(cnt)
+    for st, cnt in (unknown_rush.get("by_lifecycle_status") or {}).items():
+        combined["by_lifecycle_status"][st] = int(combined["by_lifecycle_status"].get(st) or 0) + int(cnt)
     for grp in LIFECYCLE_GROUP_TO_STATUSES:
-        combined["by_lifecycle_group"][grp] = int(
-            (rush.get("by_lifecycle_group") or {}).get(grp) or 0
-        ) + int((non_rush.get("by_lifecycle_group") or {}).get(grp) or 0)
+        combined["by_lifecycle_group"][grp] = (
+            int((rush.get("by_lifecycle_group") or {}).get(grp) or 0)
+            + int((non_rush.get("by_lifecycle_group") or {}).get(grp) or 0)
+            + int((unknown_rush.get("by_lifecycle_group") or {}).get(grp) or 0)
+        )
     return combined
+
+
+def _rush_group_for_row(row: Mapping[str, Any]) -> tuple[str, bool, str]:
+    """Return (group_key, is_rush_bool_for_legacy, rush_label)."""
+    effective = str(row.get("effective_rush") or "").upper()
+    if effective == "RUSH":
+        return "rush", True, "Rush"
+    if effective == "NON-RUSH":
+        return "non_rush", False, "Non-Rush"
+    return "unknown_rush", False, "Unknown speed"
+
+
+def _build_count_integrity(
+    combined: dict[str, Any],
+    drilldown_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Assert dashboard counts match drilldown row counts."""
+    by_status = combined.get("by_lifecycle_status") or {}
+    checks: dict[str, Any] = {}
+    for status, count in by_status.items():
+        drill = sum(
+            1
+            for r in drilldown_rows
+            if str(r.get("current_lifecycle_status") or "") == status
+        )
+        checks[status] = {
+            "count": int(count),
+            "drilldown": drill,
+            "match": int(count) == drill,
+        }
+    for kind, combined_key, predicate in (
+        ("needs_review", "needs_review", lambda r: bool(r.get("needs_review"))),
+        ("with_exceptions", "with_exceptions", lambda r: bool(r.get("exception_flags"))),
+        (
+            "completed",
+            "completed",
+            lambda r: r.get("current_lifecycle_status") in LIFECYCLE_COMPLETED_STATUSES,
+        ),
+        (
+            "pending",
+            "pending",
+            lambda r: r.get("current_lifecycle_status") not in LIFECYCLE_COMPLETED_STATUSES,
+        ),
+    ):
+        expected = int(combined.get(combined_key) or 0)
+        drill = sum(1 for r in drilldown_rows if predicate(r))
+        checks[kind] = {"count": expected, "drilldown": drill, "match": expected == drill}
+
+    workitem_drill = sum(
+        1
+        for r in drilldown_rows
+        if (r.get("operational_flags") or {}).get("has_create_workitem")
+        or (r.get("operational_flags") or {}).get("has_workitem")
+    )
+    checks["workitem"] = {
+        "count": None,
+        "drilldown": workitem_drill,
+        "match": True,
+    }
+    unreconciled = sum(
+        1 for c in checks.values() if isinstance(c, dict) and c.get("match") is False
+    )
+    return {"checks": checks, "unreconciled_difference": unreconciled}
+
+
+def _build_shift_reconciliation(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+    portal_meta: dict[str, Any],
+    portal_alignment: dict[str, Any],
+    combined: dict[str, Any],
+    drilldown_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    presence = load_presence_portal_snapshot_counts(cursor, organization_id, target_date=target_date)
+    by_status = combined.get("by_lifecycle_status") or {}
+    assigned_lifecycle = int(by_status.get(ASSIGNED_NOT_SENT_TO_VENDOR) or 0)
+    sent_rows = [r for r in drilldown_rows if r.get("current_lifecycle_status") == SENT_TO_RINSE]
+    ext = sum(
+        1
+        for r in sent_rows
+        if (r.get("stage_detail") or {}).get("sent_to_rinse_reason")
+        == SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN
+    )
+    miss = sum(
+        1
+        for r in sent_rows
+        if (r.get("stage_detail") or {}).get("sent_to_rinse_reason")
+        == SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE
+    )
+    lifecycle_total = int(combined.get("total") or 0)
+    portal_wf_incoming = int(presence.get("ready_for_vendor_wf") or 0)
+    hd_excluded = int(presence.get("ready_for_vendor_hd") or 0) + int(
+        portal_meta.get("hd_excluded") or 0
+    )
+    math_bridge = {
+        "portal_wf_ready_for_vendor": portal_wf_incoming,
+        "hd_excluded_from_lifecycle": hd_excluded,
+        "unknown_service_excluded": int(presence.get("ready_for_vendor_unknown_service") or 0),
+        "lifecycle_wf_total": lifecycle_total,
+        "assigned_not_sent_lifecycle": assigned_lifecycle,
+        "assigned_not_sent_presence_wf": int(portal_meta.get("wf_ready_for_vendor_presence") or 0),
+        "assigned_count_delta": assigned_lifecycle
+        - int(portal_meta.get("wf_ready_for_vendor_presence") or 0),
+    }
+    return {
+        "portal_snapshot": presence,
+        "staging_counts": {
+            "portal_active_total": portal_meta.get("portal_active_total"),
+            "wf_at_vendor_staging": portal_meta.get("wf_at_vendor_staging"),
+            "hd_excluded": portal_meta.get("hd_excluded"),
+            "wf_due_today_staging": portal_meta.get("wf_due_today_staging"),
+            "wf_registry_supplement": portal_meta.get("wf_registry_supplement"),
+        },
+        "registry_counts": {},
+        "presence_counts": {
+            "wf_ready_for_vendor_presence": portal_meta.get("wf_ready_for_vendor_presence"),
+            "wf_at_vendor_presence_only": portal_meta.get("wf_at_vendor_presence_only"),
+            "hd_presence_excluded": portal_meta.get("hd_presence_excluded"),
+            "ready_for_vendor_rush": portal_meta.get("ready_for_vendor_rush"),
+            "ready_for_vendor_non_rush": portal_meta.get("ready_for_vendor_non_rush"),
+            "ready_for_vendor_unknown_rush": portal_meta.get("ready_for_vendor_unknown_rush"),
+        },
+        "lifecycle_scope_counts": {
+            "wf_lifecycle_total": lifecycle_total,
+            "by_lifecycle_status": by_status,
+            "by_lifecycle_group": combined.get("by_lifecycle_group") or {},
+            "completed": int(combined.get("completed") or 0),
+            "pending": int(combined.get("pending") or 0),
+            "needs_review": int(combined.get("needs_review") or 0),
+            "with_exceptions": int(combined.get("with_exceptions") or 0),
+            "assigned_not_sent": assigned_lifecycle,
+            "sent_to_rinse": int(by_status.get(SENT_TO_RINSE) or 0),
+            "sent_to_rinse_external_scan": ext,
+            "sent_to_rinse_missing_from_scrape": miss,
+        },
+        "exclusions": {
+            "hd_from_lifecycle": hd_excluded,
+            "unknown_presence_service": int(portal_meta.get("wf_unknown_service_excluded") or 0),
+        },
+        "supplements": {
+            "wf_registry_supplement": portal_meta.get("wf_registry_supplement"),
+            "presence_incoming_wf": portal_meta.get("wf_ready_for_vendor_presence"),
+        },
+        "math_bridge": math_bridge,
+        "portal_batch_alignment": {
+            "portal_batch_wf": portal_alignment.get("portal_batch_wf"),
+            "net_gap_vs_portal_batch_wf": portal_alignment.get("net_gap_vs_portal_batch_wf"),
+        },
+        "unreconciled_difference": math_bridge["assigned_count_delta"],
+    }
 
 
 def _sum_legacy_groups(rush: dict[str, int], non_rush: dict[str, int]) -> dict[str, int]:
@@ -215,9 +386,19 @@ def filter_lifecycle_pending_rows(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if rush_group == "rush" and not row.get("rush"):
-            continue
-        if rush_group == "non_rush" and row.get("rush"):
+        if rush_group == "rush":
+            if row.get("group") is not None:
+                if row.get("group") != "rush":
+                    continue
+            elif not row.get("rush"):
+                continue
+        if rush_group == "non_rush":
+            if row.get("group") is not None:
+                if row.get("group") != "non_rush":
+                    continue
+            elif row.get("rush"):
+                continue
+        if rush_group == "unknown_rush" and row.get("group") != "unknown_rush":
             continue
         st = str(row.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN).strip()
         grp = str(row.get("lifecycle_group") or lifecycle_group_for_status(st))
@@ -868,6 +1049,7 @@ def build_lifecycle_pending_payload(
 
     rush = _empty_lifecycle_group_dict()
     non_rush = _empty_lifecycle_group_dict()
+    unknown_rush = _empty_lifecycle_group_dict()
     checkout_rush = _empty_checkout_rush_summary()
     drilldown_rows: list[dict[str, Any]] = []
 
@@ -875,7 +1057,7 @@ def build_lifecycle_pending_payload(
         bid = str(row.get("bag_id") or "").strip()
         if not bid:
             continue
-        is_rush = str(row.get("effective_rush") or "").upper() == "RUSH"
+        group_key, is_rush, rush_label = _rush_group_for_row(row)
         pf = purpose_flags.get(bid, {})
         legacy_bucket = _classify_pending_bucket(
             is_completed=int(row.get("is_completed") or 0) == 1,
@@ -928,8 +1110,12 @@ def build_lifecycle_pending_payload(
         has_exceptions = len(exception_flags) > 0
         checkout_status = str(lifecycle.get("checkout_status") or CHECKOUT_STATUS_NOT_CHECKED_OUT)
 
-        group_key = "rush" if is_rush else "non_rush"
-        target = rush if is_rush else non_rush
+        if group_key == "rush":
+            target = rush
+        elif group_key == "non_rush":
+            target = non_rush
+        else:
+            target = unknown_rush
         _accumulate_lifecycle_group(
             target,
             lifecycle_status=lifecycle_status,
@@ -953,7 +1139,8 @@ def build_lifecycle_pending_payload(
                 "customer": row.get("name_clean"),
                 "weight_lbs": row.get("weight_num"),
                 "rush": is_rush,
-                "rush_label": "Rush" if is_rush else "Non-Rush",
+                "effective_rush": str(row.get("effective_rush") or "").upper() or PRESENCE_RUSH_UNKNOWN,
+                "rush_label": rush_label,
                 "group": group_key,
                 "current_lifecycle_status": lifecycle_status,
                 "lifecycle_group": lifecycle_group,
@@ -980,7 +1167,7 @@ def build_lifecycle_pending_payload(
         )
 
     legacy_buckets = _build_legacy_pending_payload(bag_rows, purpose_flags)
-    combined = _sum_lifecycle_groups(rush, non_rush)
+    combined = _sum_lifecycle_groups(rush, non_rush, unknown_rush)
     lifecycle_ids = {str(r.get("bag_id") or "").strip().upper() for r in bag_rows if r.get("bag_id")}
     portal_alignment = _build_portal_reconciliation_meta(
         cursor,
@@ -988,6 +1175,16 @@ def build_lifecycle_pending_payload(
         target_date=td,
         lifecycle_bag_ids=lifecycle_ids,
         wf_meta=portal_meta,
+    )
+    count_integrity = _build_count_integrity(combined, drilldown_rows)
+    reconciliation = _build_shift_reconciliation(
+        cursor,
+        org,
+        target_date=td,
+        portal_meta=portal_meta,
+        portal_alignment=portal_alignment,
+        combined=combined,
+        drilldown_rows=drilldown_rows,
     )
 
     return {
@@ -997,10 +1194,18 @@ def build_lifecycle_pending_payload(
         "completion_field": "lifecycle: FOLDED_COMPLETED or SENT_TO_RINSE",
         "service_scope": "WF bags only (HD excluded from lifecycle)",
         "portal_alignment": portal_alignment,
+        "reconciliation": reconciliation,
+        "count_integrity": count_integrity,
         "lifecycle_status_labels": LIFECYCLE_STATUS_LABELS,
         "lifecycle_group_labels": LIFECYCLE_GROUP_LABELS,
         "sent_to_rinse_reason_labels": SENT_TO_RINSE_REASON_LABELS,
-        "groups": {"rush": rush, "non_rush": non_rush, "combined": combined},
+        "checkout_status_labels": CHECKOUT_STATUS_LABELS,
+        "groups": {
+            "rush": rush,
+            "non_rush": non_rush,
+            "unknown_rush": unknown_rush,
+            "combined": combined,
+        },
         "legacy_buckets": legacy_buckets,
         "checkout_summary": {
             "rush": checkout_rush,

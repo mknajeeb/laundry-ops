@@ -7,6 +7,7 @@ from backend.rinse_bag_lifecycle_status import (
     CHECKOUT_STATUS_CHECKED_OUT,
     CHECKOUT_STATUS_NEEDS_REVIEW,
     CHECKOUT_STATUS_NOT_CHECKED_OUT,
+    CHECKOUT_STATUS_NOT_RECORDED,
     FOLDED_COMPLETED,
     IN_DRYING,
     IN_WASHING,
@@ -309,6 +310,41 @@ class TestCheckoutSeparateFromLifecycle:
         )
         assert out["current_lifecycle_status"] == FOLDED_COMPLETED
         assert out["checkout_status"] == CHECKOUT_STATUS_NOT_CHECKED_OUT
+
+
+class TestCompletionOverridesWashDry:
+    def test_processed_by_vendor_after_drying_is_folded_not_in_drying(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 5, 28, 8, 0), ev_id=1),
+            _ev("weight-entry", datetime(2026, 5, 28, 8, 10), ev_id=2, scan_index=2),
+            _ev("start-cleaning", datetime(2026, 5, 28, 9, 0), ev_id=3, scan_index=3),
+            _ev("drying", datetime(2026, 5, 28, 10, 0), ev_id=4, scan_index=4),
+            _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=5, scan_index=5),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="0E0EVEA9I3")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert out["current_lifecycle_status"] != IN_DRYING
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN in out["exception_flags"]
+
+    def test_veewash_clean_clears_missing_final_scan(self):
+        events = [
+            _ev("processed-by-vendor", datetime(2026, 5, 28, 14, 0), ev_id=1),
+            _ev("move-bag", datetime(2026, 5, 28, 14, 12), ev_id=2, scan_index=2, rack="VeeWash Clean"),
+        ]
+        out = derive_bag_lifecycle_status(events, bag_id="VC1")
+        assert out["current_lifecycle_status"] == FOLDED_COMPLETED
+        assert COMPLETED_WITHOUT_FINAL_CLEAN_SCAN not in out["exception_flags"]
+
+    def test_sent_to_rinse_without_checkout_not_recorded(self):
+        events = [_ev("", datetime(2026, 5, 28, 12, 0), ev_id=1, rack="CLEAN")]
+        out = derive_bag_lifecycle_status(
+            events,
+            bag_id="STR2",
+            missing_from_next_portal_scrape=True,
+            mapped_internal_users=["Alex"],
+        )
+        assert out["current_lifecycle_status"] == SENT_TO_RINSE
+        assert out["checkout_status"] == CHECKOUT_STATUS_NOT_RECORDED
 
 
 class TestOrderRejectedFullTiming:
