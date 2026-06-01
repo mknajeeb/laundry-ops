@@ -107,6 +107,84 @@ class TestOperationsDashboardSummary(unittest.TestCase):
         self.assertEqual(out["remaining_total"], 1)
         self.assertEqual(out["source"], "registry+staging")
 
+    def test_batch_id_uses_upload_rows_not_registry_batch_stamp(self):
+        """Manual Washpro upload: dashboard must match upload file row counts, not last_upload_batch_id."""
+        cursor = MagicMock()
+        batch_rows = (
+            [
+                {
+                    "ticket_id": f"BAGR{i:04d}",
+                    "service_type": "WF",
+                    "rush_type": "RUSH",
+                    "row_status": "ACCEPTED",
+                    "reason": "OK",
+                }
+                for i in range(44)
+            ]
+            + [
+                {
+                    "ticket_id": f"BARC{i:04d}",
+                    "service_type": "WF",
+                    "rush_type": "RUSH",
+                    "row_status": "REJECTED_DUPLICATE",
+                    "reason": "ALREADY_COMPLETED",
+                }
+                for i in range(5)
+            ]
+            + [
+                {
+                    "ticket_id": f"BAGN{i:04d}",
+                    "service_type": "WF",
+                    "rush_type": "NON-RUSH",
+                    "row_status": "ACCEPTED",
+                    "reason": "OK",
+                }
+                for i in range(31)
+            ]
+            + [
+                {
+                    "ticket_id": f"BAGH{i:04d}",
+                    "service_type": "HD",
+                    "rush_type": "NON-RUSH",
+                    "row_status": "ACCEPTED",
+                    "reason": "OK",
+                }
+                for i in range(18)
+            ]
+        )
+
+        def fake_execute(sql, args=None):
+            s = " ".join(sql.split())
+            if "FROM upload_batch_rows" in s:
+                cursor.fetchall.return_value = batch_rows
+            elif "FROM rinse_bag_registry" in s and "completion_status" in s:
+                cursor.fetchall.return_value = []
+            elif "FROM orders_staging s" in s and "COUNT" in s:
+                cursor.fetchone.return_value = {"cnt": 24}
+            elif "FROM orders_staging" in s and "COUNT" in s:
+                cursor.fetchone.return_value = {"cnt": 24}
+            elif "rinse_folding_performance" in s:
+                cursor.fetchone.return_value = {"cnt": 0}
+
+        cursor.execute.side_effect = fake_execute
+
+        with patch("backend.rinse_operations_dashboard.table_exists", return_value=True), patch(
+            "backend.rinse_operations_dashboard.table_has_column", return_value=True
+        ), patch("backend.rinse_bag_registry.ensure_rinse_bag_registry_table"):
+            out = get_operations_dashboard_summary(
+                cursor, 1, target_date=date(2026, 6, 1), batch_id=500
+            )
+
+        self.assertEqual(out["source"], "upload_batch")
+        self.assertEqual(out["total_orders"], 98)
+        self.assertEqual(out["rush_total"], 49)
+        self.assertEqual(out["non_rush_total"], 49)
+        self.assertEqual(out["completed_total"], 5)
+        self.assertEqual(out["remaining_total"], 93)
+        self.assertEqual(out["wf_total"], 80)
+        self.assertEqual(out["hd_total"], 18)
+        self.assertEqual(out["checkout_active"], 24)
+
 
 class TestBulkFoldingExceptions(unittest.TestCase):
     def _row(self, **extra):
