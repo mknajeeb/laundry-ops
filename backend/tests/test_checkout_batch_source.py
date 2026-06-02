@@ -26,6 +26,33 @@ class TestCheckoutBatchSource:
         ):
             assert upload_batch_is_auto_scrape(cursor, 99, 3) is True
 
+    def test_dual_csv_without_scrape_run_is_manual(self):
+        """Washpro manual portal+scan-events upload must not be treated as scheduled scrape."""
+        cursor = MagicMock()
+        calls: dict[str, str] = {}
+
+        def execute_side_effect(sql, args=None):
+            calls["last"] = " ".join(str(sql).split())
+
+        def fetchone_side_effect():
+            sql = calls.get("last", "")
+            if "rinse_scrape_runs" in sql:
+                return None
+            if "upload_batches" in sql:
+                return {
+                    "portal_scrape_meta": None,
+                    "file_name": "washpro-portal-2026-06-02.csv + washpro-scan-events.csv",
+                }
+            return None
+
+        cursor.execute.side_effect = execute_side_effect
+        cursor.fetchone.side_effect = fetchone_side_effect
+
+        with patch("backend.checkout_batch_source.table_exists", return_value=True), patch(
+            "backend.checkout_batch_source.table_has_column", side_effect=lambda _c, t, col: True
+        ):
+            assert upload_batch_is_auto_scrape(cursor, 551, 1) is False
+
     def test_manual_source_skips_auto_scrape_batch(self):
         cursor = MagicMock()
         batches = [

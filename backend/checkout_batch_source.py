@@ -48,7 +48,12 @@ def upload_batch_is_auto_scrape(
     batch_id: int,
     organization_id: int | None = None,
 ) -> bool:
-    """True when batch came from scheduled/manual portal scrape (dual CSV + meta), not Excel upload."""
+    """
+    True when batch came from scheduled Rinse scrape (ACA job / scrape.mjs).
+
+    Manual Washpro dual-CSV portal uploads are NOT auto — only scrape-run linkage or
+    portal_scrape_meta from scrape.mjs counts.
+    """
     bid = int(batch_id)
     org = int(organization_id) if organization_id is not None else None
 
@@ -96,10 +101,6 @@ def upload_batch_is_auto_scrape(
 
     meta = row.get("portal_scrape_meta")
     if meta not in (None, "", "null", "NULL"):
-        return True
-
-    file_name = str(row.get("file_name") or "")
-    if " + " in file_name and file_name.lower().endswith(".csv"):
         return True
 
     return False
