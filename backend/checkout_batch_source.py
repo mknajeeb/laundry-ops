@@ -37,10 +37,37 @@ def _get_setting(cursor, organization_id: int, key: str) -> str | None:
 
 
 def get_checkout_batch_source(cursor, organization_id: int) -> CheckoutBatchSource:
-    return normalize_checkout_batch_source(
-        _get_setting(cursor, organization_id, KEY_CHECKOUT_BATCH_SOURCE),
-        default="manual",
-    )
+    explicit = _get_setting(cursor, organization_id, KEY_CHECKOUT_BATCH_SOURCE)
+    if explicit and str(explicit).strip().lower() in VALID_SOURCES:
+        return normalize_checkout_batch_source(explicit)
+
+    # No explicit setting: follow the latest confirmed batch type for this tenant.
+    if table_exists(cursor, "upload_batches"):
+        batch_pk = "batch_id"
+        if table_has_column(cursor, "upload_batches", "id") and not table_has_column(
+            cursor, "upload_batches", "batch_id"
+        ):
+            batch_pk = "id"
+        org_clause = ""
+        args: list[Any] = []
+        if table_has_column(cursor, "upload_batches", "organization_id"):
+            org_clause = " AND organization_id = %s"
+            args.append(int(organization_id))
+        cursor.execute(
+            f"""
+            SELECT {batch_pk} AS batch_id
+            FROM upload_batches
+            WHERE confirmed_at IS NOT NULL{org_clause}
+            ORDER BY confirmed_at DESC, {batch_pk} DESC
+            LIMIT 1
+            """,
+            tuple(args),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict) and row.get("batch_id") is not None:
+            if upload_batch_is_auto_scrape(cursor, int(row["batch_id"]), organization_id):
+                return "auto"
+    return "manual"
 
 
 def upload_batch_is_auto_scrape(

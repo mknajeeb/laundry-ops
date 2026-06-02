@@ -146,6 +146,11 @@ def build_checkout_batch_summary(
         (batch_id,),
     )
     batch_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    batch_ticket_set: set[str] = set()
+    for row in batch_rows:
+        tid = normalize_bag_id(row.get("ticket_id"))
+        if tid:
+            batch_ticket_set.add(tid)
 
     cap = _orders_status_capabilities(cursor)
     active_where = _where_active_at_washpro_sql(cap)
@@ -172,21 +177,18 @@ def build_checkout_batch_summary(
     active_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
     def _staging_bucket(row: dict[str, Any]) -> str:
-        svc = str(row.get("service_type") or "WF").strip().upper()
-        if svc == "HD":
-            return "non_rush"
         rush = str(row.get("effective_rush") or "").strip().upper()
         return "rush" if rush == "RUSH" else "non_rush"
 
     queue_remaining = {"rush": 0, "non_rush": 0}
     for row in active_rows:
+        tid = normalize_bag_id(row.get("ticket_id"))
+        if batch_ticket_set and tid and tid not in batch_ticket_set:
+            continue
         queue_remaining[_staging_bucket(row)] += 1
 
     def classify_batch_row(row: dict[str, Any]) -> str:
-        svc = str(row.get("service_type") or "WF").strip().upper()
         rush = _norm_rush(row.get("rush_type"))
-        if svc == "HD":
-            return "non_rush"
         return "rush" if rush == "RUSH" else "non_rush"
 
     active_by_ticket: dict[str, dict[str, Any]] = {}

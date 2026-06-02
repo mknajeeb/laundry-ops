@@ -200,6 +200,46 @@ class TestCheckoutBatchSummary:
         assert out["non_rush"]["total"] == 1
         assert out["non_rush"]["remaining"] == 1
 
+    def test_hd_rush_counts_in_rush_bucket(self):
+        batch_rows = [
+            {
+                "ticket_id": "HD12RUSH01",
+                "date_clean": date(2026, 6, 2),
+                "name_clean": "BlueBottle",
+                "service_type": "HD",
+                "rush_type": "RUSH",
+                "row_status": "ACCEPTED",
+                "reason": "OK",
+                "weight_num": 0,
+            }
+        ]
+        active_staging = [
+            {
+                "id": 1,
+                "ticket_id": "HD12RUSH01",
+                "name_clean": "BlueBottle",
+                "date_clean": date(2026, 6, 2),
+                "service_type": "HD",
+                "effective_rush": "RUSH",
+                "status": "PENDING",
+                "logistics_status": "AT_WASHPRO",
+                "weight_num": 0,
+            }
+        ]
+        cursor, mod, orig_te, orig_thc, auto_patch = _mock_summary_cursor(
+            batch_rows=batch_rows, active_staging=active_staging
+        )
+        try:
+            out = build_checkout_batch_summary(cursor, 1, source="manual")
+        finally:
+            auto_patch.stop()
+            mod.table_exists = orig_te
+            mod.table_has_column = orig_thc
+
+        assert out["rush"]["total"] == 1
+        assert out["rush"]["remaining"] == 1
+        assert out["non_rush"]["total"] == 0
+
     def test_accepted_not_in_queue_counts_as_not_staged_when_not_sent(self):
         batch_rows = [
             {
