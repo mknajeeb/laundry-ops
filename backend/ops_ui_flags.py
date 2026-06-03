@@ -73,7 +73,10 @@ def get_ops_ui_flags(cursor, organization_id: int) -> dict[str, bool | str]:
             _get_setting(cursor, organization_id, KEY_UPLOAD_BOTH_CSV), True
         ),
         "checkout_batch_source": get_checkout_batch_source(cursor, organization_id),
-        "manual_checkout_accept_completed_without_later_rack": get_manual_checkout_accept_completed_without_later_rack(
+        "checkout_include_completed_if_at_vendor": get_checkout_include_completed_if_at_vendor(
+            cursor, organization_id
+        ),
+        "manual_checkout_accept_completed_without_later_rack": get_checkout_include_completed_if_at_vendor(
             cursor, organization_id
         ),
     }
