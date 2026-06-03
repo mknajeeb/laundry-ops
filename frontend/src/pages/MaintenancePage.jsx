@@ -658,8 +658,9 @@ function MaintenancePage() {
             Checkout batch source
           </FormLabel>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 0.75 }}>
-            Controls which confirmed batch drives Rush Bag Checkout card subtitles. Washpro manual upload: Manual.
-            VeeWash scheduled scrape: Auto. Switch to Auto when Washpro moves to scheduled scrape.
+            Controls which confirmed batch drives Rush Bag Checkout card subtitles. If unset,
+            follows the latest confirmed batch (auto for scheduled scrape tenants, manual for Excel/portal uploads).
+            Washpro manual upload: Manual. VeeWash scheduled scrape: Auto (or leave unset to auto-detect).
           </Typography>
           <RadioGroup
             row
@@ -692,6 +693,45 @@ function MaintenancePage() {
             <FormControlLabel value="auto" control={<Radio />} label="Auto scrape" />
           </RadioGroup>
         </FormControl>
+        <FormControlLabel
+          sx={{ display: "block", mt: 1.5 }}
+          control={
+            <Switch
+              checked={!!opsUi?.manual_checkout_accept_completed_without_later_rack}
+              disabled={saving}
+              onChange={async (e) => {
+                const v = e.target.checked;
+                try {
+                  setSaving(true);
+                  await putOpsUiFlags({ manual_checkout_accept_completed_without_later_rack: v });
+                  await refreshMe();
+                  setMessage({
+                    type: "success",
+                    text: v
+                      ? "Manual checkout will accept completed/CLEAN bags unless moved after CLEAN rack."
+                      : "Manual checkout uses standard ALREADY_COMPLETED rejection for completed bags.",
+                  });
+                } catch (err) {
+                  console.error(err);
+                  setMessage({
+                    type: "error",
+                    text:
+                      err?.response?.data?.error ||
+                      "Could not save manual checkout setting (admin only).",
+                  });
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+          }
+          label="Manual Checkout: Accept completed bags unless moved after CLEAN"
+        />
+        <Typography variant="body2" color="text.secondary" sx={{ ml: 4, mt: -0.5, mb: 1 }}>
+          For manual uploads only. Allows completed/CLEAN bags to re-enter Checkout if they have
+          not moved to another rack after CLEAN. Used for Washpro manual workflow. Turn off when
+          switching to auto scrape. Does not affect lifecycle, performance, or folding.
+        </Typography>
       </Paper>
 
       <Paper sx={{ mt: 1.2, borderRadius: 2, overflow: "hidden" }}>

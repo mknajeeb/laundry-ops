@@ -95,7 +95,7 @@ function CheckoutPage() {
     try {
       setLoading(true);
       const [ordersRes, checkedRes, summaryRes] = await Promise.allSettled([
-        getOrders({ include_all: true }),
+        getOrders({ checkout_batch: true }),
         getCheckoutLog(),
         getCheckoutBatchSummary(),
       ]);
@@ -261,9 +261,19 @@ function CheckoutPage() {
     const rushCheckedOut = Number(batchRush.checked_out || 0);
     const nonRushCheckedOut = Number(batchNonRush.checked_out || 0);
     const rushExcluded =
-      Number(batchRush.excluded_already_completed || 0) + Number(batchRush.excluded_not_staged || 0);
+      Number(batchRush.excluded_rack_scan_after_clean || 0) +
+      Number(batchRush.excluded_not_staged || 0) +
+      Number(batchRush.excluded_other || 0) +
+      (batchSummary?.checkout_batch_source === "auto"
+        ? Number(batchRush.excluded_already_completed || 0)
+        : 0);
     const nonRushExcluded =
-      Number(batchNonRush.excluded_already_completed || 0) + Number(batchNonRush.excluded_not_staged || 0);
+      Number(batchNonRush.excluded_rack_scan_after_clean || 0) +
+      Number(batchNonRush.excluded_not_staged || 0) +
+      Number(batchNonRush.excluded_other || 0) +
+      (batchSummary?.checkout_batch_source === "auto"
+        ? Number(batchNonRush.excluded_already_completed || 0)
+        : 0);
     return {
       allCount: searchFilteredRows.length,
       rushInQueue,

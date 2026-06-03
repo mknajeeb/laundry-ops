@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import Any
 
 from backend.rinse_bag_completion import normalize_bag_id
+from backend.manual_checkout_eligibility import REASON_RACK_SCAN_AFTER_CLEAN_LABEL
 from backend.ta_helpers import table_exists, table_has_column
 
 
@@ -234,6 +235,10 @@ def build_checkout_batch_summary(
 
     buckets = {"rush": _empty_bucket(), "non_rush": _empty_bucket()}
     missing_rush: list[dict[str, Any]] = []
+    is_manual = batch_source == "manual"
+    from backend.manual_checkout_settings import washpro_manual_checkout_override_active
+
+    checkout_override = is_manual and washpro_manual_checkout_override_active(cursor, org)
 
     for row in batch_rows:
         bucket_key = classify_batch_row(row)
@@ -241,13 +246,39 @@ def build_checkout_batch_summary(
         bucket["total"] += 1
 
         tid = normalize_bag_id(row.get("ticket_id"))
+        in_queue = bool(tid and tid in active_by_ticket)
         row_status = str(row.get("row_status") or "").strip().upper()
         reason = str(row.get("reason") or "").strip().upper()
-        in_queue = bool(tid and tid in active_by_ticket)
+
+        if checkout_override and tid:
+            from backend.manual_checkout_eligibility import effective_washpro_manual_checkout_row_status
+
+            eff_status, eff_reason = effective_washpro_manual_checkout_row_status(
+                cursor,
+                org,
+                {**row, "batch_date": batch_date},
+                has_active_staging=in_queue,
+                is_auto_scrape=False,
+            )
+            row_status = str(eff_status or "").strip().upper()
+            reason = str(eff_reason or "").strip().upper()
+
         exclude_reason = None
 
         if in_queue:
             pass
+        elif row_status == "REJECTED_DUPLICATE" and reason == "RACK_SCAN_AFTER_CLEAN":
+            bucket["excluded_rack_scan_after_clean"] += 1
+            exclude_reason = REASON_RACK_SCAN_AFTER_CLEAN_LABEL
+        elif row_status == "REJECTED_DUPLICATE" and reason in (
+            "ALREADY_SENT_TO_RINSE",
+            "ALREADY_CHECKED_OUT",
+        ):
+            bucket["excluded_already_sent"] += 1
+            exclude_reason = "Already sent / checked out"
+        elif row_status == "REJECTED_DUPLICATE" and reason == "ALREADY_FORCE_CHECKOUT":
+            bucket["excluded_force_checkout"] += 1
+            exclude_reason = "Force checkout"
         elif row_status == "REJECTED_DUPLICATE" and reason == "ALREADY_COMPLETED":
             bucket["excluded_already_completed"] += 1
             exclude_reason = "ALREADY_COMPLETED (batch rejected duplicate)"
@@ -295,6 +326,9 @@ def _empty_bucket() -> dict[str, int]:
         "remaining": 0,
         "checked_out": 0,
         "excluded_already_completed": 0,
+        "excluded_rack_scan_after_clean": 0,
+        "excluded_already_sent": 0,
+        "excluded_force_checkout": 0,
         "excluded_not_staged": 0,
         "excluded_other": 0,
     }

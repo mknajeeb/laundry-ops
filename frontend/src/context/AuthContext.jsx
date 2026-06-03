@@ -19,6 +19,7 @@ const DEFAULT_OPS_UI = {
   dryer_qr_scan_enabled: true,
   upload_batch_require_both_csv: true,
   checkout_batch_source: "manual",
+  manual_checkout_accept_completed_without_later_rack: false,
 };
 
 export function AuthProvider({ children }) {
@@ -58,6 +59,8 @@ export function AuthProvider({ children }) {
         upload_batch_require_both_csv: ou.upload_batch_require_both_csv !== false,
         checkout_batch_source:
           String(ou.checkout_batch_source || "manual").toLowerCase() === "auto" ? "auto" : "manual",
+        manual_checkout_accept_completed_without_later_rack:
+          ou.manual_checkout_accept_completed_without_later_rack === true,
       });
     } catch {
       localStorage.removeItem("ta_token");

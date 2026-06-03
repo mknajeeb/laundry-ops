@@ -9,6 +9,11 @@ from backend.checkout_batch_source import (
     get_checkout_batch_source,
     normalize_checkout_batch_source,
 )
+from backend.manual_checkout_settings import (
+    KEY_MANUAL_CHECKOUT_ACCEPT_COMPLETED,
+    get_manual_checkout_accept_completed_without_later_rack,
+    set_manual_checkout_accept_completed_without_later_rack,
+)
 
 from backend.ta_helpers import table_exists
 
@@ -69,6 +74,9 @@ def get_ops_ui_flags(cursor, organization_id: int) -> dict[str, bool | str]:
             _get_setting(cursor, organization_id, KEY_UPLOAD_BOTH_CSV), True
         ),
         "checkout_batch_source": get_checkout_batch_source(cursor, organization_id),
+        "manual_checkout_accept_completed_without_later_rack": get_manual_checkout_accept_completed_without_later_rack(
+            cursor, organization_id
+        ),
     }
 
 
@@ -105,4 +113,10 @@ def put_ops_ui_flags(cursor, organization_id: int, payload: Mapping[str, Any]) -
     if "checkout_batch_source" in payload:
         source = normalize_checkout_batch_source(payload.get("checkout_batch_source"))
         _set_setting(cursor, organization_id, KEY_CHECKOUT_BATCH_SOURCE, source)
+    if "manual_checkout_accept_completed_without_later_rack" in payload:
+        set_manual_checkout_accept_completed_without_later_rack(
+            cursor,
+            organization_id,
+            _truthy(payload.get("manual_checkout_accept_completed_without_later_rack"), False),
+        )
     return get_ops_ui_flags(cursor, organization_id)

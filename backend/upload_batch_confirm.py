@@ -41,9 +41,11 @@ def confirm_upload_batch_core(
         where_not_sent_or_forced_sql,
     )
     from backend.rinse_bag_completion import normalize_bag_id
+    from backend.checkout_batch_source import upload_batch_is_auto_scrape
     from backend.rinse_bag_upload import (
         find_active_staging_by_ticket_id,
         find_active_staging_for_portal_upload,
+        find_staging_by_ticket_id,
         update_staging_from_upload_row,
     )
     from backend.rinse_upload_finalize import finalize_rinse_after_batch_confirm
@@ -330,15 +332,45 @@ def confirm_upload_batch_core(
         )
         if identity_key in existing_identity_before_insert:
             if tid and cap.get("has_ticket_id"):
-                by_tid = find_active_staging_by_ticket_id(
-                    cursor,
-                    tenant_oid,
-                    tid,
-                    active_where,
-                    has_staging_org=has_staging_org,
-                    has_ticket_id_col=True,
-                )
-                if not by_tid:
+                if is_manual_batch:
+                    by_tid = find_staging_by_ticket_id(
+                        cursor,
+                        tenant_oid,
+                        tid,
+                        has_staging_org=has_staging_org,
+                        has_ticket_id_col=True,
+                    )
+                else:
+                    by_tid = find_active_staging_by_ticket_id(
+                        cursor,
+                        tenant_oid,
+                        tid,
+                        active_where,
+                        has_staging_org=has_staging_org,
+                        has_ticket_id_col=True,
+                    )
+                if by_tid:
+                    update_staging_from_upload_row(
+                        cursor,
+                        int(by_tid["id"]),
+                        row,
+                        batch["batch_date"],
+                        cap,
+                        organization_id=tenant_oid,
+                        has_staging_org=has_staging_org,
+                    )
+                    staging_updated += 1
+                    cursor.execute(
+                        """
+                        UPDATE rinse_bag_registry
+                        SET last_staging_order_id = %s, updated_at = NOW()
+                        WHERE organization_id = %s AND bag_id = %s
+                        """,
+                        (int(by_tid["id"]), tenant_oid, tid),
+                    )
+                    uploaded_identity_keys.add(identity_key)
+                    continue
+                if not is_manual_batch:
                     by_portal = find_active_staging_for_portal_upload(
                         cursor,
                         tenant_oid,
@@ -366,7 +398,10 @@ def confirm_upload_batch_core(
                             """,
                             (int(by_portal["id"]), tenant_oid, tid),
                         )
-            continue
+                        uploaded_identity_keys.add(identity_key)
+                    continue
+            if not (is_manual_batch and tid):
+                continue
 
         cols = [
             "date_clean",

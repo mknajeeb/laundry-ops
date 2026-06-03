@@ -29,6 +29,7 @@ except ImportError:
     pass
 
 from backend.db import get_db  # noqa: E402
+import json  # noqa: E402
 from backend.repair_latest_upload_batch import (  # noqa: E402
     repair_latest_upload_batch,
     repair_summary_json,
@@ -63,6 +64,11 @@ def main() -> int:
         action="store_true",
         help="Re-merge upload_batch_scan_events even if persistent events exist",
     )
+    parser.add_argument(
+        "--reclassify-manual-rows",
+        action="store_true",
+        help="Reclassify upload_batch_rows using manual checkout eligibility rules",
+    )
     args = parser.parse_args()
 
     if not args.org and not args.tenant:
@@ -71,7 +77,7 @@ def main() -> int:
         args.latest = True
 
     conn = get_db()
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor(dictionary=True, buffered=True)
     try:
         org_id, org_meta = resolve_organization_id(
             cursor, organization_id=args.org, tenant=args.tenant
@@ -81,15 +87,54 @@ def main() -> int:
             f"name={org_meta.get('display_name')!r}"
         )
 
-        summary = repair_latest_upload_batch(
-            cursor,
-            organization_id=org_id,
-            tenant=None,
-            upload_batch_id=args.batch_id,
-            dry_run=args.dry_run,
-            force_scan_merge=args.force_scan_merge,
-        )
-        print(repair_summary_json(summary))
+        if args.reclassify_manual_rows:
+            from backend.manual_checkout_eligibility import reclassify_manual_batch_upload_rows
+
+            batch_id = args.batch_id
+            if batch_id is None:
+                from backend.repair_latest_upload_batch import find_latest_upload_batch, _upload_batches_pk
+
+                batch = find_latest_upload_batch(cursor, org_id)
+                if not batch:
+                    raise ValueError(f"No upload_batches rows for organization_id={org_id}")
+                batch_id = int(batch[_upload_batches_pk(cursor)])
+            summary = reclassify_manual_batch_upload_rows(
+                cursor, org_id, int(batch_id), dry_run=args.dry_run
+            )
+            summary["organization_id"] = org_id
+            summary["organization"] = org_meta
+            summary["batch_id"] = batch_id
+            print(json.dumps(summary, indent=2, default=str))
+        elif args.staging_only:
+            from backend.checkout_batch_scope import reapply_manual_batch_staging
+
+            batch_id = args.batch_id
+            if batch_id is None:
+                from backend.repair_latest_upload_batch import find_latest_upload_batch
+
+                batch = find_latest_upload_batch(cursor, org_id)
+                if not batch:
+                    raise ValueError(f"No upload_batches rows for organization_id={org_id}")
+                from backend.repair_latest_upload_batch import _upload_batches_pk
+
+                batch_id = int(batch[_upload_batches_pk(cursor)])
+            summary = reapply_manual_batch_staging(
+                cursor, org_id, int(batch_id), dry_run=args.dry_run
+            )
+            summary["organization_id"] = org_id
+            summary["organization"] = org_meta
+            summary["batch_id"] = batch_id
+            print(json.dumps(summary, indent=2, default=str))
+        else:
+            summary = repair_latest_upload_batch(
+                cursor,
+                organization_id=org_id,
+                tenant=None,
+                upload_batch_id=args.batch_id,
+                dry_run=args.dry_run,
+                force_scan_merge=args.force_scan_merge,
+            )
+            print(repair_summary_json(summary))
 
         if args.dry_run:
             print("\n[dry-run] No database changes committed.")

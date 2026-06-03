@@ -1891,11 +1891,22 @@ def get_orders():
         processing_sql = orders_processing_select_sql(cap)
         active_where = where_active_at_washpro_sql(cap)
         include_all = as_bool(request.args.get("include_all"), default=False)
+        checkout_batch = as_bool(request.args.get("checkout_batch"), default=False)
         where_clause = "1 = 1" if include_all else active_where
         exec_params = []
         if table_has_column(cursor, "orders_staging", "organization_id"):
             where_clause = f"({where_clause}) AND o.organization_id = %s"
             exec_params.append(oid)
+        if checkout_batch and cap.get("has_ticket_id"):
+            from backend.checkout_batch_scope import checkout_batch_ticket_filter
+
+            batch_tickets = checkout_batch_ticket_filter(cursor, oid)
+            if batch_tickets:
+                placeholders = ", ".join(["%s"] * len(batch_tickets))
+                where_clause = f"({where_clause}) AND o.ticket_id IN ({placeholders})"
+                exec_params.extend(sorted(batch_tickets))
+            elif not include_all:
+                where_clause = f"({where_clause}) AND 1 = 0"
         has_submissions = table_exists(cursor, "order_process_submissions")
         submission_select = ""
         submission_join = ""

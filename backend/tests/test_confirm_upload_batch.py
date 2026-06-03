@@ -92,6 +92,18 @@ class TestConfirmUploadBatch(unittest.TestCase):
             patch("backend.app.orders_logistics_select_sql", return_value="NULL AS logistics_status"),
             patch("backend.app.orders_processing_select_sql", return_value="NULL AS processing_status"),
             patch(
+                "backend.checkout_batch_source.upload_batch_is_auto_scrape",
+                return_value=False,
+            ),
+            patch(
+                "backend.rinse_bag_upload.find_staging_by_ticket_id",
+                return_value=staging_hit,
+            ),
+            patch(
+                "backend.rinse_bag_upload.find_active_staging_for_portal_upload",
+                return_value=staging_hit,
+            ),
+            patch(
                 "backend.rinse_bag_upload.find_active_staging_by_ticket_id",
                 return_value=staging_hit,
             ),

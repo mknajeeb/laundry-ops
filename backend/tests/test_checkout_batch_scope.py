@@ -1,0 +1,81 @@
+"""Tests for checkout batch scoping and manual batch staging reapply."""
+
+from __future__ import annotations
+
+import unittest
+from datetime import date
+from unittest.mock import MagicMock, patch
+
+from backend.checkout_batch_scope import (
+    batch_accepted_ticket_ids,
+    reapply_manual_batch_staging,
+)
+
+
+class TestCheckoutBatchScope(unittest.TestCase):
+    def test_batch_accepted_ticket_ids_normalizes(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {"ticket_id": " abc123 "},
+            {"ticket_id": "WXYZ"},
+            {"ticket_id": ""},
+        ]
+        with patch(
+            "backend.checkout_batch_scope._row_batch_col", return_value="upload_batch_id"
+        ), patch("backend.checkout_batch_scope.table_exists", return_value=True):
+            ids = batch_accepted_ticket_ids(cursor, 551)
+        self.assertEqual(ids, {"ABC123", "WXYZ"})
+
+    def test_reapply_skips_auto_scrape_batch(self):
+        cursor = MagicMock()
+        with patch(
+            "backend.checkout_batch_scope.upload_batch_is_auto_scrape", return_value=True
+        ):
+            out = reapply_manual_batch_staging(cursor, 1, 581, dry_run=True)
+        self.assertEqual(out["updated"], 0)
+        self.assertEqual(out["inserted"], 0)
+
+    def test_reapply_updates_sent_staging(self):
+        cursor = MagicMock()
+        row = {
+            "date_clean": date(2026, 6, 2),
+            "name_clean": "Nina Holloway",
+            "weight_num": 0,
+            "service_type": "WF",
+            "rush_type": "RUSH",
+            "ticket_id": "05X9GTM0CN",
+        }
+        cursor.fetchone.return_value = {"batch_id": 551, "batch_date": date(2026, 6, 2)}
+        cursor.fetchall.side_effect = [
+            [row],
+        ]
+        cursor.lastrowid = 9001
+
+        cap = {
+            "has_ticket_id": True,
+            "has_logistics": True,
+            "has_processing": True,
+            "has_status": True,
+        }
+        existing = {"id": 42}
+
+        with patch(
+            "backend.checkout_batch_scope.upload_batch_is_auto_scrape", return_value=False
+        ), patch("backend.checkout_batch_scope._row_batch_col", return_value="upload_batch_id"), patch(
+            "backend.checkout_batch_scope.table_exists", return_value=True
+        ), patch(
+            "backend.checkout_batch_scope.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_bag_upload.find_staging_by_ticket_id", return_value=existing
+        ), patch(
+            "backend.rinse_bag_upload.update_staging_from_upload_row"
+        ) as mock_update:
+            out = reapply_manual_batch_staging(cursor, 1, 551, dry_run=False)
+
+        self.assertEqual(out["updated"], 1)
+        self.assertEqual(out["inserted"], 0)
+        mock_update.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

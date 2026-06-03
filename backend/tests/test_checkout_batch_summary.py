@@ -158,6 +158,7 @@ class TestCheckoutBatchSummary:
         assert out["rush"]["remaining"] == 40
         assert out["rush"]["checked_out"] == 9
         assert out["rush"]["excluded_already_completed"] == 1
+        assert out["rush"]["excluded_rack_scan_after_clean"] == 0
         assert out["rush"]["excluded_not_staged"] == 0
         assert len(out["missing_rush_rows"]) == 1
 
@@ -268,3 +269,42 @@ class TestCheckoutBatchSummary:
         assert out["rush"]["checked_out"] == 0
         assert out["rush"]["excluded_not_staged"] == 1
         assert len(out["missing_rush_rows"]) == 1
+
+    def test_manual_rack_scan_after_clean_counts_excluded_not_already_completed(self):
+        from unittest.mock import patch
+
+        batch_rows = [
+            {
+                "ticket_id": "MOVED1",
+                "date_clean": date(2026, 6, 2),
+                "name_clean": "Moved Bag",
+                "service_type": "WF",
+                "rush_type": "RUSH",
+                "row_status": "REJECTED_DUPLICATE",
+                "reason": "RACK_SCAN_AFTER_CLEAN",
+                "weight_num": None,
+            }
+        ]
+
+        def _eff(_cursor, _org, row, **kwargs):
+            return ("REJECTED_DUPLICATE", "RACK_SCAN_AFTER_CLEAN")
+
+        cursor, mod, orig_te, orig_thc, auto_patch = _mock_summary_cursor(
+            batch_rows=batch_rows, active_staging=[]
+        )
+        with patch(
+            "backend.manual_checkout_settings.washpro_manual_checkout_override_active",
+            return_value=True,
+        ), patch(
+            "backend.manual_checkout_eligibility.effective_washpro_manual_checkout_row_status",
+            side_effect=_eff,
+        ):
+            try:
+                out = build_checkout_batch_summary(cursor, 1, source="manual")
+            finally:
+                auto_patch.stop()
+                mod.table_exists = orig_te
+                mod.table_has_column = orig_thc
+
+        assert out["rush"]["excluded_rack_scan_after_clean"] == 1
+        assert out["rush"]["excluded_already_completed"] == 0

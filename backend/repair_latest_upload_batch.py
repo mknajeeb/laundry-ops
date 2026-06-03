@@ -19,7 +19,11 @@ from backend.rinse_bag_completion import (
     normalize_bag_id,
 )
 from backend.rinse_bag_registry import merge_scan_events_from_upload, recompute_completion_for_bags
-from backend.rinse_bag_upload import find_active_staging_by_ticket_id, update_staging_from_upload_row
+from backend.rinse_bag_upload import (
+    find_active_staging_by_ticket_id,
+    find_staging_by_ticket_id,
+    update_staging_from_upload_row,
+)
 from backend.rinse_folding_registry import (
     folding_recompute_summary_for_response,
     recompute_folding_after_upload,
@@ -282,8 +286,15 @@ def _fix_stale_already_completed_rows(
     active_where: str,
     has_staging_org: bool,
     dry_run: bool,
+    upload_batch_id: int | None = None,
 ) -> list[dict[str, Any]]:
     """Return list of row change records for ALREADY_COMPLETED → ACCEPTED repairs."""
+    from backend.checkout_batch_source import upload_batch_is_auto_scrape
+
+    if upload_batch_id is not None and not upload_batch_is_auto_scrape(
+        cursor, int(upload_batch_id), int(organization_id)
+    ):
+        return []
     changes: list[dict[str, Any]] = []
     row_pk = _upload_batch_rows_pk(cursor)
 
@@ -447,29 +458,24 @@ def _apply_staging_for_accepted_rows(
         }
 
         if tid and cap.get("has_ticket_id"):
-            existing_staging = find_active_staging_by_ticket_id(
+            existing_staging = find_staging_by_ticket_id(
                 cursor,
                 organization_id,
                 tid,
-                active_where,
                 has_staging_org=has_staging_org,
                 has_ticket_id_col=True,
             )
             if existing_staging:
-                would_update = staging_row_values_differ(
-                    existing_staging, portal, batch_date
-                )
                 if not dry_run:
-                    if would_update:
-                        update_staging_from_upload_row(
-                            cursor,
-                            int(existing_staging["id"]),
-                            portal,
-                            batch_date,
-                            cap,
-                            organization_id=organization_id,
-                            has_staging_org=has_staging_org,
-                        )
+                    update_staging_from_upload_row(
+                        cursor,
+                        int(existing_staging["id"]),
+                        portal,
+                        batch_date,
+                        cap,
+                        organization_id=organization_id,
+                        has_staging_org=has_staging_org,
+                    )
                     cursor.execute(
                         """
                         UPDATE rinse_bag_registry
@@ -478,8 +484,7 @@ def _apply_staging_for_accepted_rows(
                         """,
                         (int(existing_staging["id"]), int(organization_id), tid),
                     )
-                if would_update:
-                    updated += 1
+                updated += 1
                 continue
 
         identity_key = _build_identity_key(
@@ -667,6 +672,7 @@ def repair_latest_upload_batch(
         active_where=active_where,
         has_staging_org=has_staging_org,
         dry_run=dry_run,
+        upload_batch_id=batch_id,
     )
     summary["row_status_changes"] = row_changes
     summary["rows_changed_from_ALREADY_COMPLETED_to_ACCEPTED"] = len(row_changes)

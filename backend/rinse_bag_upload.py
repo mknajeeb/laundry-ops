@@ -175,6 +175,39 @@ def find_active_staging_by_ticket_id(
     return cursor.fetchone()
 
 
+def find_staging_by_ticket_id(
+    cursor,
+    organization_id: int,
+    ticket_id: str,
+    *,
+    has_staging_org: bool,
+    has_ticket_id_col: bool,
+) -> dict | None:
+    """Latest staging row for this Bag ID (any logistics/status — includes SENT)."""
+    if not has_ticket_id_col:
+        return None
+    bid = normalize_bag_id(ticket_id)
+    if not bid:
+        return None
+    from backend.ta_helpers import table_has_column
+
+    cols = (
+        "id, date_clean, name_clean, weight_num, service_type, rush_type, batch_date, ticket_id"
+    )
+    if table_has_column(cursor, "orders_staging", "logistics_status"):
+        cols += ", logistics_status"
+    if table_has_column(cursor, "orders_staging", "status"):
+        cols += ", status"
+    sql = f"SELECT {cols} FROM orders_staging WHERE ticket_id = %s"
+    args: list[Any] = [bid]
+    if has_staging_org:
+        sql += " AND organization_id = %s"
+        args.append(int(organization_id))
+    sql += " ORDER BY id DESC LIMIT 1"
+    cursor.execute(sql, tuple(args))
+    return cursor.fetchone()
+
+
 def _normalize_measure_by_service(weight_num: Any, service_type: Any) -> str:
     service = str(service_type or "").strip().upper()
     if weight_num is None:

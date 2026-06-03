@@ -327,6 +327,7 @@ export const getOrders = (options = {}) =>
   axios.get(`${API_BASE}/orders`, {
     params: {
       ...(options.include_all ? { include_all: 1 } : {}),
+      ...(options.checkout_batch ? { checkout_batch: 1 } : {}),
     },
   });
 

@@ -339,6 +339,9 @@ def insert_upload_batch_rows_from_orders_df(
     final_identity_keys: set,
     existing_identity_reasons: dict,
     pre_existing_completed_bag_ids: set[str] | None = None,
+    *,
+    is_auto_scrape: bool = False,
+    pending_events_df: pd.DataFrame | None = None,
 ) -> dict[str, int]:
     from backend.app import build_identity_key, parse_date_value, table_has_column
     from backend.rinse_bag_completion import classify_portal_upload_row, normalize_bag_id
@@ -419,13 +422,17 @@ def insert_upload_batch_rows_from_orders_df(
                         },
                     )
                     was_completed_before = ticket_id in pre_existing_completed_bag_ids
-                    # Draft must not mutate registry; reject only if already COMPLETED before upload.
-                    reject_as_already_completed = was_completed_before
-                    row_status, reason = classify_portal_upload_row(
+                    from backend.manual_checkout_eligibility import classify_upload_row_for_checkout
+
+                    row_status, reason = classify_upload_row_for_checkout(
+                        cursor,
+                        tenant_oid,
                         ticket_id=ticket_id,
-                        was_completed_before_upload=reject_as_already_completed,
                         has_active_staging=staging_hit is not None,
                         row_date_before_batch=row_date < batch_date,
+                        was_completed_before_upload=was_completed_before,
+                        pending_events_df=pending_events_df,
+                        is_auto_scrape=is_auto_scrape,
                     )
                     if row_status == "REJECTED_DUPLICATE":
                         rejected += 1
@@ -592,6 +599,7 @@ def commit_draft_upload_batch_from_orders_df(
         final_keys,
         existing_reasons,
         pre_existing_completed_bag_ids=pre_existing_completed,
+        is_auto_scrape=False,
     )
     finalize_upload_batch_row_counts(
         cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
@@ -651,6 +659,7 @@ def commit_rinse_combined_upload(
     meta = portal_scrape_meta
     if meta is None and portal_scrape_meta_path:
         meta = load_portal_scrape_meta_file(portal_scrape_meta_path)
+    is_auto_scrape = meta not in (None, "", "null", "NULL")
     portal_meta_payload = persist_portal_scrape_meta_on_batch(
         cursor, upload_batch_id, tenant_oid, meta
     )
@@ -670,6 +679,8 @@ def commit_rinse_combined_upload(
         final_keys,
         existing_reasons,
         pre_existing_completed_bag_ids=pre_existing_completed,
+        is_auto_scrape=is_auto_scrape,
+        pending_events_df=events_df,
     )
 
     batch_events_payload = commit_scan_events_for_batch(
