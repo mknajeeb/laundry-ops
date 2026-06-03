@@ -101,7 +101,7 @@ def checkout_batch_ticket_filter(cursor, organization_id: int) -> set[str] | Non
     return ids if ids else None
 
 
-def reapply_manual_batch_staging(
+def reapply_checkout_batch_staging(
     cursor,
     organization_id: int,
     batch_id: int,
@@ -109,17 +109,16 @@ def reapply_manual_batch_staging(
     dry_run: bool = False,
 ) -> dict[str, int]:
     """
-    Reconcile ACCEPTED upload rows into orders_staging for a manual batch.
+    Reconcile ACCEPTED upload rows into orders_staging for a checkout batch.
 
-    Reactivates SENT rows and inserts missing staging for accepted ticket_ids.
+    Applies to manual portal uploads and auto at_vendor scrapes. Reactivates SENT rows
+    and inserts missing staging for accepted ticket_ids.
     """
     from backend.rinse_bag_upload import find_staging_by_ticket_id, update_staging_from_upload_row
     from backend.ta_helpers import table_exists
 
     org = int(organization_id)
     bid = int(batch_id)
-    if upload_batch_is_auto_scrape(cursor, bid, org):
-        return {"updated": 0, "inserted": 0, "skipped": 0, "dry_run": dry_run}
 
     row_col = _row_batch_col(cursor)
     if not row_col or not table_exists(cursor, "upload_batch_rows"):
@@ -262,3 +261,6 @@ def reapply_manual_batch_staging(
         )
 
     return {"updated": updated, "inserted": inserted, "skipped": skipped, "dry_run": dry_run}
+
+
+reapply_manual_batch_staging = reapply_checkout_batch_staging

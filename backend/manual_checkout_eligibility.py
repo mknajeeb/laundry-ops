@@ -1,7 +1,8 @@
 """
-Washpro manual checkout eligibility (checkout queue only).
+Checkout queue eligibility only — does not alter lifecycle, folding, or performance.
 
-Does not alter registry completion, lifecycle, folding, or performance scoring.
+Core rule: completed ≠ checked out. Bags still at vendor (portal/scrape) belong in Checkout
+until sent-out evidence exists.
 """
 
 from __future__ import annotations
@@ -11,11 +12,10 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 
 from backend.manual_checkout_settings import (
-    get_manual_checkout_accept_completed_without_later_rack,
-    washpro_manual_checkout_override_active,
+    checkout_at_vendor_override_active,
+    get_checkout_include_completed_if_at_vendor,
 )
 from backend.rinse_bag_completion import (
-    REASON_ALREADY_COMPLETED,
     REASON_OK,
     REASON_RACK_SCAN_AFTER_CLEAN,
     REASON_UPDATED_EXISTING_BAG,
@@ -32,16 +32,9 @@ REASON_RACK_SCAN_AFTER_CLEAN_LABEL = "Rack scan after CLEAN"
 REASON_ALREADY_SENT_TO_RINSE = "ALREADY_SENT_TO_RINSE"
 REASON_ALREADY_FORCE_CHECKOUT = "ALREADY_FORCE_CHECKOUT"
 
-_SENT_LOGISTICS = frozenset({"SENT_TO_RINSE", "CHECKED_OUT", "FORCE_CHECKOUT", "FORCED_CHECKOUT"})
-_SENT_STATUS = frozenset({"CHECKED_OUT", "FORCED_CHECKOUT", "SENT_TO_RINSE"})
-
 
 def bag_has_rack_scan_after_clean(events: Sequence[Mapping[str, Any]]) -> bool:
-    """
-    True when a non-CLEAN rack scan occurs after the last CLEAN rack scan.
-
-    Later CLEAN scans are allowed. Empty/None rack values are ignored.
-    """
+    """Non-CLEAN rack scan after the last CLEAN rack (Washpro manual extra exclusion)."""
     ordered = order_events_for_completion(events)
     last_clean_idx = -1
     for i, ev in enumerate(ordered):
@@ -57,7 +50,7 @@ def bag_has_rack_scan_after_clean(events: Sequence[Mapping[str, Any]]) -> bool:
 
 
 def staging_checkout_sent_reason(staging_row: Mapping[str, Any] | None) -> str | None:
-    """Checkout-scoped sent/force reason from latest staging row (not lifecycle)."""
+    """Checkout-scoped sent/force reason from latest staging row."""
     if not staging_row or not isinstance(staging_row, dict):
         return None
     logistics = str(staging_row.get("logistics_status") or "").strip().upper()
@@ -105,18 +98,37 @@ def load_bag_scan_timeline(
     return events
 
 
-def classify_washpro_manual_checkout_row(
+def _latest_staging_for_ticket(cursor, organization_id: int, ticket_id: str) -> dict | None:
+    from backend.rinse_bag_upload import find_staging_by_ticket_id
+    from backend.ta_helpers import table_has_column
+
+    org = int(organization_id)
+    has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+    has_ticket = table_has_column(cursor, "orders_staging", "ticket_id")
+    if not has_ticket:
+        return None
+    return find_staging_by_ticket_id(
+        cursor, org, ticket_id, has_staging_org=has_staging_org, has_ticket_id_col=True
+    )
+
+
+def classify_at_vendor_checkout_row(
     *,
     ticket_id: str | None,
     has_active_staging: bool,
     row_date_before_batch: bool,
-    has_rack_scan_after_clean: bool,
     staging_sent_reason: str | None = None,
+    has_rack_scan_after_clean: bool = False,
+    apply_rack_after_clean_rule: bool = False,
 ) -> tuple[str, str]:
-    """Washpro manual checkout upload row_status + reason (checkout scope only)."""
+    """
+    Checkout upload row when bag is still at vendor (manual portal or auto scrape).
+
+    apply_rack_after_clean_rule: Washpro manual only — not used for VeeWash auto scrape.
+    """
     tid = normalize_bag_id(ticket_id)
     if not tid:
-        raise ValueError("classify_washpro_manual_checkout_row requires ticket_id")
+        raise ValueError("classify_at_vendor_checkout_row requires ticket_id")
 
     if row_date_before_batch:
         return "NEEDS_ATTENTION", "OLDER_THAN_BATCH_DATE"
@@ -124,7 +136,7 @@ def classify_washpro_manual_checkout_row(
     if staging_sent_reason:
         return ROW_REJECTED, staging_sent_reason
 
-    if has_rack_scan_after_clean:
+    if apply_rack_after_clean_rule and has_rack_scan_after_clean:
         return ROW_REJECTED, REASON_RACK_SCAN_AFTER_CLEAN
 
     if has_active_staging:
@@ -133,7 +145,7 @@ def classify_washpro_manual_checkout_row(
     return ROW_ACCEPTED, REASON_OK
 
 
-def effective_washpro_manual_checkout_row_status(
+def effective_checkout_row_status(
     cursor,
     organization_id: int,
     row: Mapping[str, Any],
@@ -142,16 +154,13 @@ def effective_washpro_manual_checkout_row_status(
     has_active_staging: bool | None = None,
     is_auto_scrape: bool = False,
 ) -> tuple[str, str]:
-    """
-    Re-evaluate a portal row under Washpro manual checkout rules when override is active.
-    Otherwise returns stored row status (auto / setting off).
-    """
+    """Re-evaluate portal row for checkout batch summary when at-vendor override is active."""
     tid = normalize_bag_id(row.get("ticket_id"))
     if not tid:
         return str(row.get("row_status") or ""), str(row.get("reason") or "")
 
     org = int(organization_id)
-    if not washpro_manual_checkout_override_active(cursor, org, is_auto_scrape=is_auto_scrape):
+    if not checkout_at_vendor_override_active(cursor, org):
         return str(row.get("row_status") or ""), str(row.get("reason") or "")
 
     batch_date = row.get("batch_date")
@@ -165,28 +174,22 @@ def effective_washpro_manual_checkout_row_status(
         except Exception:
             row_date_before_batch = False
 
-    from backend.rinse_bag_upload import find_staging_by_ticket_id
-    from backend.ta_helpers import table_has_column
-
-    has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
-    has_ticket = table_has_column(cursor, "orders_staging", "ticket_id")
-    latest_staging = (
-        find_staging_by_ticket_id(
-            cursor, org, tid, has_staging_org=has_staging_org, has_ticket_id_col=has_ticket
-        )
-        if has_ticket
-        else None
-    )
+    latest_staging = _latest_staging_for_ticket(cursor, org, tid)
     sent_reason = staging_checkout_sent_reason(latest_staging)
 
-    events = load_bag_scan_timeline(cursor, org, tid, pending_events_df=pending_events_df)
-    rack_after = bag_has_rack_scan_after_clean(events)
-    return classify_washpro_manual_checkout_row(
+    rack_after = False
+    apply_rack = not is_auto_scrape
+    if apply_rack:
+        events = load_bag_scan_timeline(cursor, org, tid, pending_events_df=pending_events_df)
+        rack_after = bag_has_rack_scan_after_clean(events)
+
+    return classify_at_vendor_checkout_row(
         ticket_id=tid,
         has_active_staging=bool(has_active_staging),
         row_date_before_batch=row_date_before_batch,
-        has_rack_scan_after_clean=rack_after,
         staging_sent_reason=sent_reason,
+        has_rack_scan_after_clean=rack_after,
+        apply_rack_after_clean_rule=apply_rack,
     )
 
 
@@ -204,10 +207,12 @@ def classify_upload_row_for_checkout(
     """
     Upload row classification for checkout staging only.
 
-    Uses Washpro override when active; otherwise standard portal rules (ALREADY_COMPLETED).
+    When checkout_include_completed_if_at_vendor is on:
+    - Auto scrape: row in at_vendor scrape → eligible even if registry COMPLETED
+    - Manual: row in portal upload → eligible unless sent or rack-after-CLEAN
     """
     org = int(organization_id)
-    if not washpro_manual_checkout_override_active(cursor, org, is_auto_scrape=is_auto_scrape):
+    if not checkout_at_vendor_override_active(cursor, org):
         return classify_portal_upload_row(
             ticket_id=ticket_id,
             was_completed_before_upload=was_completed_before_upload,
@@ -215,48 +220,47 @@ def classify_upload_row_for_checkout(
             row_date_before_batch=row_date_before_batch,
         )
 
-    from backend.rinse_bag_upload import find_staging_by_ticket_id
-    from backend.ta_helpers import table_has_column
+    latest = _latest_staging_for_ticket(cursor, org, ticket_id)
+    sent_reason = staging_checkout_sent_reason(latest)
 
-    has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
-    has_ticket = table_has_column(cursor, "orders_staging", "ticket_id")
-    latest = (
-        find_staging_by_ticket_id(
-            cursor, org, ticket_id, has_staging_org=has_staging_org, has_ticket_id_col=has_ticket
-        )
-        if has_ticket
-        else None
-    )
-    timeline = load_bag_scan_timeline(cursor, org, ticket_id, pending_events_df=pending_events_df)
-    return classify_washpro_manual_checkout_row(
+    rack_after = False
+    apply_rack = not is_auto_scrape
+    if apply_rack:
+        timeline = load_bag_scan_timeline(cursor, org, ticket_id, pending_events_df=pending_events_df)
+        rack_after = bag_has_rack_scan_after_clean(timeline)
+
+    return classify_at_vendor_checkout_row(
         ticket_id=ticket_id,
         has_active_staging=has_active_staging,
         row_date_before_batch=row_date_before_batch,
-        has_rack_scan_after_clean=bag_has_rack_scan_after_clean(timeline),
-        staging_sent_reason=staging_checkout_sent_reason(latest),
+        staging_sent_reason=sent_reason,
+        has_rack_scan_after_clean=rack_after,
+        apply_rack_after_clean_rule=apply_rack,
     )
 
 
-# Back-compat aliases used by repair/summary paths
-classify_manual_portal_upload_row = classify_washpro_manual_checkout_row
-effective_manual_upload_row_status = effective_washpro_manual_checkout_row_status
+# Back-compat aliases
+classify_washpro_manual_checkout_row = classify_at_vendor_checkout_row
+effective_washpro_manual_checkout_row_status = effective_checkout_row_status
+classify_manual_portal_upload_row = classify_at_vendor_checkout_row
+effective_manual_upload_row_status = effective_checkout_row_status
 
 
-def reclassify_manual_batch_upload_rows(
+def reclassify_checkout_batch_upload_rows(
     cursor,
     organization_id: int,
     batch_id: int,
     *,
     dry_run: bool = False,
 ) -> dict[str, int]:
-    """Update upload_batch_rows under Washpro manual checkout override when active."""
+    """Update upload_batch_rows to at-vendor checkout rules (manual + auto scrape)."""
     from backend.checkout_batch_source import upload_batch_is_auto_scrape
     from backend.ta_helpers import table_exists, table_has_column
 
     org = int(organization_id)
     bid = int(batch_id)
     is_auto = upload_batch_is_auto_scrape(cursor, bid, org)
-    if is_auto or not get_manual_checkout_accept_completed_without_later_rack(cursor, org):
+    if not get_checkout_include_completed_if_at_vendor(cursor, org):
         return {"updated": 0, "accepted": 0, "rejected": 0, "dry_run": dry_run}
 
     row_col = None
@@ -305,12 +309,12 @@ def reclassify_manual_batch_upload_rows(
         row_id = row.get(row_pk) or row.get("id") or row.get("row_id")
         if row_id is None:
             continue
-        eff_status, eff_reason = effective_washpro_manual_checkout_row_status(
+        eff_status, eff_reason = effective_checkout_row_status(
             cursor,
             org,
             {**row, "batch_date": batch_date},
             has_active_staging=False,
-            is_auto_scrape=False,
+            is_auto_scrape=is_auto,
         )
         old_status = str(row.get("row_status") or "")
         old_reason = str(row.get("reason") or "")
@@ -336,4 +340,8 @@ def reclassify_manual_batch_upload_rows(
         "accepted": accepted,
         "rejected": rejected,
         "dry_run": dry_run,
+        "is_auto_scrape": is_auto,
     }
+
+
+reclassify_manual_batch_upload_rows = reclassify_checkout_batch_upload_rows

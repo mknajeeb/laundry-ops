@@ -697,19 +697,19 @@ function MaintenancePage() {
           sx={{ display: "block", mt: 1.5 }}
           control={
             <Switch
-              checked={!!opsUi?.manual_checkout_accept_completed_without_later_rack}
+              checked={!!opsUi?.checkout_include_completed_if_at_vendor}
               disabled={saving}
               onChange={async (e) => {
                 const v = e.target.checked;
                 try {
                   setSaving(true);
-                  await putOpsUiFlags({ manual_checkout_accept_completed_without_later_rack: v });
+                  await putOpsUiFlags({ checkout_include_completed_if_at_vendor: v });
                   await refreshMe();
                   setMessage({
                     type: "success",
                     text: v
-                      ? "Manual checkout will accept completed/CLEAN bags unless moved after CLEAN rack."
-                      : "Manual checkout uses standard ALREADY_COMPLETED rejection for completed bags.",
+                      ? "Checkout will include completed/CLEAN bags still shown at vendor."
+                      : "Checkout uses standard ALREADY_COMPLETED rejection for completed bags.",
                   });
                 } catch (err) {
                   console.error(err);
@@ -717,7 +717,7 @@ function MaintenancePage() {
                     type: "error",
                     text:
                       err?.response?.data?.error ||
-                      "Could not save manual checkout setting (admin only).",
+                      "Could not save checkout setting (admin only).",
                   });
                 } finally {
                   setSaving(false);
@@ -725,12 +725,12 @@ function MaintenancePage() {
               }}
             />
           }
-          label="Manual Checkout: Accept completed bags unless moved after CLEAN"
+          label="Checkout: Include completed bags if still at vendor"
         />
         <Typography variant="body2" color="text.secondary" sx={{ ml: 4, mt: -0.5, mb: 1 }}>
-          For manual uploads only. Allows completed/CLEAN bags to re-enter Checkout if they have
-          not moved to another rack after CLEAN. Used for Washpro manual workflow. Turn off when
-          switching to auto scrape. Does not affect lifecycle, performance, or folding.
+          For Checkout only. A completed/CLEAN bag remains in Checkout if Rinse still shows it at
+          the facility. Completion does not mean it was checked out. Does not affect lifecycle,
+          performance, or folding.
         </Typography>
       </Paper>
 

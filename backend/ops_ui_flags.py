@@ -10,9 +10,8 @@ from backend.checkout_batch_source import (
     normalize_checkout_batch_source,
 )
 from backend.manual_checkout_settings import (
-    KEY_MANUAL_CHECKOUT_ACCEPT_COMPLETED,
-    get_manual_checkout_accept_completed_without_later_rack,
-    set_manual_checkout_accept_completed_without_later_rack,
+    get_checkout_include_completed_if_at_vendor,
+    set_checkout_include_completed_if_at_vendor,
 )
 
 from backend.ta_helpers import table_exists
@@ -113,10 +112,13 @@ def put_ops_ui_flags(cursor, organization_id: int, payload: Mapping[str, Any]) -
     if "checkout_batch_source" in payload:
         source = normalize_checkout_batch_source(payload.get("checkout_batch_source"))
         _set_setting(cursor, organization_id, KEY_CHECKOUT_BATCH_SOURCE, source)
-    if "manual_checkout_accept_completed_without_later_rack" in payload:
-        set_manual_checkout_accept_completed_without_later_rack(
+    checkout_include = payload.get("checkout_include_completed_if_at_vendor")
+    if checkout_include is None:
+        checkout_include = payload.get("manual_checkout_accept_completed_without_later_rack")
+    if checkout_include is not None:
+        set_checkout_include_completed_if_at_vendor(
             cursor,
             organization_id,
-            _truthy(payload.get("manual_checkout_accept_completed_without_later_rack"), False),
+            _truthy(checkout_include, False),
         )
     return get_ops_ui_flags(cursor, organization_id)

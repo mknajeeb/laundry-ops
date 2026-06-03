@@ -1,4 +1,4 @@
-"""Washpro-scoped manual checkout setting (checkout queue only — not lifecycle)."""
+"""Checkout-only tenant settings (not lifecycle / performance)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,13 @@ from typing import Any, Optional
 
 from backend.ta_helpers import table_exists
 
+KEY_CHECKOUT_INCLUDE_COMPLETED = "checkout_include_completed_if_at_vendor"
+# Legacy key (Washpro manual rack rule) — read if new key unset
 KEY_MANUAL_CHECKOUT_ACCEPT_COMPLETED = "manual_checkout_accept_completed_without_later_rack"
+
 WASHPRO_SLUG = "washpro"
+VEEWASH_SLUG = "veewash"
+_AT_VENDOR_DEFAULT_SLUGS = frozenset({WASHPRO_SLUG, VEEWASH_SLUG})
 
 
 def _truthy(raw: Any, default: bool = False) -> bool:
@@ -65,22 +70,34 @@ def is_washpro_organization(cursor, organization_id: int) -> bool:
     return organization_slug(cursor, organization_id) == WASHPRO_SLUG
 
 
-def get_manual_checkout_accept_completed_without_later_rack(
+def is_veewash_organization(cursor, organization_id: int) -> bool:
+    return organization_slug(cursor, organization_id) == VEEWASH_SLUG
+
+
+def _default_checkout_include_completed(cursor, organization_id: int) -> bool:
+    return organization_slug(cursor, organization_id) in _AT_VENDOR_DEFAULT_SLUGS
+
+
+def get_checkout_include_completed_if_at_vendor(
     cursor,
     organization_id: int,
 ) -> bool:
     """
-    Tenant setting: allow completed/CLEAN bags into manual checkout unless rack moved after CLEAN.
+    Checkout-only: include completed/CLEAN bags if still at vendor (in upload/scrape).
 
-    Explicit DB value wins. When unset: enabled for Washpro only, disabled for all other tenants.
+    Explicit DB value wins. When unset: enabled for Washpro and VeeWash slugs.
+    Falls back to legacy manual_checkout_accept_completed_without_later_rack key.
     """
-    explicit = _get_setting(cursor, organization_id, KEY_MANUAL_CHECKOUT_ACCEPT_COMPLETED)
+    explicit = _get_setting(cursor, organization_id, KEY_CHECKOUT_INCLUDE_COMPLETED)
     if explicit is not None:
         return _truthy(explicit, False)
-    return is_washpro_organization(cursor, organization_id)
+    legacy = _get_setting(cursor, organization_id, KEY_MANUAL_CHECKOUT_ACCEPT_COMPLETED)
+    if legacy is not None:
+        return _truthy(legacy, False)
+    return _default_checkout_include_completed(cursor, organization_id)
 
 
-def set_manual_checkout_accept_completed_without_later_rack(
+def set_checkout_include_completed_if_at_vendor(
     cursor,
     organization_id: int,
     enabled: bool,
@@ -88,9 +105,22 @@ def set_manual_checkout_accept_completed_without_later_rack(
     _set_setting(
         cursor,
         int(organization_id),
-        KEY_MANUAL_CHECKOUT_ACCEPT_COMPLETED,
+        KEY_CHECKOUT_INCLUDE_COMPLETED,
         "1" if enabled else "0",
     )
+
+
+def checkout_at_vendor_override_active(
+    cursor,
+    organization_id: int,
+) -> bool:
+    """True when checkout should treat completed bags as eligible if still at vendor."""
+    return get_checkout_include_completed_if_at_vendor(cursor, int(organization_id))
+
+
+# Back-compat aliases
+get_manual_checkout_accept_completed_without_later_rack = get_checkout_include_completed_if_at_vendor
+set_manual_checkout_accept_completed_without_later_rack = set_checkout_include_completed_if_at_vendor
 
 
 def washpro_manual_checkout_override_active(
@@ -99,11 +129,7 @@ def washpro_manual_checkout_override_active(
     *,
     is_auto_scrape: bool = False,
 ) -> bool:
-    """
-    True when Washpro manual checkout override applies to upload row classification.
-
-    Never active for auto scrape or when tenant setting is off.
-    """
+    """Deprecated: use checkout_at_vendor_override_active + workflow branch in eligibility."""
     if is_auto_scrape:
-        return False
-    return get_manual_checkout_accept_completed_without_later_rack(cursor, int(organization_id))
+        return checkout_at_vendor_override_active(cursor, organization_id)
+    return checkout_at_vendor_override_active(cursor, organization_id)

@@ -235,10 +235,11 @@ def build_checkout_batch_summary(
 
     buckets = {"rush": _empty_bucket(), "non_rush": _empty_bucket()}
     missing_rush: list[dict[str, Any]] = []
-    is_manual = batch_source == "manual"
-    from backend.manual_checkout_settings import washpro_manual_checkout_override_active
+    from backend.checkout_batch_source import upload_batch_is_auto_scrape
+    from backend.manual_checkout_settings import checkout_at_vendor_override_active
 
-    checkout_override = is_manual and washpro_manual_checkout_override_active(cursor, org)
+    is_auto_batch = upload_batch_is_auto_scrape(cursor, int(batch_id), org)
+    checkout_override = checkout_at_vendor_override_active(cursor, org)
 
     for row in batch_rows:
         bucket_key = classify_batch_row(row)
@@ -251,14 +252,14 @@ def build_checkout_batch_summary(
         reason = str(row.get("reason") or "").strip().upper()
 
         if checkout_override and tid:
-            from backend.manual_checkout_eligibility import effective_washpro_manual_checkout_row_status
+            from backend.manual_checkout_eligibility import effective_checkout_row_status
 
-            eff_status, eff_reason = effective_washpro_manual_checkout_row_status(
+            eff_status, eff_reason = effective_checkout_row_status(
                 cursor,
                 org,
                 {**row, "batch_date": batch_date},
                 has_active_staging=in_queue,
-                is_auto_scrape=False,
+                is_auto_scrape=is_auto_batch,
             )
             row_status = str(eff_status or "").strip().upper()
             reason = str(eff_reason or "").strip().upper()

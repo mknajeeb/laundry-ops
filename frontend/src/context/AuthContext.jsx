@@ -19,6 +19,7 @@ const DEFAULT_OPS_UI = {
   dryer_qr_scan_enabled: true,
   upload_batch_require_both_csv: true,
   checkout_batch_source: "manual",
+  checkout_include_completed_if_at_vendor: false,
   manual_checkout_accept_completed_without_later_rack: false,
 };
 
@@ -59,7 +60,11 @@ export function AuthProvider({ children }) {
         upload_batch_require_both_csv: ou.upload_batch_require_both_csv !== false,
         checkout_batch_source:
           String(ou.checkout_batch_source || "manual").toLowerCase() === "auto" ? "auto" : "manual",
+        checkout_include_completed_if_at_vendor:
+          ou.checkout_include_completed_if_at_vendor === true ||
+          ou.manual_checkout_accept_completed_without_later_rack === true,
         manual_checkout_accept_completed_without_later_rack:
+          ou.checkout_include_completed_if_at_vendor === true ||
           ou.manual_checkout_accept_completed_without_later_rack === true,
       });
     } catch {
