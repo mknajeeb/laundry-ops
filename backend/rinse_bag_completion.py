@@ -206,6 +206,9 @@ def events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, 
                 "scan_index": r.get("scan_index")
                 if "scan_index" in r
                 else r.get("Scan Index"),
+                "purpose": r.get("purpose")
+                if "purpose" in r
+                else r.get("Purpose"),
             }
         )
     return out

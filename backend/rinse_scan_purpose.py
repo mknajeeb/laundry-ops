@@ -73,6 +73,66 @@ def is_processed_by_vendor_purpose(raw: str | None) -> bool:
     return p == "processed-by-vendor" or "processed-by-vendor" in p
 
 
+def is_complete_cleaning_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "complete-cleaning" or "complete-cleaning" in p
+
+
+def is_assembly_printed_ct_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "assembly-printed-ct" or "assembly-printed-ct" in p
+
+
+def is_load_in_purpose(raw: str | None) -> bool:
+    return normalize_scan_purpose(raw) == "load-in"
+
+
+def is_move_bag_purpose(raw: str | None) -> bool:
+    return "move-bag" in normalize_scan_purpose(raw)
+
+
+def is_inbound_cycle_reset_purpose(raw: str | None) -> bool:
+    """Inbound/at-vendor cycle markers that supersede an older CLEAN rack anchor."""
+    p = normalize_scan_purpose(raw)
+    if not p:
+        return False
+    return (
+        p in ("load-in", "received-from-vendor", "bag-picked-up")
+        or "sent-to-vendor" in p
+    )
+
+
+def is_rack_location_movement_purpose(raw: str | None) -> bool:
+    """Real rack/location movement — not cleaning/production metadata scans."""
+    p = normalize_scan_purpose(raw)
+    if not p:
+        return False
+    if p in (
+        "start-cleaning",
+        "complete-cleaning",
+        "processed-by-vendor",
+        "weight-entry",
+        "add-photos",
+        "assembly-printed-ct",
+        "cleaning",
+        "bag-picked-up",
+        "workitems-added",
+    ):
+        return False
+    if is_start_cleaning_purpose(raw) or is_processed_by_vendor_purpose(raw):
+        return False
+    if is_complete_cleaning_purpose(raw) or is_assembly_printed_ct_purpose(raw):
+        return False
+    if is_weight_entry_purpose(raw) or is_add_photos_purpose(raw):
+        return False
+    return (
+        is_load_in_purpose(raw)
+        or is_move_bag_purpose(raw)
+        or is_sent_to_vendor_purpose(raw)
+        or is_received_from_vendor_purpose(raw)
+    )
+
+
 def is_quality_control_completed_purpose(raw: str | None) -> bool:
     p = normalize_scan_purpose(raw)
     return p == "quality-control-completed" or "quality-control-completed" in p

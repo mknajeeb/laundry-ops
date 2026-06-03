@@ -26,6 +26,11 @@ from backend.rinse_bag_completion import (
     normalize_bag_id,
     order_events_for_completion,
     rack_contains_clean,
+    _progressive_timeline_sort_key,
+)
+from backend.rinse_scan_purpose import (
+    is_inbound_cycle_reset_purpose,
+    is_rack_location_movement_purpose,
 )
 
 REASON_RACK_SCAN_AFTER_CLEAN_LABEL = "Rack scan after CLEAN"
@@ -33,20 +38,56 @@ REASON_ALREADY_SENT_TO_RINSE = "ALREADY_SENT_TO_RINSE"
 REASON_ALREADY_FORCE_CHECKOUT = "ALREADY_FORCE_CHECKOUT"
 
 
-def bag_has_rack_scan_after_clean(events: Sequence[Mapping[str, Any]]) -> bool:
-    """Non-CLEAN rack scan after the last CLEAN rack (Washpro manual extra exclusion)."""
+def _is_real_non_clean_rack(rack: Any) -> bool:
+    raw = str(rack or "").strip()
+    if not raw or raw.lower() in {"none", "null", "(none)"}:
+        return False
+    return not rack_contains_clean(rack)
+
+
+def find_rack_scan_after_clean_trigger(
+    events: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """
+    Return the first post-CLEAN rack movement that triggers checkout exclusion, if any.
+
+    Uses last chronological CLEAN rack as anchor. Inbound load-in / sent-to-vendor with a
+    non-CLEAN rack after that anchor starts a new cycle and clears the stale CLEAN anchor.
+    """
     ordered = order_events_for_completion(events)
+    last_clean_ev: dict[str, Any] | None = None
     last_clean_idx = -1
     for i, ev in enumerate(ordered):
         if rack_contains_clean(ev.get("rack")):
+            last_clean_ev = ev
             last_clean_idx = i
-    if last_clean_idx < 0:
-        return False
+
+    if last_clean_ev is None or last_clean_idx < 0:
+        return None
+
+    clean_key = _progressive_timeline_sort_key(last_clean_ev)
+
     for ev in ordered[last_clean_idx + 1 :]:
-        rack = ev.get("rack")
-        if rack and str(rack).strip() and not rack_contains_clean(rack):
-            return True
-    return False
+        if _progressive_timeline_sort_key(ev) <= clean_key:
+            continue
+        if is_inbound_cycle_reset_purpose(ev.get("purpose")) and _is_real_non_clean_rack(
+            ev.get("rack")
+        ):
+            return None
+
+    for ev in ordered[last_clean_idx + 1 :]:
+        if _progressive_timeline_sort_key(ev) <= clean_key:
+            continue
+        if is_rack_location_movement_purpose(ev.get("purpose")) and _is_real_non_clean_rack(
+            ev.get("rack")
+        ):
+            return dict(ev)
+    return None
+
+
+def bag_has_rack_scan_after_clean(events: Sequence[Mapping[str, Any]]) -> bool:
+    """Non-CLEAN rack movement strictly after the last valid CLEAN rack (Washpro manual only)."""
+    return find_rack_scan_after_clean_trigger(events) is not None
 
 
 def staging_checkout_sent_reason(staging_row: Mapping[str, Any] | None) -> str | None:
@@ -79,6 +120,7 @@ def events_for_bag_from_events_df(events_df: pd.DataFrame | None, bag_id: str) -
                 "user_name": row.get("User"),
                 "scanned_at_parsed": row.get("scanned_at_parsed"),
                 "scan_index": row.get("Scan Index"),
+                "purpose": row.get("Purpose"),
             }
         )
     return events_from_records(records)

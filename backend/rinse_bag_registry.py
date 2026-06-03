@@ -300,7 +300,7 @@ def _scan_events_timeline_list_sql(*, full_row: bool, limit: int | None = None) 
             source_upload_batch_id, created_at, updated_at, last_seen_at
         """
     else:
-        cols = "id, rack, user_name, scanned_at_parsed, scan_index"
+        cols = "id, rack, user_name, scanned_at_parsed, scan_index, purpose"
     lim = f" LIMIT {int(limit)}" if limit is not None else ""
     return f"""
         SELECT {cols}
@@ -535,6 +535,7 @@ def fetch_persistent_scan_events_for_bag(
                     "user_name": r[2],
                     "scanned_at_parsed": r[3],
                     "scan_index": r[4],
+                    "purpose": r[5] if len(r) > 5 else None,
                 }
             )
     return out

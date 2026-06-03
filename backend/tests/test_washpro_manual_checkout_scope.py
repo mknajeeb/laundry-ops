@@ -24,12 +24,13 @@ from backend.manual_checkout_settings import (
 from backend.rinse_bag_completion import REASON_ALREADY_COMPLETED, REASON_OK
 
 
-def _ev(rack, ts=None, scan_index=0):
+def _ev(rack, ts=None, scan_index=0, purpose=None):
     return {
         "rack": rack,
         "scanned_at_parsed": ts or datetime(2026, 6, 1, 10, 0),
         "scan_index": scan_index,
         "id": scan_index,
+        "purpose": purpose,
     }
 
 
@@ -91,7 +92,10 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         self.assertEqual(reason, REASON_OK)
 
     def test_clean_then_wf_rejected_when_rack_rule_applied(self):
-        events = [_ev("VeeWash Clean"), _ev("026-NY-WF")]
+        events = [
+            _ev("Washpro Clean", datetime(2026, 6, 3, 8, 21), 1, "move-bag"),
+            _ev("026-NY-WF", datetime(2026, 6, 3, 10, 0), 2, "move-bag"),
+        ]
         self.assertTrue(bag_has_rack_scan_after_clean(events))
         st, reason = classify_at_vendor_checkout_row(
             ticket_id=self.BAG,
@@ -102,6 +106,30 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         )
         self.assertEqual(st, "REJECTED_DUPLICATE")
         self.assertEqual(reason, REASON_RACK_SCAN_AFTER_CLEAN)
+
+    def test_non_clean_rack_before_clean_not_rejected(self):
+        from backend.manual_checkout_eligibility import find_rack_scan_after_clean_trigger
+
+        events = [
+            _ev("Washpro Clean", datetime(2026, 5, 20, 9, 14), 1, "move-bag"),
+            _ev("020-NY-WF", datetime(2026, 6, 2, 21, 30), 2, "load-in"),
+            _ev("020-NY-WF", datetime(2026, 6, 2, 23, 40), 1, "sent-to-vendor Last Scan"),
+        ]
+        self.assertFalse(bag_has_rack_scan_after_clean(events))
+        self.assertIsNone(find_rack_scan_after_clean_trigger(events))
+
+    def test_a8l82x92v2_prod_timeline_not_rejected(self):
+        from backend.manual_checkout_eligibility import find_rack_scan_after_clean_trigger
+
+        events = [
+            _ev("Washpro Clean", datetime(2026, 5, 20, 9, 14), 1, "move-bag Last Scan"),
+            _ev(None, datetime(2026, 6, 2, 21, 10), 3, "bag-picked-up"),
+            _ev(None, datetime(2026, 6, 2, 21, 10), 4, "workitems-added"),
+            _ev("020-NY-WF", datetime(2026, 6, 2, 21, 30), 2, "load-in"),
+            _ev("020-NY-WF", datetime(2026, 6, 2, 23, 40), 1, "sent-to-vendor Last Scan"),
+        ]
+        self.assertFalse(bag_has_rack_scan_after_clean(events))
+        self.assertIsNone(find_rack_scan_after_clean_trigger(events))
 
     def test_auto_scrape_ignores_rack_after_clean(self):
         st, reason = classify_at_vendor_checkout_row(
