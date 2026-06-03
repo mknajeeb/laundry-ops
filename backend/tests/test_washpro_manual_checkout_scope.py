@@ -192,6 +192,50 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
+    def test_auto_scrape_ignores_stale_force_checkout_staging(self):
+        cursor = MagicMock()
+        with patch(
+            "backend.manual_checkout_eligibility.checkout_at_vendor_override_active",
+            return_value=True,
+        ), patch(
+            "backend.manual_checkout_eligibility._latest_staging_for_ticket",
+            return_value={"logistics_status": "FORCE_CHECKOUT", "status": "FORCED_CHECKOUT"},
+        ):
+            st, reason = classify_upload_row_for_checkout(
+                cursor,
+                3,
+                ticket_id=self.BAG,
+                has_active_staging=False,
+                row_date_before_batch=False,
+                was_completed_before_upload=True,
+                is_auto_scrape=True,
+            )
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
+
+    def test_manual_still_excludes_force_checkout_staging(self):
+        cursor = MagicMock()
+        with patch(
+            "backend.manual_checkout_eligibility.checkout_at_vendor_override_active",
+            return_value=True,
+        ), patch(
+            "backend.manual_checkout_eligibility._latest_staging_for_ticket",
+            return_value={"logistics_status": "FORCE_CHECKOUT"},
+        ), patch(
+            "backend.manual_checkout_eligibility.load_bag_scan_timeline",
+            return_value=[],
+        ):
+            st, reason = classify_upload_row_for_checkout(
+                cursor,
+                1,
+                ticket_id=self.BAG,
+                has_active_staging=False,
+                row_date_before_batch=False,
+                was_completed_before_upload=True,
+                is_auto_scrape=False,
+            )
+        self.assertEqual(reason, REASON_ALREADY_FORCE_CHECKOUT)
+
     def test_checked_out_excluded_manual(self):
         cursor = MagicMock()
         with patch(

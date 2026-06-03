@@ -264,6 +264,8 @@ function CheckoutPage() {
       Number(batchRush.excluded_rack_scan_after_clean || 0) +
       Number(batchRush.excluded_not_staged || 0) +
       Number(batchRush.excluded_other || 0) +
+      Number(batchRush.excluded_force_checkout || 0) +
+      Number(batchRush.excluded_already_sent || 0) +
       (batchSummary?.checkout_batch_source === "auto"
         ? Number(batchRush.excluded_already_completed || 0)
         : 0);
@@ -271,6 +273,8 @@ function CheckoutPage() {
       Number(batchNonRush.excluded_rack_scan_after_clean || 0) +
       Number(batchNonRush.excluded_not_staged || 0) +
       Number(batchNonRush.excluded_other || 0) +
+      Number(batchNonRush.excluded_force_checkout || 0) +
+      Number(batchNonRush.excluded_already_sent || 0) +
       (batchSummary?.checkout_batch_source === "auto"
         ? Number(batchNonRush.excluded_already_completed || 0)
         : 0);

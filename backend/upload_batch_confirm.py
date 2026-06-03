@@ -126,6 +126,10 @@ def confirm_upload_batch_core(
     accepted_rows = list(cursor.fetchall() or [])
 
     active_where = where_not_sent_or_forced_sql(cap)
+    is_manual_batch = not upload_batch_is_auto_scrape(cursor, batch_id, tenant_oid)
+    from backend.manual_checkout_settings import checkout_at_vendor_override_active
+
+    at_vendor_checkout = checkout_at_vendor_override_active(cursor, tenant_oid)
 
     if len(accepted_rows) == 0:
         from backend.upload_batch_requirements import batch_upload_files_status
@@ -290,6 +294,43 @@ def confirm_upload_batch_core(
     for row in accepted_rows:
         tid = normalize_bag_id(row.get("ticket_id")) if row.get("ticket_id") else ""
         if tid and cap.get("has_ticket_id"):
+            if (is_manual_batch or at_vendor_checkout) and not is_manual_batch:
+                by_tid = find_staging_by_ticket_id(
+                    cursor,
+                    tenant_oid,
+                    tid,
+                    has_staging_org=has_staging_org,
+                    has_ticket_id_col=True,
+                )
+                if by_tid:
+                    update_staging_from_upload_row(
+                        cursor,
+                        int(by_tid["id"]),
+                        row,
+                        batch["batch_date"],
+                        cap,
+                        organization_id=tenant_oid,
+                        has_staging_org=has_staging_org,
+                    )
+                    staging_updated += 1
+                    cursor.execute(
+                        """
+                        UPDATE rinse_bag_registry
+                        SET last_staging_order_id = %s, updated_at = NOW()
+                        WHERE organization_id = %s AND bag_id = %s
+                        """,
+                        (int(by_tid["id"]), tenant_oid, tid),
+                    )
+                    uploaded_identity_keys.add(
+                        build_identity_key(
+                            row["name_clean"],
+                            row["weight_num"],
+                            row["service_type"],
+                            row["date_clean"],
+                        )
+                    )
+                    continue
+
             existing_staging = find_active_staging_for_portal_upload(
                 cursor,
                 tenant_oid,

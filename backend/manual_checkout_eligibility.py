@@ -175,7 +175,9 @@ def effective_checkout_row_status(
             row_date_before_batch = False
 
     latest_staging = _latest_staging_for_ticket(cursor, org, tid)
-    sent_reason = staging_checkout_sent_reason(latest_staging)
+    sent_reason = None
+    if not is_auto_scrape:
+        sent_reason = staging_checkout_sent_reason(latest_staging)
 
     rack_after = False
     apply_rack = not is_auto_scrape
@@ -221,7 +223,9 @@ def classify_upload_row_for_checkout(
         )
 
     latest = _latest_staging_for_ticket(cursor, org, ticket_id)
-    sent_reason = staging_checkout_sent_reason(latest)
+    sent_reason = None
+    if not is_auto_scrape:
+        sent_reason = staging_checkout_sent_reason(latest)
 
     rack_after = False
     apply_rack = not is_auto_scrape
