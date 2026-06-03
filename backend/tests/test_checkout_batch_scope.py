@@ -79,21 +79,19 @@ class TestCheckoutBatchScope(unittest.TestCase):
         existing = {"id": 42}
 
         with patch(
-            "backend.checkout_batch_scope.upload_batch_is_auto_scrape", return_value=False
-        ), patch("backend.checkout_batch_scope._row_batch_col", return_value="upload_batch_id"), patch(
-            "backend.checkout_batch_scope.table_exists", return_value=True
-        ), patch(
+            "backend.checkout_batch_scope._row_batch_col", return_value="upload_batch_id"
+        ), patch("backend.checkout_batch_scope.table_exists", return_value=True), patch(
             "backend.checkout_batch_scope.table_has_column", return_value=True
         ), patch(
-            "backend.rinse_bag_upload.find_staging_by_ticket_id", return_value=existing
-        ), patch(
-            "backend.rinse_bag_upload.update_staging_from_upload_row"
-        ) as mock_update:
+            "backend.checkout_batch_staging.upsert_staging_for_ticket_upload_row",
+            return_value=("updated", 42),
+        ) as mock_upsert:
             out = reapply_checkout_batch_staging(cursor, 1, 551, dry_run=False)
 
         self.assertEqual(out["updated"], 1)
         self.assertEqual(out["inserted"], 0)
-        mock_update.assert_called_once()
+        mock_upsert.assert_called_once()
+        self.assertEqual(mock_upsert.call_args.kwargs.get("reactivate_sent"), False)
 
 
 if __name__ == "__main__":

@@ -41,13 +41,7 @@ def confirm_upload_batch_core(
         where_not_sent_or_forced_sql,
     )
     from backend.rinse_bag_completion import normalize_bag_id
-    from backend.checkout_batch_source import upload_batch_is_auto_scrape
-    from backend.rinse_bag_upload import (
-        find_active_staging_by_ticket_id,
-        find_active_staging_for_portal_upload,
-        find_staging_by_ticket_id,
-        update_staging_from_upload_row,
-    )
+    from backend.checkout_batch_staging import insert_staging_from_upload_row, upsert_staging_for_ticket_upload_row
     from backend.rinse_upload_finalize import finalize_rinse_after_batch_confirm
     from backend.upload_batch_requirements import validate_batch_confirm_dual_csv
 
@@ -124,12 +118,6 @@ def confirm_upload_batch_core(
         (batch_id,),
     )
     accepted_rows = list(cursor.fetchall() or [])
-
-    active_where = where_not_sent_or_forced_sql(cap)
-    is_manual_batch = not upload_batch_is_auto_scrape(cursor, batch_id, tenant_oid)
-    from backend.manual_checkout_settings import checkout_at_vendor_override_active
-
-    at_vendor_checkout = checkout_at_vendor_override_active(cursor, tenant_oid)
 
     if len(accepted_rows) == 0:
         from backend.upload_batch_requirements import batch_upload_files_status
@@ -293,217 +281,40 @@ def confirm_upload_batch_core(
     staging_updated = 0
     for row in accepted_rows:
         tid = normalize_bag_id(row.get("ticket_id")) if row.get("ticket_id") else ""
-        if tid and cap.get("has_ticket_id"):
-            if (is_manual_batch or at_vendor_checkout) and not is_manual_batch:
-                by_tid = find_staging_by_ticket_id(
-                    cursor,
-                    tenant_oid,
-                    tid,
-                    has_staging_org=has_staging_org,
-                    has_ticket_id_col=True,
-                )
-                if by_tid:
-                    update_staging_from_upload_row(
-                        cursor,
-                        int(by_tid["id"]),
-                        row,
-                        batch["batch_date"],
-                        cap,
-                        organization_id=tenant_oid,
-                        has_staging_org=has_staging_org,
-                    )
-                    staging_updated += 1
-                    cursor.execute(
-                        """
-                        UPDATE rinse_bag_registry
-                        SET last_staging_order_id = %s, updated_at = NOW()
-                        WHERE organization_id = %s AND bag_id = %s
-                        """,
-                        (int(by_tid["id"]), tenant_oid, tid),
-                    )
-                    uploaded_identity_keys.add(
-                        build_identity_key(
-                            row["name_clean"],
-                            row["weight_num"],
-                            row["service_type"],
-                            row["date_clean"],
-                        )
-                    )
-                    continue
-
-            existing_staging = find_active_staging_for_portal_upload(
-                cursor,
-                tenant_oid,
-                tid,
-                active_where,
-                has_staging_org=has_staging_org,
-                portal_row=row,
-            )
-            if existing_staging:
-                update_staging_from_upload_row(
-                    cursor,
-                    int(existing_staging["id"]),
-                    row,
-                    batch["batch_date"],
-                    cap,
-                    organization_id=tenant_oid,
-                    has_staging_org=has_staging_org,
-                )
-                staging_updated += 1
-                cursor.execute(
-                    """
-                    UPDATE rinse_bag_registry
-                    SET last_staging_order_id = %s, updated_at = NOW()
-                    WHERE organization_id = %s AND bag_id = %s
-                    """,
-                    (int(existing_staging["id"]), tenant_oid, tid),
-                )
-                uploaded_identity_keys.add(
-                    build_identity_key(
-                        row["name_clean"],
-                        row["weight_num"],
-                        row["service_type"],
-                        row["date_clean"],
-                    )
-                )
-                continue
-
         identity_key = build_identity_key(
             row["name_clean"], row["weight_num"], row["service_type"], row["date_clean"]
         )
-        if identity_key in existing_identity_before_insert:
-            if tid and cap.get("has_ticket_id"):
-                if is_manual_batch:
-                    by_tid = find_staging_by_ticket_id(
-                        cursor,
-                        tenant_oid,
-                        tid,
-                        has_staging_org=has_staging_org,
-                        has_ticket_id_col=True,
-                    )
-                else:
-                    by_tid = find_active_staging_by_ticket_id(
-                        cursor,
-                        tenant_oid,
-                        tid,
-                        active_where,
-                        has_staging_org=has_staging_org,
-                        has_ticket_id_col=True,
-                    )
-                if by_tid:
-                    update_staging_from_upload_row(
-                        cursor,
-                        int(by_tid["id"]),
-                        row,
-                        batch["batch_date"],
-                        cap,
-                        organization_id=tenant_oid,
-                        has_staging_org=has_staging_org,
-                    )
-                    staging_updated += 1
-                    cursor.execute(
-                        """
-                        UPDATE rinse_bag_registry
-                        SET last_staging_order_id = %s, updated_at = NOW()
-                        WHERE organization_id = %s AND bag_id = %s
-                        """,
-                        (int(by_tid["id"]), tenant_oid, tid),
-                    )
-                    uploaded_identity_keys.add(identity_key)
-                    continue
-                if not is_manual_batch:
-                    by_portal = find_active_staging_for_portal_upload(
-                        cursor,
-                        tenant_oid,
-                        tid,
-                        active_where,
-                        has_staging_org=has_staging_org,
-                        portal_row=row,
-                    )
-                    if by_portal:
-                        update_staging_from_upload_row(
-                            cursor,
-                            int(by_portal["id"]),
-                            row,
-                            batch["batch_date"],
-                            cap,
-                            organization_id=tenant_oid,
-                            has_staging_org=has_staging_org,
-                        )
-                        staging_updated += 1
-                        cursor.execute(
-                            """
-                            UPDATE rinse_bag_registry
-                            SET last_staging_order_id = %s, updated_at = NOW()
-                            WHERE organization_id = %s AND bag_id = %s
-                            """,
-                            (int(by_portal["id"]), tenant_oid, tid),
-                        )
-                        uploaded_identity_keys.add(identity_key)
-                    continue
-            if not (is_manual_batch and tid):
-                continue
 
-        cols = [
-            "date_clean",
-            "name_clean",
-            "weight_num",
-            "service_type",
-            "rush_type",
-            "batch_date",
-        ]
-        vals = ["%s", "%s", "%s", "%s", "%s", "%s"]
-        args = [
-            row["date_clean"],
-            row["name_clean"],
-            row["weight_num"],
-            row["service_type"],
-            row["rush_type"],
-            batch["batch_date"],
-        ]
-
-        if has_staging_org:
-            cols = ["organization_id"] + cols
-            vals = ["%s"] + vals
-            args = [tenant_oid] + args
-
-        if cap["has_logistics"]:
-            cols.append("logistics_status")
-            vals.append("%s")
-            args.append("AT_WASHPRO")
-        if cap["has_processing"]:
-            cols.append("processing_status")
-            vals.append("%s")
-            args.append("PENDING")
-        if cap.get("has_status"):
-            cols.append("status")
-            vals.append("%s")
-            args.append("PENDING")
-
-        if cap.get("has_ticket_id") and tid:
-            cols.append("ticket_id")
-            vals.append("%s")
-            args.append(tid[:120])
-
-        cursor.execute(
-            f"""
-            INSERT INTO orders_staging
-            ({", ".join(cols)})
-            VALUES ({", ".join(vals)})
-            """,
-            tuple(args),
-        )
-        new_staging_id = cursor.lastrowid
-        inserted += 1
-        if tid:
-            cursor.execute(
-                """
-                UPDATE rinse_bag_registry
-                SET last_staging_order_id = %s, updated_at = NOW()
-                WHERE organization_id = %s AND bag_id = %s
-                """,
-                (int(new_staging_id), tenant_oid, tid),
+        if tid and cap.get("has_ticket_id"):
+            action, _sid = upsert_staging_for_ticket_upload_row(
+                cursor,
+                tenant_oid,
+                row,
+                batch["batch_date"],
+                cap,
+                has_staging_org=has_staging_org,
+                reactivate_sent=True,
             )
+            if action == "updated":
+                staging_updated += 1
+            elif action == "inserted":
+                inserted += 1
+            uploaded_identity_keys.add(identity_key)
+            existing_identity_before_insert.add(identity_key)
+            continue
+
+        if identity_key in existing_identity_before_insert:
+            continue
+
+        new_staging_id = insert_staging_from_upload_row(
+            cursor,
+            tenant_oid,
+            row,
+            batch["batch_date"],
+            cap,
+            has_staging_org=has_staging_org,
+        )
+        inserted += 1
         uploaded_identity_keys.add(identity_key)
         existing_identity_before_insert.add(identity_key)
 

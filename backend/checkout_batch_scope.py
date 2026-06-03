@@ -114,7 +114,7 @@ def reapply_checkout_batch_staging(
     Applies to manual portal uploads and auto at_vendor scrapes. Reactivates SENT rows
     and inserts missing staging for accepted ticket_ids.
     """
-    from backend.rinse_bag_upload import find_staging_by_ticket_id, update_staging_from_upload_row
+    from backend.checkout_batch_staging import upsert_staging_for_ticket_upload_row
     from backend.ta_helpers import table_exists
 
     org = int(organization_id)
@@ -163,102 +163,42 @@ def reapply_checkout_batch_staging(
             skipped += 1
             continue
 
-        portal = {
-            "date_clean": row["date_clean"],
-            "name_clean": row["name_clean"],
-            "weight_num": row["weight_num"],
-            "service_type": row["service_type"],
-            "rush_type": row.get("rush_type") or "NON-RUSH",
-            "ticket_id": tid,
-        }
+        if dry_run:
+            from backend.rinse_bag_upload import find_staging_by_ticket_id
 
-        existing = find_staging_by_ticket_id(
+            existing = find_staging_by_ticket_id(
+                cursor,
+                org,
+                tid,
+                has_staging_org=has_staging_org,
+                has_ticket_id_col=True,
+            )
+            if existing:
+                from backend.manual_checkout_eligibility import staging_checkout_sent_reason
+
+                if staging_checkout_sent_reason(existing):
+                    skipped += 1
+                else:
+                    updated += 1
+            else:
+                inserted += 1
+            continue
+
+        action, _sid = upsert_staging_for_ticket_upload_row(
             cursor,
             org,
-            tid,
-            has_staging_org=has_staging_org,
-            has_ticket_id_col=True,
-        )
-        if existing:
-            if not dry_run:
-                update_staging_from_upload_row(
-                    cursor,
-                    int(existing["id"]),
-                    portal,
-                    batch_date,
-                    cap,
-                    organization_id=org,
-                    has_staging_org=has_staging_org,
-                )
-                cursor.execute(
-                    """
-                    UPDATE rinse_bag_registry
-                    SET last_staging_order_id = %s, updated_at = NOW()
-                    WHERE organization_id = %s AND bag_id = %s
-                    """,
-                    (int(existing["id"]), org, tid),
-                )
-            updated += 1
-            continue
-
-        if dry_run:
-            inserted += 1
-            continue
-
-        cols = [
-            "date_clean",
-            "name_clean",
-            "weight_num",
-            "service_type",
-            "rush_type",
-            "batch_date",
-        ]
-        vals = ["%s", "%s", "%s", "%s", "%s", "%s"]
-        args: list[Any] = [
-            portal["date_clean"],
-            portal["name_clean"],
-            portal["weight_num"],
-            portal["service_type"],
-            portal["rush_type"],
+            row,
             batch_date,
-        ]
-        if has_staging_org:
-            cols = ["organization_id"] + cols
-            vals = ["%s"] + vals
-            args = [org] + args
-        if cap.get("has_logistics"):
-            cols.append("logistics_status")
-            vals.append("%s")
-            args.append("AT_WASHPRO")
-        if cap.get("has_processing"):
-            cols.append("processing_status")
-            vals.append("%s")
-            args.append("PENDING")
-        if cap.get("has_status"):
-            cols.append("status")
-            vals.append("%s")
-            args.append("PENDING")
-        cols.append("ticket_id")
-        vals.append("%s")
-        args.append(tid[:120])
-
-        cursor.execute(
-            f"""
-            INSERT INTO orders_staging ({", ".join(cols)})
-            VALUES ({", ".join(vals)})
-            """,
-            tuple(args),
+            cap,
+            has_staging_org=has_staging_org,
+            reactivate_sent=False,
         )
-        new_id = cursor.lastrowid
-        inserted += 1
-        cursor.execute(
-            """
-            UPDATE rinse_bag_registry
-            SET last_staging_order_id = %s, updated_at = NOW()
-            WHERE organization_id = %s AND bag_id = %s
-            """,
-            (int(new_id), org, tid),
-        )
+        if action == "updated":
+            updated += 1
+        elif action == "inserted":
+            inserted += 1
+        else:
+            skipped += 1
 
     return {"updated": updated, "inserted": inserted, "skipped": skipped, "dry_run": dry_run}
 
