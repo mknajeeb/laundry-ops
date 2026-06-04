@@ -1041,6 +1041,18 @@ export const getPayrollCalendarSettings = () =>
 export const putPayrollCalendarSettings = (body) =>
   axios.put(`${API_BASE}/api/ta/payroll/calendar-settings`, body);
 
+export const getPayrollScheduleCoverageTargets = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/coverage-targets`);
+
+export const postPayrollScheduleCoverageTargets = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule/coverage-targets`, body);
+
+export const getPayrollPlanningMaintenance = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/planning-maintenance`);
+
+export const putPayrollPlanningMaintenance = (body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/planning-maintenance`, body);
+
 export const getPayrollScheduleWorkers = () =>
   axios.get(`${API_BASE}/api/ta/payroll/workers`);
 

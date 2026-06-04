@@ -45,6 +45,9 @@ import ScheduleWorkerCard from "./schedule/ScheduleWorkerCard";
 import PayrollFundingForecastPanel from "./PayrollFundingForecastPanel";
 import ShareRosterDrawer from "./schedule/ShareRosterDrawer";
 import ScheduleEmptyState from "./schedule/ScheduleEmptyState";
+import PayrollPlanningSettingsPanel from "./PayrollPlanningSettingsPanel";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import { useAuth } from "../context/AuthContext";
 import {
   addDaysYmd,
   applyWorkerProfileToForm,
@@ -175,7 +178,12 @@ function ShiftPlanCard({ plan, workerStatsMap, onAdd, onEdit, onRemove, onAbsent
 export default function PayrollSchedulingPanel() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const { hasPerm, user } = useAuth();
+  const canManageSettings =
+    hasPerm("ta.settings") ||
+    (user?.roles || []).some((r) => String(r).toUpperCase() === "ADMIN");
 
+  const [settingsView, setSettingsView] = useState(false);
   const [view, setView] = useState("day");
   const [selectedDate, setSelectedDate] = useState(localDateYmd());
   const [settings, setSettings] = useState(null);
@@ -801,6 +809,20 @@ export default function PayrollSchedulingPanel() {
     </Drawer>
   );
 
+  if (settingsView) {
+    return (
+      <Box sx={{ background: SCHEDULE_THEME.pageGradient, minHeight: "100%", mx: -1.2, px: 1.2, pb: 14 }}>
+        <PayrollPlanningSettingsPanel
+          onBack={() => {
+            setSettingsView(false);
+            loadPlan();
+          }}
+          onSaved={loadPlan}
+        />
+      </Box>
+    );
+  }
+
   return (
     <Box sx={{ background: SCHEDULE_THEME.pageGradient, minHeight: "100%", mx: -1.2, px: 1.2, pb: 14 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ pt: 1, mb: 2 }}>
@@ -813,6 +835,11 @@ export default function PayrollSchedulingPanel() {
           </Typography>
         </Box>
         <Stack direction="row" spacing={0.5}>
+          {canManageSettings ? (
+            <IconButton color="primary" onClick={() => setSettingsView(true)} aria-label="Planning settings">
+              <SettingsOutlinedIcon />
+            </IconButton>
+          ) : null}
           <IconButton color="primary" onClick={() => setShareOpen(true)} aria-label="Share roster">
             <IosShareIcon />
           </IconButton>

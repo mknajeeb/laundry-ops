@@ -5689,6 +5689,8 @@ def payroll_schedule_settings():
         oid = _tenant_id()
         if request.method == "GET":
             return jsonify(get_org_schedule_settings(conn, oid))
+        if not user_has_perm(conn, g.ta_user["id"], "ta.settings"):
+            return jsonify({"error": "Admin settings permission required"}), 403
         body = request.get_json(silent=True) or {}
         out = update_org_schedule_settings(conn, oid, body)
         conn.commit()
@@ -6070,6 +6072,34 @@ def payroll_funding_forecast():
         )
     except Exception as e:
         current_app.logger.exception("payroll_funding_forecast failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/planning-maintenance", methods=["GET", "PUT"])
+@require_auth
+@require_any_perm("ta.settings")
+def payroll_planning_maintenance():
+    """Scheduling extras, forecast assumptions, machine capacity placeholders (admin)."""
+    conn = get_db()
+    try:
+        from backend.payroll_planning_settings import (
+            get_planning_maintenance_extras,
+            save_planning_maintenance_extras,
+        )
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(get_planning_maintenance_extras(conn, oid))
+        body = request.get_json(silent=True) or {}
+        out = save_planning_maintenance_extras(conn, oid, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_planning_maintenance failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

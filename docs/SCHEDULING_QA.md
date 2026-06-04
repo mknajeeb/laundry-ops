@@ -51,6 +51,14 @@ Partner roster still exposes only allowed fields (no rates, category, OT, or per
 
 Scheduling does **not** create duplicate people. `payroll_worker_profiles` is auto-provisioned from active payroll users when the plan bundle loads.
 
+## Payroll planning settings UI (admin)
+
+**Payroll → Scheduling → gear icon (Settings)** — requires `ta.settings` / admin.
+
+Tabs: Shifts, Work streams, Roles, Coverage targets, Payroll calendar (W-2 / 1099 / Temp), Scheduling rules, Forecast assumptions (placeholder), Machine capacity (placeholder).
+
+APIs: `GET/POST /api/ta/payroll/schedule/settings`, `GET/POST /api/ta/payroll/schedule/coverage-targets`, `GET/PUT /api/ta/payroll/calendar-settings`, `GET/PUT /api/ta/payroll/planning-maintenance`.
+
 ## Parameterized settings (not hard-coded in logic)
 
 Defaults are seeded per org in DB tables / settings:

@@ -163,9 +163,15 @@ def get_org_schedule_settings(conn, organization_id: int) -> dict[str, Any]:
     )
     org_row = c.fetchone() or {}
     period = get_payroll_period_settings(conn, oid) or {}
+    from backend.payroll_planning_settings import ensure_planning_optional_columns
+
+    ensure_planning_optional_columns(c)
+    shift_cols = "id, name, start_time_default, end_time_default, sort_order, active"
+    if table_has_column(c, "payroll_shifts", "notes"):
+        shift_cols += ", notes"
     c.execute(
-        """
-        SELECT id, name, start_time_default, end_time_default, sort_order, active
+        f"""
+        SELECT {shift_cols}
         FROM payroll_shifts WHERE organization_id=%s ORDER BY sort_order, name
         """,
         (oid,),
@@ -174,17 +180,23 @@ def get_org_schedule_settings(conn, organization_id: int) -> dict[str, Any]:
     for s in shifts:
         s["start_time_default"] = _time_to_str(_parse_time(s.get("start_time_default")))
         s["end_time_default"] = _time_to_str(_parse_time(s.get("end_time_default")))
+    stream_cols = "id, name, sort_order, active"
+    if table_has_column(c, "payroll_work_streams", "notes"):
+        stream_cols += ", notes"
     c.execute(
-        """
-        SELECT id, name, sort_order, active FROM payroll_work_streams
+        f"""
+        SELECT {stream_cols} FROM payroll_work_streams
         WHERE organization_id=%s ORDER BY sort_order, name
         """,
         (oid,),
     )
     streams = [json_safe(r) for r in c.fetchall()]
+    role_cols = "id, name, sort_order, active"
+    if table_has_column(c, "payroll_roles", "role_group"):
+        role_cols += ", role_group"
     c.execute(
-        """
-        SELECT id, name, sort_order, active FROM payroll_roles
+        f"""
+        SELECT {role_cols} FROM payroll_roles
         WHERE organization_id=%s ORDER BY sort_order, name
         """,
         (oid,),
@@ -239,10 +251,22 @@ def update_org_schedule_settings(conn, organization_id: int, body: dict) -> dict
             """,
             (oid, int(body["default_break_minutes"])),
         )
+    if body.get("payment_day_of_week") is not None:
+        c.execute(
+            """
+            INSERT INTO payroll_schedule_org_settings (organization_id, payment_day_of_week)
+            VALUES (%s, %s)
+            ON DUPLICATE KEY UPDATE payment_day_of_week=VALUES(payment_day_of_week)
+            """,
+            (oid, int(body["payment_day_of_week"])),
+        )
+    from backend.payroll_planning_settings import ensure_planning_optional_columns
+
+    ensure_planning_optional_columns(c)
     for key, table, cols in (
-        ("shifts", "payroll_shifts", ("name", "start_time_default", "end_time_default", "sort_order", "active")),
-        ("work_streams", "payroll_work_streams", ("name", "sort_order", "active")),
-        ("roles", "payroll_roles", ("name", "sort_order", "active")),
+        ("shifts", "payroll_shifts", ("name", "start_time_default", "end_time_default", "sort_order", "active", "notes")),
+        ("work_streams", "payroll_work_streams", ("name", "sort_order", "active", "notes")),
+        ("roles", "payroll_roles", ("name", "sort_order", "active", "role_group")),
     ):
         items = body.get(key)
         if not isinstance(items, list):
