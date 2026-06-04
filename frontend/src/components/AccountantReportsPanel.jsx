@@ -29,6 +29,7 @@ import {
   PAYROLL_ESTIMATE_PURPOSE,
   isLineTaxIncomplete,
 } from "../payroll/payrollTaxMessages";
+import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
 export default function AccountantReportsPanel() {
   const [subTab, setSubTab] = useState(0);

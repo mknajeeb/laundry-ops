@@ -42,13 +42,13 @@ import {
   formatEasternTimeShort,
   formatHoursDecimal,
 } from "../utils/datetimeFormat";
+import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
 const CATEGORY_SHORT = {
   w2: "W-2",
   contractor_1099: "1099",
   temp: "Temp",
 };
-import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 
 const STATUS_OPTIONS = [
   { value: "all", label: "All statuses" },

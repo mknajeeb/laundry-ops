@@ -66,6 +66,7 @@ import {
   workerProfileUrl,
 } from "../payroll/schedulePlanner";
 import { computeFundingForecast } from "../payroll/fundingForecast";
+import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import { SCHEDULE_THEME } from "../payroll/scheduleTheme";
 
 function localDateYmd(d = new Date()) {
@@ -876,6 +877,28 @@ export default function PayrollSchedulingPanel() {
                   {(settings?.work_streams || []).map((s) => (
                     <MenuItem key={s.id} value={s.id}>
                       {s.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel>Category</InputLabel>
+                <Select label="Category" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)}>
+                  <MenuItem value="">All</MenuItem>
+                  {WORKER_CATEGORY_OPTIONS.filter((o) => o.value !== "all").map((o) => (
+                    <MenuItem key={o.value} value={o.value}>
+                      {o.label}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel>Role</InputLabel>
+                <Select label="Role" value={filterRole} onChange={(e) => setFilterRole(e.target.value)}>
+                  <MenuItem value="">All</MenuItem>
+                  {(settings?.roles || []).filter((r) => r.active).map((r) => (
+                    <MenuItem key={r.id} value={r.id}>
+                      {r.name}
                     </MenuItem>
                   ))}
                 </Select>
