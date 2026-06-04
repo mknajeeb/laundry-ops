@@ -34,6 +34,7 @@ import {
   deleteUser,
   getEmploymentCategories,
   getGeofences,
+  getPayrollScheduleWorkers,
   getRoles,
   getTaRoles,
   getTaUser,
@@ -44,6 +45,7 @@ import {
   updateTaUser,
   updateUser,
 } from "../api";
+import SchedulingReadinessChip from "../components/worker/SchedulingReadinessChip";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 
@@ -58,6 +60,44 @@ function formatEmploymentStatusCell(ta, wpActive, t) {
     return lbl === key ? code : lbl;
   }
   return wpActive ? t("people.status.ACTIVE") : t("people.status.INACTIVE");
+}
+
+/** Multi-select Washpro roles (CHECKOUT + UPLOAD can both be enabled). */
+function WashproRolesMultiSelect({ label, value, onChange, roles }) {
+  const selected = (value || []).map((c) => String(c || "").trim().toUpperCase()).filter(Boolean);
+  const choices = (roles || []).map((r) => ({
+    ...r,
+    code: String(r.code || "").trim().toUpperCase(),
+  }));
+
+  return (
+    <FormControl fullWidth>
+      <InputLabel id="wp-roles-pick">{label}</InputLabel>
+      <Select
+        labelId="wp-roles-pick"
+        multiple
+        label={label}
+        value={selected}
+        onChange={(e) => {
+          const raw = e.target.value;
+          const next = (typeof raw === "string" ? raw.split(",") : raw)
+            .map((c) => String(c || "").trim().toUpperCase())
+            .filter(Boolean);
+          onChange(next);
+        }}
+        input={<OutlinedInput label={label} />}
+        renderValue={(sel) => sel.join(", ")}
+      >
+        {choices.map((r) => (
+          <MenuItem key={r.code} value={r.code}>
+            <Checkbox checked={selected.includes(r.code)} size="small" sx={{ py: 0, mr: 1 }} />
+            {r.code}
+            {r.name && r.name !== r.code ? ` — ${r.name}` : ""}
+          </MenuItem>
+        ))}
+      </Select>
+    </FormControl>
+  );
 }
 
 function PeoplePage({ user }) {
@@ -92,6 +132,8 @@ function PeoplePage({ user }) {
   const [filterCategoryId, setFilterCategoryId] = useState("");
   const [filterRole, setFilterRole] = useState("");
   const [filterDept, setFilterDept] = useState("");
+  const [filterSchedule, setFilterSchedule] = useState("all");
+  const [scheduleWorkers, setScheduleWorkers] = useState([]);
 
   const loadWashpro = useCallback(async () => {
     if (!isAdmin) return;
@@ -136,6 +178,13 @@ function PeoplePage({ user }) {
   useEffect(() => {
     if (canTaView) loadTa();
   }, [canTaView, loadTa]);
+
+  useEffect(() => {
+    if (!canTaView) return;
+    getPayrollScheduleWorkers()
+      .then((res) => setScheduleWorkers(res.data?.items || []))
+      .catch(() => setScheduleWorkers([]));
+  }, [canTaView, taUsers.length]);
 
   const q = search.trim().toLowerCase();
   const wpFiltered = useMemo(() => {
@@ -205,9 +254,18 @@ function PeoplePage({ user }) {
     return Array.from(s).sort();
   }, [taUsers]);
 
+  const workerByUserId = useMemo(() => {
+    const m = new Map();
+    for (const w of scheduleWorkers) {
+      if (w.user_id != null) m.set(Number(w.user_id), w);
+    }
+    return m;
+  }, [scheduleWorkers]);
+
   const unifiedFiltered = useMemo(() => {
     return wpFiltered.filter((u) => {
       const ta = taByWashproId.get(u.id);
+      const sw = workerByUserId.get(u.id);
       if (filterStatus === "active" && !u.active) return false;
       if (filterStatus === "inactive" && u.active) return false;
       if (filterCategoryId) {
@@ -221,9 +279,30 @@ function PeoplePage({ user }) {
         if (!blob.includes(filterRole.trim().toLowerCase())) return false;
       }
       if (filterDept && String(ta?.dept_code || "") !== filterDept) return false;
+      if (filterSchedule !== "all" && sw) {
+        const gaps = sw.profile_gaps || [];
+        const cat = String(sw.worker_category || "").toLowerCase();
+        const skills = sw.role_skills || [];
+        const roleNames = skills.map((s) => String(s.role_name || "").toLowerCase());
+        if (filterSchedule === "ready" && !sw.readiness?.ready) return false;
+        if (filterSchedule === "missing_setup" && sw.readiness?.ready) return false;
+        if (filterSchedule === "rate_missing" && !gaps.includes("Missing hourly rate")) return false;
+        if (filterSchedule === "w2" && cat !== "w2") return false;
+        if (filterSchedule === "1099" && !cat.includes("1099") && cat !== "contractor_1099") return false;
+        if (filterSchedule === "temp" && cat !== "temp") return false;
+        if (filterSchedule === "rinse" && !sw.can_work_rinse) return false;
+        if (filterSchedule === "dropoff" && !sw.can_work_drop_off) return false;
+        if (filterSchedule === "folder" && !roleNames.some((n) => n.includes("folder"))) return false;
+        if (filterSchedule === "operator" && !roleNames.some((n) => n.includes("operator"))) return false;
+        if (filterSchedule === "ot_missing" && sw.overtime_threshold == null) return false;
+        if (filterSchedule === "active_only" && sw.active === false) return false;
+        if (filterSchedule === "inactive_sched" && sw.active !== false) return false;
+      }
+      if (filterSchedule === "active_only" && !u.active) return false;
+      if (filterSchedule === "inactive_sched" && u.active) return false;
       return true;
     });
-  }, [wpFiltered, taByWashproId, filterStatus, filterCategoryId, filterRole, filterDept]);
+  }, [wpFiltered, taByWashproId, workerByUserId, filterStatus, filterCategoryId, filterRole, filterDept, filterSchedule]);
 
   function openWpCreate() {
     setWpForm({
@@ -242,7 +321,9 @@ function PeoplePage({ user }) {
       username: u.username,
       display_name: u.display_name || "",
       active: !!u.active,
-      roles: [...(u.roles || [])],
+      roles: [...(u.roles || [])]
+        .map((c) => String(c || "").trim().toUpperCase())
+        .filter(Boolean),
       password: "",
     });
     setWpDialog("edit");
@@ -564,6 +645,25 @@ function PeoplePage({ user }) {
                 ))}
               </Select>
             </FormControl>
+            <FormControl size="small" sx={{ minWidth: 180 }}>
+              <InputLabel>Scheduling</InputLabel>
+              <Select label="Scheduling" value={filterSchedule} onChange={(e) => setFilterSchedule(e.target.value)}>
+                <MenuItem value="all">All workers</MenuItem>
+                <MenuItem value="ready">Ready for scheduling</MenuItem>
+                <MenuItem value="missing_setup">Missing setup</MenuItem>
+                <MenuItem value="rate_missing">Rate missing</MenuItem>
+                <MenuItem value="w2">W-2</MenuItem>
+                <MenuItem value="1099">1099</MenuItem>
+                <MenuItem value="temp">Temp</MenuItem>
+                <MenuItem value="rinse">Rinse-capable</MenuItem>
+                <MenuItem value="dropoff">Drop Off-capable</MenuItem>
+                <MenuItem value="folder">Folder skill</MenuItem>
+                <MenuItem value="operator">Operator skill</MenuItem>
+                <MenuItem value="ot_missing">OT rule missing</MenuItem>
+                <MenuItem value="active_only">Active only</MenuItem>
+                <MenuItem value="inactive_sched">Inactive (scheduling)</MenuItem>
+              </Select>
+            </FormControl>
           </>
         ) : null}
       </Stack>
@@ -600,6 +700,7 @@ function PeoplePage({ user }) {
                     <TableCell>{t("profile.lastName")}</TableCell>
                     <TableCell>{t("people.colEmail")}</TableCell>
                     <TableCell>{t("people.colRole")}</TableCell>
+                    <TableCell>Scheduling</TableCell>
                     <TableCell>{t("people.colStatus")}</TableCell>
                     <TableCell align="right" sx={{ width: 48 }}>
                       {t("people.colActions")}
@@ -620,6 +721,9 @@ function PeoplePage({ user }) {
                           <Typography variant="body2" color="text.secondary">
                             {ta?.role_name || (u.roles || []).join(", ") || "—"}
                           </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <SchedulingReadinessChip worker={workerByUserId.get(u.id)} />
                         </TableCell>
                         <TableCell>{formatEmploymentStatusCell(ta, u.active, t)}</TableCell>
                         <TableCell align="right">
@@ -856,19 +960,12 @@ function PeoplePage({ user }) {
               onChange={(e) => setWpForm((p) => ({ ...p, password: e.target.value }))}
               required
             />
-            <TextField
-              select
+            <WashproRolesMultiSelect
               label="Roles"
-              SelectProps={{ multiple: true }}
               value={wpForm.roles || []}
-              onChange={(e) => setWpForm((p) => ({ ...p, roles: e.target.value }))}
-            >
-              {wpRoles.map((r) => (
-                <MenuItem key={r.code} value={r.code}>
-                  {r.code}
-                </MenuItem>
-              ))}
-            </TextField>
+              onChange={(roles) => setWpForm((p) => ({ ...p, roles }))}
+              roles={wpRoles}
+            />
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -906,19 +1003,12 @@ function PeoplePage({ user }) {
               value={wpForm.password || ""}
               onChange={(e) => setWpForm((p) => ({ ...p, password: e.target.value }))}
             />
-            <TextField
-              select
+            <WashproRolesMultiSelect
               label="Roles"
-              SelectProps={{ multiple: true }}
               value={wpForm.roles || []}
-              onChange={(e) => setWpForm((p) => ({ ...p, roles: e.target.value }))}
-            >
-              {wpRoles.map((r) => (
-                <MenuItem key={r.code} value={r.code}>
-                  {r.code}
-                </MenuItem>
-              ))}
-            </TextField>
+              onChange={(roles) => setWpForm((p) => ({ ...p, roles }))}
+              roles={wpRoles}
+            />
             <FormControlLabel
               control={
                 <Checkbox

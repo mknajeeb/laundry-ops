@@ -53,6 +53,7 @@ import HomePage from "./pages/HomePage";
 import LoginPage from "./pages/LoginPage";
 import KioskUnlockPage from "./pages/KioskUnlockPage";
 import AttendancePinPage from "./pages/AttendancePinPage";
+import PartnerRosterPage from "./pages/PartnerRosterPage";
 import InventoryPage from "./pages/InventoryPage";
 import DiscrepanciesPage from "./pages/DiscrepanciesPage";
 import PayrollManagementPage from "./pages/PayrollManagementPage";
@@ -133,6 +134,12 @@ function MobileTopBar({ pathname, user, onOpenNav, onLogout, showKioskLock, onKi
       </Toolbar>
     </AppBar>
   );
+}
+
+/** Read-only partner roster: /roster/:token (no app session). */
+function isPartnerRosterRoute(path) {
+  const p = path || "";
+  return p.startsWith("/roster/");
 }
 
 /** Public login: /login or /login/:orgSlug (tenant-specific bookmark URL). */
@@ -472,7 +479,7 @@ function AppShell() {
     []
   );
 
-  if (authLoading && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname)) {
+  if (authLoading && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname) && !isPartnerRosterRoute(pathname)) {
     return (
       <Box sx={{ flex: 1, minHeight: 0, width: "100%", display: "grid", placeItems: "center" }}>
         <Typography>Loading...</Typography>
@@ -500,7 +507,16 @@ function AppShell() {
     );
   }
 
-  if (!user && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname)) {
+  /** Partner roster share link — read-only, no sidebar. */
+  if (isPartnerRosterRoute(pathname)) {
+    return (
+      <Routes>
+        <Route path="/roster/:token" element={<PartnerRosterPage />} />
+      </Routes>
+    );
+  }
+
+  if (!user && !isLoginRoute(pathname) && !isKioskRoute(pathname) && !isAttendanceRoute(pathname) && !isPartnerRosterRoute(pathname)) {
     return <Navigate to="/login" replace />;
   }
 

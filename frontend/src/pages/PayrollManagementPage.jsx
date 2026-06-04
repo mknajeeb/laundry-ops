@@ -16,6 +16,7 @@ import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
+import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import { PAYROLL_ESTIMATE_PURPOSE } from "../payroll/payrollTaxMessages";
 
 /**
@@ -42,6 +43,7 @@ export default function PayrollManagementPage() {
   const sections = useMemo(() => {
     const out = [];
     if (canTime) out.push({ key: "time", label: "Time Records" });
+    if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canPayout) out.push({ key: "documents", label: "Documents" });
@@ -126,6 +128,7 @@ export default function PayrollManagementPage() {
             onPayPeriodChange={onPayPeriodChange}
           />
         ) : null}
+        {active?.key === "schedule" ? <PayrollSchedulingPanel /> : null}
         {active?.key === "batches" ? (
           <PayoutBatchesPanel
             payPeriodStart={payPeriod.start}

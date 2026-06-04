@@ -46,6 +46,7 @@ import {
   putTaUserHrProfile,
 } from "../api";
 import PayrollPtoSection from "../components/PayrollPtoSection";
+import WorkerSchedulingProfilePanel from "../components/worker/WorkerSchedulingProfilePanel";
 import I9DetailsForm, {
   emptyI9,
   emptyPreparer,
@@ -271,7 +272,7 @@ function parseTaAddressBlob(blob) {
   return { line1, city, state, zip };
 }
 
-const WORKSPACE_TAB_FLOW = ["summary", "basic", "payroll", "compliance", "emergency", "notes", "documents"];
+const WORKSPACE_TAB_FLOW = ["summary", "basic", "payroll", "scheduling", "compliance", "emergency", "notes", "documents"];
 
 const ONBOARD_STEP_INDEX = {
   basic: 0,
@@ -602,7 +603,7 @@ export default function UserProfilePage({ user: sessionUser }) {
         return true;
       }
       const req =
-        tab === "payroll"
+        tab === "payroll" || tab === "scheduling"
           ? ["category"]
           : tab === "compliance" || tab === "emergency"
             ? ["category", "payrollCore"]
@@ -1395,6 +1396,7 @@ export default function UserProfilePage({ user: sessionUser }) {
               ["summary", t("workspace.tabSummary")],
               ["basic", t("workspace.tabBasic")],
               ["payroll", t("workspace.tabPayroll")],
+              ["scheduling", "Scheduling"],
               ["compliance", t("workspace.tabComplianceData")],
               ["emergency", t("workspace.tabEmergency")],
               ["notes", t("workspace.tabNotes")],
@@ -1612,6 +1614,7 @@ export default function UserProfilePage({ user: sessionUser }) {
                 >
                   {washproRoleChoices.map((r) => (
                     <MenuItem key={r.code} value={r.code}>
+                      <Checkbox checked={wpRoles.includes(r.code)} size="small" sx={{ py: 0, mr: 1 }} />
                       {r.code}
                       {r.name && r.name !== r.code ? ` — ${r.name}` : ""}
                     </MenuItem>
@@ -2207,6 +2210,14 @@ export default function UserProfilePage({ user: sessionUser }) {
           </Stack>
           </ProfileSection>
         </Paper>
+        ) : null}
+
+        {!platformMode && workspaceTab === "scheduling" && hasPayroll ? (
+          <WorkerSchedulingProfilePanel
+            userId={uid}
+            payrollRow={{ first_name: firstName, last_name: lastName, mobile }}
+            canEdit={canEditPayrollRecords}
+          />
         ) : null}
 
         {!platformMode && workspaceTab === "compliance" && (canTaView || canEditPayrollRecords) && (hasPayroll || canTaAdd) ? (

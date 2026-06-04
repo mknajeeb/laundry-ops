@@ -1014,6 +1014,90 @@ export const getPayrollEmployeePto = (userId) =>
 export const postPayrollEmployeePtoAdjust = (userId, body) =>
   axios.post(`${API_BASE}/api/ta/payroll/pto/${userId}`, body);
 
+export const getPayrollScheduleSettings = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/settings`);
+
+export const postPayrollScheduleSettings = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule/settings`, body);
+
+export const getPayrollSchedule = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule`, { params });
+
+export const postPayrollScheduleEntry = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule`, body);
+
+export const patchPayrollScheduleEntry = (entryId, body) =>
+  axios.patch(`${API_BASE}/api/ta/payroll/schedule/${entryId}`, body);
+
+export const deletePayrollScheduleEntry = (entryId) =>
+  axios.delete(`${API_BASE}/api/ta/payroll/schedule/${entryId}`);
+
+export const getPayrollFundingForecast = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/funding-forecast`, { params });
+
+export const getPayrollCalendarSettings = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/calendar-settings`);
+
+export const putPayrollCalendarSettings = (body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/calendar-settings`, body);
+
+export const getPayrollScheduleWorkers = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/workers`);
+
+export const getPayrollWorkerSchedulingProfile = (userId) =>
+  axios.get(`${API_BASE}/api/ta/payroll/workers/by-user/${userId}/scheduling`);
+
+export const putPayrollWorkerSchedulingProfile = (userId, body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/workers/by-user/${userId}/scheduling`, body);
+
+export const getPayrollWorkerAvailability = (workerProfileId) =>
+  axios.get(`${API_BASE}/api/ta/payroll/workers/${workerProfileId}/availability`);
+
+export const postPayrollWorkerAvailability = (workerProfileId, body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/workers/${workerProfileId}/availability`, body);
+
+export const getPayrollScheduleWeeklySummary = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/weekly-summary`, { params });
+
+export const getPayrollScheduleOvertimeRisk = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/overtime-risk`, { params });
+
+export const getPayrollScheduleReplacements = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/replacement-suggestions`, { params });
+
+export const getPayrollSchedulePlan = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/plan`, { params });
+
+export const postPayrollScheduleSaveDraft = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule/plan/save-draft`, body);
+
+export const postPayrollSchedulePublish = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule/plan/publish`, body);
+
+export const getPayrollScheduleSuggestions = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/suggestions`, { params });
+
+export const getPayrollScheduleChangeLog = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/change-log`, { params });
+
+export const getRosterShareLinks = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/schedule/roster-share-links`);
+
+export const postRosterShareLink = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule/roster-share-links`, body);
+
+export const patchRosterShareLink = (linkId, body) =>
+  axios.patch(`${API_BASE}/api/ta/payroll/schedule/roster-share-links/${linkId}`, body);
+
+export const deleteRosterShareLink = (linkId) =>
+  axios.delete(`${API_BASE}/api/ta/payroll/schedule/roster-share-links/${linkId}`);
+
+export const getPublicRoster = (token, params) =>
+  axios.get(`${API_BASE}/api/public/roster/${token}`, { params });
+
+export const postPublicRosterVerify = (token, body) =>
+  axios.post(`${API_BASE}/api/public/roster/${token}/verify`, body);
+
 export const getPayrollDue = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/pay-due`, { params });
 

@@ -1,0 +1,82 @@
+# Deploy Payroll Planning Layer to Azure staging slot (NOT production wwwroot).
+#
+# Triggers: push to feature/payroll-planning-layer, or manual workflow_dispatch.
+# Does NOT run on main — main workflow still deploys production laundryops-api.
+#
+# Prerequisites (Azure Portal):
+#   - Web App laundryops-api → Deployment slots → Add slot named "staging"
+#   - Slot URL e.g. https://laundryops-api-staging.azurewebsites.net
+#   - Same app settings as production OR a staging MySQL database
+#   - GitHub variable: AZURE_WEBAPP_RESOURCE_GROUP
+#
+# Static Web App: PR previews are created by azure-static-web-apps workflow on PR to main.
+# For full-stack staging, point a SWA environment or PR preview VITE_API_BASE at the staging slot API.
+
+name: Deploy payroll planning to staging slot
+
+on:
+  push:
+    branches:
+      - feature/payroll-planning-layer
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m venv antenv
+          source antenv/bin/activate
+          pip install -r requirements.txt
+      - name: Payroll planning tests
+        run: |
+          source antenv/bin/activate
+          pytest backend/tests/test_payroll_schedule.py \
+                 backend/tests/test_payroll_roster_share.py \
+                 backend/tests/test_payroll_funding_forecast.py -q
+      - name: Verify deploy bundle
+        run: |
+          test -f backend/payroll_schedule.py
+          test -f backend/payroll_funding_forecast.py
+          chmod +x startup.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-app-staging
+          path: |
+            .
+            !antenv/
+
+  deploy_staging_slot:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: python-app-staging
+          path: deploy_pkg
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_2D83462BC08F44C381C6256584851BA1 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_980B3988625145B8950C00217BB86C65 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1D4160C7070D4EB49054DE2E4C8AE35C }}
+      - name: Deploy to staging slot
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: laundryops-api
+          slot-name: staging
+          package: ./deploy_pkg
+          restart: true

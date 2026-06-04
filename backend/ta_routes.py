@@ -5675,5 +5675,488 @@ def payroll_employee_pto(user_id: int):
         conn.close()
 
 
+    finally:
+        conn.close()
+
+
+# --- Payroll scheduling (Phase 1) ---
+
+
+@ta_bp.route("/payroll/schedule/settings", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_settings():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import get_org_schedule_settings, update_org_schedule_settings
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(get_org_schedule_settings(conn, oid))
+        body = request.get_json(silent=True) or {}
+        out = update_org_schedule_settings(conn, oid, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_settings failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_list_create():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import create_schedule_entry, list_schedule_entries
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            start = request.args.get("start_date") or date.today().isoformat()
+            end = request.args.get("end_date") or start
+            return jsonify({"items": list_schedule_entries(conn, oid, start_date=start, end_date=end)})
+        body = request.get_json(silent=True) or {}
+        out = create_schedule_entry(conn, oid, body, created_by=int(g.ta_user["id"]))
+        conn.commit()
+        return jsonify(out), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_list_create failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/<int:entry_id>", methods=["PATCH", "DELETE"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_entry(entry_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import delete_schedule_entry, update_schedule_entry
+
+        oid = _tenant_id()
+        if request.method == "DELETE":
+            delete_schedule_entry(conn, oid, entry_id)
+            conn.commit()
+            return jsonify({"ok": True})
+        body = request.get_json(silent=True) or {}
+        out = update_schedule_entry(conn, oid, entry_id, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_entry failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/workers", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings", "users.view")
+def payroll_schedule_workers():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import list_workers_enriched
+
+        active_only = request.args.get("active_only", "0") == "1"
+        return jsonify({"items": list_workers_enriched(conn, _tenant_id(), active_only=active_only)})
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_workers failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/workers/by-user/<int:user_id>/scheduling", methods=["GET", "PUT"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings", "users.view", "users.edit")
+def payroll_worker_scheduling_profile(user_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import get_scheduling_profile_bundle, save_scheduling_profile
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(get_scheduling_profile_bundle(conn, oid, user_id))
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit") and not user_has_perm(
+            conn, g.ta_user["id"], "ta.settings"
+        ):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(silent=True) or {}
+        out = save_scheduling_profile(conn, oid, user_id, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_worker_scheduling_profile failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/workers/<int:worker_profile_id>/availability", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_worker_availability(worker_profile_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import get_worker_availability, save_worker_availability
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(get_worker_availability(conn, oid, worker_profile_id))
+        body = request.get_json(silent=True) or {}
+        out = save_worker_availability(conn, oid, worker_profile_id, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_worker_availability failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/weekly-summary", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_weekly_summary():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import weekly_summary
+        from backend.payroll_identity import payroll_week_bounds
+
+        oid = _tenant_id()
+        week_start = request.args.get("week_start")
+        if not week_start:
+            ws, _ = payroll_week_bounds(conn, date.today(), oid)
+            week_start = ws.isoformat()
+        return jsonify(weekly_summary(conn, oid, week_start))
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_weekly_summary failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/overtime-risk", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_overtime_risk():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import overtime_risk_report
+        from backend.payroll_identity import payroll_week_bounds
+
+        oid = _tenant_id()
+        week_start = request.args.get("week_start")
+        if not week_start:
+            ws, _ = payroll_week_bounds(conn, date.today(), oid)
+            week_start = ws.isoformat()
+        return jsonify(overtime_risk_report(conn, oid, week_start))
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_overtime_risk failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/replacement-suggestions", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_replacement_suggestions():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule import replacement_suggestions
+
+        entry_id = request.args.get("schedule_entry_id", type=int)
+        if not entry_id:
+            return jsonify({"error": "schedule_entry_id required"}), 400
+        return jsonify(replacement_suggestions(conn, _tenant_id(), entry_id))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_replacement_suggestions failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/plan", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_plan():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule_planner import load_plan_bundle
+
+        oid = _tenant_id()
+        start = request.args.get("start_date") or date.today().isoformat()
+        end = request.args.get("end_date") or start
+        return jsonify(load_plan_bundle(conn, oid, start_date=start, end_date=end))
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_plan failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/plan/save-draft", methods=["POST"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_save_draft():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule_planner import save_draft_entries
+
+        body = request.get_json(silent=True) or {}
+        out = save_draft_entries(
+            conn, _tenant_id(), body.get("entries") or [], created_by=int(g.ta_user["id"])
+        )
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_save_draft failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/plan/publish", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings")
+def payroll_schedule_publish():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule_planner import publish_schedule
+
+        body = request.get_json(silent=True) or {}
+        start = body.get("start_date")
+        end = body.get("end_date")
+        if not start or not end:
+            return jsonify({"error": "start_date and end_date required"}), 400
+        out = publish_schedule(
+            conn,
+            _tenant_id(),
+            start_date=start,
+            end_date=end,
+            changed_by=int(g.ta_user["id"]),
+            note=body.get("note"),
+        )
+        conn.commit()
+        return jsonify(out)
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_publish failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/suggestions", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_schedule_suggestions():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule_planner import suggest_workers_for_shift
+
+        shift_id = request.args.get("shift_id", type=int)
+        if not shift_id:
+            return jsonify({"error": "shift_id required"}), 400
+        return jsonify(
+            suggest_workers_for_shift(
+                conn,
+                _tenant_id(),
+                work_date=request.args.get("work_date") or date.today().isoformat(),
+                shift_id=request.args.get("shift_id", type=int),
+                work_stream_id=request.args.get("work_stream_id", type=int),
+                role_id=request.args.get("role_id", type=int),
+                start_time=request.args.get("start_time"),
+                end_time=request.args.get("end_time"),
+                break_minutes=request.args.get("break_minutes", 0, type=int),
+                exclude_entry_id=request.args.get("exclude_entry_id", type=int),
+            )
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_suggestions failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/coverage-targets", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.settings")
+def payroll_schedule_coverage_targets():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule_planner import list_coverage_targets, save_coverage_targets
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify({"items": list_coverage_targets(conn, oid)})
+        body = request.get_json(silent=True) or {}
+        items = save_coverage_targets(conn, oid, body.get("items") or [])
+        conn.commit()
+        return jsonify({"items": items})
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_coverage_targets failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/change-log", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings")
+def payroll_schedule_change_log():
+    conn = get_db()
+    try:
+        from backend.payroll_schedule_planner import list_change_log
+
+        return jsonify(
+            {
+                "items": list_change_log(
+                    conn,
+                    _tenant_id(),
+                    start_date=request.args.get("start_date"),
+                    limit=request.args.get("limit", 50, type=int),
+                )
+            }
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_change_log failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/funding-forecast", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_funding_forecast():
+    conn = get_db()
+    try:
+        from backend.payroll_funding_forecast import build_funding_forecast
+
+        oid = _tenant_id()
+        as_of = request.args.get("date")
+        location_id = request.args.get("location_id", type=int)
+        worker_category = request.args.get("worker_category")
+        include_draft = request.args.get("include_draft")
+        include_published = request.args.get("include_published")
+        return jsonify(
+            build_funding_forecast(
+                conn,
+                oid,
+                as_of_date=as_of,
+                location_id=location_id,
+                worker_category=worker_category,
+                include_draft=None if include_draft is None else include_draft.lower() in ("1", "true", "yes"),
+                include_published=None
+                if include_published is None
+                else include_published.lower() in ("1", "true", "yes"),
+            )
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_funding_forecast failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/calendar-settings", methods=["GET", "PUT"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings")
+def payroll_calendar_settings():
+    conn = get_db()
+    try:
+        from backend.payroll_funding_forecast import get_calendar_settings, save_calendar_settings
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify(get_calendar_settings(conn, oid))
+        if not user_has_perm(conn, g.ta_user["id"], "ta.settings"):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(silent=True) or {}
+        out = save_calendar_settings(conn, oid, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_calendar_settings failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+# --- Partner roster share links ---
+
+
+@ta_bp.route("/payroll/schedule/roster-share-links", methods=["GET", "POST"])
+@require_auth
+@require_any_perm("ta.settings", "ta.monitor")
+def payroll_roster_share_links():
+    conn = get_db()
+    try:
+        from backend.payroll_roster_share import create_share_link, list_share_links
+
+        oid = _tenant_id()
+        if request.method == "GET":
+            return jsonify({"items": list_share_links(conn, oid)})
+        body = request.get_json(silent=True) or {}
+        out = create_share_link(conn, oid, body, created_by=int(g.ta_user["id"]))
+        conn.commit()
+        return jsonify(out), 201
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_roster_share_links failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/schedule/roster-share-links/<int:link_id>", methods=["PATCH", "DELETE"])
+@require_auth
+@require_perm("ta.settings")
+def payroll_roster_share_link(link_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_roster_share import revoke_share_link, update_share_link
+
+        oid = _tenant_id()
+        if request.method == "DELETE":
+            revoke_share_link(conn, oid, link_id)
+            conn.commit()
+            return jsonify({"ok": True})
+        body = request.get_json(silent=True) or {}
+        out = update_share_link(conn, oid, link_id, body)
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_roster_share_link failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 def register_ta_routes(app):
     app.register_blueprint(ta_bp, url_prefix="/api/ta")

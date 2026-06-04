@@ -51,6 +51,7 @@ from backend.payroll_identity import (
     payroll_profiles_active,
 )
 from backend.ta_helpers import hash_password, json_safe, verify_password
+from backend.business_time import business_today
 from backend.notification_routes import register_notification_routes
 from backend.rinse_export_routes import register_rinse_export_routes
 from backend.rinse_admin_routes import register_rinse_admin_routes
@@ -1907,6 +1908,19 @@ def get_orders():
                 exec_params.extend(sorted(batch_tickets))
             elif not include_all:
                 where_clause = f"({where_clause}) AND 1 = 0"
+            if table_exists(cursor, "checkout_log"):
+                org_join = (
+                    " AND os.organization_id = o.organization_id"
+                    if table_has_column(cursor, "orders_staging", "organization_id")
+                    else ""
+                )
+                where_clause = (
+                    f"({where_clause}) AND NOT EXISTS ("
+                    f"SELECT 1 FROM checkout_log cl "
+                    f"INNER JOIN orders_staging os ON os.id = cl.order_id "
+                    f"WHERE os.ticket_id = o.ticket_id{org_join}"
+                    f")"
+                )
         has_submissions = table_exists(cursor, "order_process_submissions")
         submission_select = ""
         submission_join = ""
@@ -3761,7 +3775,7 @@ def upload_orders():
         tenant_oid = user_org_id(me)
 
         requested_batch_date = request.form.get("batch_date")
-        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
+        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else business_today()
 
         payload = commit_draft_upload_batch_from_orders_df(
             conn, cursor, tenant_oid, batch_date, orders_df, file.filename
@@ -3844,7 +3858,7 @@ def upload_orders_portal_csv():
             return jsonify(body), code
 
         requested_batch_date = request.form.get("batch_date")
-        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
+        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else business_today()
 
         payload = commit_draft_upload_batch_from_orders_df(
             conn, cursor, tenant_oid, batch_date, orders_df, orig_name
@@ -3927,7 +3941,7 @@ def upload_orders_rinse_dual_csv():
         tenant_oid = user_org_id(me)
 
         requested_batch_date = request.form.get("batch_date")
-        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else date.today()
+        batch_date = parse_date_value(requested_batch_date) if requested_batch_date else business_today()
 
         from backend.rinse_combined_upload import commit_rinse_combined_upload
 
@@ -4260,7 +4274,7 @@ def create_manual_order():
         if not name_clean:
             return jsonify({"error": "name_clean is required"}), 400
 
-        batch_date = date.today()
+        batch_date = business_today()
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -5842,6 +5856,59 @@ def public_organization_branding():
         return jsonify(out)
     finally:
         cursor.close()
+        conn.close()
+
+
+@app.route("/api/public/roster/<token>", methods=["GET"])
+def public_roster_get(token):
+    """Read-only partner roster — tokenized, no auth session."""
+    pin = request.args.get("pin") or request.headers.get("X-Roster-Pin")
+    conn = get_db()
+    try:
+        from backend.payroll_roster_share import get_public_roster
+
+        out = get_public_roster(
+            conn,
+            token,
+            pin=pin,
+            ip=request.remote_addr,
+            user_agent=(request.headers.get("User-Agent") or "")[:512],
+        )
+        conn.commit()
+        if out.get("requires_pin"):
+            return jsonify(out), 401
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        app.logger.exception("public_roster_get failed")
+        return jsonify({"error": "Could not load roster"}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/public/roster/<token>/verify", methods=["POST"])
+def public_roster_verify(token):
+    body = request.get_json(silent=True) or {}
+    pin = str(body.get("pin") or body.get("password") or "").strip()
+    conn = get_db()
+    try:
+        from backend.payroll_roster_share import get_public_roster, verify_roster_pin
+
+        if not verify_roster_pin(conn, token, pin):
+            return jsonify({"error": "Invalid PIN"}), 401
+        out = get_public_roster(
+            conn,
+            token,
+            pin=pin,
+            ip=request.remote_addr,
+            user_agent=(request.headers.get("User-Agent") or "")[:512],
+        )
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    finally:
         conn.close()
 
 
@@ -10178,7 +10245,7 @@ def override_upload_conflicts():
         rows = cursor.fetchall()
 
         inserted = 0
-        today_batch_date = date.today()
+        today_batch_date = business_today()
 
         for row in rows:
             cols = [
