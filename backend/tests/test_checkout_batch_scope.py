@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 from backend.checkout_batch_scope import (
     batch_accepted_ticket_ids,
+    batch_checkout_eligible_ticket_ids,
+    checkout_batch_ticket_filter,
     reapply_checkout_batch_staging,
 )
 
@@ -25,6 +27,59 @@ class TestCheckoutBatchScope(unittest.TestCase):
         ), patch("backend.checkout_batch_scope.table_exists", return_value=True):
             ids = batch_accepted_ticket_ids(cursor, 551)
         self.assertEqual(ids, {"ABC123", "WXYZ"})
+
+    def test_eligible_includes_completed_at_vendor_when_override_on(self):
+        cursor = MagicMock()
+        rows = [
+            {
+                "ticket_id": "DONE1",
+                "date_clean": date(2026, 6, 4),
+                "name_clean": "Done",
+                "service_type": "WF",
+                "rush_type": "RUSH",
+                "row_status": "REJECTED_DUPLICATE",
+                "reason": "ALREADY_COMPLETED",
+                "weight_num": 0,
+            },
+            {
+                "ticket_id": "OK1",
+                "date_clean": date(2026, 6, 4),
+                "name_clean": "Ok",
+                "service_type": "WF",
+                "rush_type": "RUSH",
+                "row_status": "ACCEPTED",
+                "reason": "OK",
+                "weight_num": 0,
+            },
+        ]
+        cursor.fetchone.return_value = {"batch_date": date(2026, 6, 4)}
+        cursor.fetchall.return_value = rows
+        with patch(
+            "backend.checkout_batch_scope._row_batch_col", return_value="upload_batch_id"
+        ), patch("backend.checkout_batch_scope.table_exists", return_value=True), patch(
+            "backend.checkout_batch_scope._batch_pk", return_value="batch_id"
+        ), patch(
+            "backend.manual_checkout_settings.checkout_at_vendor_override_active",
+            return_value=True,
+        ), patch(
+            "backend.checkout_batch_source.upload_batch_is_auto_scrape",
+            return_value=True,
+        ), patch(
+            "backend.manual_checkout_eligibility.effective_checkout_row_status",
+            side_effect=lambda _c, _o, row, **kw: (
+                ("ACCEPTED", "OK")
+                if row.get("ticket_id") == "DONE1"
+                else ("ACCEPTED", "OK")
+            ),
+        ):
+            eligible = batch_checkout_eligible_ticket_ids(cursor, 673, 3)
+        self.assertEqual(eligible, {"DONE1", "OK1"})
+        with patch(
+            "backend.checkout_batch_scope.batch_accepted_ticket_ids",
+            return_value={"OK1"},
+        ):
+            raw = batch_accepted_ticket_ids(cursor, 673)
+        self.assertEqual(raw, {"OK1"})
 
     def test_reapply_works_for_auto_scrape_batch(self):
         cursor = MagicMock()

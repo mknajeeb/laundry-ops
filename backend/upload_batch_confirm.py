@@ -100,6 +100,12 @@ def confirm_upload_batch_core(
             {"error": "Batch has NEEDS_ATTENTION rows", "attention_count": attention_count},
         )
 
+    from backend.manual_checkout_settings import checkout_at_vendor_override_active
+    from backend.manual_checkout_eligibility import reclassify_checkout_batch_upload_rows
+
+    if checkout_at_vendor_override_active(cursor, tenant_oid):
+        reclassify_checkout_batch_upload_rows(cursor, tenant_oid, batch_id)
+
     ubr_tid_sel = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
     cursor.execute(
         f"""

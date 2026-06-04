@@ -88,6 +88,92 @@ def batch_accepted_ticket_ids(cursor, batch_id: int) -> set[str]:
     return out
 
 
+def batch_checkout_eligible_ticket_ids(
+    cursor,
+    batch_id: int,
+    organization_id: int,
+) -> set[str]:
+    """
+    Ticket IDs that belong in the live checkout queue for this batch.
+
+    When at-vendor override is active, re-evaluates each batch row (same rules as
+    checkout batch summary) so COMPLETED bags still in the vendor source are included
+    even if upload_batch_rows still says REJECTED_DUPLICATE / ALREADY_COMPLETED.
+    """
+    from backend.manual_checkout_eligibility import effective_checkout_row_status
+    from backend.manual_checkout_settings import checkout_at_vendor_override_active
+
+    org = int(organization_id)
+    bid = int(batch_id)
+    if not checkout_at_vendor_override_active(cursor, org):
+        return batch_accepted_ticket_ids(cursor, bid)
+
+    row_col = _row_batch_col(cursor)
+    if not row_col or not table_exists(cursor, "upload_batch_rows"):
+        return set()
+
+    batch_pk = _batch_pk(cursor)
+    cursor.execute(
+        f"SELECT batch_date FROM upload_batches WHERE {batch_pk} = %s",
+        (bid,),
+    )
+    batch = cursor.fetchone()
+    batch_date = batch.get("batch_date") if isinstance(batch, dict) else None
+    is_auto = upload_batch_is_auto_scrape(cursor, bid, org)
+
+    cursor.execute(
+        f"""
+        SELECT ticket_id, date_clean, name_clean, service_type, rush_type,
+               row_status, reason, weight_num
+        FROM upload_batch_rows
+        WHERE {row_col} = %s
+          AND ticket_id IS NOT NULL AND TRIM(ticket_id) != ''
+        """,
+        (bid,),
+    )
+    out: set[str] = set()
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        tid = normalize_bag_id(row.get("ticket_id"))
+        if not tid:
+            continue
+        eff_status, _reason = effective_checkout_row_status(
+            cursor,
+            org,
+            {**row, "batch_date": batch_date},
+            is_auto_scrape=is_auto,
+        )
+        if str(eff_status or "").strip().upper() in ("ACCEPTED", "OVERRIDDEN"):
+            out.add(tid)
+    return out
+
+
+def _checkout_staging_rows_for_batch(cursor, organization_id: int, batch_id: int) -> list[dict]:
+    """Upload batch rows that should be staged for checkout (after optional reclassify)."""
+    from backend.manual_checkout_eligibility import reclassify_checkout_batch_upload_rows
+    from backend.manual_checkout_settings import checkout_at_vendor_override_active
+
+    org = int(organization_id)
+    bid = int(batch_id)
+    if checkout_at_vendor_override_active(cursor, org):
+        reclassify_checkout_batch_upload_rows(cursor, org, bid)
+
+    row_col = _row_batch_col(cursor)
+    if not row_col or not table_exists(cursor, "upload_batch_rows"):
+        return []
+    cursor.execute(
+        f"""
+        SELECT date_clean, name_clean, weight_num, service_type, rush_type, ticket_id
+        FROM upload_batch_rows
+        WHERE {row_col} = %s
+          AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
+        """,
+        (bid,),
+    )
+    return [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+
+
 def checkout_batch_ticket_filter(cursor, organization_id: int) -> set[str] | None:
     """
     Ticket IDs that belong in checkout for this tenant.
@@ -97,7 +183,8 @@ def checkout_batch_ticket_filter(cursor, organization_id: int) -> set[str] | Non
     batch = latest_checkout_batch(cursor, organization_id)
     if not batch or batch.get("batch_id") is None:
         return None
-    ids = batch_accepted_ticket_ids(cursor, int(batch["batch_id"]))
+    org = int(organization_id)
+    ids = batch_checkout_eligible_ticket_ids(cursor, int(batch["batch_id"]), org)
     return ids if ids else None
 
 
@@ -134,16 +221,7 @@ def reapply_checkout_batch_staging(
         return {"updated": 0, "inserted": 0, "skipped": 0, "dry_run": dry_run}
 
     batch_date = batch.get("batch_date")
-    cursor.execute(
-        f"""
-        SELECT date_clean, name_clean, weight_num, service_type, rush_type, ticket_id
-        FROM upload_batch_rows
-        WHERE {row_col} = %s
-          AND row_status IN ('ACCEPTED', 'OVERRIDDEN')
-        """,
-        (bid,),
-    )
-    accepted_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    accepted_rows = _checkout_staging_rows_for_batch(cursor, org, bid)
 
     cap = {
         "has_logistics": table_has_column(cursor, "orders_staging", "logistics_status"),
