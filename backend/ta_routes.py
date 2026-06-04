@@ -5675,10 +5675,6 @@ def payroll_employee_pto(user_id: int):
         conn.close()
 
 
-    finally:
-        conn.close()
-
-
 # --- Payroll scheduling (Phase 1) ---
 
 
