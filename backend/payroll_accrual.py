@@ -42,10 +42,25 @@ def _q4(val: Decimal) -> float:
     return float(val.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP))
 
 
-def ensure_payroll_accrual_ledger(cursor) -> None:
-    if table_exists(cursor, "payroll_accrual_ledger"):
+def _cursor(conn_or_cursor, dictionary: bool = True):
+    """Accept either a mysql connection or an existing cursor."""
+    if hasattr(conn_or_cursor, "fetchone"):
+        return conn_or_cursor
+    return conn_or_cursor.cursor(dictionary=dictionary)
+
+
+def _connection(conn_or_cursor):
+    """Return the connection object for APIs that need conn.cursor()."""
+    if hasattr(conn_or_cursor, "fetchone"):
+        return getattr(conn_or_cursor, "connection", None) or conn_or_cursor
+    return conn_or_cursor
+
+
+def ensure_payroll_accrual_ledger(conn_or_cursor) -> None:
+    c = _cursor(conn_or_cursor)
+    if table_exists(c, "payroll_accrual_ledger"):
         return
-    cursor.execute(
+    c.execute(
         """
         CREATE TABLE IF NOT EXISTS payroll_accrual_ledger (
             id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -76,8 +91,9 @@ def ensure_payroll_accrual_ledger(cursor) -> None:
     )
 
 
-def ensure_payout_line_accrual_columns(cursor) -> None:
-    if not table_exists(cursor, "payout_batch_lines"):
+def ensure_payout_line_accrual_columns(conn_or_cursor) -> None:
+    c = _cursor(conn_or_cursor)
+    if not table_exists(c, "payout_batch_lines"):
         return
     extras = [
         ("ot_hours", "DECIMAL(10,2) NOT NULL DEFAULT 0"),
@@ -92,8 +108,8 @@ def ensure_payout_line_accrual_columns(cursor) -> None:
         ("ny_dbl_deduction", "DECIMAL(10,2) NULL"),
     ]
     for col, typedef in extras:
-        if not table_has_column(cursor, "payout_batch_lines", col):
-            cursor.execute(
+        if not table_has_column(c, "payout_batch_lines", col):
+            c.execute(
                 f"ALTER TABLE payout_batch_lines ADD COLUMN {col} {typedef}"
             )
 
@@ -152,14 +168,14 @@ def calculate_health_credit_amount(
 
 
 def get_ledger_ytd_totals(
-    cursor,
+    conn_or_cursor,
     organization_id: int,
     user_id: int,
     accrual_type: str,
     year: int,
 ) -> dict[str, Decimal]:
-    ensure_payroll_accrual_ledger(cursor)
-    c = cursor if hasattr(cursor, "execute") else cursor.cursor(dictionary=True)
+    c = _cursor(conn_or_cursor)
+    ensure_payroll_accrual_ledger(c)
     c.execute(
         """
         SELECT
@@ -179,11 +195,11 @@ def get_ledger_ytd_totals(
 
 
 def get_sick_leave_balance(
-    cursor, organization_id: int, user_id: int, *, year: Optional[int] = None
+    conn_or_cursor, organization_id: int, user_id: int, *, year: Optional[int] = None
 ) -> dict[str, Any]:
     year = int(year or date.today().year)
-    ensure_payroll_accrual_ledger(cursor)
-    c = cursor if hasattr(cursor, "fetchone") else cursor.cursor(dictionary=True)
+    c = _cursor(conn_or_cursor)
+    ensure_payroll_accrual_ledger(c)
     c.execute(
         """
         SELECT balance_after FROM payroll_accrual_ledger
@@ -195,7 +211,7 @@ def get_sick_leave_balance(
     row = c.fetchone() or {}
     balance = _d(row.get("balance_after"))
     ytd = get_ledger_ytd_totals(c, organization_id, user_id, "SICK_LEAVE", year)
-    settings = fetch_payroll_tax_settings(c, organization_id)
+    settings = fetch_payroll_tax_settings(_connection(conn_or_cursor), organization_id)
     return json_safe(
         {
             "balance_hours": _q2(balance),
@@ -211,7 +227,7 @@ def get_sick_leave_balance(
 
 
 def insert_ledger_entry(
-    cursor,
+    conn_or_cursor,
     *,
     organization_id: int,
     user_id: int,
@@ -229,8 +245,8 @@ def insert_ledger_entry(
     admin_note: Optional[str] = None,
     created_by: Optional[int] = None,
 ) -> int:
-    ensure_payroll_accrual_ledger(cursor)
-    c = cursor
+    c = _cursor(conn_or_cursor)
+    ensure_payroll_accrual_ledger(c)
     c.execute(
         """
         INSERT INTO payroll_accrual_ledger (
@@ -262,14 +278,14 @@ def insert_ledger_entry(
 
 
 def reverse_ledger_entries_for_line(
-    cursor,
+    conn_or_cursor,
     organization_id: int,
     line_id: int,
     *,
     created_by: Optional[int] = None,
 ) -> int:
-    ensure_payroll_accrual_ledger(cursor)
-    c = cursor if hasattr(cursor, "fetchone") else cursor.cursor(dictionary=True)
+    c = _cursor(conn_or_cursor)
+    ensure_payroll_accrual_ledger(c)
     c.execute(
         """
         SELECT * FROM payroll_accrual_ledger
@@ -309,15 +325,15 @@ def reverse_ledger_entries_for_line(
 
 
 def reverse_ledger_entries_for_batch(
-    cursor,
+    conn_or_cursor,
     organization_id: int,
     batch_id: int,
     *,
     created_by: Optional[int] = None,
 ) -> int:
     """Reverse accrual entries for a batch (audit trail preserved)."""
-    ensure_payroll_accrual_ledger(cursor)
-    c = cursor if hasattr(cursor, "fetchone") else cursor.cursor(dictionary=True)
+    c = _cursor(conn_or_cursor)
+    ensure_payroll_accrual_ledger(c)
     c.execute(
         """
         SELECT * FROM payroll_accrual_ledger
