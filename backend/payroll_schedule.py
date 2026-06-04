@@ -297,10 +297,23 @@ def update_org_schedule_settings(conn, organization_id: int, body: dict) -> dict
 
 
 def _worker_display_name(c, user_id: int) -> str:
+    """Resolve display name from payroll_profiles and/or users (schema varies by tenant)."""
+    name_parts = []
+    if table_has_column(c, "payroll_profiles", "first_name"):
+        name_parts.append("NULLIF(TRIM(CONCAT(pp.first_name,' ',pp.last_name)), '')")
+    if table_has_column(c, "users", "display_name"):
+        name_parts.append("NULLIF(TRIM(u.display_name), '')")
+    if table_has_column(c, "users", "username"):
+        name_parts.append("NULLIF(TRIM(u.username), '')")
+    if table_has_column(c, "payroll_profiles", "email"):
+        name_parts.append("NULLIF(TRIM(pp.email), '')")
+    if table_has_column(c, "users", "email"):
+        name_parts.append("NULLIF(TRIM(u.email), '')")
+    name_parts.append("CONCAT('User #', u.id)")
+    coalesce = ", ".join(name_parts)
     c.execute(
-        """
-        SELECT COALESCE(NULLIF(TRIM(CONCAT(pp.first_name,' ',pp.last_name)), ''),
-               u.username, u.email, CONCAT('User #', u.id)) AS nm
+        f"""
+        SELECT COALESCE({coalesce}) AS nm
         FROM users u
         LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
         WHERE u.id=%s LIMIT 1
