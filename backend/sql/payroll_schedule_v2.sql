@@ -2,19 +2,8 @@
 
 SET NAMES utf8mb4;
 
-ALTER TABLE payroll_schedule_org_settings
-  ADD COLUMN IF NOT EXISTS underused_hours_threshold DECIMAL(6,2) NOT NULL DEFAULT 15.00,
-  ADD COLUMN IF NOT EXISTS heavy_hours_threshold DECIMAL(6,2) NOT NULL DEFAULT 35.00,
-  ADD COLUMN IF NOT EXISTS target_hours_per_week DECIMAL(6,2) NOT NULL DEFAULT 32.00;
-
-ALTER TABLE payroll_schedule_entries
-  ADD COLUMN IF NOT EXISTS publish_status VARCHAR(16) NOT NULL DEFAULT 'draft',
-  ADD COLUMN IF NOT EXISTS published_at TIMESTAMP NULL,
-  ADD COLUMN IF NOT EXISTS published_by INT NULL,
-  ADD COLUMN IF NOT EXISTS worker_category_snapshot VARCHAR(32) NULL,
-  ADD COLUMN IF NOT EXISTS role_snapshot VARCHAR(64) NULL,
-  ADD COLUMN IF NOT EXISTS work_stream_snapshot VARCHAR(64) NULL,
-  ADD COLUMN IF NOT EXISTS shift_snapshot VARCHAR(64) NULL;
+-- Column adds are applied idempotently by ensure_payroll_schedule_v2() in payroll_schedule_planner.py
+-- (MySQL 8.0 on Azure does not support ADD COLUMN IF NOT EXISTS in ALTER TABLE).
 
 CREATE TABLE IF NOT EXISTS payroll_schedule_coverage_targets (
   id INT AUTO_INCREMENT PRIMARY KEY,
