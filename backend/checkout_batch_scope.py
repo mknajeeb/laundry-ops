@@ -165,6 +165,7 @@ def reapply_checkout_batch_staging(
 
         if dry_run:
             from backend.rinse_bag_upload import find_staging_by_ticket_id
+            from backend.manual_checkout_settings import checkout_at_vendor_override_active
 
             existing = find_staging_by_ticket_id(
                 cursor,
@@ -173,10 +174,11 @@ def reapply_checkout_batch_staging(
                 has_staging_org=has_staging_org,
                 has_ticket_id_col=True,
             )
+            reactivate = checkout_at_vendor_override_active(cursor, org)
             if existing:
                 from backend.manual_checkout_eligibility import staging_checkout_sent_reason
 
-                if staging_checkout_sent_reason(existing):
+                if staging_checkout_sent_reason(existing) and not reactivate:
                     skipped += 1
                 else:
                     updated += 1
@@ -184,6 +186,9 @@ def reapply_checkout_batch_staging(
                 inserted += 1
             continue
 
+        from backend.manual_checkout_settings import checkout_at_vendor_override_active
+
+        reactivate = checkout_at_vendor_override_active(cursor, org)
         action, _sid = upsert_staging_for_ticket_upload_row(
             cursor,
             org,
@@ -191,7 +196,7 @@ def reapply_checkout_batch_staging(
             batch_date,
             cap,
             has_staging_org=has_staging_org,
-            reactivate_sent=False,
+            reactivate_sent=reactivate,
         )
         if action == "updated":
             updated += 1

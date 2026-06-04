@@ -83,6 +83,9 @@ class TestCheckoutBatchScope(unittest.TestCase):
         ), patch("backend.checkout_batch_scope.table_exists", return_value=True), patch(
             "backend.checkout_batch_scope.table_has_column", return_value=True
         ), patch(
+            "backend.manual_checkout_settings.checkout_at_vendor_override_active",
+            return_value=True,
+        ), patch(
             "backend.checkout_batch_staging.upsert_staging_for_ticket_upload_row",
             return_value=("updated", 42),
         ) as mock_upsert:
@@ -91,7 +94,7 @@ class TestCheckoutBatchScope(unittest.TestCase):
         self.assertEqual(out["updated"], 1)
         self.assertEqual(out["inserted"], 0)
         mock_upsert.assert_called_once()
-        self.assertEqual(mock_upsert.call_args.kwargs.get("reactivate_sent"), False)
+        self.assertEqual(mock_upsert.call_args.kwargs.get("reactivate_sent"), True)
 
 
 if __name__ == "__main__":

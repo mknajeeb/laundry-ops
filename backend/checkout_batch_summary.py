@@ -284,8 +284,24 @@ def build_checkout_batch_summary(
             bucket["excluded_already_completed"] += 1
             exclude_reason = "ALREADY_COMPLETED (batch rejected duplicate)"
         elif row_status in ("ACCEPTED", "OVERRIDDEN"):
-            if tid and tid in checked_out_tickets:
+            from backend.manual_checkout_eligibility import ticket_true_sent_out_for_checkout
+
+            true_sent = bool(
+                tid
+                and ticket_true_sent_out_for_checkout(
+                    cursor,
+                    org,
+                    tid,
+                    in_latest_vendor_batch=True,
+                )
+            )
+            if true_sent:
                 bucket["checked_out"] += 1
+            elif tid and tid in checked_out_tickets:
+                bucket["excluded_not_staged"] += 1
+                exclude_reason = (
+                    "ACCEPTED in vendor batch; stale sent/force staging (needs reactivate)"
+                )
             else:
                 bucket["excluded_not_staged"] += 1
                 exclude_reason = "ACCEPTED but not in active staging (identity or confirm skip)"

@@ -91,7 +91,7 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
-    def test_clean_then_wf_rejected_when_rack_rule_applied(self):
+    def test_clean_then_wf_accepted_when_still_in_portal_upload(self):
         events = [
             _ev("Washpro Clean", datetime(2026, 6, 3, 8, 21), 1, "move-bag"),
             _ev("026-NY-WF", datetime(2026, 6, 3, 10, 0), 2, "move-bag"),
@@ -104,8 +104,8 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
             has_rack_scan_after_clean=True,
             apply_rack_after_clean_rule=True,
         )
-        self.assertEqual(st, "REJECTED_DUPLICATE")
-        self.assertEqual(reason, REASON_RACK_SCAN_AFTER_CLEAN)
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
 
     def test_non_clean_rack_before_clean_not_rejected(self):
         from backend.manual_checkout_eligibility import find_rack_scan_after_clean_trigger
@@ -142,7 +142,7 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
-    def test_sent_staging_excluded(self):
+    def test_stale_sent_staging_ignored_when_still_at_vendor(self):
         st, reason = classify_at_vendor_checkout_row(
             ticket_id=self.BAG,
             has_active_staging=False,
@@ -150,8 +150,8 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
             has_rack_scan_after_clean=False,
             staging_sent_reason=REASON_ALREADY_SENT_TO_RINSE,
         )
-        self.assertEqual(st, "REJECTED_DUPLICATE")
-        self.assertEqual(reason, REASON_ALREADY_SENT_TO_RINSE)
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
 
     def test_force_checkout_excluded(self):
         reason = staging_checkout_sent_reason({"logistics_status": "FORCE_CHECKOUT"})
@@ -241,7 +241,7 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
         self.assertEqual(st, "ACCEPTED")
         self.assertEqual(reason, REASON_OK)
 
-    def test_manual_still_excludes_force_checkout_staging(self):
+    def test_manual_completed_with_stale_force_accepted_when_override_on(self):
         cursor = MagicMock()
         with patch(
             "backend.manual_checkout_eligibility.checkout_at_vendor_override_active",
@@ -262,9 +262,10 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
                 was_completed_before_upload=True,
                 is_auto_scrape=False,
             )
-        self.assertEqual(reason, REASON_ALREADY_FORCE_CHECKOUT)
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
 
-    def test_checked_out_excluded_manual(self):
+    def test_manual_completed_with_stale_checked_out_accepted_when_override_on(self):
         cursor = MagicMock()
         with patch(
             "backend.manual_checkout_eligibility.checkout_at_vendor_override_active",
@@ -282,7 +283,8 @@ class TestAtVendorCheckoutClassification(unittest.TestCase):
                 was_completed_before_upload=True,
                 is_auto_scrape=False,
             )
-        self.assertEqual(reason, REASON_ALREADY_SENT_TO_RINSE)
+        self.assertEqual(st, "ACCEPTED")
+        self.assertEqual(reason, REASON_OK)
 
 
 class TestSettingKeys(unittest.TestCase):

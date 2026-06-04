@@ -103,6 +103,66 @@ def staging_checkout_sent_reason(staging_row: Mapping[str, Any] | None) -> str |
     return None
 
 
+def staging_row_has_sent_status(staging_row: Mapping[str, Any] | None) -> bool:
+    return staging_checkout_sent_reason(staging_row) is not None
+
+
+def has_checkout_log_for_staging(cursor, organization_id: int, staging_id: int) -> bool:
+    """True when an explicit checkout_log row exists for this staging order."""
+    from backend.ta_helpers import table_exists, table_has_column
+
+    if not table_exists(cursor, "checkout_log") or staging_id is None:
+        return False
+    sid = int(staging_id)
+    if table_has_column(cursor, "checkout_log", "organization_id"):
+        cursor.execute(
+            """
+            SELECT 1 AS ok FROM checkout_log
+            WHERE order_id = %s AND organization_id = %s
+            LIMIT 1
+            """,
+            (sid, int(organization_id)),
+        )
+    else:
+        cursor.execute(
+            "SELECT 1 AS ok FROM checkout_log WHERE order_id = %s LIMIT 1",
+            (sid,),
+        )
+    return bool(cursor.fetchone())
+
+
+def ticket_has_checkout_log(cursor, organization_id: int, ticket_id: str) -> bool:
+    """Explicit checkout action recorded for this bag (via staging order_id)."""
+    from backend.ta_helpers import table_has_column
+
+    staging = _latest_staging_for_ticket(cursor, organization_id, ticket_id)
+    if not staging or staging.get("id") is None:
+        return False
+    return has_checkout_log_for_staging(cursor, organization_id, int(staging["id"]))
+
+
+def ticket_true_sent_out_for_checkout(
+    cursor,
+    organization_id: int,
+    ticket_id: str,
+    *,
+    in_latest_vendor_batch: bool,
+) -> bool:
+    """
+    True sent-out evidence for checkout summary/queue.
+
+    When the bag is still in the latest confirmed vendor source (portal upload / at_vendor
+    scrape), stale staging SENT/FORCE rows are ignored unless an explicit checkout_log exists.
+    """
+    tid = normalize_bag_id(ticket_id)
+    if not tid:
+        return False
+    if in_latest_vendor_batch:
+        return ticket_has_checkout_log(cursor, organization_id, tid)
+    staging = _latest_staging_for_ticket(cursor, organization_id, tid)
+    return staging_row_has_sent_status(staging)
+
+
 def events_for_bag_from_events_df(events_df: pd.DataFrame | None, bag_id: str) -> list[dict[str, Any]]:
     bid = normalize_bag_id(bag_id)
     if not bid or events_df is None or events_df.empty:
@@ -175,11 +235,9 @@ def classify_at_vendor_checkout_row(
     if row_date_before_batch:
         return "NEEDS_ATTENTION", "OLDER_THAN_BATCH_DATE"
 
-    if staging_sent_reason:
-        return ROW_REJECTED, staging_sent_reason
-
-    if apply_rack_after_clean_rule and has_rack_scan_after_clean:
-        return ROW_REJECTED, REASON_RACK_SCAN_AFTER_CLEAN
+    # Bag is in latest vendor upload/scrape — stale staging sent/force and rack-after-CLEAN
+    # do not remove it from checkout. True sent-out is enforced via checkout_log or absence
+    # from a later confirmed vendor source.
 
     if has_active_staging:
         return ROW_ACCEPTED, REASON_UPDATED_EXISTING_BAG
@@ -216,24 +274,10 @@ def effective_checkout_row_status(
         except Exception:
             row_date_before_batch = False
 
-    latest_staging = _latest_staging_for_ticket(cursor, org, tid)
-    sent_reason = None
-    if not is_auto_scrape:
-        sent_reason = staging_checkout_sent_reason(latest_staging)
-
-    rack_after = False
-    apply_rack = not is_auto_scrape
-    if apply_rack:
-        events = load_bag_scan_timeline(cursor, org, tid, pending_events_df=pending_events_df)
-        rack_after = bag_has_rack_scan_after_clean(events)
-
     return classify_at_vendor_checkout_row(
         ticket_id=tid,
         has_active_staging=bool(has_active_staging),
         row_date_before_batch=row_date_before_batch,
-        staging_sent_reason=sent_reason,
-        has_rack_scan_after_clean=rack_after,
-        apply_rack_after_clean_rule=apply_rack,
     )
 
 
@@ -253,7 +297,8 @@ def classify_upload_row_for_checkout(
 
     When checkout_include_completed_if_at_vendor is on:
     - Auto scrape: row in at_vendor scrape → eligible even if registry COMPLETED
-    - Manual: row in portal upload → eligible unless sent or rack-after-CLEAN
+    - Manual: row in portal upload → eligible even if registry COMPLETED / rack-after-CLEAN
+    Stale staging sent/force does not exclude rows still present in the vendor source.
     """
     org = int(organization_id)
     if not checkout_at_vendor_override_active(cursor, org):
@@ -264,24 +309,10 @@ def classify_upload_row_for_checkout(
             row_date_before_batch=row_date_before_batch,
         )
 
-    latest = _latest_staging_for_ticket(cursor, org, ticket_id)
-    sent_reason = None
-    if not is_auto_scrape:
-        sent_reason = staging_checkout_sent_reason(latest)
-
-    rack_after = False
-    apply_rack = not is_auto_scrape
-    if apply_rack:
-        timeline = load_bag_scan_timeline(cursor, org, ticket_id, pending_events_df=pending_events_df)
-        rack_after = bag_has_rack_scan_after_clean(timeline)
-
     return classify_at_vendor_checkout_row(
         ticket_id=ticket_id,
         has_active_staging=has_active_staging,
         row_date_before_batch=row_date_before_batch,
-        staging_sent_reason=sent_reason,
-        has_rack_scan_after_clean=rack_after,
-        apply_rack_after_clean_rule=apply_rack,
     )
 
 
