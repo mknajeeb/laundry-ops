@@ -285,6 +285,11 @@ export default function PayrollSchedulingPanel() {
     return filteredEntries;
   }, [filteredEntries, onlyGaps, view, draftEntries, settings, coverageTargets, selectedDate, workers]);
 
+  const settingsWithWorkers = useMemo(
+    () => (settings ? { ...settings, _workers: workers } : null),
+    [settings, workers],
+  );
+
   const dayPlanFull = useMemo(() => {
     if (!settingsWithWorkers) return null;
     return computeDayPlan(draftEntries, settingsWithWorkers, coverageTargets, selectedDate, workers);
@@ -326,11 +331,6 @@ export default function PayrollSchedulingPanel() {
 
   const activeSummary = view === "day" ? dayPlanFull : weekSummary;
   const hasUnsaved = JSON.stringify(draftEntries) !== JSON.stringify(serverEntries);
-
-  const settingsWithWorkers = useMemo(
-    () => (settings ? { ...settings, _workers: workers } : null),
-    [settings, workers],
-  );
 
   const fundingForecast = useMemo(() => {
     if (!settings || !weekStart || !weekEnd) return null;
