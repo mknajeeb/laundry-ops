@@ -16,8 +16,17 @@
 | Environment | Frontend | API |
 |-------------|----------|-----|
 | Production (unchanged until merge) | https://zealous-bay-0fb502610.4.azurestaticapps.net | https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net |
-| Staging slot (after workflow) | Use SWA **PR preview** or local `npm run dev` with `VITE_API_BASE` → staging API | https://laundryops-api-staging.azurewebsites.net (if slot exists) |
-| Local dev | http://localhost:5173 | http://127.0.0.1:8000 (proxy) |
+| Staging slot | Requires **Standard** App Service plan or higher (Basic SKU has **no deployment slots**). | `https://laundryops-api-staging.azurewebsites.net` after slot is created |
+| PR preview (frontend only) | Open PR from `feature/payroll-planning-layer` → SWA preview URL in GitHub checks | Still production API unless you set preview `VITE_API_BASE` |
+| **Recommended for QA now** | http://localhost:5173 | Local Flask on `PORT` (Vite proxy) |
+
+### Azure note (2026-06-04)
+
+`laundryops-api` is on **Basic** SKU — slot create failed: *site will exceed the number of slots allowed*. Options:
+
+1. **Local full-stack** (branch checked out, migrations on a non-production DB — see below).
+2. **Upgrade** App Service to Standard → add slot `staging` → re-run workflow `Deploy payroll planning to staging slot`.
+3. **Separate test database** on the same MySQL server (e.g. `laundryapp_staging`), point local `.env` at it, run migrations + seed there.
 
 ## Branch and commit
 
