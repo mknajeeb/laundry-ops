@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
@@ -48,7 +48,7 @@ function ProfileSection({ title, hint, children }) {
   );
 }
 
-export default function WorkerSchedulingProfilePanel({ userId, payrollRow, canEdit, onSaved }) {
+export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrollRow, canEdit, onSaved }, ref) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -108,11 +108,10 @@ export default function WorkerSchedulingProfilePanel({ userId, payrollRow, canEd
 
   const perf = bundle?.worker?.performance_preview;
 
-  const save = async () => {
+  const save = useCallback(async () => {
     setSaving(true);
     setError("");
     try {
-      await putUserGeofences(userId, { geofence_ids: form.geofence_ids || [] });
       const res = await putPayrollWorkerSchedulingProfile(userId, {
         default_hourly_rate: form.default_hourly_rate === "" ? null : Number(form.default_hourly_rate),
         max_hours_per_week: form.max_hours_per_week === "" ? null : Number(form.max_hours_per_week),
@@ -129,12 +128,22 @@ export default function WorkerSchedulingProfilePanel({ userId, payrollRow, canEd
       });
       setBundle(res.data);
       onSaved?.(res.data);
+      try {
+        await putUserGeofences(userId, { geofence_ids: form.geofence_ids || [] });
+      } catch (geoErr) {
+        console.warn("Geofence save skipped:", geoErr);
+      }
+      return res.data;
     } catch (e) {
-      setError(e.response?.data?.error || "Save failed.");
+      const msg = e.response?.data?.error || e.message || "Save failed.";
+      setError(msg);
+      throw new Error(msg);
     } finally {
       setSaving(false);
     }
-  };
+  }, [form, onSaved, userId]);
+
+  useImperativeHandle(ref, () => ({ save }), [save]);
 
   if (loading) {
     return (
@@ -342,45 +351,6 @@ export default function WorkerSchedulingProfilePanel({ userId, payrollRow, canEd
         )}
       </ProfileSection>
 
-      <ProfileSection title="Location compatibility" hint="Where this worker can be scheduled. Edited here; planner warns on mismatches.">
-        {canEdit ? (
-          <FormControl fullWidth size="small">
-            <InputLabel>Locations</InputLabel>
-            <Select
-              multiple
-              label="Locations"
-              value={(form.geofence_ids || []).map(String)}
-              onChange={(e) => {
-                const v = e.target.value;
-                setForm({ ...form, geofence_ids: (typeof v === "string" ? v.split(",") : v).map(Number) });
-              }}
-              input={<OutlinedInput label="Locations" />}
-              renderValue={(sel) =>
-                sel.map((id) => geofences.find((g) => String(g.id) === String(id))?.name || id).join(", ")
-              }
-            >
-              {geofences.map((g) => (
-                <MenuItem key={g.id} value={String(g.id)}>
-                  <Checkbox checked={(form.geofence_ids || []).map(String).includes(String(g.id))} size="small" />
-                  {g.name}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-        ) : (
-          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-            {(bundle?.worker?.assigned_locations || []).map((g) => (
-              <Chip key={g.id} label={g.name} size="small" />
-            ))}
-            {!(bundle?.worker?.assigned_locations || []).length ? (
-              <Typography variant="body2" color="text.secondary">
-                No locations assigned
-              </Typography>
-            ) : null}
-          </Stack>
-        )}
-      </ProfileSection>
-
       <ProfileSection title="Performance mapping">
         {perf?.available ? (
           <Stack spacing={0.5}>
@@ -409,4 +379,4 @@ export default function WorkerSchedulingProfilePanel({ userId, payrollRow, canEd
       </Button>
     </Box>
   );
-}
+});

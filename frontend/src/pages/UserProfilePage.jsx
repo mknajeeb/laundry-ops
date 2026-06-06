@@ -495,6 +495,7 @@ export default function UserProfilePage({ user: sessionUser }) {
 
   const catalogsPrimedRef = useRef(false);
   const profileLoadSeqRef = useRef(0);
+  const schedulingPanelRef = useRef(null);
 
   const mapsForPayrollTab = !platformMode && workspaceTab === "payroll";
   const mapsForComplianceTab = !platformMode && workspaceTab === "compliance";
@@ -1006,6 +1007,10 @@ export default function UserProfilePage({ user: sessionUser }) {
     setSaving(true);
     setError("");
     try {
+      if (!platformMode && workspaceTab === "scheduling" && hasPayroll && canEditPayrollRecords) {
+        await schedulingPanelRef.current?.save();
+        return;
+      }
       if (platformMode) {
         const oid = organizationId === "" ? undefined : Number(organizationId);
         const washpro = {
@@ -2214,6 +2219,7 @@ export default function UserProfilePage({ user: sessionUser }) {
 
         {!platformMode && workspaceTab === "scheduling" && hasPayroll ? (
           <WorkerSchedulingProfilePanel
+            ref={schedulingPanelRef}
             userId={uid}
             payrollRow={{ first_name: firstName, last_name: lastName, mobile }}
             canEdit={canEditPayrollRecords}

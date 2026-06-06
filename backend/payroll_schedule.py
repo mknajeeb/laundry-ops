@@ -63,14 +63,13 @@ def _cursor(conn):
 
 def _dict_cursor(conn_or_cursor):
     """Dictionary cursor whether caller passed a connection or plain cursor."""
-    if hasattr(conn_or_cursor, "cursor") and conn_or_cursor.__class__.__name__ in {
-        "MySQLConnection",
-        "PooledMySQLConnection",
-        "CMySQLConnection",
-    }:
-        return conn_or_cursor.cursor(dictionary=True)
+    if hasattr(conn_or_cursor, "cursor") and callable(getattr(conn_or_cursor, "cursor", None)):
+        try:
+            return conn_or_cursor.cursor(dictionary=True)
+        except TypeError:
+            pass
     conn = getattr(conn_or_cursor, "_connection", None) or getattr(conn_or_cursor, "connection", None)
-    if conn is not None:
+    if conn is not None and hasattr(conn, "cursor"):
         return conn.cursor(dictionary=True)
     return conn_or_cursor
 
@@ -447,6 +446,16 @@ def ensure_worker_profile(
         if resolved.get("hourly_rate"):
             row["default_hourly_rate"] = resolved["hourly_rate"]
             row["hourly_rate_source"] = resolved.get("rate_source")
+            if row.get("id"):
+                conn.cursor().execute(
+                    """
+                    UPDATE payroll_worker_profiles
+                    SET default_hourly_rate=%s
+                    WHERE id=%s AND organization_id=%s
+                      AND (default_hourly_rate IS NULL OR default_hourly_rate <= 0)
+                    """,
+                    (resolved["hourly_rate"], int(row["id"]), oid),
+                )
     return json_safe(row)
 
 
@@ -654,7 +663,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
     uid = int(user_id)
     prof = ensure_worker_profile(conn, oid, uid)
     wpid = int(prof["id"])
-    c = conn.cursor()
+    c = _cursor(conn)
     profile_fields = {}
     for fld in (
         "default_hourly_rate",
@@ -690,6 +699,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
         for k in (
             "availability",
             "role_skills",
+            "default_hourly_rate",
             "max_hours_per_week",
             "overtime_threshold",
             "can_work_rinse",
@@ -698,6 +708,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
             "preferred_shift_id",
             "preferred_role_id",
             "notes",
+            "active",
         )
         if k in body
     }

@@ -583,6 +583,7 @@ export default function PayrollTimeRecordsPanel({
             details={[
               `Regular ${formatPayrollMoney(totalRegularCost, { allowZero: true })}`,
               `OT ${formatPayrollMoney(totalOtCost, { allowZero: true })}`,
+              "Same rules for W-2, 1099, and temp",
             ]}
             gradient={`linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.1)} 0%, ${alpha(theme.palette.success.main, 0.02)} 100%)`}
           />

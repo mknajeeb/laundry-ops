@@ -35,15 +35,15 @@ export function computeSummaryHoursLevel(totalHours, userId, workerTotals = {}) 
 
 function rateEntryFromSources(uid, cat, regular, calendar, orgOt) {
   const cal = calendar[cat] || calendar.default || {};
-  const otEnabled =
-    cat === "w2" && cal.overtime_enabled !== false && cal.overtime_enabled !== 0;
   const multiplier = Number(cal.overtime_multiplier || DEFAULT_OT_MULTIPLIER);
-  const otRate = otEnabled && regular > 0 ? regular * multiplier : null;
+  const otThreshold = Number(cal.overtime_threshold_hours ?? orgOt) || DEFAULT_OT_THRESHOLD;
+  const otEnabled = regular > 0;
+  const otRate = otEnabled ? regular * multiplier : null;
   return {
     regular_rate: regular > 0 ? regular : null,
     ot_rate: otRate,
     ot_enabled: otEnabled,
-    ot_threshold: Number(cal.overtime_threshold_hours ?? orgOt) || DEFAULT_OT_THRESHOLD,
+    ot_threshold: otThreshold,
     worker_category: cat,
   };
 }
@@ -128,7 +128,7 @@ export function enrichTimeRecords(rows = [], rateMap = {}, { userId = "" } = {})
       totalOtCost += otCost;
       economicsById[r.id] = {
         regular_rate: rateInfo.regular_rate,
-        ot_rate: otEnabled ? rateInfo.ot_rate : null,
+        ot_rate: rateInfo.ot_rate,
         regular_cost: regularCost,
         ot_cost: otCost,
         row_total: rowTotal,
