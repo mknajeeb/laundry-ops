@@ -14,6 +14,7 @@ KEY_REJECT_NO_START = "reject_no_start_cleaning_minutes"
 KEY_WASHING_MINUTES = "washing_minutes"
 KEY_DRYING_MINUTES = "drying_minutes"
 KEY_REJECT_AFTER_CREATE_ISSUE = "reject_after_create_issue_minutes"
+KEY_WEIGHT_DIFFERENCE_THRESHOLD = "weight_difference_threshold_lbs"
 
 DEFAULT_WEIGH = 30
 DEFAULT_SORT = 180
@@ -23,6 +24,7 @@ DEFAULT_REJECT_NO_START = 30
 DEFAULT_WASHING_MINUTES = 30
 DEFAULT_DRYING_MINUTES = 45
 DEFAULT_REJECT_AFTER_CREATE_ISSUE = 45
+DEFAULT_WEIGHT_DIFFERENCE_THRESHOLD_LBS = 5.0
 
 
 def _get_setting(cursor, organization_id: int, key: str) -> str | None:
@@ -61,6 +63,15 @@ def _int_setting(raw: Any, default: int) -> int:
         return default
 
 
+def _float_setting(raw: Any, default: float) -> float:
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return max(0.0, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
 def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
     org = int(organization_id)
     weigh = _int_setting(_get_setting(cursor, org, KEY_WEIGH), DEFAULT_WEIGH)
@@ -80,6 +91,10 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
         _get_setting(cursor, org, KEY_REJECT_AFTER_CREATE_ISSUE),
         DEFAULT_REJECT_AFTER_CREATE_ISSUE,
     )
+    weight_diff = _float_setting(
+        _get_setting(cursor, org, KEY_WEIGHT_DIFFERENCE_THRESHOLD),
+        DEFAULT_WEIGHT_DIFFERENCE_THRESHOLD_LBS,
+    )
     total = weigh + sort + wash + dry
     return {
         "processing_weigh_seconds_per_bag": weigh,
@@ -90,6 +105,7 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
         "washing_minutes": washing_minutes,
         "drying_minutes": drying_minutes,
         "reject_after_create_issue_minutes": reject_after_issue,
+        "weight_difference_threshold_lbs": weight_diff,
         "total_seconds_per_bag": total,
         "total_minutes_per_bag": round(total / 60.0, 2),
     }
@@ -107,7 +123,11 @@ def put_processing_settings(cursor, organization_id: int, payload: dict[str, Any
         (KEY_WASHING_MINUTES, "washing_minutes"),
         (KEY_DRYING_MINUTES, "drying_minutes"),
         (KEY_REJECT_AFTER_CREATE_ISSUE, "reject_after_create_issue_minutes"),
+        (KEY_WEIGHT_DIFFERENCE_THRESHOLD, "weight_difference_threshold_lbs"),
     ):
         if field in data and data[field] is not None:
-            _set_setting(cursor, org, key, str(_int_setting(data[field], 0)))
+            if field == "weight_difference_threshold_lbs":
+                _set_setting(cursor, org, key, str(_float_setting(data[field], 0)))
+            else:
+                _set_setting(cursor, org, key, str(_int_setting(data[field], 0)))
     return get_processing_settings(cursor, org)

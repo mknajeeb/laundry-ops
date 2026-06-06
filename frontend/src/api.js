@@ -524,6 +524,9 @@ export const getFoldingLeaderboard = (params = {}) =>
 export const getFoldingEmployeeAnalysis = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/employee-analysis`, { params, timeout: 30000 });
 
+export const getShiftAnalysisSimple = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/simple`, { params, timeout: 60000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 
@@ -1085,6 +1088,9 @@ export const postPayrollScheduleSaveDraft = (body) =>
 
 export const postPayrollSchedulePublish = (body) =>
   axios.post(`${API_BASE}/api/ta/payroll/schedule/plan/publish`, body);
+
+export const postPayrollScheduleGenerateRoster = (body) =>
+  axios.post(`${API_BASE}/api/ta/payroll/schedule/generate-roster`, body);
 
 export const getPayrollScheduleSuggestions = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/schedule/suggestions`, { params });

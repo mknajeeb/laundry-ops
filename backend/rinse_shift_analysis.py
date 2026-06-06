@@ -1957,6 +1957,8 @@ def build_shift_analysis_summary(
         folding_rows=lb_rows,
     )
 
+    from backend.rinse_shift_analysis_debug import _clock_hours_diagnostic
+
     return {
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
@@ -1994,6 +1996,9 @@ def build_shift_analysis_summary(
         "live_monitor": live_monitor,
         "staff_performance": staff_performance,
         "feature_flags": feature_flags,
+        "clock_hours_diagnostic": _clock_hours_diagnostic(
+            cursor, org, period_start, period_end, clock_hours
+        ),
     }
 
 

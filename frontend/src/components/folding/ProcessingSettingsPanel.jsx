@@ -74,6 +74,7 @@ export default function ProcessingSettingsPanel() {
         washingMinutes: d.washing_minutes ?? 30,
         dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
+        weightDiffLbs: d.weight_difference_threshold_lbs ?? 5,
         totalMinutes: d.total_minutes_per_bag,
       });
     } catch (e) {
@@ -99,6 +100,7 @@ export default function ProcessingSettingsPanel() {
         washing_minutes: Math.max(1, Number(fields.washingMinutes) || 30),
         drying_minutes: Math.max(1, Number(fields.dryingMinutes) || 45),
         reject_after_create_issue_minutes: Math.max(1, Number(fields.rejectAfterIssueMinutes) || 45),
+        weight_difference_threshold_lbs: Math.max(0, Number(fields.weightDiffLbs) || 5),
       };
       const res = await putProcessingSettings(body);
       const d = res.data || {};
@@ -111,6 +113,7 @@ export default function ProcessingSettingsPanel() {
         washingMinutes: d.washing_minutes ?? 30,
         dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
+        weightDiffLbs: d.weight_difference_threshold_lbs ?? 5,
         totalMinutes: d.total_minutes_per_bag,
       });
       setMessage("Processing time settings saved.");
@@ -185,6 +188,18 @@ export default function ProcessingSettingsPanel() {
             value={fields.rejectAfterIssueMinutes ?? 45}
             onChange={(e) => setFields({ ...fields, rejectAfterIssueMinutes: e.target.value })}
             inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+        <Grid item xs={12} sm={6} md={3}>
+          <TextField
+            size="small"
+            type="number"
+            label="Weight Difference (lbs)"
+            helperText="Flag when first vs second weight exceeds this (default 5)."
+            value={fields.weightDiffLbs ?? 5}
+            onChange={(e) => setFields({ ...fields, weightDiffLbs: e.target.value })}
+            inputProps={{ min: 0, step: 0.1 }}
             fullWidth
           />
         </Grid>

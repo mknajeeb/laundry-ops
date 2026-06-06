@@ -20,7 +20,7 @@ from backend.rinse_shift_analysis import (
 from backend.rinse_scan_time import json_safe_rinse
 
 
-def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, parse_date_value):
+def register_rinse_shift_analysis_routes(app, *, require_user, require_admin, user_org_id, parse_date_value):
     @app.route("/rinse/shift-analysis/summary", methods=["GET"])
     def rinse_shift_analysis_summary():
         conn = get_db()
@@ -178,6 +178,74 @@ def register_rinse_shift_analysis_routes(app, *, require_user, user_org_id, pars
                     return jsonify(json_safe_rinse({**out, "rows": op_rows, "total": len(op_rows), "activity": "operational"}))
 
             return jsonify(json_safe_rinse({**out, "rows": rows, "activity": "folding"}))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/simple", methods=["GET"])
+    def rinse_shift_analysis_simple():
+        """Simplified Scope A / Scope B performance payload (backend-first)."""
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            period_start, period_end, _period_label, _date_field = parse_range_from_request(
+                request.args, parse_date_value
+            )
+            if not isinstance(period_start, date) or not isinstance(period_end, date):
+                return jsonify({"error": "date_start and date_end required"}), 400
+            eval_at = _parse_evaluation_time(request.args.get("evaluation_time"))
+            payload = build_simple_shift_performance_payload(
+                cursor,
+                tenant_oid,
+                period_start=period_start,
+                period_end=period_end,
+                evaluation_time=eval_at,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/debug", methods=["GET"])
+    def rinse_shift_analysis_debug():
+        """Admin-only audit payload for /performance data reconciliation."""
+        from backend.rinse_shift_analysis_debug import build_shift_analysis_debug_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            _, err_a, code_a = require_admin(cursor)
+            if err_a is not None:
+                return err_a, code_a
+            tenant_oid = user_org_id(me)
+            period_start, period_end, _period_label, date_field = parse_range_from_request(
+                request.args, parse_date_value
+            )
+            if not isinstance(period_start, date) or not isinstance(period_end, date):
+                return jsonify({"error": "date_start and date_end required"}), 400
+            eval_at = _parse_evaluation_time(request.args.get("evaluation_time"))
+            payload = build_shift_analysis_debug_payload(
+                cursor,
+                tenant_oid,
+                period_start=period_start,
+                period_end=period_end,
+                date_field=date_field,
+                evaluation_time=eval_at,
+            )
+            return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:

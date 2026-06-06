@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_completion import _parsed_scan_datetime, _progressive_timeline_sort_key
 from backend.rinse_scan_purpose import (
+    is_add_photos_purpose,
     is_drying_purpose,
     is_ghost_cleaning_purpose,
     is_load_washer_end_purpose,
@@ -28,16 +29,18 @@ PERF_STAGE_LOAD_DRYER = "LOAD_DRYER"
 def gaming_events_from_records(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for r in records:
-        out.append(
-            {
-                "id": r.get("id"),
-                "rack": r.get("rack") if "rack" in r else r.get("Rack"),
-                "user": r.get("user_name") if "user_name" in r else r.get("User"),
-                "scanned_at_parsed": r.get("scanned_at_parsed"),
-                "scan_index": r.get("scan_index") if "scan_index" in r else r.get("Scan Index"),
-                "purpose": r.get("purpose") if "purpose" in r else r.get("Purpose"),
-            }
-        )
+        row = {
+            "id": r.get("id"),
+            "rack": r.get("rack") if "rack" in r else r.get("Rack"),
+            "user": r.get("user_name") if "user_name" in r else r.get("User"),
+            "scanned_at_parsed": r.get("scanned_at_parsed"),
+            "scan_index": r.get("scan_index") if "scan_index" in r else r.get("Scan Index"),
+            "purpose": r.get("purpose") if "purpose" in r else r.get("Purpose"),
+        }
+        for key in ("weight_lbs", "weight_num", "weight"):
+            if key in r and r[key] is not None:
+                row[key] = r[key]
+        out.append(row)
     return sorted(out, key=_progressive_timeline_sort_key)
 
 
@@ -125,20 +128,37 @@ def workitem_eligible_events(
     return events_after_ts(anchored, weight_ts)
 
 
+def is_cleaning_purpose_for_activity_start(raw: str | None) -> bool:
+    """Ghost ``cleaning`` or ``start-cleaning`` — activity start anchors."""
+    return is_ghost_cleaning_purpose(raw) or is_start_cleaning_purpose(raw)
+
+
 def last_exact_cleaning_before(
     timeline: Sequence[Mapping[str, Any]], *, before: datetime
 ) -> Mapping[str, Any] | None:
-    """Exact ``cleaning`` purpose only — used for weighing performance start."""
+    """Last cleaning purpose before timestamp — weighing/sorting start anchor."""
     candidates = [
         ev
         for ev in timeline
-        if is_ghost_cleaning_purpose(ev.get("purpose"))
+        if is_cleaning_purpose_for_activity_start(ev.get("purpose"))
         and ts_valid(event_ts(ev))
         and event_ts(ev) < before
     ]
     if not candidates:
         return None
     return max(candidates, key=sort_key_ev)
+
+
+def _first_add_photos_after(
+    anchored: Sequence[Mapping[str, Any]], *, after_ts: datetime
+) -> Mapping[str, Any] | None:
+    for ev in anchored:
+        if not is_add_photos_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts_valid(ts) and ts > after_ts:
+            return ev
+    return None
 
 
 def first_start_cleaning_after(
@@ -157,12 +177,44 @@ def first_start_cleaning_after(
 
 
 def sorting_bounds_after_weight(
-    anchored: Sequence[Mapping[str, Any]], weight_ts: datetime
+    anchored: Sequence[Mapping[str, Any]],
+    weight_ts: datetime,
+    *,
+    full_timeline: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
-    after_weight = events_after_ts(anchored, weight_ts)
-    if not after_weight:
+    """
+    Sorting requires first add-photos after weight. Start = last cleaning before add-photos,
+    or first weight-entry when cleaning is missing. End = latest event before start-cleaning,
+    or latest post-weight event when start-cleaning is missing.
+    """
+    weight_ev: Mapping[str, Any] | None = None
+    for ev in anchored:
+        if is_weight_entry_purpose(ev.get("purpose")) and event_ts(ev) == weight_ts:
+            weight_ev = ev
+            break
+    if weight_ev is None:
+        for ev in anchored:
+            if is_weight_entry_purpose(ev.get("purpose")):
+                ts = event_ts(ev)
+                if ts_valid(ts) and ts == weight_ts:
+                    weight_ev = ev
+                    break
+
+    add_ev = _first_add_photos_after(anchored, after_ts=weight_ts)
+    if add_ev is None:
         return None, None
-    sorting_start_ev = after_weight[0]
+
+    add_ts = event_ts(add_ev)
+    if not ts_valid(add_ts):
+        return None, None
+
+    cleaning_ev = last_exact_cleaning_before(
+        list(full_timeline) if full_timeline is not None else list(anchored),
+        before=add_ts,
+    )
+    sorting_start_ev = cleaning_ev if cleaning_ev is not None else weight_ev
+
+    after_weight = events_after_ts(anchored, weight_ts)
     start_cleaning_ev = first_start_cleaning_after(anchored, after_ts=weight_ts)
     if start_cleaning_ev is not None:
         sc_ts = event_ts(start_cleaning_ev)
@@ -171,7 +223,7 @@ def sorting_bounds_after_weight(
         ]
         sorting_end_ev = max(before_sc, key=sort_key_ev) if before_sc else None
     else:
-        sorting_end_ev = max(after_weight, key=sort_key_ev)
+        sorting_end_ev = max(after_weight, key=sort_key_ev) if after_weight else None
     return sorting_start_ev, sorting_end_ev
 
 

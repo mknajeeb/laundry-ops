@@ -689,7 +689,7 @@ function exportRecordsCsv(rows, filename = "shift-analysis-records.csv", { lifec
   URL.revokeObjectURL(url);
 }
 
-export default function ShiftAnalysisDashboardPage({ user }) {
+export default function ShiftAnalysisAdvancedPanel({ user, embedded = false }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialToday = todayRange();
   const [rangePreset, setRangePreset] = useState("today");
@@ -833,7 +833,12 @@ export default function ShiftAnalysisDashboardPage({ user }) {
     loadData();
   }, [searchTick, loadData]);
 
-  const overall = summary?.overall_production || {};
+  const clockDiag = summary?.clock_hours_diagnostic || {};
+  const clockHoursDisplay = (() => {
+    const formatted = formatLaborHours(overall.clocked_labor_hours, 1);
+    if (formatted !== "—") return formatted;
+    return clockDiag.reason_if_missing || "No clock records found";
+  })();
   const scoring = summary?.scoring_data || {};
   const speed = summary?.speed || {};
   const incomingSection = summary?.pending?.incoming || {};
@@ -1099,7 +1104,8 @@ export default function ShiftAnalysisDashboardPage({ user }) {
   };
 
   return (
-    <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1400, mx: "auto" }}>
+    <Box sx={{ p: embedded ? 1 : { xs: 2, md: 3 }, maxWidth: 1400, mx: "auto" }}>
+      {!embedded ? (
       <Stack direction={{ xs: "column", lg: "row" }} justifyContent="space-between" alignItems={{ xs: "stretch", lg: "flex-start" }} gap={2} mb={2}>
         <Box sx={{ flex: 1 }}>
           <Typography variant="h4" fontWeight={800} sx={{ lineHeight: 1.15 }}>
@@ -1142,6 +1148,11 @@ export default function ShiftAnalysisDashboardPage({ user }) {
           </Stack>
         </Stack>
       </Stack>
+      ) : (
+        <Stack direction="row" spacing={0.75} flexWrap="wrap" justifyContent="flex-end" mb={2}>
+          <Button variant="outlined" size="small" onClick={() => setSearchTick((t) => t + 1)} disabled={loading}>Refresh</Button>
+        </Stack>
+      )}
 
       {message.text ? (
         <Alert severity={message.type || "info"} sx={{ mb: 2 }} onClose={() => setMessage({ type: "", text: "" })}>
@@ -1353,10 +1364,10 @@ export default function ShiftAnalysisDashboardPage({ user }) {
         <Typography variant="h6" fontWeight={700} gutterBottom>Team & labor</Typography>
         <Grid container spacing={1.25}>
           <Grid item xs={6} sm={4} md={2}>
-            <CompactKpi label="Clocked hrs" value={formatLaborHours(overall.clocked_labor_hours, 1)} accent="#334155" />
+            <CompactKpi label="Clocked hrs" value={clockHoursDisplay} accent="#334155" />
           </Grid>
           <Grid item xs={6} sm={4} md={2}>
-            <CompactKpi label="Bags folded" value={formatCount(overall.total_bags_completed)} accent="#0097b2" onClick={() => applyRecordDrill({ source: "all", label: "All completed bags" })} />
+            <CompactKpi label="Scoring folded bags" value={formatCount(scoring.scoring_bags ?? overall.total_bags_completed)} accent="#0097b2" onClick={() => applyRecordDrill({ source: "scoring", inScoring: true, label: "Scoring folded bags" })} />
           </Grid>
           <Grid item xs={6} sm={4} md={2}>
             <CompactKpi label="Lbs folded" value={formatLbs(overall.total_lbs_folded)} accent="#0097b2" />

@@ -1,4 +1,4 @@
-import { formatRinseApiDateTime, hasExplicitTzOffset } from "./rinseTimeFormat";
+import { formatBusinessDateTime, formatNaiveEtWallDateTime, hasExplicitTzOffset } from "./rinseTimeFormat";
 
 export function formatLaborHours(hours, digits = 1) {
   if (hours == null || hours === "") return "—";
@@ -53,54 +53,26 @@ export function formatLbs(val) {
 export function formatDateTime(val) {
   if (!val) return "—";
   const s = String(val).trim();
-  if (hasExplicitTzOffset(s)) return formatRinseApiDateTime(s);
+  if (hasExplicitTzOffset(s)) return formatBusinessDateTime(s);
   if (/\bGMT\b/i.test(s)) return "—";
+  const naive = formatNaiveEtWallDateTime(s);
+  if (naive) return naive;
   const d = new Date(val);
   if (Number.isNaN(d.getTime())) return String(val);
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return formatBusinessDateTime(d.toISOString());
 }
 
-/** Single-line ET wall time for folding tables (no timezone line-wrap). */
+/** Folding tables: single-line Eastern wall time (naive ET from DB). */
 export function formatFoldingWallDateTime(val) {
   if (!val) return "—";
   const s = String(val).trim();
   if (/\bGMT\b/i.test(s)) return "—";
-  if (hasExplicitTzOffset(s)) {
-    const d = new Date(s);
-    if (Number.isNaN(d.getTime())) return "—";
-    return `${d.toLocaleString("en-US", {
-      timeZone: "America/New_York",
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    })} ET`;
-  }
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})/);
-  if (m) {
-    const [, y, mo, d, h, mi] = m;
-    const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi));
-    if (Number.isNaN(dt.getTime())) return s;
-    return `${dt.toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    })} ET`;
-  }
+  if (hasExplicitTzOffset(s)) return formatBusinessDateTime(s);
+  const naive = formatNaiveEtWallDateTime(s);
+  if (naive) return naive;
   const d = new Date(val);
   if (Number.isNaN(d.getTime())) return String(val);
-  return `${d.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  })} ET`;
+  return formatBusinessDateTime(d.toISOString());
 }
 
 export function formatPeriodRange(start, end) {

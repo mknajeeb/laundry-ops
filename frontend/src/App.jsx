@@ -33,7 +33,7 @@ import { hasPlatformAdminRole, isPlatformOnlyUser, userSatisfiesRoleGate } from 
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
-import ShiftAnalysisDashboardPage from "./pages/ShiftAnalysisDashboardPage";
+import ShiftMonitorPage from "./pages/ShiftMonitorPage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
 import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
 import PerformanceBackfillPage from "./pages/PerformanceBackfillPage";
@@ -785,7 +785,7 @@ function AppShell() {
               element={
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
-                    <ShiftAnalysisDashboardPage user={user} />
+                    <ShiftMonitorPage user={user} />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

@@ -276,43 +276,12 @@ def find_strong_completion_evidence(
     Earliest strong completion signal without requiring a CLEAN rack.
 
     Evidence: processed-by-vendor, received-from-vendor, quality-control-completed,
-    or post-process weight-entry after processed-by-vendor.
+    second/post-process weight-entry after first valid post-anchor weight, or
+    post-process weight-entry after processed-by-vendor.
     """
-    tl = list(timeline)
-    processed_at: datetime | None = None
-    best: tuple[datetime, Mapping[str, Any], str] | None = None
+    from backend.rinse_bag_activity_rules import find_strong_completion_evidence_v2
 
-    def _consider(ts: datetime, ev: Mapping[str, Any], kind: str) -> None:
-        nonlocal best
-        if best is None or ts < best[0]:
-            best = (ts, ev, kind)
-
-    for ev in tl:
-        ts = _event_ts(ev)
-        if not _ts_valid(ts):
-            continue
-        purpose = ev.get("purpose")
-        if is_processed_by_vendor_purpose(purpose):
-            processed_at = ts
-            _consider(ts, ev, "processed-by-vendor")
-        elif is_received_from_vendor_purpose(purpose):
-            _consider(ts, ev, "received-from-vendor")
-        elif is_quality_control_completed_purpose(purpose):
-            _consider(ts, ev, "quality-control-completed")
-
-    if processed_at is not None:
-        for ev in tl:
-            ts = _event_ts(ev)
-            if not _ts_valid(ts) or ts <= processed_at:
-                continue
-            if is_weight_entry_purpose(ev.get("purpose")):
-                _consider(ts, ev, "weight-entry-after-processed-by-vendor")
-                break
-
-    if best is None:
-        return None
-    ts, ev, kind = best
-    return ev, ts, kind
+    return find_strong_completion_evidence_v2(timeline)
 
 
 def evaluate_completed_without_final_clean_scan(

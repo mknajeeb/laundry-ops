@@ -26,6 +26,7 @@ from backend.rinse_bag_stage_bounds import (
     sorting_bounds_after_weight as _sorting_bounds_after_weight,
     ts_valid as _ts_valid,
     weighing_performance_bounds as _weighing_performance_bounds,
+    _first_add_photos_after,
 )
 from backend.rinse_processing_settings import DEFAULT_DRYING_MINUTES, DEFAULT_WASHING_MINUTES
 from backend.rinse_scan_purpose import (
@@ -47,6 +48,7 @@ WEIGHING_START_CLEANING_MISSING = "WEIGHING_START_CLEANING_MISSING"
 WEIGHING_DURATION_INVALID = "WEIGHING_DURATION_INVALID"
 
 EXCEPTION_MISSING_SORTING_END = "MISSING_SORTING_END"
+EXCEPTION_SORTING_ADD_PHOTOS_MISSING = "SORTING_ADD_PHOTOS_MISSING"
 EXCEPTION_INVALID_SORTING_TIMESTAMPS = "INVALID_SORTING_TIMESTAMPS"
 
 START_CLEANING_MISSING = "START_CLEANING_MISSING"
@@ -166,15 +168,20 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
             status=STAGE_EXCEPTION,
             exception_codes=(WEIGHT_ENTRY_MISSING,),
         )
-    start_ev, end_ev = _sorting_bounds_after_weight(anchored, weight_ts)
+    start_ev, end_ev = _sorting_bounds_after_weight(anchored, weight_ts, full_timeline=timeline)
     if start_ev is None:
+        add_missing = _first_add_photos_after(anchored, after_ts=weight_ts) is None
         return StageTiming(
             start_time=None,
             end_time=None,
             end_event_purpose=None,
             duration_seconds=None,
             status=STAGE_EXCEPTION,
-            exception_codes=(WEIGHT_ENTRY_MISSING,),
+            exception_codes=(
+                (EXCEPTION_SORTING_ADD_PHOTOS_MISSING,)
+                if add_missing
+                else (WEIGHT_ENTRY_MISSING,)
+            ),
         )
     start_at = _event_ts(start_ev)
     if end_ev is None:
@@ -555,7 +562,7 @@ def _sorting_boundary_events(
     weight_ev, weight_ts = _first_weight_after_anchor(anchored)
     if weight_ev is None or weight_ts is None:
         return None, None
-    return _sorting_bounds_after_weight(anchored, weight_ts)
+    return _sorting_bounds_after_weight(anchored, weight_ts, full_timeline=timeline)
 
 
 def _wash_load_boundary_events(
@@ -633,10 +640,14 @@ def build_bag_activity_slices(
 
     sorting = evaluate_sorting_stage(timeline)
     s_start_ev, s_end_ev = _sorting_boundary_events(timeline)
+    anchored = _anchored_timeline(timeline)
+    _, weight_ts = _first_weight_after_anchor(anchored)
+    add_ev = _first_add_photos_after(anchored, after_ts=weight_ts) if weight_ts else None
     s_start_user = _event_user(s_start_ev)
     s_end_user = _event_user(s_end_ev)
+    s_assigned = _event_user(add_ev) or s_end_user
     s_review: list[str] = []
-    if s_start_user and s_end_user and not _users_match(s_start_user, s_end_user):
+    if s_start_user and s_assigned and not _users_match(s_start_user, s_assigned):
         s_review.append(REVIEW_USER_AMBIGUOUS)
     slices.append(
         _slice_from_stage(
@@ -645,7 +656,7 @@ def build_bag_activity_slices(
             stage=sorting,
             start_ev=s_start_ev,
             end_ev=s_end_ev,
-            assigned_user=s_end_user,
+            assigned_user=s_assigned,
             extra_review=s_review,
         )
     )

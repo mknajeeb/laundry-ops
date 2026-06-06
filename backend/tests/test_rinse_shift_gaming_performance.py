@@ -129,7 +129,7 @@ class TestScenarioAOnePersonAllActivities:
                 _sv(
                     _ev("cleaning", datetime(2026, 5, 27, 9, 50), user="Alex", ev_id=2, scan_index=2),
                     _ev("weight-entry", datetime(2026, 5, 27, 10, 0), user="Alex", ev_id=3, scan_index=3),
-                    _ev("split-load", datetime(2026, 5, 27, 10, 10), user="Alex", ev_id=4, scan_index=4),
+                    _ev("add-photos", datetime(2026, 5, 27, 10, 10), user="Alex", ev_id=4, scan_index=4),
                     _ev("start-cleaning", datetime(2026, 5, 27, 10, 20), user="Alex", ev_id=5, scan_index=5),
                     _ev("drying", datetime(2026, 5, 27, 11, 0), user="Alex", ev_id=6, scan_index=6),
                 ),
