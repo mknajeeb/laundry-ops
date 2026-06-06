@@ -61,6 +61,20 @@ def _cursor(conn):
     return conn.cursor(dictionary=True)
 
 
+def _dict_cursor(conn_or_cursor):
+    """Dictionary cursor whether caller passed a connection or plain cursor."""
+    if hasattr(conn_or_cursor, "cursor") and conn_or_cursor.__class__.__name__ in {
+        "MySQLConnection",
+        "PooledMySQLConnection",
+        "CMySQLConnection",
+    }:
+        return conn_or_cursor.cursor(dictionary=True)
+    conn = getattr(conn_or_cursor, "_connection", None) or getattr(conn_or_cursor, "connection", None)
+    if conn is not None:
+        return conn.cursor(dictionary=True)
+    return conn_or_cursor
+
+
 def _where_active(cursor, table: str, alias: str = "") -> str:
     """SQL predicate for active rows; safe when legacy DB lacks `active` column."""
     c = cursor if hasattr(cursor, "execute") else cursor.cursor()
@@ -103,7 +117,7 @@ def ensure_payroll_schedule_tables(cursor) -> None:
 def seed_schedule_defaults(cursor, organization_id: int) -> None:
     ensure_payroll_schedule_tables(cursor)
     oid = int(organization_id)
-    c = cursor if hasattr(cursor, "execute") else cursor.cursor(dictionary=True)
+    c = _dict_cursor(cursor)
     c.execute(
         "INSERT IGNORE INTO payroll_schedule_org_settings (organization_id) VALUES (%s)",
         (oid,),
@@ -429,7 +443,7 @@ def ensure_worker_profile(
     if _d(row.get("default_hourly_rate") or 0) <= 0:
         from backend.payroll_workflow import resolve_worker_hourly_rate
 
-        resolved = resolve_worker_hourly_rate(conn, oid, uid)
+        resolved = resolve_worker_hourly_rate(conn, uid, oid)
         if resolved.get("hourly_rate"):
             row["default_hourly_rate"] = resolved["hourly_rate"]
             row["hourly_rate_source"] = resolved.get("rate_source")
@@ -669,6 +683,8 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
             f"UPDATE payroll_worker_profiles SET {', '.join(sets)} WHERE id=%s AND organization_id=%s",
             tuple(params),
         )
+        if "default_hourly_rate" in profile_fields and profile_fields["default_hourly_rate"] is not None:
+            prof["default_hourly_rate"] = profile_fields["default_hourly_rate"]
     save_body = {
         k: body[k]
         for k in (
@@ -802,6 +818,8 @@ def save_worker_availability(
                 tuple(params),
             )
     for row in body.get("availability") or []:
+        if not isinstance(row, dict):
+            continue
         dow = int(row.get("day_of_week", 0))
         c.execute(
             """
@@ -827,6 +845,8 @@ def save_worker_availability(
             ),
         )
     for skill in body.get("role_skills") or []:
+        if not isinstance(skill, dict):
+            continue
         if not skill.get("role_id"):
             continue
         c.execute(
@@ -1096,8 +1116,19 @@ def get_performance_preview(conn, organization_id: int, user_id: int) -> dict[st
         if not rows:
             return {"available": False, "message": "No performance data yet", "rinse_user_name": rinse_name}
         bags = len(rows)
-        total_lbs = sum(float(r.get("weight_lbs") or r.get("registry_weight_num") or 0) for r in rows)
-        total_sec = sum(int(r.get("duration_seconds") or 0) for r in rows if r.get("duration_seconds"))
+        def _perf_row_val(row, key, alt=None):
+            if isinstance(row, dict):
+                return row.get(key) if row.get(key) is not None else (row.get(alt) if alt else None)
+            return None
+
+        total_lbs = sum(
+            float(_perf_row_val(r, "weight_lbs", "registry_weight_num") or 0) for r in rows
+        )
+        total_sec = sum(
+            int(_perf_row_val(r, "duration_seconds") or 0)
+            for r in rows
+            if _perf_row_val(r, "duration_seconds")
+        )
         hours = total_sec / 3600.0 if total_sec > 0 else 0
         return json_safe(
             {
