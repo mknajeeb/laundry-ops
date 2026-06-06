@@ -11001,6 +11001,7 @@ register_rinse_processing_routes(
 register_rinse_shift_analysis_routes(
     app,
     require_user=require_user,
+    require_admin=require_admin,
     user_org_id=user_org_id,
     parse_date_value=parse_date_value,
 )
