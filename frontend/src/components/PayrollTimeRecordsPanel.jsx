@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -24,13 +24,20 @@ import {
   TextField,
   Tooltip,
   Typography,
+  alpha,
+  useTheme,
 } from "@mui/material";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import AddIcon from "@mui/icons-material/Add";
+import AttachMoneyIcon from "@mui/icons-material/AttachMoney";
 import CheckIcon from "@mui/icons-material/Check";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import {
   deletePayrollTimeRecord,
+  getPayrollCalendarSettings,
+  getPayrollScheduleSettings,
+  getPayrollScheduleWorkers,
   getPayrollTimeRecords,
   getTaUsers,
   patchPayrollTimeRecord,
@@ -43,6 +50,13 @@ import {
   formatHoursDecimal,
 } from "../utils/datetimeFormat";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
+import {
+  buildWorkerRateMap,
+  enrichTimeRecords,
+  formatPayrollMoney,
+  formatPayrollRate,
+} from "../payroll/timeRecordPayroll";
+import { PayrollDateField, PayrollDateTimeField } from "./PayrollDateTimeField";
 
 const CATEGORY_SHORT = {
   w2: "W-2",
@@ -100,18 +114,84 @@ const emptyForm = () => ({
   notes: "",
 });
 
+function hoursCellSx(level, theme) {
+  if (level === "critical") {
+    return {
+      bgcolor: alpha(theme.palette.error.main, 0.14),
+      color: theme.palette.error.dark,
+      fontWeight: 700,
+    };
+  }
+  if (level === "warning") {
+    return {
+      bgcolor: alpha(theme.palette.warning.main, 0.18),
+      color: theme.palette.warning.dark,
+      fontWeight: 600,
+    };
+  }
+  return { fontVariantNumeric: "tabular-nums" };
+}
+
+function SummaryStat({ icon, label, value, sub, gradient }) {
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        p: 1.75,
+        borderRadius: 2,
+        border: "1px solid",
+        borderColor: "divider",
+        background: gradient,
+      }}
+    >
+      <Stack direction="row" spacing={1.25} alignItems="center">
+        <Box
+          sx={{
+            width: 40,
+            height: 40,
+            borderRadius: 1.5,
+            display: "grid",
+            placeItems: "center",
+            bgcolor: "background.paper",
+            boxShadow: 1,
+          }}
+        >
+          {icon}
+        </Box>
+        <Box>
+          <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: 0.4 }}>
+            {label}
+          </Typography>
+          <Typography variant="h6" sx={{ lineHeight: 1.2, fontWeight: 700 }}>
+            {value}
+          </Typography>
+          {sub ? (
+            <Typography variant="caption" color="text.secondary">
+              {sub}
+            </Typography>
+          ) : null}
+        </Box>
+      </Stack>
+    </Paper>
+  );
+}
+
 export default function PayrollTimeRecordsPanel({
   payPeriodStart = "",
   payPeriodEnd = "",
   linkedCategory = "all",
   onPayPeriodChange,
 }) {
+  const theme = useTheme();
   const [fromDate, setFromDate] = useState(payPeriodStart || "");
   const [toDate, setToDate] = useState(payPeriodEnd || "");
   const [category, setCategory] = useState(linkedCategory || "all");
   const [status, setStatus] = useState("all");
   const [userId, setUserId] = useState("");
   const [users, setUsers] = useState([]);
+  const [workers, setWorkers] = useState([]);
+  const [scheduleSettings, setScheduleSettings] = useState(null);
+  const [calendarSettings, setCalendarSettings] = useState(null);
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -123,13 +203,32 @@ export default function PayrollTimeRecordsPanel({
   const [saving, setSaving] = useState(false);
   const [bulkApproving, setBulkApproving] = useState(false);
 
-  const approvableRows = rows.filter(canApproveRecord);
-
   useEffect(() => {
     getTaUsers()
       .then((r) => setUsers(r.data?.users || r.data || []))
       .catch(() => {});
+    getPayrollScheduleWorkers()
+      .then((r) => setWorkers(r.data?.items || []))
+      .catch(() => {});
+    getPayrollScheduleSettings()
+      .then((r) => setScheduleSettings(r.data || null))
+      .catch(() => {});
+    getPayrollCalendarSettings()
+      .then((r) => setCalendarSettings(r.data || null))
+      .catch(() => {});
   }, []);
+
+  const rateMap = useMemo(
+    () => buildWorkerRateMap(workers, scheduleSettings, calendarSettings),
+    [workers, scheduleSettings, calendarSettings],
+  );
+
+  const { rows: displayRows, totalHours, totalCost } = useMemo(
+    () => enrichTimeRecords(rows, rateMap),
+    [rows, rateMap],
+  );
+
+  const approvableRows = rows.filter(canApproveRecord);
 
   useEffect(() => {
     if (payPeriodStart) setFromDate(payPeriodStart);
@@ -327,26 +426,18 @@ export default function PayrollTimeRecordsPanel({
             alignItems: "end",
           }}
         >
-          <TextField
-            size="small"
-            type="date"
+          <PayrollDateField
             label="Start date"
-            InputLabelProps={{ shrink: true }}
             value={fromDate}
-            onChange={(e) => {
-              const v = e.target.value;
+            onChange={(v) => {
               setFromDate(v);
               onPayPeriodChange?.({ start: v, end: toDate, category });
             }}
           />
-          <TextField
-            size="small"
-            type="date"
+          <PayrollDateField
             label="End date"
-            InputLabelProps={{ shrink: true }}
             value={toDate}
-            onChange={(e) => {
-              const v = e.target.value;
+            onChange={(v) => {
               setToDate(v);
               onPayPeriodChange?.({ start: fromDate, end: v, category });
             }}
@@ -396,23 +487,112 @@ export default function PayrollTimeRecordsPanel({
         </Box>
       </Paper>
 
-      <TableContainer component={Paper} sx={{ width: "100%", overflowX: "auto" }}>
-        <Table size="small" sx={{ minWidth: 720 }}>
+      <Paper
+        elevation={0}
+        sx={{
+          p: 2,
+          borderRadius: 2,
+          border: "1px solid",
+          borderColor: "divider",
+          background: `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.04)} 0%, ${alpha(theme.palette.background.paper, 1)} 100%)`,
+        }}
+      >
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          justifyContent="space-between"
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={2}
+          sx={{ mb: 2 }}
+        >
+          <Box>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+              Period summary
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {fromDate && toDate ? `${fromDate} – ${toDate}` : "Set dates to see totals"}
+              {userId ? " · filtered to one worker" : ""}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip
+              size="small"
+              variant="outlined"
+              label=">35h orange"
+              sx={{ borderColor: alpha(theme.palette.warning.main, 0.5) }}
+            />
+            <Chip
+              size="small"
+              variant="outlined"
+              color="error"
+              label="≥40h red"
+            />
+          </Stack>
+        </Stack>
+
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" },
+            gap: 1.5,
+            mb: 2,
+          }}
+        >
+          <SummaryStat
+            icon={<AccessTimeIcon color="primary" fontSize="small" />}
+            label="Total hours"
+            value={formatHoursDecimal(totalHours)}
+            sub={`${displayRows.length} record${displayRows.length === 1 ? "" : "s"}`}
+            gradient={`linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.08)} 0%, ${alpha(theme.palette.primary.main, 0.02)} 100%)`}
+          />
+          <SummaryStat
+            icon={<AttachMoneyIcon color="success" fontSize="small" />}
+            label="Total cost"
+            value={totalCost > 0 ? formatPayrollMoney(totalCost) : "$0.00"}
+            sub="Regular + OT by worker threshold"
+            gradient={`linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.1)} 0%, ${alpha(theme.palette.success.main, 0.02)} 100%)`}
+          />
+        </Box>
+
+      <TableContainer sx={{ width: "100%", overflowX: "auto", borderRadius: 1.5 }}>
+        <Table size="small" sx={{ minWidth: 980 }}>
           <TableHead>
-            <TableRow>
+            <TableRow
+              sx={{
+                "& th": {
+                  fontWeight: 700,
+                  fontSize: "0.75rem",
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                  bgcolor: alpha(theme.palette.primary.main, 0.06),
+                  borderBottom: `2px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                  whiteSpace: "nowrap",
+                },
+              }}
+            >
               <TableCell>Date</TableCell>
               <TableCell>Worker</TableCell>
               <TableCell>Cat.</TableCell>
               <TableCell>In</TableCell>
               <TableCell>Out</TableCell>
               <TableCell align="right">Hrs</TableCell>
+              <TableCell align="right">Reg rate</TableCell>
+              <TableCell align="right">OT rate</TableCell>
+              <TableCell align="right">Total</TableCell>
               <TableCell>Status</TableCell>
               <TableCell align="right">Actions</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((r) => (
-              <TableRow key={r.id} hover>
+            {displayRows.map((r) => (
+              <TableRow
+                key={r.id}
+                hover
+                sx={{
+                  "&:nth-of-type(even)": {
+                    bgcolor: alpha(theme.palette.action.hover, 0.04),
+                  },
+                }}
+              >
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{r.work_date}</TableCell>
                 <TableCell
                   sx={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
@@ -425,8 +605,36 @@ export default function PayrollTimeRecordsPanel({
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{formatEasternTimeShort(r.clock_in_at)}</TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>{formatEasternTimeShort(r.clock_out_at)}</TableCell>
-                <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
+                <TableCell
+                  align="right"
+                  sx={{
+                    whiteSpace: "nowrap",
+                    ...hoursCellSx(r.hours_level, theme),
+                  }}
+                  title={
+                    r.hours_level !== "normal"
+                      ? `${formatHoursDecimal(r.worker_period_hours)} total for ${r.worker_name} in this period`
+                      : undefined
+                  }
+                >
                   {formatHoursDecimal(r.approved_hours)}
+                </TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                  {formatPayrollRate(r.regular_rate)}
+                </TableCell>
+                <TableCell align="right" sx={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                  {formatPayrollRate(r.ot_rate)}
+                </TableCell>
+                <TableCell
+                  align="right"
+                  sx={{
+                    whiteSpace: "nowrap",
+                    fontVariantNumeric: "tabular-nums",
+                    fontWeight: 600,
+                    ...hoursCellSx(r.hours_level, theme),
+                  }}
+                >
+                  {formatPayrollMoney(r.row_total)}
                 </TableCell>
                 <TableCell sx={{ whiteSpace: "nowrap" }}>
                   <Chip size="small" label={statusLabel(r.status)} color={statusColor(r.status)} />
@@ -462,9 +670,9 @@ export default function PayrollTimeRecordsPanel({
                 </TableCell>
               </TableRow>
             ))}
-            {!rows.length && !loading ? (
+            {!displayRows.length && !loading ? (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={11}>
                   <Typography color="text.secondary">No records for these filters.</Typography>
                 </TableCell>
               </TableRow>
@@ -472,6 +680,7 @@ export default function PayrollTimeRecordsPanel({
           </TableBody>
         </Table>
       </TableContainer>
+      </Paper>
 
       <Dialog open={editorOpen} onClose={() => setEditorOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>{editorMode === "add" ? "Add time record" : "Edit time record"}</DialogTitle>
@@ -491,23 +700,15 @@ export default function PayrollTimeRecordsPanel({
                 ))}
               </Select>
             </FormControl>
-            <TextField
-              fullWidth
-              size="small"
-              type="datetime-local"
+            <PayrollDateTimeField
               label="Clock in"
-              InputLabelProps={{ shrink: true }}
               value={form.clock_in_at}
-              onChange={(e) => setForm((f) => ({ ...f, clock_in_at: e.target.value }))}
+              onChange={(v) => setForm((f) => ({ ...f, clock_in_at: v }))}
             />
-            <TextField
-              fullWidth
-              size="small"
-              type="datetime-local"
+            <PayrollDateTimeField
               label="Clock out"
-              InputLabelProps={{ shrink: true }}
               value={form.clock_out_at}
-              onChange={(e) => setForm((f) => ({ ...f, clock_out_at: e.target.value }))}
+              onChange={(v) => setForm((f) => ({ ...f, clock_out_at: v }))}
             />
             <TextField
               fullWidth

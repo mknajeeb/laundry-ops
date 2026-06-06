@@ -281,23 +281,47 @@
   margin-top: 0.35in;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.35in;
+  grid-template-rows: auto minmax(0.46in, auto) auto auto auto;
+  column-gap: 0.35in;
+  row-gap: 0.08in;
   page-break-inside: avoid;
+  align-items: end;
+}
+
+.cform-sig-heading {
+  font-size: 10pt;
+  align-self: start;
+}
+
+.cform-sig-info {
+  font-size: 10pt;
+  line-height: 1.35;
+  align-self: start;
+}
+
+.cform-sig-info p {
+  margin: 0 0 0.04in;
+}
+
+.cform-sig-info p:last-child {
+  margin-bottom: 0;
+}
+
+.cform-sig-info-placeholder {
+  visibility: hidden;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.cform-sig-date-label {
+  font-size: 10pt;
+  align-self: end;
 }
 
 .cform-sig-line {
   border-bottom: 1px solid #1e293b;
   min-height: 0.22in;
-  margin-top: 0.2in;
-}
-
-.cform-sig-printed-name {
-  margin: 0.1in 0 0.06in;
-  font-size: 10pt;
-  line-height: 1.35;
-}
-
-.cform-sig-printed-name p {
+  width: 100%;
   margin: 0;
 }
 
