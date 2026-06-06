@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.contractor_management import (
     compute_payment_summary_amounts,
+    delete_payment_summary,
     sum_payments_ytd,
     user_in_contractor_management,
     user_is_contractor,
@@ -80,6 +81,26 @@ class TestSumPaymentsYtd(unittest.TestCase):
         self.assertEqual(out["year"], 2026)
         self.assertEqual(out["total_paid_ytd"], 697.0)
         self.assertEqual(out["payment_count"], 2)
+
+
+class TestDeletePaymentSummary(unittest.TestCase):
+    def test_delete_found(self):
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        cur.rowcount = 1
+        with patch("backend.contractor_management.table_exists", return_value=True):
+            ok = delete_payment_summary(conn, 1, 4)
+        self.assertTrue(ok)
+
+    def test_delete_missing(self):
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        cur.rowcount = 0
+        with patch("backend.contractor_management.table_exists", return_value=True):
+            ok = delete_payment_summary(conn, 1, 999)
+        self.assertFalse(ok)
 
 
 class TestUserIsContractor(unittest.TestCase):

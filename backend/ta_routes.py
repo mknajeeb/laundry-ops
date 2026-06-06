@@ -5174,6 +5174,26 @@ def contractors_create_payment_record():
         conn.close()
 
 
+@ta_bp.route("/contractors/payment-records/<int:record_id>", methods=["DELETE"])
+@require_auth
+@require_any_perm("users.edit", "ta.settings")
+def contractors_delete_payment_record(record_id: int):
+    """Remove a saved contractor invoice/payment receipt."""
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        oid = _tenant_id()
+        from backend.contractor_management import delete_payment_summary
+
+        if not delete_payment_summary(conn, oid, int(record_id)):
+            return jsonify({"error": "Payment record not found"}), 404
+        conn.commit()
+        return jsonify({"ok": True, "id": int(record_id)})
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/contractors/compute-payment", methods=["POST"])
 @require_auth
 @require_any_perm("users.view", "users.edit", "ta.settings")

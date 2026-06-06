@@ -983,6 +983,9 @@ export const postContractorPaymentSummary = (userId, body) =>
 export const postContractorPaymentRecord = (body) =>
   axios.post(`${API_BASE}/api/ta/contractors/payment-records`, body);
 
+export const deleteContractorPaymentRecord = (recordId) =>
+  axios.delete(`${API_BASE}/api/ta/contractors/payment-records/${recordId}`);
+
 export const getPayrollTimeRecords = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/time-records`, { params });
 

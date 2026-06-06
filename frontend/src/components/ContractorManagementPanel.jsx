@@ -9,6 +9,7 @@ import {
   FormControlLabel,
   FormGroup,
   Grid,
+  IconButton,
   MenuItem,
   Paper,
   Radio,
@@ -21,8 +22,10 @@ import {
 } from "@mui/material";
 import PrintIcon from "@mui/icons-material/Print";
 import SaveIcon from "@mui/icons-material/Save";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import {
   computeContractorPayment,
+  deleteContractorPaymentRecord,
   getContractorPaymentSummaries,
   getContractorPaymentYtd,
   getContractorPrefill,
@@ -81,6 +84,7 @@ export default function ContractorManagementPanel() {
   const [formFieldValues, setFormFieldValues] = useState({});
   const [savedRecords, setSavedRecords] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [deletingRecordId, setDeletingRecordId] = useState(null);
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [ytdPrior, setYtdPrior] = useState(0);
   const [record, setRecord] = useState(() => emptyPaymentRecord({}, "regular"));
@@ -379,6 +383,51 @@ export default function ContractorManagementPanel() {
       setError(e.response?.data?.error || e.message || "Save failed");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const refreshYtd = useCallback(async (userId) => {
+    if (!userId) return;
+    try {
+      const year = new Date().getFullYear();
+      const ytdRes = await getContractorPaymentYtd(userId, year);
+      const ytd = Number(ytdRes.data?.total_paid_ytd) || 0;
+      setYtdPrior(ytd);
+      setRecord((r) => ({ ...r, total_paid_ytd_prior: String(ytd) }));
+    } catch {
+      /* keep current YTD display */
+    }
+  }, []);
+
+  const deletePaymentRecord = async (summary) => {
+    const id = summary?.id;
+    if (!id) return;
+    const amount = Number(summary.amount_paid ?? summary.total_payment ?? 0);
+    const period = `${summary.pay_period_start || summary.work_period_start || "?"} – ${
+      summary.pay_period_end || summary.work_period_end || "?"
+    }`;
+    const ok = window.confirm(
+      `Delete payment record #${id} (${period}, $${amount.toFixed(2)})? This cannot be undone.`,
+    );
+    if (!ok) return;
+    setDeletingRecordId(id);
+    setError("");
+    try {
+      await deleteContractorPaymentRecord(id);
+      setSavedRecords((prev) => prev.filter((s) => s.id !== id));
+      if (selected?.user_id && !selected?.manual) {
+        await refreshYtd(selected.user_id);
+      } else {
+        setYtdPrior((prev) => Math.max(0, prev - amount));
+        setRecord((r) => ({
+          ...r,
+          total_paid_ytd_prior: String(Math.max(0, (Number(r.total_paid_ytd_prior) || 0) - amount)),
+        }));
+      }
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Delete failed");
+    } finally {
+      setDeletingRecordId(null);
     }
   };
 
@@ -751,12 +800,30 @@ export default function ContractorManagementPanel() {
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="subtitle2">Recent payment records</Typography>
                   {savedRecords.slice(0, 8).map((s) => (
-                    <Typography key={s.id} variant="body2" color="text.secondary">
-                      #{s.id}{" "}
-                      {s.pay_period_start || s.work_period_start || "?"} –{" "}
-                      {s.pay_period_end || s.work_period_end || "?"} · $
-                      {Number(s.amount_paid ?? s.total_payment ?? 0).toFixed(2)}
-                    </Typography>
+                    <Stack
+                      key={s.id}
+                      direction="row"
+                      alignItems="center"
+                      justifyContent="space-between"
+                      spacing={1}
+                      sx={{ py: 0.25 }}
+                    >
+                      <Typography variant="body2" color="text.secondary" sx={{ flex: 1, minWidth: 0 }}>
+                        #{s.id}{" "}
+                        {s.pay_period_start || s.work_period_start || "?"} –{" "}
+                        {s.pay_period_end || s.work_period_end || "?"} · $
+                        {Number(s.amount_paid ?? s.total_payment ?? 0).toFixed(2)}
+                      </Typography>
+                      <IconButton
+                        size="small"
+                        color="error"
+                        aria-label={`Delete payment record ${s.id}`}
+                        disabled={deletingRecordId === s.id}
+                        onClick={() => deletePaymentRecord(s)}
+                      >
+                        <DeleteOutlineIcon fontSize="small" />
+                      </IconButton>
+                    </Stack>
                   ))}
                 </Box>
               ) : null}

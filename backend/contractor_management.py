@@ -510,6 +510,25 @@ def create_payment_summary(
     return json_safe(row)
 
 
+def delete_payment_summary(
+    conn,
+    organization_id: int,
+    summary_id: int,
+) -> bool:
+    """Delete a contractor payment summary for this tenant. Returns True if a row was removed."""
+    ensure_contractor_payment_summaries_table(conn.cursor())
+    c = conn.cursor()
+    c.execute(
+        """
+        DELETE FROM contractor_payment_summaries
+        WHERE id = %s AND organization_id = %s
+        LIMIT 1
+        """,
+        (int(summary_id), int(organization_id)),
+    )
+    return c.rowcount > 0
+
+
 CONTRACTOR_FORM_CATALOG = [
     {
         "id": "invoice_payment_receipt",
