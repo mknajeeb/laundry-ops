@@ -61,6 +61,31 @@ def _cursor(conn):
     return conn.cursor(dictionary=True)
 
 
+def _where_active(cursor, table: str, alias: str = "") -> str:
+    """SQL predicate for active rows; safe when legacy DB lacks `active` column."""
+    c = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    prefix = f"{alias}." if alias else ""
+    if table_exists(c, table) and table_has_column(c, table, "active"):
+        return f"{prefix}active=1"
+    return "1=1"
+
+
+def _select_active_expr(cursor, table: str) -> str:
+    """SELECT list fragment for active flag (defaults to 1 when column missing)."""
+    c = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    if table_exists(c, table) and table_has_column(c, table, "active"):
+        return "active"
+    return "1 AS active"
+
+
+def _users_list_filter(cursor) -> str:
+    """Who appears in scheduling worker list — tolerates production without users.active."""
+    c = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    if table_has_column(c, "users", "active"):
+        return "(pp.user_id IS NOT NULL OR u.active = 1)"
+    return "pp.user_id IS NOT NULL"
+
+
 def ensure_payroll_schedule_tables(cursor) -> None:
     if table_exists(cursor, "payroll_schedule_entries"):
         return
@@ -83,31 +108,40 @@ def seed_schedule_defaults(cursor, organization_id: int) -> None:
         "INSERT IGNORE INTO payroll_schedule_org_settings (organization_id) VALUES (%s)",
         (oid,),
     )
-    for name, start_t, end_t, sort in DEFAULT_SHIFTS:
-        c.execute(
-            """
-            INSERT IGNORE INTO payroll_shifts
-              (organization_id, name, start_time_default, end_time_default, sort_order, active)
-            VALUES (%s, %s, %s, %s, %s, 1)
-            """,
-            (oid, name, start_t, end_t, sort),
-        )
-    for name, sort in DEFAULT_STREAMS:
-        c.execute(
-            """
-            INSERT IGNORE INTO payroll_work_streams (organization_id, name, sort_order, active)
-            VALUES (%s, %s, %s, 1)
-            """,
-            (oid, name, sort),
-        )
-    for name, sort in DEFAULT_ROLES:
-        c.execute(
-            """
-            INSERT IGNORE INTO payroll_roles (organization_id, name, sort_order, active)
-            VALUES (%s, %s, %s, CASE WHEN %s <= 20 THEN 1 ELSE 0 END)
-            """,
-            (oid, name, sort, sort),
-        )
+    c.execute("SELECT COUNT(*) AS n FROM payroll_shifts WHERE organization_id=%s", (oid,))
+    shift_n = int((c.fetchone() or {}).get("n") or 0)
+    if shift_n == 0:
+        for name, start_t, end_t, sort in DEFAULT_SHIFTS:
+            c.execute(
+                """
+                INSERT INTO payroll_shifts
+                  (organization_id, name, start_time_default, end_time_default, sort_order, active)
+                VALUES (%s, %s, %s, %s, %s, 1)
+                """,
+                (oid, name, start_t, end_t, sort),
+            )
+    c.execute("SELECT COUNT(*) AS n FROM payroll_work_streams WHERE organization_id=%s", (oid,))
+    stream_n = int((c.fetchone() or {}).get("n") or 0)
+    if stream_n == 0:
+        for name, sort in DEFAULT_STREAMS:
+            c.execute(
+                """
+                INSERT INTO payroll_work_streams (organization_id, name, sort_order, active)
+                VALUES (%s, %s, %s, 1)
+                """,
+                (oid, name, sort),
+            )
+    c.execute("SELECT COUNT(*) AS n FROM payroll_roles WHERE organization_id=%s", (oid,))
+    role_n = int((c.fetchone() or {}).get("n") or 0)
+    if role_n == 0:
+        for name, sort in DEFAULT_ROLES:
+            c.execute(
+                """
+                INSERT INTO payroll_roles (organization_id, name, sort_order, active)
+                VALUES (%s, %s, %s, CASE WHEN %s <= 20 THEN 1 ELSE 0 END)
+                """,
+                (oid, name, sort, sort),
+            )
 
 
 def _parse_time(val: Any) -> Optional[time]:
@@ -166,7 +200,7 @@ def get_org_schedule_settings(conn, organization_id: int) -> dict[str, Any]:
     from backend.payroll_planning_settings import ensure_planning_optional_columns
 
     ensure_planning_optional_columns(c)
-    shift_cols = "id, name, start_time_default, end_time_default, sort_order, active"
+    shift_cols = f"id, name, start_time_default, end_time_default, sort_order, {_select_active_expr(c, 'payroll_shifts')}"
     if table_has_column(c, "payroll_shifts", "notes"):
         shift_cols += ", notes"
     c.execute(
@@ -180,7 +214,7 @@ def get_org_schedule_settings(conn, organization_id: int) -> dict[str, Any]:
     for s in shifts:
         s["start_time_default"] = _time_to_str(_parse_time(s.get("start_time_default")))
         s["end_time_default"] = _time_to_str(_parse_time(s.get("end_time_default")))
-    stream_cols = "id, name, sort_order, active"
+    stream_cols = f"id, name, sort_order, {_select_active_expr(c, 'payroll_work_streams')}"
     if table_has_column(c, "payroll_work_streams", "notes"):
         stream_cols += ", notes"
     c.execute(
@@ -191,7 +225,7 @@ def get_org_schedule_settings(conn, organization_id: int) -> dict[str, Any]:
         (oid,),
     )
     streams = [json_safe(r) for r in c.fetchall()]
-    role_cols = "id, name, sort_order, active"
+    role_cols = f"id, name, sort_order, {_select_active_expr(c, 'payroll_roles')}"
     if table_has_column(c, "payroll_roles", "role_group"):
         role_cols += ", role_group"
     c.execute(
@@ -392,6 +426,13 @@ def ensure_worker_profile(
     row["worker_category_label"] = {"w2": "W-2", "contractor_1099": "1099", "temp": "Temp"}.get(
         str(row.get("worker_category")), str(row.get("worker_category"))
     )
+    if _d(row.get("default_hourly_rate") or 0) <= 0:
+        from backend.payroll_workflow import resolve_worker_hourly_rate
+
+        resolved = resolve_worker_hourly_rate(conn, oid, uid)
+        if resolved.get("hourly_rate"):
+            row["default_hourly_rate"] = resolved["hourly_rate"]
+            row["hourly_rate_source"] = resolved.get("rate_source")
     return json_safe(row)
 
 
@@ -399,12 +440,13 @@ def list_workers(conn, organization_id: int, *, active_only: bool = True) -> lis
     seed_schedule_defaults(conn.cursor(), organization_id)
     c = _cursor(conn)
     oid = int(organization_id)
+    user_filter = _users_list_filter(c)
     c.execute(
-        """
+        f"""
         SELECT DISTINCT u.id AS user_id
         FROM users u
         LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
-        WHERE u.organization_id=%s AND (pp.user_id IS NOT NULL OR u.active = 1)
+        WHERE u.organization_id=%s AND {user_filter}
         ORDER BY u.id
         """,
         (oid,),
@@ -434,13 +476,14 @@ def get_worker_availability(conn, organization_id: int, worker_profile_id: int) 
     for r in rows:
         r["available_from"] = _time_to_str(_parse_time(r.get("available_from")))
         r["available_to"] = _time_to_str(_parse_time(r.get("available_to")))
+    skill_active = _where_active(c, "payroll_worker_role_skills", "s")
     c.execute(
-        """
+        f"""
         SELECT s.*, r.name AS role_name, ws.name AS work_stream_name
         FROM payroll_worker_role_skills s
         JOIN payroll_roles r ON r.id=s.role_id
         LEFT JOIN payroll_work_streams ws ON ws.id=s.work_stream_id
-        WHERE s.worker_profile_id=%s AND s.active=1
+        WHERE s.worker_profile_id=%s AND {skill_active}
         """,
         (int(worker_profile_id),),
     )
@@ -452,8 +495,9 @@ def _user_geofence_ids(conn, user_id: int) -> list[int]:
     c = _cursor(conn)
     if not table_exists(c, "user_geofences"):
         return []
+    ug_active = _where_active(c, "user_geofences")
     c.execute(
-        "SELECT geofence_id FROM user_geofences WHERE user_id=%s AND active=1",
+        f"SELECT geofence_id FROM user_geofences WHERE user_id=%s AND {ug_active}",
         (int(user_id),),
     )
     return [int(r["geofence_id"]) for r in c.fetchall() if r.get("geofence_id") is not None]
@@ -491,9 +535,6 @@ def worker_profile_gaps(
         gaps.append("No availability set")
     if not worker.get("preferred_shift_id"):
         gaps.append("No preferred shift")
-    geofences = worker.get("geofence_ids")
-    if geofences is not None and not geofences:
-        gaps.append("No location compatibility")
     return gaps
 
 
@@ -519,7 +560,6 @@ PROFILE_COMPLETENESS_CHECKS = (
         and any(not a.get("unavailable_flag") for a in avail),
     ),
     ("preferred_shift", "No preferred shift", lambda w, _a, _s: bool(w.get("preferred_shift_id"))),
-    ("location", "No location compatibility", lambda w, _a, _s: bool(w.get("geofence_ids"))),
     (
         "performance",
         "No performance mapping",
@@ -573,7 +613,11 @@ def get_scheduling_profile_bundle(conn, organization_id: int, user_id: int) -> d
     worker = get_worker_by_user_id(conn, oid, user_id)
     settings = get_org_schedule_settings(conn, oid)
     c = _cursor(conn)
-    c.execute("SELECT id, name FROM geofences WHERE organization_id=%s AND active=1 ORDER BY name", (oid,))
+    gf_active = _where_active(c, "geofences")
+    c.execute(
+        f"SELECT id, name FROM geofences WHERE organization_id=%s AND {gf_active} ORDER BY name",
+        (oid,),
+    )
     geofences = [json_safe(r) for r in c.fetchall()]
     assigned = worker.get("geofence_ids") or []
     worker["assigned_locations"] = [g for g in geofences if int(g["id"]) in assigned]
@@ -986,11 +1030,12 @@ def check_schedule_warnings(
         if "drop" in sn and not worker_profile.get("can_work_drop_off"):
             warnings.append("Worker not flagged for Drop Off work stream")
     role_id = entry.get("role_id")
+    skill_active = _where_active(c, "payroll_worker_role_skills")
     if role_id:
         c.execute(
-            """
+            f"""
             SELECT 1 FROM payroll_worker_role_skills
-            WHERE worker_profile_id=%s AND role_id=%s AND active=1 LIMIT 1
+            WHERE worker_profile_id=%s AND role_id=%s AND {skill_active} LIMIT 1
             """,
             (int(worker_profile["id"]), int(role_id)),
         )
@@ -998,17 +1043,17 @@ def check_schedule_warnings(
             warnings.append("Worker has no active skill record for this role")
         elif stream_id:
             c.execute(
-                """
+                f"""
                 SELECT 1 FROM payroll_worker_role_skills
-                WHERE worker_profile_id=%s AND role_id=%s AND work_stream_id=%s AND active=1 LIMIT 1
+                WHERE worker_profile_id=%s AND role_id=%s AND work_stream_id=%s AND {skill_active} LIMIT 1
                 """,
                 (int(worker_profile["id"]), int(role_id), int(stream_id)),
             )
             if not c.fetchone():
                 c.execute(
-                    """
+                    f"""
                     SELECT 1 FROM payroll_worker_role_skills
-                    WHERE worker_profile_id=%s AND role_id=%s AND work_stream_id IS NULL AND active=1 LIMIT 1
+                    WHERE worker_profile_id=%s AND role_id=%s AND work_stream_id IS NULL AND {skill_active} LIMIT 1
                     """,
                     (int(worker_profile["id"]), int(role_id)),
                 )
@@ -1017,11 +1062,6 @@ def check_schedule_warnings(
     pref_shift = worker_profile.get("preferred_shift_id")
     if pref_shift and entry.get("shift_id") and int(pref_shift) != int(entry["shift_id"]):
         warnings.append("Shift differs from worker preferred shift")
-    gf = entry.get("geofence_id")
-    if gf:
-        allowed = _user_geofence_ids(conn, int(worker_profile["user_id"]))
-        if allowed and int(gf) not in allowed:
-            warnings.append("Location not assigned to worker profile")
     for gap in worker_profile_gaps(worker_profile):
         if gap not in warnings:
             warnings.append(gap)
@@ -1035,10 +1075,11 @@ def check_schedule_warnings(
 
 def get_performance_preview(conn, organization_id: int, user_id: int) -> dict[str, Any]:
     c = _cursor(conn)
+    map_active = _where_active(c, "rinse_folding_user_map")
     c.execute(
-        """
+        f"""
         SELECT rinse_user_name FROM rinse_folding_user_map
-        WHERE organization_id=%s AND user_id=%s AND active=1 LIMIT 1
+        WHERE organization_id=%s AND user_id=%s AND {map_active} LIMIT 1
         """,
         (int(organization_id), int(user_id)),
     )
@@ -1354,8 +1395,6 @@ def replacement_suggestions(conn, organization_id: int, schedule_entry_id: int) 
     entry = c.fetchone()
     if not entry:
         raise ValueError("Schedule entry not found")
-    if str(entry.get("status")) not in ABSENT_STATUSES:
-        return {"entry_id": schedule_entry_id, "suggestions": [], "note": "Entry is not absent/sick/no-show"}
     enriched = _enrich_entry(conn, organization_id, dict(entry))
     work_date = date.fromisoformat(str(entry["work_date"])[:10])
     week_start, _ = payroll_week_bounds(conn, work_date, organization_id)
@@ -1373,11 +1412,12 @@ def replacement_suggestions(conn, organization_id: int, schedule_entry_id: int) 
         add_hours = _d(entry.get("scheduled_hours"))
         projected_after = _d(wh["projected_hours"]) + add_hours
         score = 100
+        skill_active = _where_active(c, "payroll_worker_role_skills")
         if entry.get("role_id"):
             c.execute(
-                """
+                f"""
                 SELECT 1 FROM payroll_worker_role_skills
-                WHERE worker_profile_id=%s AND role_id=%s AND active=1
+                WHERE worker_profile_id=%s AND role_id=%s AND {skill_active}
                 """,
                 (int(w["id"]), int(entry["role_id"])),
             )
@@ -1387,9 +1427,9 @@ def replacement_suggestions(conn, organization_id: int, schedule_entry_id: int) 
                 score -= 20
         if entry.get("work_stream_id"):
             c.execute(
-                """
+                f"""
                 SELECT 1 FROM payroll_worker_role_skills
-                WHERE worker_profile_id=%s AND work_stream_id=%s AND active=1
+                WHERE worker_profile_id=%s AND work_stream_id=%s AND {skill_active}
                 """,
                 (int(w["id"]), int(entry["work_stream_id"])),
             )
@@ -1402,6 +1442,35 @@ def replacement_suggestions(conn, organization_id: int, schedule_entry_id: int) 
         perf = get_performance_preview(conn, organization_id, int(w["user_id"]))
         if perf.get("available"):
             score += 10
+        role_match = "Yes"
+        stream_match = "Yes"
+        if entry.get("role_id"):
+            c.execute(
+                f"SELECT 1 FROM payroll_worker_role_skills WHERE worker_profile_id=%s AND role_id=%s AND {skill_active} LIMIT 1",
+                (int(w["id"]), int(entry["role_id"])),
+            )
+            if not c.fetchone():
+                role_match = "No"
+        if entry.get("work_stream_id"):
+            c.execute(
+                f"SELECT 1 FROM payroll_worker_role_skills WHERE worker_profile_id=%s AND work_stream_id=%s AND {skill_active} LIMIT 1",
+                (int(w["id"]), int(entry["work_stream_id"])),
+            )
+            if not c.fetchone():
+                stream_match = "No"
+        current_h = _d(wh.get("scheduled_hours") or wh.get("projected_hours"))
+        ot_after = projected_after > _d(wh["overtime_threshold"])
+        rec = "Best" if score >= 120 and not ot_after else ("Avoid" if ot_after else "Good")
+        rate = _d(w.get("default_hourly_rate") or 0)
+        reasons = [
+            "Available: Yes",
+            f"Role match: {role_match}",
+            f"Stream match: {stream_match}",
+            f"Current weekly hours: {_q2(current_h)}",
+            f"After replacement: {_q2(projected_after)}",
+            f"Overtime risk: {'Yes' if ot_after else 'No'}",
+            f"Estimated added cost: ${_q2(add_hours * rate)}",
+        ]
         candidates.append(
             json_safe(
                 {
@@ -1410,9 +1479,14 @@ def replacement_suggestions(conn, organization_id: int, schedule_entry_id: int) 
                     "worker_name": w.get("display_name"),
                     "worker_category": w.get("worker_category"),
                     "score": score,
+                    "recommendation": rec,
+                    "reasons": reasons,
+                    "current_weekly_hours": _q2(current_h),
                     "week_hours": wh,
                     "projected_hours_after": _q2(projected_after),
-                    "overtime_risk_after": projected_after > _d(wh["overtime_threshold"]),
+                    "overtime_risk_after": ot_after,
+                    "hourly_rate": _q2(rate) if rate > 0 else None,
+                    "estimated_added_cost": _q2(add_hours * rate),
                     "performance_preview": perf,
                     "warnings": warnings,
                 }

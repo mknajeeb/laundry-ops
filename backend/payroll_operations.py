@@ -256,6 +256,7 @@ def list_time_records(
     params.append(int(limit))
     c.execute(q, params)
     rows = c.fetchall() or []
+    rate_cache: dict[int, dict] = {}
     out = []
     for row in rows:
         cat = worker_category_for_user(conn, int(row["user_id"]))
@@ -263,6 +264,12 @@ def list_time_records(
             continue
         net = int(row.get("net_work_seconds") or 0)
         approved_sec = net
+        uid = int(row["user_id"])
+        if uid not in rate_cache:
+            from backend.payroll_workflow import resolve_worker_hourly_rate
+
+            rate_cache[uid] = resolve_worker_hourly_rate(conn, uid, int(organization_id))
+        rate_info = rate_cache[uid]
         rec = {
             "id": row["id"],
             "user_id": row["user_id"],
@@ -276,6 +283,9 @@ def list_time_records(
             "total_hours_display": format_hours_display(net),
             "approved_hours": round(approved_sec / 3600, 2),
             "approved_hours_display": format_hours_display(approved_sec),
+            "hourly_rate": rate_info.get("hourly_rate"),
+            "rate_source": rate_info.get("rate_source"),
+            "rate_missing": bool(rate_info.get("rate_missing")),
             "status": time_record_status(row),
             "notes": row.get("period_adjustment_remarks") or "",
             "payroll_hours_approved": bool(row.get("payroll_hours_approved")),

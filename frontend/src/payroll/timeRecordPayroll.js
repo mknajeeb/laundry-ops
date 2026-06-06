@@ -2,9 +2,10 @@ const DEFAULT_OT_THRESHOLD = 40;
 const DEFAULT_OT_MULTIPLIER = 1.5;
 const WARN_HOURS = 35;
 
-export function formatPayrollMoney(n) {
+export function formatPayrollMoney(n, { allowZero = false } = {}) {
   const v = Number(n);
-  if (!Number.isFinite(v) || v <= 0) return "—";
+  if (!Number.isFinite(v)) return "—";
+  if (v <= 0 && !allowZero) return "—";
   return `$${v.toFixed(2)}`;
 }
 
@@ -21,7 +22,38 @@ export function workerHoursLevel(totalHours) {
   return "normal";
 }
 
-export function buildWorkerRateMap(workers = [], scheduleSettings = null, calendarBundle = null) {
+export function computeSummaryHoursLevel(totalHours, userId, workerTotals = {}) {
+  if (userId) {
+    return workerHoursLevel(workerTotals[String(userId)] ?? totalHours);
+  }
+  const uids = Object.keys(workerTotals);
+  if (uids.length === 1) {
+    return workerHoursLevel(workerTotals[uids[0]]);
+  }
+  return workerHoursLevel(totalHours);
+}
+
+function rateEntryFromSources(uid, cat, regular, calendar, orgOt) {
+  const cal = calendar[cat] || calendar.default || {};
+  const otEnabled =
+    cat === "w2" && cal.overtime_enabled !== false && cal.overtime_enabled !== 0;
+  const multiplier = Number(cal.overtime_multiplier || DEFAULT_OT_MULTIPLIER);
+  const otRate = otEnabled && regular > 0 ? regular * multiplier : null;
+  return {
+    regular_rate: regular > 0 ? regular : null,
+    ot_rate: otRate,
+    ot_enabled: otEnabled,
+    ot_threshold: Number(cal.overtime_threshold_hours ?? orgOt) || DEFAULT_OT_THRESHOLD,
+    worker_category: cat,
+  };
+}
+
+export function buildWorkerRateMap(
+  workers = [],
+  scheduleSettings = null,
+  calendarBundle = null,
+  rows = [],
+) {
   const orgOt = Number(
     scheduleSettings?.overtime_threshold_hours
       ?? calendarBundle?.org_schedule_settings?.overtime_threshold_hours
@@ -33,24 +65,23 @@ export function buildWorkerRateMap(workers = [], scheduleSettings = null, calend
   for (const w of workers) {
     const uid = String(w.user_id);
     const cat = w.worker_category || "w2";
-    const cal = calendar[cat] || calendar.default || {};
-    const otEnabled =
-      cat === "w2" && cal.overtime_enabled !== false && cal.overtime_enabled !== 0;
-    const regular = Number(w.default_hourly_rate || 0);
-    const multiplier = Number(cal.overtime_multiplier || DEFAULT_OT_MULTIPLIER);
-    const otRate = otEnabled && regular > 0 ? regular * multiplier : null;
-    map[uid] = {
-      regular_rate: regular > 0 ? regular : null,
-      ot_rate: otRate,
-      ot_enabled: otEnabled,
-      ot_threshold: Number(cal.overtime_threshold_hours ?? orgOt) || DEFAULT_OT_THRESHOLD,
-      worker_category: cat,
-    };
+    const regular = Number(w.default_hourly_rate || w.hourly_rate || 0);
+    map[uid] = rateEntryFromSources(uid, cat, regular, calendar, orgOt);
   }
+
+  for (const r of rows) {
+    const uid = String(r.user_id);
+    if (map[uid]?.regular_rate) continue;
+    const regular = Number(r.hourly_rate || 0);
+    if (regular <= 0) continue;
+    const cat = r.worker_category || map[uid]?.worker_category || "w2";
+    map[uid] = rateEntryFromSources(uid, cat, regular, calendar, orgOt);
+  }
+
   return map;
 }
 
-export function enrichTimeRecords(rows = [], rateMap = {}) {
+export function enrichTimeRecords(rows = [], rateMap = {}, { userId = "" } = {}) {
   const workerTotals = {};
   for (const r of rows) {
     const uid = String(r.user_id);
@@ -65,6 +96,9 @@ export function enrichTimeRecords(rows = [], rateMap = {}) {
   }
 
   const economicsById = {};
+  let totalRegularCost = 0;
+  let totalOtCost = 0;
+
   for (const [uid, userRows] of Object.entries(byUser)) {
     const rateInfo = rateMap[uid] || {};
     const regRate = Number(rateInfo.regular_rate || 0);
@@ -87,11 +121,16 @@ export function enrichTimeRecords(rows = [], rateMap = {}) {
         otH = Math.max(0, hrs - regH);
       }
       cumulative += hrs;
-      const rowTotal =
-        regRate > 0 ? regH * regRate + (otEnabled && otRate > 0 ? otH * otRate : 0) : 0;
+      const regularCost = regRate > 0 ? regH * regRate : 0;
+      const otCost = otEnabled && otRate > 0 ? otH * otRate : 0;
+      const rowTotal = regularCost + otCost;
+      totalRegularCost += regularCost;
+      totalOtCost += otCost;
       economicsById[r.id] = {
         regular_rate: rateInfo.regular_rate,
         ot_rate: otEnabled ? rateInfo.ot_rate : null,
+        regular_cost: regularCost,
+        ot_cost: otCost,
         row_total: rowTotal,
         worker_period_hours: workerTotals[uid] || 0,
         hours_level: workerHoursLevel(workerTotals[uid]),
@@ -104,6 +143,8 @@ export function enrichTimeRecords(rows = [], rateMap = {}) {
     ...(economicsById[r.id] || {
       regular_rate: null,
       ot_rate: null,
+      regular_cost: 0,
+      ot_cost: 0,
       row_total: 0,
       worker_period_hours: workerTotals[String(r.user_id)] || 0,
       hours_level: workerHoursLevel(workerTotals[String(r.user_id)]),
@@ -111,7 +152,16 @@ export function enrichTimeRecords(rows = [], rateMap = {}) {
   }));
 
   const totalHours = enriched.reduce((s, r) => s + Number(r.approved_hours || 0), 0);
-  const totalCost = enriched.reduce((s, r) => s + Number(r.row_total || 0), 0);
+  const totalCost = totalRegularCost + totalOtCost;
+  const summaryHoursLevel = computeSummaryHoursLevel(totalHours, userId, workerTotals);
 
-  return { rows: enriched, totalHours, totalCost };
+  return {
+    rows: enriched,
+    totalHours,
+    totalCost,
+    totalRegularCost,
+    totalOtCost,
+    summaryHoursLevel,
+    workerTotals,
+  };
 }

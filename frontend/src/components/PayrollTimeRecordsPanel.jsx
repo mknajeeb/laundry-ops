@@ -132,7 +132,7 @@ function hoursCellSx(level, theme) {
   return { fontVariantNumeric: "tabular-nums" };
 }
 
-function SummaryStat({ icon, label, value, sub, gradient }) {
+function SummaryStat({ icon, label, value, valueSx, details = [], gradient }) {
   return (
     <Paper
       elevation={0}
@@ -144,7 +144,7 @@ function SummaryStat({ icon, label, value, sub, gradient }) {
         background: gradient,
       }}
     >
-      <Stack direction="row" spacing={1.25} alignItems="center">
+      <Stack direction="row" spacing={1.25} alignItems="flex-start">
         <Box
           sx={{
             width: 40,
@@ -154,22 +154,23 @@ function SummaryStat({ icon, label, value, sub, gradient }) {
             placeItems: "center",
             bgcolor: "background.paper",
             boxShadow: 1,
+            flexShrink: 0,
           }}
         >
           {icon}
         </Box>
-        <Box>
+        <Box sx={{ minWidth: 0 }}>
           <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: 0.4 }}>
             {label}
           </Typography>
-          <Typography variant="h6" sx={{ lineHeight: 1.2, fontWeight: 700 }}>
+          <Typography variant="h6" sx={{ lineHeight: 1.2, fontWeight: 700, ...valueSx }}>
             {value}
           </Typography>
-          {sub ? (
-            <Typography variant="caption" color="text.secondary">
-              {sub}
+          {details.map((line) => (
+            <Typography key={line} variant="caption" color="text.secondary" display="block">
+              {line}
             </Typography>
-          ) : null}
+          ))}
         </Box>
       </Stack>
     </Paper>
@@ -219,14 +220,31 @@ export default function PayrollTimeRecordsPanel({
   }, []);
 
   const rateMap = useMemo(
-    () => buildWorkerRateMap(workers, scheduleSettings, calendarSettings),
-    [workers, scheduleSettings, calendarSettings],
+    () => buildWorkerRateMap(workers, scheduleSettings, calendarSettings, rows),
+    [workers, scheduleSettings, calendarSettings, rows],
   );
 
-  const { rows: displayRows, totalHours, totalCost } = useMemo(
-    () => enrichTimeRecords(rows, rateMap),
-    [rows, rateMap],
+  const {
+    rows: displayRows,
+    totalHours,
+    totalCost,
+    totalRegularCost,
+    totalOtCost,
+    summaryHoursLevel,
+  } = useMemo(
+    () => enrichTimeRecords(rows, rateMap, { userId }),
+    [rows, rateMap, userId],
   );
+
+  const summaryHoursSx = useMemo(() => {
+    if (summaryHoursLevel === "critical") {
+      return { color: theme.palette.error.dark };
+    }
+    if (summaryHoursLevel === "warning") {
+      return { color: theme.palette.warning.dark };
+    }
+    return undefined;
+  }, [summaryHoursLevel, theme]);
 
   const approvableRows = rows.filter(canApproveRecord);
 
@@ -541,14 +559,31 @@ export default function PayrollTimeRecordsPanel({
             icon={<AccessTimeIcon color="primary" fontSize="small" />}
             label="Total hours"
             value={formatHoursDecimal(totalHours)}
-            sub={`${displayRows.length} record${displayRows.length === 1 ? "" : "s"}`}
-            gradient={`linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.08)} 0%, ${alpha(theme.palette.primary.main, 0.02)} 100%)`}
+            valueSx={summaryHoursSx}
+            details={[
+              `${displayRows.length} record${displayRows.length === 1 ? "" : "s"}`,
+              summaryHoursLevel === "critical"
+                ? "At or above 40h — overtime"
+                : summaryHoursLevel === "warning"
+                  ? "Above 35h — approaching overtime"
+                  : null,
+            ].filter(Boolean)}
+            gradient={
+              summaryHoursLevel === "critical"
+                ? `linear-gradient(135deg, ${alpha(theme.palette.error.main, 0.12)} 0%, ${alpha(theme.palette.error.main, 0.03)} 100%)`
+                : summaryHoursLevel === "warning"
+                  ? `linear-gradient(135deg, ${alpha(theme.palette.warning.main, 0.14)} 0%, ${alpha(theme.palette.warning.main, 0.03)} 100%)`
+                  : `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.08)} 0%, ${alpha(theme.palette.primary.main, 0.02)} 100%)`
+            }
           />
           <SummaryStat
             icon={<AttachMoneyIcon color="success" fontSize="small" />}
             label="Total cost"
-            value={totalCost > 0 ? formatPayrollMoney(totalCost) : "$0.00"}
-            sub="Regular + OT by worker threshold"
+            value={formatPayrollMoney(totalCost, { allowZero: true })}
+            details={[
+              `Regular ${formatPayrollMoney(totalRegularCost, { allowZero: true })}`,
+              `OT ${formatPayrollMoney(totalOtCost, { allowZero: true })}`,
+            ]}
             gradient={`linear-gradient(135deg, ${alpha(theme.palette.success.main, 0.1)} 0%, ${alpha(theme.palette.success.main, 0.02)} 100%)`}
           />
         </Box>
