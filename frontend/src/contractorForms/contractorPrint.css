@@ -291,6 +291,16 @@
   margin-top: 0.2in;
 }
 
+.cform-sig-printed-name {
+  margin: 0.1in 0 0.06in;
+  font-size: 10pt;
+  line-height: 1.35;
+}
+
+.cform-sig-printed-name p {
+  margin: 0;
+}
+
 .contractor-payment-table {
   width: 100%;
   border-collapse: collapse;

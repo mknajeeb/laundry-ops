@@ -42,6 +42,7 @@ import ContractorEngagementLetterPrint from "../contractorForms/ContractorEngage
 import ContractorInvoicePaymentPrint, {
   calcServiceAmount,
   emptyPaymentRecord,
+  splitSupervisorFields,
 } from "../contractorForms/ContractorInvoicePaymentPrint";
 import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
 import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
@@ -153,6 +154,7 @@ export default function ContractorManagementPanel() {
             : pre.worker_kind === "1099"
               ? "regular"
               : "regular";
+        const supervisor = splitSupervisorFields(pre.company_supervisor_name);
         setRecord({
           ...emptyPaymentRecord(pre, kind),
           contractor_type: kind,
@@ -161,7 +163,8 @@ export default function ContractorManagementPanel() {
           worker_email: pre.email || "",
           service_rate: pre.rate_per_hour != null ? String(pre.rate_per_hour) : "",
           payment_method: pre.payment_method || "",
-          company_supervisor_name: pre.company_supervisor_name || "",
+          company_supervisor_name: supervisor.company_supervisor_name,
+          company_supervisor_title: supervisor.company_supervisor_title,
           total_paid_ytd_prior: String(ytd),
           amount_paid_manual: false,
         });
@@ -757,15 +760,24 @@ export default function ContractorManagementPanel() {
                   onChange={(e) => onRecordField("payment_date", e.target.value)}
                 />
               </Box>
-              <TextField
-                fullWidth
-                size="small"
-                sx={{ mt: 2 }}
-                label="Supervisor name (printed with company signature)"
-                placeholder="Defaults from org settings when configured"
-                value={record.company_supervisor_name || ""}
-                onChange={(e) => onRecordField("company_supervisor_name", e.target.value)}
-              />
+              <Box sx={formGridSx}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Supervisor name (printed with company signature)"
+                  placeholder="Defaults from org settings when configured"
+                  value={record.company_supervisor_name || ""}
+                  onChange={(e) => onRecordField("company_supervisor_name", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Supervisor title"
+                  placeholder="e.g. Managing Director"
+                  value={record.company_supervisor_title || ""}
+                  onChange={(e) => onRecordField("company_supervisor_title", e.target.value)}
+                />
+              </Box>
 
               <FormControlLabel
                 sx={{ mt: 1.5 }}

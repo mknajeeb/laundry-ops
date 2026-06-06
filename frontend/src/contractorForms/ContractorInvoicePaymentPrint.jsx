@@ -34,6 +34,21 @@ function typeLabel(t) {
   return "Regular Contractor";
 }
 
+function splitSupervisorNameTitle(rawName, rawTitle) {
+  const title = pickText(rawTitle);
+  const nameRaw = pickText(rawName);
+  if (!nameRaw) return { name: null, title };
+  if (title) return { name: nameRaw, title };
+  const comma = nameRaw.indexOf(",");
+  if (comma > 0) {
+    return {
+      name: nameRaw.slice(0, comma).trim(),
+      title: nameRaw.slice(comma + 1).trim() || null,
+    };
+  }
+  return { name: nameRaw, title: null };
+}
+
 function PrintTable({ rows }) {
   const visible = rows.filter((row) => row.value != null && row.value !== "");
   if (!visible.length) return null;
@@ -177,11 +192,11 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
     strongLabel: true,
   });
 
-  const supervisorName = pickText(
-    r.company_supervisor_name,
-    prefill?.company_supervisor_name,
-    prefill?.company_representative,
+  const supervisor = splitSupervisorNameTitle(
+    pickText(r.company_supervisor_name, prefill?.company_supervisor_name, prefill?.company_representative),
+    pickText(r.company_supervisor_title, prefill?.company_supervisor_title),
   );
+  const workerName = pickText(r.worker_name, prefill?.full_name);
 
   return (
     <>
@@ -210,16 +225,30 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
       <div className="cform-sig-block">
         <div>
           <strong>Contractor / worker signature</strong>
+          {workerName ? (
+            <p className="cform-sig-printed-name">
+              <strong>Name:</strong> {workerName}
+            </p>
+          ) : null}
           <div className="cform-sig-line" />
           <strong>Date</strong>
           <div className="cform-sig-line" />
         </div>
         <div>
           <strong>Company signature</strong>
-          {supervisorName ? (
-            <p className="cform-p" style={{ margin: "0.08in 0 0.1in", fontSize: "10pt" }}>
-              <strong>Supervisor name:</strong> {supervisorName}
-            </p>
+          {supervisor.name || supervisor.title ? (
+            <div className="cform-sig-printed-name">
+              {supervisor.name ? (
+                <p className="cform-p" style={{ margin: "0.06in 0 0", fontSize: "10pt" }}>
+                  <strong>Name:</strong> {supervisor.name}
+                </p>
+              ) : null}
+              {supervisor.title ? (
+                <p className="cform-p" style={{ margin: "0.04in 0 0", fontSize: "10pt" }}>
+                  <strong>Title:</strong> {supervisor.title}
+                </p>
+              ) : null}
+            </div>
           ) : null}
           <div className="cform-sig-line" />
           <strong>Date</strong>
@@ -258,10 +287,24 @@ export function emptyPaymentRecord(prefill = {}, contractorType = "regular") {
     amount_paid_manual: false,
     print_include_payment_reference: true,
     company_supervisor_name: prefill?.company_supervisor_name || "",
+    company_supervisor_title: prefill?.company_supervisor_title || "",
     notes: "",
     source_type: "manual",
     status: "paid",
   };
+}
+
+export function splitSupervisorFields(full) {
+  const raw = String(full || "").trim();
+  if (!raw) return { company_supervisor_name: "", company_supervisor_title: "" };
+  const comma = raw.indexOf(",");
+  if (comma > 0) {
+    return {
+      company_supervisor_name: raw.slice(0, comma).trim(),
+      company_supervisor_title: raw.slice(comma + 1).trim(),
+    };
+  }
+  return { company_supervisor_name: raw, company_supervisor_title: "" };
 }
 
 export function calcServiceAmount(hours, rate) {
