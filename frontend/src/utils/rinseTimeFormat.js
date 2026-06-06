@@ -18,17 +18,33 @@ export function parseRinseApiInstant(value) {
   return Number.isFinite(t) ? t : Number.NaN;
 }
 
-/** System/job timestamps from API (UTC stored, serialized with ET offset). */
-export const formatSystemDateTime = formatRinseApiDateTime;
+/** Display naive Rinse/DB wall time (already Eastern) without browser-local drift. */
+export function formatNaiveEtWallDateTime(value) {
+  const s = String(value ?? "").trim();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m;
+  const monthIdx = Number(mo) - 1;
+  const dayNum = Number(d);
+  const hour24 = Number(h);
+  const hour12 = hour24 % 12 || 12;
+  const ampm = hour24 >= 12 ? "PM" : "AM";
+  const monthLabel = new Date(Number(y), monthIdx, dayNum).toLocaleString("en-US", { month: "short" });
+  return `${monthLabel} ${dayNum}, ${hour12}:${mi} ${ampm} ET`;
+}
 
-export function formatRinseApiDateTime(value, { withYear = false } = {}) {
+/** System/job timestamps from API (UTC stored, serialized with ET offset). */
+export const formatSystemDateTime = formatBusinessDateTime;
+
+/** Laundry Ops business display: America/New_York with EDT/EST label. */
+export function formatBusinessDateTime(value, { withYear = false } = {}) {
   if (!value) return "—";
   const s = String(value).trim();
   if (/\bGMT\b/i.test(s)) return "—";
   if (!hasExplicitTzOffset(s)) return "—";
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
+  return d.toLocaleString("en-US", {
     timeZone: ET,
     month: "short",
     day: "numeric",
@@ -39,13 +55,21 @@ export function formatRinseApiDateTime(value, { withYear = false } = {}) {
   });
 }
 
-/** Prefer portal raw text; fall back to offset ISO from API. */
+/** @deprecated alias — prefer formatBusinessDateTime */
+export function formatRinseApiDateTime(value, opts = {}) {
+  return formatBusinessDateTime(value, opts);
+}
+
+/** Prefer portal raw text; fall back to Eastern ISO from API. */
 export function formatRinseScanTime(ev) {
   const raw = String(ev?.time_scanned_raw ?? "").trim();
-  if (raw) return raw;
+  if (raw) {
+    if (/\b(EDT|EST|ET)\b/i.test(raw)) return raw;
+    return `${raw} ET`;
+  }
   const parsed = ev?.scanned_at_parsed;
   if (parsed && hasExplicitTzOffset(parsed)) {
-    return formatRinseApiDateTime(parsed);
+    return formatBusinessDateTime(parsed);
   }
   if (parsed) return String(parsed);
   return "—";

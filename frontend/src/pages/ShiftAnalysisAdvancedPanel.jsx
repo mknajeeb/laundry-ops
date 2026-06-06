@@ -611,7 +611,7 @@ function LifecycleDetailPanel({ row }) {
       <Typography variant="body2"><strong>Bag ID:</strong> {row.bag_id}</Typography>
       <Typography variant="body2"><strong>Customer:</strong> {row.customer || "—"}</Typography>
       <Typography variant="body2"><strong>Lifecycle:</strong> {lifecycleStatusLabel(row.current_lifecycle_status)}</Typography>
-      <Typography variant="body2"><strong>Checkout:</strong> {checkoutStatusLabel(row.checkout_status, checkoutStatusLabels)}</Typography>
+      <Typography variant="body2"><strong>Checkout:</strong> {checkoutStatusLabel(row.checkout_status, CHECKOUT_STATUS_LABELS)}</Typography>
       <Typography variant="body2"><strong>Status time:</strong> {formatDateTime(row.status_timestamp)}</Typography>
       <Typography variant="body2"><strong>Exceptions:</strong> {formatExceptionFlags(row.exception_flags)}</Typography>
       {reject ? (
@@ -834,6 +834,7 @@ export default function ShiftAnalysisAdvancedPanel({ user, embedded = false }) {
   }, [searchTick, loadData]);
 
   const clockDiag = summary?.clock_hours_diagnostic || {};
+  const overall = summary?.overall_production || {};
   const clockHoursDisplay = (() => {
     const formatted = formatLaborHours(overall.clocked_labor_hours, 1);
     if (formatted !== "—") return formatted;
