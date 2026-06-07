@@ -109,7 +109,7 @@ def _qualifies_for_active_work(
     pending_row: Mapping[str, Any] | None,
     completion: Any,
 ) -> bool:
-    """Current at-vendor active work: active staging only, not completed/sent/RFV."""
+    """Current at-vendor active work: active orders_staging only (portal population)."""
     if not pending_row or not isinstance(pending_row, dict):
         return False
     scope = str(pending_row.get("record_scope") or "")
@@ -117,12 +117,8 @@ def _qualifies_for_active_work(
         return False
     if not pending_row.get("in_active_staging"):
         return False
-    if completion.completed:
-        return False
     status = str(pending_row.get("current_lifecycle_status") or "")
-    if status in LIFECYCLE_COMPLETED_STATUSES:
-        return False
-    if int(pending_row.get("is_completed") or 0) == 1:
+    if status == SENT_TO_RINSE:
         return False
     if _logistics_sent(pending_row):
         return False
@@ -528,8 +524,8 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(r, dict)
         and str(r.get("record_scope") or "") != "incoming"
         and r.get("in_active_staging")
-        and str(r.get("current_lifecycle_status") or "") not in LIFECYCLE_COMPLETED_STATUSES
-        and int(r.get("is_completed") or 0) != 1
+        and str(r.get("current_lifecycle_status") or "") != SENT_TO_RINSE
+        and not _logistics_sent(r)
     ]
     hd_rows = [r for r in active_rows if str(r.get("record_scope") or "") == "hd_lifecycle"]
     wf_rows = [r for r in active_rows if r not in hd_rows]

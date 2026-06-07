@@ -459,8 +459,8 @@ class TestDrilldownCountIntegrity:
         active = payload["current_active_work"]
         checkout = payload["rush_checkout"]
         records = payload["records"]
-        assert active["total"] == _count_tag(records, "active_work") == 1
-        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 1
+        assert active["total"] == _count_tag(records, "active_work") == 2
+        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 2
         assert active["counts_add_up"] is True
         assert checkout["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
         assert checkout["checkout_not_recorded"] == _count_tag(records, "checkout_not_recorded") == 0
@@ -615,8 +615,8 @@ class TestActiveWorkCountLogic:
         payload = build_simple_shift_performance_payload(
             cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
         )
-        assert payload["current_active_work"]["total"] == 1
-        assert _count_tag(payload["records"], "active_work") == 1
+        assert payload["current_active_work"]["total"] == 2
+        assert _count_tag(payload["records"], "active_work") == 2
         recon = payload["debug_audit"]["active_work_reconciliation"]
         assert recon["counts_add_up"] is True
         assert "REG1" in {e["bag_id"] for e in recon["excluded_ids"]}

@@ -1325,10 +1325,11 @@ def _load_hd_production_bag_rows(
             if table_has_column(cursor, "orders_staging", "rush_type")
             else "CASE WHEN s.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
         )
+        logistics_expr = _staging_logistics_expr(cursor, "s")
         cursor.execute(
             f"""
             SELECT s.ticket_id AS bag_id, {svc_s} AS service_type, UPPER({rush_s}) AS effective_rush,
-                   0 AS is_completed, s.name_clean, s.weight_num, NULL AS logistics_status
+                   0 AS is_completed, s.name_clean, s.weight_num, {logistics_expr} AS logistics_status
             FROM orders_staging s
             WHERE ({active_where}){org_clause}
               AND s.ticket_id IS NOT NULL AND TRIM(s.ticket_id) != ''
@@ -1669,6 +1670,9 @@ def build_lifecycle_pending_payload(
                 "exception_flags": exception_flags,
                 "operational_flags": lifecycle.get("operational_flags") or {},
                 "is_completed": hd_status in ("processed_completed", "sent_to_rinse"),
+                "in_active_staging": bool(row.get("in_active_staging")),
+                "registry_supplement": bool(row.get("registry_supplement")),
+                "logistics_status": row.get("logistics_status"),
             }
         )
 

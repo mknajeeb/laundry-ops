@@ -13,7 +13,7 @@ from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_bag_lifecycle_status import derive_bag_lifecycle_status
 from backend.rinse_portal_csv import parse_rush_flag_from_portal_cells, portal_csv_to_orders_df
 from backend.rinse_processing_settings import get_processing_settings
-from backend.ta_helpers import table_exists
+from backend.ta_helpers import table_exists, table_has_column
 
 PORTAL_STATUS_READY = "ready_for_vendor"
 PORTAL_STATUS_AT_VENDOR = "at_vendor"
@@ -422,23 +422,49 @@ def _presence_service_type(row: Mapping[str, Any]) -> str | None:
     if svc_raw in ("WF", "HD"):
         return svc_raw
     rj = _presence_raw_row_json(row)
-    for key in ("service_type", "ServiceType", "service_type_raw"):
+    for key in ("service_type", "ServiceType", "service_type_raw", "Sub-Service", "sub_service"):
         inferred = _infer_service_type_from_text(rj.get(key))
         if inferred:
             return inferred
+    from etl.transform_orders import classify_service
+
+    service_cells = [
+        rj.get("service_type"),
+        rj.get("ServiceType"),
+        rj.get("service_type_raw"),
+        rj.get("Sub-Service"),
+    ]
+    meaningful = [c for c in service_cells if c is not None and str(c).strip()]
+    if meaningful:
+        try:
+            st = str(classify_service(meaningful) or "").strip().upper()
+            if st in ("WF", "HD"):
+                return st
+        except Exception:
+            pass
     return _infer_service_type_from_text(svc_raw)
 
 
 def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
+    cells = [
+        row.get("customer_name"),
+        _presence_raw_row_json(row).get("estimated_delivery_text"),
+        _presence_raw_row_json(row).get("Name_Clean"),
+    ]
+    parsed = parse_rush_flag_from_portal_cells([c for c in cells if c is not None])
+    if parsed == "RUSH":
+        return "RUSH"
     rf = str(row.get("rush_flag") or "").strip().upper()
     if rf == "RUSH":
         return "RUSH"
+    if parsed == "NON-RUSH":
+        return "NON-RUSH"
     if rf == "NON-RUSH":
         return "NON-RUSH"
-    parsed = _rush_from_raw_row_json(row.get("raw_row_json"))
-    if parsed == "RUSH":
+    rush_from_json = _rush_from_raw_row_json(row.get("raw_row_json"))
+    if rush_from_json == "RUSH":
         return "RUSH"
-    if parsed == "NON-RUSH":
+    if rush_from_json == "NON-RUSH":
         return "NON-RUSH"
     edd = _parse_presence_date(row.get("estimated_delivery_date"))
     if edd is None:
@@ -519,6 +545,65 @@ def load_wf_presence_at_vendor_rows(
     return rows, meta
 
 
+def _lookup_service_types_from_staging(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+) -> dict[str, str]:
+    """Fallback WF/HD from orders_staging or rinse_bag_registry when presence row lacks service."""
+    out: dict[str, str] = {}
+    if not bag_ids:
+        return out
+    org = int(organization_id)
+    chunk = 100
+    ids = [str(b or "").strip().upper() for b in bag_ids if str(b or "").strip()]
+    if table_exists(cursor, "orders_staging") and table_has_column(cursor, "orders_staging", "ticket_id"):
+        for i in range(0, len(ids), chunk):
+            part = ids[i : i + chunk]
+            ph = ",".join(["%s"] * len(part))
+            org_clause = " AND organization_id = %s" if table_has_column(cursor, "orders_staging", "organization_id") else ""
+            args: list[Any] = list(part)
+            if org_clause:
+                args.append(org)
+            cursor.execute(
+                f"""
+                SELECT UPPER(TRIM(ticket_id)) AS bag_id,
+                       UPPER(COALESCE(service_type, 'WF')) AS service_type
+                FROM orders_staging
+                WHERE UPPER(TRIM(ticket_id)) IN ({ph}){org_clause}
+                """,
+                tuple(args),
+            )
+            for row in cursor.fetchall() or []:
+                if isinstance(row, dict):
+                    bid = str(row.get("bag_id") or "").strip().upper()
+                    svc = str(row.get("service_type") or "").strip().upper()
+                    if bid and svc in ("WF", "HD"):
+                        out[bid] = svc
+    if table_exists(cursor, "rinse_bag_registry"):
+        for i in range(0, len(ids), chunk):
+            part = [b for b in ids[i : i + chunk] if b not in out]
+            if not part:
+                continue
+            ph = ",".join(["%s"] * len(part))
+            cursor.execute(
+                f"""
+                SELECT UPPER(TRIM(bag_id)) AS bag_id,
+                       UPPER(COALESCE(service_type, 'WF')) AS service_type
+                FROM rinse_bag_registry
+                WHERE organization_id = %s AND UPPER(TRIM(bag_id)) IN ({ph})
+                """,
+                (org, *part),
+            )
+            for row in cursor.fetchall() or []:
+                if isinstance(row, dict):
+                    bid = str(row.get("bag_id") or "").strip().upper()
+                    svc = str(row.get("service_type") or "").strip().upper()
+                    if bid and svc in ("WF", "HD") and bid not in out:
+                        out[bid] = svc
+    return out
+
+
 def load_incoming_unassigned_presence_rows(
     cursor,
     organization_id: int,
@@ -567,21 +652,6 @@ def load_incoming_unassigned_presence_rows(
             latest_seen = ls
         svc_raw = _presence_service_type(raw) or ""
         eff_rush = _presence_effective_rush(raw, td)
-        needs_review = not svc_raw or eff_rush == PRESENCE_RUSH_UNKNOWN
-
-        meta["incoming_total"] += 1
-        if svc_raw == "WF":
-            meta["incoming_wf"] += 1
-        elif svc_raw == "HD":
-            meta["incoming_hd"] += 1
-        else:
-            meta["incoming_unknown_service"] += 1
-        if eff_rush == "RUSH":
-            meta["incoming_rush"] += 1
-        elif eff_rush == "NON-RUSH":
-            meta["incoming_non_rush"] += 1
-        else:
-            meta["incoming_unknown_rush"] += 1
 
         rj = raw.get("raw_row_json")
         if isinstance(rj, str):
@@ -610,13 +680,49 @@ def load_incoming_unassigned_presence_rows(
                 "portal_status": PORTAL_STATUS_READY,
                 "estimated_delivery_date": raw.get("estimated_delivery_date"),
                 "estimated_delivery_text": (rj or {}).get("estimated_delivery_text"),
-                "needs_review": needs_review,
+                "needs_review": not svc_raw or eff_rush == PRESENCE_RUSH_UNKNOWN,
                 "presence_source": True,
                 "record_scope": "incoming",
                 "ready_for_vendor": True,
             }
         )
-    meta["last_presence_refresh_at"] = latest_seen.isoformat() if latest_seen else None
+
+    hints = _lookup_service_types_from_staging(
+        cursor, org, [str(r.get("bag_id") or "") for r in rows if not r.get("service_type")]
+    )
+    if hints:
+        for row in rows:
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if not row.get("service_type") and bid in hints:
+                row["service_type"] = hints[bid]
+                row["needs_review"] = not row.get("service_type") or row.get("effective_rush") == PRESENCE_RUSH_UNKNOWN
+
+    meta = {
+        "incoming_total": len(rows),
+        "incoming_wf": 0,
+        "incoming_hd": 0,
+        "incoming_unknown_service": 0,
+        "incoming_rush": 0,
+        "incoming_non_rush": 0,
+        "incoming_unknown_rush": 0,
+        "last_presence_refresh_at": latest_seen.isoformat() if latest_seen else None,
+    }
+    for row in rows:
+        svc = str(row.get("service_type") or "").upper()
+        eff = str(row.get("effective_rush") or "").upper()
+        if svc == "WF":
+            meta["incoming_wf"] += 1
+        elif svc == "HD":
+            meta["incoming_hd"] += 1
+        else:
+            meta["incoming_unknown_service"] += 1
+        if eff == "RUSH":
+            meta["incoming_rush"] += 1
+        elif eff == "NON-RUSH":
+            meta["incoming_non_rush"] += 1
+        else:
+            meta["incoming_unknown_rush"] += 1
+
     return rows, meta
 
 
