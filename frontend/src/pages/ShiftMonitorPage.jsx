@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   Accordion,
@@ -18,14 +18,22 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
-import { getShiftAnalysisSimple } from "../api";
+import { getShiftAnalysisSimple, runCleanerTicketPresenceScrape } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
-import { formatAppliedRangeSummary } from "../utils/foldingEasternDate";
 import { formatDateTime, formatLaborHours, formatRate } from "../utils/foldingFormat";
+import {
+  RUSH_FILTERS,
+  filterRecords,
+  formatShiftDateLabel,
+  sectionSplitCounts,
+  shiftMetricValue,
+  syncStatusSubtext,
+} from "../utils/shiftMonitorHelpers";
 
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
 
 const ACCENT = "#0097b2";
+const SYNC_TIMEOUT_MS = 120000;
 
 function MonitorNav() {
   return (
@@ -33,7 +41,7 @@ function MonitorNav() {
       {[
         ["/performance/settings", "Settings"],
         ["/performance/user-mapping", "User mapping"],
-        ["/performance/backfill", "Backfill"],
+        ["/performance/backfill", "Historical Repair / Admin Tools"],
       ].map(([to, label]) => (
         <Button key={to} size="small" component={RouterLink} to={to} sx={{ textTransform: "none", fontWeight: 600 }}>
           {label}
@@ -43,7 +51,24 @@ function MonitorNav() {
   );
 }
 
-function StatCard({ label, value, source, sub, onClick, active, stale }) {
+function RushFilterChips({ value, onChange }) {
+  return (
+    <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1.5 }}>
+      {RUSH_FILTERS.map(({ id, label }) => (
+        <Chip
+          key={id}
+          size="small"
+          label={label}
+          color={value === id ? "primary" : "default"}
+          variant={value === id ? "filled" : "outlined"}
+          onClick={() => onChange(id)}
+        />
+      ))}
+    </Stack>
+  );
+}
+
+function StatCard({ label, value, source, sub, onClick, active, warn }) {
   const display = value ?? "—";
   return (
     <Paper
@@ -53,13 +78,13 @@ function StatCard({ label, value, source, sub, onClick, active, stale }) {
         p: 1.5,
         borderRadius: 2,
         border: "2px solid",
-        borderColor: active ? ACCENT : "divider",
+        borderColor: active ? ACCENT : warn ? "error.main" : "divider",
         cursor: onClick ? "pointer" : "default",
         bgcolor: active ? "rgba(0,151,178,0.06)" : "background.paper",
         minHeight: 88,
       }}
     >
-      <Typography variant="h4" fontWeight={800} lineHeight={1.1} color={ACCENT}>
+      <Typography variant="h4" fontWeight={800} lineHeight={1.1} color={warn ? "error.main" : ACCENT}>
         {display}
       </Typography>
       <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
@@ -71,21 +96,27 @@ function StatCard({ label, value, source, sub, onClick, active, stale }) {
         </Typography>
       ) : null}
       {source ? (
-        <Typography variant="caption" color={stale ? "warning.main" : "text.secondary"} display="block" sx={{ mt: 0.5 }}>
-          Source: {source}
-          {stale ? " · stale" : ""}
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+          {source}
         </Typography>
       ) : null}
     </Paper>
   );
 }
 
-function Section({ title, children }) {
+function Section({ title, description, rushFilter, onRushFilterChange, children, alert }) {
   return (
     <Box sx={{ mb: 3 }}>
-      <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
+      <Typography variant="h6" fontWeight={800}>
         {title}
       </Typography>
+      {description ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          {description}
+        </Typography>
+      ) : null}
+      {alert}
+      {onRushFilterChange ? <RushFilterChips value={rushFilter} onChange={onRushFilterChange} /> : null}
       <Box
         sx={{
           display: "grid",
@@ -99,12 +130,8 @@ function Section({ title, children }) {
   );
 }
 
-function filterRecords(records, tag) {
-  if (!tag) return records || [];
-  return (records || []).filter((r) => (r.drilldown_tags || []).includes(tag));
-}
-
 function RecordRow({ row, expanded, onToggle }) {
+  const wd = row.weight_difference || {};
   return (
     <Paper elevation={0} sx={{ p: 1.5, mb: 1, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" onClick={onToggle} sx={{ cursor: "pointer" }}>
@@ -138,11 +165,32 @@ function RecordRow({ row, expanded, onToggle }) {
           <Typography variant="caption" display="block">
             Flags: {(row.flags || []).join(", ") || "—"}
           </Typography>
-          {row.weight_difference?.flagged ? (
+          {wd.flagged ? (
             <Typography variant="caption" display="block" color="warning.main">
-              Weight Δ {row.weight_difference.difference_lbs} lbs (threshold {row.weight_difference.threshold_lbs})
+              Weight Δ {wd.difference_lbs} lbs (threshold {wd.threshold_lbs})
             </Typography>
           ) : null}
+          {(wd.first_weight_lbs != null || wd.second_weight_lbs != null || wd.unavailable_reason) && (
+            <Box sx={{ mt: 0.5 }}>
+              <Typography variant="caption" display="block" fontWeight={700}>
+                Weight difference
+              </Typography>
+              <Typography variant="caption" display="block">
+                First: {wd.first_weight_lbs ?? "—"} lbs · {formatDateTime(wd.first_weight_at)} · {wd.first_weight_user || "—"}
+              </Typography>
+              <Typography variant="caption" display="block">
+                Second: {wd.second_weight_lbs ?? "—"} lbs · {formatDateTime(wd.second_weight_at)} · {wd.second_weight_user || "—"}
+              </Typography>
+              <Typography variant="caption" display="block">
+                Difference: {wd.difference_lbs ?? "—"} · Threshold: {wd.threshold_lbs ?? "—"}
+              </Typography>
+              {wd.unavailable_reason ? (
+                <Typography variant="caption" color="text.secondary" display="block">
+                  {wd.unavailable_reason}
+                </Typography>
+              ) : null}
+            </Box>
+          )}
           {(row.activities || []).map((a) => (
             <Typography key={`${a.role}-${a.activity_at}`} variant="caption" display="block">
               {a.role}: {a.employee || "—"} @ {formatDateTime(a.activity_at)}
@@ -180,7 +228,8 @@ function EmployeeCard({ card }) {
           </Typography>
           <Typography variant="caption">bags touched</Typography>
           <Typography variant="caption" display="block">
-            {diag || `${formatLaborHours(card.performance_hours)} · ${formatRate(card.bags_per_hour)} bags/hr`}
+            {diag
+              || `${formatLaborHours(card.performance_hours)} · ${formatRate(card.bags_per_hour)} bags/hr${card.lbs_per_hour ? ` · ${formatRate(card.lbs_per_hour)} lbs/hr` : ""}`}
           </Typography>
         </Box>
       </Stack>
@@ -189,10 +238,11 @@ function EmployeeCard({ card }) {
           {(card.roles || []).map((role) => (
             <Box key={role.role} sx={{ p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
               <Typography variant="body2" fontWeight={700}>
-                {role.role} · {role.bags} bags
+                {role.role} · {role.bags} bags{role.lbs ? ` · ${role.lbs} lbs` : ""}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                {role.diagnostic || `${formatLaborHours(role.performance_hours)} perf hrs · ${formatRate(role.bags_per_hour)} bags/hr · last ${formatDateTime(role.last_activity_time)}`}
+                {role.diagnostic
+                  || `${formatLaborHours(role.performance_hours)} perf hrs · ${formatRate(role.bags_per_hour)} bags/hr${role.lbs_per_hour ? ` · ${formatRate(role.lbs_per_hour)} lbs/hr` : ""} · last ${formatDateTime(role.last_activity_time)}`}
               </Typography>
             </Box>
           ))}
@@ -207,7 +257,11 @@ export default function ShiftMonitorPage({ user }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const [syncRunning, setSyncRunning] = useState(false);
+  const syncTimerRef = useRef(null);
   const [filterTag, setFilterTag] = useState(searchParams.get("filter") || null);
+  const [rushFilter, setRushFilter] = useState("all");
   const [expandedBag, setExpandedBag] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const initialToday = todayRange();
@@ -217,6 +271,10 @@ export default function ShiftMonitorPage({ user }) {
   });
   const [dateStart, setDateStart] = useState(() => searchParams.get("date_start") || initialToday.start);
   const [dateEnd, setDateEnd] = useState(() => searchParams.get("date_end") || initialToday.end);
+
+  useEffect(() => () => {
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -239,7 +297,10 @@ export default function ShiftMonitorPage({ user }) {
   }, [load]);
 
   const records = data?.records || [];
-  const filtered = useMemo(() => filterRecords(records, filterTag), [records, filterTag]);
+  const filtered = useMemo(
+    () => filterRecords(records, filterTag, rushFilter),
+    [records, filterTag, rushFilter],
+  );
 
   const openDrilldown = (tag) => {
     setFilterTag(tag);
@@ -252,11 +313,54 @@ export default function ShiftMonitorPage({ user }) {
     });
   };
 
+  const runRinseSync = async (dryRun) => {
+    setSyncRunning(true);
+    setSyncMessage("");
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      setSyncRunning(false);
+      setSyncMessage("Rinse Sync timed out — check admin tools for status.");
+    }, SYNC_TIMEOUT_MS);
+    try {
+      await runCleanerTicketPresenceScrape({
+        portal_status: "ready_for_vendor",
+        dry_run: dryRun,
+        mark_missing: false,
+      });
+      setSyncMessage(dryRun ? "Dry Run Rinse Sync finished." : "Apply Rinse Sync finished.");
+      await load();
+    } catch (e) {
+      setSyncMessage(e?.response?.data?.error || "Rinse Sync failed");
+    } finally {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      setSyncRunning(false);
+    }
+  };
+
   const rfv = data?.ready_for_vendor || {};
   const active = data?.current_active_work || {};
+  const checkout = data?.rush_checkout || {};
   const shift = data?.shift_status || {};
   const exceptions = data?.exceptions_summary || {};
-  const stalePresence = !rfv.last_refreshed_at;
+  const rfvCounts = sectionSplitCounts(rfv, rushFilter);
+  const activeCounts = sectionSplitCounts(active, rushFilter);
+  const syncSub = syncStatusSubtext(rfv);
+  const syncStale = rfv.sync_status?.stale && rfv.last_refreshed_at;
+
+  const weightDiffValue = (() => {
+    const wd = shift.weight_difference;
+    const flagged = shiftMetricValue(wd, rushFilter);
+    if (flagged > 0) return flagged;
+    if (shift.weight_difference_status === "unavailable") return "—";
+    return flagged ?? 0;
+  })();
+
+  const weightDiffSub = (() => {
+    if (shift.weight_difference_status === "unavailable") {
+      return "No comparable first/second weights";
+    }
+    return `≥${shift.weight_difference_threshold_lbs} lbs threshold`;
+  })();
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -272,13 +376,16 @@ export default function ShiftMonitorPage({ user }) {
             Shift Monitor
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {formatAppliedRangeSummary({ dateStart, dateEnd, preset: rangePreset })} · ET
+            {formatShiftDateLabel(dateStart, dateEnd)}
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Times shown in New York time
           </Typography>
         </Box>
         <MonitorNav />
       </Stack>
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} sx={{ mb: 2 }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} sx={{ mb: 2 }} flexWrap="wrap">
         <FoldingDateRangeFilter
           preset={rangePreset}
           onPresetChange={setRangePreset}
@@ -291,64 +398,123 @@ export default function ShiftMonitorPage({ user }) {
         <Button variant="contained" size="small" onClick={load} disabled={loading} sx={{ alignSelf: { xs: "stretch", sm: "center" } }}>
           Apply
         </Button>
+        <Button variant="outlined" size="small" onClick={() => runRinseSync(false)} disabled={syncRunning || loading}>
+          {syncRunning ? "Refreshing…" : "Refresh Rinse Sync"}
+        </Button>
       </Stack>
 
       {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+      {syncMessage ? <Alert severity="info" sx={{ mb: 2 }}>{syncMessage}</Alert> : null}
       {loading && !data ? (
         <Typography variant="body2" color="text.secondary">Loading…</Typography>
       ) : null}
 
       {data ? (
         <>
-          <Section title="Ready for Vendor">
-            <StatCard label="Total" value={rfv.total} source={rfv.source} stale={stalePresence} sub={rfv.last_refreshed_at ? `Refreshed ${formatDateTime(rfv.last_refreshed_at)}` : "Refresh time unknown"} onClick={() => openDrilldown("ready_for_vendor")} active={filterTag === "ready_for_vendor"} />
-            <StatCard label="Rush WF" value={rfv.rush_wf} source={rfv.source} onClick={() => openDrilldown("rfv_rush_wf")} active={filterTag === "rfv_rush_wf"} />
-            <StatCard label="Rush HD" value={rfv.rush_hd} source={rfv.source} onClick={() => openDrilldown("rfv_rush_hd")} active={filterTag === "rfv_rush_hd"} />
-            <StatCard label="Non-Rush WF" value={rfv.nonrush_wf} source={rfv.source} onClick={() => openDrilldown("rfv_nonrush_wf")} active={filterTag === "rfv_nonrush_wf"} />
-            <StatCard label="Non-Rush HD" value={rfv.nonrush_hd} source={rfv.source} onClick={() => openDrilldown("rfv_nonrush_hd")} active={filterTag === "rfv_nonrush_hd"} />
-            <StatCard label="Unknown / Review" value={rfv.unknown_needs_review} source={rfv.source} onClick={() => openDrilldown("rfv_unknown_needs_review")} active={filterTag === "rfv_unknown_needs_review"} />
+          <Section
+            title="Ready for Vendor"
+            description="Incoming / unassigned queue from Rinse Sync"
+            rushFilter={rushFilter}
+            onRushFilterChange={setRushFilter}
+            alert={
+              rfv.data_quality_warning ? (
+                <Alert severity="error" sx={{ mb: 1.5 }}>{rfv.data_quality_warning}</Alert>
+              ) : syncStale ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>{syncSub}</Alert>
+              ) : null
+            }
+          >
+            <StatCard
+              label="Total"
+              value={rfvCounts.total}
+              source="Ready for Vendor queue"
+              sub={syncSub}
+              onClick={() => openDrilldown("ready_for_vendor")}
+              active={filterTag === "ready_for_vendor"}
+            />
+            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : rfv.rush_wf} onClick={() => openDrilldown("rfv_rush_wf")} active={filterTag === "rfv_rush_wf"} />
+            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : rfv.rush_hd} onClick={() => openDrilldown("rfv_rush_hd")} active={filterTag === "rfv_rush_hd"} />
+            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : rfv.nonrush_wf} onClick={() => openDrilldown("rfv_nonrush_wf")} active={filterTag === "rfv_nonrush_wf"} />
+            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : rfv.nonrush_hd} onClick={() => openDrilldown("rfv_nonrush_hd")} active={filterTag === "rfv_nonrush_hd"} />
+            <StatCard
+              label="Unknown / Review"
+              value={rushFilter === "all" ? rfv.unknown_needs_review : 0}
+              warn={rushFilter === "all" && rfv.unknown_needs_review > 0}
+              onClick={() => openDrilldown("rfv_unknown_needs_review")}
+              active={filterTag === "rfv_unknown_needs_review"}
+            />
           </Section>
 
-          <Section title="Current Active Work">
-            <StatCard label="Active Total" value={active.total} source={active.source} onClick={() => openDrilldown("active_work")} active={filterTag === "active_work"} />
-            <StatCard label="Rush WF" value={active.rush_wf} source={active.source} onClick={() => openDrilldown("active_rush_wf")} />
-            <StatCard label="Rush HD" value={active.rush_hd} source={active.source} onClick={() => openDrilldown("active_rush_hd")} />
-            <StatCard label="Non-Rush WF" value={active.nonrush_wf} source={active.source} onClick={() => openDrilldown("active_nonrush_wf")} />
-            <StatCard label="Non-Rush HD" value={active.nonrush_hd} source={active.source} onClick={() => openDrilldown("active_nonrush_hd")} />
-            <StatCard label="Checkout Pending" value={active.checkout_pending} source="Checkout staging" onClick={() => openDrilldown("checkout_pending")} />
+          <Section
+            title="Current Active Work"
+            description="At Vendor — bags currently in facility production"
+            rushFilter={rushFilter}
+            onRushFilterChange={setRushFilter}
+            alert={
+              active.unreconciled > 0 ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>
+                  {active.unreconciled} unreconciled bag(s) — splits do not match total. Use drilldown.
+                </Alert>
+              ) : null
+            }
+          >
+            <StatCard label="Active Total" value={activeCounts.total} source={active.source} onClick={() => openDrilldown("active_work")} active={filterTag === "active_work"} />
+            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : active.rush_wf} onClick={() => openDrilldown("active_rush_wf")} />
+            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : active.rush_hd} onClick={() => openDrilldown("active_rush_hd")} />
+            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : active.nonrush_wf} onClick={() => openDrilldown("active_nonrush_wf")} />
+            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : active.nonrush_hd} onClick={() => openDrilldown("active_nonrush_hd")} />
+            <StatCard
+              label="Unknown / Review"
+              value={rushFilter === "all" ? active.unknown_needs_review : 0}
+              onClick={() => openDrilldown("unknown_speed_service")}
+            />
           </Section>
 
-          <Section title="Shift Status">
-            <StatCard label="Weighed" value={shift.weighed} source={shift.source} onClick={() => openDrilldown("shift_weighed")} />
-            <StatCard label="Not Weighed" value={shift.not_weighed} source={shift.source} onClick={() => openDrilldown("shift_not_weighed")} />
-            <StatCard label="Issues" value={shift.issues} source="Scan events" onClick={() => openDrilldown("issues")} />
-            <StatCard label="Workitems" value={shift.workitems} source="Scan events" onClick={() => openDrilldown("workitems")} />
-            <StatCard label="Weight Difference" value={shift.weight_difference} source={`Scan events · ≥${shift.weight_difference_threshold_lbs} lbs`} onClick={() => openDrilldown("weight_difference")} />
-            <StatCard label="Rush Pending Wash" value={shift.rush_pending_wash} source="Scan events" onClick={() => openDrilldown("rush_pending_wash")} />
+          <Section
+            title="Rush Checkout"
+            description={checkout.description || "Checkout Pending = Rush bags still waiting for facility checkout"}
+            rushFilter="rush"
+          >
+            <StatCard label="Checkout Pending" value={checkout.checkout_pending} source={checkout.source} onClick={() => openDrilldown("checkout_pending")} active={filterTag === "checkout_pending"} />
+            <StatCard label="Checked Out" value={checkout.checked_out} source={checkout.source} />
+            <StatCard label="Checkout Not Recorded" value={checkout.checkout_not_recorded} source={checkout.source} onClick={() => openDrilldown("checkout_pending")} />
+            <StatCard label="Checkout Needs Review" value={checkout.checkout_needs_review} source={checkout.source} />
+          </Section>
+
+          <Section title="Shift Status" rushFilter={rushFilter} onRushFilterChange={setRushFilter}>
+            <StatCard label="Weighed" value={shiftMetricValue(shift.weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_weighed")} />
+            <StatCard label="Not Weighed" value={shiftMetricValue(shift.not_weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_not_weighed")} />
+            <StatCard label="Issues" value={shiftMetricValue(shift.issues, rushFilter)} source="Scan events" onClick={() => openDrilldown("issues")} />
+            <StatCard label="Workitems" value={shiftMetricValue(shift.workitems, rushFilter)} source="Scan events" onClick={() => openDrilldown("workitems")} />
+            <StatCard label="Weight Difference" value={weightDiffValue} source={`Scan events · ${weightDiffSub}`} onClick={() => openDrilldown("weight_difference")} />
+            <StatCard label="Rush Pending Wash" value={shiftMetricValue(shift.rush_pending_wash, "rush")} source="Rush only · Scan events" onClick={() => openDrilldown("rush_pending_wash")} />
             <StatCard
               label="Last Rush Wash"
               value={shift.last_rush_wash ? formatDateTime(shift.last_rush_wash.at)?.split(",")[1]?.trim() || "—" : "—"}
-              source="Scan events"
+              source="Rush only · Scan events"
               sub={shift.last_rush_wash ? `${shift.last_rush_wash.bag_id} · ${shift.last_rush_wash.user || ""}` : "No rush wash today"}
             />
-            <StatCard label="Yet to Fold" value={shift.yet_to_fold} source="Active staging" onClick={() => openDrilldown("yet_to_fold")} />
+            <StatCard label="Yet to Fold" value={shiftMetricValue(shift.yet_to_fold, rushFilter)} source="At Vendor staging" onClick={() => openDrilldown("yet_to_fold")} />
           </Section>
 
           <Box sx={{ mb: 3 }}>
+            <RushFilterChips value={rushFilter} onChange={setRushFilter} />
             <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
               Employee Activity
             </Typography>
             {(data.employee_cards || []).length === 0 ? (
-              <Typography variant="body2" color="text.secondary">No employee activity for this shift.</Typography>
+              <Typography variant="body2" color="text.secondary">
+                {data.employee_diagnostics?.folding_averages_status || "No employee activity for this shift."}
+              </Typography>
             ) : (
               (data.employee_cards || []).map((card) => <EmployeeCard key={card.employee} card={card} />)
             )}
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-              Source: Clock records + scan events
+              Source: Clock records + scan events (mapped / tenant staff only)
             </Typography>
           </Box>
 
-          <Section title="Exceptions / Needs Review">
+          <Section title="Exceptions / Needs Review" rushFilter={rushFilter} onRushFilterChange={setRushFilter}>
             {Object.entries(exceptions).map(([key, ex]) => (
               <StatCard
                 key={key}
@@ -365,7 +531,17 @@ export default function ShiftMonitorPage({ user }) {
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography fontWeight={700}>Advanced / Debug</Typography>
             </AccordionSummary>
-            <AccordionDetails sx={{ p: 0 }}>
+            <AccordionDetails>
+              {data.debug_audit ? (
+                <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
+                  {JSON.stringify(data.debug_audit, null, 2)}
+                </Box>
+              ) : null}
+              {data.employee_diagnostics?.excluded_external?.length ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  External / ignored users: {data.employee_diagnostics.excluded_external.join(", ")}
+                </Alert>
+              ) : null}
               <Suspense fallback={<Typography sx={{ p: 2 }}>Loading advanced view…</Typography>}>
                 <ShiftAnalysisAdvancedPanel user={user} embedded />
               </Suspense>
@@ -388,9 +564,10 @@ export default function ShiftMonitorPage({ user }) {
             <CloseIcon />
           </IconButton>
         </Stack>
-        {filterTag ? (
-          <Chip label={filterTag} onDelete={() => { setFilterTag(null); setDrawerOpen(false); }} sx={{ mb: 1 }} />
-        ) : null}
+        <Stack direction="row" spacing={1} sx={{ mb: 1 }} flexWrap="wrap">
+          {filterTag ? <Chip label={filterTag} onDelete={() => setFilterTag(null)} /> : null}
+          {rushFilter !== "all" ? <Chip label={rushFilter === "rush" ? "Rush" : "Non-Rush"} size="small" /> : null}
+        </Stack>
         <Box sx={{ overflow: "auto", flex: 1 }}>
           {filtered.map((row) => (
             <RecordRow

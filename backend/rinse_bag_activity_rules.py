@@ -251,6 +251,10 @@ class WeightDifferenceResult:
     threshold_lbs: float
     first_weight_at: datetime | None = None
     second_weight_at: datetime | None = None
+    first_weight_user: str | None = None
+    second_weight_user: str | None = None
+    comparable: bool = False
+    unavailable_reason: str | None = None
 
 
 def evaluate_weight_difference(
@@ -268,8 +272,21 @@ def evaluate_weight_difference(
         second_weight_lbs=None,
         difference_lbs=None,
         threshold_lbs=threshold_lbs,
+        unavailable_reason="No comparable first/second weights",
     )
     if len(weights) < 2:
+        if len(weights) == 1:
+            w1_ev, w1_ts = weights[0]
+            return WeightDifferenceResult(
+                flagged=False,
+                first_weight_lbs=_weight_lbs_from_event(w1_ev),
+                second_weight_lbs=None,
+                difference_lbs=None,
+                threshold_lbs=threshold_lbs,
+                first_weight_at=w1_ts,
+                first_weight_user=_operator(w1_ev),
+                unavailable_reason="No comparable first/second weights",
+            )
         return empty
 
     w1_ev, w1_ts = weights[0]
@@ -285,6 +302,9 @@ def evaluate_weight_difference(
             threshold_lbs=threshold_lbs,
             first_weight_at=w1_ts,
             second_weight_at=w2_ts,
+            first_weight_user=_operator(w1_ev),
+            second_weight_user=_operator(w2_ev),
+            unavailable_reason="No comparable first/second weights",
         )
     diff = abs(w2 - w1)
     return WeightDifferenceResult(
@@ -295,6 +315,9 @@ def evaluate_weight_difference(
         threshold_lbs=threshold_lbs,
         first_weight_at=w1_ts,
         second_weight_at=w2_ts,
+        first_weight_user=_operator(w1_ev),
+        second_weight_user=_operator(w2_ev),
+        comparable=True,
     )
 
 

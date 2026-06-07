@@ -42,6 +42,21 @@ from backend.rinse_shift_analysis import (
 )
 from backend.ta_helpers import table_exists, table_has_column
 
+RINSE_SYNC_STALE_MINUTES = 120
+PRODUCTION_TENANT_MARKERS = ("veewash", "washpro staff", "washpro")
+
+
+def _normalized_service_type(row: Mapping[str, Any]) -> str | None:
+    svc_raw = row.get("service_type")
+    if svc_raw is not None and str(svc_raw).strip():
+        svc = str(svc_raw).strip().upper()
+        if svc in ("WF", "HD"):
+            return svc
+    from backend.rinse_cleaner_ticket_presence import _presence_service_type
+
+    inferred = _presence_service_type(row)
+    return inferred if inferred in ("WF", "HD") else None
+
 
 def _split_counts() -> dict[str, int]:
     return {
@@ -58,8 +73,8 @@ def _split_counts() -> dict[str, int]:
 def _bucket_for_row(row: Mapping[str, Any]) -> str | None:
     rush_raw = row.get("effective_rush") or row.get("rush_type") or row.get("rush_label") or ""
     rush = _rush_bucket_key(str(rush_raw))
-    svc = str(row.get("service_type") or "WF").upper()
-    if svc not in ("WF", "HD"):
+    svc = _normalized_service_type(row)
+    if svc is None:
         return "unknown_service"
     if rush == "rush":
         return f"rush_{svc.lower()}"
@@ -288,7 +303,7 @@ def _count_splits_from_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]
 def _presence_last_refreshed(pending: Mapping[str, Any]) -> str | None:
     incoming = pending.get("incoming") or {}
     summary = incoming.get("summary") or {}
-    for key in ("presence_last_refreshed_at", "last_refreshed_at", "last_seen_at"):
+    for key in ("last_presence_refresh_at", "presence_last_refreshed_at", "last_refreshed_at", "last_seen_at"):
         raw = summary.get(key)
         if raw is None:
             continue
@@ -296,7 +311,7 @@ def _presence_last_refreshed(pending: Mapping[str, Any]) -> str | None:
             return raw.isoformat()
         return str(raw)
     portal = pending.get("portal_alignment") or {}
-    raw = portal.get("presence_last_refreshed_at")
+    raw = portal.get("presence_last_refreshed_at") or portal.get("last_presence_refresh_at")
     if isinstance(raw, datetime):
         return raw.isoformat()
     if raw:
@@ -304,11 +319,116 @@ def _presence_last_refreshed(pending: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _parse_iso_datetime(raw: Any) -> datetime | None:
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")[:26])
+        except ValueError:
+            return None
+    return None
+
+
+def _build_sync_status(last_refreshed_at: str | None, *, evaluation_time: datetime | None = None) -> dict[str, Any]:
+    if not last_refreshed_at:
+        return {
+            "sync_time_unavailable": True,
+            "stale": False,
+            "stale_reason": None,
+            "message": "Ready for Vendor sync time unavailable",
+            "last_rinse_sync_at": None,
+            "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
+        }
+    last_dt = _parse_iso_datetime(last_refreshed_at)
+    now = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    if last_dt is None:
+        return {
+            "sync_time_unavailable": True,
+            "stale": False,
+            "stale_reason": None,
+            "message": "Ready for Vendor sync time unavailable",
+            "last_rinse_sync_at": last_refreshed_at,
+            "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
+        }
+    age_min = max(0, int((now - last_dt).total_seconds()) // 60)
+    stale = age_min > RINSE_SYNC_STALE_MINUTES
+    return {
+        "sync_time_unavailable": False,
+        "stale": stale,
+        "stale_reason": (
+            f"Stale because older than {RINSE_SYNC_STALE_MINUTES} minutes"
+            if stale
+            else None
+        ),
+        "message": f"Last Rinse Sync: {last_refreshed_at}",
+        "last_rinse_sync_at": last_refreshed_at,
+        "age_minutes": age_min,
+        "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
+    }
+
+
+def _finalize_section_counts(section: dict[str, Any]) -> None:
+    parts = (
+        int(section.get("rush_wf") or 0)
+        + int(section.get("rush_hd") or 0)
+        + int(section.get("nonrush_wf") or 0)
+        + int(section.get("nonrush_hd") or 0)
+        + int(section.get("unknown_needs_review") or 0)
+    )
+    total = int(section.get("total") or 0)
+    section["split_sum"] = parts
+    section["counts_add_up"] = total == parts
+    section["unreconciled"] = max(0, total - parts) if total != parts else 0
+
+
+def _collect_unreconciled_ids(records: list[dict[str, Any]], base_tag: str) -> list[str]:
+    prefix = "rfv_" if base_tag == "ready_for_vendor" else "active_"
+    bucket_suffixes = ("rush_wf", "rush_hd", "nonrush_wf", "nonrush_hd", "unknown_rush_wf", "unknown_rush_hd")
+    out: list[str] = []
+    for rec in records:
+        tags = set(rec.get("drilldown_tags") or [])
+        if base_tag not in tags:
+            continue
+        if any(f"{prefix}{suffix}" in tags for suffix in bucket_suffixes):
+            continue
+        if "rfv_unknown_needs_review" in tags or "unknown_speed_service" in tags:
+            continue
+        bid = str(rec.get("bag_id") or "").strip()
+        if bid:
+            out.append(bid)
+    return sorted(out)
+
+
+def _data_quality_warning(section: dict[str, Any]) -> str | None:
+    total = int(section.get("total") or 0)
+    unknown = int(section.get("unknown_needs_review") or 0)
+    if total > 0 and unknown >= total:
+        return "Ready for Vendor rows are missing Rush/WF/HD classification. Check Rinse Sync parser."
+    if int(section.get("unreconciled") or 0) > 0:
+        return "Section counts do not add up — see unreconciled drilldown."
+    return None
+
+
+def _is_production_employee(employee: str, user_maps: dict[str, dict[str, Any]]) -> bool:
+    emp = str(employee or "").strip()
+    if not emp:
+        return False
+    if emp.casefold() in user_maps:
+        return True
+    if "(" in emp and ")" in emp:
+        inner = emp.split("(")[-1].split(")")[0].casefold()
+        if any(marker in inner for marker in PRODUCTION_TENANT_MARKERS):
+            return True
+    return False
+
+
 def _build_ready_for_vendor_section(pending: Mapping[str, Any]) -> dict[str, Any]:
     incoming = pending.get("incoming") or {}
     rows = [r for r in (incoming.get("rows") or []) if isinstance(r, dict)]
     splits = _count_splits_from_rows(rows)
-    return {
+    last_refreshed_at = _presence_last_refreshed(pending)
+    section = {
         "total": int(splits.get("total") or 0),
         "rush_wf": int(splits.get("rush_wf") or 0),
         "rush_hd": int(splits.get("rush_hd") or 0),
@@ -317,10 +437,14 @@ def _build_ready_for_vendor_section(pending: Mapping[str, Any]) -> dict[str, Any
         "unknown_needs_review": int(splits.get("unknown_rush_wf") or 0)
         + int(splits.get("unknown_rush_hd") or 0)
         + int(splits.get("unknown_service") or 0),
-        "source": "Rinse Ready for Vendor scrape",
-        "last_refreshed_at": _presence_last_refreshed(pending),
+        "source": "Ready for Vendor queue",
+        "last_refreshed_at": last_refreshed_at,
+        "sync_status": _build_sync_status(last_refreshed_at),
         "drilldown_filter": "ready_for_vendor",
     }
+    _finalize_section_counts(section)
+    section["data_quality_warning"] = _data_quality_warning(section)
+    return section
 
 
 def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
@@ -336,9 +460,7 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
     ]
     wf_rows = [r for r in active_rows if r not in hd_rows]
     splits = _count_splits_from_rows(wf_rows + hd_rows)
-    checkout = pending.get("checkout_rush") or {}
-    checkout_pending = int(checkout.get("checkout_pending") or 0)
-    return {
+    section = {
         "total": int(splits.get("total") or 0),
         "rush_wf": int(splits.get("rush_wf") or 0),
         "rush_hd": int(splits.get("rush_hd") or 0),
@@ -347,9 +469,23 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
         "unknown_needs_review": int(splits.get("unknown_rush_wf") or 0)
         + int(splits.get("unknown_rush_hd") or 0)
         + int(splits.get("unknown_service") or 0),
-        "checkout_pending": checkout_pending,
-        "source": "Latest confirmed Rinse scrape + active staging",
+        "source": "At Vendor — current facility work",
         "drilldown_filter": "active_work",
+    }
+    _finalize_section_counts(section)
+    return section
+
+
+def _build_rush_checkout_section(pending: Mapping[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
+    checkout = pending.get("checkout_rush") or {}
+    return {
+        "checkout_pending": _count_tag(records, "checkout_pending"),
+        "checked_out": int(checkout.get("checked_out") or 0),
+        "checkout_needs_review": int(checkout.get("checkout_needs_review") or 0),
+        "checkout_not_recorded": _count_tag(records, "checkout_pending"),
+        "source": "Rush facility checkout workflow",
+        "description": "Checkout Pending = Rush bags still waiting for facility checkout",
+        "drilldown_filter": "checkout_pending",
     }
 
 
@@ -414,14 +550,21 @@ def _build_employee_activity_summary(
     end_exclusive = naive_et_day_end_exclusive(period_end)
 
     by_emp_role: dict[tuple[str, str], list[BagActivityCredit]] = defaultdict(list)
+    all_employees: set[str] = set()
     for cr in credits:
         if not credit_in_et_period(cr, period_start=start_dt, period_end_exclusive=end_exclusive):
             continue
         emp = str(cr.employee or "").strip()
         if not emp:
             continue
+        all_employees.add(emp)
+        if not _is_production_employee(emp, user_maps):
+            continue
         by_emp_role[(emp, cr.role)].append(cr)
 
+    excluded_external = sorted(
+        e for e in all_employees if not _is_production_employee(e, user_maps)
+    )
     summaries: list[dict[str, Any]] = []
     for (employee, role), rows in sorted(by_emp_role.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
         mapping = user_maps.get(employee.casefold())
@@ -491,11 +634,27 @@ def _build_employee_activity_summary(
                 "lbs_per_hour": lbs_per_hour,
                 "needs_review_count": needs_review,
                 "exception_count": sum(len(r.flags) for r in filtered),
-                "diagnostic": diagnostic,
+                "diagnostic": diagnostic or (None if bags_per_hour is not None else "No completion activity"),
             }
         )
 
-    return summaries
+    folding_blank_reason = None
+    folding_rows = [s for s in summaries if s.get("role") == ROLE_FOLDING]
+    if not folding_rows:
+        folding_blank_reason = "No completion activity"
+    elif all(s.get("diagnostic") for s in folding_rows):
+        folding_blank_reason = folding_rows[0].get("diagnostic")
+
+    diagnostics = {
+        "included_employees": sorted({s["employee"] for s in summaries}),
+        "excluded_external": excluded_external,
+        "folding_averages_status": (
+            "ok"
+            if any(s.get("bags_per_hour") is not None for s in folding_rows)
+            else (folding_blank_reason or "Clock-in missing")
+        ),
+    }
+    return summaries, diagnostics
 
 
 def _build_employee_cards(role_summaries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -535,6 +694,10 @@ def _build_employee_cards(role_summaries: list[dict[str, Any]]) -> list[dict[str
                 diagnostic = diagnostic or "Clock-in missing"
         elif not diagnostic:
             diagnostic = "Clock-in missing"
+        total_lbs = round(sum(float(r.get("lbs") or 0) for r in roles if r.get("lbs")), 2)
+        lbs_per_hour = None
+        if perf_hours and perf_hours > 0 and total_lbs:
+            lbs_per_hour = round(total_lbs / perf_hours, 4)
         cards.append(
             {
                 "employee": employee,
@@ -543,8 +706,10 @@ def _build_employee_cards(role_summaries: list[dict[str, Any]]) -> list[dict[str
                 "last_activity_type": last_meta.get("last_activity_type"),
                 "last_activity_bag_id": last_meta.get("last_activity_bag_id"),
                 "total_bags_touched": len(all_bags),
+                "total_lbs": total_lbs or None,
                 "performance_hours": perf_hours,
                 "bags_per_hour": bags_per_hour,
+                "lbs_per_hour": lbs_per_hour,
                 "diagnostic": diagnostic,
                 "roles": roles,
             }
@@ -619,7 +784,7 @@ def _record_from_bag(
         if not completion.completed:
             tags.add("yet_to_fold")
         checkout = str(row_meta.get("checkout_status") or "")
-        if checkout.endswith("NOT_CHECKED_OUT") or checkout == "CHECKOUT_PENDING":
+        if is_rush and (checkout.endswith("NOT_CHECKED_OUT") or checkout == "CHECKOUT_PENDING"):
             tags.add("checkout_pending")
     if any(c.role == ROLE_ISSUES for c in period_credits):
         tags.add("issues")
@@ -627,6 +792,8 @@ def _record_from_bag(
         tags.add("workitems")
     if wdiff.flagged:
         tags.add("weight_difference")
+    elif in_active and wdiff.unavailable_reason:
+        tags.add("weight_difference_unavailable")
     if completion.exception_code == "COMPLETED_WITHOUT_FINAL_CLEAN_SCAN":
         tags.add("completed_without_clean")
     if bucket and (bucket.startswith("unknown") or bucket == "unknown_service"):
@@ -653,7 +820,7 @@ def _record_from_bag(
     return {
         "bag_id": bid,
         "customer": customer,
-        "service_type": str(merged.get("service_type") or "WF").upper(),
+        "service_type": _normalized_service_type(merged) or "UNKNOWN",
         "rush_bucket": bucket,
         "rush_label": _rush_label(bucket),
         "current_status": status or row_meta.get("lifecycle_status_label"),
@@ -668,10 +835,16 @@ def _record_from_bag(
         "in_ready_for_vendor": in_incoming,
         "weight_difference": {
             "flagged": wdiff.flagged,
+            "comparable": wdiff.comparable,
             "first_weight_lbs": wdiff.first_weight_lbs,
             "second_weight_lbs": wdiff.second_weight_lbs,
             "difference_lbs": wdiff.difference_lbs,
             "threshold_lbs": wdiff.threshold_lbs,
+            "first_weight_at": wdiff.first_weight_at.isoformat() if isinstance(wdiff.first_weight_at, datetime) else None,
+            "second_weight_at": wdiff.second_weight_at.isoformat() if isinstance(wdiff.second_weight_at, datetime) else None,
+            "first_weight_user": wdiff.first_weight_user,
+            "second_weight_user": wdiff.second_weight_user,
+            "unavailable_reason": wdiff.unavailable_reason,
         },
         "activities": [
             {
@@ -693,6 +866,135 @@ def _count_tag(records: list[dict[str, Any]], tag: str) -> int:
     return sum(1 for r in records if tag in (r.get("drilldown_tags") or []))
 
 
+def _record_matches_rush(rec: Mapping[str, Any], rush_filter: str | None) -> bool:
+    if not rush_filter or rush_filter == "all":
+        return True
+    label = str(rec.get("rush_label") or "")
+    if rush_filter == "rush":
+        return label == "Rush"
+    if rush_filter == "non_rush":
+        return label == "Non-Rush"
+    return True
+
+
+def _count_tag_by_rush(
+    records: list[dict[str, Any]],
+    tag: str,
+    *,
+    rush_filter: str | None = None,
+    active_only: bool = False,
+) -> int:
+    return sum(
+        1
+        for r in records
+        if tag in (r.get("drilldown_tags") or [])
+        and _record_matches_rush(r, rush_filter)
+        and (not active_only or r.get("in_scope_a_active"))
+    )
+
+
+def _metric_split_counts(
+    records: list[dict[str, Any]],
+    tag: str,
+    *,
+    active_only: bool = False,
+    rush_only_metric: bool = False,
+) -> dict[str, int]:
+    if rush_only_metric:
+        return {
+            "all": _count_tag_by_rush(records, tag, rush_filter="rush", active_only=active_only),
+            "rush": _count_tag_by_rush(records, tag, rush_filter="rush", active_only=active_only),
+            "non_rush": 0,
+        }
+    return {
+        "all": _count_tag_by_rush(records, tag, rush_filter="all", active_only=active_only),
+        "rush": _count_tag_by_rush(records, tag, rush_filter="rush", active_only=active_only),
+        "non_rush": _count_tag_by_rush(records, tag, rush_filter="non_rush", active_only=active_only),
+    }
+
+
+def _build_shift_status(records: list[dict[str, Any]], *, threshold: float, last_rush_wash: dict | None) -> dict[str, Any]:
+    active_records = [r for r in records if r.get("in_scope_a_active")]
+    flagged = _count_tag(records, "weight_difference")
+    unavailable = _count_tag(active_records, "weight_difference_unavailable")
+    return {
+        "weighed": _metric_split_counts(active_records, "shift_weighed", active_only=True),
+        "not_weighed": _metric_split_counts(active_records, "shift_not_weighed", active_only=True),
+        "issues": _metric_split_counts(records, "issues"),
+        "workitems": _metric_split_counts(records, "workitems"),
+        "weight_difference": {
+            "flagged": flagged,
+            "unavailable": unavailable,
+            "all": flagged,
+            "rush": _count_tag_by_rush(records, "weight_difference", rush_filter="rush"),
+            "non_rush": _count_tag_by_rush(records, "weight_difference", rush_filter="non_rush"),
+        },
+        "weight_difference_threshold_lbs": threshold,
+        "weight_difference_status": (
+            "flagged"
+            if flagged
+            else ("unavailable" if unavailable else "none")
+        ),
+        "rush_pending_wash": _metric_split_counts(active_records, "rush_pending_wash", active_only=True, rush_only_metric=True),
+        "last_rush_wash": last_rush_wash,
+        "yet_to_fold": _metric_split_counts(active_records, "yet_to_fold", active_only=True),
+        "source": "Scan events + At Vendor staging",
+    }
+
+
+def _build_debug_audit(
+    *,
+    pending: Mapping[str, Any],
+    ready_for_vendor: dict[str, Any],
+    active_work: dict[str, Any],
+    rush_checkout: dict[str, Any],
+    records: list[dict[str, Any]],
+    employee_diagnostics: dict[str, Any],
+    shift_status: dict[str, Any],
+) -> dict[str, Any]:
+    incoming_rows = [r for r in ((pending.get("incoming") or {}).get("rows") or []) if isinstance(r, dict)]
+    unknown_why: list[str] = []
+    if ready_for_vendor.get("unknown_needs_review"):
+        if any(not _normalized_service_type(r) for r in incoming_rows):
+            unknown_why.append("missing service_type in presence rows")
+        if any(_rush_bucket_key(str(r.get("effective_rush") or "")) not in ("rush", "non_rush") for r in incoming_rows):
+            unknown_why.append("missing rush classification (rush_flag/estimated_delivery_date)")
+    return {
+        "ready_for_vendor": {
+            "total": ready_for_vendor.get("total"),
+            "rush_wf": ready_for_vendor.get("rush_wf"),
+            "rush_hd": ready_for_vendor.get("rush_hd"),
+            "nonrush_wf": ready_for_vendor.get("nonrush_wf"),
+            "nonrush_hd": ready_for_vendor.get("nonrush_hd"),
+            "unknown": ready_for_vendor.get("unknown_needs_review"),
+            "why_unknown": unknown_why or None,
+            "counts_add_up": ready_for_vendor.get("counts_add_up"),
+            "unreconciled_ids": _collect_unreconciled_ids(records, "ready_for_vendor"),
+        },
+        "current_active_work": {
+            "expected_total_from_pending": active_work.get("total"),
+            "actual_api_total": _count_tag(records, "active_work"),
+            "rush_wf": active_work.get("rush_wf"),
+            "rush_hd": active_work.get("rush_hd"),
+            "nonrush_wf": active_work.get("nonrush_wf"),
+            "nonrush_hd": active_work.get("nonrush_hd"),
+            "unknown": active_work.get("unknown_needs_review"),
+            "unreconciled": active_work.get("unreconciled"),
+            "unreconciled_ids": _collect_unreconciled_ids(records, "active_work"),
+        },
+        "rush_checkout": {
+            "checkout_pending_rush_only": rush_checkout.get("checkout_pending"),
+            "checked_out": rush_checkout.get("checked_out"),
+        },
+        "employee_activity": employee_diagnostics,
+        "weight_difference": {
+            "flagged": shift_status.get("weight_difference", {}).get("flagged"),
+            "unavailable": shift_status.get("weight_difference", {}).get("unavailable"),
+            "status": shift_status.get("weight_difference_status"),
+        },
+    }
+
+
 def _align_ready_for_vendor_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
     section["total"] = _count_tag(records, "ready_for_vendor")
     section["rush_wf"] = _count_tag(records, "rfv_rush_wf")
@@ -700,6 +1002,9 @@ def _align_ready_for_vendor_counts(section: dict[str, Any], records: list[dict[s
     section["nonrush_wf"] = _count_tag(records, "rfv_nonrush_wf")
     section["nonrush_hd"] = _count_tag(records, "rfv_nonrush_hd")
     section["unknown_needs_review"] = _count_tag(records, "rfv_unknown_needs_review")
+    _finalize_section_counts(section)
+    section["data_quality_warning"] = _data_quality_warning(section)
+    section["unreconciled_ids"] = _collect_unreconciled_ids(records, "ready_for_vendor")
 
 
 def _align_active_work_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -708,7 +1013,16 @@ def _align_active_work_counts(section: dict[str, Any], records: list[dict[str, A
     section["rush_hd"] = _count_tag(records, "active_rush_hd")
     section["nonrush_wf"] = _count_tag(records, "active_nonrush_wf")
     section["nonrush_hd"] = _count_tag(records, "active_nonrush_hd")
-    section["checkout_pending"] = _count_tag(records, "checkout_pending")
+    section["unknown_needs_review"] = sum(
+        1
+        for r in records
+        if "active_work" in (r.get("drilldown_tags") or [])
+        and (
+            "unknown_speed_service" in (r.get("drilldown_tags") or [])
+            or any(t.startswith("active_unknown") for t in (r.get("drilldown_tags") or []))
+        )
+    )
+    _finalize_section_counts(section)
 
 
 def _build_exceptions_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -821,27 +1135,30 @@ def build_simple_shift_performance_payload(
                         "user": ev.get("user_name"),
                     }
 
-    active_records = [r for r in records if r.get("in_scope_a_active")]
-    shift_status = {
-        "weighed": _count_tag(active_records, "shift_weighed"),
-        "not_weighed": _count_tag(active_records, "shift_not_weighed"),
-        "issues": _count_tag(records, "issues"),
-        "workitems": _count_tag(records, "workitems"),
-        "weight_difference": _count_tag(records, "weight_difference"),
-        "weight_difference_threshold_lbs": threshold,
-        "rush_pending_wash": _count_tag(active_records, "rush_pending_wash"),
-        "last_rush_wash": last_rush_wash,
-        "yet_to_fold": _count_tag(active_records, "yet_to_fold"),
-        "source": "Scan events + active staging",
-    }
+    shift_status = _build_shift_status(records, threshold=threshold, last_rush_wash=last_rush_wash)
 
-    employee_summary = _build_employee_activity_summary(
+    employee_summary, employee_diagnostics = _build_employee_activity_summary(
         cursor, org, credits=all_credits, period_start=period_start, period_end=period_end, user_maps=user_maps
     )
     employee_cards = _build_employee_cards(employee_summary)
     exceptions_summary = _build_exceptions_summary(records)
     _align_ready_for_vendor_counts(ready_for_vendor, records)
     _align_active_work_counts(active_work, records)
+    active_work["unreconciled_ids"] = _collect_unreconciled_ids(records, "active_work")
+    ready_for_vendor["sync_status"] = _build_sync_status(
+        ready_for_vendor.get("last_refreshed_at"),
+        evaluation_time=evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow(),
+    )
+    rush_checkout = _build_rush_checkout_section(pending, records)
+    debug_audit = _build_debug_audit(
+        pending=pending,
+        ready_for_vendor=ready_for_vendor,
+        active_work=active_work,
+        rush_checkout=rush_checkout,
+        records=records,
+        employee_diagnostics=employee_diagnostics,
+        shift_status=shift_status,
+    )
 
     return {
         "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
@@ -849,6 +1166,7 @@ def build_simple_shift_performance_payload(
         "period_end": period_end.isoformat(),
         "ready_for_vendor": ready_for_vendor,
         "current_active_work": active_work,
+        "rush_checkout": rush_checkout,
         "scope_a_active_work": scope_a,
         "scope_b_performance_day": {
             "total_bags_worked": len(scope_b_ids),
@@ -860,7 +1178,9 @@ def build_simple_shift_performance_payload(
         "shift_status": shift_status,
         "employee_activity_summary": employee_summary,
         "employee_cards": employee_cards,
+        "employee_diagnostics": employee_diagnostics,
         "exceptions_summary": exceptions_summary,
+        "debug_audit": debug_audit,
         "records": records,
         "settings": {
             "weight_difference_threshold_lbs": threshold,

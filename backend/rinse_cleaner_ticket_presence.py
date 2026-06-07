@@ -358,6 +358,61 @@ def _rush_from_raw_row_json(raw_json: Any) -> str | None:
     return None
 
 
+def _parse_presence_date(raw: Any) -> date | None:
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return date.fromisoformat(raw.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _presence_raw_row_json(row: Mapping[str, Any]) -> dict[str, Any]:
+    rj = row.get("raw_row_json")
+    if isinstance(rj, dict):
+        return rj
+    if isinstance(rj, str) and rj.strip():
+        try:
+            parsed = json.loads(rj)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _infer_service_type_from_text(raw: str) -> str | None:
+    text = str(raw or "").strip().upper()
+    if not text:
+        return None
+    if text in ("WF", "WASH & FOLD", "WASH AND FOLD"):
+        return "WF"
+    if text in ("HD", "HOME DELIVERY", "HANG DRY", "HANG-DRY"):
+        return "HD"
+    if "HOME" in text and "DELIV" in text:
+        return "HD"
+    if "HANG" in text and "DRY" in text:
+        return "HD"
+    if "WASH" in text and "FOLD" in text:
+        return "WF"
+    return None
+
+
+def _presence_service_type(row: Mapping[str, Any]) -> str | None:
+    svc_raw = str(row.get("service_type") or "").strip().upper()
+    if svc_raw in ("WF", "HD"):
+        return svc_raw
+    rj = _presence_raw_row_json(row)
+    for key in ("service_type", "ServiceType", "service_type_raw"):
+        inferred = _infer_service_type_from_text(rj.get(key))
+        if inferred:
+            return inferred
+    return _infer_service_type_from_text(svc_raw)
+
+
 def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
     rf = str(row.get("rush_flag") or "").strip().upper()
     if rf == "RUSH":
@@ -369,6 +424,12 @@ def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
         return "RUSH"
     if parsed == "NON-RUSH":
         return "NON-RUSH"
+    edd = _parse_presence_date(row.get("estimated_delivery_date"))
+    if edd is None:
+        rj = _presence_raw_row_json(row)
+        edd = _parse_presence_date(rj.get("Date_Clean"))
+    if edd is not None:
+        return "RUSH" if edd < target_date else "NON-RUSH"
     return PRESENCE_RUSH_UNKNOWN
 
 
@@ -488,7 +549,7 @@ def load_incoming_unassigned_presence_rows(
         ls = raw.get("last_seen_at")
         if isinstance(ls, datetime) and (latest_seen is None or ls > latest_seen):
             latest_seen = ls
-        svc_raw = str(raw.get("service_type") or "").strip().upper()
+        svc_raw = _presence_service_type(raw) or ""
         eff_rush = _presence_effective_rush(raw, td)
         needs_review = not svc_raw or eff_rush == PRESENCE_RUSH_UNKNOWN
 

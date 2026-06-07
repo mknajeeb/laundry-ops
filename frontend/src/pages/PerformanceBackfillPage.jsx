@@ -24,7 +24,7 @@ function SettingsNav() {
     { to: "/performance", label: "Dashboard" },
     { to: "/performance/settings", label: "Settings" },
     { to: "/performance/user-mapping", label: "User mapping" },
-    { to: "/performance/backfill", label: "Backfill" },
+    { to: "/performance/backfill", label: "Historical Repair / Admin Tools" },
   ];
   return (
     <Stack direction="row" spacing={2} flexWrap="wrap" sx={{ mb: 3 }}>
@@ -99,9 +99,9 @@ export default function PerformanceBackfillPage() {
 
   return (
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 900, mx: "auto" }}>
-      <Typography variant="h4" fontWeight={800} gutterBottom>Performance Backfill</Typography>
+      <Typography variant="h4" fontWeight={800} gutterBottom>Historical Repair / Admin Tools</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Historical repair and recompute tools. Not required for normal nightly uploads.
+        Historical repair and Rinse Sync admin. Not required for normal daily work.
       </Typography>
       <SettingsNav />
       {message.text ? <Alert severity={message.type || "info"} sx={{ mb: 2 }}>{message.text}</Alert> : null}
@@ -117,7 +117,7 @@ export default function PerformanceBackfillPage() {
             </Select>
           </FormControl>
           <Button variant="contained" onClick={runRecompute} disabled={recomputing}>
-            {recomputing ? "Running…" : "Run backfill"}
+            {recomputing ? "Running…" : "Run historical repair"}
           </Button>
         </Stack>
         {recomputeSummary ? (
@@ -131,10 +131,10 @@ export default function PerformanceBackfillPage() {
       </Paper>
 
       <Typography variant="h6" fontWeight={700} sx={{ mt: 4, mb: 1 }}>
-        Portal ticket presence
+        Rinse Sync Admin
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Scrape Rinse cleaner tickets into a separate presence table (ready_for_vendor / at_vendor).
+        Pull current Rinse portal Ready for Vendor / At Vendor data into the presence table.
         Does not update orders_staging. Requires admin + tenant flag enable_ready_for_vendor_scrape.
       </Typography>
       {presenceSummary?.length ? (
@@ -165,7 +165,7 @@ export default function PerformanceBackfillPage() {
           </Stack>
           <Stack direction="row" spacing={1} flexWrap="wrap">
             <Button variant="outlined" onClick={() => runPresenceScrape(true)} disabled={presenceRunning}>
-              {presenceRunning && presenceDryRun ? "Running…" : "Dry run scrape"}
+              {presenceRunning && presenceDryRun ? "Running…" : "Dry Run Rinse Sync"}
             </Button>
             <Button
               variant="contained"
@@ -176,7 +176,7 @@ export default function PerformanceBackfillPage() {
               }}
               disabled={presenceRunning}
             >
-              {presenceRunning && !presenceDryRun ? "Applying…" : "Apply scrape"}
+              {presenceRunning && !presenceDryRun ? "Applying…" : "Apply Rinse Sync"}
             </Button>
           </Stack>
           {presenceResult ? (

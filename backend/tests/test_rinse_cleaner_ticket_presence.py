@@ -34,6 +34,15 @@ class TestRushParsing:
         row = {"rush_flag": None, "estimated_delivery_date": None, "raw_row_json": {}}
         assert _presence_effective_rush(row, date(2026, 6, 1)) == PRESENCE_RUSH_UNKNOWN
 
+    def test_presence_effective_rush_from_estimated_delivery_date(self):
+        row = {
+            "rush_flag": None,
+            "estimated_delivery_date": date(2026, 6, 3),
+            "raw_row_json": {},
+        }
+        assert _presence_effective_rush(row, date(2026, 6, 4)) == "RUSH"
+        assert _presence_effective_rush(row, date(2026, 6, 3)) == "NON-RUSH"
+
     def test_presence_effective_rush_from_raw_json_text(self):
         row = {
             "rush_flag": None,
@@ -332,7 +341,8 @@ class TestLoadWfPresenceIncomingRows:
         assert len(rows) == 1
         assert rows[0]["record_scope"] == "incoming"
         assert meta["incoming_wf"] == 1
-        assert meta["incoming_unknown_rush"] == 1
+        assert meta["incoming_non_rush"] == 1
+        assert rows[0]["effective_rush"] == "NON-RUSH"
 
     def test_hd_included_in_incoming(self):
         from backend.rinse_cleaner_ticket_presence import load_incoming_unassigned_presence_rows

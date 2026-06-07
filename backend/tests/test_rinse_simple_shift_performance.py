@@ -213,6 +213,16 @@ class TestWeightDifference:
         out = evaluate_weight_difference(events, threshold_lbs=5.0)
         assert out.flagged is True
         assert out.difference_lbs == 8.0
+        assert out.comparable is True
+        assert out.first_weight_user == "Alex"
+
+    def test_weight_difference_unavailable_with_single_weight(self):
+        w1 = _ev("weight-entry", T1, ev_id=2, scan_index=2, rack="Scale")
+        w1["weight_lbs"] = 20.0
+        out = evaluate_weight_difference(_sv(w1), threshold_lbs=5.0)
+        assert out.flagged is False
+        assert out.comparable is False
+        assert out.unavailable_reason == "No comparable first/second weights"
 
 
 class TestSimplePayloadScopes:
@@ -435,7 +445,7 @@ class TestDrilldownCountIntegrity:
             "rows": [
                 {"bag_id": "IN1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
                 {"bag_id": "A1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "PENDING_WEIGHING"},
-                {"bag_id": "A2", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "checkout_status": "CHECKOUT_PENDING"},
+                {"bag_id": "A2", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "checkout_status": "CHECKOUT_PENDING"},
             ],
             "incoming": {"rows": [{"bag_id": "IN1", "record_scope": "incoming"}], "groups": {"combined": {}}},
             "wf_lifecycle": {"groups": {"combined": {"total": 2, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
@@ -447,10 +457,106 @@ class TestDrilldownCountIntegrity:
             cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
         )
         active = payload["current_active_work"]
+        checkout = payload["rush_checkout"]
         records = payload["records"]
         assert active["total"] == _count_tag(records, "active_work") == 2
-        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 1
-        assert active["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
+        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 2
+        assert active["counts_add_up"] is True
+        assert checkout["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
+        assert "checkout_pending" not in active
         incoming_rec = next(r for r in records if r["bag_id"] == "IN1")
         assert incoming_rec["in_scope_a_active"] is False
         assert "active_work" not in incoming_rec["drilldown_tags"]
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_external_employee_excluded_from_productivity(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {"alex (veewash)": {"user_id": 1}}
+        mock_scope_b.return_value = ["B1"]
+        mock_meta.return_value = {"B1": {"bag_id": "B1", "service_type": "WF", "rush_type": "RUSH"}}
+        mock_events.return_value = {
+            "B1": [
+                _ev("sent-to-vendor", datetime(2026, 6, 4, 7, 0), user="Vendor", ev_id=1, scan_index=1),
+                _ev("weight-entry", T1, user="Alex (VeeWash)", ev_id=2, scan_index=2),
+                _ev("move-bag", T5, user="Michael Osei", ev_id=3, scan_index=3, rack="VeeWash Clean"),
+            ]
+        }
+        mock_pending.return_value = {
+            "rows": [],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_rush": {},
+        }
+        cursor = MagicMock()
+        with patch("backend.rinse_simple_shift_performance._employee_shift_window", return_value=(T0, T6, None)):
+            payload = build_simple_shift_performance_payload(
+                cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+            )
+        included = payload["employee_diagnostics"]["included_employees"]
+        excluded = payload["employee_diagnostics"]["excluded_external"]
+        assert any("veewash" in e.lower() for e in included)
+        assert "Michael Osei" in excluded
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_shift_status_has_rush_non_rush_splits(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {
+            "N1": [
+                _ev("sent-to-vendor", datetime(2026, 6, 4, 7, 0), user="Vendor", ev_id=1, scan_index=1),
+                _ev("weight-entry", T1, user="Alice", ev_id=2, scan_index=2),
+            ]
+        }
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "R1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "PENDING_WEIGHING"},
+                {"bag_id": "N1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "WEIGHED_NOT_STARTED"},
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 2, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_rush": {},
+        }
+        cursor = MagicMock()
+        payload = build_simple_shift_performance_payload(
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+        )
+        weighed = payload["shift_status"]["weighed"]
+        assert weighed["all"] == 1
+        assert weighed["rush"] == 0
+        assert weighed["non_rush"] == 1
