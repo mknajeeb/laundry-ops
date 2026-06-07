@@ -123,6 +123,8 @@ def ensure_rinse_cleaner_ticket_presence_table(cursor) -> None:
 
 
 def ensure_rinse_cleaner_ticket_presence_runs_table(cursor) -> None:
+    from backend.ta_helpers import table_has_column
+
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS rinse_cleaner_ticket_presence_runs (
@@ -143,6 +145,20 @@ def ensure_rinse_cleaner_ticket_presence_runs_table(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    extra_cols = (
+        ("run_type", "VARCHAR(24) NULL"),
+        ("status", "VARCHAR(24) NULL"),
+        ("started_at", "DATETIME(6) NULL"),
+        ("finished_at", "DATETIME(6) NULL"),
+        ("duration_seconds", "INT NULL"),
+        ("pages_visited", "INT NULL"),
+        ("scrape_meta_json", "JSON NULL"),
+    )
+    for col, ddl in extra_cols:
+        if not table_has_column(cursor, "rinse_cleaner_ticket_presence_runs", col):
+            cursor.execute(
+                f"ALTER TABLE rinse_cleaner_ticket_presence_runs ADD COLUMN {col} {ddl}"
+            )
 
 
 def ensure_presence_tables(cursor) -> None:
@@ -720,6 +736,11 @@ def apply_presence_scrape(
     source_url: str | None = None,
     dry_run: bool = True,
     mark_missing: bool = False,
+    run_type: str | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    status: str | None = None,
+    scrape_meta: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     ps = str(portal_status or "").strip()
     if ps not in VALID_PORTAL_STATUSES:
@@ -884,13 +905,26 @@ def apply_presence_scrape(
                     )
 
     if not dry_run:
+        run_started = started_at or now
+        run_finished = finished_at or now
+        duration_seconds = None
+        if run_started and run_finished:
+            duration_seconds = max(0, int((run_finished - run_started).total_seconds()))
+        pages_visited = None
+        if scrape_meta and scrape_meta.get("pages_scraped") is not None:
+            try:
+                pages_visited = int(scrape_meta.get("pages_scraped"))
+            except (TypeError, ValueError):
+                pages_visited = None
+        run_status = status or ("success" if not stats["errors"] else "partial")
         cursor.execute(
             """
             INSERT INTO rinse_cleaner_ticket_presence_runs (
                 organization_id, portal_status, source_batch_id, source_url, dry_run,
                 rows_found, rows_inserted, rows_updated, rows_unchanged, rows_missing,
-                errors_json
-            ) VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s)
+                errors_json, run_type, status, started_at, finished_at, duration_seconds,
+                pages_visited, scrape_meta_json
+            ) VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 org,
@@ -903,6 +937,13 @@ def apply_presence_scrape(
                 stats["rows_unchanged"],
                 stats["rows_missing"],
                 json.dumps(stats["errors"]) if stats["errors"] else None,
+                run_type,
+                run_status,
+                run_started,
+                run_finished,
+                duration_seconds,
+                pages_visited,
+                json.dumps(dict(scrape_meta)) if scrape_meta else None,
             ),
         )
 

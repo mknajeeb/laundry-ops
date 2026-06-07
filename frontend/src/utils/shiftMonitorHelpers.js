@@ -64,12 +64,33 @@ export function formatShiftDateLabel(dateStart, dateEnd) {
   return `Showing: ${fmt(dateStart)} – ${fmt(dateEnd)}`;
 }
 
-export function syncStatusSubtext(rfv) {
-  const sync = rfv?.sync_status || {};
-  if (sync.sync_time_unavailable) {
-    return sync.message || "Ready for Vendor sync time unavailable";
+export function syncStatusSubtext(section, syncName = "Ready for Vendor Sync") {
+  const sync = section?.sync_status || {};
+  if (sync.status === "disabled" || sync.enabled === false) {
+    return sync.message || `${syncName}: disabled`;
   }
-  const parts = [sync.message || (rfv.last_refreshed_at ? `Last Rinse Sync: ${rfv.last_refreshed_at}` : null)];
+  if (sync.sync_time_unavailable) {
+    return sync.message || `${syncName}: unavailable`;
+  }
+  const parts = [sync.message || (section?.last_refreshed_at ? `${syncName}: ${section.last_refreshed_at}` : null)];
   if (sync.stale && sync.stale_reason) parts.push(sync.stale_reason);
   return parts.filter(Boolean).join(" · ");
+}
+
+export function rinseSyncBanner(data) {
+  const rinseSync = data?.rinse_sync || {};
+  const av = rinseSync.at_vendor || data?.current_active_work?.sync_status || {};
+  const rfv = rinseSync.ready_for_vendor || data?.ready_for_vendor?.sync_status || {};
+  const lines = [];
+  if (av.message) lines.push(av.message);
+  else if (av.last_refreshed_at_et) lines.push(`At Vendor Sync: ${av.last_refreshed_at_et}`);
+  if (rfv.enabled === false) {
+    lines.push(rfv.message || "Ready for Vendor Sync: disabled");
+  } else if (rfv.message) {
+    lines.push(rfv.message);
+  }
+  const staleParts = [];
+  if (av.stale && av.stale_reason) staleParts.push(av.stale_reason);
+  if (rfv.stale && rfv.stale_reason) staleParts.push(rfv.stale_reason);
+  return { lines, staleParts, anyStale: staleParts.length > 0 };
 }

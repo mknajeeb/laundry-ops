@@ -70,12 +70,17 @@ def main(argv: list[str] | None = None) -> int:
             "portal_rows_count": r.portal_rows_count,
             "scan_events_count": r.scan_events_count,
             "error_message": r.error_message,
+            "ready_for_vendor_status": r.ready_for_vendor_status,
+            "ready_for_vendor_error": r.ready_for_vendor_error,
+            "at_vendor_status": r.at_vendor_status,
             "log_path": str(r.paths.log_path) if r.paths else None,
             "detail": r.detail,
         }
         out.append(item)
         if r.status == "failed":
             exit_code = 1
+        elif r.status == "partial_success" and exit_code == 0:
+            exit_code = 2
         elif r.status == "needs_attention" and exit_code == 0:
             exit_code = 3
 

@@ -18,7 +18,7 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
-import { getShiftAnalysisSimple, runCleanerTicketPresenceScrape } from "../api";
+import { getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatLaborHours, formatRate } from "../utils/foldingFormat";
 import {
@@ -28,6 +28,7 @@ import {
   sectionSplitCounts,
   shiftMetricValue,
   syncStatusSubtext,
+  rinseSyncBanner,
 } from "../utils/shiftMonitorHelpers";
 
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
@@ -313,24 +314,35 @@ export default function ShiftMonitorPage({ user }) {
     });
   };
 
-  const runRinseSync = async (dryRun) => {
+  const runRinseSync = async () => {
     setSyncRunning(true);
     setSyncMessage("");
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => {
       setSyncRunning(false);
-      setSyncMessage("Rinse Sync timed out — check admin tools for status.");
+      setSyncMessage("Sync timed out — check Scheduled Rinse Sync for status.");
     }, SYNC_TIMEOUT_MS);
     try {
-      await runCleanerTicketPresenceScrape({
-        portal_status: "ready_for_vendor",
-        dry_run: dryRun,
-        mark_missing: false,
-      });
-      setSyncMessage(dryRun ? "Dry Run Rinse Sync finished." : "Apply Rinse Sync finished.");
+      const res = await runRinseBothSyncs({ dry_run: false });
+      const av = res.data?.at_vendor_sync || {};
+      const rfv = res.data?.ready_for_vendor_sync || {};
+      const overall = res.data?.overall_status || "success";
+      setSyncMessage(
+        overall === "partial_success"
+          ? `At Vendor: ${av.status || "—"} · Ready for Vendor: ${rfv.status || "failed"} (partial success)`
+          : `Both syncs finished — At Vendor: ${av.status || "—"} · Ready for Vendor: ${rfv.status || "—"}`,
+      );
       await load();
     } catch (e) {
-      setSyncMessage(e?.response?.data?.error || "Rinse Sync failed");
+      const data = e?.response?.data;
+      if (data?.overall_status === "partial_success" || e?.response?.status === 207) {
+        setSyncMessage(
+          `Partial success — At Vendor: ${data?.at_vendor_sync?.status || "ok"} · Ready for Vendor: ${data?.ready_for_vendor_sync?.status || "failed"}`,
+        );
+        await load();
+      } else {
+        setSyncMessage(data?.error || "Refresh Both Syncs failed");
+      }
     } finally {
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       setSyncRunning(false);
@@ -339,13 +351,16 @@ export default function ShiftMonitorPage({ user }) {
 
   const rfv = data?.ready_for_vendor || {};
   const active = data?.current_active_work || {};
+  const rinseSync = rinseSyncBanner(data);
   const checkout = data?.rush_checkout || {};
   const shift = data?.shift_status || {};
   const exceptions = data?.exceptions_summary || {};
   const rfvCounts = sectionSplitCounts(rfv, rushFilter);
   const activeCounts = sectionSplitCounts(active, rushFilter);
-  const syncSub = syncStatusSubtext(rfv);
-  const syncStale = rfv.sync_status?.stale && rfv.last_refreshed_at;
+  const rfvSyncSub = syncStatusSubtext(rfv, "Ready for Vendor Sync");
+  const avSyncSub = syncStatusSubtext(active, "At Vendor Sync");
+  const rfvSyncStale = rfv.sync_status?.stale && rfv.last_refreshed_at;
+  const avSyncStale = active.sync_status?.stale && active.last_refreshed_at;
 
   const weightDiffValue = (() => {
     const wd = shift.weight_difference;
@@ -398,10 +413,16 @@ export default function ShiftMonitorPage({ user }) {
         <Button variant="contained" size="small" onClick={load} disabled={loading} sx={{ alignSelf: { xs: "stretch", sm: "center" } }}>
           Apply
         </Button>
-        <Button variant="outlined" size="small" onClick={() => runRinseSync(false)} disabled={syncRunning || loading}>
-          {syncRunning ? "Refreshing…" : "Refresh Rinse Sync"}
+        <Button variant="outlined" size="small" onClick={runRinseSync} disabled={syncRunning || loading}>
+          {syncRunning ? "Refreshing…" : "Refresh Both Syncs"}
         </Button>
       </Stack>
+
+      {data?.rinse_sync ? (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          {rinseSync.lines.filter(Boolean).join(" · ")}
+        </Typography>
+      ) : null}
 
       {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
       {syncMessage ? <Alert severity="info" sx={{ mb: 2 }}>{syncMessage}</Alert> : null}
@@ -419,8 +440,8 @@ export default function ShiftMonitorPage({ user }) {
             alert={
               rfv.data_quality_warning ? (
                 <Alert severity="error" sx={{ mb: 1.5 }}>{rfv.data_quality_warning}</Alert>
-              ) : syncStale ? (
-                <Alert severity="warning" sx={{ mb: 1.5 }}>{syncSub}</Alert>
+              ) : rfvSyncStale ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>{rfvSyncSub}</Alert>
               ) : null
             }
           >
@@ -428,7 +449,7 @@ export default function ShiftMonitorPage({ user }) {
               label="Total"
               value={rfvCounts.total}
               source="Ready for Vendor queue"
-              sub={syncSub}
+              sub={rfvSyncSub}
               onClick={() => openDrilldown("ready_for_vendor")}
               active={filterTag === "ready_for_vendor"}
             />
@@ -451,14 +472,16 @@ export default function ShiftMonitorPage({ user }) {
             rushFilter={rushFilter}
             onRushFilterChange={setRushFilter}
             alert={
-              active.unreconciled > 0 ? (
+              avSyncStale ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>{avSyncSub}</Alert>
+              ) : active.unreconciled > 0 ? (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>
                   {active.unreconciled} unreconciled bag(s) — splits do not match total. Use drilldown.
                 </Alert>
               ) : null
             }
           >
-            <StatCard label="Active Total" value={activeCounts.total} source={active.source} onClick={() => openDrilldown("active_work")} active={filterTag === "active_work"} />
+            <StatCard label="Active Total" value={activeCounts.total} source={active.source} sub={avSyncSub} onClick={() => openDrilldown("active_work")} active={filterTag === "active_work"} />
             <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : active.rush_wf} onClick={() => openDrilldown("active_rush_wf")} />
             <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : active.rush_hd} onClick={() => openDrilldown("active_rush_hd")} />
             <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : active.nonrush_wf} onClick={() => openDrilldown("active_nonrush_wf")} />

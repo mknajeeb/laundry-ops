@@ -481,4 +481,12 @@ def get_scheduled_scrape_status(cursor, organization_id: int) -> dict[str, Any]:
         out["running_run_id"] = running.get("id")
         out["running_started_at"] = _fmt_system(running.get("started_at"))
 
+    from backend.rinse_presence_sync_status import (
+        build_at_vendor_sync_status,
+        get_ready_for_vendor_sync_status,
+    )
+
+    out["at_vendor_sync"] = build_at_vendor_sync_status(cursor, org)
+    out["ready_for_vendor_sync"] = get_ready_for_vendor_sync_status(cursor, org)
+
     return out

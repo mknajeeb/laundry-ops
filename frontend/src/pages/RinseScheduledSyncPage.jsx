@@ -45,6 +45,40 @@ function Row({ label, value }) {
   );
 }
 
+function SyncStatusPanel({ title, sync }) {
+  if (!sync) {
+    return (
+      <Paper variant="outlined" sx={{ p: 2 }}>
+        <Typography variant="subtitle1" fontWeight={700} gutterBottom>{title}</Typography>
+        <Typography variant="body2" color="text.secondary">No runs recorded yet.</Typography>
+      </Paper>
+    );
+  }
+  const run = sync.latest_run || sync.last_success || sync.run || sync;
+  const chipStatus = sync.status || run?.status || "unknown";
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Stack direction="row" alignItems="center" spacing={1} mb={1} flexWrap="wrap">
+        <Typography variant="subtitle1" fontWeight={700}>{title}</Typography>
+        <Chip size="small" label={chipStatus} color={statusColor(chipStatus)} />
+        {sync.enabled === false ? <Chip size="small" variant="outlined" label="disabled" /> : null}
+      </Stack>
+      <Row label="Last refreshed" value={formatSystemDateTime(sync.last_refreshed_at || run?.finished_at || run?.last_finished_at)} />
+      <Row label="Last started" value={formatSystemDateTime(run?.started_at || run?.scrape_started_at || sync.last_started_at)} />
+      <Row label="Last finished" value={formatSystemDateTime(run?.finished_at || run?.scrape_finished_at || sync.last_finished_at)} />
+      <Row label="Duration" value={run?.duration_label || sync.duration_label || (run?.duration_seconds != null ? `${run.duration_seconds}s` : "—")} />
+      <Row label="Rows found" value={run?.rows_found ?? run?.portal_rows_count ?? run?.rows_imported} />
+      <Row label="Rows inserted" value={run?.rows_inserted} />
+      <Row label="Rows updated" value={run?.rows_updated} />
+      <Row label="Rows unchanged" value={run?.rows_unchanged} />
+      <Row label="Pages visited" value={run?.pages_visited} />
+      {(sync.error_message || run?.error_message) ? (
+        <Alert severity="error" sx={{ mt: 1 }}>{String(sync.error_message || run?.error_message)}</Alert>
+      ) : null}
+    </Paper>
+  );
+}
+
 function RunTimingPanel({ title, run }) {
   if (!run) {
     return (
@@ -193,7 +227,10 @@ export default function RinseScheduledSyncPage() {
             ) : null}
           </Paper>
 
-          <RunTimingPanel title="Latest scrape run" run={latest} />
+          <SyncStatusPanel title="At Vendor Sync" sync={data.at_vendor_sync} />
+          <SyncStatusPanel title="Ready for Vendor Sync" sync={data.ready_for_vendor_sync} />
+
+          <RunTimingPanel title="Latest At Vendor scrape run" run={latest} />
           {lastSuccess && lastSuccess.scrape_run_id !== latest?.scrape_run_id ? (
             <RunTimingPanel title="Last successful scrape" run={lastSuccess} />
           ) : null}

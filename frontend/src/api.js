@@ -491,6 +491,9 @@ export const recomputeFoldingPerformance = (body) =>
 export const runCleanerTicketPresenceScrape = (body) =>
   axios.post(`${API_BASE}/api/rinse/cleaner-ticket-presence/scrape`, body, { timeout: 600000 });
 
+export const runRinseBothSyncs = (body = {}) =>
+  axios.post(`${API_BASE}/api/rinse/sync/both`, body, { timeout: 600000 });
+
 export const getCleanerTicketPresenceSummary = () =>
   axios.get(`${API_BASE}/api/rinse/cleaner-ticket-presence/summary`, { timeout: 30000 });
 

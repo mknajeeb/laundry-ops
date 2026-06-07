@@ -20,7 +20,15 @@ from backend.rinse_shift_analysis import (
 from backend.rinse_scan_time import json_safe_rinse
 
 
-def register_rinse_shift_analysis_routes(app, *, require_user, require_admin, user_org_id, parse_date_value):
+def register_rinse_shift_analysis_routes(
+    app,
+    *,
+    require_user,
+    require_admin,
+    require_admin_or_ops=None,
+    user_org_id,
+    parse_date_value,
+):
     @app.route("/rinse/shift-analysis/summary", methods=["GET"])
     def rinse_shift_analysis_summary():
         conn = get_db()
@@ -247,6 +255,62 @@ def register_rinse_shift_analysis_routes(app, *, require_user, require_admin, us
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/api/rinse/sync/both", methods=["POST"])
+    def rinse_sync_both():
+        """Run At Vendor scheduled scrape then Ready for Vendor presence sync (Shift Monitor refresh)."""
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+
+            body = request.get_json(silent=True) or {}
+            dry_run = bool(body.get("dry_run", False))
+
+            from backend.rinse_scheduled_scrape import run_scheduled_scrape_for_org
+
+            av_result = run_scheduled_scrape_for_org(
+                conn,
+                tenant_oid,
+                run_type="manual",
+                dry_run=dry_run,
+            )
+            payload = {
+                "organization_id": tenant_oid,
+                "overall_status": av_result.status,
+                "at_vendor_sync": {
+                    "status": av_result.at_vendor_status or av_result.status,
+                    "run_id": av_result.run_id,
+                    "batch_id": av_result.batch_id,
+                    "portal_rows_count": av_result.portal_rows_count,
+                    "scan_events_count": av_result.scan_events_count,
+                    "error_message": av_result.error_message,
+                },
+                "ready_for_vendor_sync": av_result.detail.get("ready_for_vendor_sync")
+                or {
+                    "status": av_result.ready_for_vendor_status,
+                    "error_message": av_result.ready_for_vendor_error,
+                },
+            }
+            code = 200
+            if av_result.status == "failed":
+                code = 502
+            elif av_result.status == "partial_success":
+                code = 207
+            return jsonify(json_safe_rinse(payload)), code
+        except Exception as exc:
+            conn.rollback()
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

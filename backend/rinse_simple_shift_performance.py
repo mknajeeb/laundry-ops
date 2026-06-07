@@ -330,15 +330,21 @@ def _parse_iso_datetime(raw: Any) -> datetime | None:
     return None
 
 
-def _build_sync_status(last_refreshed_at: str | None, *, evaluation_time: datetime | None = None) -> dict[str, Any]:
+def _build_sync_status(
+    last_refreshed_at: str | None,
+    *,
+    sync_name: str = "Ready for Vendor Sync",
+    evaluation_time: datetime | None = None,
+) -> dict[str, Any]:
     if not last_refreshed_at:
         return {
             "sync_time_unavailable": True,
             "stale": False,
             "stale_reason": None,
-            "message": "Ready for Vendor sync time unavailable",
+            "message": f"{sync_name}: unavailable",
             "last_rinse_sync_at": None,
             "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
+            "sync_name": sync_name,
         }
     last_dt = _parse_iso_datetime(last_refreshed_at)
     now = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
@@ -347,24 +353,22 @@ def _build_sync_status(last_refreshed_at: str | None, *, evaluation_time: dateti
             "sync_time_unavailable": True,
             "stale": False,
             "stale_reason": None,
-            "message": "Ready for Vendor sync time unavailable",
+            "message": f"{sync_name}: unavailable",
             "last_rinse_sync_at": last_refreshed_at,
             "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
+            "sync_name": sync_name,
         }
     age_min = max(0, int((now - last_dt).total_seconds()) // 60)
     stale = age_min > RINSE_SYNC_STALE_MINUTES
     return {
         "sync_time_unavailable": False,
         "stale": stale,
-        "stale_reason": (
-            f"Stale because older than {RINSE_SYNC_STALE_MINUTES} minutes"
-            if stale
-            else None
-        ),
-        "message": f"Last Rinse Sync: {last_refreshed_at}",
+        "stale_reason": f"{sync_name} stale" if stale else None,
+        "message": f"{sync_name}: {last_refreshed_at}",
         "last_rinse_sync_at": last_refreshed_at,
         "age_minutes": age_min,
         "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
+        "sync_name": sync_name,
     }
 
 
@@ -439,7 +443,7 @@ def _build_ready_for_vendor_section(pending: Mapping[str, Any]) -> dict[str, Any
         + int(splits.get("unknown_service") or 0),
         "source": "Ready for Vendor queue",
         "last_refreshed_at": last_refreshed_at,
-        "sync_status": _build_sync_status(last_refreshed_at),
+        "sync_status": _build_sync_status(last_refreshed_at, sync_name="Ready for Vendor Sync"),
         "drilldown_filter": "ready_for_vendor",
     }
     _finalize_section_counts(section)
@@ -474,6 +478,45 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
     }
     _finalize_section_counts(section)
     return section
+
+
+def _attach_section_sync_statuses(
+    cursor,
+    organization_id: int,
+    *,
+    ready_for_vendor: dict[str, Any],
+    active_work: dict[str, Any],
+    evaluation_time: datetime | None = None,
+) -> dict[str, Any]:
+    from backend.rinse_presence_sync_status import (
+        build_at_vendor_sync_status,
+        get_ready_for_vendor_sync_status,
+    )
+
+    rfv_sync = get_ready_for_vendor_sync_status(
+        cursor, organization_id, evaluation_time=evaluation_time
+    )
+    av_sync = build_at_vendor_sync_status(
+        cursor, organization_id, evaluation_time=evaluation_time
+    )
+    ready_for_vendor["last_refreshed_at"] = (
+        rfv_sync.get("last_refreshed_at") or ready_for_vendor.get("last_refreshed_at")
+    )
+    ready_for_vendor["sync_status"] = {
+        **_build_sync_status(
+            ready_for_vendor.get("last_refreshed_at"),
+            sync_name="Ready for Vendor Sync",
+            evaluation_time=evaluation_time,
+        ),
+        **{k: v for k, v in rfv_sync.items() if k not in ("message",)},
+    }
+    active_work["last_refreshed_at"] = av_sync.get("last_refreshed_at")
+    active_work["sync_status"] = av_sync
+    return {
+        "at_vendor": av_sync,
+        "ready_for_vendor": rfv_sync,
+        "ready_for_vendor_enabled": bool(rfv_sync.get("enabled", True)),
+    }
 
 
 def _build_rush_checkout_section(pending: Mapping[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1145,8 +1188,11 @@ def build_simple_shift_performance_payload(
     _align_ready_for_vendor_counts(ready_for_vendor, records)
     _align_active_work_counts(active_work, records)
     active_work["unreconciled_ids"] = _collect_unreconciled_ids(records, "active_work")
-    ready_for_vendor["sync_status"] = _build_sync_status(
-        ready_for_vendor.get("last_refreshed_at"),
+    rinse_sync = _attach_section_sync_statuses(
+        cursor,
+        org,
+        ready_for_vendor=ready_for_vendor,
+        active_work=active_work,
         evaluation_time=evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow(),
     )
     rush_checkout = _build_rush_checkout_section(pending, records)
@@ -1166,6 +1212,7 @@ def build_simple_shift_performance_payload(
         "period_end": period_end.isoformat(),
         "ready_for_vendor": ready_for_vendor,
         "current_active_work": active_work,
+        "rinse_sync": rinse_sync,
         "rush_checkout": rush_checkout,
         "scope_a_active_work": scope_a,
         "scope_b_performance_day": {

@@ -181,6 +181,8 @@ class ScheduledScrapeResult:
     organization_id: int
     run_id: int | None = None
     status: str = "failed"
+    at_vendor_status: str = "failed"
+    ready_for_vendor_status: str | None = None
     rinse_vendor: str = ""
     tenant_slug: str | None = None
     batch_id: int | None = None
@@ -188,6 +190,7 @@ class ScheduledScrapeResult:
     scan_events_count: int = 0
     paths: ScrapePaths | None = None
     error_message: str | None = None
+    ready_for_vendor_error: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
 
 
@@ -291,6 +294,20 @@ def _count_accepted_rows(cursor, batch_id: int) -> int:
     return int(row.get("c") if isinstance(row, dict) else row[0] or 0)
 
 
+def _combine_scheduled_status(at_vendor_status: str, rfv_status: str | None) -> str:
+    """Overall scheduled run status from separate At Vendor + Ready for Vendor steps."""
+    av_ok = at_vendor_status in ("success", "needs_attention")
+    if rfv_status is None or rfv_status == "disabled":
+        return at_vendor_status
+    if rfv_status in ("success", "dry_run"):
+        return at_vendor_status if av_ok else "failed"
+    if av_ok and rfv_status == "failed":
+        return "partial_success"
+    if not av_ok:
+        return "failed"
+    return at_vendor_status
+
+
 def run_scheduled_scrape_for_org(
     conn,
     organization_id: int,
@@ -355,119 +372,165 @@ def run_scheduled_scrape_for_org(
     started_at = datetime.utcnow()
     log = _TeeLog(paths.log_path)
 
+    result.at_vendor_status = "failed"
+    env: dict[str, str] = {}
     try:
-        log.write(f"Scheduled Rinse scrape org={org_id} vendor={vendor} run_id={run_id}\n")
-        log.write(f"America/New_York batch_date={_today_label_et()}\n")
+        try:
+            log.write(f"Scheduled Rinse scrape org={org_id} vendor={vendor} run_id={run_id}\n")
+            log.write(f"America/New_York batch_date={_today_label_et()}\n")
 
-        env = _subprocess_env_for_vendor(
-            org_id, vendor, paths, organization_slug=slug, organization_name=org_name
-        )
-        portal_script = tenant_dir / "run-production-scrape.sh"
-        scan_script = tenant_dir / "run-scan-events.sh"
-
-        if _run_bash_script(portal_script, env, log) != 0:
-            raise RuntimeError("Portal scrape subprocess failed")
-
-        if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:
-            raise RuntimeError("Portal CSV missing or empty after scrape")
-
-        if _run_bash_script(scan_script, env, log) != 0:
-            raise RuntimeError("Scan-events scrape subprocess failed")
-
-        portal_rows = count_csv_data_rows(paths.portal_csv)
-        scan_rows = count_csv_data_rows(paths.scan_events_csv)
-        result.portal_rows_count = portal_rows
-        result.scan_events_count = scan_rows
-
-        if scan_rows < 1:
-            raise RuntimeError("Scan-events CSV missing or empty after scrape")
-
-        from backend.rinse_combined_upload import commit_rinse_combined_upload
-        from backend.rinse_portal_csv import portal_csv_to_orders_df
-        from backend.rinse_scan_events_upload import parse_scan_events_csv
-
-        batch_date = _today_et()
-        portal_name = f"scheduled-rinse-portal-{_stamp_et()}.csv"
-        events_name = f"scheduled-rinse-events-{_stamp_et()}.csv"
-
-        orders_df = portal_csv_to_orders_df(str(paths.portal_csv))
-        events_df, warnings = parse_scan_events_csv(str(paths.scan_events_csv))
-
-        if len(orders_df) < 1:
-            raise RuntimeError("Portal CSV parsed to zero order rows")
-
-        from backend.rinse_portal_scrape_meta import meta_path_for_portal_csv
-
-        portal_meta_path = meta_path_for_portal_csv(paths.portal_csv)
-        draft_payload = commit_rinse_combined_upload(
-            conn,
-            cursor,
-            org_id,
-            batch_date,
-            portal_name,
-            orders_df,
-            events_name,
-            events_df,
-            portal_scrape_meta_path=str(portal_meta_path),
-        )
-        if not draft_payload.get("portal_absence_allowed"):
-            log.write(
-                "WARNING: portal scrape hit max pages — "
-                "MISSING_FROM_LATEST_PORTAL_UPLOAD will be skipped on confirm\n"
+            env = _subprocess_env_for_vendor(
+                org_id, vendor, paths, organization_slug=slug, organization_name=org_name
             )
-        batch_id = int(draft_payload["batch_id"])
-        result.batch_id = batch_id
-        log.write(f"Draft batch_id={batch_id} rows_inserted={draft_payload.get('rows_inserted')}\n")
+            portal_script = tenant_dir / "run-production-scrape.sh"
+            scan_script = tenant_dir / "run-scan-events.sh"
 
-        accepted = _count_accepted_rows(cursor, batch_id)
-        attention = _count_attention_rows(cursor, batch_id)
+            if _run_bash_script(portal_script, env, log) != 0:
+                raise RuntimeError("Portal scrape subprocess failed")
 
-        if accepted < 1:
-            conn.rollback()
-            raise RuntimeError("All portal rows rejected; nothing to apply")
+            if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:
+                raise RuntimeError("Portal CSV missing or empty after scrape")
 
-        confirm_payload: dict[str, Any] | None = None
-        final_status = "success"
+            if _run_bash_script(scan_script, env, log) != 0:
+                raise RuntimeError("Scan-events scrape subprocess failed")
 
-        if attention > 0:
-            final_status = "needs_attention"
-            result.error_message = (
-                f"Draft batch {batch_id} has {attention} NEEDS_ATTENTION row(s); not auto-confirmed"
+            portal_rows = count_csv_data_rows(paths.portal_csv)
+            scan_rows = count_csv_data_rows(paths.scan_events_csv)
+            result.portal_rows_count = portal_rows
+            result.scan_events_count = scan_rows
+
+            if scan_rows < 1:
+                raise RuntimeError("Scan-events CSV missing or empty after scrape")
+
+            from backend.rinse_combined_upload import commit_rinse_combined_upload
+            from backend.rinse_portal_csv import portal_csv_to_orders_df
+            from backend.rinse_scan_events_upload import parse_scan_events_csv
+
+            batch_date = _today_et()
+            portal_name = f"scheduled-rinse-portal-{_stamp_et()}.csv"
+            events_name = f"scheduled-rinse-events-{_stamp_et()}.csv"
+
+            orders_df = portal_csv_to_orders_df(str(paths.portal_csv))
+            events_df, warnings = parse_scan_events_csv(str(paths.scan_events_csv))
+
+            if len(orders_df) < 1:
+                raise RuntimeError("Portal CSV parsed to zero order rows")
+
+            from backend.rinse_portal_scrape_meta import meta_path_for_portal_csv
+
+            portal_meta_path = meta_path_for_portal_csv(paths.portal_csv)
+            draft_payload = commit_rinse_combined_upload(
+                conn,
+                cursor,
+                org_id,
+                batch_date,
+                portal_name,
+                orders_df,
+                events_name,
+                events_df,
+                portal_scrape_meta_path=str(portal_meta_path),
             )
-            log.write(f"{result.error_message}\n")
-        else:
-            from backend.upload_batch_confirm import (
-                UploadBatchConfirmError,
-                confirm_upload_batch_core,
-            )
-
-            try:
-                confirm_payload = confirm_upload_batch_core(
-                    cursor, org_id, batch_id, force_confirm=False
+            if not draft_payload.get("portal_absence_allowed"):
+                log.write(
+                    "WARNING: portal scrape hit max pages — "
+                    "MISSING_FROM_LATEST_PORTAL_UPLOAD will be skipped on confirm\n"
                 )
-                log.write(f"Auto-confirmed batch_id={batch_id}\n")
-            except UploadBatchConfirmError as e:
+            batch_id = int(draft_payload["batch_id"])
+            result.batch_id = batch_id
+            log.write(f"Draft batch_id={batch_id} rows_inserted={draft_payload.get('rows_inserted')}\n")
+
+            accepted = _count_accepted_rows(cursor, batch_id)
+            attention = _count_attention_rows(cursor, batch_id)
+
+            if accepted < 1:
                 conn.rollback()
-                raise RuntimeError(str(e)) from e
+                raise RuntimeError("All portal rows rejected; nothing to apply")
 
-        conn.commit()
+            confirm_payload: dict[str, Any] | None = None
+            final_status = "success"
 
-        result.status = final_status
-        result.detail = {
-            "draft": draft_payload,
-            "confirm": confirm_payload,
-            "warnings": warnings,
-            "attention_count": attention,
-            "accepted_count": accepted,
-        }
-        return result
+            if attention > 0:
+                final_status = "needs_attention"
+                result.error_message = (
+                    f"Draft batch {batch_id} has {attention} NEEDS_ATTENTION row(s); not auto-confirmed"
+                )
+                log.write(f"{result.error_message}\n")
+            else:
+                from backend.upload_batch_confirm import (
+                    UploadBatchConfirmError,
+                    confirm_upload_batch_core,
+                )
 
-    except Exception as e:
-        conn.rollback()
-        result.status = "failed"
-        result.error_message = str(e)
-        log.write(f"ERROR: {e}\n")
-        return result
+                try:
+                    confirm_payload = confirm_upload_batch_core(
+                        cursor, org_id, batch_id, force_confirm=False
+                    )
+                    log.write(f"Auto-confirmed batch_id={batch_id}\n")
+                except UploadBatchConfirmError as e:
+                    conn.rollback()
+                    raise RuntimeError(str(e)) from e
+
+            conn.commit()
+
+            result.status = final_status
+            result.at_vendor_status = final_status
+            result.detail = {
+                "draft": draft_payload,
+                "confirm": confirm_payload,
+                "warnings": warnings,
+                "attention_count": attention,
+                "accepted_count": accepted,
+            }
+
+        except Exception as e:
+            conn.rollback()
+            result.status = "failed"
+            result.at_vendor_status = "failed"
+            result.error_message = str(e)
+            log.write(f"ERROR: {e}\n")
+
+        # Step 2: Ready for Vendor presence sync (presence table only; optional per tenant flag).
+        try:
+            from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
+            rfv_result = run_presence_scrape_for_org(
+                conn,
+                org_id,
+                portal_status="ready_for_vendor",
+                dry_run=False,
+                mark_missing=False,
+                run_type=run_type,
+                organization_slug=slug,
+                organization_name=org_name,
+                rinse_vendor=vendor,
+                max_pages=env.get("RINSE_MAX_PAGES") or None,
+                log_write=log.write,
+            )
+            result.ready_for_vendor_status = rfv_result.status
+            if rfv_result.status == "failed":
+                result.ready_for_vendor_error = rfv_result.error_message
+            result.detail["ready_for_vendor_sync"] = {
+                "status": rfv_result.status,
+                "skipped_reason": rfv_result.skipped_reason,
+                "error_message": rfv_result.error_message,
+                "stats": rfv_result.stats,
+                "scrape_debug": rfv_result.scrape_debug,
+                "started_at": rfv_result.started_at.isoformat() if rfv_result.started_at else None,
+                "finished_at": rfv_result.finished_at.isoformat() if rfv_result.finished_at else None,
+                "duration_seconds": rfv_result.duration_seconds,
+            }
+        except Exception as rfv_exc:
+            result.ready_for_vendor_status = "failed"
+            result.ready_for_vendor_error = str(rfv_exc)
+            result.detail.setdefault("ready_for_vendor_sync", {})["error_message"] = str(rfv_exc)
+            log.write(f"Ready for Vendor sync ERROR: {rfv_exc}\n")
+
+        result.status = _combine_scheduled_status(
+            result.at_vendor_status or result.status,
+            result.ready_for_vendor_status,
+        )
+        if result.status == "partial_success" and not result.error_message:
+            result.error_message = result.ready_for_vendor_error or "Ready for Vendor sync failed"
 
     finally:
         log.close()
@@ -496,6 +559,8 @@ def run_scheduled_scrape_for_org(
         finally:
             release_scrape_lock(cursor, org_id)
             conn.commit()
+
+    return result
 
 
 def run_all_scheduled_scrapes(
