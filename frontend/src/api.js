@@ -402,6 +402,12 @@ export const uploadRinseScanEventsCsv = (batchId, formData) =>
 export const getRinseBagDetail = (bagId) =>
   axios.get(`${API_BASE}/rinse/bags/${encodeURIComponent(bagId)}/detail`, { timeout: 30000 });
 
+export const getRinseBagScanEvents = (bagId, params = {}) =>
+  axios.get(`${API_BASE}/rinse/bags/${encodeURIComponent(bagId)}/scan-events`, {
+    params,
+    timeout: 30000,
+  });
+
 export const getRinseScheduledScrapeStatus = () =>
   axios.get(`${API_BASE}/rinse/scheduled-scrape/status`, { timeout: 30000 });
 

@@ -511,18 +511,25 @@ def _build_ready_for_vendor_section(pending: Mapping[str, Any]) -> dict[str, Any
 
 
 def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
-    active_rows = [
-        r
-        for r in (pending.get("rows") or [])
-        if isinstance(r, dict)
-        and str(r.get("record_scope") or "") != "incoming"
-        and r.get("in_active_staging")
-    ]
-    hd_rows = [r for r in active_rows if str(r.get("record_scope") or "") == "hd_lifecycle"]
-    wf_rows = [r for r in active_rows if r not in hd_rows]
-    splits = _count_splits_from_rows(wf_rows + hd_rows)
+    active_staging = pending.get("active_staging") or {}
+    staging_rows = [r for r in (active_staging.get("rows") or []) if isinstance(r, dict)]
+    if staging_rows:
+        active_rows = staging_rows
+    else:
+        active_rows = [
+            r
+            for r in (pending.get("rows") or [])
+            if isinstance(r, dict)
+            and str(r.get("record_scope") or "") != "incoming"
+            and r.get("in_active_staging")
+        ]
+    splits = _count_splits_from_rows(active_rows)
+    staging_meta = active_staging.get("meta") or {}
     portal = pending.get("portal_alignment") or {}
-    staging_total = int(portal.get("portal_active_total") or 0)
+    staging_total = int(
+        staging_meta.get("unique_bag_count") or portal.get("portal_active_total") or 0
+    )
+    duplicate_rows = int(staging_meta.get("duplicate_staging_rows") or 0)
     section = {
         "total": int(splits.get("total") or 0),
         "rush_wf": int(splits.get("rush_wf") or 0),
@@ -533,11 +540,18 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
         + int(splits.get("unknown_rush_hd") or 0)
         + int(splits.get("unknown_service") or 0),
         "staging_total": staging_total,
+        "staging_row_count": int(staging_meta.get("staging_row_count") or staging_total),
+        "duplicate_staging_rows": duplicate_rows,
         "source": "At Vendor — active orders_staging (same basis as GET /dashboard)",
         "drilldown_filter": "active_work",
     }
     _finalize_section_counts(section)
-    if staging_total > 0 and int(section.get("total") or 0) != staging_total:
+    if duplicate_rows > 0:
+        section["data_quality_warning"] = (
+            f"orders_staging has {duplicate_rows} duplicate ticket_id row(s); "
+            f"Active Work uses {staging_total} unique bags."
+        )
+    elif staging_total > 0 and int(section.get("total") or 0) != staging_total:
         section["data_quality_warning"] = (
             f"Active Work ({section.get('total')}) does not match orders_staging ({staging_total}). "
             "Run Refresh Both Syncs or check Advanced Debug."
@@ -975,6 +989,7 @@ def _record_from_bag(
             }
             for c in period_credits
         ],
+        "scan_event_count": len(events),
         "drilldown_tags": sorted(tags),
         "checkout_status": row_meta.get("checkout_status"),
         "source": "Scan events" if events else "Portal scrape",
@@ -1224,7 +1239,22 @@ def _build_debug_audit(
         "active_work_reconciliation": {
             "expected_total_from_buckets": expected_bucket_total,
             "api_total": api_total,
-            "staging_total": int((pending.get("portal_alignment") or {}).get("portal_active_total") or 0),
+            "staging_total": int(
+                (pending.get("active_staging") or {}).get("meta", {}).get("unique_bag_count")
+                or (pending.get("portal_alignment") or {}).get("portal_active_total")
+                or 0
+            ),
+            "staging_row_count": int(
+                (pending.get("active_staging") or {}).get("meta", {}).get("staging_row_count") or 0
+            ),
+            "duplicate_staging_rows": int(
+                (pending.get("active_staging") or {}).get("meta", {}).get("duplicate_staging_rows") or 0
+            ),
+            "staging_gap_fill_ids": sorted(
+                str(r.get("bag_id"))
+                for r in (pending.get("rows") or [])
+                if isinstance(r, dict) and r.get("staging_gap_fill")
+            ),
             "counts_add_up": expected_bucket_total == api_total == int(active_work.get("total") or 0),
             "lifecycle_sent_excluded_from_monitor": [
                 str(r.get("bag_id"))
@@ -1354,13 +1384,26 @@ def build_simple_shift_performance_payload(
         for r in (pending.get("rows") or [])
         if isinstance(r, dict) and r.get("bag_id")
     }
-    active_candidates = {
-        bid
-        for bid, row in pending_by_bag.items()
-        if bid not in incoming_rows
-        and row.get("in_active_staging")
-        and str(row.get("record_scope") or "") in ("wf_lifecycle", "hd_lifecycle")
-    }
+    staging_pop_rows = [
+        r
+        for r in ((pending.get("active_staging") or {}).get("rows") or [])
+        if isinstance(r, dict) and r.get("bag_id")
+    ]
+    for row in staging_pop_rows:
+        bid = str(row.get("bag_id") or "").strip().upper()
+        pending_by_bag[bid] = {**(pending_by_bag.get(bid) or {}), **row}
+    if staging_pop_rows:
+        active_candidates = {
+            str(r.get("bag_id") or "").strip().upper() for r in staging_pop_rows
+        }
+    else:
+        active_candidates = {
+            bid
+            for bid, row in pending_by_bag.items()
+            if bid not in incoming_rows
+            and row.get("in_active_staging")
+            and str(row.get("record_scope") or "") in ("wf_lifecycle", "hd_lifecycle")
+        }
     scope_b_ids = _load_bag_ids_with_et_activity(
         cursor, org, period_start=period_start, period_end=period_end
     )

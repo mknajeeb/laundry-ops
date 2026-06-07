@@ -18,9 +18,10 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
-import { getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
+import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
+import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
-import { formatDateTime, formatLaborHours, formatRate } from "../utils/foldingFormat";
+import { formatDateTime, formatFoldingDuration, formatLaborHours, formatRate } from "../utils/foldingFormat";
 import {
   RUSH_FILTERS,
   filterRecords,
@@ -134,6 +135,40 @@ function Section({ title, description, rushFilter, onRushFilterChange, children,
 
 function RecordRow({ row, expanded, onToggle }) {
   const wd = row.weight_difference || {};
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState(null);
+
+  useEffect(() => {
+    if (!expanded) {
+      setDetail(null);
+      setDetailError(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    setDetailError(null);
+    getFoldingPerformanceDetail(row.bag_id)
+      .then((res) => {
+        if (!cancelled) setDetail(res.data);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setDetail(null);
+          setDetailError(e?.response?.data?.error || "Could not load scan events");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, row.bag_id]);
+
+  const perf = detail?.performance;
+  const scanEvents = detail?.scan_events || [];
+
   return (
     <Paper elevation={0} sx={{ p: 1.5, mb: 1, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" onClick={onToggle} sx={{ cursor: "pointer" }}>
@@ -198,6 +233,32 @@ function RecordRow({ row, expanded, onToggle }) {
               {a.role}: {a.employee || "—"} @ {formatDateTime(a.activity_at)}
             </Typography>
           ))}
+          <Box sx={{ mt: 1.5 }}>
+            <Typography variant="caption" fontWeight={700} display="block">
+              Folding / scan timeline
+              {row.scan_event_count != null ? ` (${row.scan_event_count} events)` : ""}
+            </Typography>
+            {detailLoading ? (
+              <Typography variant="caption" color="text.secondary">Loading events…</Typography>
+            ) : detailError ? (
+              <Typography variant="caption" color="error.main">{detailError}</Typography>
+            ) : (
+              <>
+                {perf ? (
+                  <Typography variant="caption" display="block" sx={{ mb: 0.5 }}>
+                    Folder: {perf.assigned_user_name || "—"}
+                    {perf.duration_seconds != null ? ` · ${formatFoldingDuration(perf.duration_seconds)}` : ""}
+                    {perf.status ? ` · ${perf.status}` : ""}
+                  </Typography>
+                ) : detail?.folding_not_computed ? (
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                    Folding not computed yet (bag still in progress or no FOLDING→CLEAN interval).
+                  </Typography>
+                ) : null}
+                <FoldingScanEventsTable events={scanEvents} />
+              </>
+            )}
+          </Box>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
             {row.source}
           </Typography>

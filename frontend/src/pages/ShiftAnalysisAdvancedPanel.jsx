@@ -1035,6 +1035,7 @@ export default function ShiftAnalysisAdvancedPanel({ user, embedded = false }) {
       const res = await getFoldingPerformanceDetail(bagId);
       setDrawerDetail(res.data);
     } catch (e) {
+      setDrawerDetail({ scan_events: [], folding_load_error: e?.response?.data?.error || "Could not load bag detail" });
       setMessage({ type: "error", text: e?.response?.data?.error || "Could not load bag detail" });
     }
   };
@@ -1687,6 +1688,20 @@ export default function ShiftAnalysisAdvancedPanel({ user, embedded = false }) {
           <Typography variant="h6" gutterBottom>Bag {drawerBagId}</Typography>
           {drawerRow?.activity === "lifecycle" ? <LifecycleDetailPanel row={drawerRow} /> : null}
           {drawerRow?.activity === "operational" ? <OperationalDetailPanel row={drawerRow} /> : null}
+          {drawerDetail?.performance ? (
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="body2">Folding status: {drawerDetail.performance.status || "—"}</Typography>
+              <Typography variant="body2">Folder: {drawerDetail.performance.assigned_user_name || "—"}</Typography>
+              <Typography variant="body2">Duration: {formatFoldingDuration(drawerDetail.performance.duration_seconds)}</Typography>
+            </Box>
+          ) : drawerDetail?.folding_not_computed ? (
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              No folding performance row yet — showing scan events only.
+            </Typography>
+          ) : null}
+          {drawerDetail?.folding_load_error ? (
+            <Typography variant="body2" color="error.main" sx={{ mb: 1 }}>{drawerDetail.folding_load_error}</Typography>
+          ) : null}
           {drawerDetail ? <FoldingScanEventsTable events={drawerDetail.scan_events || []} /> : <Typography variant="body2">Loading…</Typography>}
         </Box>
       </Drawer>

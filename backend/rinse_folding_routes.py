@@ -158,11 +158,24 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, require_a
             if not bid:
                 return jsonify({"error": "Invalid bag id"}), 400
             row = get_folding_performance_row(cursor, tenant_oid, bid)
-            if not row:
-                return jsonify({"error": "Performance row not found"}), 404
             from backend.rinse_bag_registry import get_registry_row, list_scan_events_for_bag
 
             registry = get_registry_row(cursor, tenant_oid, bid)
+            scan_events = list_scan_events_for_bag(cursor, tenant_oid, bid)
+            if not row:
+                if not registry and not scan_events:
+                    return jsonify({"error": "Performance row not found"}), 404
+                return jsonify(
+                    json_safe_rinse(
+                        {
+                            "performance": None,
+                            "registry": registry,
+                            "scan_events": scan_events,
+                            "override_history": [],
+                            "folding_not_computed": True,
+                        }
+                    )
+                )
             perf = dict(row)
             if registry:
                 perf["name_clean"] = registry.get("name_clean")
@@ -171,7 +184,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, require_a
                     {
                         "performance": perf,
                         "registry": registry,
-                        "scan_events": list_scan_events_for_bag(cursor, tenant_oid, bid),
+                        "scan_events": scan_events,
                         "override_history": list_folding_performance_overrides(
                             cursor, tenant_oid, bid
                         ),

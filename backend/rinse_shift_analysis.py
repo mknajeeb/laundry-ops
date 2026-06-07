@@ -1119,6 +1119,194 @@ def _build_portal_reconciliation_meta(
     return out
 
 
+def load_active_staging_population_rows(
+    cursor,
+    organization_id: int,
+    *,
+    target_date: date,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Unique WF+HD bags in active orders_staging — Shift Monitor / dashboard population.
+    Rush is derived from staging columns only (registry does not override).
+    """
+    org = int(organization_id)
+    td = target_date
+    rows: list[dict[str, Any]] = []
+    meta = {
+        "staging_row_count": 0,
+        "unique_bag_count": 0,
+        "duplicate_staging_rows": 0,
+        "wf": 0,
+        "hd": 0,
+    }
+
+    if not table_exists(cursor, "orders_staging") or not table_has_column(
+        cursor, "orders_staging", "ticket_id"
+    ):
+        return rows, meta
+
+    active_where = _active_staging_where_sql(cursor)
+    has_org = table_has_column(cursor, "orders_staging", "organization_id")
+    has_rush = table_has_column(cursor, "orders_staging", "rush_type")
+    has_name = table_has_column(cursor, "orders_staging", "name_clean")
+    has_notes = table_has_column(cursor, "orders_staging", "notes")
+    has_date = table_has_column(cursor, "orders_staging", "date_clean")
+    has_weight = table_has_column(cursor, "orders_staging", "weight_num")
+    logistics_expr = _staging_logistics_expr(cursor, "s")
+    rush_s = (
+        effective_rush_expr("s", date_col="date_clean")
+        if has_rush
+        else "CASE WHEN s.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
+    )
+    svc_s = _service_expr("s")
+    org_clause = " AND s.organization_id = %s" if has_org else ""
+    args: list[Any] = [org] if has_org else []
+
+    name_col = "s.name_clean" if has_name else "NULL"
+    notes_col = "s.notes" if has_notes else "NULL"
+    date_col = "s.date_clean" if has_date else "NULL"
+    weight_col = "s.weight_num" if has_weight else "NULL"
+
+    cursor.execute(
+        f"""
+        SELECT
+            s.ticket_id AS bag_id,
+            {svc_s} AS service_type,
+            UPPER({rush_s}) AS staging_rush,
+            {name_col} AS name_clean,
+            {notes_col} AS notes,
+            {date_col} AS date_clean,
+            {weight_col} AS weight_num,
+            {logistics_expr} AS logistics_status
+        FROM orders_staging s
+        WHERE ({active_where}){org_clause}
+          AND s.ticket_id IS NOT NULL AND TRIM(s.ticket_id) != ''
+        ORDER BY s.ticket_id, s.id
+        """,
+        tuple(args),
+    )
+
+    seen: set[str] = set()
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        meta["staging_row_count"] += 1
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        if bid in seen:
+            meta["duplicate_staging_rows"] += 1
+            continue
+        seen.add(bid)
+        svc = str(row.get("service_type") or "WF").upper()
+        if svc not in ("WF", "HD"):
+            svc = "WF"
+        st_rush = str(row.get("staging_rush") or row.get("effective_rush") or "").upper().strip()
+        resolved = resolve_effective_rush_for_row(
+            {
+                **row,
+                "service_type": svc,
+                "effective_rush": st_rush or None,
+                "rush_type": st_rush or None,
+            },
+            td,
+        )
+        record_scope = "hd_lifecycle" if svc == "HD" else "wf_lifecycle"
+        rows.append(
+            {
+                "bag_id": bid,
+                "service_type": svc,
+                "effective_rush": resolved,
+                "staging_rush": st_rush,
+                "name_clean": row.get("name_clean"),
+                "notes": row.get("notes"),
+                "date_clean": row.get("date_clean"),
+                "weight_num": row.get("weight_num"),
+                "logistics_status": row.get("logistics_status"),
+                "in_active_staging": True,
+                "registry_supplement": False,
+                "presence_source": False,
+                "record_scope": record_scope,
+            }
+        )
+        if svc == "HD":
+            meta["hd"] += 1
+        else:
+            meta["wf"] += 1
+
+    meta["unique_bag_count"] = len(rows)
+    return rows, meta
+
+
+def _apply_staging_population_to_drilldown(
+    wf_drilldown: list[dict[str, Any]],
+    hd_drilldown: list[dict[str, Any]],
+    staging_pop: list[dict[str, Any]],
+) -> None:
+    """Align active-staging drilldown with unique staging population (counts + rush)."""
+    staging_by_id = {
+        normalize_bag_id(str(r.get("bag_id") or "")): r
+        for r in staging_pop
+        if r.get("bag_id")
+    }
+    existing_ids: set[str] = set()
+
+    for drow in wf_drilldown + hd_drilldown:
+        bid = str(drow.get("bag_id") or "").strip()
+        if not bid:
+            continue
+        nb = normalize_bag_id(bid)
+        existing_ids.add(nb)
+        if not drow.get("in_active_staging"):
+            continue
+        srow = staging_by_id.get(nb)
+        if not srow:
+            continue
+        group_key, is_rush, rush_label = _rush_group_for_row(srow)
+        drow["effective_rush"] = str(srow.get("effective_rush") or "").upper() or PRESENCE_RUSH_UNKNOWN
+        drow["rush"] = is_rush
+        drow["rush_label"] = rush_label
+        drow["group"] = group_key
+
+    for srow in staging_pop:
+        bid = str(srow.get("bag_id") or "").strip()
+        if not bid:
+            continue
+        nb = normalize_bag_id(bid)
+        if nb in existing_ids:
+            continue
+        svc = str(srow.get("service_type") or "WF").upper()
+        group_key, is_rush, rush_label = _rush_group_for_row(srow)
+        scope = "hd_lifecycle" if svc == "HD" else "wf_lifecycle"
+        gap_row = {
+            "bag_id": bid,
+            "customer": srow.get("name_clean"),
+            "weight_lbs": srow.get("weight_num"),
+            "service_type": svc,
+            "rush": is_rush,
+            "effective_rush": str(srow.get("effective_rush") or "").upper() or PRESENCE_RUSH_UNKNOWN,
+            "rush_label": rush_label,
+            "group": group_key,
+            "record_scope": scope,
+            "current_lifecycle_status": LIFECYCLE_UNKNOWN,
+            "lifecycle_group": LIFECYCLE_GROUP_UNKNOWN,
+            "lifecycle_status_label": LIFECYCLE_STATUS_LABELS.get(LIFECYCLE_UNKNOWN, LIFECYCLE_UNKNOWN),
+            "lifecycle_group_label": LIFECYCLE_GROUP_LABELS.get(LIFECYCLE_GROUP_UNKNOWN, LIFECYCLE_GROUP_UNKNOWN),
+            "needs_review": True,
+            "exception_flags": [],
+            "operational_flags": {},
+            "checkout_status": CHECKOUT_STATUS_NOT_CHECKED_OUT,
+            "in_active_staging": True,
+            "registry_supplement": False,
+            "staging_gap_fill": True,
+        }
+        if scope == "hd_lifecycle":
+            hd_drilldown.append(gap_row)
+        else:
+            wf_drilldown.append(gap_row)
+        existing_ids.add(nb)
+
+
 def _load_pending_bag_rows(
     cursor,
     organization_id: int,
@@ -1194,6 +1382,7 @@ def _load_pending_bag_rows(
             SELECT
                 s.ticket_id AS bag_id,
                 {svc_s} AS service_type,
+                UPPER({rush_s}) AS staging_rush,
                 {rush_final} AS effective_rush,
                 {completed_expr} AS is_completed,
                 {name_expr} AS name_clean,
@@ -1227,7 +1416,13 @@ def _load_pending_bag_rows(
                 wf_not_due_today_staging += 1
             row["in_active_staging"] = True
             row["registry_supplement"] = False
-            row["effective_rush"] = resolve_effective_rush_for_row(row, td)
+            st_rush = str(
+                row.pop("staging_rush", None) or row.get("effective_rush") or ""
+            ).upper().strip()
+            row["effective_rush"] = resolve_effective_rush_for_row(
+                {**row, "effective_rush": st_rush or None, "rush_type": st_rush or None},
+                td,
+            )
             rows.append(row)
 
     if has_reg:
@@ -1539,8 +1734,7 @@ def build_lifecycle_pending_payload(
         lifecycle_status = str(
             lifecycle.get("current_lifecycle_status") or LIFECYCLE_UNKNOWN
         ).strip()
-        if lifecycle_status == ASSIGNED_NOT_SENT_TO_VENDOR:
-            continue
+        excluded_from_lifecycle_groups = lifecycle_status == ASSIGNED_NOT_SENT_TO_VENDOR
         lifecycle_group = lifecycle_group_for_status(lifecycle_status)
         is_completed = lifecycle_status in LIFECYCLE_COMPLETED_STATUSES
         exception_flags = list(lifecycle.get("exception_flags") or [])
@@ -1548,29 +1742,30 @@ def build_lifecycle_pending_payload(
         has_exceptions = len(exception_flags) > 0
         checkout_status = str(lifecycle.get("checkout_status") or CHECKOUT_STATUS_NOT_CHECKED_OUT)
 
-        if group_key == "rush":
-            target = wf_rush
-        elif group_key == "non_rush":
-            target = wf_non_rush
-        else:
-            target = wf_unknown_rush
-        _accumulate_lifecycle_group(
-            target,
-            lifecycle_status=lifecycle_status,
-            lifecycle_group=lifecycle_group,
-            is_completed=is_completed,
-            needs_review=needs_review,
-            has_exceptions=has_exceptions,
-        )
+        if not excluded_from_lifecycle_groups:
+            if group_key == "rush":
+                target = wf_rush
+            elif group_key == "non_rush":
+                target = wf_non_rush
+            else:
+                target = wf_unknown_rush
+            _accumulate_lifecycle_group(
+                target,
+                lifecycle_status=lifecycle_status,
+                lifecycle_group=lifecycle_group,
+                is_completed=is_completed,
+                needs_review=needs_review,
+                has_exceptions=has_exceptions,
+            )
 
-        if is_rush and is_completed and checkout_status == CHECKOUT_STATUS_NOT_CHECKED_OUT:
-            checkout_rush["checkout_pending"] += 1
-        elif is_rush and checkout_status == CHECKOUT_STATUS_CHECKED_OUT:
-            checkout_rush["checked_out"] += 1
-        elif is_rush and checkout_status == CHECKOUT_STATUS_NEEDS_REVIEW:
-            checkout_rush["checkout_needs_review"] += 1
-        elif is_rush and checkout_status == CHECKOUT_STATUS_NOT_RECORDED:
-            checkout_rush["checkout_not_recorded"] += 1
+            if is_rush and is_completed and checkout_status == CHECKOUT_STATUS_NOT_CHECKED_OUT:
+                checkout_rush["checkout_pending"] += 1
+            elif is_rush and checkout_status == CHECKOUT_STATUS_CHECKED_OUT:
+                checkout_rush["checked_out"] += 1
+            elif is_rush and checkout_status == CHECKOUT_STATUS_NEEDS_REVIEW:
+                checkout_rush["checkout_needs_review"] += 1
+            elif is_rush and checkout_status == CHECKOUT_STATUS_NOT_RECORDED:
+                checkout_rush["checkout_not_recorded"] += 1
 
         wf_drilldown.append(
             {
@@ -1695,6 +1890,9 @@ def build_lifecycle_pending_payload(
             hd_combined[k] += int(g.get(k) or 0)
     hd_groups["combined"] = hd_combined
 
+    staging_pop, staging_meta = load_active_staging_population_rows(cursor, org, target_date=td)
+    _apply_staging_population_to_drilldown(wf_drilldown, hd_drilldown, staging_pop)
+
     exceptions_section = _build_exceptions_section(wf_drilldown, hd_drilldown)
     all_drilldown = incoming_rows + wf_drilldown + hd_drilldown
 
@@ -1704,6 +1902,8 @@ def build_lifecycle_pending_payload(
     portal_meta = {
         **portal_meta,
         **hd_meta,
+        **staging_meta,
+        "portal_active_total": staging_meta.get("unique_bag_count", portal_meta.get("portal_active_total")),
         "incoming_total": incoming_meta.get("incoming_total"),
         "incoming_wf": incoming_meta.get("incoming_wf"),
         "incoming_hd": incoming_meta.get("incoming_hd"),
@@ -1776,6 +1976,10 @@ def build_lifecycle_pending_payload(
                 "checked_out": "Rush checked out",
                 "checkout_needs_review": "Checkout needs review",
             },
+        },
+        "active_staging": {
+            "rows": staging_pop,
+            "meta": staging_meta,
         },
         "rows": all_drilldown,
     }

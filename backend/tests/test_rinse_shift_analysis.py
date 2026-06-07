@@ -1015,3 +1015,96 @@ class TestLifecycleSectionSplit:
         ]
         assert len(filter_lifecycle_pending_rows(rows, filter_kind="needs_review")) == 1
         assert len(filter_lifecycle_pending_rows(rows, filter_kind="exceptions")) == 1
+
+
+class TestActiveStagingPopulation:
+    def test_load_active_staging_dedupes_duplicate_ticket_ids(self):
+        from backend.rinse_shift_analysis import load_active_staging_population_rows
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {
+                "bag_id": "DUP1",
+                "service_type": "WF",
+                "staging_rush": "RUSH",
+                "name_clean": "A",
+                "date_clean": date(2026, 6, 6),
+            },
+            {
+                "bag_id": "DUP1",
+                "service_type": "WF",
+                "staging_rush": "RUSH",
+                "name_clean": "A",
+                "date_clean": date(2026, 6, 6),
+            },
+            {
+                "bag_id": "HD1",
+                "service_type": "HD",
+                "staging_rush": "NON-RUSH",
+                "name_clean": "B",
+                "date_clean": date(2026, 6, 8),
+            },
+        ]
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ):
+            rows, meta = load_active_staging_population_rows(cursor, 1, target_date=date(2026, 6, 7))
+
+        assert meta["staging_row_count"] == 3
+        assert meta["duplicate_staging_rows"] == 1
+        assert meta["unique_bag_count"] == 2
+        assert meta["wf"] == 1
+        assert meta["hd"] == 1
+        assert {r["bag_id"] for r in rows} == {"DUP1", "HD1"}
+
+    def test_staging_rush_wins_over_registry_for_active_work(self):
+        cursor = MagicMock()
+        _staging_execute_side_effect(
+            cursor,
+            [
+                {
+                    "bag_id": "REG1",
+                    "service_type": "WF",
+                    "staging_rush": "RUSH",
+                    "effective_rush": "NON-RUSH",
+                    "is_completed": 0,
+                    "name_clean": "Rush Customer",
+                    "date_clean": date(2026, 6, 8),
+                    "logistics_status": "AT_WASHPRO",
+                },
+            ],
+        )
+        with patch("backend.rinse_shift_analysis.table_exists", return_value=True), patch(
+            "backend.rinse_shift_analysis.table_has_column", return_value=True
+        ), patch(
+            "backend.rinse_shift_analysis.get_processing_settings",
+            return_value={"washing_minutes": 30, "drying_minutes": 45, "reject_after_create_issue_minutes": 45},
+        ):
+            out = build_lifecycle_pending_payload(cursor, 1, target_date=date(2026, 6, 7))
+
+        staging = out["active_staging"]["rows"]
+        assert len(staging) == 1
+        assert staging[0]["effective_rush"] == "RUSH"
+        assert out["portal_alignment"]["portal_active_total"] == 1
+        active_rows = [r for r in out["rows"] if r.get("in_active_staging")]
+        assert any(r.get("bag_id") == "REG1" and r.get("effective_rush") == "RUSH" for r in active_rows)
+
+    def test_staging_gap_fill_adds_missing_drilldown_row(self):
+        from backend.rinse_shift_analysis import _apply_staging_population_to_drilldown
+
+        wf_drilldown: list = []
+        hd_drilldown: list = []
+        staging_pop = [
+            {
+                "bag_id": "GAP1",
+                "service_type": "WF",
+                "effective_rush": "NON-RUSH",
+                "name_clean": "Gap Bag",
+                "in_active_staging": True,
+                "record_scope": "wf_lifecycle",
+            }
+        ]
+        _apply_staging_population_to_drilldown(wf_drilldown, hd_drilldown, staging_pop)
+        assert len(wf_drilldown) == 1
+        assert wf_drilldown[0]["bag_id"] == "GAP1"
+        assert wf_drilldown[0]["staging_gap_fill"] is True
