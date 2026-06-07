@@ -413,6 +413,14 @@ def _worker_display_name(c, user_id: int) -> str:
 def ensure_worker_profile(
     conn, organization_id: int, user_id: int, *, sync_category: bool = True
 ) -> dict[str, Any]:
+    from backend.payroll_schedule_planner import ensure_payroll_schedule_v2
+    from backend.payroll_worker_defaults import (
+        ensure_worker_profile_payroll_defaults,
+        is_blank_rate,
+        new_worker_payroll_defaults,
+    )
+
+    ensure_payroll_schedule_v2(conn.cursor())
     seed_schedule_defaults(conn.cursor(), organization_id)
     c = _cursor(conn)
     oid = int(organization_id)
@@ -427,14 +435,24 @@ def ensure_worker_profile(
         from backend.payroll_workflow import resolve_worker_hourly_rate
 
         rate_info = resolve_worker_hourly_rate(conn, uid, oid)
+        defaults = new_worker_payroll_defaults(hourly_rate=rate_info.get("hourly_rate"))
         ins = conn.cursor()
         ins.execute(
             """
             INSERT INTO payroll_worker_profiles
-              (organization_id, user_id, worker_category, default_hourly_rate, active)
-            VALUES (%s,%s,%s,%s,1)
+              (organization_id, user_id, worker_category, default_hourly_rate,
+               default_overtime_rate, max_hours_per_week, overtime_threshold, active)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,1)
             """,
-            (oid, uid, cat, rate_info.get("hourly_rate")),
+            (
+                oid,
+                uid,
+                cat,
+                defaults["default_hourly_rate"],
+                defaults["default_overtime_rate"],
+                defaults["max_hours_per_week"],
+                defaults["overtime_threshold"],
+            ),
         )
         c.execute(
             "SELECT * FROM payroll_worker_profiles WHERE organization_id=%s AND user_id=%s",
@@ -448,13 +466,7 @@ def ensure_worker_profile(
         )
         row["worker_category"] = cat
     row = dict(row or {})
-    row["display_name"] = _worker_display_name(c, uid)
-    row["worker_profile_id"] = row.get("id")
-    row["worker_name"] = row["display_name"]
-    row["worker_category_label"] = {"w2": "W-2", "contractor_1099": "1099", "temp": "Temp"}.get(
-        str(row.get("worker_category")), str(row.get("worker_category"))
-    )
-    if _d(row.get("default_hourly_rate") or 0) <= 0:
+    if is_blank_rate(row.get("default_hourly_rate")):
         from backend.payroll_workflow import resolve_worker_hourly_rate
 
         resolved = resolve_worker_hourly_rate(conn, uid, oid)
@@ -471,11 +483,27 @@ def ensure_worker_profile(
                     """,
                     (resolved["hourly_rate"], int(row["id"]), oid),
                 )
+    if row.get("id"):
+        ensure_worker_profile_payroll_defaults(conn, oid, int(row["id"]))
+        c.execute(
+            "SELECT * FROM payroll_worker_profiles WHERE organization_id=%s AND user_id=%s",
+            (oid, uid),
+        )
+        row = dict(c.fetchone() or row)
+    row["display_name"] = _worker_display_name(c, uid)
+    row["worker_profile_id"] = row.get("id")
+    row["worker_name"] = row["display_name"]
+    row["worker_category_label"] = {"w2": "W-2", "contractor_1099": "1099", "temp": "Temp"}.get(
+        str(row.get("worker_category")), str(row.get("worker_category"))
+    )
     return json_safe(row)
 
 
 def list_workers(conn, organization_id: int, *, active_only: bool = True) -> list[dict[str, Any]]:
+    from backend.payroll_worker_defaults import backfill_payroll_worker_defaults
+
     seed_schedule_defaults(conn.cursor(), organization_id)
+    backfill_payroll_worker_defaults(conn, int(organization_id))
     c = _cursor(conn)
     oid = int(organization_id)
     user_filter = _users_list_filter(c)
@@ -682,6 +710,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
     profile_fields = {}
     for fld in (
         "default_hourly_rate",
+        "default_overtime_rate",
         "max_hours_per_week",
         "overtime_threshold",
         "can_work_rinse",
@@ -702,7 +731,12 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
                 val = 1 if val else 0
             elif fld in ("preferred_shift_id", "preferred_role_id"):
                 val = _nullable_int(val)
-            elif fld in ("default_hourly_rate", "max_hours_per_week", "overtime_threshold"):
+            elif fld in (
+                "default_hourly_rate",
+                "default_overtime_rate",
+                "max_hours_per_week",
+                "overtime_threshold",
+            ):
                 val = _nullable_decimal(val)
             elif fld == "notes" and val == "":
                 val = None
@@ -721,6 +755,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
             "availability",
             "role_skills",
             "default_hourly_rate",
+            "default_overtime_rate",
             "max_hours_per_week",
             "overtime_threshold",
             "can_work_rinse",
@@ -831,6 +866,7 @@ def save_worker_availability(
         "preferred_role_id",
         "notes",
         "default_hourly_rate",
+        "default_overtime_rate",
         "active",
     )
     if any(k in body for k in profile_update_keys):
@@ -843,7 +879,12 @@ def save_worker_availability(
                     val = 1 if val else 0
                 elif fld in ("preferred_shift_id", "preferred_role_id"):
                     val = _nullable_int(val)
-                elif fld in ("default_hourly_rate", "max_hours_per_week", "overtime_threshold"):
+                elif fld in (
+                    "default_hourly_rate",
+                    "default_overtime_rate",
+                    "max_hours_per_week",
+                    "overtime_threshold",
+                ):
                     val = _nullable_decimal(val)
                 elif fld == "notes" and val == "":
                     val = None

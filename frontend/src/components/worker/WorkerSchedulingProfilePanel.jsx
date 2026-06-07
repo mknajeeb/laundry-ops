@@ -31,6 +31,12 @@ import SchedulingReadinessChip from "./SchedulingReadinessChip";
 import WorkerAvailabilityEditor from "./WorkerAvailabilityEditor";
 import WorkerSkillsEditor from "./WorkerSkillsEditor";
 import { emptyAvailabilityWeek, profileCompleteness } from "../../payroll/workerSchedulingProfile";
+import {
+  buildPayrollSetupFormDefaults,
+  formatPayrollMoneyInput,
+  PAYROLL_DEFAULT_OT_RATE,
+  PAYROLL_DEFAULT_REGULAR_RATE,
+} from "../../payroll/payrollWorkerDefaults";
 
 function ProfileSection({ title, hint, children }) {
   return (
@@ -64,10 +70,12 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
       const data = res.data || {};
       setBundle(data);
       const w = data.worker || {};
+      const payrollDefaults = buildPayrollSetupFormDefaults(w);
       setForm({
-        default_hourly_rate: w.default_hourly_rate ?? "",
-        max_hours_per_week: w.max_hours_per_week ?? "",
-        overtime_threshold: w.overtime_threshold ?? "",
+        default_hourly_rate: payrollDefaults.default_hourly_rate,
+        default_overtime_rate: payrollDefaults.default_overtime_rate,
+        max_hours_per_week: payrollDefaults.max_hours_per_week,
+        overtime_threshold: payrollDefaults.overtime_threshold,
         preferred_shift_id: w.preferred_shift_id ?? "",
         preferred_role_id: w.preferred_role_id ?? "",
         can_work_rinse: w.can_work_rinse !== false,
@@ -114,6 +122,7 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
     try {
       const res = await putPayrollWorkerSchedulingProfile(userId, {
         default_hourly_rate: form.default_hourly_rate === "" ? null : Number(form.default_hourly_rate),
+        default_overtime_rate: form.default_overtime_rate === "" ? null : Number(form.default_overtime_rate),
         max_hours_per_week: form.max_hours_per_week === "" ? null : Number(form.max_hours_per_week),
         overtime_threshold: form.overtime_threshold === "" ? null : Number(form.overtime_threshold),
         preferred_shift_id: form.preferred_shift_id || null,
@@ -238,31 +247,64 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
       </ProfileSection>
 
       <ProfileSection title="Payroll setup" hint="Rate and hours limits feed estimated labor cost and overtime warnings in the planner.">
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} flexWrap="wrap" useFlexGap>
           <TextField
             size="small"
-            label="Default hourly rate ($)"
+            label="Regular Rate"
             type="number"
             fullWidth
             disabled={!canEdit}
+            inputProps={{ min: 0, step: 0.01 }}
+            InputProps={{
+              startAdornment: <Typography sx={{ mr: 0.5, color: "text.secondary" }}>$</Typography>,
+            }}
+            helperText={`Default $${formatPayrollMoneyInput(PAYROLL_DEFAULT_REGULAR_RATE)}`}
             value={form.default_hourly_rate}
             onChange={(e) => setForm({ ...form, default_hourly_rate: e.target.value })}
+            onBlur={() =>
+              setForm((f) => ({
+                ...f,
+                default_hourly_rate: f.default_hourly_rate === "" ? "" : formatPayrollMoneyInput(f.default_hourly_rate),
+              }))
+            }
           />
           <TextField
             size="small"
-            label="Max hours / week"
+            label="OT Rate"
             type="number"
             fullWidth
             disabled={!canEdit}
+            inputProps={{ min: 0, step: 0.01 }}
+            InputProps={{
+              startAdornment: <Typography sx={{ mr: 0.5, color: "text.secondary" }}>$</Typography>,
+            }}
+            helperText={`Default $${formatPayrollMoneyInput(PAYROLL_DEFAULT_OT_RATE)}`}
+            value={form.default_overtime_rate}
+            onChange={(e) => setForm({ ...form, default_overtime_rate: e.target.value })}
+            onBlur={() =>
+              setForm((f) => ({
+                ...f,
+                default_overtime_rate: f.default_overtime_rate === "" ? "" : formatPayrollMoneyInput(f.default_overtime_rate),
+              }))
+            }
+          />
+          <TextField
+            size="small"
+            label="Max Regular Hours"
+            type="number"
+            fullWidth
+            disabled={!canEdit}
+            inputProps={{ min: 0, step: 0.5 }}
             value={form.max_hours_per_week}
             onChange={(e) => setForm({ ...form, max_hours_per_week: e.target.value })}
           />
           <TextField
             size="small"
-            label="OT threshold (hrs)"
+            label="OT Threshold"
             type="number"
             fullWidth
             disabled={!canEdit}
+            inputProps={{ min: 0, step: 0.5 }}
             helperText={`Org default: ${settings.overtime_threshold_hours ?? 40}h`}
             value={form.overtime_threshold}
             onChange={(e) => setForm({ ...form, overtime_threshold: e.target.value })}

@@ -120,6 +120,7 @@ def ensure_payroll_schedule_v2(cursor) -> None:
         ("payroll_schedule_entries", "role_snapshot", "VARCHAR(64) NULL"),
         ("payroll_schedule_entries", "work_stream_snapshot", "VARCHAR(64) NULL"),
         ("payroll_schedule_entries", "shift_snapshot", "VARCHAR(64) NULL"),
+        ("payroll_worker_profiles", "default_overtime_rate", "DECIMAL(10,2) NULL"),
     ]
     for table, col, ddl in cols:
         if table_exists(c, table) and not table_has_column(c, table, col):
