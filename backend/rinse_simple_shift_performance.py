@@ -197,12 +197,19 @@ def _load_rinse_user_maps(cursor, organization_id: int) -> dict[str, dict[str, A
     if not table_exists(cursor, "rinse_folding_user_map"):
         return {}
     org = int(organization_id)
-    active_clause = " AND active = 1" if table_has_column(cursor, "rinse_folding_user_map", "active") else ""
+    active_clause = " AND m.active = 1" if table_has_column(cursor, "rinse_folding_user_map", "active") else ""
+    if table_has_column(cursor, "users", "display_name"):
+        display_expr = "u.display_name AS display_name"
+    elif table_has_column(cursor, "users", "username"):
+        display_expr = "u.username AS display_name"
+    else:
+        display_expr = "NULL AS display_name"
     cursor.execute(
         f"""
-        SELECT rinse_user_name, user_id, display_name
-        FROM rinse_folding_user_map
-        WHERE organization_id = %s{active_clause}
+        SELECT m.rinse_user_name, m.user_id, {display_expr}
+        FROM rinse_folding_user_map m
+        LEFT JOIN users u ON u.id = m.user_id
+        WHERE m.organization_id = %s{active_clause}
         """,
         (org,),
     )
