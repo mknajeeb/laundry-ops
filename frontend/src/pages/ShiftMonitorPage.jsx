@@ -469,11 +469,13 @@ export default function ShiftMonitorPage({ user }) {
 
           <Section
             title="Current Active Work"
-            description="At Vendor — bags currently in facility production"
+            description="At Vendor — active orders_staging (same basis as Operations Dashboard)"
             rushFilter={rushFilter}
             onRushFilterChange={setRushFilter}
             alert={
-              avSyncStale ? (
+              active.data_quality_warning ? (
+                <Alert severity="error" sx={{ mb: 1.5 }}>{active.data_quality_warning}</Alert>
+              ) : avSyncStale ? (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>{avSyncSub}</Alert>
               ) : active.unreconciled > 0 ? (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>

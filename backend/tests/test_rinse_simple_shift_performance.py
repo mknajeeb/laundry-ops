@@ -731,6 +731,62 @@ class TestActiveWorkCountLogic:
     @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
     @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
     @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_lifecycle_sent_staging_row_still_counts_in_active_work(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_pending.return_value = {
+            "rows": [
+                {
+                    "bag_id": "SENT1",
+                    "record_scope": "wf_lifecycle",
+                    "service_type": "WF",
+                    "effective_rush": "RUSH",
+                    "current_lifecycle_status": "SENT_TO_RINSE",
+                    "in_active_staging": True,
+                },
+                {
+                    "bag_id": "ACT1",
+                    "record_scope": "wf_lifecycle",
+                    "service_type": "WF",
+                    "effective_rush": "NON-RUSH",
+                    "current_lifecycle_status": "IN_WASHING",
+                    "in_active_staging": True,
+                },
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "portal_alignment": {"portal_active_total": 2},
+            "wf_lifecycle": {"groups": {"combined": {"total": 2, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {}},
+        }
+        cursor = MagicMock()
+        payload = build_simple_shift_performance_payload(
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+        )
+        assert payload["current_active_work"]["total"] == 2
+        assert _count_tag(payload["records"], "active_work") == 2
+        assert _count_tag(payload["records"], "active_rush_wf") == 1
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
     def test_rush_hd_stays_rush_in_active_work(
         self,
         mock_settings,

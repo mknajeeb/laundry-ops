@@ -109,20 +109,13 @@ def _qualifies_for_active_work(
     pending_row: Mapping[str, Any] | None,
     completion: Any,
 ) -> bool:
-    """Current at-vendor active work: active orders_staging only (portal population)."""
+    """Match GET /dashboard: every active orders_staging row (WF + HD), regardless of lifecycle."""
     if not pending_row or not isinstance(pending_row, dict):
         return False
     scope = str(pending_row.get("record_scope") or "")
     if scope == "incoming" or scope not in ("wf_lifecycle", "hd_lifecycle"):
         return False
-    if not pending_row.get("in_active_staging"):
-        return False
-    status = str(pending_row.get("current_lifecycle_status") or "")
-    if status == SENT_TO_RINSE:
-        return False
-    if _logistics_sent(pending_row):
-        return False
-    return True
+    return bool(pending_row.get("in_active_staging"))
 
 
 def _qualifies_yet_to_fold(
@@ -524,12 +517,12 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(r, dict)
         and str(r.get("record_scope") or "") != "incoming"
         and r.get("in_active_staging")
-        and str(r.get("current_lifecycle_status") or "") != SENT_TO_RINSE
-        and not _logistics_sent(r)
     ]
     hd_rows = [r for r in active_rows if str(r.get("record_scope") or "") == "hd_lifecycle"]
     wf_rows = [r for r in active_rows if r not in hd_rows]
     splits = _count_splits_from_rows(wf_rows + hd_rows)
+    portal = pending.get("portal_alignment") or {}
+    staging_total = int(portal.get("portal_active_total") or 0)
     section = {
         "total": int(splits.get("total") or 0),
         "rush_wf": int(splits.get("rush_wf") or 0),
@@ -539,10 +532,16 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
         "unknown_needs_review": int(splits.get("unknown_rush_wf") or 0)
         + int(splits.get("unknown_rush_hd") or 0)
         + int(splits.get("unknown_service") or 0),
-        "source": "At Vendor — current facility work",
+        "staging_total": staging_total,
+        "source": "At Vendor — active orders_staging (same basis as GET /dashboard)",
         "drilldown_filter": "active_work",
     }
     _finalize_section_counts(section)
+    if staging_total > 0 and int(section.get("total") or 0) != staging_total:
+        section["data_quality_warning"] = (
+            f"Active Work ({section.get('total')}) does not match orders_staging ({staging_total}). "
+            "Run Refresh Both Syncs or check Advanced Debug."
+        )
     return section
 
 
@@ -1225,7 +1224,15 @@ def _build_debug_audit(
         "active_work_reconciliation": {
             "expected_total_from_buckets": expected_bucket_total,
             "api_total": api_total,
+            "staging_total": int((pending.get("portal_alignment") or {}).get("portal_active_total") or 0),
             "counts_add_up": expected_bucket_total == api_total == int(active_work.get("total") or 0),
+            "lifecycle_sent_excluded_from_monitor": [
+                str(r.get("bag_id"))
+                for r in (pending.get("rows") or [])
+                if isinstance(r, dict)
+                and r.get("in_active_staging")
+                and str(r.get("current_lifecycle_status") or "") == SENT_TO_RINSE
+            ],
             **bucket_ids,
             "duplicate_ids": bucket_audit["duplicate_ids"],
             "excluded_ids": bucket_audit["excluded_ids"],
