@@ -71,7 +71,6 @@ def test_profile_completeness_score():
         "can_work_rinse": True,
         "availability": [{"day_of_week": 0, "unavailable_flag": 0}],
         "preferred_shift_id": 1,
-        "geofence_ids": [1],
         "performance_preview": {"available": True},
     }
     out = profile_completeness(worker)
@@ -96,6 +95,28 @@ def test_scheduling_readiness_ready():
     badge = scheduling_readiness_badge(worker)
     assert badge["ready"] is True
     assert badge["label"] == "Ready for Scheduling"
+
+
+def test_nullable_int_coerces_empty_string():
+    from backend.payroll_schedule import _nullable_int
+
+    assert _nullable_int("") is None
+    assert _nullable_int(None) is None
+    assert _nullable_int(5) == 5
+    assert _nullable_int("3") == 3
+
+
+def test_users_list_filter_without_users_active_column():
+    from unittest.mock import MagicMock
+
+    from backend.payroll_schedule import _users_list_filter
+
+    c = MagicMock()
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "backend.payroll_schedule.table_has_column",
+        side_effect=lambda _c, table, col: not (table == "users" and col == "active"),
+    ):
+        assert _users_list_filter(c) == "pp.user_id IS NOT NULL"
 
 
 def test_apply_profile_to_entry_uses_profile_rate():

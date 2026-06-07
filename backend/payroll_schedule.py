@@ -157,6 +157,21 @@ def seed_schedule_defaults(cursor, organization_id: int) -> None:
             )
 
 
+def _nullable_int(val: Any) -> Optional[int]:
+    if val is None or val == "":
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nullable_decimal(val: Any) -> Optional[Any]:
+    if val is None or val == "":
+        return None
+    return val
+
+
 def _parse_time(val: Any) -> Optional[time]:
     if val is None:
         return None
@@ -685,6 +700,12 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
         for fld, val in profile_fields.items():
             if fld.startswith("can_work_") or fld == "active":
                 val = 1 if val else 0
+            elif fld in ("preferred_shift_id", "preferred_role_id"):
+                val = _nullable_int(val)
+            elif fld in ("default_hourly_rate", "max_hours_per_week", "overtime_threshold"):
+                val = _nullable_decimal(val)
+            elif fld == "notes" and val == "":
+                val = None
             sets.append(f"{fld}=%s")
             params.append(val)
         params.extend([wpid, oid])
@@ -820,6 +841,12 @@ def save_worker_availability(
                 val = body[fld]
                 if fld.startswith("can_work_") or fld == "active":
                     val = 1 if val else 0
+                elif fld in ("preferred_shift_id", "preferred_role_id"):
+                    val = _nullable_int(val)
+                elif fld in ("default_hourly_rate", "max_hours_per_week", "overtime_threshold"):
+                    val = _nullable_decimal(val)
+                elif fld == "notes" and val == "":
+                    val = None
                 sets.append(f"{fld}=%s")
                 params.append(val)
         if sets:
@@ -848,11 +875,11 @@ def save_worker_availability(
             (
                 wpid,
                 dow,
-                row.get("available_from"),
-                row.get("available_to"),
-                row.get("preferred_shift_id"),
+                row.get("available_from") or None,
+                row.get("available_to") or None,
+                _nullable_int(row.get("preferred_shift_id")),
                 1 if row.get("unavailable_flag") else 0,
-                row.get("notes"),
+                row.get("notes") or None,
             ),
         )
     for skill in body.get("role_skills") or []:
@@ -870,7 +897,7 @@ def save_worker_availability(
             (
                 wpid,
                 int(skill["role_id"]),
-                skill.get("work_stream_id"),
+                _nullable_int(skill.get("work_stream_id")),
                 int(skill.get("skill_level") or 1),
                 1 if skill.get("active", True) else 0,
             ),
