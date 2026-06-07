@@ -19,6 +19,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import { SCHEDULE_THEME } from "../payroll/scheduleTheme";
+import { formatDateShortLabel, formatWeekRangeLabel } from "../utils/businessTime";
 
 function money(n) {
   return `$${Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
@@ -74,8 +75,11 @@ export default function PayrollFundingForecastPanel({ forecast, compact }) {
               {f.card_title || "Payroll funding forecast"}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Work week {f.work_week_start} – {f.work_week_end}
-              {f.payment_date ? ` · Pay ${f.payment_date}` : ""}
+              Work week{" "}
+              {f.work_week_start && f.work_week_end
+                ? formatWeekRangeLabel(f.work_week_start, f.work_week_end)
+                : `${f.work_week_start || ""} – ${f.work_week_end || ""}`}
+              {f.payment_date ? ` · Pay ${formatDateShortLabel(f.payment_date)}` : ""}
             </Typography>
           </Box>
           <IconButton size="small" onClick={() => setExpanded((v) => !v)} aria-label="Toggle forecast">

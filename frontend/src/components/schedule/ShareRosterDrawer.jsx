@@ -24,10 +24,8 @@ import {
 } from "../../api";
 
 import ScheduleEmptyState from "./ScheduleEmptyState";
-
-function localDateYmd(d = new Date()) {
-  return d.toISOString().slice(0, 10);
-}
+import PlanningDateRangePicker from "../datetime/PlanningDateRangePicker";
+import { businessTodayYmd } from "../../utils/businessTime";
 
 export default function ShareRosterDrawer({ open, onClose, defaultStart, defaultEnd, publishedCount = 0, settings }) {
   const [links, setLinks] = useState([]);
@@ -35,8 +33,8 @@ export default function ShareRosterDrawer({ open, onClose, defaultStart, default
   const [copied, setCopied] = useState("");
   const [form, setForm] = useState({
     title: "Partner Roster",
-    date_start: defaultStart || localDateYmd(),
-    date_end: defaultEnd || localDateYmd(),
+    date_start: defaultStart || businessTodayYmd(),
+    date_end: defaultEnd || businessTodayYmd(),
     published_only: true,
     show_phone: false,
     show_worker_category: false,
@@ -138,26 +136,18 @@ export default function ShareRosterDrawer({ open, onClose, defaultStart, default
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
           />
-          <Stack direction="row" spacing={1}>
-            <TextField
-              label="From"
-              type="date"
-              size="small"
-              fullWidth
-              InputLabelProps={{ shrink: true }}
-              value={form.date_start}
-              onChange={(e) => setForm({ ...form, date_start: e.target.value })}
-            />
-            <TextField
-              label="To"
-              type="date"
-              size="small"
-              fullWidth
-              InputLabelProps={{ shrink: true }}
-              value={form.date_end}
-              onChange={(e) => setForm({ ...form, date_end: e.target.value })}
-            />
-          </Stack>
+          <PlanningDateRangePicker
+            start={form.date_start}
+            end={form.date_end}
+            weekStartsOn={settings?.week_starts_on ?? 0}
+            onChange={({ start, end }) =>
+              setForm((prev) => ({
+                ...prev,
+                ...(start != null ? { date_start: start } : {}),
+                ...(end != null ? { date_end: end } : {}),
+              }))
+            }
+          />
           <TextField
             label="Optional PIN"
             type="password"

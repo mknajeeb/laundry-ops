@@ -979,16 +979,27 @@ def _build_portal_reconciliation_meta(
         bid = str(row.get("ticket_id") or "").strip().upper()
         if not bid or bid in lifecycle_ids:
             continue
-        cursor.execute(
-            """
-            SELECT status, logistics_status
-            FROM orders_staging
-            WHERE organization_id = %s AND ticket_id = %s
-            LIMIT 1
-            """,
-            (org, bid),
-        )
-        staging = cursor.fetchone() if table_exists(cursor, "orders_staging") else None
+        staging = None
+        if table_exists(cursor, "orders_staging"):
+            staging_cols: list[str] = []
+            if table_has_column(cursor, "orders_staging", "status"):
+                staging_cols.append("status")
+            if table_has_column(cursor, "orders_staging", "logistics_status"):
+                staging_cols.append("logistics_status")
+            else:
+                staging_cols.append(
+                    f"{_staging_logistics_expr(cursor, 'orders_staging')} AS logistics_status"
+                )
+            cursor.execute(
+                f"""
+                SELECT {", ".join(staging_cols)}
+                FROM orders_staging
+                WHERE organization_id = %s AND ticket_id = %s
+                LIMIT 1
+                """,
+                (org, bid),
+            )
+            staging = cursor.fetchone()
         staging_present = isinstance(staging, dict)
         active_staging = False
         if staging_present:

@@ -132,13 +132,39 @@ def has_checkout_log_for_staging(cursor, organization_id: int, staging_id: int) 
 
 
 def ticket_has_checkout_log(cursor, organization_id: int, ticket_id: str) -> bool:
-    """Explicit checkout action recorded for this bag (via staging order_id)."""
-    from backend.ta_helpers import table_has_column
+    """True when any staging row for this bag has an explicit checkout_log entry."""
+    from backend.ta_helpers import table_exists, table_has_column
 
-    staging = _latest_staging_for_ticket(cursor, organization_id, ticket_id)
-    if not staging or staging.get("id") is None:
+    tid = normalize_bag_id(ticket_id)
+    if not tid or not table_exists(cursor, "checkout_log"):
         return False
-    return has_checkout_log_for_staging(cursor, organization_id, int(staging["id"]))
+    if not table_has_column(cursor, "orders_staging", "ticket_id"):
+        return False
+
+    org = int(organization_id)
+    if table_has_column(cursor, "orders_staging", "organization_id"):
+        cursor.execute(
+            """
+            SELECT 1 AS ok
+            FROM checkout_log cl
+            INNER JOIN orders_staging os ON os.id = cl.order_id
+            WHERE os.ticket_id = %s AND os.organization_id = %s
+            LIMIT 1
+            """,
+            (tid, org),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT 1 AS ok
+            FROM checkout_log cl
+            INNER JOIN orders_staging os ON os.id = cl.order_id
+            WHERE os.ticket_id = %s
+            LIMIT 1
+            """,
+            (tid,),
+        )
+    return bool(cursor.fetchone())
 
 
 def ticket_true_sent_out_for_checkout(
@@ -419,6 +445,72 @@ def reclassify_checkout_batch_upload_rows(
         "dry_run": dry_run,
         "is_auto_scrape": is_auto,
     }
+
+
+def repair_spurious_active_staging_after_checkout(
+    cursor,
+    organization_id: int,
+    *,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """
+    Close duplicate AT_WASHPRO/PENDING staging rows when the same bag_id already has checkout_log.
+
+    Scheduled scrapes can insert a fresh staging row after checkout; checkout_log is keyed by
+    staging order_id, so the new row bypasses sent-out detection until repaired.
+    """
+    from backend.ta_helpers import table_exists, table_has_column
+
+    org = int(organization_id)
+    if not table_exists(cursor, "checkout_log") or not table_has_column(
+        cursor, "orders_staging", "ticket_id"
+    ):
+        return {"closed": 0, "dry_run": dry_run}
+
+    has_org = table_has_column(cursor, "orders_staging", "organization_id")
+    org_where = " AND os.organization_id = %s" if has_org else ""
+    org_join = " AND os2.organization_id = os.organization_id" if has_org else ""
+    args: list[int] = [org] if has_org else []
+
+    cursor.execute(
+        f"""
+        SELECT os.id, os.ticket_id
+        FROM orders_staging os
+        WHERE os.ticket_id IS NOT NULL AND TRIM(os.ticket_id) != ''
+          AND COALESCE(os.logistics_status, 'AT_WASHPRO') = 'AT_WASHPRO'
+          AND COALESCE(os.status, 'PENDING') NOT IN ('CHECKED_OUT', 'FORCED_CHECKOUT')
+          {org_where}
+          AND EXISTS (
+            SELECT 1
+            FROM checkout_log cl
+            INNER JOIN orders_staging os2 ON os2.id = cl.order_id
+            WHERE os2.ticket_id = os.ticket_id{org_join}
+          )
+        """,
+        tuple(args),
+    )
+    rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    closed = 0
+    for row in rows:
+        closed += 1
+        if dry_run:
+            continue
+        sid = int(row["id"])
+        set_parts = []
+        if table_has_column(cursor, "orders_staging", "logistics_status"):
+            set_parts.append("logistics_status = 'SENT_TO_RINSE'")
+        if table_has_column(cursor, "orders_staging", "status"):
+            set_parts.append("status = 'CHECKED_OUT'")
+        if not set_parts:
+            continue
+        sql = f"UPDATE orders_staging SET {', '.join(set_parts)} WHERE id = %s"
+        upd_args: list[int] = [sid]
+        if has_org:
+            sql += " AND organization_id = %s"
+            upd_args.append(org)
+        cursor.execute(sql, tuple(upd_args))
+
+    return {"closed": closed, "dry_run": dry_run}
 
 
 reclassify_manual_batch_upload_rows = reclassify_checkout_batch_upload_rows

@@ -16,6 +16,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 
+from backend.business_time import business_today
 from etl.transform_orders import (
     classify_service,
     detect_rush_hint,
@@ -42,7 +43,7 @@ def _cell(row: pd.Series, key: str):
     return s if s else None
 
 
-def _parse_portal_date(val: str | None):
+def parse_portal_date(val: str | None) -> date | None:
     """Portal Date column is often 'Tue 4/14' or 'Tue 04/14/2026'; may include 'TODAY' from Rinse."""
     if val is None:
         return None
@@ -51,12 +52,14 @@ def _parse_portal_date(val: str | None):
         return None
 
     if re.fullmatch(r"today", t, flags=re.I):
-        return date.today()
+        return business_today()
 
     t_parse = re.sub(r"\btoday\b", " ", t, flags=re.I)
     t_parse = re.sub(r"\s+", " ", t_parse).strip()
     if not t_parse:
-        return date.today()
+        return business_today()
+    if re.fullmatch(r"(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*", t_parse, re.I):
+        return business_today()
 
     d = extract_date_from_text(t_parse) or extract_date_from_text(t)
     if d is not None:
@@ -73,7 +76,7 @@ def _parse_portal_date(val: str | None):
         if yraw:
             y = int(yraw) if len(yraw) > 2 else 2000 + int(yraw)
         else:
-            y = date.today().year
+            y = business_today().year
         try:
             return date(y, month, day)
         except ValueError:
@@ -86,6 +89,9 @@ def _parse_portal_date(val: str | None):
     if pd.notna(ts):
         return ts.date()
     return None
+
+
+_parse_portal_date = parse_portal_date
 
 
 def parse_rush_flag_from_portal_cells(cells: Sequence[Any]) -> str | None:
@@ -133,7 +139,7 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
         ticket_id = _ticket_id_from_bag(bag)
         if not cust:
             continue
-        d = _parse_portal_date(date_raw)
+        d = parse_portal_date(date_raw)
         if d is None:
             continue
         cells = [

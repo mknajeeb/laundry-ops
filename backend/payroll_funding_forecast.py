@@ -61,9 +61,9 @@ def _default_calendar_row(organization_id: int, worker_category: str, org_settin
 
 
 def get_calendar_settings(conn, organization_id: int) -> dict[str, Any]:
-    seed_schedule_defaults(conn.cursor())
-    ensure_payroll_calendar_settings(conn.cursor())
     oid = int(organization_id)
+    seed_schedule_defaults(conn.cursor(), oid)
+    ensure_payroll_calendar_settings(conn.cursor())
     org_settings = get_org_schedule_settings(conn, oid)
     c = _cursor(conn)
     c.execute(

@@ -46,7 +46,7 @@ import {
   uploadRinseScanEventsCsv,
 } from "../api";
 import StagingOrderManagementTable from "../components/StagingOrderManagementTable";
-import { formatSystemDateTime } from "../utils/rinseTimeFormat";
+import { formatBusinessDateTime, hasExplicitTzOffset } from "../utils/rinseTimeFormat";
 import { useAuth } from "../context/AuthContext";
 import { formatCalendarDateLabel, toDateInputValue } from "../utils/datetimeFormat";
 import { easternTzLabel, getTodayYmdEastern } from "../utils/estWallClock";
@@ -134,18 +134,11 @@ function UploadPage({ user }) {
   const formatBatchCreatedLabel = (row) => {
     if (!row) return "No time";
     const et = row.batch_created_at || row.created_at;
-    const formatted = formatSystemDateTime(et);
+    const formatted = formatBusinessDateTime(et);
     if (formatted !== "—") return formatted;
     const dtSource = row.created_at || row.updated_at;
-    const dt = dtSource ? new Date(dtSource) : null;
-    if (dt && !Number.isNaN(dt.getTime())) {
-      return dt.toLocaleString(undefined, {
-        timeZone: "America/New_York",
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
+    if (dtSource && hasExplicitTzOffset(String(dtSource))) {
+      return formatBusinessDateTime(dtSource);
     }
     return "No time";
   };
@@ -160,7 +153,7 @@ function UploadPage({ user }) {
     const scrape = row?.scheduled_scrape;
     if (scrape?.timing_summary) return scrape.timing_summary;
     if (row?.batch_confirmed_at) {
-      return `Confirmed ${formatSystemDateTime(row.batch_confirmed_at)}`;
+      return `Confirmed ${formatBusinessDateTime(row.batch_confirmed_at)}`;
     }
     return null;
   };

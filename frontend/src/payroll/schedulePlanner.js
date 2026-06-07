@@ -4,6 +4,15 @@
  */
 
 import { entryProfileStaleWarning } from "./workerSchedulingProfile";
+import {
+  addDaysYmd,
+  weekStartFromDate,
+  weekEndFromStart,
+  businessTodayYmd,
+  dayOfWeekMon0,
+} from "../utils/businessTime";
+
+export { addDaysYmd, weekStartFromDate, weekEndFromStart, businessTodayYmd, dayOfWeekMon0 };
 
 export function parseTimeToMinutes(t) {
   if (!t) return null;
@@ -20,21 +29,6 @@ export function computeScheduledHours(startTime, endTime, breakMinutes = 0) {
   let mins = et - st;
   if (mins <= 0) mins += 24 * 60;
   return Math.max(0, (mins - Number(breakMinutes || 0)) / 60);
-}
-
-export function addDaysYmd(ymd, n) {
-  const d = new Date(`${ymd}T12:00:00`);
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-export function weekStartFromDate(ymd, weekStartsOn = 0) {
-  const d = new Date(`${ymd}T12:00:00`);
-  const dow = d.getDay();
-  const monBased = dow === 0 ? 6 : dow - 1;
-  const delta = (monBased - weekStartsOn + 7) % 7;
-  d.setDate(d.getDate() - delta);
-  return d.toISOString().slice(0, 10);
 }
 
 export function enrichEntry(entry, settings) {
@@ -128,11 +122,6 @@ export function eligibleStreamsForWorker(worker, settings, roleId) {
   return streams.filter((s) => streamIds.has(String(s.id)));
 }
 
-function dayOfWeekMon0(ymd) {
-  const dow = new Date(`${ymd}T12:00:00`).getDay();
-  return dow === 0 ? 6 : dow - 1;
-}
-
 export function checkEntryProfileWarnings(entry, worker, settings) {
   if (!worker) return [];
   const warnings = [];
@@ -174,11 +163,6 @@ export function checkEntryProfileWarnings(entry, worker, settings) {
   }
   if (entry.shift_id && worker.preferred_shift_id && String(entry.shift_id) !== String(worker.preferred_shift_id)) {
     warnings.push("Shift differs from worker preferred shift");
-  }
-  if (entry.geofence_id && (worker.geofence_ids || []).length) {
-    if (!worker.geofence_ids.map(String).includes(String(entry.geofence_id))) {
-      warnings.push("Location not assigned to worker profile");
-    }
   }
   const stream = (settings?.work_streams || []).find((s) => String(s.id) === String(entry.work_stream_id));
   const sn = String(stream?.name || "").toLowerCase();

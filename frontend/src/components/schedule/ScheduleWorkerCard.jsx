@@ -108,7 +108,7 @@ export default function ScheduleWorkerCard({ entry, weekStats, onEdit, onRemove,
           <IconButton size="small" aria-label="Edit" onClick={() => onEdit(entry)}>
             <EditOutlinedIcon fontSize="small" />
           </IconButton>
-          <IconButton size="small" aria-label="Replace" onClick={() => onReplace(entry)}>
+          <IconButton size="small" aria-label="Find replacement" title="Find replacement" onClick={() => onReplace(entry)}>
             <SwapHorizOutlinedIcon fontSize="small" />
           </IconButton>
           <IconButton size="small" aria-label="Mark absent" onClick={() => onAbsent(entry)}>

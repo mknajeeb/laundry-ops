@@ -35,6 +35,8 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SaveIcon from "@mui/icons-material/Save";
 import { useAuth } from "../context/AuthContext";
+import PlanningTimePicker from "./datetime/PlanningTimePicker";
+import BagVolumeForecastSettingsTab from "./PayrollPlanningSettings/BagVolumeForecastSettingsTab";
 import {
   getPayrollCalendarSettings,
   getPayrollPlanningMaintenance,
@@ -228,9 +230,21 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
     }
   };
 
+  const [showInactiveShifts, setShowInactiveShifts] = useState(false);
+  const [showInactiveStreams, setShowInactiveStreams] = useState(false);
+  const [showInactiveRoles, setShowInactiveRoles] = useState(false);
+
   const shiftRows = settings?.shifts || [];
   const streamRows = settings?.work_streams || [];
   const roleRows = settings?.roles || [];
+
+  const deactivateLookupRow = async (key, row) => {
+    if (!row?.id) return;
+    const listKey = key === "shifts" ? "shifts" : key === "streams" ? "work_streams" : "roles";
+    const rows = key === "shifts" ? shiftRows : key === "streams" ? streamRows : roleRows;
+    const list = rows.map((r) => (r.id === row.id ? { ...r, active: false } : r));
+    await saveSettings({ [listKey]: list });
+  };
 
   const updateCalendarCat = (key, field, value) => {
     setCalendar((prev) => ({
@@ -280,7 +294,7 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
       ) : null}
 
       <Tabs value={tab} onChange={(_, v) => setTab(v)} variant="scrollable" scrollButtons="auto" sx={{ mb: 2 }}>
-        {["Shifts", "Work streams", "Roles", "Coverage", "Payroll calendar", "Scheduling rules", "Forecast", "Machines"].map(
+        {["Shifts", "Work streams", "Roles", "Coverage", "Payroll calendar", "Scheduling rules", "Bag volume forecast", "Machines"].map(
           (label, i) => (
             <Tab key={label} label={label} value={i} />
           ),
@@ -294,12 +308,24 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
           {tab === 0 ? (
             <Card variant="outlined">
               <CardContent>
-                <Stack direction="row" justifyContent="space-between" sx={{ mb: 2 }}>
-                  <Typography fontWeight={700}>Shifts</Typography>
+                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1 }}>
+                  <Box>
+                    <Typography fontWeight={700}>Shifts</Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ maxWidth: 520, mt: 0.5 }}>
+                      First visit may add starter shifts (Morning, Afternoon, etc.). There is no hard delete — use Deactivate to hide a shift from scheduling. Edit → Active off does the same.
+                    </Typography>
+                  </Box>
                   <Button size="small" startIcon={<AddIcon />} onClick={() => setEditShift(emptyShift())}>
                     Add shift
                   </Button>
                 </Stack>
+                <FormControlLabel
+                  sx={{ mb: 1 }}
+                  control={
+                    <Switch size="small" checked={showInactiveShifts} onChange={(e) => setShowInactiveShifts(e.target.checked)} />
+                  }
+                  label="Show inactive shifts"
+                />
                 <Table size="small">
                   <TableHead>
                     <TableRow>
@@ -308,21 +334,34 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
                       <TableCell>End</TableCell>
                       <TableCell>Order</TableCell>
                       <TableCell>Active</TableCell>
-                      <TableCell align="right">Edit</TableCell>
+                      <TableCell align="right">Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {shiftRows.map((row) => (
-                      <TableRow key={row.id || row.name}>
+                    {shiftRows
+                      .filter((row) => showInactiveShifts || row.active !== false && row.active !== 0)
+                      .map((row) => (
+                      <TableRow key={row.id || row.name} sx={{ opacity: row.active === false || row.active === 0 ? 0.55 : 1 }}>
                         <TableCell>{row.name}</TableCell>
                         <TableCell>{timeInput(row.start_time_default)}</TableCell>
                         <TableCell>{timeInput(row.end_time_default)}</TableCell>
                         <TableCell>{row.sort_order}</TableCell>
-                        <TableCell>{row.active ? "Yes" : "No"}</TableCell>
+                        <TableCell>{row.active !== false && row.active !== 0 ? "Yes" : "No"}</TableCell>
                         <TableCell align="right">
-                          <IconButton size="small" onClick={() => setEditShift({ ...row })}>
+                          <IconButton size="small" aria-label="Edit shift" onClick={() => setEditShift({ ...row })}>
                             <EditOutlinedIcon fontSize="small" />
                           </IconButton>
+                          {row.active !== false && row.active !== 0 ? (
+                            <IconButton
+                              size="small"
+                              color="error"
+                              aria-label="Deactivate shift"
+                              disabled={saving}
+                              onClick={() => deactivateLookupRow("shifts", row)}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -335,31 +374,56 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
           {tab === 1 ? (
             <Card variant="outlined">
               <CardContent>
-                <Stack direction="row" justifyContent="space-between" sx={{ mb: 2 }}>
-                  <Typography fontWeight={700}>Work streams</Typography>
+                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1 }}>
+                  <Box>
+                    <Typography fontWeight={700}>Work streams</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Deactivate to hide from scheduling (no hard delete).
+                    </Typography>
+                  </Box>
                   <Button size="small" startIcon={<AddIcon />} onClick={() => setEditStream(emptyStream())}>
                     Add stream
                   </Button>
                 </Stack>
+                <FormControlLabel
+                  sx={{ mb: 1 }}
+                  control={
+                    <Switch size="small" checked={showInactiveStreams} onChange={(e) => setShowInactiveStreams(e.target.checked)} />
+                  }
+                  label="Show inactive streams"
+                />
                 <Table size="small">
                   <TableHead>
                     <TableRow>
                       <TableCell>Name</TableCell>
                       <TableCell>Order</TableCell>
                       <TableCell>Active</TableCell>
-                      <TableCell align="right">Edit</TableCell>
+                      <TableCell align="right">Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {streamRows.map((row) => (
+                    {streamRows
+                      .filter((row) => showInactiveStreams || row.active !== false && row.active !== 0)
+                      .map((row) => (
                       <TableRow key={row.id || row.name}>
                         <TableCell>{row.name}</TableCell>
                         <TableCell>{row.sort_order}</TableCell>
-                        <TableCell>{row.active ? "Yes" : "No"}</TableCell>
+                        <TableCell>{row.active !== false && row.active !== 0 ? "Yes" : "No"}</TableCell>
                         <TableCell align="right">
                           <IconButton size="small" onClick={() => setEditStream({ ...row })}>
                             <EditOutlinedIcon fontSize="small" />
                           </IconButton>
+                          {row.active !== false && row.active !== 0 ? (
+                            <IconButton
+                              size="small"
+                              color="error"
+                              disabled={saving}
+                              aria-label="Deactivate stream"
+                              onClick={() => deactivateLookupRow("streams", row)}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -372,12 +436,24 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
           {tab === 2 ? (
             <Card variant="outlined">
               <CardContent>
-                <Stack direction="row" justifyContent="space-between" sx={{ mb: 2 }}>
-                  <Typography fontWeight={700}>Roles</Typography>
+                <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1 }}>
+                  <Box>
+                    <Typography fontWeight={700}>Roles</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      Deactivate to hide from scheduling (no hard delete).
+                    </Typography>
+                  </Box>
                   <Button size="small" startIcon={<AddIcon />} onClick={() => setEditRole(emptyRole())}>
                     Add role
                   </Button>
                 </Stack>
+                <FormControlLabel
+                  sx={{ mb: 1 }}
+                  control={
+                    <Switch size="small" checked={showInactiveRoles} onChange={(e) => setShowInactiveRoles(e.target.checked)} />
+                  }
+                  label="Show inactive roles"
+                />
                 <Table size="small">
                   <TableHead>
                     <TableRow>
@@ -385,20 +461,33 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
                       <TableCell>Group</TableCell>
                       <TableCell>Order</TableCell>
                       <TableCell>Active</TableCell>
-                      <TableCell align="right">Edit</TableCell>
+                      <TableCell align="right">Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
-                    {roleRows.map((row) => (
+                    {roleRows
+                      .filter((row) => showInactiveRoles || row.active !== false && row.active !== 0)
+                      .map((row) => (
                       <TableRow key={row.id || row.name}>
                         <TableCell>{row.name}</TableCell>
                         <TableCell>{row.role_group || "—"}</TableCell>
                         <TableCell>{row.sort_order}</TableCell>
-                        <TableCell>{row.active ? "Yes" : "No"}</TableCell>
+                        <TableCell>{row.active !== false && row.active !== 0 ? "Yes" : "No"}</TableCell>
                         <TableCell align="right">
                           <IconButton size="small" onClick={() => setEditRole({ ...row })}>
                             <EditOutlinedIcon fontSize="small" />
                           </IconButton>
+                          {row.active !== false && row.active !== 0 ? (
+                            <IconButton
+                              size="small"
+                              color="error"
+                              disabled={saving}
+                              aria-label="Deactivate role"
+                              onClick={() => deactivateLookupRow("roles", row)}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          ) : null}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -704,47 +793,25 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
           ) : null}
 
           {tab === 6 && extras ? (
-            <Card variant="outlined">
-              <CardContent>
-                <Chip label="Phase 2 placeholder" size="small" color="info" sx={{ mb: 2 }} />
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  {extras.forecast_assumptions?.notes || "Not used in funding forecast calculations yet."}
-                </Typography>
-                <Stack spacing={2} direction={{ xs: "column", md: "row" }} flexWrap="wrap" useFlexGap>
-                  {[
-                    ["average_rinse_bag_weight_lbs", "Avg Rinse bag weight (lbs)"],
-                    ["folding_bags_per_hour", "Folding bags / hour"],
-                    ["folding_pounds_per_hour", "Folding lbs / hour"],
-                    ["weighing_minutes_per_bag", "Weighing min / bag"],
-                    ["sorting_minutes_per_bag", "Sorting min / bag"],
-                    ["washing_handling_minutes_per_bag", "Washing min / bag"],
-                    ["drying_handling_minutes_per_bag", "Drying min / bag"],
-                    ["target_labor_cost_percent", "Target labor cost %"],
-                  ].map(([key, label]) => (
-                    <TextField
-                      key={key}
-                      size="small"
-                      label={label}
-                      type="number"
-                      sx={{ minWidth: 200 }}
-                      value={extras.forecast_assumptions?.[key] ?? ""}
-                      onChange={(e) =>
-                        setExtras({
-                          ...extras,
-                          forecast_assumptions: {
-                            ...extras.forecast_assumptions,
-                            [key]: e.target.value === "" ? null : Number(e.target.value),
-                          },
-                        })
-                      }
-                    />
-                  ))}
-                </Stack>
-                <Button sx={{ mt: 2 }} variant="contained" disabled={saving} onClick={saveExtras}>
-                  Save forecast assumptions
-                </Button>
-              </CardContent>
-            </Card>
+            <BagVolumeForecastSettingsTab
+              extras={extras}
+              setExtras={setExtras}
+              settings={settings}
+              saving={saving}
+              onSave={async (partial) => {
+                setSaving(true);
+                setError("");
+                try {
+                  const res = await putPayrollPlanningMaintenance({ ...extras, ...partial });
+                  setExtras(res.data);
+                  showMsg("Bag volume forecast settings saved.");
+                } catch (e) {
+                  setError(e.response?.data?.error || e.message || "Save failed");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
           ) : null}
 
           {tab === 7 && extras ? (
@@ -791,19 +858,15 @@ export default function PayrollPlanningSettingsPanel({ onBack, onSaved }) {
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <TextField label="Name" value={editShift?.name || ""} onChange={(e) => setEditShift({ ...editShift, name: e.target.value })} />
-            <TextField
-              label="Start"
-              type="time"
-              InputLabelProps={{ shrink: true }}
+            <PlanningTimePicker
+              label="Default start"
               value={timeInput(editShift?.start_time_default)}
-              onChange={(e) => setEditShift({ ...editShift, start_time_default: e.target.value })}
+              onChange={(start_time_default) => setEditShift({ ...editShift, start_time_default })}
             />
-            <TextField
-              label="End"
-              type="time"
-              InputLabelProps={{ shrink: true }}
+            <PlanningTimePicker
+              label="Default end"
               value={timeInput(editShift?.end_time_default)}
-              onChange={(e) => setEditShift({ ...editShift, end_time_default: e.target.value })}
+              onChange={(end_time_default) => setEditShift({ ...editShift, end_time_default })}
             />
             <TextField
               label="Sort order"

@@ -9,6 +9,8 @@ import threading
 import time
 import uuid
 from datetime import date, datetime, timezone
+
+from backend.business_time import business_today
 from pathlib import Path
 
 from flask import current_app, jsonify, request, send_file
@@ -909,7 +911,7 @@ def register_rinse_export_routes(app):
 
         data = request.get_json(silent=True) or {}
         batch_raw = data.get("batch_date")
-        batch_date = parse_date_value(batch_raw) if batch_raw else date.today()
+        batch_date = parse_date_value(batch_raw) if batch_raw else business_today()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         virtual_name = f"rinse-portal-import-{stamp}.csv"
 
@@ -965,7 +967,7 @@ def register_rinse_export_routes(app):
 
         data = request.get_json(silent=True) or {}
         batch_raw = data.get("batch_date")
-        batch_date = parse_date_value(batch_raw) if batch_raw else date.today()
+        batch_date = parse_date_value(batch_raw) if batch_raw else business_today()
         job_page_env, job_seq_pages, job_max_seq = _parse_rinse_import_job_options(data)
 
         job_id = str(uuid.uuid4())

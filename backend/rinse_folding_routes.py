@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from flask import jsonify, request
 
+from backend.business_time import business_today
 from backend.db import get_db
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_folding_registry import (
@@ -374,9 +375,9 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, require_a
             else:
                 period = "week"
             anchor_raw = request.args.get("date")
-            anchor = parse_date_value(anchor_raw) if anchor_raw else date.today()
+            anchor = parse_date_value(anchor_raw) if anchor_raw else business_today()
             if not isinstance(anchor, date):
-                anchor = date.today()
+                anchor = business_today()
             payload = aggregate_folding_leaderboard(
                 cursor,
                 tenant_oid,
@@ -411,7 +412,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, require_a
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
             date_raw = request.args.get("date")
-            anchor = parse_date_value(date_raw) if date_raw else date.today()
+            anchor = parse_date_value(date_raw) if date_raw else business_today()
             if not isinstance(anchor, date):
                 return jsonify({"error": "Invalid date"}), 400
             user_name = (request.args.get("user_name") or "").strip() or None
@@ -448,7 +449,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, require_a
             if day_raw:
                 day = parse_date_value(day_raw)
             else:
-                day = date.today()
+                day = business_today()
             if not isinstance(day, date):
                 return jsonify({"error": "Invalid date"}), 400
             stats = aggregate_user_folding_stats(
@@ -475,7 +476,7 @@ def register_rinse_folding_routes(app, *, require_user, require_admin, require_a
             if week_start_raw:
                 week_start = parse_date_value(week_start_raw)
             else:
-                today = date.today()
+                today = business_today()
                 week_start = today - timedelta(days=today.weekday())
             if not isinstance(week_start, date):
                 return jsonify({"error": "Invalid week_start"}), 400

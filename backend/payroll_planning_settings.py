@@ -9,6 +9,7 @@ from backend.ta_helpers import json_safe, table_exists, table_has_column
 
 KEY_SCHEDULING_EXTRAS = "payroll_scheduling_rules_extras_v1"
 KEY_FORECAST_ASSUMPTIONS = "payroll_forecast_assumptions_v1"
+KEY_BAG_VOLUME_FORECAST = "payroll_bag_volume_forecast_v1"
 KEY_MACHINE_CAPACITY = "payroll_machine_capacity_v1"
 
 DEFAULT_SCHEDULING_EXTRAS = {
@@ -29,8 +30,13 @@ DEFAULT_FORECAST_ASSUMPTIONS = {
     "washing_handling_minutes_per_bag": None,
     "drying_handling_minutes_per_bag": None,
     "target_labor_cost_percent": None,
-    "notes": "Phase 2 — not used in funding forecast yet.",
+    "notes": "Deprecated — use bag_volume_forecast.role_speed_parameters.",
 }
+
+def _default_bag_volume_forecast():
+    from backend.payroll_bag_volume_forecast import DEFAULT_BAG_VOLUME_FORECAST
+
+    return dict(DEFAULT_BAG_VOLUME_FORECAST)
 
 DEFAULT_MACHINE_CAPACITY = {
     "washers": [],
@@ -93,24 +99,37 @@ def ensure_planning_optional_columns(cursor) -> None:
 
 
 def get_planning_maintenance_extras(conn, organization_id: int) -> dict[str, Any]:
+    from backend.payroll_bag_volume_forecast import merge_legacy_forecast_assumptions, validate_bag_volume_forecast
+
     ensure_planning_optional_columns(conn.cursor())
+    legacy_forecast = _get_json_setting(conn, organization_id, KEY_FORECAST_ASSUMPTIONS, DEFAULT_FORECAST_ASSUMPTIONS)
+    bag_raw = _get_json_setting(conn, organization_id, KEY_BAG_VOLUME_FORECAST, _default_bag_volume_forecast())
+    bag_volume = merge_legacy_forecast_assumptions(bag_raw, legacy_forecast)
+    validation_errors = validate_bag_volume_forecast(bag_volume)
     return json_safe(
         {
             "scheduling_rules": _get_json_setting(conn, organization_id, KEY_SCHEDULING_EXTRAS, DEFAULT_SCHEDULING_EXTRAS),
-            "forecast_assumptions": _get_json_setting(
-                conn, organization_id, KEY_FORECAST_ASSUMPTIONS, DEFAULT_FORECAST_ASSUMPTIONS
-            ),
+            "forecast_assumptions": legacy_forecast,
+            "bag_volume_forecast": bag_volume,
+            "bag_volume_forecast_validation_errors": validation_errors,
             "machine_capacity": _get_json_setting(conn, organization_id, KEY_MACHINE_CAPACITY, DEFAULT_MACHINE_CAPACITY),
         }
     )
 
 
 def save_planning_maintenance_extras(conn, organization_id: int, body: dict) -> dict[str, Any]:
+    from backend.payroll_bag_volume_forecast import validate_bag_volume_forecast
+
     oid = int(organization_id)
     if "scheduling_rules" in body:
         _set_json_setting(conn, oid, KEY_SCHEDULING_EXTRAS, body["scheduling_rules"])
     if "forecast_assumptions" in body:
         _set_json_setting(conn, oid, KEY_FORECAST_ASSUMPTIONS, body["forecast_assumptions"])
+    if "bag_volume_forecast" in body:
+        errors = validate_bag_volume_forecast(body["bag_volume_forecast"])
+        if errors:
+            raise ValueError("; ".join(errors))
+        _set_json_setting(conn, oid, KEY_BAG_VOLUME_FORECAST, body["bag_volume_forecast"])
     if "machine_capacity" in body:
         _set_json_setting(conn, oid, KEY_MACHINE_CAPACITY, body["machine_capacity"])
     return get_planning_maintenance_extras(conn, oid)

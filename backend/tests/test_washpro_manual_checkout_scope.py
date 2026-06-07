@@ -299,5 +299,38 @@ class TestSettingKeys(unittest.TestCase):
         )
 
 
+class TestCheckoutLogTicketScope(unittest.TestCase):
+    def test_ticket_has_checkout_log_any_staging_row_not_only_latest(self):
+        from backend.manual_checkout_eligibility import ticket_has_checkout_log
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"ok": 1}
+        with patch(
+            "backend.ta_helpers.table_exists",
+            return_value=True,
+        ), patch(
+            "backend.ta_helpers.table_has_column",
+            return_value=True,
+        ):
+            self.assertTrue(ticket_has_checkout_log(cursor, 3, "44SES6FL9A"))
+        sql = str(cursor.execute.call_args[0][0])
+        self.assertIn("INNER JOIN orders_staging os", sql)
+        self.assertIn("os.ticket_id = %s", sql)
+
+    def test_true_sent_out_when_older_staging_has_checkout_log(self):
+        from backend.manual_checkout_eligibility import ticket_true_sent_out_for_checkout
+
+        cursor = MagicMock()
+        with patch(
+            "backend.manual_checkout_eligibility.ticket_has_checkout_log",
+            return_value=True,
+        ):
+            self.assertTrue(
+                ticket_true_sent_out_for_checkout(
+                    cursor, 3, "44SES6FL9A", in_latest_vendor_batch=True
+                )
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

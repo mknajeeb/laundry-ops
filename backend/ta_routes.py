@@ -6016,6 +6016,27 @@ def payroll_schedule_suggestions():
         conn.close()
 
 
+@ta_bp.route("/payroll/schedule/generate-roster", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings")
+def payroll_schedule_generate_roster():
+    conn = get_db()
+    try:
+        from backend.payroll_roster_generator import generate_roster_draft
+
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        out = generate_roster_draft(conn, oid, body)
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_schedule_generate_roster failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/schedule/coverage-targets", methods=["GET", "POST"])
 @require_auth
 @require_any_perm("ta.settings")

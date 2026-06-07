@@ -37,6 +37,7 @@ from backend.rinse_scan_time import RINSE_SCAN_SOURCE_TIMEZONE
 from backend.rinse_shift_analysis import (
     _load_scan_events_for_bags,
     _rush_bucket_key,
+    _staging_logistics_expr,
     get_pending_bag_status,
 )
 from backend.ta_helpers import table_exists, table_has_column
@@ -119,14 +120,24 @@ def _load_bag_metadata(
 
     if table_exists(cursor, "rinse_bag_registry"):
         chunk = 100
+        rush_sel = (
+            "COALESCE(NULLIF(UPPER(rush_type), ''), 'UNKNOWN') AS rush_type"
+            if table_has_column(cursor, "rinse_bag_registry", "rush_type")
+            else "'UNKNOWN' AS rush_type"
+        )
+        registry_cols = ["bag_id", "name_clean", "weight_num", "service_type", rush_sel]
+        if table_has_column(cursor, "rinse_bag_registry", "completion_status"):
+            registry_cols.append("completion_status")
+        if table_has_column(cursor, "rinse_bag_registry", "logistics_status"):
+            registry_cols.append("logistics_status")
+        else:
+            registry_cols.append("NULL AS logistics_status")
         for i in range(0, len(bag_ids), chunk):
             part = bag_ids[i : i + chunk]
             ph = ",".join(["%s"] * len(part))
             cursor.execute(
                 f"""
-                SELECT bag_id, name_clean, weight_num, service_type,
-                       COALESCE(NULLIF(UPPER(rush_type), ''), 'UNKNOWN') AS rush_type,
-                       completion_status, logistics_status
+                SELECT {", ".join(registry_cols)}
                 FROM rinse_bag_registry
                 WHERE organization_id = %s AND bag_id IN ({ph})
                 """,
@@ -148,11 +159,24 @@ def _load_bag_metadata(
             args: list[Any] = list(part)
             if org_clause:
                 args.append(org)
+            logistics_sel = f"{_staging_logistics_expr(cursor, 'os')} AS logistics_status"
+            staging_cols = [
+                "os.ticket_id AS bag_id",
+                "os.name_clean",
+                "os.weight_num",
+                "os.service_type",
+                "os.rush_type",
+                logistics_sel,
+            ]
+            if table_has_column(cursor, "orders_staging", "status"):
+                staging_cols.append("os.status")
+            else:
+                staging_cols.append("NULL AS status")
             cursor.execute(
                 f"""
-                SELECT ticket_id AS bag_id, name_clean, weight_num, service_type, rush_type, logistics_status, status
-                FROM orders_staging
-                WHERE ticket_id IN ({ph}){org_clause}
+                SELECT {", ".join(staging_cols)}
+                FROM orders_staging os
+                WHERE os.ticket_id IN ({ph}){org_clause}
                 """,
                 tuple(args),
             )

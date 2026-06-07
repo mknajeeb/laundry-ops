@@ -17,6 +17,7 @@ from backend.payroll_schedule import (
     _parse_time,
     _q2,
     _time_to_str,
+    _where_active,
     check_schedule_warnings,
     compute_scheduled_hours,
     ensure_payroll_schedule_tables,
@@ -29,7 +30,7 @@ from backend.payroll_schedule import (
     seed_schedule_defaults,
 )
 from backend.payroll_identity import payroll_week_bounds
-from backend.ta_helpers import json_safe, table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, json_safe, table_exists, table_has_column
 
 
 FRONTEND_ONLY_KEYS = frozenset(
@@ -87,9 +88,26 @@ def count_published_entries(conn, organization_id: int, start_date: str, end_dat
     return int(row.get("n") or 0)
 
 
+def _ensure_active_columns(cursor) -> None:
+    """Add `active` on planning tables when legacy prod schema omitted it."""
+    c = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    for table in (
+        "payroll_shifts",
+        "payroll_work_streams",
+        "payroll_roles",
+        "payroll_worker_profiles",
+        "payroll_worker_role_skills",
+        "payroll_schedule_coverage_targets",
+    ):
+        if table_exists(c, table) and not table_has_column(c, table, "active"):
+            c.execute(f"ALTER TABLE {table} ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1")
+    invalidate_schema_cache()
+
+
 def ensure_payroll_schedule_v2(cursor) -> None:
     ensure_payroll_schedule_tables(cursor)
     c = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    _ensure_active_columns(c)
     cols = [
         ("payroll_schedule_org_settings", "underused_hours_threshold", "DECIMAL(6,2) NOT NULL DEFAULT 15.00"),
         ("payroll_schedule_org_settings", "heavy_hours_threshold", "DECIMAL(6,2) NOT NULL DEFAULT 35.00"),
@@ -144,39 +162,41 @@ def ensure_payroll_schedule_v2(cursor) -> None:
         )
 
 
-def _seed_default_coverage_targets(cursor, organization_id: int) -> None:
-    c = cursor if hasattr(cursor, "execute") else cursor.cursor(dictionary=True)
+def _seed_default_coverage_targets(conn, organization_id: int) -> None:
+    c = _cursor(conn)
     c.execute(
         "SELECT COUNT(*) AS n FROM payroll_schedule_coverage_targets WHERE organization_id=%s",
         (int(organization_id),),
     )
-    row = c.fetchone()
-    n = int((row or {}).get("n") or (row[0] if row else 0))
+    row = c.fetchone() or {}
+    n = int(row.get("n") or 0)
     if n > 0:
         return
-    dc = cursor if hasattr(cursor, "fetchone") else cursor.cursor(dictionary=True)
-    dc.execute(
-        "SELECT id, name FROM payroll_shifts WHERE organization_id=%s AND active=1",
+    shift_active = _where_active(c, "payroll_shifts")
+    c.execute(
+        f"SELECT id, name FROM payroll_shifts WHERE organization_id=%s AND {shift_active}",
         (int(organization_id),),
     )
-    shifts = {r["name"].lower(): r["id"] for r in dc.fetchall()}
-    dc.execute(
-        "SELECT id, name FROM payroll_work_streams WHERE organization_id=%s AND active=1",
+    shifts = {r["name"].lower(): r["id"] for r in c.fetchall()}
+    stream_active = _where_active(c, "payroll_work_streams")
+    c.execute(
+        f"SELECT id, name FROM payroll_work_streams WHERE organization_id=%s AND {stream_active}",
         (int(organization_id),),
     )
-    streams = {r["name"].lower(): r["id"] for r in dc.fetchall()}
-    dc.execute(
-        "SELECT id, name FROM payroll_roles WHERE organization_id=%s AND active=1",
+    streams = {r["name"].lower(): r["id"] for r in c.fetchall()}
+    role_active = _where_active(c, "payroll_roles")
+    c.execute(
+        f"SELECT id, name FROM payroll_roles WHERE organization_id=%s AND {role_active}",
         (int(organization_id),),
     )
-    roles = {r["name"].lower(): r["id"] for r in dc.fetchall()}
+    roles = {r["name"].lower(): r["id"] for r in c.fetchall()}
     morning = shifts.get("morning")
     afternoon = shifts.get("afternoon")
     rinse = streams.get("rinse")
     drop = streams.get("drop off")
     op = roles.get("operator")
     folder = roles.get("folder")
-    ins = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    ins = conn.cursor()
     defaults = []
     if morning and rinse and op:
         defaults.append((None, morning, rinse, op, 1))
@@ -200,7 +220,7 @@ def _seed_default_coverage_targets(cursor, organization_id: int) -> None:
 def list_coverage_targets(conn, organization_id: int) -> list[dict[str, Any]]:
     ensure_payroll_schedule_v2(conn.cursor())
     seed_schedule_defaults(conn.cursor(), organization_id)
-    _seed_default_coverage_targets(conn.cursor(), organization_id)
+    _seed_default_coverage_targets(conn, organization_id)
     c = _cursor(conn)
     c.execute(
         """

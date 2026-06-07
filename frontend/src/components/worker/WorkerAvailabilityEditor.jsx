@@ -16,6 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import { DAY_NAMES } from "../../payroll/workerSchedulingProfile";
+import PlanningTimePicker from "../datetime/PlanningTimePicker";
 
 export default function WorkerAvailabilityEditor({ value, onChange, shifts = [] }) {
   const rows = value?.length ? value : DAY_NAMES.map((_, dow) => ({ day_of_week: dow, unavailable_flag: true }));
@@ -116,22 +117,19 @@ export default function WorkerAvailabilityEditor({ value, onChange, shifts = [] 
                     />
                   </TableCell>
                   <TableCell>
-                    <TextField
-                      type="time"
-                      size="small"
+                    <PlanningTimePicker
+                      compact
                       disabled={!available}
                       value={(row.available_from || "").slice(0, 5)}
-                      onChange={(e) => updateRow(dow, { available_from: e.target.value })}
-                      InputLabelProps={{ shrink: true }}
+                      onChange={(available_from) => updateRow(dow, { available_from })}
                     />
                   </TableCell>
                   <TableCell>
-                    <TextField
-                      type="time"
-                      size="small"
+                    <PlanningTimePicker
+                      compact
                       disabled={!available}
                       value={(row.available_to || "").slice(0, 5)}
-                      onChange={(e) => updateRow(dow, { available_to: e.target.value })}
+                      onChange={(available_to) => updateRow(dow, { available_to })}
                     />
                   </TableCell>
                   <TableCell>
@@ -140,7 +138,19 @@ export default function WorkerAvailabilityEditor({ value, onChange, shifts = [] 
                       <Select
                         label="Shift"
                         value={row.preferred_shift_id || ""}
-                        onChange={(e) => updateRow(dow, { preferred_shift_id: e.target.value || null })}
+                        onChange={(e) => {
+                          const preferred_shift_id = e.target.value || null;
+                          const sh = shifts.find((s) => String(s.id) === String(preferred_shift_id));
+                          updateRow(dow, {
+                            preferred_shift_id,
+                            ...(sh
+                              ? {
+                                  available_from: sh.start_time_default?.slice(0, 5),
+                                  available_to: sh.end_time_default?.slice(0, 5),
+                                }
+                              : {}),
+                          });
+                        }}
                       >
                         <MenuItem value="">—</MenuItem>
                         {shifts.filter((s) => s.active).map((s) => (

@@ -36,14 +36,23 @@ import IosShareIcon from "@mui/icons-material/IosShare";
 import LightbulbOutlinedIcon from "@mui/icons-material/LightbulbOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
+  getPayrollCalendarSettings,
   getPayrollSchedulePlan,
+  getPayrollScheduleReplacements,
   getPayrollScheduleSuggestions,
   postPayrollSchedulePublish,
   postPayrollScheduleSaveDraft,
 } from "../api";
+import SchedulingPayrollOverview from "./schedule/SchedulingPayrollOverview";
+import ReplacementFindPanel from "./schedule/ReplacementFindPanel";
+import { normalizeApiReplacement, rankReplacementsForEntry } from "../payroll/replacementSuggestions";
 import ScheduleWorkerCard from "./schedule/ScheduleWorkerCard";
 import PayrollFundingForecastPanel from "./PayrollFundingForecastPanel";
 import ShareRosterDrawer from "./schedule/ShareRosterDrawer";
+import GenerateRosterDrawer from "./schedule/GenerateRosterDrawer";
+import RosterBoardView from "./schedule/RosterBoardView";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import ViewModuleOutlinedIcon from "@mui/icons-material/ViewModuleOutlined";
 import ScheduleEmptyState from "./schedule/ScheduleEmptyState";
 import PayrollPlanningSettingsPanel from "./PayrollPlanningSettingsPanel";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -51,6 +60,7 @@ import { useAuth } from "../context/AuthContext";
 import {
   addDaysYmd,
   applyWorkerProfileToForm,
+  businessTodayYmd,
   checkEntryProfileWarnings,
   computeDayPlan,
   computePlanSummary,
@@ -68,13 +78,13 @@ import {
   workerProfileGaps,
   workerProfileUrl,
 } from "../payroll/schedulePlanner";
+import PlanningDatePicker from "./datetime/PlanningDatePicker";
+import PlanningWeekPicker from "./datetime/PlanningWeekPicker";
+import ShiftScheduleTimeFields from "./datetime/ShiftScheduleTimeFields";
+import { validateScheduleTimes } from "../payroll/scheduleTimeValidation";
 import { computeFundingForecast } from "../payroll/fundingForecast";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import { SCHEDULE_THEME } from "../payroll/scheduleTheme";
-
-function localDateYmd(d = new Date()) {
-  return d.toISOString().slice(0, 10);
-}
 
 function SummaryMetric({ label, value, highlight }) {
   return (
@@ -184,8 +194,12 @@ export default function PayrollSchedulingPanel() {
     (user?.roles || []).some((r) => String(r).toUpperCase() === "ADMIN");
 
   const [settingsView, setSettingsView] = useState(false);
-  const [view, setView] = useState("day");
-  const [selectedDate, setSelectedDate] = useState(localDateYmd());
+  const [view, setView] = useState("board");
+  const [periodId, setPeriodId] = useState("current_pay_period");
+  const [calendarSettings, setCalendarSettings] = useState(null);
+  const [replacementLoading, setReplacementLoading] = useState(false);
+  const [replacementList, setReplacementList] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(businessTodayYmd());
   const [settings, setSettings] = useState(null);
   const [workers, setWorkers] = useState([]);
   const [coverageTargets, setCoverageTargets] = useState([]);
@@ -196,6 +210,7 @@ export default function PayrollSchedulingPanel() {
   const [summaryCollapsed, setSummaryCollapsed] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [rosterGenOpen, setRosterGenOpen] = useState(false);
   const [editEntry, setEditEntry] = useState(null);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState({});
@@ -218,12 +233,20 @@ export default function PayrollSchedulingPanel() {
     [selectedDate, settings?.week_starts_on],
   );
   const weekEnd = useMemo(() => addDaysYmd(weekStart, 6), [weekStart]);
+  const planLoadStart = useMemo(() => addDaysYmd(weekStart, -7), [weekStart]);
+  const planLoadEnd = useMemo(() => addDaysYmd(weekStart, 13), [weekStart]);
+
+  useEffect(() => {
+    getPayrollCalendarSettings()
+      .then((res) => setCalendarSettings(res.data || null))
+      .catch(() => setCalendarSettings(null));
+  }, []);
 
   const loadPlan = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await getPayrollSchedulePlan({ start_date: weekStart, end_date: weekEnd });
+      const res = await getPayrollSchedulePlan({ start_date: planLoadStart, end_date: planLoadEnd });
       const data = res.data || {};
       setSettings(data.settings || null);
       setWorkers(data.workers || []);
@@ -237,11 +260,15 @@ export default function PayrollSchedulingPanel() {
     } finally {
       setLoading(false);
     }
-  }, [weekStart, weekEnd]);
+  }, [planLoadStart, planLoadEnd]);
 
   useEffect(() => {
     loadPlan();
   }, [loadPlan]);
+
+  useEffect(() => {
+    if (!canManageSettings && (view === "board" || view === "hours")) setView("day");
+  }, [view, canManageSettings]);
 
   const filteredEntries = useMemo(() => {
     let list = draftEntries.filter((e) => !e._deleted && e.status !== "cancelled" && e.status !== "replaced");
@@ -394,6 +421,23 @@ export default function PayrollSchedulingPanel() {
     return checkEntryProfileWarnings({ ...form, work_date: form.work_date || selectedDate }, selectedFormWorker, settingsWithWorkers);
   }, [selectedFormWorker, form, selectedDate, settingsWithWorkers]);
 
+  const formTimeValidation = useMemo(() => {
+    if (!formOpen) return { errors: [], warnings: [] };
+    const worker = workers.find((w) => String(w.id) === String(form.worker_profile_id));
+    return validateScheduleTimes({
+      startTime: form.start_time,
+      endTime: form.end_time,
+      breakMinutes: form.break_minutes,
+      maxShiftHours: settings?.max_shift_hours,
+      workDate: form.work_date || selectedDate,
+      workerProfileId: form.worker_profile_id,
+      editEntryId: editEntry?.id,
+      draftEntries,
+      worker,
+      settings: { ...settings, _weekStart: weekStart },
+    });
+  }, [form, formOpen, draftEntries, settings, weekStart, workers, editEntry, selectedDate]);
+
   const formOtPreview = useMemo(() => {
     if (!form.worker_profile_id || !form.start_time || !form.end_time) return null;
     const worker = workers.find((w) => String(w.id) === String(form.worker_profile_id));
@@ -427,6 +471,49 @@ export default function PayrollSchedulingPanel() {
 
   const applyLocal = (updater) => setDraftEntries((prev) => updater(prev));
 
+  const handleAcceptRosterDraft = (entries, meta = {}) => {
+    if (meta.clearGeneratedOnly) {
+      applyLocal((prev) =>
+        prev.map((e) =>
+          e._roster_generated && !e._deleted
+            ? { ...e, _deleted: true, _dirty: true }
+            : e,
+        ),
+      );
+      showToast("Cleared auto-generated draft shifts", "info");
+      return;
+    }
+    applyLocal((prev) => {
+      let next = prev;
+      if (meta.clearRangeDrafts && meta.start_date && meta.end_date) {
+        next = next.map((e) => {
+          const wd = String(e.work_date).slice(0, 10);
+          if (
+            wd >= meta.start_date &&
+            wd <= meta.end_date &&
+            (e.publish_status === "draft" || e._dirty) &&
+            String(e.publish_status) !== "published" &&
+            !e._deleted
+          ) {
+            return { ...e, _deleted: true, _dirty: true };
+          }
+          return e;
+        });
+      }
+      for (const raw of entries || []) {
+        const enriched = enrichEntry(raw, settingsWithWorkers);
+        next = upsertLocalEntry(next, enriched);
+      }
+      return next;
+    });
+    showToast(
+      entries?.length
+        ? `Added ${entries.length} draft shift(s) — review and Save draft before publish`
+        : "No shifts added",
+      entries?.length ? "success" : "info",
+    );
+  };
+
   const assignReplacement = (originalEntry, suggestion) => {
     const replacement = newTempEntry(
       enrichEntry(
@@ -459,11 +546,11 @@ export default function PayrollSchedulingPanel() {
     showToast(`Assigned ${suggestion.worker_name} as replacement`, "success");
   };
 
-  const openAdd = (shiftId, streamId, roleId) => {
+  const openAdd = (shiftId, streamId, roleId, workDate) => {
     const shift = (settings?.shifts || []).find((s) => String(s.id) === String(shiftId));
     setEditEntry(null);
     setForm({
-      work_date: selectedDate,
+      work_date: workDate || selectedDate,
       shift_id: shiftId || shift?.id || "",
       work_stream_id: streamId || "",
       role_id: roleId || "",
@@ -497,6 +584,10 @@ export default function PayrollSchedulingPanel() {
   };
 
   const commitLocalForm = () => {
+    if (formTimeValidation.errors.length) {
+      showToast(formTimeValidation.errors[0], "error");
+      return;
+    }
     const hours = computeScheduledHours(form.start_time, form.end_time, form.break_minutes);
     const worker = workers.find((w) => String(w.id) === String(form.worker_profile_id));
     const rate = Number(worker?.default_hourly_rate || 0);
@@ -546,7 +637,146 @@ export default function PayrollSchedulingPanel() {
         change_note: "Marked absent/sick",
       }),
     );
-    showToast(`${entry.worker_name} marked sick — tap Replace to find coverage`, "warning");
+    showToast(`${entry.worker_name} marked sick`, "warning");
+    findReplacement({ ...entry, status: "sick" });
+  };
+
+  const findReplacement = async (entry) => {
+    if (!entry) return;
+    setReplaceContext(entry);
+    setReplacementLoading(true);
+    setReplacementList([]);
+    try {
+      let list = [];
+      const eid = entry.id;
+      if (eid && !String(eid).startsWith("tmp") && !String(eid).startsWith("gen-")) {
+        try {
+          const res = await getPayrollScheduleReplacements({ schedule_entry_id: eid });
+          list = (res.data?.suggestions || []).map((s) => normalizeApiReplacement(s, entry));
+        } catch {
+          list = [];
+        }
+      }
+      if (!list.length) {
+        list = rankReplacementsForEntry(entry, { workers, draftEntries, settings });
+      }
+      setReplacementList(list);
+    } finally {
+      setReplacementLoading(false);
+    }
+  };
+
+  const copyBoardDay = (fromYmd, toYmd) => {
+    const src = fromYmd || addDaysYmd(toYmd || selectedDate, -1);
+    const dest = toYmd || selectedDate;
+    const prevEntries = entriesForDate(draftEntries, src);
+    if (!prevEntries.length) {
+      showToast("No shifts on that day to copy", "warning");
+      return;
+    }
+    const copied = prevEntries.map((e) =>
+      newTempEntry(
+        enrichEntry(
+          {
+            ...e,
+            id: undefined,
+            work_date: dest,
+            publish_status: "draft",
+            status: "scheduled",
+          },
+          { ...settings, _workers: workers },
+        ),
+      ),
+    );
+    applyLocal((prev) => [...prev, ...copied]);
+    showToast(`Copied ${copied.length} shift(s) to ${dest}`, "success");
+  };
+
+  const copyPreviousWeek = () => {
+    const prevStart = addDaysYmd(weekStart, -7);
+    const prevEnd = addDaysYmd(weekEnd, -7);
+    const prevEntries = draftEntries.filter((e) => {
+      if (e._deleted || e.status === "cancelled" || e.status === "replaced") return false;
+      const wd = String(e.work_date).slice(0, 10);
+      return wd >= prevStart && wd <= prevEnd;
+    });
+    if (!prevEntries.length) {
+      showToast("No shifts in the previous week to copy", "warning");
+      return;
+    }
+    const copied = prevEntries.map((e) =>
+      newTempEntry(
+        enrichEntry(
+          {
+            ...e,
+            id: undefined,
+            work_date: addDaysYmd(String(e.work_date).slice(0, 10), 7),
+            publish_status: "draft",
+            status: "scheduled",
+          },
+          { ...settings, _workers: workers },
+        ),
+      ),
+    );
+    applyLocal((prev) => [...prev, ...copied]);
+    showToast(`Copied ${copied.length} shift(s) from prior week`, "success");
+  };
+
+  const clearDraftInWeek = () => {
+    applyLocal((prev) =>
+      prev.map((e) => {
+        const wd = String(e.work_date).slice(0, 10);
+        if (wd >= weekStart && wd <= weekEnd && String(e.publish_status) !== "published" && !e._deleted) {
+          return { ...e, _deleted: true, _dirty: true };
+        }
+        return e;
+      }),
+    );
+    showToast("Draft shifts cleared for this week (published kept)", "info");
+  };
+
+  const duplicateEntry = (entry) => {
+    applyLocal((prev) =>
+      upsertLocalEntry(
+        prev,
+        newTempEntry(
+          enrichEntry(
+            {
+              ...entry,
+              id: undefined,
+              publish_status: "draft",
+              status: "scheduled",
+            },
+            { ...settings, _workers: workers },
+          ),
+        ),
+      ),
+    );
+    showToast("Shift duplicated", "success");
+  };
+
+  const openAddForSlot = (shiftId, streamId, roleId, workDate) => {
+    openAdd(shiftId, streamId, roleId);
+    setForm((prev) => ({ ...prev, work_date: workDate || selectedDate }));
+  };
+
+  const fillGapFromSuggestion = (workDate, gap, suggestion) => {
+    const shift = (settings?.shifts || []).find((s) => String(s.id) === String(gap.shift_id));
+    setEditEntry(null);
+    setForm({
+      work_date: workDate,
+      shift_id: gap.shift_id,
+      work_stream_id: gap.work_stream_id || "",
+      role_id: gap.role_id || "",
+      worker_profile_id: suggestion?.worker_profile_id || "",
+      start_time: shift?.start_time_default?.slice(0, 5) || "07:00",
+      end_time: shift?.end_time_default?.slice(0, 5) || "15:00",
+      break_minutes: settings?.default_break_minutes || 0,
+      status: "scheduled",
+      publish_status: "draft",
+      notes: "",
+    });
+    setFormOpen(true);
   };
 
   const copyPreviousDay = () => {
@@ -574,12 +804,13 @@ export default function PayrollSchedulingPanel() {
     showToast(`Copied ${copied.length} shift(s) from ${prev}`, "success");
   };
 
-  const loadSuggestions = async (plan, gap) => {
+  const loadSuggestions = async (plan, gap, workDateOverride) => {
     try {
       const shiftId = plan?.shift_id || gap?.shift_id;
       const shift = (settings?.shifts || []).find((s) => String(s.id) === String(shiftId));
+      const workDate = workDateOverride || selectedDate;
       const res = await getPayrollScheduleSuggestions({
-        work_date: selectedDate,
+        work_date: workDate,
         shift_id: shiftId,
         work_stream_id: gap?.work_stream_id,
         role_id: gap?.role_id,
@@ -644,13 +875,10 @@ export default function PayrollSchedulingPanel() {
         {editEntry ? "Edit shift" : "Add to plan"}
       </Typography>
       <Stack spacing={2}>
-        <TextField
+        <PlanningDatePicker
           label="Date"
-          type="date"
-          size="small"
-          InputLabelProps={{ shrink: true }}
           value={form.work_date || ""}
-          onChange={(e) => setForm({ ...form, work_date: e.target.value })}
+          onChange={(work_date) => setForm({ ...form, work_date })}
         />
         <FormControl size="small" fullWidth>
           <InputLabel>Worker</InputLabel>
@@ -725,26 +953,23 @@ export default function PayrollSchedulingPanel() {
               ))}
           </Select>
         </FormControl>
-        <Stack direction="row" spacing={1}>
-          <TextField
-            label="Start"
-            type="time"
-            size="small"
-            fullWidth
-            InputLabelProps={{ shrink: true }}
-            value={form.start_time || ""}
-            onChange={(e) => setForm({ ...form, start_time: e.target.value })}
-          />
-          <TextField
-            label="End"
-            type="time"
-            size="small"
-            fullWidth
-            InputLabelProps={{ shrink: true }}
-            value={form.end_time || ""}
-            onChange={(e) => setForm({ ...form, end_time: e.target.value })}
-          />
-        </Stack>
+        <ShiftScheduleTimeFields
+          startTime={form.start_time}
+          endTime={form.end_time}
+          breakMinutes={form.break_minutes}
+          onStartChange={(start_time) => setForm({ ...form, start_time })}
+          onEndChange={(end_time) => setForm({ ...form, end_time })}
+          onBreakChange={(break_minutes) => setForm({ ...form, break_minutes })}
+          maxShiftHours={settings?.max_shift_hours}
+          validationContext={{
+            workDate: form.work_date || selectedDate,
+            workerProfileId: form.worker_profile_id,
+            editEntryId: editEntry?.id,
+            draftEntries,
+            worker: selectedFormWorker,
+            settings: { ...settings, _weekStart: weekStart },
+          }}
+        />
         <FormControl size="small" fullWidth>
           <InputLabel>Stream</InputLabel>
           <Select
@@ -800,7 +1025,13 @@ export default function PayrollSchedulingPanel() {
             fullWidth
             variant="contained"
             onClick={commitLocalForm}
-            disabled={!form.worker_profile_id || !form.shift_id}
+            disabled={
+              !form.worker_profile_id ||
+              !form.shift_id ||
+              formTimeValidation.errors.length > 0 ||
+              !form.start_time ||
+              !form.end_time
+            }
           >
             {editEntry ? "Update plan" : "Add to plan"}
           </Button>
@@ -846,6 +1077,19 @@ export default function PayrollSchedulingPanel() {
         </Stack>
       </Stack>
 
+      {settings ? (
+        <SchedulingPayrollOverview
+          periodId={periodId}
+          onPeriodChange={setPeriodId}
+          draftEntries={draftEntries}
+          workers={workers}
+          settings={settings}
+          calendarSettings={calendarSettings}
+          anchorYmd={selectedDate}
+          plannerWeek={{ start: weekStart, end: weekEnd }}
+        />
+      ) : null}
+
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         <Button size="small" variant={hasUnsaved ? "contained" : "outlined"} disabled={!hasUnsaved || saving} onClick={saveDraft}>
           Save draft
@@ -853,12 +1097,44 @@ export default function PayrollSchedulingPanel() {
         <Button size="small" variant="contained" color="secondary" disabled={saving} onClick={publish}>
           Publish week
         </Button>
-        <Button size="small" startIcon={<ContentCopyIcon />} onClick={copyPreviousDay}>
-          Copy prev day
-        </Button>
-        <Button size="small" startIcon={<FilterListIcon />} onClick={() => setFiltersOpen((v) => !v)}>
-          Filters
-        </Button>
+        {view === "board" ? (
+          <>
+            <Button size="small" color="inherit" onClick={clearDraftInWeek}>
+              Clear draft
+            </Button>
+            <Button size="small" startIcon={<ContentCopyIcon />} onClick={copyPreviousWeek}>
+              Copy prev week
+            </Button>
+            <Button
+              size="small"
+              startIcon={<ContentCopyIcon />}
+              onClick={() => copyBoardDay(addDaysYmd(selectedDate, -1), selectedDate)}
+            >
+              Copy day
+            </Button>
+          </>
+        ) : (
+          <Button size="small" startIcon={<ContentCopyIcon />} onClick={copyPreviousDay}>
+            Copy prev day
+          </Button>
+        )}
+        {canManageSettings ? (
+          <Button
+            size="small"
+            variant="outlined"
+            color="primary"
+            startIcon={<AutoAwesomeIcon />}
+            onClick={() => setRosterGenOpen(true)}
+            sx={{ minHeight: 36 }}
+          >
+            Generate draft roster
+          </Button>
+        ) : null}
+        {view !== "board" ? (
+          <Button size="small" startIcon={<FilterListIcon />} onClick={() => setFiltersOpen((v) => !v)}>
+            Filters
+          </Button>
+        ) : null}
       </Stack>
 
       {fundingForecast ? <PayrollFundingForecastPanel forecast={fundingForecast} compact /> : null}
@@ -949,31 +1225,82 @@ export default function PayrollSchedulingPanel() {
         </Card>
       </Collapse>
 
-      <Tabs value={view} onChange={(_, v) => setView(v)} sx={{ mb: 1.5, minHeight: 40 }}>
+      <Tabs value={view} onChange={(_, v) => setView(v)} sx={{ mb: 1.5, minHeight: 40 }} variant="scrollable">
         <Tab value="day" label="Day" sx={{ fontWeight: 700 }} />
         <Tab value="week" label="Week" sx={{ fontWeight: 700 }} />
+        {canManageSettings ? (
+          <Tab
+            value="board"
+            label="Roster Board"
+            icon={<ViewModuleOutlinedIcon sx={{ fontSize: 18 }} />}
+            iconPosition="start"
+            sx={{ fontWeight: 700, minHeight: 48 }}
+          />
+        ) : null}
       </Tabs>
 
-      <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mb: 2 }}>
-        <IconButton onClick={() => setSelectedDate(addDaysYmd(selectedDate, view === "day" ? -1 : -7))}>
-          <ChevronLeftIcon />
-        </IconButton>
-        <TextField
-          type="date"
-          size="small"
-          value={selectedDate}
-          onChange={(e) => setSelectedDate(e.target.value)}
-          InputLabelProps={{ shrink: true }}
-          sx={{ flex: 1 }}
+      {view === "board" ? (
+        <RosterBoardView
+          draftEntries={draftEntries}
+          settings={settings}
+          coverageTargets={coverageTargets}
+          workers={workers}
+          weekStart={weekStart}
+          weekEnd={weekEnd}
+          selectedDate={selectedDate}
+          onSelectedDateChange={setSelectedDate}
+          workerStatsMap={workerStatsMap}
+          fundingForecast={fundingForecast}
+          hasUnsaved={hasUnsaved}
+          onAdd={openAddForSlot}
+          onEdit={openEdit}
+          onRemove={(id) => applyLocal((prev) => removeLocalEntry(prev, id))}
+          onDuplicate={duplicateEntry}
+          onAbsent={markAbsent}
+              onReplace={(e) => findReplacement(e)}
+          onFillGap={fillGapFromSuggestion}
+          onWorkerPanel={(userId) => {
+            const url = workerProfileUrl(userId);
+            if (url) window.open(url, "_blank", "noopener");
+          }}
         />
-        <IconButton onClick={() => setSelectedDate(addDaysYmd(selectedDate, view === "day" ? 1 : 7))}>
-          <ChevronRightIcon />
-        </IconButton>
-        <Button size="small" onClick={() => setSelectedDate(localDateYmd())}>
-          Today
-        </Button>
-      </Stack>
+      ) : null}
 
+      {view === "board" || view === "hours" ? (
+        <Box sx={{ mb: 2 }}>
+          <PlanningWeekPicker
+            selectedDate={selectedDate}
+            onSelectedDateChange={setSelectedDate}
+            weekStartsOn={settings?.week_starts_on ?? 0}
+            showDateJump
+          />
+        </Box>
+      ) : (
+        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mb: 2 }}>
+          <IconButton
+            aria-label="Previous day"
+            onClick={() => setSelectedDate(addDaysYmd(selectedDate, -1))}
+            sx={{ p: 1.25 }}
+          >
+            <ChevronLeftIcon />
+          </IconButton>
+          <Box sx={{ flex: 1 }}>
+            <PlanningDatePicker label="Schedule date" value={selectedDate} onChange={setSelectedDate} />
+          </Box>
+          <IconButton
+            aria-label="Next day"
+            onClick={() => setSelectedDate(addDaysYmd(selectedDate, 1))}
+            sx={{ p: 1.25 }}
+          >
+            <ChevronRightIcon />
+          </IconButton>
+          <Button size="small" onClick={() => setSelectedDate(businessTodayYmd())} sx={{ minHeight: 40 }}>
+            Today
+          </Button>
+        </Stack>
+      )}
+
+      {view !== "board" ? (
       <Box sx={{ ...SCHEDULE_THEME.stickyBar, position: "sticky", top: 0, zIndex: 20, py: 1, mb: 2, mx: -0.5, px: 0.5 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: summaryCollapsed ? 0 : 1 }}>
           <Typography variant="subtitle2" fontWeight={800}>
@@ -1009,6 +1336,8 @@ export default function PayrollSchedulingPanel() {
           </Stack>
         </Collapse>
       </Box>
+      ) : null}
+
 
       {view === "day" && dayPlan && !dayPlanFull?.total_people && !loading ? (
         <ScheduleEmptyState
@@ -1063,24 +1392,21 @@ export default function PayrollSchedulingPanel() {
               onEdit={openEdit}
               onRemove={(id) => applyLocal((prev) => removeLocalEntry(prev, id))}
               onAbsent={markAbsent}
-              onReplace={(e) => {
-                setReplaceContext(e);
-                loadSuggestions({ shift_id: e.shift_id, work_stream_id: e.work_stream_id, role_id: e.role_id }, null);
-              }}
+              onReplace={(e) => findReplacement(e)}
               onSuggest={loadSuggestions}
             />
           ))}
         </>
       ) : null}
 
-      {view === "week" && weekSummary && !weekSummary.worker_stats?.length && !loading ? (
+      {view === "hours" && weekSummary && !weekSummary.worker_stats?.length && !loading ? (
         <ScheduleEmptyState
           title="No workers loaded"
           description="Add payroll workers in People, then return to schedule."
         />
       ) : null}
 
-      {view === "week" && weekSummary ? (
+      {view === "hours" && weekSummary ? (
         <Stack spacing={1.5}>
           {(weekSummary.worker_stats || []).map((w) => {
             const stats = w.week_stats;
@@ -1152,59 +1478,73 @@ export default function PayrollSchedulingPanel() {
         </Typography>
       ) : null}
 
-      <Fab
-        color="primary"
-        sx={{ position: "fixed", bottom: 24, right: 24, boxShadow: "0 8px 32px rgba(99,102,241,0.4)" }}
-        onClick={() => openAdd()}
-      >
-        <AddIcon />
-      </Fab>
+      {view !== "board" ? (
+        <Fab
+          color="primary"
+          sx={{ position: "fixed", bottom: 24, right: 24, boxShadow: "0 8px 32px rgba(99,102,241,0.4)" }}
+          onClick={() => openAdd()}
+        >
+          <AddIcon />
+        </Fab>
+      ) : null}
 
       {formDrawer}
 
+      <ReplacementFindPanel
+        open={!!replaceContext}
+        onClose={() => {
+          setReplaceContext(null);
+          setReplacementList([]);
+        }}
+        originalEntry={replaceContext}
+        suggestions={replacementList}
+        loading={replacementLoading}
+        onAssign={(s) => {
+          if (replaceContext) {
+            const ctx = replaceContext;
+            if (!["sick", "absent", "no_show"].includes(ctx.status)) {
+              applyLocal((prev) =>
+                upsertLocalEntry(prev, {
+                  ...ctx,
+                  status: "sick",
+                  publish_status: "draft",
+                  _dirty: true,
+                  change_note: "Marked absent — replaced",
+                }),
+              );
+            }
+            assignReplacement(ctx, s);
+          }
+          setReplaceContext(null);
+          setReplacementList([]);
+        }}
+        onMarkAbsentFirst={markAbsent}
+      />
+
       <Drawer
         anchor="bottom"
-        open={!!suggestions}
-        onClose={() => {
-          setSuggestions(null);
-          setReplaceContext(null);
-        }}
+        open={!!suggestions && !replaceContext}
+        onClose={() => setSuggestions(null)}
         PaperProps={{ sx: { borderRadius: "20px 20px 0 0", maxHeight: "85vh", p: 2 } }}
       >
         <Typography variant="h6" fontWeight={800} sx={{ mb: 2 }}>
-          {suggestions?.title || "Suggestions"}
+          {suggestions?.title || "Coverage suggestions"}
         </Typography>
         <Stack spacing={1.5}>
           {(suggestions?.suggestions || []).map((s, idx) => (
             <Card key={s.worker_profile_id} variant="outlined" sx={{ borderRadius: 2 }}>
               <CardContent sx={{ py: 1.5 }}>
-                <Stack direction="row" justifyContent="space-between">
-                  <Typography fontWeight={700}>
-                    {idx + 1}. {s.worker_name}
-                  </Typography>
-                  <Chip
-                    size="small"
-                    color={s.recommendation === "Best" ? "success" : s.recommendation?.includes("Avoid") ? "warning" : "default"}
-                    label={s.recommendation}
-                  />
-                </Stack>
-                {(s.reasons || []).map((r) => (
-                  <Typography key={r} variant="caption" display="block" color="text.secondary">
-                    {r}
-                  </Typography>
-                ))}
+                <Typography fontWeight={700}>
+                  {idx + 1}. {s.worker_name} — {s.recommendation}
+                </Typography>
                 <Button
                   size="small"
                   sx={{ mt: 1 }}
                   variant="contained"
                   onClick={() => {
-                    if (replaceContext) {
-                      assignReplacement(replaceContext, s);
-                    } else {
-                      openAdd(suggestions.shift_id);
-                      setForm((f) => ({ ...f, worker_profile_id: s.worker_profile_id }));
-                      setSuggestions(null);
-                    }
+                    openAdd(suggestions.shift_id);
+                    setForm((f) => ({ ...f, worker_profile_id: s.worker_profile_id }));
+                    setSuggestions(null);
                   }}
                 >
                   Assign
@@ -1212,12 +1552,6 @@ export default function PayrollSchedulingPanel() {
               </CardContent>
             </Card>
           ))}
-          {!suggestions?.suggestions?.length ? (
-            <ScheduleEmptyState
-              title="No replacements found"
-              description="Try another shift, adjust filters, or check worker availability."
-            />
-          ) : null}
         </Stack>
       </Drawer>
 
@@ -1228,6 +1562,20 @@ export default function PayrollSchedulingPanel() {
         defaultEnd={weekEnd}
         publishedCount={publishedCount}
         settings={settings}
+      />
+
+      <GenerateRosterDrawer
+        open={rosterGenOpen}
+        onClose={() => setRosterGenOpen(false)}
+        weekStart={weekStart}
+        weekEnd={weekEnd}
+        selectedDate={selectedDate}
+        settings={settings}
+        onAcceptDraft={handleAcceptRosterDraft}
+        onPublishWeek={() => {
+          setRosterGenOpen(false);
+          publish();
+        }}
       />
 
       <Snackbar

@@ -9,6 +9,11 @@ from backend.checkout_batch_source import (
     upload_batch_is_auto_scrape,
 )
 from backend.rinse_bag_completion import normalize_bag_id
+from backend.manual_checkout_eligibility import (
+    effective_checkout_row_status,
+    reclassify_checkout_batch_upload_rows,
+    ticket_has_checkout_log,
+)
 from backend.ta_helpers import table_exists, table_has_column
 
 
@@ -100,7 +105,6 @@ def batch_checkout_eligible_ticket_ids(
     checkout batch summary) so COMPLETED bags still in the vendor source are included
     even if upload_batch_rows still says REJECTED_DUPLICATE / ALREADY_COMPLETED.
     """
-    from backend.manual_checkout_eligibility import effective_checkout_row_status
     from backend.manual_checkout_settings import checkout_at_vendor_override_active
 
     org = int(organization_id)
@@ -144,14 +148,16 @@ def batch_checkout_eligible_ticket_ids(
             {**row, "batch_date": batch_date},
             is_auto_scrape=is_auto,
         )
-        if str(eff_status or "").strip().upper() in ("ACCEPTED", "OVERRIDDEN"):
-            out.add(tid)
+        if str(eff_status or "").strip().upper() not in ("ACCEPTED", "OVERRIDDEN"):
+            continue
+        if ticket_has_checkout_log(cursor, org, tid):
+            continue
+        out.add(tid)
     return out
 
 
 def _checkout_staging_rows_for_batch(cursor, organization_id: int, batch_id: int) -> list[dict]:
     """Upload batch rows that should be staged for checkout (after optional reclassify)."""
-    from backend.manual_checkout_eligibility import reclassify_checkout_batch_upload_rows
     from backend.manual_checkout_settings import checkout_at_vendor_override_active
 
     org = int(organization_id)

@@ -42,7 +42,7 @@ class TestCheckoutBatchScope(unittest.TestCase):
                 "weight_num": 0,
             },
             {
-                "ticket_id": "OK1",
+                "ticket_id": "OK12",
                 "date_clean": date(2026, 6, 4),
                 "name_clean": "Ok",
                 "service_type": "WF",
@@ -65,21 +65,14 @@ class TestCheckoutBatchScope(unittest.TestCase):
             "backend.checkout_batch_source.upload_batch_is_auto_scrape",
             return_value=True,
         ), patch(
-            "backend.manual_checkout_eligibility.effective_checkout_row_status",
-            side_effect=lambda _c, _o, row, **kw: (
-                ("ACCEPTED", "OK")
-                if row.get("ticket_id") == "DONE1"
-                else ("ACCEPTED", "OK")
-            ),
+            "backend.checkout_batch_scope.effective_checkout_row_status",
+            side_effect=lambda _c, _o, row, **kw: ("ACCEPTED", "OK"),
+        ), patch(
+            "backend.checkout_batch_scope.ticket_has_checkout_log",
+            return_value=False,
         ):
             eligible = batch_checkout_eligible_ticket_ids(cursor, 673, 3)
-        self.assertEqual(eligible, {"DONE1", "OK1"})
-        with patch(
-            "backend.checkout_batch_scope.batch_accepted_ticket_ids",
-            return_value={"OK1"},
-        ):
-            raw = batch_accepted_ticket_ids(cursor, 673)
-        self.assertEqual(raw, {"OK1"})
+        self.assertEqual(eligible, {"DONE1", "OK12"})
 
     def test_reapply_works_for_auto_scrape_batch(self):
         cursor = MagicMock()

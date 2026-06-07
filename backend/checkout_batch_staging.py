@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from backend.manual_checkout_eligibility import staging_checkout_sent_reason
+from backend.manual_checkout_eligibility import staging_checkout_sent_reason, ticket_has_checkout_log
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_bag_upload import find_staging_by_ticket_id, update_staging_from_upload_row
 
@@ -105,6 +105,9 @@ def upsert_staging_for_ticket_upload_row(
         return "skipped", None
 
     org = int(organization_id)
+    if ticket_has_checkout_log(cursor, org, tid):
+        return "skipped", None
+
     existing = find_staging_by_ticket_id(
         cursor,
         org,

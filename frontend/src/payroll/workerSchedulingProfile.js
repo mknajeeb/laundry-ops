@@ -25,9 +25,6 @@ export function workerProfileGaps(worker) {
   const avail = worker.availability || [];
   if (!avail.length || !avail.some((a) => !a.unavailable_flag)) gaps.push("No availability set");
   if (!worker.preferred_shift_id) gaps.push("No preferred shift");
-  if (worker.geofence_ids != null && !(worker.geofence_ids || []).length) {
-    gaps.push("No location compatibility");
-  }
   return gaps;
 }
 
@@ -59,11 +56,6 @@ const COMPLETENESS_CHECKS = [
     test: (w) => (w.availability || []).some((a) => !a.unavailable_flag),
   },
   { key: "preferred_shift", label: "No preferred shift", test: (w) => !!w.preferred_shift_id },
-  {
-    key: "location",
-    label: "No location compatibility",
-    test: (w) => (w.geofence_ids || []).length > 0,
-  },
   {
     key: "performance",
     label: "No performance mapping",
@@ -102,7 +94,7 @@ export function schedulingReadinessBadge(worker) {
   }
   const blocking = gaps.filter(
     (g) =>
-      !["No preferred shift", "No location compatibility", "Payroll category missing"].includes(g),
+      !["No preferred shift", "Payroll category missing"].includes(g),
   );
   if (blocking.length) {
     return { label: "Needs Review", color: "info", ready: false, gaps };

@@ -6,6 +6,7 @@ from datetime import date
 
 from flask import jsonify, request
 
+from backend.business_time import business_today
 from backend.db import get_db
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_operations_dashboard import get_operations_dashboard_summary
@@ -65,7 +66,7 @@ def register_rinse_admin_routes(
                             bd = bd.date()
                         target = bd
                 if not isinstance(target, date):
-                    target = date.today()
+                    target = business_today()
 
             payload = get_operations_dashboard_summary(
                 cursor,

@@ -29,6 +29,14 @@ class TestTicketFirstStaging(unittest.TestCase):
             "has_processing": True,
             "has_status": True,
         }
+        self._log_patcher = patch(
+            "backend.checkout_batch_staging.ticket_has_checkout_log",
+            return_value=False,
+        )
+        self._log_patcher.start()
+
+    def tearDown(self):
+        self._log_patcher.stop()
 
     def test_same_customer_different_ticket_ids_insert_separate_rows(self):
         cursor = MagicMock()
@@ -140,6 +148,24 @@ class TestTicketFirstStaging(unittest.TestCase):
         )
         self.assertEqual(action, "skipped")
         self.assertIsNone(sid)
+
+    def test_skips_staging_when_ticket_already_has_checkout_log(self):
+        cursor = MagicMock()
+        with patch(
+            "backend.checkout_batch_staging.ticket_has_checkout_log",
+            return_value=True,
+        ), patch(
+            "backend.checkout_batch_staging.find_staging_by_ticket_id",
+        ) as find_staging, patch(
+            "backend.checkout_batch_staging.insert_staging_from_upload_row",
+        ) as ins:
+            action, sid = upsert_staging_for_ticket_upload_row(
+                cursor, 3, _row("44SES6FL9A"), date(2026, 6, 4), self.cap
+            )
+        self.assertEqual(action, "skipped")
+        self.assertIsNone(sid)
+        find_staging.assert_not_called()
+        ins.assert_not_called()
 
 
 class TestBatchSummaryNotStaged(unittest.TestCase):
