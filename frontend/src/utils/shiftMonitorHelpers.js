@@ -50,6 +50,23 @@ export function shiftMetricValue(metric, rushFilter = "all") {
   return null;
 }
 
+const SHIFT_METRIC_LABELS = {
+  weighed: { all: "Weighed", rush: "Rush Weighed", non_rush: "Non-Rush Weighed" },
+  not_weighed: { all: "Not Weighed", rush: "Rush Not Weighed", non_rush: "Non-Rush Not Weighed" },
+  issues: { all: "Issues", rush: "Rush Issues", non_rush: "Non-Rush Issues" },
+  workitems: { all: "Workitems", rush: "Rush Workitems", non_rush: "Non-Rush Workitems" },
+  weight_difference: { all: "Weight Difference", rush: "Rush Weight Difference", non_rush: "Non-Rush Weight Difference" },
+  yet_to_fold: { all: "Yet to Fold", rush: "Rush Yet to Fold", non_rush: "Non-Rush Yet to Fold" },
+};
+
+export function shiftMetricLabel(metricKey, rushFilter = "all") {
+  const labels = SHIFT_METRIC_LABELS[metricKey];
+  if (!labels) return metricKey;
+  if (rushFilter === "rush") return labels.rush;
+  if (rushFilter === "non_rush") return labels.non_rush;
+  return labels.all;
+}
+
 export function formatShiftDateLabel(dateStart, dateEnd) {
   const fmt = (iso) => {
     if (!iso) return "";

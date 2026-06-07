@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY, ensure_presence_tables
-from backend.rinse_scan_time import serialize_system_datetime_for_api, system_datetime_to_et
+from backend.rinse_scan_time import serialize_system_datetime_for_api, system_datetime_to_et, naive_system_utc
 from backend.rinse_presence_scrape import ready_for_vendor_scrape_enabled
 from backend.ta_helpers import table_exists
 
@@ -46,7 +46,10 @@ def build_presence_run_list_item(run: dict[str, Any]) -> dict[str, Any]:
     finished = run.get("finished_at") or run.get("created_at")
     duration = run.get("duration_seconds")
     if duration is None and isinstance(started, datetime) and isinstance(finished, datetime):
-        duration = int((finished - started).total_seconds())
+        s = naive_system_utc(started)
+        f = naive_system_utc(finished)
+        if s is not None and f is not None:
+            duration = int((f - s).total_seconds())
     scrape_meta = run.get("scrape_meta_json")
     if isinstance(scrape_meta, str):
         try:
@@ -146,12 +149,14 @@ def build_sync_status_from_run(
     finished_raw = run.get("finished_at") or run.get("created_at")
     last_fmt = _fmt_system(finished_raw if isinstance(finished_raw, datetime) else None)
     last_et = _short_time_et(finished_raw if isinstance(finished_raw, datetime) else None)
-    now = evaluation_time or datetime.now(timezone.utc).replace(tzinfo=None)
+    now = naive_system_utc(evaluation_time) or datetime.now(timezone.utc).replace(tzinfo=None)
     age_min = None
     stale = False
     if isinstance(finished_raw, datetime):
-        age_min = max(0, int((now - finished_raw).total_seconds()) // 60)
-        stale = age_min > RINSE_SYNC_STALE_MINUTES
+        ref = naive_system_utc(finished_raw)
+        if ref is not None:
+            age_min = max(0, int((now - ref).total_seconds()) // 60)
+            stale = age_min > RINSE_SYNC_STALE_MINUTES
     run_status = str(run.get("status") or item.get("status") or "unknown")
     failed = run_status == "failed"
     return {
@@ -265,10 +270,10 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
     started_raw = latest.get("started_at")
     last_fmt = detail.get("data_last_updated_at") or detail.get("scrape_finished_at")
     last_et = _short_time_et(finished_raw if isinstance(finished_raw, datetime) else None)
-    now = evaluation_time or datetime.now(timezone.utc).replace(tzinfo=None)
+    now = naive_system_utc(evaluation_time) or datetime.now(timezone.utc).replace(tzinfo=None)
     age_min = None
     stale = False
-    ref_dt = finished_raw if isinstance(finished_raw, datetime) else None
+    ref_dt = naive_system_utc(finished_raw if isinstance(finished_raw, datetime) else None)
     if ref_dt is not None:
         age_min = max(0, int((now - ref_dt).total_seconds()) // 60)
         stale = age_min > RINSE_SYNC_STALE_MINUTES

@@ -444,13 +444,13 @@ class TestDrilldownCountIntegrity:
         mock_pending.return_value = {
             "rows": [
                 {"bag_id": "IN1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
-                {"bag_id": "A1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "PENDING_WEIGHING"},
-                {"bag_id": "A2", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "checkout_status": "CHECKOUT_PENDING"},
+                {"bag_id": "A1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "PENDING_WEIGHING", "in_active_staging": True},
+                {"bag_id": "A2", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "FOLDED_COMPLETED", "checkout_status": "NOT_CHECKED_OUT", "in_active_staging": True},
             ],
             "incoming": {"rows": [{"bag_id": "IN1", "record_scope": "incoming"}], "groups": {"combined": {}}},
             "wf_lifecycle": {"groups": {"combined": {"total": 2, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
             "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
-            "checkout_rush": {"checkout_pending": 1},
+            "checkout_summary": {"rush": {"checkout_pending": 1, "checked_out": 0, "checkout_needs_review": 0, "checkout_not_recorded": 0}},
         }
         cursor = MagicMock()
         payload = build_simple_shift_performance_payload(
@@ -459,10 +459,11 @@ class TestDrilldownCountIntegrity:
         active = payload["current_active_work"]
         checkout = payload["rush_checkout"]
         records = payload["records"]
-        assert active["total"] == _count_tag(records, "active_work") == 2
-        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 2
+        assert active["total"] == _count_tag(records, "active_work") == 1
+        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 1
         assert active["counts_add_up"] is True
         assert checkout["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
+        assert checkout["checkout_not_recorded"] == _count_tag(records, "checkout_not_recorded") == 0
         assert "checkout_pending" not in active
         incoming_rec = next(r for r in records if r["bag_id"] == "IN1")
         assert incoming_rec["in_scope_a_active"] is False
@@ -544,8 +545,8 @@ class TestDrilldownCountIntegrity:
         }
         mock_pending.return_value = {
             "rows": [
-                {"bag_id": "R1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "PENDING_WEIGHING"},
-                {"bag_id": "N1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "WEIGHED_NOT_STARTED"},
+                {"bag_id": "R1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "PENDING_WEIGHING", "in_active_staging": True},
+                {"bag_id": "N1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "WEIGHED_NOT_STARTED", "in_active_staging": True},
             ],
             "incoming": {"rows": [], "groups": {"combined": {}}},
             "wf_lifecycle": {"groups": {"combined": {"total": 2, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
@@ -560,3 +561,205 @@ class TestDrilldownCountIntegrity:
         assert weighed["all"] == 1
         assert weighed["rush"] == 0
         assert weighed["non_rush"] == 1
+
+
+class TestActiveWorkCountLogic:
+    def test_resolve_rush_from_portal_text(self):
+        from datetime import date
+        from backend.rinse_shift_analysis import resolve_effective_rush_for_row
+
+        row = {
+            "name_clean": "Customer ⚡ RUSH",
+            "date_clean": date(2026, 6, 4),
+            "effective_rush": "NON-RUSH",
+        }
+        assert resolve_effective_rush_for_row(row, date(2026, 6, 4)) == "RUSH"
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_active_work_excludes_registry_presence_and_completed(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "STG1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "IN_WASHING", "in_active_staging": True},
+                {"bag_id": "REG1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "PENDING_WEIGHING", "registry_supplement": True, "in_active_staging": False},
+                {"bag_id": "PRS1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "PENDING_WEIGHING", "presence_source": True, "in_active_staging": False},
+                {"bag_id": "DONE1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "FOLDED_COMPLETED", "in_active_staging": True},
+                {"bag_id": "RFV1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
+            ],
+            "incoming": {"rows": [{"bag_id": "RFV1", "record_scope": "incoming"}], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 4, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {}},
+        }
+        cursor = MagicMock()
+        payload = build_simple_shift_performance_payload(
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+        )
+        assert payload["current_active_work"]["total"] == 1
+        assert _count_tag(payload["records"], "active_work") == 1
+        recon = payload["debug_audit"]["active_work_reconciliation"]
+        assert recon["counts_add_up"] is True
+        assert "REG1" in {e["bag_id"] for e in recon["excluded_ids"]}
+        assert "PRS1" in {e["bag_id"] for e in recon["excluded_ids"]}
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_checkout_pending_not_same_as_not_recorded(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "PEND", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "FOLDED_COMPLETED", "checkout_status": "NOT_CHECKED_OUT", "in_active_staging": True},
+                {"bag_id": "NOREC", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "SENT_TO_RINSE", "checkout_status": "CHECKOUT_NOT_RECORDED", "in_active_staging": True},
+                {"bag_id": "WASH", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "IN_WASHING", "checkout_status": "NOT_CHECKED_OUT", "in_active_staging": True},
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 3, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {"checkout_pending": 1, "checkout_not_recorded": 1}},
+        }
+        cursor = MagicMock()
+        payload = build_simple_shift_performance_payload(
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+        )
+        checkout = payload["rush_checkout"]
+        records = payload["records"]
+        assert checkout["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
+        assert checkout["checkout_not_recorded"] == _count_tag(records, "checkout_not_recorded") == 1
+        wash = next(r for r in records if r["bag_id"] == "WASH")
+        assert "checkout_pending" not in wash["drilldown_tags"]
+        assert "checkout_not_recorded" not in wash["drilldown_tags"]
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_yet_to_fold_excludes_completed_second_weight(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {
+            "FOLDED": _sv(
+                _ev("weight-entry", T1, ev_id=2, scan_index=2),
+                _ev("start-cleaning", T2, ev_id=3, scan_index=3),
+                _ev("weight-entry", T5, ev_id=4, scan_index=4),
+            ),
+            "WASHING": _sv(
+                _ev("weight-entry", T1, ev_id=2, scan_index=2),
+                _ev("start-cleaning", T2, ev_id=3, scan_index=3),
+            ),
+        }
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "FOLDED", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "IN_DRYING", "in_active_staging": True},
+                {"bag_id": "WASHING", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "IN_WASHING", "in_active_staging": True},
+                {"bag_id": "WEIGH", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "PENDING_WEIGHING", "in_active_staging": True},
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 3, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {}},
+        }
+        cursor = MagicMock()
+        payload = build_simple_shift_performance_payload(
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+        )
+        assert _count_tag(payload["records"], "yet_to_fold") == 1
+        folded = next(r for r in payload["records"] if r["bag_id"] == "FOLDED")
+        assert folded["completed"] is True
+        assert "yet_to_fold" not in folded["drilldown_tags"]
+        assert "completed_without_clean" in folded["drilldown_tags"]
+        audit = payload["debug_audit"]["yet_to_fold_audit"]
+        assert audit["count"] == 1
+        assert audit["bag_ids"] == ["WASHING"]
+
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_rush_hd_stays_rush_in_active_work(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "HD1", "record_scope": "hd_lifecycle", "service_type": "HD", "effective_rush": "RUSH", "current_lifecycle_status": "at_vendor", "in_active_staging": True},
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 1}}},
+            "checkout_summary": {"rush": {}},
+        }
+        cursor = MagicMock()
+        payload = build_simple_shift_performance_payload(
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+        )
+        assert payload["current_active_work"]["rush_hd"] == 1
+        assert payload["current_active_work"]["total"] == 1

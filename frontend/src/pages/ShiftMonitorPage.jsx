@@ -27,6 +27,7 @@ import {
   formatShiftDateLabel,
   sectionSplitCounts,
   shiftMetricValue,
+  shiftMetricLabel,
   syncStatusSubtext,
   rinseSyncBanner,
 } from "../utils/shiftMonitorHelpers";
@@ -500,24 +501,28 @@ export default function ShiftMonitorPage({ user }) {
           >
             <StatCard label="Checkout Pending" value={checkout.checkout_pending} source={checkout.source} onClick={() => openDrilldown("checkout_pending")} active={filterTag === "checkout_pending"} />
             <StatCard label="Checked Out" value={checkout.checked_out} source={checkout.source} />
-            <StatCard label="Checkout Not Recorded" value={checkout.checkout_not_recorded} source={checkout.source} onClick={() => openDrilldown("checkout_pending")} />
+            <StatCard label="Checkout Not Recorded" value={checkout.checkout_not_recorded} source={checkout.source} onClick={() => openDrilldown("checkout_not_recorded")} />
             <StatCard label="Checkout Needs Review" value={checkout.checkout_needs_review} source={checkout.source} />
           </Section>
 
           <Section title="Shift Status" rushFilter={rushFilter} onRushFilterChange={setRushFilter}>
-            <StatCard label="Weighed" value={shiftMetricValue(shift.weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_weighed")} />
-            <StatCard label="Not Weighed" value={shiftMetricValue(shift.not_weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_not_weighed")} />
-            <StatCard label="Issues" value={shiftMetricValue(shift.issues, rushFilter)} source="Scan events" onClick={() => openDrilldown("issues")} />
-            <StatCard label="Workitems" value={shiftMetricValue(shift.workitems, rushFilter)} source="Scan events" onClick={() => openDrilldown("workitems")} />
-            <StatCard label="Weight Difference" value={weightDiffValue} source={`Scan events · ${weightDiffSub}`} onClick={() => openDrilldown("weight_difference")} />
-            <StatCard label="Rush Pending Wash" value={shiftMetricValue(shift.rush_pending_wash, "rush")} source="Rush only · Scan events" onClick={() => openDrilldown("rush_pending_wash")} />
-            <StatCard
-              label="Last Rush Wash"
-              value={shift.last_rush_wash ? formatDateTime(shift.last_rush_wash.at)?.split(",")[1]?.trim() || "—" : "—"}
-              source="Rush only · Scan events"
-              sub={shift.last_rush_wash ? `${shift.last_rush_wash.bag_id} · ${shift.last_rush_wash.user || ""}` : "No rush wash today"}
-            />
-            <StatCard label="Yet to Fold" value={shiftMetricValue(shift.yet_to_fold, rushFilter)} source="At Vendor staging" onClick={() => openDrilldown("yet_to_fold")} />
+            <StatCard label={shiftMetricLabel("weighed", rushFilter)} value={shiftMetricValue(shift.weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_weighed")} />
+            <StatCard label={shiftMetricLabel("not_weighed", rushFilter)} value={shiftMetricValue(shift.not_weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_not_weighed")} />
+            <StatCard label={shiftMetricLabel("issues", rushFilter)} value={shiftMetricValue(shift.issues, rushFilter)} source="Scan events" onClick={() => openDrilldown("issues")} />
+            <StatCard label={shiftMetricLabel("workitems", rushFilter)} value={shiftMetricValue(shift.workitems, rushFilter)} source="Scan events" onClick={() => openDrilldown("workitems")} />
+            <StatCard label={shiftMetricLabel("weight_difference", rushFilter)} value={weightDiffValue} source={`Scan events · ${weightDiffSub}`} onClick={() => openDrilldown("weight_difference")} />
+            {rushFilter !== "non_rush" ? (
+              <StatCard label="Rush Pending Wash" value={shiftMetricValue(shift.rush_pending_wash, "rush")} source="Rush only · Scan events" onClick={() => openDrilldown("rush_pending_wash")} />
+            ) : null}
+            {rushFilter !== "non_rush" ? (
+              <StatCard
+                label="Last Rush Wash"
+                value={shift.last_rush_wash ? formatDateTime(shift.last_rush_wash.at)?.split(",")[1]?.trim() || "—" : "—"}
+                source="Rush only · Scan events"
+                sub={shift.last_rush_wash ? `${shift.last_rush_wash.bag_id} · ${shift.last_rush_wash.user || ""}` : "No rush wash today"}
+              />
+            ) : null}
+            <StatCard label={shiftMetricLabel("yet_to_fold", rushFilter)} value={shiftMetricValue(shift.yet_to_fold, rushFilter)} source="At Vendor staging" onClick={() => openDrilldown("yet_to_fold")} />
           </Section>
 
           <Box sx={{ mb: 3 }}>

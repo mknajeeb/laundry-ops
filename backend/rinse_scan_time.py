@@ -130,6 +130,15 @@ def system_datetime_to_et(dt: datetime | None) -> datetime | None:
     return dt.astimezone(_ET)
 
 
+def naive_system_utc(dt: datetime | None) -> datetime | None:
+    """Normalize system/job DB datetimes to naive UTC for safe age arithmetic."""
+    if dt is None or not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        return dt
+    return dt.astimezone(_UTC).replace(tzinfo=None)
+
+
 def json_safe_rinse(obj: Any) -> Any:
     """Recursively serialize Rinse scan/bag payloads (scan wall-time datetimes)."""
     if obj is None:

@@ -21,7 +21,12 @@ from backend.rinse_bag_activity_rules import (
     extract_bag_activity_credits,
 )
 from backend.rinse_bag_lifecycle_status import (
+    CHECKOUT_STATUS_CHECKED_OUT,
+    CHECKOUT_STATUS_NEEDS_REVIEW,
+    CHECKOUT_STATUS_NOT_CHECKED_OUT,
+    CHECKOUT_STATUS_NOT_RECORDED,
     FOLDED_COMPLETED,
+    IN_DRYING,
     IN_WASHING,
     PENDING_WEIGHING,
     SENT_TO_RINSE,
@@ -31,10 +36,11 @@ from backend.rinse_bag_lifecycle_status import (
 from backend.rinse_folding_et import naive_et_day_end_exclusive, period_datetime_bounds_et
 from backend.rinse_processing_productivity import _load_shift_sessions, _shift_effective_clock_out
 from backend.rinse_processing_settings import get_processing_settings
-from backend.rinse_scan_purpose import is_start_cleaning_purpose
+from backend.rinse_scan_purpose import is_start_cleaning_purpose, is_weight_entry_purpose
 from backend.rinse_bag_stage_bounds import first_start_cleaning_after, gaming_events_from_records, lifecycle_anchor, events_on_or_after
-from backend.rinse_scan_time import RINSE_SCAN_SOURCE_TIMEZONE
+from backend.rinse_scan_time import RINSE_SCAN_SOURCE_TIMEZONE, naive_system_utc
 from backend.rinse_shift_analysis import (
+    LIFECYCLE_COMPLETED_STATUSES,
     _load_scan_events_for_bags,
     _rush_bucket_key,
     _staging_logistics_expr,
@@ -44,6 +50,17 @@ from backend.ta_helpers import table_exists, table_has_column
 
 RINSE_SYNC_STALE_MINUTES = 120
 PRODUCTION_TENANT_MARKERS = ("veewash", "washpro staff", "washpro")
+
+_LOGISTICS_SENT = frozenset({"SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"})
+_PRE_FOLD_LIFECYCLE = frozenset(
+    {
+        PENDING_WEIGHING,
+        WEIGHED_NOT_STARTED,
+        "ASSIGNED_NOT_SENT_TO_VENDOR",
+        "SENT_TO_VENDOR",
+    }
+)
+_YET_TO_FOLD_LIFECYCLE = frozenset({SORTED_READY_FOR_WASH, IN_WASHING, IN_DRYING})
 
 
 def _normalized_service_type(row: Mapping[str, Any]) -> str | None:
@@ -81,6 +98,57 @@ def _bucket_for_row(row: Mapping[str, Any]) -> str | None:
     if rush == "non_rush":
         return f"nonrush_{svc.lower()}"
     return f"unknown_rush_{svc.lower()}"
+
+
+def _logistics_sent(row: Mapping[str, Any]) -> bool:
+    logistics = str(row.get("logistics_status") or row.get("status") or "").upper()
+    return logistics in _LOGISTICS_SENT
+
+
+def _qualifies_for_active_work(
+    pending_row: Mapping[str, Any] | None,
+    completion: Any,
+) -> bool:
+    """Current at-vendor active work: active staging only, not completed/sent/RFV."""
+    if not pending_row or not isinstance(pending_row, dict):
+        return False
+    scope = str(pending_row.get("record_scope") or "")
+    if scope == "incoming" or scope not in ("wf_lifecycle", "hd_lifecycle"):
+        return False
+    if not pending_row.get("in_active_staging"):
+        return False
+    if completion.completed:
+        return False
+    status = str(pending_row.get("current_lifecycle_status") or "")
+    if status in LIFECYCLE_COMPLETED_STATUSES:
+        return False
+    if int(pending_row.get("is_completed") or 0) == 1:
+        return False
+    if _logistics_sent(pending_row):
+        return False
+    return True
+
+
+def _qualifies_yet_to_fold(
+    pending_row: Mapping[str, Any] | None,
+    events: Sequence[Mapping[str, Any]],
+    completion: Any,
+) -> bool:
+    """Post-wash / in-process bags not yet completed on our side."""
+    if completion.completed:
+        return False
+    if not pending_row:
+        return False
+    status = str(pending_row.get("current_lifecycle_status") or "")
+    if status in LIFECYCLE_COMPLETED_STATUSES or status in _PRE_FOLD_LIFECYCLE:
+        if status in _PRE_FOLD_LIFECYCLE:
+            return False
+    has_start_cleaning = any(is_start_cleaning_purpose(ev.get("purpose")) for ev in events)
+    if status in _YET_TO_FOLD_LIFECYCLE:
+        return True
+    if has_start_cleaning and status not in LIFECYCLE_COMPLETED_STATUSES:
+        return True
+    return False
 
 
 def _inc_split(counts: dict[str, int], bucket: str | None) -> None:
@@ -321,10 +389,10 @@ def _presence_last_refreshed(pending: Mapping[str, Any]) -> str | None:
 
 def _parse_iso_datetime(raw: Any) -> datetime | None:
     if isinstance(raw, datetime):
-        return raw
+        return naive_system_utc(raw)
     if isinstance(raw, str) and raw.strip():
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")[:26])
+            return naive_system_utc(datetime.fromisoformat(raw.replace("Z", "+00:00")[:26]))
         except ValueError:
             return None
     return None
@@ -347,7 +415,9 @@ def _build_sync_status(
             "sync_name": sync_name,
         }
     last_dt = _parse_iso_datetime(last_refreshed_at)
-    now = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    now = naive_system_utc(
+        evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    )
     if last_dt is None:
         return {
             "sync_time_unavailable": True,
@@ -455,13 +525,13 @@ def _build_active_work_section(pending: Mapping[str, Any]) -> dict[str, Any]:
     active_rows = [
         r
         for r in (pending.get("rows") or [])
-        if isinstance(r, dict) and str(r.get("record_scope") or "") != "incoming"
+        if isinstance(r, dict)
+        and str(r.get("record_scope") or "") != "incoming"
+        and r.get("in_active_staging")
+        and str(r.get("current_lifecycle_status") or "") not in LIFECYCLE_COMPLETED_STATUSES
+        and int(r.get("is_completed") or 0) != 1
     ]
-    hd_rows = [
-        r
-        for r in (pending.get("rows") or [])
-        if isinstance(r, dict) and str(r.get("record_scope") or "") == "hd_lifecycle"
-    ]
+    hd_rows = [r for r in active_rows if str(r.get("record_scope") or "") == "hd_lifecycle"]
     wf_rows = [r for r in active_rows if r not in hd_rows]
     splits = _count_splits_from_rows(wf_rows + hd_rows)
     section = {
@@ -520,12 +590,13 @@ def _attach_section_sync_statuses(
 
 
 def _build_rush_checkout_section(pending: Mapping[str, Any], records: list[dict[str, Any]]) -> dict[str, Any]:
-    checkout = pending.get("checkout_rush") or {}
+    checkout = (pending.get("checkout_summary") or {}).get("rush") or {}
     return {
         "checkout_pending": _count_tag(records, "checkout_pending"),
-        "checked_out": int(checkout.get("checked_out") or 0),
-        "checkout_needs_review": int(checkout.get("checkout_needs_review") or 0),
-        "checkout_not_recorded": _count_tag(records, "checkout_pending"),
+        "checked_out": int(checkout.get("checked_out") or 0) or _count_tag(records, "checkout_checked_out"),
+        "checkout_needs_review": int(checkout.get("checkout_needs_review") or 0)
+        or _count_tag(records, "checkout_needs_review"),
+        "checkout_not_recorded": _count_tag(records, "checkout_not_recorded"),
         "source": "Rush facility checkout workflow",
         "description": "Checkout Pending = Rush bags still waiting for facility checkout",
         "drilldown_filter": "checkout_pending",
@@ -791,12 +862,13 @@ def _record_from_bag(
     period_end_exclusive: datetime,
     in_active: bool,
     in_incoming: bool,
+    completion: Any | None = None,
 ) -> dict[str, Any]:
     row_meta = dict(pending_row or {})
-    merged = {**row_meta, **dict(meta)}
+    merged = {**dict(meta), **row_meta}
     customer = merged.get("name_clean") or merged.get("customer")
     bucket = _bucket_for_row(merged)
-    completion = evaluate_bag_completion_v2(events)
+    completion = completion if completion is not None else evaluate_bag_completion_v2(events)
     credits = extract_bag_activity_credits(
         bid, events, customer=customer, default_lbs=_safe_float(merged.get("weight_num"))
     )
@@ -814,7 +886,8 @@ def _record_from_bag(
             tags.add(f"rfv_{bucket}")
             if bucket.startswith("unknown") or bucket == "unknown_service":
                 tags.add("rfv_unknown_needs_review")
-    if in_active:
+    active_eligible = in_active and _qualifies_for_active_work(pending_row, completion)
+    if active_eligible:
         tags.add("active_work")
         if bucket:
             tags.add(f"active_{bucket}")
@@ -824,10 +897,18 @@ def _record_from_bag(
             tags.add("shift_not_weighed")
         if is_rush and not has_start_cleaning:
             tags.add("rush_pending_wash")
-        if not completion.completed:
+        if _qualifies_yet_to_fold(pending_row, events, completion):
             tags.add("yet_to_fold")
-        checkout = str(row_meta.get("checkout_status") or "")
-        if is_rush and (checkout.endswith("NOT_CHECKED_OUT") or checkout == "CHECKOUT_PENDING"):
+    checkout = str(row_meta.get("checkout_status") or "")
+    lifecycle_status = str(row_meta.get("current_lifecycle_status") or "")
+    if is_rush:
+        if checkout == CHECKOUT_STATUS_NOT_RECORDED:
+            tags.add("checkout_not_recorded")
+        elif checkout == CHECKOUT_STATUS_CHECKED_OUT:
+            tags.add("checkout_checked_out")
+        elif checkout == CHECKOUT_STATUS_NEEDS_REVIEW:
+            tags.add("checkout_needs_review")
+        elif lifecycle_status == FOLDED_COMPLETED and checkout == CHECKOUT_STATUS_NOT_CHECKED_OUT:
             tags.add("checkout_pending")
     if any(c.role == ROLE_ISSUES for c in period_credits):
         tags.add("issues")
@@ -835,7 +916,7 @@ def _record_from_bag(
         tags.add("workitems")
     if wdiff.flagged:
         tags.add("weight_difference")
-    elif in_active and wdiff.unavailable_reason:
+    elif active_eligible and wdiff.unavailable_reason:
         tags.add("weight_difference_unavailable")
     if completion.exception_code == "COMPLETED_WITHOUT_FINAL_CLEAN_SCAN":
         tags.add("completed_without_clean")
@@ -874,7 +955,7 @@ def _record_from_bag(
         "completion_kind": completion.completion_kind,
         "completion_exception": completion.exception_code,
         "needs_review": completion.needs_review or bool(row_meta.get("needs_review")),
-        "in_scope_a_active": in_active,
+        "in_scope_a_active": active_eligible,
         "in_ready_for_vendor": in_incoming,
         "weight_difference": {
             "flagged": wdiff.flagged,
@@ -985,6 +1066,73 @@ def _build_shift_status(records: list[dict[str, Any]], *, threshold: float, last
     }
 
 
+def _weight_entry_counts(events: Sequence[Mapping[str, Any]]) -> tuple[int, list[str]]:
+    weights = [ev for ev in events if is_weight_entry_purpose(ev.get("purpose"))]
+    non_parseable: list[str] = []
+    parseable = 0
+    for ev in weights:
+        raw = ev.get("weight_lbs") or ev.get("weight") or ev.get("purpose")
+        try:
+            if raw is not None and float(str(raw).split()[0]) > 0:
+                parseable += 1
+                continue
+        except (TypeError, ValueError):
+            pass
+        non_parseable.append(str(ev.get("purpose") or ""))
+    return len(weights), non_parseable
+
+
+def _collect_active_bucket_ids(
+    records: list[dict[str, Any]],
+    pending_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, list[str]]:
+    buckets = {
+        "rush_wf_ids": "active_rush_wf",
+        "rush_hd_ids": "active_rush_hd",
+        "nonrush_wf_ids": "active_nonrush_wf",
+        "nonrush_hd_ids": "active_nonrush_hd",
+        "unknown_ids": None,
+    }
+    out: dict[str, list[str]] = {k: [] for k in buckets}
+    seen: list[str] = []
+    dupes: list[str] = []
+    excluded: list[dict[str, str]] = []
+    for rec in records:
+        bid = str(rec.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        tags = set(rec.get("drilldown_tags") or [])
+        if "active_work" in tags:
+            if bid in seen:
+                dupes.append(bid)
+            seen.append(bid)
+            for key, tag in buckets.items():
+                if tag and tag in tags:
+                    out[key].append(bid)
+            if any(t.startswith("active_unknown") for t in tags) or "unknown_speed_service" in tags:
+                out["unknown_ids"].append(bid)
+        elif rec.get("in_ready_for_vendor"):
+            excluded.append({"bag_id": bid, "reason": "ready_for_vendor"})
+        elif rec.get("completed"):
+            excluded.append({"bag_id": bid, "reason": "completed_scan_evidence"})
+        elif not rec.get("in_scope_a_active"):
+            pending_row = (pending_by_bag or {}).get(bid)
+            if pending_row and not pending_row.get("in_active_staging"):
+                if pending_row.get("registry_supplement"):
+                    excluded.append({"bag_id": bid, "reason": "registry_supplement"})
+                elif pending_row.get("presence_source"):
+                    excluded.append({"bag_id": bid, "reason": "presence_supplement"})
+                else:
+                    excluded.append({"bag_id": bid, "reason": "not_in_active_staging"})
+            elif pending_row and str(pending_row.get("current_lifecycle_status") or "") in LIFECYCLE_COMPLETED_STATUSES:
+                excluded.append({"bag_id": bid, "reason": "lifecycle_completed"})
+            elif bid:
+                excluded.append({"bag_id": bid, "reason": "not_in_active_staging_or_completed"})
+    for key in out:
+        out[key] = sorted(set(out[key]))
+    return {"bucket_ids": out, "duplicate_ids": sorted(set(dupes)), "excluded_ids": excluded}
+
+
 def _build_debug_audit(
     *,
     pending: Mapping[str, Any],
@@ -994,6 +1142,7 @@ def _build_debug_audit(
     records: list[dict[str, Any]],
     employee_diagnostics: dict[str, Any],
     shift_status: dict[str, Any],
+    events_by_bag: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     incoming_rows = [r for r in ((pending.get("incoming") or {}).get("rows") or []) if isinstance(r, dict)]
     unknown_why: list[str] = []
@@ -1002,6 +1151,58 @@ def _build_debug_audit(
             unknown_why.append("missing service_type in presence rows")
         if any(_rush_bucket_key(str(r.get("effective_rush") or "")) not in ("rush", "non_rush") for r in incoming_rows):
             unknown_why.append("missing rush classification (rush_flag/estimated_delivery_date)")
+
+    bucket_audit = _collect_active_bucket_ids(records, pending_by_bag={
+        str(r.get("bag_id") or "").strip().upper(): r
+        for r in (pending.get("rows") or [])
+        if isinstance(r, dict) and r.get("bag_id")
+    })
+    bucket_ids = bucket_audit["bucket_ids"]
+    expected_bucket_total = sum(len(bucket_ids[k]) for k in bucket_ids)
+    api_total = _count_tag(records, "active_work")
+
+    rush_rows = [r for r in (pending.get("rows") or []) if isinstance(r, dict) and _rush_bucket_key(str(r.get("effective_rush") or "")) == "rush"]
+    rush_active = [r for r in records if r.get("rush_label") == "Rush" and "active_work" in (r.get("drilldown_tags") or [])]
+
+    yet_to_fold_ids: list[str] = []
+    completion_by_bag: dict[str, dict[str, Any]] = {}
+    excluded_completed: list[str] = []
+    for rec in records:
+        bid = str(rec.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        completion_by_bag[bid] = {
+            "completed": rec.get("completed"),
+            "completion_kind": rec.get("completion_kind"),
+            "completion_exception": rec.get("completion_exception"),
+        }
+        if "yet_to_fold" in (rec.get("drilldown_tags") or []):
+            yet_to_fold_ids.append(bid)
+        if rec.get("completed") and "yet_to_fold" not in (rec.get("drilldown_tags") or []):
+            if rec.get("in_scope_a_active") or rec.get("in_ready_for_vendor"):
+                excluded_completed.append(bid)
+
+    zero_w = one_w = two_plus = parseable_two = 0
+    non_parseable: list[dict[str, str]] = []
+    events_by_bag = events_by_bag or {}
+    for rec in records:
+        if not rec.get("in_scope_a_active"):
+            continue
+        bid = str(rec.get("bag_id") or "").strip().upper()
+        evs = events_by_bag.get(bid) or []
+        n, bad = _weight_entry_counts(evs)
+        if n == 0:
+            zero_w += 1
+        elif n == 1:
+            one_w += 1
+        else:
+            two_plus += 1
+            wdiff = rec.get("weight_difference") or {}
+            if wdiff.get("comparable"):
+                parseable_two += 1
+            elif bad:
+                non_parseable.append({"bag_id": bid, "issue": "non_parseable_weight_values"})
+
     return {
         "ready_for_vendor": {
             "total": ready_for_vendor.get("total"),
@@ -1016,7 +1217,7 @@ def _build_debug_audit(
         },
         "current_active_work": {
             "expected_total_from_pending": active_work.get("total"),
-            "actual_api_total": _count_tag(records, "active_work"),
+            "actual_api_total": api_total,
             "rush_wf": active_work.get("rush_wf"),
             "rush_hd": active_work.get("rush_hd"),
             "nonrush_wf": active_work.get("nonrush_wf"),
@@ -1025,9 +1226,48 @@ def _build_debug_audit(
             "unreconciled": active_work.get("unreconciled"),
             "unreconciled_ids": _collect_unreconciled_ids(records, "active_work"),
         },
+        "active_work_reconciliation": {
+            "expected_total_from_buckets": expected_bucket_total,
+            "api_total": api_total,
+            "counts_add_up": expected_bucket_total == api_total == int(active_work.get("total") or 0),
+            **bucket_ids,
+            "duplicate_ids": bucket_audit["duplicate_ids"],
+            "excluded_ids": bucket_audit["excluded_ids"],
+        },
+        "rush_classification_audit": {
+            "rush_expected_count": len(rush_rows),
+            "rush_api_count": len(rush_active),
+            "rows_missing_rush_type": [
+                str(r.get("bag_id"))
+                for r in (pending.get("rows") or [])
+                if isinstance(r, dict)
+                and not str(r.get("rush_type") or r.get("effective_rush") or "").strip()
+            ],
+            "rows_using_fallback": [
+                str(r.get("bag_id"))
+                for r in (pending.get("rows") or [])
+                if isinstance(r, dict) and r.get("in_active_staging") and r.get("date_clean")
+            ],
+            "misclassified_candidates": [],
+        },
+        "yet_to_fold_audit": {
+            "count": len(yet_to_fold_ids),
+            "bag_ids": sorted(yet_to_fold_ids),
+            "completion_signal_by_bag": completion_by_bag,
+            "excluded_as_completed": sorted(set(excluded_completed)),
+        },
+        "weight_difference_audit": {
+            "zero_weight_entries": zero_w,
+            "one_weight_entry": one_w,
+            "two_plus_weight_entries": two_plus,
+            "parseable_two_weight_entries": parseable_two,
+            "non_parseable_weights": non_parseable,
+        },
         "rush_checkout": {
             "checkout_pending_rush_only": rush_checkout.get("checkout_pending"),
             "checked_out": rush_checkout.get("checked_out"),
+            "checkout_not_recorded": rush_checkout.get("checkout_not_recorded"),
+            "checkout_needs_review": rush_checkout.get("checkout_needs_review"),
         },
         "employee_activity": employee_diagnostics,
         "weight_difference": {
@@ -1075,7 +1315,7 @@ def _build_exceptions_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "workitems": {"count": _count_tag(records, "workitems"), "drilldown_filter": "workitems", "source": "Scan events"},
         "weight_difference": {"count": _count_tag(records, "weight_difference"), "drilldown_filter": "weight_difference", "source": "Scan events"},
         "unknown_service_speed": {"count": _count_tag(records, "unknown_speed_service"), "drilldown_filter": "unknown_speed_service", "source": "Portal scrape"},
-        "checkout_not_recorded": {"count": _count_tag(records, "checkout_pending"), "drilldown_filter": "checkout_pending", "source": "Checkout staging"},
+        "checkout_not_recorded": {"count": _count_tag(records, "checkout_not_recorded"), "drilldown_filter": "checkout_not_recorded", "source": "Checkout staging"},
     }
 
 
@@ -1111,11 +1351,17 @@ def build_simple_shift_performance_payload(
         for r in (pending.get("rows") or [])
         if isinstance(r, dict) and r.get("bag_id")
     }
-    active_ids = set(pending_by_bag.keys()) - set(incoming_rows.keys())
+    active_candidates = {
+        bid
+        for bid, row in pending_by_bag.items()
+        if bid not in incoming_rows
+        and row.get("in_active_staging")
+        and str(row.get("record_scope") or "") in ("wf_lifecycle", "hd_lifecycle")
+    }
     scope_b_ids = _load_bag_ids_with_et_activity(
         cursor, org, period_start=period_start, period_end=period_end
     )
-    all_bag_ids = sorted(set(scope_b_ids) | set(incoming_rows.keys()) | active_ids)
+    all_bag_ids = sorted(set(scope_b_ids) | set(incoming_rows.keys()) | set(pending_by_bag.keys()))
 
     meta_by_bag = _load_bag_metadata(cursor, org, all_bag_ids)
     events_by_bag = _load_scan_events_for_bags(cursor, org, all_bag_ids)
@@ -1135,7 +1381,8 @@ def build_simple_shift_performance_payload(
             meta = {**meta, **{k: v for k, v in pending_row.items() if v is not None}}
         events = events_by_bag.get(bid) or []
         in_incoming = bid in incoming_rows
-        in_active = bid in active_ids
+        in_active = bid in active_candidates
+        completion = evaluate_bag_completion_v2(events)
         rec = _record_from_bag(
             bid=bid,
             meta=meta,
@@ -1146,6 +1393,7 @@ def build_simple_shift_performance_payload(
             period_end_exclusive=end_exclusive,
             in_active=in_active,
             in_incoming=in_incoming,
+            completion=completion,
         )
         records.append(rec)
 
@@ -1193,7 +1441,9 @@ def build_simple_shift_performance_payload(
         org,
         ready_for_vendor=ready_for_vendor,
         active_work=active_work,
-        evaluation_time=evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow(),
+        evaluation_time=naive_system_utc(
+            evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+        ),
     )
     rush_checkout = _build_rush_checkout_section(pending, records)
     debug_audit = _build_debug_audit(
@@ -1204,6 +1454,7 @@ def build_simple_shift_performance_payload(
         records=records,
         employee_diagnostics=employee_diagnostics,
         shift_status=shift_status,
+        events_by_bag=events_by_bag,
     )
 
     return {

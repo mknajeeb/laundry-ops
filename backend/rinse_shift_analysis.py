@@ -44,6 +44,7 @@ from backend.rinse_cleaner_ticket_presence import (
 from backend.rinse_lifecycle_portal_scrape import compute_missing_from_confirmed_portal_scrape
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_order_search import _active_staging_where_sql
+from backend.rinse_portal_csv import parse_rush_flag_from_portal_cells
 from backend.rinse_processing_productivity import build_processing_productivity
 from backend.rinse_processing_settings import get_processing_settings
 from backend.rinse_scan_purpose import is_start_cleaning_purpose, is_weight_entry_purpose
@@ -121,17 +122,19 @@ LIFECYCLE_GROUP_LABELS: dict[str, str] = {
 
 
 def _parse_evaluation_time(raw: str | datetime | None) -> datetime | None:
+    from backend.rinse_scan_time import naive_system_utc
+
     if raw is None:
         return None
     if isinstance(raw, datetime):
-        return raw
+        return naive_system_utc(raw)
     text = str(raw).strip()
     if not text:
         return None
     try:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
-        return datetime.fromisoformat(text)
+        return naive_system_utc(datetime.fromisoformat(text))
     except ValueError:
         return None
 
@@ -175,6 +178,46 @@ def _rush_bucket_key(effective_rush: str) -> str:
     if er == "NON-RUSH":
         return "non_rush"
     return "unknown_rush"
+
+
+def _parse_row_date(raw: Any) -> date | None:
+    if isinstance(raw, date) and not isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, datetime):
+        return raw.date()
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return date.fromisoformat(raw.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def resolve_effective_rush_for_row(row: Mapping[str, Any], target_date: date) -> str:
+    """
+    Rush rule for Shift Monitor / lifecycle: rush_type, RUSH text / ⚡ in portal cells,
+    then date_clean (EDD) before target_date => RUSH.
+    """
+    cells = [row.get("name_clean"), row.get("notes")]
+    parsed = parse_rush_flag_from_portal_cells([c for c in cells if c is not None])
+    if parsed == "RUSH":
+        return "RUSH"
+    er = str(row.get("effective_rush") or "").upper().strip()
+    if er == "RUSH":
+        return "RUSH"
+    rt = str(row.get("rush_type") or "").upper().strip()
+    if rt == "RUSH":
+        return "RUSH"
+    if parsed == "NON-RUSH":
+        return "NON-RUSH"
+    if er == "NON-RUSH":
+        return "NON-RUSH"
+    if rt == "NON-RUSH":
+        return "NON-RUSH"
+    dc = _parse_row_date(row.get("date_clean"))
+    if dc is not None:
+        return "RUSH" if dc < target_date else "NON-RUSH"
+    return PRESENCE_RUSH_UNKNOWN
 
 
 def _accumulate_incoming_group(group: dict[str, int], row: Mapping[str, Any]) -> None:
@@ -352,6 +395,7 @@ def _empty_checkout_rush_summary() -> dict[str, int]:
         "checkout_pending": 0,
         "checked_out": 0,
         "checkout_needs_review": 0,
+        "checkout_not_recorded": 0,
     }
 
 
@@ -1181,6 +1225,9 @@ def _load_pending_bag_rows(
                 wf_due_today_staging += 1
             else:
                 wf_not_due_today_staging += 1
+            row["in_active_staging"] = True
+            row["registry_supplement"] = False
+            row["effective_rush"] = resolve_effective_rush_for_row(row, td)
             rows.append(row)
 
     if has_reg:
@@ -1213,6 +1260,9 @@ def _load_pending_bag_rows(
                 continue
             seen.add(bid)
             wf_registry_supplement += 1
+            row["in_active_staging"] = False
+            row["registry_supplement"] = True
+            row["effective_rush"] = resolve_effective_rush_for_row(row, td)
             rows.append(row)
 
     presence_rows, presence_meta = load_wf_presence_at_vendor_rows(
@@ -1223,6 +1273,9 @@ def _load_pending_bag_rows(
         if not bid or bid in seen:
             continue
         seen.add(bid)
+        row["in_active_staging"] = False
+        row["registry_supplement"] = False
+        row["effective_rush"] = resolve_effective_rush_for_row(row, td)
         rows.append(row)
 
     meta = {
@@ -1291,6 +1344,9 @@ def _load_hd_production_bag_rows(
                 continue
             seen.add(bid)
             hd_staging += 1
+            row["in_active_staging"] = True
+            row["registry_supplement"] = False
+            row["effective_rush"] = resolve_effective_rush_for_row(row, td)
             rows.append(row)
 
     if has_reg:
@@ -1315,6 +1371,9 @@ def _load_hd_production_bag_rows(
                 continue
             seen.add(bid)
             hd_registry += 1
+            row["in_active_staging"] = False
+            row["registry_supplement"] = True
+            row["effective_rush"] = resolve_effective_rush_for_row(row, td)
             rows.append(row)
 
     if table_exists(cursor, "rinse_cleaner_ticket_presence"):
@@ -1336,8 +1395,7 @@ def _load_hd_production_bag_rows(
                 continue
             seen.add(bid)
             hd_presence += 1
-            rows.append(
-                {
+            hd_row = {
                     "bag_id": bid,
                     "service_type": "HD",
                     "effective_rush": _presence_effective_rush(raw, td),
@@ -1347,8 +1405,11 @@ def _load_hd_production_bag_rows(
                     "logistics_status": None,
                     "at_vendor_presence": True,
                     "presence_source": True,
+                    "in_active_staging": False,
+                    "registry_supplement": False,
                 }
-            )
+            hd_row["effective_rush"] = resolve_effective_rush_for_row(hd_row, td)
+            rows.append(hd_row)
 
     meta = {
         "hd_staging": hd_staging,
@@ -1396,7 +1457,11 @@ def build_lifecycle_pending_payload(
     """Structured lifecycle payload: Incoming, WF lifecycle, HD lifecycle, Exceptions."""
     org = int(organization_id)
     td = target_date
-    eval_at = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    from backend.rinse_scan_time import naive_system_utc
+
+    eval_at = naive_system_utc(
+        evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    ) or datetime.utcnow()
 
     wf_bag_rows, portal_meta = _load_pending_bag_rows(cursor, org, target_date=td)
     hd_bag_rows, hd_meta = _load_hd_production_bag_rows(cursor, org, target_date=td)
@@ -1503,6 +1568,8 @@ def build_lifecycle_pending_payload(
             checkout_rush["checked_out"] += 1
         elif is_rush and checkout_status == CHECKOUT_STATUS_NEEDS_REVIEW:
             checkout_rush["checkout_needs_review"] += 1
+        elif is_rush and checkout_status == CHECKOUT_STATUS_NOT_RECORDED:
+            checkout_rush["checkout_not_recorded"] += 1
 
         wf_drilldown.append(
             {
@@ -1536,6 +1603,8 @@ def build_lifecycle_pending_payload(
                 "pending_bucket": legacy_bucket,
                 "presence_source": bool(row.get("presence_source")),
                 "presence_portal_status": row.get("presence_portal_status"),
+                "in_active_staging": bool(row.get("in_active_staging")),
+                "registry_supplement": bool(row.get("registry_supplement")),
             }
         )
 
@@ -1948,7 +2017,11 @@ def build_shift_analysis_summary(
     )
     from backend.tenant_feature_flags import get_tenant_feature_flags
 
-    eval_at = evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    from backend.rinse_scan_time import naive_system_utc
+
+    eval_at = naive_system_utc(
+        evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    ) or datetime.utcnow()
     pending_rows = pending.get("rows") or []
     bag_ids = [str(r.get("bag_id") or "").strip() for r in pending_rows if isinstance(r, dict) and r.get("bag_id")]
     events_by_bag = _load_scan_events_for_bags(cursor, org, bag_ids)

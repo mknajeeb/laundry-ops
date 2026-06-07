@@ -155,8 +155,12 @@ def _resolve_evaluation_time(
     timeline: Sequence[Mapping[str, Any]],
     evaluation_time: datetime | None,
 ) -> datetime:
+    from backend.rinse_scan_time import naive_system_utc
+
     if evaluation_time is not None and _ts_valid(evaluation_time):
-        return evaluation_time
+        normalized = naive_system_utc(evaluation_time)
+        if normalized is not None:
+            return normalized
     latest: datetime | None = None
     for ev in timeline:
         ts = _event_ts(ev)

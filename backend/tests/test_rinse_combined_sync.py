@@ -208,6 +208,30 @@ class TestShiftMonitorSeparateSyncStatuses:
         assert "At Vendor Sync" in out["message"]
         assert out["sync_name"] == "At Vendor Sync"
 
+    def test_build_sync_status_accepts_aware_evaluation_time(self):
+        from datetime import datetime, timezone, timedelta
+
+        from backend.rinse_simple_shift_performance import _build_sync_status
+
+        now = datetime.now(timezone.utc)
+        last = (now - timedelta(minutes=30)).replace(tzinfo=None).isoformat()
+        out = _build_sync_status(last, sync_name="At Vendor Sync", evaluation_time=now)
+        assert out["age_minutes"] == 30
+
+    def test_at_vendor_sync_status_accepts_aware_db_timestamps(self):
+        from datetime import datetime, timezone, timedelta
+
+        from backend.rinse_presence_sync_status import build_sync_status_from_run
+
+        finished = datetime.now(timezone.utc) - timedelta(minutes=45)
+        run = {"finished_at": finished, "status": "success", "created_at": finished}
+        out = build_sync_status_from_run(
+            run,
+            sync_name="At Vendor Sync",
+            evaluation_time=datetime.now(timezone.utc),
+        )
+        assert out["age_minutes"] == 45
+
     @patch("backend.rinse_presence_sync_status.ready_for_vendor_scrape_enabled", return_value=False)
     @patch("backend.rinse_presence_sync_status.build_at_vendor_sync_status")
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
