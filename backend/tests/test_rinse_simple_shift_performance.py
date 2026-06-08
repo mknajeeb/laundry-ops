@@ -40,6 +40,69 @@ def _sv(*events):
     return [_ev("sent-to-vendor", datetime(2026, 6, 4, 7, 0), ev_id=1, scan_index=1)] + list(events)
 
 
+def _make_dashboard_snapshot(specs):
+    """Build a GET /dashboard-shaped snapshot from bag specs."""
+    rows = []
+    rush_wf_ids, rush_hd_ids, nonrush_wf_ids, nonrush_hd_ids, unknown_ids = [], [], [], [], []
+    for spec in specs:
+        bid = str(spec["bag_id"]).strip().upper()
+        svc = str(spec.get("service_type", "WF")).upper()
+        rush = str(spec.get("effective_rush", "RUSH")).upper()
+        if rush != "RUSH":
+            rush = "NON-RUSH"
+        bucket = f"{'rush' if rush == 'RUSH' else 'nonrush'}_{svc.lower()}"
+        row = {
+            "bag_id": bid,
+            "service_type": svc if svc in ("WF", "HD") else "WF",
+            "effective_rush": rush,
+            "rush_type": rush,
+            "name_clean": spec.get("name_clean"),
+            "in_active_staging": True,
+            "registry_supplement": False,
+            "presence_source": False,
+            "record_scope": "hd_lifecycle" if svc == "HD" else "wf_lifecycle",
+            "dashboard_bucket": bucket,
+        }
+        rows.append(row)
+        if bucket == "rush_wf":
+            rush_wf_ids.append(bid)
+        elif bucket == "rush_hd":
+            rush_hd_ids.append(bid)
+        elif bucket == "nonrush_wf":
+            nonrush_wf_ids.append(bid)
+        elif bucket == "nonrush_hd":
+            nonrush_hd_ids.append(bid)
+        else:
+            unknown_ids.append(bid)
+    unique_ids = list(dict.fromkeys(r["bag_id"] for r in rows))
+    return {
+        "source": "GET /dashboard orders_staging",
+        "total_orders": len(rows),
+        "wf_total": sum(1 for r in rows if r["service_type"] == "WF"),
+        "hd_total": sum(1 for r in rows if r["service_type"] == "HD"),
+        "wf_rush": len(rush_wf_ids),
+        "wf_non_rush": len(nonrush_wf_ids),
+        "hd_rush": len(rush_hd_ids),
+        "hd_non_rush": len(nonrush_hd_ids),
+        "batch_date": None,
+        "staging_row_count": len(rows),
+        "unique_bag_count": len(unique_ids),
+        "duplicate_staging_rows": len(rows) - len(unique_ids),
+        "rows": rows,
+        "unique_bag_ids": unique_ids,
+        "active_staging_bag_ids": unique_ids,
+        "rush_wf_ids": rush_wf_ids,
+        "rush_hd_ids": rush_hd_ids,
+        "nonrush_wf_ids": nonrush_wf_ids,
+        "nonrush_hd_ids": nonrush_hd_ids,
+        "unknown_ids": unknown_ids,
+    }
+
+
+_FRESH_RFV_SYNC = {"stale": False, "last_refreshed_at": "2026-06-07T12:00:00"}
+_STALE_RFV_SYNC = {"stale": True, "last_refreshed_at": "2026-05-31T10:00:00"}
+
+
 T0 = datetime(2026, 6, 4, 8, 0)
 T1 = datetime(2026, 6, 4, 8, 10)
 T2 = datetime(2026, 6, 4, 8, 20)
@@ -366,6 +429,8 @@ class TestSimplePayloadScopes:
 
 
 class TestDrilldownCountIntegrity:
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -380,6 +445,8 @@ class TestDrilldownCountIntegrity:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -389,6 +456,8 @@ class TestDrilldownCountIntegrity:
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
         mock_events.return_value = {}
+        mock_dashboard.return_value = _make_dashboard_snapshot([])
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
         mock_pending.return_value = {
             "rows": [
                 {"bag_id": "R1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
@@ -418,6 +487,8 @@ class TestDrilldownCountIntegrity:
         assert rfv["rush_hd"] == _count_tag(records, "rfv_rush_hd") == 1
         assert rfv["nonrush_wf"] == _count_tag(records, "rfv_nonrush_wf") == 1
 
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -432,6 +503,8 @@ class TestDrilldownCountIntegrity:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -441,6 +514,11 @@ class TestDrilldownCountIntegrity:
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
         mock_events.return_value = {}
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "A1", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "A2", "service_type": "WF", "effective_rush": "RUSH"},
+        ])
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
         mock_pending.return_value = {
             "rows": [
                 {"bag_id": "IN1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
@@ -515,6 +593,8 @@ class TestDrilldownCountIntegrity:
         assert any("veewash" in e.lower() for e in included)
         assert "Michael Osei" in excluded
 
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -529,6 +609,8 @@ class TestDrilldownCountIntegrity:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
@@ -537,6 +619,11 @@ class TestDrilldownCountIntegrity:
         mock_maps.return_value = {}
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "R1", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "N1", "service_type": "WF", "effective_rush": "NON-RUSH"},
+        ])
         mock_events.return_value = {
             "N1": [
                 _ev("sent-to-vendor", datetime(2026, 6, 4, 7, 0), user="Vendor", ev_id=1, scan_index=1),
@@ -575,6 +662,8 @@ class TestActiveWorkCountLogic:
         }
         assert resolve_effective_rush_for_row(row, date(2026, 6, 4)) == "RUSH"
 
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -589,6 +678,8 @@ class TestActiveWorkCountLogic:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -598,6 +689,11 @@ class TestActiveWorkCountLogic:
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
         mock_events.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "STG1", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "DONE1", "service_type": "WF", "effective_rush": "RUSH"},
+        ])
         mock_pending.return_value = {
             "rows": [
                 {"bag_id": "STG1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "RUSH", "current_lifecycle_status": "IN_WASHING", "in_active_staging": True},
@@ -668,6 +764,8 @@ class TestActiveWorkCountLogic:
         assert "checkout_pending" not in wash["drilldown_tags"]
         assert "checkout_not_recorded" not in wash["drilldown_tags"]
 
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -682,6 +780,8 @@ class TestActiveWorkCountLogic:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -690,6 +790,12 @@ class TestActiveWorkCountLogic:
         mock_maps.return_value = {}
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "FOLDED", "service_type": "WF", "effective_rush": "NON-RUSH"},
+            {"bag_id": "WASHING", "service_type": "WF", "effective_rush": "NON-RUSH"},
+            {"bag_id": "WEIGH", "service_type": "WF", "effective_rush": "NON-RUSH"},
+        ])
         mock_events.return_value = {
             "FOLDED": _sv(
                 _ev("weight-entry", T1, ev_id=2, scan_index=2),
@@ -725,6 +831,8 @@ class TestActiveWorkCountLogic:
         assert audit["count"] == 1
         assert audit["bag_ids"] == ["WASHING"]
 
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -739,6 +847,8 @@ class TestActiveWorkCountLogic:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -748,6 +858,11 @@ class TestActiveWorkCountLogic:
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
         mock_events.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "SENT1", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "ACT1", "service_type": "WF", "effective_rush": "NON-RUSH"},
+        ])
         mock_pending.return_value = {
             "rows": [
                 {
@@ -781,6 +896,8 @@ class TestActiveWorkCountLogic:
         assert _count_tag(payload["records"], "active_work") == 2
         assert _count_tag(payload["records"], "active_rush_wf") == 1
 
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
     @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
     @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
@@ -795,6 +912,8 @@ class TestActiveWorkCountLogic:
         mock_events,
         mock_scope_b,
         mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
@@ -804,6 +923,10 @@ class TestActiveWorkCountLogic:
         mock_scope_b.return_value = []
         mock_meta.return_value = {}
         mock_events.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "HD1", "service_type": "HD", "effective_rush": "RUSH"},
+        ])
         mock_pending.return_value = {
             "rows": [
                 {"bag_id": "HD1", "record_scope": "hd_lifecycle", "service_type": "HD", "effective_rush": "RUSH", "current_lifecycle_status": "at_vendor", "in_active_staging": True},
@@ -818,4 +941,166 @@ class TestActiveWorkCountLogic:
             cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
         )
         assert payload["current_active_work"]["rush_hd"] == 1
-        assert payload["current_active_work"]["total"] == 1
+
+
+class TestDashboardSourceOfTruth:
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_stale_ready_for_vendor_not_counted_as_live(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_dashboard.return_value = _make_dashboard_snapshot([])
+        mock_rfv_sync.return_value = _STALE_RFV_SYNC
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "RFV1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
+            ],
+            "incoming": {
+                "rows": [{"bag_id": "RFV1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"}],
+                "groups": {"combined": {}},
+            },
+            "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {}},
+        }
+        payload = build_simple_shift_performance_payload(
+            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7)
+        )
+        rfv = payload["ready_for_vendor"]
+        assert rfv["live"] is False
+        assert rfv["total"] is None
+        assert "stale" in (rfv.get("unavailable_reason") or "").lower()
+
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_current_active_work_equals_dashboard_active_rows(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        dashboard = _make_dashboard_snapshot([
+            {"bag_id": "R1", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "R2", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "N1", "service_type": "WF", "effective_rush": "NON-RUSH"},
+            {"bag_id": "H1", "service_type": "HD", "effective_rush": "NON-RUSH"},
+        ])
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = dashboard
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "REG1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "registry_supplement": True, "in_active_staging": False},
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {}},
+        }
+        payload = build_simple_shift_performance_payload(
+            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7)
+        )
+        active = payload["current_active_work"]
+        recon = payload["dashboard_reconciliation"]
+        assert active["total"] == dashboard["total_orders"] == 4
+        assert active["rush_wf"] == 2
+        assert active["nonrush_hd"] == 1
+        assert recon["match"] is True
+        assert recon["bag_ids_in_dashboard_not_monitor"] == []
+        assert recon["bag_ids_in_monitor_not_dashboard"] == []
+
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_active_total_equals_bucket_sum_and_debug_ids(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        dashboard = _make_dashboard_snapshot([
+            {"bag_id": "RW1", "service_type": "WF", "effective_rush": "RUSH"},
+            {"bag_id": "RH1", "service_type": "HD", "effective_rush": "RUSH"},
+            {"bag_id": "NW1", "service_type": "WF", "effective_rush": "NON-RUSH"},
+            {"bag_id": "NH1", "service_type": "HD", "effective_rush": "NON-RUSH"},
+        ])
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = dashboard
+        mock_pending.return_value = {
+            "rows": [],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_summary": {"rush": {}},
+        }
+        payload = build_simple_shift_performance_payload(
+            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7)
+        )
+        active = payload["current_active_work"]
+        assert active["counts_add_up"] is True
+        assert active["total"] == active["rush_wf"] + active["rush_hd"] + active["nonrush_wf"] + active["nonrush_hd"]
+        audit = payload["debug_audit"]
+        assert sorted(audit["active_staging_bag_ids"]) == sorted(dashboard["unique_bag_ids"])
+        recon = audit["dashboard_vs_monitor"]
+        assert recon["rush_wf_ids"] == ["RW1"]
+        assert recon["rush_hd_ids"] == ["RH1"]
+        assert recon["nonrush_wf_ids"] == ["NW1"]
+        assert recon["nonrush_hd_ids"] == ["NH1"]

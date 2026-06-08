@@ -21,14 +21,12 @@ import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
-import { formatDateTime, formatFoldingDuration, formatLaborHours, formatRate } from "../utils/foldingFormat";
+import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import {
   RUSH_FILTERS,
   filterRecords,
   formatShiftDateLabel,
   sectionSplitCounts,
-  shiftMetricValue,
-  shiftMetricLabel,
   syncStatusSubtext,
   rinseSyncBanner,
 } from "../utils/shiftMonitorHelpers";
@@ -268,53 +266,6 @@ function RecordRow({ row, expanded, onToggle }) {
   );
 }
 
-function EmployeeCard({ card }) {
-  const [open, setOpen] = useState(false);
-  const diag = card.diagnostic;
-  return (
-    <Paper elevation={0} sx={{ p: 2, mb: 1.5, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
-      <Stack direction="row" justifyContent="space-between" onClick={() => setOpen((v) => !v)} sx={{ cursor: "pointer" }}>
-        <Box>
-          <Typography variant="subtitle1" fontWeight={800}>
-            {card.employee}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block">
-            Clock-in: {formatDateTime(card.clock_in_time) || (diag || "—")}
-          </Typography>
-          <Typography variant="caption" color="text.secondary" display="block">
-            Last activity: {formatDateTime(card.last_activity_time) || "—"}
-          </Typography>
-        </Box>
-        <Box textAlign="right">
-          <Typography variant="h5" fontWeight={800} color={ACCENT}>
-            {card.total_bags_touched ?? 0}
-          </Typography>
-          <Typography variant="caption">bags touched</Typography>
-          <Typography variant="caption" display="block">
-            {diag
-              || `${formatLaborHours(card.performance_hours)} · ${formatRate(card.bags_per_hour)} bags/hr${card.lbs_per_hour ? ` · ${formatRate(card.lbs_per_hour)} lbs/hr` : ""}`}
-          </Typography>
-        </Box>
-      </Stack>
-      <Collapse in={open}>
-        <Stack spacing={1} sx={{ mt: 1.5 }}>
-          {(card.roles || []).map((role) => (
-            <Box key={role.role} sx={{ p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
-              <Typography variant="body2" fontWeight={700}>
-                {role.role} · {role.bags} bags{role.lbs ? ` · ${role.lbs} lbs` : ""}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {role.diagnostic
-                  || `${formatLaborHours(role.performance_hours)} perf hrs · ${formatRate(role.bags_per_hour)} bags/hr${role.lbs_per_hour ? ` · ${formatRate(role.lbs_per_hour)} lbs/hr` : ""} · last ${formatDateTime(role.last_activity_time)}`}
-              </Typography>
-            </Box>
-          ))}
-        </Stack>
-      </Collapse>
-    </Paper>
-  );
-}
-
 export default function ShiftMonitorPage({ user }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState(null);
@@ -413,31 +364,15 @@ export default function ShiftMonitorPage({ user }) {
 
   const rfv = data?.ready_for_vendor || {};
   const active = data?.current_active_work || {};
+  const underReview = data?.sections_under_review || {};
+  const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
   const rinseSync = rinseSyncBanner(data);
-  const checkout = data?.rush_checkout || {};
-  const shift = data?.shift_status || {};
-  const exceptions = data?.exceptions_summary || {};
   const rfvCounts = sectionSplitCounts(rfv, rushFilter);
   const activeCounts = sectionSplitCounts(active, rushFilter);
   const rfvSyncSub = syncStatusSubtext(rfv, "Ready for Vendor Sync");
   const avSyncSub = syncStatusSubtext(active, "At Vendor Sync");
   const rfvSyncStale = rfv.sync_status?.stale && rfv.last_refreshed_at;
   const avSyncStale = active.sync_status?.stale && active.last_refreshed_at;
-
-  const weightDiffValue = (() => {
-    const wd = shift.weight_difference;
-    const flagged = shiftMetricValue(wd, rushFilter);
-    if (flagged > 0) return flagged;
-    if (shift.weight_difference_status === "unavailable") return "—";
-    return flagged ?? 0;
-  })();
-
-  const weightDiffSub = (() => {
-    if (shift.weight_difference_status === "unavailable") {
-      return "No comparable first/second weights";
-    }
-    return `≥${shift.weight_difference_threshold_lbs} lbs threshold`;
-  })();
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -496,41 +431,58 @@ export default function ShiftMonitorPage({ user }) {
         <>
           <Section
             title="Ready for Vendor"
-            description="Incoming / unassigned queue from Rinse Sync"
-            rushFilter={rushFilter}
-            onRushFilterChange={setRushFilter}
+            description={rfvLive ? "Incoming / unassigned queue from Rinse Sync" : "Sync required before live counts are shown"}
+            rushFilter={rfvLive ? rushFilter : null}
+            onRushFilterChange={rfvLive ? setRushFilter : null}
             alert={
-              rfv.data_quality_warning ? (
+              !rfvLive ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>
+                  Ready for Vendor: Sync stale
+                  {rfv.last_refreshed_at ? ` · Last refresh: ${formatDateTime(rfv.last_refreshed_at)}` : ""}
+                  {" · Refresh required"}
+                </Alert>
+              ) : rfv.data_quality_warning ? (
                 <Alert severity="error" sx={{ mb: 1.5 }}>{rfv.data_quality_warning}</Alert>
               ) : rfvSyncStale ? (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>{rfvSyncSub}</Alert>
               ) : null
             }
           >
-            <StatCard
-              label="Total"
-              value={rfvCounts.total}
-              source="Ready for Vendor queue"
-              sub={rfvSyncSub}
-              onClick={() => openDrilldown("ready_for_vendor")}
-              active={filterTag === "ready_for_vendor"}
-            />
-            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : rfv.rush_wf} onClick={() => openDrilldown("rfv_rush_wf")} active={filterTag === "rfv_rush_wf"} />
-            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : rfv.rush_hd} onClick={() => openDrilldown("rfv_rush_hd")} active={filterTag === "rfv_rush_hd"} />
-            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : rfv.nonrush_wf} onClick={() => openDrilldown("rfv_nonrush_wf")} active={filterTag === "rfv_nonrush_wf"} />
-            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : rfv.nonrush_hd} onClick={() => openDrilldown("rfv_nonrush_hd")} active={filterTag === "rfv_nonrush_hd"} />
-            <StatCard
-              label="Unknown / Review"
-              value={rushFilter === "all" ? rfv.unknown_needs_review : 0}
-              warn={rushFilter === "all" && rfv.unknown_needs_review > 0}
-              onClick={() => openDrilldown("rfv_unknown_needs_review")}
-              active={filterTag === "rfv_unknown_needs_review"}
-            />
+            {rfvLive ? (
+              <>
+                <StatCard
+                  label="Total"
+                  value={rfvCounts.total}
+                  source="Ready for Vendor queue"
+                  sub={rfvSyncSub}
+                  onClick={() => openDrilldown("ready_for_vendor")}
+                  active={filterTag === "ready_for_vendor"}
+                />
+                <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : rfv.rush_wf} onClick={() => openDrilldown("rfv_rush_wf")} active={filterTag === "rfv_rush_wf"} />
+                <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : rfv.rush_hd} onClick={() => openDrilldown("rfv_rush_hd")} active={filterTag === "rfv_rush_hd"} />
+                <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : rfv.nonrush_wf} onClick={() => openDrilldown("rfv_nonrush_wf")} active={filterTag === "rfv_nonrush_wf"} />
+                <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : rfv.nonrush_hd} onClick={() => openDrilldown("rfv_nonrush_hd")} active={filterTag === "rfv_nonrush_hd"} />
+                <StatCard
+                  label="Unknown / Review"
+                  value={rushFilter === "all" ? rfv.unknown_needs_review : 0}
+                  warn={rushFilter === "all" && rfv.unknown_needs_review > 0}
+                  onClick={() => openDrilldown("rfv_unknown_needs_review")}
+                  active={filterTag === "rfv_unknown_needs_review"}
+                />
+              </>
+            ) : (
+              <StatCard
+                label="Ready for Vendor"
+                value="—"
+                source="Unavailable"
+                sub={rfv.unavailable_reason || rfvSyncSub || "Refresh Both Syncs"}
+              />
+            )}
           </Section>
 
           <Section
             title="Current Active Work"
-            description="At Vendor — active orders_staging (same basis as Operations Dashboard)"
+            description="GET /dashboard — active orders_staging only (no registry, presence, or lifecycle supplements)"
             rushFilter={rushFilter}
             onRushFilterChange={setRushFilter}
             alert={
@@ -557,72 +509,22 @@ export default function ShiftMonitorPage({ user }) {
             />
           </Section>
 
-          <Section
-            title="Rush Checkout"
-            description={checkout.description || "Checkout Pending = Rush bags still waiting for facility checkout"}
-            rushFilter="rush"
-          >
-            <StatCard label="Checkout Pending" value={checkout.checkout_pending} source={checkout.source} onClick={() => openDrilldown("checkout_pending")} active={filterTag === "checkout_pending"} />
-            <StatCard label="Checked Out" value={checkout.checked_out} source={checkout.source} />
-            <StatCard label="Checkout Not Recorded" value={checkout.checkout_not_recorded} source={checkout.source} onClick={() => openDrilldown("checkout_not_recorded")} />
-            <StatCard label="Checkout Needs Review" value={checkout.checkout_needs_review} source={checkout.source} />
-          </Section>
-
-          <Section title="Shift Status" rushFilter={rushFilter} onRushFilterChange={setRushFilter}>
-            <StatCard label={shiftMetricLabel("weighed", rushFilter)} value={shiftMetricValue(shift.weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_weighed")} />
-            <StatCard label={shiftMetricLabel("not_weighed", rushFilter)} value={shiftMetricValue(shift.not_weighed, rushFilter)} source={shift.source} onClick={() => openDrilldown("shift_not_weighed")} />
-            <StatCard label={shiftMetricLabel("issues", rushFilter)} value={shiftMetricValue(shift.issues, rushFilter)} source="Scan events" onClick={() => openDrilldown("issues")} />
-            <StatCard label={shiftMetricLabel("workitems", rushFilter)} value={shiftMetricValue(shift.workitems, rushFilter)} source="Scan events" onClick={() => openDrilldown("workitems")} />
-            <StatCard label={shiftMetricLabel("weight_difference", rushFilter)} value={weightDiffValue} source={`Scan events · ${weightDiffSub}`} onClick={() => openDrilldown("weight_difference")} />
-            {rushFilter !== "non_rush" ? (
-              <StatCard label="Rush Pending Wash" value={shiftMetricValue(shift.rush_pending_wash, "rush")} source="Rush only · Scan events" onClick={() => openDrilldown("rush_pending_wash")} />
-            ) : null}
-            {rushFilter !== "non_rush" ? (
-              <StatCard
-                label="Last Rush Wash"
-                value={shift.last_rush_wash ? formatDateTime(shift.last_rush_wash.at)?.split(",")[1]?.trim() || "—" : "—"}
-                source="Rush only · Scan events"
-                sub={shift.last_rush_wash ? `${shift.last_rush_wash.bag_id} · ${shift.last_rush_wash.user || ""}` : "No rush wash today"}
-              />
-            ) : null}
-            <StatCard label={shiftMetricLabel("yet_to_fold", rushFilter)} value={shiftMetricValue(shift.yet_to_fold, rushFilter)} source="At Vendor staging" onClick={() => openDrilldown("yet_to_fold")} />
-          </Section>
-
-          <Box sx={{ mb: 3 }}>
-            <RushFilterChips value={rushFilter} onChange={setRushFilter} />
-            <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
-              Employee Activity
-            </Typography>
-            {(data.employee_cards || []).length === 0 ? (
-              <Typography variant="body2" color="text.secondary">
-                {data.employee_diagnostics?.folding_averages_status || "No employee activity for this shift."}
-              </Typography>
-            ) : (
-              (data.employee_cards || []).map((card) => <EmployeeCard key={card.employee} card={card} />)
-            )}
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-              Source: Clock records + scan events (mapped / tenant staff only)
-            </Typography>
-          </Box>
-
-          <Section title="Exceptions / Needs Review" rushFilter={rushFilter} onRushFilterChange={setRushFilter}>
-            {Object.entries(exceptions).map(([key, ex]) => (
-              <StatCard
-                key={key}
-                label={key.replace(/_/g, " ")}
-                value={ex.count}
-                source={ex.source}
-                onClick={() => openDrilldown(ex.drilldown_filter)}
-                active={filterTag === ex.drilldown_filter}
-              />
-            ))}
-          </Section>
+          {underReview.shift_status || underReview.rush_checkout || underReview.employee_activity || underReview.exceptions ? (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Shift Status, Rush Checkout, Employee Activity, and Exceptions are under review until Active Work is verified against Operations Dashboard.
+            </Alert>
+          ) : null}
 
           <Accordion sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography fontWeight={700}>Advanced / Debug</Typography>
             </AccordionSummary>
             <AccordionDetails>
+              {data.dashboard_reconciliation ? (
+                <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
+                  {JSON.stringify(data.dashboard_reconciliation, null, 2)}
+                </Box>
+              ) : null}
               {data.debug_audit ? (
                 <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
                   {JSON.stringify(data.debug_audit, null, 2)}

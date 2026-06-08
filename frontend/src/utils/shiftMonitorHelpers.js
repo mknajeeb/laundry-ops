@@ -22,8 +22,8 @@ export function filterRecords(records, tag, rushFilter = "all") {
 }
 
 export function sectionSplitCounts(section, rushFilter = "all") {
-  if (!section) {
-    return { total: 0, wf: 0, hd: 0, unknown: 0 };
+  if (!section || section.live === false) {
+    return { total: null, wf: null, hd: null, unknown: null, unavailable: true };
   }
   const rushWf = section.rush_wf || 0;
   const rushHd = section.rush_hd || 0;
