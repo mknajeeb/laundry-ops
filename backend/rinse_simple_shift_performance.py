@@ -1327,6 +1327,7 @@ def _build_debug_audit(
     scope_overlap: Mapping[str, Any] | None = None,
     pipeline_debug: Mapping[str, Any] | None = None,
     rfv_sync: Mapping[str, Any] | None = None,
+    av_sync: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     incoming_rows = [r for r in ((pending.get("incoming") or {}).get("rows") or []) if isinstance(r, dict)]
     unknown_why: list[str] = []
@@ -1389,6 +1390,7 @@ def _build_debug_audit(
 
     return {
         "ready_for_vendor_sync": {
+            "latest_attempt_at": (rfv_sync or {}).get("latest_attempt_at") or (rfv_sync or {}).get("last_refreshed_at"),
             "last_success_at": (rfv_sync or {}).get("last_success_at"),
             "status": (rfv_sync or {}).get("latest_status") or (rfv_sync or {}).get("status"),
             "rows_found": (rfv_sync or {}).get("rows_found"),
@@ -1397,6 +1399,15 @@ def _build_debug_audit(
             "skipped_reason": (rfv_sync or {}).get("skipped_reason"),
             "enabled": (rfv_sync or {}).get("enabled"),
             "stale": (rfv_sync or {}).get("stale"),
+        },
+        "at_vendor_sync": {
+            "latest_attempt_at": (av_sync or {}).get("latest_attempt_at") or (av_sync or {}).get("last_refreshed_at"),
+            "last_success_at": (av_sync or {}).get("last_success_at"),
+            "status": (av_sync or {}).get("status"),
+            "rows_found": (av_sync or {}).get("rows_found"),
+            "pages_visited": (av_sync or {}).get("pages_visited"),
+            "error_message": (av_sync or {}).get("error_message"),
+            "stale": (av_sync or {}).get("stale"),
         },
         "dashboard_vs_monitor": dict(dashboard_reconciliation or {}),
         "facility_tracker_today": {
@@ -1862,6 +1873,7 @@ def build_simple_shift_performance_payload(
             scope_overlap=scope_overlap,
             pipeline_debug=pipeline_debug,
             rfv_sync=rfv_sync,
+            av_sync=rinse_sync.get("at_vendor") if isinstance(rinse_sync, dict) else None,
         )
         if include_debug
         else None

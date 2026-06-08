@@ -63,17 +63,23 @@ function SyncStatusPanel({ title, sync }) {
         <Chip size="small" label={chipStatus} color={statusColor(chipStatus)} />
         {sync.enabled === false ? <Chip size="small" variant="outlined" label="disabled" /> : null}
       </Stack>
+      <Row label="Latest attempt" value={formatSystemDateTime(sync.latest_attempt_at || sync.last_refreshed_at || run?.finished_at || run?.last_finished_at)} />
+      <Row label="Last success" value={formatSystemDateTime(sync.last_success_at || sync.last_success?.finished_at)} />
       <Row label="Last refreshed" value={formatSystemDateTime(sync.last_refreshed_at || run?.finished_at || run?.last_finished_at)} />
       <Row label="Last started" value={formatSystemDateTime(run?.started_at || run?.scrape_started_at || sync.last_started_at)} />
       <Row label="Last finished" value={formatSystemDateTime(run?.finished_at || run?.scrape_finished_at || sync.last_finished_at)} />
       <Row label="Duration" value={run?.duration_label || sync.duration_label || (run?.duration_seconds != null ? `${run.duration_seconds}s` : "—")} />
       <Row label="Rows found" value={run?.rows_found ?? run?.portal_rows_count ?? run?.rows_imported} />
+      <Row label="Active rows" value={sync.active_rows ?? run?.active_rows} />
       <Row label="Rows inserted" value={run?.rows_inserted} />
       <Row label="Rows updated" value={run?.rows_updated} />
       <Row label="Rows unchanged" value={run?.rows_unchanged} />
       <Row label="Pages visited" value={run?.pages_visited} />
-      {(sync.error_message || run?.error_message) ? (
-        <Alert severity="error" sx={{ mt: 1 }}>{String(sync.error_message || run?.error_message)}</Alert>
+      {(sync.error || sync.error_message || run?.error_message) ? (
+        <Alert severity="error" sx={{ mt: 1 }}>{String(sync.error || sync.error_message || run?.error_message)}</Alert>
+      ) : null}
+      {sync.skipped_reason ? (
+        <Alert severity="warning" sx={{ mt: 1 }}>{String(sync.skipped_reason)}</Alert>
       ) : null}
     </Paper>
   );

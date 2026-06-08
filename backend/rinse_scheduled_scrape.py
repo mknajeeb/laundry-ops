@@ -327,16 +327,97 @@ def build_ready_for_vendor_sync_detail(rfv_result) -> dict[str, Any]:
     }
 
 
+def _apply_rfv_to_scheduled_result(
+    result: ScheduledScrapeResult,
+    *,
+    rfv_result,
+    rfv_detail: dict[str, Any],
+) -> ScheduledScrapeResult:
+    """Merge Ready for Vendor step into scheduled scrape result and overall status."""
+    result.detail["ready_for_vendor_sync"] = rfv_detail
+    result.ready_for_vendor_status = rfv_result.status
+    if rfv_result.status == "failed":
+        result.ready_for_vendor_error = rfv_result.error_message
+    result.status = _combine_scheduled_status(
+        result.at_vendor_status or result.status,
+        rfv_result.status,
+    )
+    if result.status == "partial_success" and not result.error_message:
+        result.error_message = result.ready_for_vendor_error or "Ready for Vendor sync failed"
+    return result
+
+
+def run_rinse_combined_sync_for_org(
+    conn,
+    organization_id: int,
+    *,
+    run_type: str = "scheduled",
+    dry_run: bool = False,
+) -> ScheduledScrapeResult:
+    """
+    Ready for Vendor first, then At Vendor only.
+    Shared by manual Refresh Both Syncs and scheduled cron.
+    """
+    org_id = int(organization_id)
+    cursor = conn.cursor(dictionary=True)
+    slug, org_name = _org_slug_name(cursor, org_id)
+    vendor = resolve_rinse_vendor(org_id, organization_slug=slug, organization_name=org_name)
+
+    from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
+    print(
+        f"Ready for Vendor sync org={org_id} vendor={vendor} run_type={run_type}",
+        flush=True,
+    )
+    rfv_result = run_presence_scrape_for_org(
+        conn,
+        org_id,
+        portal_status="ready_for_vendor",
+        dry_run=dry_run,
+        mark_missing=not dry_run,
+        run_type=run_type,
+        organization_slug=slug,
+        organization_name=org_name,
+        rinse_vendor=vendor,
+    )
+    rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+    if not dry_run:
+        conn.commit()
+    print(
+        f"Ready for Vendor sync done org={org_id} status={rfv_result.status} "
+        f"rows_found={(rfv_result.stats or {}).get('rows_found')}",
+        flush=True,
+    )
+
+    av_result = run_scheduled_scrape_for_org(
+        conn,
+        org_id,
+        run_type=run_type,
+        dry_run=dry_run,
+        rfv_detail=rfv_detail,
+        rfv_status=rfv_result.status,
+        rfv_error=rfv_result.error_message,
+    )
+    return _apply_rfv_to_scheduled_result(
+        av_result,
+        rfv_result=rfv_result,
+        rfv_detail=rfv_detail,
+    )
+
+
 def run_scheduled_scrape_for_org(
     conn,
     organization_id: int,
     *,
     run_type: str = "scheduled",
     dry_run: bool = False,
-    skip_ready_for_vendor: bool = False,
+    rfv_detail: dict[str, Any] | None = None,
+    rfv_status: str | None = None,
+    rfv_error: str | None = None,
 ) -> ScheduledScrapeResult:
     """
-    Full pipeline for one organization. Caller owns conn commit/rollback.
+    At Vendor scrape + import only. Ready for Vendor is run by run_rinse_combined_sync_for_org first.
+    Optional rfv_* args attach RFV metadata to rinse_scrape_runs.result_json when finishing.
     """
     org_id = int(organization_id)
     result = ScheduledScrapeResult(organization_id=org_id)
@@ -512,40 +593,17 @@ def run_scheduled_scrape_for_org(
             result.error_message = str(e)
             log.write(f"ERROR: {e}\n")
 
-        # Step 2: Ready for Vendor presence sync (presence table only; optional per tenant flag).
-        if not skip_ready_for_vendor:
-            try:
-                from backend.rinse_presence_scrape import run_presence_scrape_for_org
-
-                rfv_result = run_presence_scrape_for_org(
-                    conn,
-                    org_id,
-                    portal_status="ready_for_vendor",
-                    dry_run=False,
-                    mark_missing=True,
-                    run_type=run_type,
-                    organization_slug=slug,
-                    organization_name=org_name,
-                    rinse_vendor=vendor,
-                    max_pages=env.get("RINSE_MAX_PAGES") or None,
-                    log_write=log.write,
-                )
-                result.ready_for_vendor_status = rfv_result.status
-                if rfv_result.status == "failed":
-                    result.ready_for_vendor_error = rfv_result.error_message
-                result.detail["ready_for_vendor_sync"] = build_ready_for_vendor_sync_detail(rfv_result)
-            except Exception as rfv_exc:
-                result.ready_for_vendor_status = "failed"
-                result.ready_for_vendor_error = str(rfv_exc)
-                result.detail.setdefault("ready_for_vendor_sync", {})["error_message"] = str(rfv_exc)
-                log.write(f"Ready for Vendor sync ERROR: {rfv_exc}\n")
-
-        result.status = _combine_scheduled_status(
-            result.at_vendor_status or result.status,
-            result.ready_for_vendor_status,
-        )
-        if result.status == "partial_success" and not result.error_message:
-            result.error_message = result.ready_for_vendor_error or "Ready for Vendor sync failed"
+        if rfv_detail is not None:
+            result.detail["ready_for_vendor_sync"] = rfv_detail
+            result.ready_for_vendor_status = rfv_status
+            if rfv_status == "failed":
+                result.ready_for_vendor_error = rfv_error
+            result.status = _combine_scheduled_status(
+                result.at_vendor_status or result.status,
+                rfv_status,
+            )
+            if result.status == "partial_success" and not result.error_message:
+                result.error_message = rfv_error or "Ready for Vendor sync failed"
 
     finally:
         log.close()
@@ -605,6 +663,6 @@ def run_all_scheduled_scrapes(
     for i, oid in enumerate(orgs, start=1):
         print(f"--- organization {oid} ({i}/{len(orgs)}) ---", flush=True)
         results.append(
-            run_scheduled_scrape_for_org(conn, oid, run_type=run_type, dry_run=dry_run)
+            run_rinse_combined_sync_for_org(conn, oid, run_type=run_type, dry_run=dry_run)
         )
     return results

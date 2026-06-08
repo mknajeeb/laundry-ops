@@ -270,6 +270,7 @@ def get_ready_for_vendor_sync_status(
         **sync,
         "latest_run": latest_item,
         "last_success": success_item,
+        "latest_attempt_at": sync.get("last_refreshed_at") or (latest_item or {}).get("finished_at"),
         "last_success_at": success_item.get("finished_at") if success_item else None,
         "last_success_at_et": _short_time_et(
             (last_success or {}).get("finished_at")
@@ -353,6 +354,31 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         stale = age_min > RINSE_SYNC_STALE_MINUTES
     run_status = str(latest.get("status") or "unknown")
     failed = run_status == "failed"
+    cursor.execute(
+        """
+        SELECT id, status, started_at, finished_at, duration_seconds,
+               portal_rows_count, scan_events_count, imported_batch_id,
+               error_message, run_type
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s AND status = 'success'
+        ORDER BY finished_at DESC
+        LIMIT 1
+        """,
+        (org,),
+    )
+    last_success = cursor.fetchone()
+    success_detail = (
+        build_scrape_run_batch_detail(last_success, None)
+        if last_success and isinstance(last_success, dict)
+        else None
+    )
+    latest_attempt_at = detail.get("scrape_finished_at") or _fmt_system(
+        finished_raw if isinstance(finished_raw, datetime) else None
+    )
+    last_success_at = (
+        (success_detail or {}).get("scrape_finished_at")
+        or (success_detail or {}).get("data_last_updated_at")
+    )
     return {
         "enabled": True,
         "status": run_status,
@@ -366,6 +392,8 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         ),
         "last_refreshed_at": last_fmt,
         "last_refreshed_at_et": last_et,
+        "latest_attempt_at": latest_attempt_at,
+        "last_success_at": last_success_at,
         "last_started_at": detail.get("scrape_started_at"),
         "last_finished_at": detail.get("scrape_finished_at"),
         "duration_seconds": detail.get("scrape_duration_seconds"),
@@ -373,10 +401,14 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "rows_found": detail.get("portal_rows_count"),
         "rows_imported": detail.get("rows_imported"),
         "scan_events_count": detail.get("scan_events_count"),
+        "pages_visited": detail.get("pages_visited"),
         "sync_time_unavailable": not last_fmt,
         "age_minutes": age_min,
         "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
         "run": detail,
+        "latest_run": detail,
+        "last_success": success_detail,
+        "error_message": latest.get("error_message"),
         "started_at_raw": started_raw,
         "finished_at_raw": finished_raw,
     }

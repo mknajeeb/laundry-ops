@@ -285,58 +285,25 @@ def register_rinse_shift_analysis_routes(
             body = request.get_json(silent=True) or {}
             dry_run = bool(body.get("dry_run", False))
 
-            from backend.rinse_presence_scrape import run_presence_scrape_for_org
-            from backend.rinse_scheduled_scrape import (
-                _org_slug_name,
-                build_ready_for_vendor_sync_detail,
-                run_scheduled_scrape_for_org,
-                _combine_scheduled_status,
-            )
-            from backend.rinse_vendor_config import resolve_rinse_vendor
+            from backend.rinse_scheduled_scrape import run_rinse_combined_sync_for_org
 
-            slug, org_name = _org_slug_name(cursor, tenant_oid)
-            vendor = resolve_rinse_vendor(tenant_oid, organization_slug=slug)
-
-            rfv_result = run_presence_scrape_for_org(
-                conn,
-                tenant_oid,
-                portal_status="ready_for_vendor",
-                dry_run=dry_run,
-                mark_missing=not dry_run,
-                run_type="manual",
-                organization_slug=slug,
-                organization_name=org_name,
-                rinse_vendor=vendor,
-            )
-            rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
-            if not dry_run:
-                conn.commit()
-
-            av_result = run_scheduled_scrape_for_org(
+            combined = run_rinse_combined_sync_for_org(
                 conn,
                 tenant_oid,
                 run_type="manual",
                 dry_run=dry_run,
-                skip_ready_for_vendor=True,
             )
-            av_result.detail["ready_for_vendor_sync"] = rfv_detail
-            av_result.ready_for_vendor_status = rfv_result.status
-            if rfv_result.status == "failed":
-                av_result.ready_for_vendor_error = rfv_result.error_message
-            av_result.status = _combine_scheduled_status(
-                av_result.at_vendor_status or av_result.status,
-                rfv_result.status,
-            )
+            rfv_detail = dict(combined.detail.get("ready_for_vendor_sync") or {})
             payload = {
                 "organization_id": tenant_oid,
-                "overall_status": av_result.status,
+                "overall_status": combined.status,
                 "at_vendor_sync": {
-                    "status": av_result.at_vendor_status or av_result.status,
-                    "run_id": av_result.run_id,
-                    "batch_id": av_result.batch_id,
-                    "portal_rows_count": av_result.portal_rows_count,
-                    "scan_events_count": av_result.scan_events_count,
-                    "error_message": av_result.error_message,
+                    "status": combined.at_vendor_status or combined.status,
+                    "run_id": combined.run_id,
+                    "batch_id": combined.batch_id,
+                    "portal_rows_count": combined.portal_rows_count,
+                    "scan_events_count": combined.scan_events_count,
+                    "error_message": combined.error_message,
                 },
                 "ready_for_vendor_sync": rfv_detail,
             }
@@ -346,9 +313,9 @@ def register_rinse_shift_analysis_routes(
                     or "enable_ready_for_vendor_scrape=false"
                 )
             code = 200
-            if av_result.status == "failed":
+            if combined.status == "failed":
                 code = 502
-            elif av_result.status == "partial_success":
+            elif combined.status == "partial_success":
                 code = 207
             return jsonify(json_safe_rinse(payload)), code
         except Exception as exc:

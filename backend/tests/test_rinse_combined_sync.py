@@ -91,7 +91,7 @@ class TestScheduledScrapeRunsBoth:
     @patch("backend.rinse_scheduled_scrape.tenant_script_dir")
     @patch("backend.rinse_scheduled_scrape.build_run_paths")
     @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
-    def test_scheduled_runs_rfv_when_flag_path_called(
+    def test_scheduled_combined_runs_rfv_first(
         self,
         _slug,
         mock_paths,
@@ -105,14 +105,12 @@ class TestScheduledScrapeRunsBoth:
         _bash,
         mock_rfv,
     ):
-        from datetime import datetime
         from pathlib import Path
-
-        from backend.rinse_scheduled_scrape import ScrapePaths, run_scheduled_scrape_for_org
-
-        mock_tenant_dir.return_value.is_dir.return_value = True
         import tempfile
 
+        from backend.rinse_scheduled_scrape import ScrapePaths, run_rinse_combined_sync_for_org
+
+        mock_tenant_dir.return_value.is_dir.return_value = True
         run_dir = Path(tempfile.mkdtemp())
         p = ScrapePaths(
             run_dir=run_dir,
@@ -125,14 +123,20 @@ class TestScheduledScrapeRunsBoth:
         p.portal_csv.write_text("h\n1\n")
         p.scan_events_csv.write_text("h\n1\n")
 
-        mock_rfv.return_value = PresenceScrapeResult(
-            organization_id=3,
-            portal_status="ready_for_vendor",
-            status="success",
-            started_at=datetime.utcnow(),
-            finished_at=datetime.utcnow(),
-            stats={"rows_found": 2},
-        )
+        call_order: list[str] = []
+
+        def _rfv_side_effect(*_args, **_kwargs):
+            call_order.append("rfv")
+            return PresenceScrapeResult(
+                organization_id=3,
+                portal_status="ready_for_vendor",
+                status="success",
+                started_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+                stats={"rows_found": 0, "active_rows": 0},
+            )
+
+        mock_rfv.side_effect = _rfv_side_effect
 
         conn = MagicMock()
         cursor = MagicMock()
@@ -149,12 +153,14 @@ class TestScheduledScrapeRunsBoth:
             import pandas as pd
 
             pdf.return_value = pd.DataFrame([{"ticket_id": "ABC"}])
-            result = run_scheduled_scrape_for_org(conn, 3, run_type="scheduled")
+            result = run_rinse_combined_sync_for_org(conn, 3, run_type="scheduled")
 
+        assert call_order == ["rfv"]
         mock_rfv.assert_called_once()
         assert mock_rfv.call_args.kwargs.get("mark_missing") is True
         assert result.ready_for_vendor_status == "success"
         assert result.status == "success"
+        assert result.detail.get("ready_for_vendor_sync", {}).get("rows_found") == 0
 
     @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
     @patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0)
@@ -181,10 +187,10 @@ class TestScheduledScrapeRunsBoth:
         _bash,
         mock_rfv,
     ):
-        from datetime import datetime
         from pathlib import Path
+        import tempfile
 
-        from backend.rinse_scheduled_scrape import ScrapePaths, run_scheduled_scrape_for_org
+        from backend.rinse_scheduled_scrape import ScrapePaths, run_rinse_combined_sync_for_org
 
         mock_tenant_dir.return_value.is_dir.return_value = True
         import tempfile
@@ -225,20 +231,63 @@ class TestScheduledScrapeRunsBoth:
             import pandas as pd
 
             pdf.return_value = pd.DataFrame([{"ticket_id": "ABC"}])
-            result = run_scheduled_scrape_for_org(conn, 3, run_type="scheduled")
+            result = run_rinse_combined_sync_for_org(conn, 3, run_type="scheduled")
 
         assert result.at_vendor_status == "success"
         assert result.ready_for_vendor_status == "failed"
         assert result.status == "partial_success"
+        assert result.detail.get("ready_for_vendor_sync", {}).get("status") == "failed"
 
 
-class TestSyncBothRunsRfvFirst:
+class TestCombinedSyncOrchestration:
     @patch("backend.rinse_scheduled_scrape.run_scheduled_scrape_for_org")
     @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
-    def test_rfv_runs_before_at_vendor_with_skip_flag(self, mock_rfv, mock_av):
-        from datetime import datetime
+    @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
+    @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    def test_manual_and_scheduled_share_rfv_first_orchestrator(
+        self, _slug, _vendor, mock_rfv, mock_av
+    ):
+        from backend.rinse_scheduled_scrape import ScheduledScrapeResult, run_rinse_combined_sync_for_org
 
-        from backend.rinse_scheduled_scrape import ScheduledScrapeResult
+        call_order: list[str] = []
+
+        def _rfv(*_a, **_k):
+            call_order.append("rfv")
+            return PresenceScrapeResult(
+                organization_id=3,
+                portal_status="ready_for_vendor",
+                status="success",
+                started_at=datetime.utcnow(),
+                finished_at=datetime.utcnow(),
+                stats={"rows_found": 0, "active_rows": 0},
+            )
+
+        def _av(*_a, **k):
+            call_order.append("av")
+            assert k.get("rfv_detail") is not None
+            assert k.get("rfv_status") == "success"
+            return ScheduledScrapeResult(
+                organization_id=3,
+                status="success",
+                at_vendor_status="success",
+            )
+
+        mock_rfv.side_effect = _rfv
+        mock_av.side_effect = _av
+        conn = MagicMock()
+        conn.cursor.return_value = MagicMock()
+
+        result = run_rinse_combined_sync_for_org(conn, 3, run_type="manual")
+        assert call_order == ["rfv", "av"]
+        assert result.ready_for_vendor_status == "success"
+        assert result.status == "success"
+
+    @patch("backend.rinse_scheduled_scrape.run_scheduled_scrape_for_org")
+    @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
+    @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
+    @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    def test_av_failure_does_not_hide_rfv_success(self, _slug, _vendor, mock_rfv, mock_av):
+        from backend.rinse_scheduled_scrape import ScheduledScrapeResult, run_rinse_combined_sync_for_org
 
         mock_rfv.return_value = PresenceScrapeResult(
             organization_id=3,
@@ -250,21 +299,34 @@ class TestSyncBothRunsRfvFirst:
         )
         mock_av.return_value = ScheduledScrapeResult(
             organization_id=3,
-            status="success",
-            at_vendor_status="success",
+            status="failed",
+            at_vendor_status="failed",
+            error_message="Portal scrape subprocess failed",
         )
-
         conn = MagicMock()
-        mock_rfv(conn, 3, portal_status="ready_for_vendor", dry_run=False, mark_missing=True)
-        mock_av(conn, 3, run_type="manual", dry_run=False, skip_ready_for_vendor=True)
+        conn.cursor.return_value = MagicMock()
 
-        assert mock_rfv.call_count == 1
-        assert mock_av.call_count == 1
-        assert mock_rfv.call_args.kwargs.get("mark_missing") is True
-        assert mock_av.call_args.kwargs.get("skip_ready_for_vendor") is True
+        result = run_rinse_combined_sync_for_org(conn, 3, run_type="scheduled")
+        assert result.ready_for_vendor_status == "success"
+        assert result.at_vendor_status == "failed"
+        assert result.status == "partial_success"
+        assert result.detail["ready_for_vendor_sync"]["rows_found"] == 0
+
+    @patch("backend.rinse_scheduled_scrape.run_rinse_combined_sync_for_org")
+    def test_run_all_scheduled_scrapes_uses_combined_orchestrator(self, mock_combined):
+        from backend.rinse_scheduled_scrape import ScheduledScrapeResult, run_all_scheduled_scrapes
+
+        mock_combined.return_value = ScheduledScrapeResult(organization_id=3, status="success")
+        conn = MagicMock()
+        with patch("backend.rinse_scheduled_scrape.scheduled_scrape_enabled", return_value=True), patch(
+            "backend.rinse_scheduled_scrape.parse_scheduled_org_ids", return_value=[3]
+        ):
+            results = run_all_scheduled_scrapes(conn, run_type="scheduled")
+        mock_combined.assert_called_once_with(conn, 3, run_type="scheduled", dry_run=False)
+        assert len(results) == 1
 
 
-class TestSkipReadyForVendorInScheduled:
+class TestAtVendorOnlyDoesNotRunRfv:
     @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
     @patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0)
     @patch("backend.rinse_scheduled_scrape.count_csv_data_rows", return_value=5)
@@ -276,7 +338,7 @@ class TestSkipReadyForVendorInScheduled:
     @patch("backend.rinse_scheduled_scrape.tenant_script_dir")
     @patch("backend.rinse_scheduled_scrape.build_run_paths")
     @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
-    def test_skip_rfv_when_requested(
+    def test_at_vendor_only_path_does_not_call_rfv(
         self,
         _slug,
         mock_paths,
@@ -323,9 +385,40 @@ class TestSkipReadyForVendorInScheduled:
             import pandas as pd
 
             pdf.return_value = pd.DataFrame([{"ticket_id": "ABC"}])
-            run_scheduled_scrape_for_org(conn, 3, run_type="manual", skip_ready_for_vendor=True)
+            run_scheduled_scrape_for_org(conn, 3, run_type="manual")
+
+            run_scheduled_scrape_for_org(conn, 3, run_type="manual")
 
         mock_rfv.assert_not_called()
+
+
+class TestScheduledSyncStatusFields:
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_presence_sync_status.build_at_vendor_sync_status")
+    @patch("backend.rinse_scrape_status.table_exists", return_value=True)
+    def test_get_scheduled_scrape_status_exposes_separate_syncs(
+        self, _tables, mock_av, mock_rfv
+    ):
+        from backend.rinse_scrape_status import get_scheduled_scrape_status
+
+        mock_rfv.return_value = {
+            "latest_attempt_at": "2026-06-08T12:00:00",
+            "last_success_at": "2026-06-08T12:00:00",
+            "status": "success",
+            "rows_found": 0,
+            "active_rows": 0,
+        }
+        mock_av.return_value = {
+            "latest_attempt_at": "2026-06-08T12:30:00",
+            "last_success_at": "2026-06-08T12:30:00",
+            "status": "success",
+            "rows_found": 120,
+        }
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [None, None, None]
+        out = get_scheduled_scrape_status(cursor, 3)
+        assert out["ready_for_vendor_sync"]["latest_attempt_at"] == "2026-06-08T12:00:00"
+        assert out["at_vendor_sync"]["latest_attempt_at"] == "2026-06-08T12:30:00"
 
 
 class TestRecordFailedPresenceRun:
