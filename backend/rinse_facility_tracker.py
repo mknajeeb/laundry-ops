@@ -175,15 +175,13 @@ def build_facility_tracker_section(
     return section
 
 
-def _bag_is_sent_or_checked_out(rec: Mapping[str, Any], meta: Mapping[str, Any]) -> bool:
-    from backend.rinse_simple_shift_performance import _logistics_sent
+def _bag_is_sent_or_left(rec: Mapping[str, Any], meta: Mapping[str, Any]) -> bool:
+    from backend.rinse_work_pipeline import bag_is_sent_or_left
 
-    lifecycle = str(rec.get("current_status") or meta.get("current_lifecycle_status") or "").upper()
-    checkout = str(meta.get("checkout_status") or "").upper()
-    if lifecycle in {"SENT_TO_RINSE", "FOLDED_COMPLETED", "CHECKED_OUT", "FORCE_CHECKOUT"}:
-        if checkout in {"CHECKED_OUT", "CHECKOUT_NOT_RECORDED"} or lifecycle == "SENT_TO_RINSE":
-            return True
-    return _logistics_sent(meta)
+    pending = meta if isinstance(meta, dict) else {}
+    completion_completed = bool(rec.get("completed"))
+    completion = type("_C", (), {"completed": completion_completed})()
+    return bag_is_sent_or_left(pending, completion, {**pending, **rec})
 
 
 def enrich_facility_tracker_status(
@@ -198,7 +196,7 @@ def enrich_facility_tracker_status(
     staging = {str(b).strip().upper() for b in (staging_bag_ids or []) if b}
     completed_ids: list[str] = []
     still_active_ids: list[str] = []
-    sent_or_checked_out_ids: list[str] = []
+    sent_or_left_ids: list[str] = []
     missing_staging_ids: list[str] = []
 
     for bid in sorted({str(b).strip().upper() for b in bag_ids if b}):
@@ -208,17 +206,19 @@ def enrich_facility_tracker_status(
             completed_ids.append(bid)
         if bid in active:
             still_active_ids.append(bid)
-        if _bag_is_sent_or_checked_out(rec, meta):
-            sent_or_checked_out_ids.append(bid)
+        if _bag_is_sent_or_left(rec, meta):
+            sent_or_left_ids.append(bid)
         if staging and bid not in staging:
             missing_staging_ids.append(bid)
 
     section["completed"] = len(completed_ids)
     section["still_active"] = len(still_active_ids)
-    section["sent_or_checked_out"] = len(sent_or_checked_out_ids)
+    section["sent_or_left"] = len(sent_or_left_ids)
+    section["sent_or_checked_out"] = len(sent_or_left_ids)
     section["completed_ids"] = completed_ids
     section["still_active_ids"] = still_active_ids
-    section["sent_or_checked_out_ids"] = sent_or_checked_out_ids
+    section["sent_or_left_ids"] = sent_or_left_ids
+    section["sent_or_checked_out_ids"] = sent_or_left_ids
     section["missing_staging_ids"] = missing_staging_ids
     return section
 
@@ -228,21 +228,27 @@ def build_scope_overlap_debug(
     facility_bag_ids: Iterable[str],
     active_bag_ids: Iterable[str],
     records_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
+    pipeline_debug: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Legacy overlap keys plus current_work_pipeline debug buckets."""
+    from backend.rinse_work_pipeline import build_current_work_pipeline_debug
+
     facility = {str(b).strip().upper() for b in facility_bag_ids if b}
     active = {str(b).strip().upper() for b in active_bag_ids if b}
-    records_by_bag = records_by_bag or {}
-
+    pipeline = pipeline_debug or build_current_work_pipeline_debug(
+        facility_bag_ids=facility,
+        pipeline_bag_ids=active,
+        staging_bag_ids=active,
+        completed_excluded=[],
+        sent_excluded=[],
+    )
     entered_and_active = sorted(facility & active)
-    entered_not_active: list[str] = []
-    for bid in sorted(facility - active):
-        rec = records_by_bag.get(bid) or {}
-        entered_not_active.append(bid)
-
+    entered_completed = sorted(facility - set(pipeline.get("entered_today_still_active") or entered_and_active))
     return {
-        "entered_today_and_still_active": entered_and_active,
-        "entered_today_and_completed": sorted(facility - active),
-        "carryover_active_from_prior_day": sorted(active - facility),
+        "current_work_pipeline": dict(pipeline),
+        "entered_today_and_still_active": pipeline.get("entered_today_still_active") or entered_and_active,
+        "entered_today_and_completed": entered_completed,
+        "carryover_active_from_prior_day": pipeline.get("carryover_active_from_prior_day") or sorted(active - facility),
         "facility_only_count": len(facility - active),
         "active_only_count": len(active - facility),
         "overlap_count": len(facility & active),

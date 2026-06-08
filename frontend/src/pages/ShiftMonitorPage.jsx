@@ -29,6 +29,7 @@ import {
   sectionSplitCounts,
   syncStatusSubtext,
   rinseSyncBanner,
+  formatLastWash,
 } from "../utils/shiftMonitorHelpers";
 
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
@@ -385,19 +386,19 @@ export default function ShiftMonitorPage({ user }) {
 
   const rfv = data?.ready_for_vendor || {};
   const facility = data?.facility_tracker_today || {};
-  const active = data?.current_active_work_now || data?.current_active_work || {};
+  const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
   const underReview = data?.sections_under_review || {};
   const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
   const rinseSync = rinseSyncBanner(data);
   const rfvCounts = sectionSplitCounts(rfv, rushFilter);
   const facilityCounts = sectionSplitCounts(facility, rushFilter);
-  const activeCounts = sectionSplitCounts(active, rushFilter);
-  const avSync = data?.rinse_sync?.at_vendor || active.sync_status || {};
+  const pipelineCounts = sectionSplitCounts(pipeline, rushFilter);
+  const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
   const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
   const rfvSyncSub = syncStatusSubtext({ sync_status: rfvSync, last_refreshed_at: rfv.last_refreshed_at }, "Ready for Vendor Sync");
   const avSyncSub = syncStatusSubtext({ sync_status: avSync }, "At Vendor Sync");
   const rfvSyncStale = rfvSync?.stale && (rfv.last_refreshed_at || rfvSync.last_refreshed_at);
-  const avSyncStale = avSync?.stale && (active.last_refreshed_at || avSync.last_refreshed_at);
+  const avSyncStale = avSync?.stale && (pipeline.last_refreshed_at || avSync.last_refreshed_at);
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -482,7 +483,7 @@ export default function ShiftMonitorPage({ user }) {
             }
           >
             <StatCard
-              label="Entered Total"
+              label="Total Entered Today"
               value={facilityCounts.total}
               source={facility.source || "Scan events"}
               onClick={() => openDrilldown("facility_tracker")}
@@ -493,34 +494,45 @@ export default function ShiftMonitorPage({ user }) {
             <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : facility.nonrush_wf} onClick={() => openDrilldown("facility_nonrush_wf")} active={filterTag === "facility_nonrush_wf"} />
             <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : facility.nonrush_hd} onClick={() => openDrilldown("facility_nonrush_hd")} active={filterTag === "facility_nonrush_hd"} />
             <StatCard label="Unknown / Review" value={rushFilter === "all" ? facility.unknown_needs_review : 0} onClick={() => openDrilldown("facility_unknown_needs_review")} />
-            <StatCard label="Completed" value={facility.completed ?? 0} source="Scan completion rules" />
-            <StatCard label="Still Active" value={facility.still_active ?? 0} source="Current active staging" />
-            <StatCard label="Sent / Checked Out" value={facility.sent_or_checked_out ?? 0} source="Lifecycle / checkout" />
+            <StatCard label="Completed Today from Entered Bags" value={facility.completed ?? 0} source="Scan completion rules" onClick={() => openDrilldown("facility_tracker")} />
+            <StatCard label="Still Active from Entered Bags" value={facility.still_active ?? 0} source="Current work pipeline" onClick={() => openDrilldown("facility_tracker")} />
+            <StatCard label="Sent / Left from Entered Bags" value={facility.sent_or_left ?? facility.sent_or_checked_out ?? 0} source="Lifecycle / scan / scrape" />
           </Section>
 
           <Section
-            title="Current Active Work Now"
-            description="Bags still pending now — active orders_staging (includes carryover from prior days)"
+            title="Current Work Pipeline Now"
+            description="Bags still pending now — includes carryover from prior days (excludes completed/sent)"
             rushFilter={rushFilter}
             onRushFilterChange={setRushFilter}
             alert={
-              active.data_quality_warning ? (
-                <Alert severity="error" sx={{ mb: 1.5 }}>{active.data_quality_warning}</Alert>
+              pipeline.data_quality_warning ? (
+                <Alert severity="error" sx={{ mb: 1.5 }}>{pipeline.data_quality_warning}</Alert>
               ) : avSyncStale ? (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>{avSyncSub}</Alert>
-              ) : active.unreconciled > 0 ? (
+              ) : pipeline.unreconciled > 0 ? (
                 <Alert severity="warning" sx={{ mb: 1.5 }}>
-                  {active.unreconciled} unreconciled bag(s) — splits do not match total. Use drilldown.
+                  {pipeline.unreconciled} unreconciled bag(s) — splits do not match total. Use drilldown.
                 </Alert>
               ) : null
             }
           >
-            <StatCard label="Active Total" value={activeCounts.total} source={active.source} sub={avSyncSub} onClick={() => openDrilldown("active_work")} active={filterTag === "active_work"} />
-            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : active.rush_wf} onClick={() => openDrilldown("active_rush_wf")} />
-            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : active.rush_hd} onClick={() => openDrilldown("active_rush_hd")} />
-            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : active.nonrush_wf} onClick={() => openDrilldown("active_nonrush_wf")} />
-            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : active.nonrush_hd} onClick={() => openDrilldown("active_nonrush_hd")} />
-            <StatCard label="Unknown / Review" value={rushFilter === "all" ? active.unknown_needs_review : 0} onClick={() => openDrilldown("unknown_speed_service")} />
+            <StatCard label="Pipeline Total" value={pipelineCounts.total} source={pipeline.source} sub={avSyncSub} onClick={() => openDrilldown("pipeline_work")} active={filterTag === "pipeline_work"} />
+            <StatCard label="Rush Pending" value={rushFilter === "non_rush" ? 0 : pipeline.rush_pending ?? ((pipeline.rush_wf || 0) + (pipeline.rush_hd || 0))} onClick={() => openDrilldown("pipeline_work")} />
+            <StatCard label="Non-Rush Pending" value={rushFilter === "rush" ? 0 : pipeline.nonrush_pending ?? ((pipeline.nonrush_wf || 0) + (pipeline.nonrush_hd || 0))} onClick={() => openDrilldown("pipeline_work")} />
+            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : pipeline.rush_wf} onClick={() => openDrilldown("pipeline_rush_wf")} />
+            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : pipeline.rush_hd} onClick={() => openDrilldown("pipeline_rush_hd")} />
+            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : pipeline.nonrush_wf} onClick={() => openDrilldown("pipeline_nonrush_wf")} />
+            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : pipeline.nonrush_hd} onClick={() => openDrilldown("pipeline_nonrush_hd")} />
+            <StatCard label="Pending Wash — Rush" value={pipeline.pending_wash_rush ?? 0} onClick={() => openDrilldown("pending_wash_rush")} active={filterTag === "pending_wash_rush"} />
+            <StatCard label="Pending Wash — Non-Rush" value={pipeline.pending_wash_nonrush ?? 0} onClick={() => openDrilldown("pending_wash_nonrush")} active={filterTag === "pending_wash_nonrush"} />
+            <StatCard label="All Pending Wash" value={pipeline.pending_wash_total ?? 0} onClick={() => openDrilldown("pending_wash")} active={filterTag === "pending_wash"} />
+            <StatCard label="Last Rush Wash" value=" " sub={formatLastWash(pipeline.last_rush_wash, "No Rush wash started yet")} />
+            <StatCard label="Last Non-Rush Wash" value=" " sub={formatLastWash(pipeline.last_nonrush_wash, "No Non-Rush wash started yet")} />
+            <StatCard label="Last Wash Overall" value=" " sub={formatLastWash(pipeline.last_wash_overall, "No wash started yet")} />
+            <StatCard label="Yet to Complete / Fold" value={pipeline.yet_to_fold ?? 0} onClick={() => openDrilldown("yet_to_fold")} active={filterTag === "yet_to_fold"} />
+            <StatCard label="Issues" value={pipeline.issues ?? 0} onClick={() => openDrilldown("issues")} active={filterTag === "issues"} />
+            <StatCard label="Workitems" value={pipeline.workitems ?? 0} onClick={() => openDrilldown("workitems")} active={filterTag === "workitems"} />
+            <StatCard label="Unknown / Review" value={rushFilter === "all" ? pipeline.unknown_needs_review : 0} onClick={() => openDrilldown("unknown_speed_service")} />
           </Section>
 
           <Section
@@ -557,7 +569,7 @@ export default function ShiftMonitorPage({ user }) {
 
           {underReview.shift_status || underReview.rush_checkout || underReview.employee_activity || underReview.exceptions ? (
             <Alert severity="info" sx={{ mb: 2 }}>
-              Employee Activity, Shift Status, Checkout, and Exceptions remain under review until Facility Tracker Today and Current Active Work Now are verified.
+              Employee Activity, Shift Status, Checkout, and Exceptions remain under review until Facility Tracker Today and Current Work Pipeline Now are verified.
             </Alert>
           ) : null}
 
@@ -568,7 +580,7 @@ export default function ShiftMonitorPage({ user }) {
             <AccordionDetails>
               {data.scope_overlap ? (
                 <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
-                  {JSON.stringify({ overlap: data.scope_overlap, facility_tracker_today: data.debug_audit?.facility_tracker_today, current_active_work_now: data.debug_audit?.current_active_work_now }, null, 2)}
+                  {JSON.stringify({ overlap: data.scope_overlap, facility_tracker_today: data.debug_audit?.facility_tracker_today, current_work_pipeline: data.debug_audit?.current_work_pipeline }, null, 2)}
                 </Box>
               ) : null}
               {data.dashboard_reconciliation ? (

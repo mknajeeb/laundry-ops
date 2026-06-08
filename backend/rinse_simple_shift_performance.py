@@ -576,6 +576,53 @@ def _build_ready_for_vendor_section(
     return section
 
 
+def _build_work_pipeline_section(
+    pipeline_bag_ids: Iterable[str],
+    meta_by_bag: Mapping[str, Mapping[str, Any]],
+    target_date: date,
+    *,
+    last_rush_wash: dict[str, Any] | None = None,
+    last_nonrush_wash: dict[str, Any] | None = None,
+    last_wash_overall: dict[str, Any] | None = None,
+    records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Current Work Pipeline Now — pending bags including carryover (excludes completed/sent)."""
+    from backend.rinse_facility_tracker import classify_bag_ids_into_section
+
+    ids = sorted({str(b).strip().upper() for b in pipeline_bag_ids if b})
+    section = classify_bag_ids_into_section(
+        ids,
+        meta_by_bag,
+        target_date,
+        source="Active orders_staging minus completed/sent",
+        drilldown_filter="pipeline_work",
+        scope_label="current_work_pipeline",
+    )
+    section["description"] = "Bags still pending now — includes carryover from prior days"
+    section["scope"] = "current_work_pipeline"
+    recs = records or []
+    rush_pending = sum(1 for r in recs if r.get("rush_label") == "Rush" and "pipeline_work" in (r.get("drilldown_tags") or []))
+    nonrush_pending = sum(1 for r in recs if r.get("rush_label") == "Non-Rush" and "pipeline_work" in (r.get("drilldown_tags") or []))
+    section["rush_pending"] = rush_pending
+    section["nonrush_pending"] = nonrush_pending
+    section["pending_wash_rush"] = _count_tag(recs, "pending_wash_rush")
+    section["pending_wash_nonrush"] = _count_tag(recs, "pending_wash_nonrush")
+    section["pending_wash_total"] = _count_tag(recs, "pending_wash")
+    section["yet_to_fold"] = _count_tag(recs, "yet_to_fold")
+    section["issues"] = _count_tag(recs, "issues")
+    section["workitems"] = _count_tag(recs, "workitems")
+    section["last_rush_wash"] = last_rush_wash
+    section["last_nonrush_wash"] = last_nonrush_wash
+    section["last_wash_overall"] = last_wash_overall
+    section["pending_wash_rush_ids"] = sorted(
+        str(r.get("bag_id")) for r in recs if "pending_wash_rush" in (r.get("drilldown_tags") or [])
+    )
+    section["pending_wash_nonrush_ids"] = sorted(
+        str(r.get("bag_id")) for r in recs if "pending_wash_nonrush" in (r.get("drilldown_tags") or [])
+    )
+    return section
+
+
 def _build_active_work_from_dashboard(dashboard: Mapping[str, Any]) -> dict[str, Any]:
     """Current Active Work Now — currently active/pending facility work (orders_staging)."""
     section = {
@@ -971,7 +1018,8 @@ def _record_from_bag(
     threshold: float,
     period_start: datetime,
     period_end_exclusive: datetime,
-    in_active: bool,
+    in_pipeline: bool = False,
+    in_staging: bool = False,
     in_incoming: bool,
     in_facility_tracker: bool = False,
     completion: Any | None = None,
@@ -1004,30 +1052,26 @@ def _record_from_bag(
             tags.add(f"facility_{bucket}")
             if bucket.startswith("unknown") or bucket == "unknown_service":
                 tags.add("facility_unknown_needs_review")
-    active_eligible = in_active
-    if active_eligible:
+    active_eligible = in_pipeline
+    if in_pipeline:
+        tags.add("pipeline_work")
         tags.add("active_work")
         if bucket:
+            tags.add(f"pipeline_{bucket}")
             tags.add(f"active_{bucket}")
         if has_weigh:
             tags.add("shift_weighed")
         else:
             tags.add("shift_not_weighed")
-        if is_rush and not has_start_cleaning:
-            tags.add("rush_pending_wash")
+        if not has_start_cleaning:
+            tags.add("pending_wash")
+            if is_rush:
+                tags.add("pending_wash_rush")
+            elif rec_rush_label := _rush_label(bucket):
+                if rec_rush_label == "Non-Rush":
+                    tags.add("pending_wash_nonrush")
         if _qualifies_yet_to_fold(pending_row, events, completion):
             tags.add("yet_to_fold")
-    checkout = str(row_meta.get("checkout_status") or "")
-    lifecycle_status = str(row_meta.get("current_lifecycle_status") or "")
-    if is_rush:
-        if checkout == CHECKOUT_STATUS_NOT_RECORDED:
-            tags.add("checkout_not_recorded")
-        elif checkout == CHECKOUT_STATUS_CHECKED_OUT:
-            tags.add("checkout_checked_out")
-        elif checkout == CHECKOUT_STATUS_NEEDS_REVIEW:
-            tags.add("checkout_needs_review")
-        elif lifecycle_status == FOLDED_COMPLETED and checkout == CHECKOUT_STATUS_NOT_CHECKED_OUT:
-            tags.add("checkout_pending")
     if any(c.role == ROLE_ISSUES for c in period_credits):
         tags.add("issues")
     if any(c.role == ROLE_WORKITEMS for c in period_credits):
@@ -1074,6 +1118,8 @@ def _record_from_bag(
         "completion_exception": completion.exception_code,
         "needs_review": completion.needs_review or bool(row_meta.get("needs_review")),
         "in_scope_a_active": active_eligible,
+        "in_pipeline": in_pipeline,
+        "in_staging": in_staging,
         "in_ready_for_vendor": in_incoming,
         "weight_difference": {
             "flagged": wdiff.flagged,
@@ -1206,10 +1252,10 @@ def _collect_active_bucket_ids(
     pending_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, list[str]]:
     buckets = {
-        "rush_wf_ids": "active_rush_wf",
-        "rush_hd_ids": "active_rush_hd",
-        "nonrush_wf_ids": "active_nonrush_wf",
-        "nonrush_hd_ids": "active_nonrush_hd",
+        "rush_wf_ids": "pipeline_rush_wf",
+        "rush_hd_ids": "pipeline_rush_hd",
+        "nonrush_wf_ids": "pipeline_nonrush_wf",
+        "nonrush_hd_ids": "pipeline_nonrush_hd",
         "unknown_ids": None,
     }
     out: dict[str, list[str]] = {k: [] for k in buckets}
@@ -1221,14 +1267,14 @@ def _collect_active_bucket_ids(
         if not bid:
             continue
         tags = set(rec.get("drilldown_tags") or [])
-        if "active_work" in tags:
+        if "pipeline_work" in tags or "active_work" in tags:
             if bid in seen:
                 dupes.append(bid)
             seen.append(bid)
             for key, tag in buckets.items():
                 if tag and tag in tags:
                     out[key].append(bid)
-            if any(t.startswith("active_unknown") for t in tags) or "unknown_speed_service" in tags:
+            if any(t.startswith("pipeline_unknown") for t in tags) or "unknown_speed_service" in tags:
                 out["unknown_ids"].append(bid)
         elif rec.get("in_ready_for_vendor"):
             excluded.append({"bag_id": bid, "reason": "ready_for_vendor"})
@@ -1266,6 +1312,7 @@ def _build_debug_audit(
     dashboard_reconciliation: Mapping[str, Any] | None = None,
     facility_tracker: Mapping[str, Any] | None = None,
     scope_overlap: Mapping[str, Any] | None = None,
+    pipeline_debug: Mapping[str, Any] | None = None,
     rfv_sync: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     incoming_rows = [r for r in ((pending.get("incoming") or {}).get("rows") or []) if isinstance(r, dict)]
@@ -1283,7 +1330,7 @@ def _build_debug_audit(
     })
     bucket_ids = bucket_audit["bucket_ids"]
     expected_bucket_total = sum(len(bucket_ids[k]) for k in bucket_ids)
-    api_total = _count_tag(records, "active_work")
+    api_total = _count_tag(records, "pipeline_work")
 
     rush_rows = [r for r in (pending.get("rows") or []) if isinstance(r, dict) and _rush_bucket_key(str(r.get("effective_rush") or "")) == "rush"]
     rush_active = [r for r in records if r.get("rush_label") == "Rush" and "active_work" in (r.get("drilldown_tags") or [])]
@@ -1340,6 +1387,10 @@ def _build_debug_audit(
         },
         "dashboard_vs_monitor": dict(dashboard_reconciliation or {}),
         "facility_tracker_today": {
+            "entered_today_ids": sorted((facility_tracker or {}).get("bag_ids") or []),
+            "completed_ids": sorted((facility_tracker or {}).get("completed_ids") or []),
+            "still_active_ids": sorted((facility_tracker or {}).get("still_active_ids") or []),
+            "sent_or_left_ids": sorted((facility_tracker or {}).get("sent_or_left_ids") or []),
             "source": (facility_tracker or {}).get("source"),
             "entry_racks": (facility_tracker or {}).get("entry_racks"),
             "bag_ids": sorted((facility_tracker or {}).get("bag_ids") or []),
@@ -1348,11 +1399,25 @@ def _build_debug_audit(
             "nonrush_wf_ids": sorted((facility_tracker or {}).get("nonrush_wf_ids") or []),
             "nonrush_hd_ids": sorted((facility_tracker or {}).get("nonrush_hd_ids") or []),
             "unknown_ids": sorted((facility_tracker or {}).get("unknown_ids") or []),
-            "completed_ids": sorted((facility_tracker or {}).get("completed_ids") or []),
-            "still_active_ids": sorted((facility_tracker or {}).get("still_active_ids") or []),
-            "sent_or_checked_out_ids": sorted((facility_tracker or {}).get("sent_or_checked_out_ids") or []),
             "missing_staging_ids": sorted((facility_tracker or {}).get("missing_staging_ids") or []),
             "total": (facility_tracker or {}).get("total"),
+        },
+        "current_work_pipeline": {
+            "active_now_ids": sorted(active_work.get("bag_ids") or []),
+            "entered_today_still_active": (pipeline_debug or scope_overlap or {}).get("entered_today_still_active")
+            or (scope_overlap or {}).get("current_work_pipeline", {}).get("entered_today_still_active")
+            or [],
+            "carryover_active_from_prior_day": (pipeline_debug or {}).get("carryover_active_from_prior_day") or [],
+            "pending_wash_rush_ids": sorted(active_work.get("pending_wash_rush_ids") or []),
+            "pending_wash_nonrush_ids": sorted(active_work.get("pending_wash_nonrush_ids") or []),
+            "last_rush_wash": active_work.get("last_rush_wash"),
+            "last_nonrush_wash": active_work.get("last_nonrush_wash"),
+            "last_wash_overall": active_work.get("last_wash_overall"),
+            "completed_excluded": sorted((pipeline_debug or {}).get("completed_excluded") or []),
+            "sent_excluded": sorted((pipeline_debug or {}).get("sent_excluded") or []),
+            "source": active_work.get("source"),
+            "bag_ids": sorted(active_work.get("bag_ids") or []),
+            "total": active_work.get("total"),
         },
         "current_active_work_now": {
             "source": active_work.get("source"),
@@ -1465,22 +1530,38 @@ def _align_ready_for_vendor_counts(section: dict[str, Any], records: list[dict[s
     section["unreconciled_ids"] = _collect_unreconciled_ids(records, "ready_for_vendor")
 
 
-def _align_active_work_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
-    section["total"] = _count_tag(records, "active_work")
-    section["rush_wf"] = _count_tag(records, "active_rush_wf")
-    section["rush_hd"] = _count_tag(records, "active_rush_hd")
-    section["nonrush_wf"] = _count_tag(records, "active_nonrush_wf")
-    section["nonrush_hd"] = _count_tag(records, "active_nonrush_hd")
+def _align_pipeline_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    section["total"] = _count_tag(records, "pipeline_work")
+    section["rush_wf"] = _count_tag(records, "pipeline_rush_wf")
+    section["rush_hd"] = _count_tag(records, "pipeline_rush_hd")
+    section["nonrush_wf"] = _count_tag(records, "pipeline_nonrush_wf")
+    section["nonrush_hd"] = _count_tag(records, "pipeline_nonrush_hd")
     section["unknown_needs_review"] = sum(
         1
         for r in records
-        if "active_work" in (r.get("drilldown_tags") or [])
+        if "pipeline_work" in (r.get("drilldown_tags") or [])
         and (
             "unknown_speed_service" in (r.get("drilldown_tags") or [])
-            or any(t.startswith("active_unknown") for t in (r.get("drilldown_tags") or []))
+            or any(t.startswith("pipeline_unknown") for t in (r.get("drilldown_tags") or []))
         )
     )
+    section["rush_pending"] = sum(
+        1 for r in records if r.get("rush_label") == "Rush" and "pipeline_work" in (r.get("drilldown_tags") or [])
+    )
+    section["nonrush_pending"] = sum(
+        1 for r in records if r.get("rush_label") == "Non-Rush" and "pipeline_work" in (r.get("drilldown_tags") or [])
+    )
+    section["pending_wash_rush"] = _count_tag(records, "pending_wash_rush")
+    section["pending_wash_nonrush"] = _count_tag(records, "pending_wash_nonrush")
+    section["pending_wash_total"] = _count_tag(records, "pending_wash")
+    section["yet_to_fold"] = _count_tag(records, "yet_to_fold")
+    section["issues"] = _count_tag(records, "issues")
+    section["workitems"] = _count_tag(records, "workitems")
     _finalize_section_counts(section)
+
+
+def _align_active_work_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    _align_pipeline_counts(section, records)
 
 
 def _build_exceptions_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1521,6 +1602,13 @@ def build_simple_shift_performance_payload(
     )
     from backend.rinse_presence_sync_status import get_ready_for_vendor_sync_status
     from backend.rinse_shift_analysis import resolve_effective_rush_for_row
+    from backend.rinse_work_pipeline import (
+        bag_is_pipeline_eligible,
+        bag_is_sent_or_left,
+        build_current_work_pipeline_debug,
+        build_last_wash_detail,
+        update_last_wash_if_newer,
+    )
 
     eval_at = naive_system_utc(
         evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
@@ -1540,7 +1628,6 @@ def build_simple_shift_performance_payload(
         cursor, org, target_date=target_date, evaluation_time=evaluation_time
     )
     ready_for_vendor = _build_ready_for_vendor_section(pending, rfv_sync=rfv_sync)
-    active_work = _build_active_work_from_dashboard(dashboard_snapshot)
     scope_a = _build_scope_a(pending)
 
     incoming_rows = {
@@ -1598,6 +1685,11 @@ def build_simple_shift_performance_payload(
     scope_b_completed = 0
     scope_b_sent = 0
     last_rush_wash: dict[str, Any] | None = None
+    last_nonrush_wash: dict[str, Any] | None = None
+    last_wash_overall: dict[str, Any] | None = None
+    pipeline_bag_ids: set[str] = set()
+    completed_excluded: list[str] = []
+    sent_excluded: list[str] = []
 
     for bid in all_bag_ids:
         meta = meta_by_bag.get(bid) or {"bag_id": bid}
@@ -1607,9 +1699,17 @@ def build_simple_shift_performance_payload(
         meta["effective_rush"] = resolve_effective_rush_for_row(meta, target_date)
         events = events_by_bag.get(bid) or []
         in_incoming = bid in incoming_rows
-        in_active = bid in active_candidates
+        in_staging = bid in active_candidates
         in_facility_tracker = bid in facility_entry_ids
         completion = evaluate_bag_completion_v2(events)
+        in_pipeline = bag_is_pipeline_eligible(pending_row, completion, meta, events)
+        if in_pipeline:
+            pipeline_bag_ids.add(bid)
+        elif in_staging and pending_row:
+            if bag_is_sent_or_left(pending_row, completion, meta, events):
+                sent_excluded.append(bid)
+            elif completion.completed or str(pending_row.get("current_lifecycle_status") or "").upper() in LIFECYCLE_COMPLETED_STATUSES:
+                completed_excluded.append(bid)
         rec = _record_from_bag(
             bid=bid,
             meta=meta,
@@ -1618,7 +1718,8 @@ def build_simple_shift_performance_payload(
             threshold=threshold,
             period_start=start_dt,
             period_end_exclusive=end_exclusive,
-            in_active=in_active,
+            in_pipeline=in_pipeline,
+            in_staging=in_staging,
             in_incoming=in_incoming,
             in_facility_tracker=in_facility_tracker,
             completion=completion,
@@ -1639,20 +1740,39 @@ def build_simple_shift_performance_payload(
             all_credits.extend(
                 c for c in credits if credit_in_et_period(c, period_start=start_dt, period_end_exclusive=end_exclusive)
             )
-            is_rush = rec.get("rush_label") == "Rush"
-            for ev in events:
-                if not is_start_cleaning_purpose(ev.get("purpose")):
-                    continue
-                ts = ev.get("scanned_at_parsed")
-                if not isinstance(ts, datetime) or not (start_dt <= ts < end_exclusive):
-                    continue
-                if is_rush and (last_rush_wash is None or ts > datetime.fromisoformat(last_rush_wash["at"])):
-                    last_rush_wash = {
-                        "at": ts.isoformat(),
-                        "bag_id": bid,
-                        "customer": rec.get("customer"),
-                        "user": ev.get("user_name"),
-                    }
+        rush_label = rec.get("rush_label")
+        for ev in events:
+            if not is_start_cleaning_purpose(ev.get("purpose")):
+                continue
+            ts = ev.get("scanned_at_parsed")
+            if not isinstance(ts, datetime) or not (start_dt <= ts < end_exclusive):
+                continue
+            detail = build_last_wash_detail(
+                at=ts,
+                bag_id=bid,
+                customer=rec.get("customer"),
+                user=ev.get("user_name"),
+                service_type=rec.get("service_type"),
+                rush_label=rush_label,
+                rush_bucket=rec.get("rush_bucket"),
+            )
+            last_wash_overall = update_last_wash_if_newer(last_wash_overall, detail)
+            if rush_label == "Rush":
+                last_rush_wash = update_last_wash_if_newer(last_rush_wash, detail)
+            elif rush_label == "Non-Rush":
+                last_nonrush_wash = update_last_wash_if_newer(last_nonrush_wash, detail)
+
+    work_pipeline = _build_work_pipeline_section(
+        pipeline_bag_ids,
+        meta_by_bag,
+        target_date,
+        last_rush_wash=last_rush_wash,
+        last_nonrush_wash=last_nonrush_wash,
+        last_wash_overall=last_wash_overall,
+        records=records,
+    )
+    _align_pipeline_counts(work_pipeline, records)
+    active_work = work_pipeline
 
     shift_status = _build_shift_status(records, threshold=threshold, last_rush_wash=last_rush_wash)
 
@@ -1676,23 +1796,31 @@ def build_simple_shift_performance_payload(
             **{k: v for k, v in rfv_sync.items() if k != "message"},
         }
     rush_checkout = _build_rush_checkout_section(pending, records)
-    dashboard_reconciliation = build_dashboard_vs_monitor_reconciliation(
-        dashboard_snapshot,
-        active_work,
-        monitor_bag_ids=sorted(active_candidates),
-    )
     records_by_bag = {str(r.get("bag_id") or "").strip().upper(): r for r in records if r.get("bag_id")}
+    pipeline_debug = build_current_work_pipeline_debug(
+        facility_bag_ids=facility_entry_ids,
+        pipeline_bag_ids=pipeline_bag_ids,
+        staging_bag_ids=active_candidates,
+        completed_excluded=completed_excluded,
+        sent_excluded=sent_excluded,
+    )
     facility_tracker = enrich_facility_tracker_status(
         facility_tracker,
         bag_ids=facility_entry_ids,
         records_by_bag=records_by_bag,
-        active_bag_ids=active_candidates,
+        active_bag_ids=pipeline_bag_ids,
         staging_bag_ids=dashboard_snapshot.get("unique_bag_ids") or [],
     )
     scope_overlap = build_scope_overlap_debug(
         facility_bag_ids=facility_entry_ids,
-        active_bag_ids=active_candidates,
+        active_bag_ids=pipeline_bag_ids,
         records_by_bag=records_by_bag,
+        pipeline_debug=pipeline_debug,
+    )
+    dashboard_reconciliation = build_dashboard_vs_monitor_reconciliation(
+        dashboard_snapshot,
+        active_work,
+        monitor_bag_ids=sorted(pipeline_bag_ids),
     )
     debug_audit = _build_debug_audit(
         pending=pending,
@@ -1707,6 +1835,7 @@ def build_simple_shift_performance_payload(
         dashboard_reconciliation=dashboard_reconciliation,
         facility_tracker=facility_tracker,
         scope_overlap=scope_overlap,
+        pipeline_debug=pipeline_debug,
         rfv_sync=rfv_sync,
     )
 
@@ -1724,8 +1853,9 @@ def build_simple_shift_performance_payload(
         "period_end": period_end.isoformat(),
         "ready_for_vendor": ready_for_vendor,
         "facility_tracker_today": facility_tracker,
-        "current_active_work": active_work,
-        "current_active_work_now": active_work,
+        "current_work_pipeline": work_pipeline,
+        "current_active_work": work_pipeline,
+        "current_active_work_now": work_pipeline,
         "dashboard_active_staging": dashboard_snapshot,
         "dashboard_reconciliation": dashboard_reconciliation,
         "scope_overlap": scope_overlap,

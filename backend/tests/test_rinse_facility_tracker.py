@@ -191,4 +191,4 @@ class TestPayloadFacilityTracker:
         assert "OLD" in overlap["carryover_active_from_prior_day"]
         audit = payload["debug_audit"]
         assert audit["facility_tracker_today"]["bag_ids"] == ["TODAY"]
-        assert audit["current_active_work_now"]["bag_ids"] == ["OLD"]
+        assert audit["current_work_pipeline"]["bag_ids"] == ["OLD"]

@@ -67,6 +67,19 @@ export function shiftMetricLabel(metricKey, rushFilter = "all") {
   return labels.all;
 }
 
+export function formatLastWash(entry, emptyLabel = "No wash started yet") {
+  if (!entry || (!entry.at && !entry.time)) return emptyLabel;
+  const parts = [
+    entry.time || entry.at,
+    entry.bag_id,
+    entry.customer || "—",
+    entry.employee || entry.user || "—",
+    entry.service_type,
+    entry.rush_label,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 export function formatShiftDateLabel(dateStart, dateEnd) {
   const fmt = (iso) => {
     if (!iso) return "";

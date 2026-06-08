@@ -550,15 +550,15 @@ class TestDrilldownCountIntegrity:
         payload = build_simple_shift_performance_payload(
             cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
         )
-        active = payload["current_active_work"]
+        pipeline = payload["current_work_pipeline"]
         checkout = payload["rush_checkout"]
         records = payload["records"]
-        assert active["total"] == _count_tag(records, "active_work") == 2
-        assert active["rush_wf"] == _count_tag(records, "active_rush_wf") == 2
-        assert active["counts_add_up"] is True
-        assert checkout["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
-        assert checkout["checkout_not_recorded"] == _count_tag(records, "checkout_not_recorded") == 0
-        assert "checkout_pending" not in active
+        assert pipeline["total"] == _count_tag(records, "pipeline_work") == 1
+        assert pipeline["rush_wf"] == _count_tag(records, "pipeline_rush_wf") == 1
+        assert pipeline["counts_add_up"] is True
+        assert _count_tag(records, "checkout_pending") == 0
+        assert _count_tag(records, "checkout_not_recorded") == 0
+        assert "checkout_pending" not in pipeline
         incoming_rec = next(r for r in records if r["bag_id"] == "IN1")
         assert incoming_rec["in_scope_a_active"] is False
         assert "active_work" not in incoming_rec["drilldown_tags"]
@@ -727,8 +727,8 @@ class TestActiveWorkCountLogic:
         payload = build_simple_shift_performance_payload(
             cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
         )
-        assert payload["current_active_work"]["total"] == 2
-        assert _count_tag(payload["records"], "active_work") == 2
+        assert payload["current_work_pipeline"]["total"] == 1
+        assert _count_tag(payload["records"], "pipeline_work") == 1
         recon = payload["debug_audit"]["active_work_reconciliation"]
         assert recon["counts_add_up"] is True
         assert "REG1" in {e["bag_id"] for e in recon["excluded_ids"]}
@@ -740,7 +740,7 @@ class TestActiveWorkCountLogic:
     @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
     @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
     @patch("backend.rinse_simple_shift_performance.get_processing_settings")
-    def test_checkout_pending_not_same_as_not_recorded(
+    def test_checkout_tags_not_on_shift_monitor_records(
         self,
         mock_settings,
         mock_maps,
@@ -774,11 +774,13 @@ class TestActiveWorkCountLogic:
         )
         checkout = payload["rush_checkout"]
         records = payload["records"]
-        assert checkout["checkout_pending"] == _count_tag(records, "checkout_pending") == 1
-        assert checkout["checkout_not_recorded"] == _count_tag(records, "checkout_not_recorded") == 1
+        assert _count_tag(records, "checkout_pending") == 0
+        assert _count_tag(records, "checkout_not_recorded") == 0
+        assert payload["current_work_pipeline"]["total"] == _count_tag(records, "pipeline_work") == 1
         wash = next(r for r in records if r["bag_id"] == "WASH")
         assert "checkout_pending" not in wash["drilldown_tags"]
         assert "checkout_not_recorded" not in wash["drilldown_tags"]
+        assert payload["sections_under_review"]["rush_checkout"] is True
 
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
@@ -855,7 +857,7 @@ class TestActiveWorkCountLogic:
     @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
     @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
     @patch("backend.rinse_simple_shift_performance.get_processing_settings")
-    def test_lifecycle_sent_staging_row_still_counts_in_active_work(
+    def test_lifecycle_sent_staging_row_excluded_from_pipeline(
         self,
         mock_settings,
         mock_maps,
@@ -908,9 +910,11 @@ class TestActiveWorkCountLogic:
         payload = build_simple_shift_performance_payload(
             cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
         )
-        assert payload["current_active_work"]["total"] == 2
-        assert _count_tag(payload["records"], "active_work") == 2
-        assert _count_tag(payload["records"], "active_rush_wf") == 1
+        assert payload["current_work_pipeline"]["total"] == 1
+        assert _count_tag(payload["records"], "pipeline_work") == 1
+        assert _count_tag(payload["records"], "pipeline_nonrush_wf") == 1
+        debug = payload["debug_audit"]["current_work_pipeline"]
+        assert "SENT1" in debug["sent_excluded"]
 
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
