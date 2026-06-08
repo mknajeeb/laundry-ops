@@ -99,8 +99,24 @@ def _make_dashboard_snapshot(specs):
     }
 
 
-_FRESH_RFV_SYNC = {"stale": False, "last_refreshed_at": "2026-06-07T12:00:00"}
-_STALE_RFV_SYNC = {"stale": True, "last_refreshed_at": "2026-05-31T10:00:00"}
+_FRESH_RFV_SYNC = {
+    "stale": False,
+    "enabled": True,
+    "latest_status": "success",
+    "status": "success",
+    "last_refreshed_at": "2026-06-07T12:00:00",
+    "last_success_at": "2026-06-07T12:00:00",
+    "rows_found": 0,
+    "active_rows": 0,
+}
+_STALE_RFV_SYNC = {
+    "stale": True,
+    "enabled": True,
+    "latest_status": "success",
+    "status": "success",
+    "last_refreshed_at": "2026-05-31T10:00:00",
+    "last_success_at": "2026-05-31T10:00:00",
+}
 
 
 T0 = datetime(2026, 6, 4, 8, 0)

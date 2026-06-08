@@ -188,6 +188,24 @@ def build_sync_status_from_run(
     }
 
 
+def _count_active_presence_rows(cursor, organization_id: int, portal_status: str) -> int:
+    ensure_presence_tables(cursor)
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS active_rows
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id=%s AND portal_status=%s AND active=1
+        """,
+        (int(organization_id), portal_status),
+    )
+    row = cursor.fetchone()
+    if isinstance(row, dict):
+        return int(row.get("active_rows") or 0)
+    if row:
+        return int(row[0] or 0)
+    return 0
+
+
 def get_ready_for_vendor_sync_status(
     cursor,
     organization_id: int,
@@ -198,16 +216,53 @@ def get_ready_for_vendor_sync_status(
     enabled = ready_for_vendor_scrape_enabled(cursor, org)
     latest = _latest_presence_run(cursor, org, PORTAL_STATUS_READY) if enabled else None
     last_success = _latest_success_presence_run(cursor, org, PORTAL_STATUS_READY) if enabled else None
+    active_rows = _count_active_presence_rows(cursor, org, PORTAL_STATUS_READY) if enabled else 0
+
     sync = build_sync_status_from_run(
-        latest,
+        last_success or latest,
         sync_name="Ready for Vendor Sync",
         enabled=enabled,
         evaluation_time=evaluation_time,
     )
+    latest_item = build_presence_run_list_item(latest) if latest else None
+    success_item = build_presence_run_list_item(last_success) if last_success else None
+    latest_status = str((latest or {}).get("status") or (latest_item or {}).get("status") or "")
+    skipped_reason = None
+    error_message = None
+    if not enabled:
+        skipped_reason = "enable_ready_for_vendor_scrape=false"
+    elif latest_status == "disabled":
+        skipped_reason = "enable_ready_for_vendor_scrape=false"
+    elif latest_status == "failed":
+        error_message = str((latest or {}).get("errors_json") or (latest_item or {}).get("error_message") or "")
+        sync["latest_failed"] = True
+        sync["message"] = f"Ready for Vendor Sync failed: {error_message or 'unknown error'}"
+    elif latest_status == "success" and int((latest_item or {}).get("rows_found") or 0) == 0:
+        sync["zero_rows_success"] = True
+        sync["message"] = "Ready for Vendor Sync returned 0 rows successfully"
+
+    rows_found = None
+    if latest_item and latest_item.get("rows_found") is not None:
+        rows_found = int(latest_item.get("rows_found") or 0)
+    elif success_item and success_item.get("rows_found") is not None:
+        rows_found = int(success_item.get("rows_found") or 0)
+
     return {
         **sync,
-        "latest_run": build_presence_run_list_item(latest) if latest else None,
-        "last_success": build_presence_run_list_item(last_success) if last_success else None,
+        "latest_run": latest_item,
+        "last_success": success_item,
+        "last_success_at": success_item.get("finished_at") if success_item else None,
+        "last_success_at_et": _short_time_et(
+            (last_success or {}).get("finished_at")
+            if isinstance((last_success or {}).get("finished_at"), datetime)
+            else None
+        ),
+        "latest_status": latest_status or sync.get("status"),
+        "rows_found": rows_found,
+        "active_rows": active_rows,
+        "skipped_reason": skipped_reason,
+        "error": error_message,
+        "enabled": enabled,
     }
 
 

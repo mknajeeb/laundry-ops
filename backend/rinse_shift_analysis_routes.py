@@ -303,6 +303,11 @@ def register_rinse_shift_analysis_routes(
                     "error_message": av_result.ready_for_vendor_error,
                 },
             }
+            if payload["ready_for_vendor_sync"].get("status") == "disabled":
+                payload["ready_for_vendor_sync"]["skipped_reason"] = (
+                    payload["ready_for_vendor_sync"].get("skipped_reason")
+                    or "enable_ready_for_vendor_scrape=false"
+                )
             code = 200
             if av_result.status == "failed":
                 code = 502

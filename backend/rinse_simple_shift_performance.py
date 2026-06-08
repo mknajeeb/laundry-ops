@@ -492,12 +492,21 @@ def _build_ready_for_vendor_section(
     rfv_sync: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     sync = dict(rfv_sync or {})
+    enabled = sync.get("enabled", True)
+    latest_status = str(sync.get("latest_status") or sync.get("status") or "")
+    skipped_reason = sync.get("skipped_reason")
+    error_message = sync.get("error") or sync.get("error_message")
     stale = bool(sync.get("stale"))
-    last_refreshed_at = sync.get("last_refreshed_at") or _presence_last_refreshed(pending)
+    last_refreshed_at = (
+        sync.get("last_success_at")
+        or sync.get("last_refreshed_at")
+        or _presence_last_refreshed(pending)
+    )
     base_sync = sync if sync else _build_sync_status(
         last_refreshed_at, sync_name="Ready for Vendor Sync"
     )
-    if stale:
+
+    def _unavailable(reason: str) -> dict[str, Any]:
         return {
             "live": False,
             "under_review": True,
@@ -510,13 +519,30 @@ def _build_ready_for_vendor_section(
             "source": "Ready for Vendor queue",
             "last_refreshed_at": last_refreshed_at,
             "sync_status": base_sync,
-            "unavailable_reason": "Ready for Vendor sync stale — refresh required",
-            "data_quality_warning": (
+            "unavailable_reason": reason,
+            "data_quality_warning": reason,
+            "drilldown_filter": "ready_for_vendor",
+            "rows_found": sync.get("rows_found"),
+            "active_rows": sync.get("active_rows"),
+            "skipped_reason": skipped_reason,
+            "error": error_message,
+        }
+
+    if not enabled or latest_status == "disabled" or skipped_reason:
+        return _unavailable(
+            f"Ready for Vendor Sync skipped: {skipped_reason or 'feature flag disabled'}"
+        )
+    if latest_status == "failed" or sync.get("latest_failed"):
+        return _unavailable(
+            f"Ready for Vendor Sync failed: {error_message or 'unknown error'}"
+        )
+    if stale:
+        return _unavailable(
+            (
                 f"Ready for Vendor sync stale — last refresh {last_refreshed_at or 'unknown'}. "
                 "Refresh Both Syncs before using live counts."
-            ),
-            "drilldown_filter": "ready_for_vendor",
-        }
+            )
+        )
 
     incoming = pending.get("incoming") or {}
     rows = [r for r in (incoming.get("rows") or []) if isinstance(r, dict)]
@@ -536,14 +562,22 @@ def _build_ready_for_vendor_section(
         "last_refreshed_at": last_refreshed_at,
         "sync_status": base_sync,
         "drilldown_filter": "ready_for_vendor",
+        "rows_found": sync.get("rows_found"),
+        "active_rows": sync.get("active_rows"),
+        "skipped_reason": skipped_reason,
+        "error": error_message,
     }
+    if sync.get("zero_rows_success"):
+        section["zero_rows_success"] = True
+        section["data_quality_warning"] = "Ready for Vendor Sync returned 0 rows successfully"
+    else:
+        section["data_quality_warning"] = _data_quality_warning(section)
     _finalize_section_counts(section)
-    section["data_quality_warning"] = _data_quality_warning(section)
     return section
 
 
 def _build_active_work_from_dashboard(dashboard: Mapping[str, Any]) -> dict[str, Any]:
-    """Current Active Work — exact GET /dashboard staging aggregates only."""
+    """Current Active Work Now — currently active/pending facility work (orders_staging)."""
     section = {
         "total": int(dashboard.get("total_orders") or 0),
         "rush_wf": int(dashboard.get("wf_rush") or 0),
@@ -556,9 +590,17 @@ def _build_active_work_from_dashboard(dashboard: Mapping[str, Any]) -> dict[str,
         "duplicate_staging_rows": int(dashboard.get("duplicate_staging_rows") or 0),
         "unique_bag_count": int(dashboard.get("unique_bag_count") or 0),
         "batch_date": dashboard.get("batch_date"),
-        "source": "GET /dashboard — active orders_staging only",
+        "source": "Currently active/pending facility work (orders_staging)",
+        "description": "Bags still pending now — includes carryover from prior days",
+        "scope": "current_active_work_now",
         "drilldown_filter": "active_work",
         "dashboard_source": True,
+        "rush_wf_ids": sorted(dashboard.get("rush_wf_ids") or []),
+        "rush_hd_ids": sorted(dashboard.get("rush_hd_ids") or []),
+        "nonrush_wf_ids": sorted(dashboard.get("nonrush_wf_ids") or []),
+        "nonrush_hd_ids": sorted(dashboard.get("nonrush_hd_ids") or []),
+        "unknown_ids": sorted(dashboard.get("unknown_ids") or []),
+        "bag_ids": sorted(dashboard.get("unique_bag_ids") or []),
     }
     _finalize_section_counts(section)
     dup = int(dashboard.get("duplicate_staging_rows") or 0)
@@ -931,6 +973,7 @@ def _record_from_bag(
     period_end_exclusive: datetime,
     in_active: bool,
     in_incoming: bool,
+    in_facility_tracker: bool = False,
     completion: Any | None = None,
 ) -> dict[str, Any]:
     row_meta = dict(pending_row or {})
@@ -955,6 +998,12 @@ def _record_from_bag(
             tags.add(f"rfv_{bucket}")
             if bucket.startswith("unknown") or bucket == "unknown_service":
                 tags.add("rfv_unknown_needs_review")
+    if in_facility_tracker:
+        tags.add("facility_tracker")
+        if bucket:
+            tags.add(f"facility_{bucket}")
+            if bucket.startswith("unknown") or bucket == "unknown_service":
+                tags.add("facility_unknown_needs_review")
     active_eligible = in_active
     if active_eligible:
         tags.add("active_work")
@@ -1215,6 +1264,9 @@ def _build_debug_audit(
     events_by_bag: dict[str, list[dict[str, Any]]] | None = None,
     dashboard_snapshot: Mapping[str, Any] | None = None,
     dashboard_reconciliation: Mapping[str, Any] | None = None,
+    facility_tracker: Mapping[str, Any] | None = None,
+    scope_overlap: Mapping[str, Any] | None = None,
+    rfv_sync: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     incoming_rows = [r for r in ((pending.get("incoming") or {}).get("rows") or []) if isinstance(r, dict)]
     unknown_why: list[str] = []
@@ -1276,7 +1328,43 @@ def _build_debug_audit(
                 non_parseable.append({"bag_id": bid, "issue": "non_parseable_weight_values"})
 
     return {
+        "ready_for_vendor_sync": {
+            "last_success_at": (rfv_sync or {}).get("last_success_at"),
+            "status": (rfv_sync or {}).get("latest_status") or (rfv_sync or {}).get("status"),
+            "rows_found": (rfv_sync or {}).get("rows_found"),
+            "active_rows": (rfv_sync or {}).get("active_rows"),
+            "error": (rfv_sync or {}).get("error"),
+            "skipped_reason": (rfv_sync or {}).get("skipped_reason"),
+            "enabled": (rfv_sync or {}).get("enabled"),
+            "stale": (rfv_sync or {}).get("stale"),
+        },
         "dashboard_vs_monitor": dict(dashboard_reconciliation or {}),
+        "facility_tracker_today": {
+            "source": (facility_tracker or {}).get("source"),
+            "entry_racks": (facility_tracker or {}).get("entry_racks"),
+            "bag_ids": sorted((facility_tracker or {}).get("bag_ids") or []),
+            "rush_wf_ids": sorted((facility_tracker or {}).get("rush_wf_ids") or []),
+            "rush_hd_ids": sorted((facility_tracker or {}).get("rush_hd_ids") or []),
+            "nonrush_wf_ids": sorted((facility_tracker or {}).get("nonrush_wf_ids") or []),
+            "nonrush_hd_ids": sorted((facility_tracker or {}).get("nonrush_hd_ids") or []),
+            "unknown_ids": sorted((facility_tracker or {}).get("unknown_ids") or []),
+            "completed_ids": sorted((facility_tracker or {}).get("completed_ids") or []),
+            "still_active_ids": sorted((facility_tracker or {}).get("still_active_ids") or []),
+            "sent_or_checked_out_ids": sorted((facility_tracker or {}).get("sent_or_checked_out_ids") or []),
+            "missing_staging_ids": sorted((facility_tracker or {}).get("missing_staging_ids") or []),
+            "total": (facility_tracker or {}).get("total"),
+        },
+        "current_active_work_now": {
+            "source": active_work.get("source"),
+            "bag_ids": sorted(active_work.get("bag_ids") or []),
+            "rush_wf_ids": sorted(active_work.get("rush_wf_ids") or []),
+            "rush_hd_ids": sorted(active_work.get("rush_hd_ids") or []),
+            "nonrush_wf_ids": sorted(active_work.get("nonrush_wf_ids") or []),
+            "nonrush_hd_ids": sorted(active_work.get("nonrush_hd_ids") or []),
+            "unknown_ids": sorted(active_work.get("unknown_ids") or []),
+            "total": active_work.get("total"),
+        },
+        "overlap": dict(scope_overlap or {}),
         "active_staging_bag_ids": sorted(dashboard_snapshot.get("unique_bag_ids") or []) if dashboard_snapshot else [],
         "ready_for_vendor": {
             "total": ready_for_vendor.get("total"),
@@ -1425,13 +1513,28 @@ def build_simple_shift_performance_payload(
         build_dashboard_vs_monitor_reconciliation,
         get_dashboard_active_staging_snapshot,
     )
+    from backend.rinse_facility_tracker import (
+        build_facility_tracker_section,
+        build_scope_overlap_debug,
+        enrich_facility_tracker_status,
+        load_facility_entry_bag_ids,
+    )
     from backend.rinse_presence_sync_status import get_ready_for_vendor_sync_status
+    from backend.rinse_shift_analysis import resolve_effective_rush_for_row
 
     eval_at = naive_system_utc(
         evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
     )
     dashboard_snapshot = get_dashboard_active_staging_snapshot(cursor, org)
     rfv_sync = get_ready_for_vendor_sync_status(cursor, org, evaluation_time=eval_at)
+    entry_racks = settings.get("facility_entry_racks") or ["VeeWash Dirty"]
+    facility_entry_ids = load_facility_entry_bag_ids(
+        cursor,
+        org,
+        period_start=period_start,
+        period_end=period_end,
+        entry_racks=entry_racks,
+    )
 
     pending = get_pending_bag_status(
         cursor, org, target_date=target_date, evaluation_time=evaluation_time
@@ -1463,9 +1566,29 @@ def build_simple_shift_performance_payload(
     scope_b_ids = _load_bag_ids_with_et_activity(
         cursor, org, period_start=period_start, period_end=period_end
     )
-    all_bag_ids = sorted(set(scope_b_ids) | set(incoming_rows.keys()) | set(pending_by_bag.keys()))
+    all_bag_ids = sorted(
+        set(scope_b_ids)
+        | set(incoming_rows.keys())
+        | set(pending_by_bag.keys())
+        | set(facility_entry_ids)
+    )
 
     meta_by_bag = _load_bag_metadata(cursor, org, all_bag_ids)
+    for bid in all_bag_ids:
+        base = meta_by_bag.get(bid) or {"bag_id": bid}
+        pending_row = pending_by_bag.get(bid)
+        merged = {**base, **{k: v for k, v in (pending_row or {}).items() if v is not None}}
+        merged["effective_rush"] = resolve_effective_rush_for_row(merged, target_date)
+        meta_by_bag[bid] = merged
+
+    facility_tracker = build_facility_tracker_section(
+        facility_entry_ids,
+        meta_by_bag,
+        target_date,
+        entry_racks=entry_racks,
+        period_start=period_start,
+        period_end=period_end,
+    )
     events_by_bag = _load_scan_events_for_bags(cursor, org, all_bag_ids)
     user_maps = _load_rinse_user_maps(cursor, org)
 
@@ -1481,9 +1604,11 @@ def build_simple_shift_performance_payload(
         pending_row = pending_by_bag.get(bid)
         if pending_row:
             meta = {**meta, **{k: v for k, v in pending_row.items() if v is not None}}
+        meta["effective_rush"] = resolve_effective_rush_for_row(meta, target_date)
         events = events_by_bag.get(bid) or []
         in_incoming = bid in incoming_rows
         in_active = bid in active_candidates
+        in_facility_tracker = bid in facility_entry_ids
         completion = evaluate_bag_completion_v2(events)
         rec = _record_from_bag(
             bid=bid,
@@ -1495,6 +1620,7 @@ def build_simple_shift_performance_payload(
             period_end_exclusive=end_exclusive,
             in_active=in_active,
             in_incoming=in_incoming,
+            in_facility_tracker=in_facility_tracker,
             completion=completion,
         )
         records.append(rec)
@@ -1555,6 +1681,19 @@ def build_simple_shift_performance_payload(
         active_work,
         monitor_bag_ids=sorted(active_candidates),
     )
+    records_by_bag = {str(r.get("bag_id") or "").strip().upper(): r for r in records if r.get("bag_id")}
+    facility_tracker = enrich_facility_tracker_status(
+        facility_tracker,
+        bag_ids=facility_entry_ids,
+        records_by_bag=records_by_bag,
+        active_bag_ids=active_candidates,
+        staging_bag_ids=dashboard_snapshot.get("unique_bag_ids") or [],
+    )
+    scope_overlap = build_scope_overlap_debug(
+        facility_bag_ids=facility_entry_ids,
+        active_bag_ids=active_candidates,
+        records_by_bag=records_by_bag,
+    )
     debug_audit = _build_debug_audit(
         pending=pending,
         ready_for_vendor=ready_for_vendor,
@@ -1566,6 +1705,9 @@ def build_simple_shift_performance_payload(
         events_by_bag=events_by_bag,
         dashboard_snapshot=dashboard_snapshot,
         dashboard_reconciliation=dashboard_reconciliation,
+        facility_tracker=facility_tracker,
+        scope_overlap=scope_overlap,
+        rfv_sync=rfv_sync,
     )
 
     sections_under_review = {
@@ -1581,9 +1723,13 @@ def build_simple_shift_performance_payload(
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
         "ready_for_vendor": ready_for_vendor,
+        "facility_tracker_today": facility_tracker,
         "current_active_work": active_work,
+        "current_active_work_now": active_work,
         "dashboard_active_staging": dashboard_snapshot,
         "dashboard_reconciliation": dashboard_reconciliation,
+        "scope_overlap": scope_overlap,
+        "facility_entry_racks": entry_racks,
         "sections_under_review": sections_under_review,
         "rinse_sync": rinse_sync,
         "rush_checkout": rush_checkout,

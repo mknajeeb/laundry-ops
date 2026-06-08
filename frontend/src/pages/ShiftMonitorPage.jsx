@@ -340,17 +340,38 @@ export default function ShiftMonitorPage({ user }) {
       const av = res.data?.at_vendor_sync || {};
       const rfv = res.data?.ready_for_vendor_sync || {};
       const overall = res.data?.overall_status || "success";
+      const rfvDetail = (() => {
+        if (rfv.skipped_reason || rfv.status === "disabled") {
+          return `Ready for Vendor skipped: ${rfv.skipped_reason || "feature flag disabled"}`;
+        }
+        if (rfv.status === "failed") {
+          return `Ready for Vendor failed: ${rfv.error_message || "unknown error"}`;
+        }
+        if (rfv.status === "success" && Number(rfv.rows_found) === 0) {
+          return "Ready for Vendor returned 0 rows successfully (old rows marked inactive)";
+        }
+        if (rfv.status === "success") {
+          return `Ready for Vendor success: ${rfv.rows_found ?? 0} rows, ${rfv.active_rows ?? 0} active`;
+        }
+        return `Ready for Vendor: ${rfv.status || "—"}`;
+      })();
       setSyncMessage(
         overall === "partial_success"
-          ? `At Vendor: ${av.status || "—"} · Ready for Vendor: ${rfv.status || "failed"} (partial success)`
-          : `Both syncs finished — At Vendor: ${av.status || "—"} · Ready for Vendor: ${rfv.status || "—"}`,
+          ? `At Vendor: ${av.status || "—"} · ${rfvDetail} (partial success)`
+          : `Both syncs finished — At Vendor: ${av.status || "—"} · ${rfvDetail}`,
       );
       await load();
     } catch (e) {
       const data = e?.response?.data;
       if (data?.overall_status === "partial_success" || e?.response?.status === 207) {
         setSyncMessage(
-          `Partial success — At Vendor: ${data?.at_vendor_sync?.status || "ok"} · Ready for Vendor: ${data?.ready_for_vendor_sync?.status || "failed"}`,
+          `Partial success — At Vendor: ${data?.at_vendor_sync?.status || "ok"} · ${
+            data?.ready_for_vendor_sync?.error_message
+              ? `Ready for Vendor failed: ${data.ready_for_vendor_sync.error_message}`
+              : data?.ready_for_vendor_sync?.skipped_reason
+                ? `Ready for Vendor skipped: ${data.ready_for_vendor_sync.skipped_reason}`
+                : `Ready for Vendor: ${data?.ready_for_vendor_sync?.status || "failed"}`
+          }`,
         );
         await load();
       } else {
@@ -363,16 +384,20 @@ export default function ShiftMonitorPage({ user }) {
   };
 
   const rfv = data?.ready_for_vendor || {};
-  const active = data?.current_active_work || {};
+  const facility = data?.facility_tracker_today || {};
+  const active = data?.current_active_work_now || data?.current_active_work || {};
   const underReview = data?.sections_under_review || {};
   const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
   const rinseSync = rinseSyncBanner(data);
   const rfvCounts = sectionSplitCounts(rfv, rushFilter);
+  const facilityCounts = sectionSplitCounts(facility, rushFilter);
   const activeCounts = sectionSplitCounts(active, rushFilter);
-  const rfvSyncSub = syncStatusSubtext(rfv, "Ready for Vendor Sync");
-  const avSyncSub = syncStatusSubtext(active, "At Vendor Sync");
-  const rfvSyncStale = rfv.sync_status?.stale && rfv.last_refreshed_at;
-  const avSyncStale = active.sync_status?.stale && active.last_refreshed_at;
+  const avSync = data?.rinse_sync?.at_vendor || active.sync_status || {};
+  const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
+  const rfvSyncSub = syncStatusSubtext({ sync_status: rfvSync, last_refreshed_at: rfv.last_refreshed_at }, "Ready for Vendor Sync");
+  const avSyncSub = syncStatusSubtext({ sync_status: avSync }, "At Vendor Sync");
+  const rfvSyncStale = rfvSync?.stale && (rfv.last_refreshed_at || rfvSync.last_refreshed_at);
+  const avSyncStale = avSync?.stale && (active.last_refreshed_at || avSync.last_refreshed_at);
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -430,59 +455,52 @@ export default function ShiftMonitorPage({ user }) {
       {data ? (
         <>
           <Section
-            title="Ready for Vendor"
-            description={rfvLive ? "Incoming / unassigned queue from Rinse Sync" : "Sync required before live counts are shown"}
-            rushFilter={rfvLive ? rushFilter : null}
-            onRushFilterChange={rfvLive ? setRushFilter : null}
-            alert={
-              !rfvLive ? (
-                <Alert severity="warning" sx={{ mb: 1.5 }}>
-                  Ready for Vendor: Sync stale
-                  {rfv.last_refreshed_at ? ` · Last refresh: ${formatDateTime(rfv.last_refreshed_at)}` : ""}
-                  {" · Refresh required"}
-                </Alert>
-              ) : rfv.data_quality_warning ? (
-                <Alert severity="error" sx={{ mb: 1.5 }}>{rfv.data_quality_warning}</Alert>
-              ) : rfvSyncStale ? (
-                <Alert severity="warning" sx={{ mb: 1.5 }}>{rfvSyncSub}</Alert>
-              ) : null
-            }
+            title="Sync Status"
+            description="At Vendor Sync and Ready for Vendor Sync timestamps"
           >
-            {rfvLive ? (
-              <>
-                <StatCard
-                  label="Total"
-                  value={rfvCounts.total}
-                  source="Ready for Vendor queue"
-                  sub={rfvSyncSub}
-                  onClick={() => openDrilldown("ready_for_vendor")}
-                  active={filterTag === "ready_for_vendor"}
-                />
-                <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : rfv.rush_wf} onClick={() => openDrilldown("rfv_rush_wf")} active={filterTag === "rfv_rush_wf"} />
-                <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : rfv.rush_hd} onClick={() => openDrilldown("rfv_rush_hd")} active={filterTag === "rfv_rush_hd"} />
-                <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : rfv.nonrush_wf} onClick={() => openDrilldown("rfv_nonrush_wf")} active={filterTag === "rfv_nonrush_wf"} />
-                <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : rfv.nonrush_hd} onClick={() => openDrilldown("rfv_nonrush_hd")} active={filterTag === "rfv_nonrush_hd"} />
-                <StatCard
-                  label="Unknown / Review"
-                  value={rushFilter === "all" ? rfv.unknown_needs_review : 0}
-                  warn={rushFilter === "all" && rfv.unknown_needs_review > 0}
-                  onClick={() => openDrilldown("rfv_unknown_needs_review")}
-                  active={filterTag === "rfv_unknown_needs_review"}
-                />
-              </>
-            ) : (
-              <StatCard
-                label="Ready for Vendor"
-                value="—"
-                source="Unavailable"
-                sub={rfv.unavailable_reason || rfvSyncSub || "Refresh Both Syncs"}
-              />
-            )}
+            <StatCard label="At Vendor Sync" value={avSync.last_refreshed_at_et || avSync.message || "—"} source="orders_staging + scan events" sub={avSyncSub} />
+            <StatCard
+              label="Ready for Vendor Sync"
+              value={rfvSync.last_refreshed_at_et || rfvSync.last_success_at_et || rfvSync.message || "—"}
+              source="rinse_cleaner_ticket_presence"
+              sub={rfv.unavailable_reason || rfvSyncSub || (rfvSync.zero_rows_success ? "0 rows — success" : null)}
+              warn={!rfvLive || rfvSync?.failed || rfvSync?.latest_failed}
+            />
           </Section>
 
           <Section
-            title="Current Active Work"
-            description="GET /dashboard — active orders_staging only (no registry, presence, or lifecycle supplements)"
+            title="Facility Tracker Today"
+            description="Bags that entered today — facility entry rack scan on selected date (kept even if completed or sent)"
+            rushFilter={rushFilter}
+            onRushFilterChange={setRushFilter}
+            alert={
+              facility.entry_racks?.length ? (
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                  Entry racks: {facility.entry_racks.join(", ")}
+                </Typography>
+              ) : null
+            }
+          >
+            <StatCard
+              label="Entered Total"
+              value={facilityCounts.total}
+              source={facility.source || "Scan events"}
+              onClick={() => openDrilldown("facility_tracker")}
+              active={filterTag === "facility_tracker"}
+            />
+            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : facility.rush_wf} onClick={() => openDrilldown("facility_rush_wf")} active={filterTag === "facility_rush_wf"} />
+            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : facility.rush_hd} onClick={() => openDrilldown("facility_rush_hd")} active={filterTag === "facility_rush_hd"} />
+            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : facility.nonrush_wf} onClick={() => openDrilldown("facility_nonrush_wf")} active={filterTag === "facility_nonrush_wf"} />
+            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : facility.nonrush_hd} onClick={() => openDrilldown("facility_nonrush_hd")} active={filterTag === "facility_nonrush_hd"} />
+            <StatCard label="Unknown / Review" value={rushFilter === "all" ? facility.unknown_needs_review : 0} onClick={() => openDrilldown("facility_unknown_needs_review")} />
+            <StatCard label="Completed" value={facility.completed ?? 0} source="Scan completion rules" />
+            <StatCard label="Still Active" value={facility.still_active ?? 0} source="Current active staging" />
+            <StatCard label="Sent / Checked Out" value={facility.sent_or_checked_out ?? 0} source="Lifecycle / checkout" />
+          </Section>
+
+          <Section
+            title="Current Active Work Now"
+            description="Bags still pending now — active orders_staging (includes carryover from prior days)"
             rushFilter={rushFilter}
             onRushFilterChange={setRushFilter}
             alert={
@@ -502,16 +520,44 @@ export default function ShiftMonitorPage({ user }) {
             <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : active.rush_hd} onClick={() => openDrilldown("active_rush_hd")} />
             <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : active.nonrush_wf} onClick={() => openDrilldown("active_nonrush_wf")} />
             <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : active.nonrush_hd} onClick={() => openDrilldown("active_nonrush_hd")} />
-            <StatCard
-              label="Unknown / Review"
-              value={rushFilter === "all" ? active.unknown_needs_review : 0}
-              onClick={() => openDrilldown("unknown_speed_service")}
-            />
+            <StatCard label="Unknown / Review" value={rushFilter === "all" ? active.unknown_needs_review : 0} onClick={() => openDrilldown("unknown_speed_service")} />
+          </Section>
+
+          <Section
+            title="Ready for Vendor"
+            description={rfvLive ? "Incoming / unassigned queue from Rinse Sync" : "Sync required before live counts are shown"}
+            rushFilter={rfvLive ? rushFilter : null}
+            onRushFilterChange={rfvLive ? setRushFilter : null}
+            alert={
+              !rfvLive ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>
+                  {rfv.unavailable_reason || "Ready for Vendor: Sync stale"}
+                  {rfv.last_refreshed_at ? ` · Last refresh: ${formatDateTime(rfv.last_refreshed_at)}` : ""}
+                </Alert>
+              ) : rfv.data_quality_warning ? (
+                <Alert severity={rfv.zero_rows_success ? "info" : "error"} sx={{ mb: 1.5 }}>{rfv.data_quality_warning}</Alert>
+              ) : rfvSyncStale ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>{rfvSyncSub}</Alert>
+              ) : null
+            }
+          >
+            {rfvLive ? (
+              <>
+                <StatCard label="Total" value={rfvCounts.total} source="Ready for Vendor queue" sub={rfvSyncSub} onClick={() => openDrilldown("ready_for_vendor")} active={filterTag === "ready_for_vendor"} />
+                <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : rfv.rush_wf} onClick={() => openDrilldown("rfv_rush_wf")} active={filterTag === "rfv_rush_wf"} />
+                <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : rfv.rush_hd} onClick={() => openDrilldown("rfv_rush_hd")} active={filterTag === "rfv_rush_hd"} />
+                <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : rfv.nonrush_wf} onClick={() => openDrilldown("rfv_nonrush_wf")} active={filterTag === "rfv_nonrush_wf"} />
+                <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : rfv.nonrush_hd} onClick={() => openDrilldown("rfv_nonrush_hd")} active={filterTag === "rfv_nonrush_hd"} />
+                <StatCard label="Unknown / Review" value={rushFilter === "all" ? rfv.unknown_needs_review : 0} warn={rushFilter === "all" && rfv.unknown_needs_review > 0} onClick={() => openDrilldown("rfv_unknown_needs_review")} active={filterTag === "rfv_unknown_needs_review"} />
+              </>
+            ) : (
+              <StatCard label="Ready for Vendor" value="—" source="Unavailable" sub={rfv.unavailable_reason || rfvSyncSub || "Refresh Both Syncs"} />
+            )}
           </Section>
 
           {underReview.shift_status || underReview.rush_checkout || underReview.employee_activity || underReview.exceptions ? (
             <Alert severity="info" sx={{ mb: 2 }}>
-              Shift Status, Rush Checkout, Employee Activity, and Exceptions are under review until Active Work is verified against Operations Dashboard.
+              Employee Activity, Shift Status, Checkout, and Exceptions remain under review until Facility Tracker Today and Current Active Work Now are verified.
             </Alert>
           ) : null}
 
@@ -520,6 +566,11 @@ export default function ShiftMonitorPage({ user }) {
               <Typography fontWeight={700}>Advanced / Debug</Typography>
             </AccordionSummary>
             <AccordionDetails>
+              {data.scope_overlap ? (
+                <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
+                  {JSON.stringify({ overlap: data.scope_overlap, facility_tracker_today: data.debug_audit?.facility_tracker_today, current_active_work_now: data.debug_audit?.current_active_work_now }, null, 2)}
+                </Box>
+              ) : null}
               {data.dashboard_reconciliation ? (
                 <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
                   {JSON.stringify(data.dashboard_reconciliation, null, 2)}

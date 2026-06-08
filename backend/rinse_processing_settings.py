@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from backend.ta_helpers import table_exists
+
+DEFAULT_FACILITY_ENTRY_RACKS = ("VeeWash Dirty",)
+
+
+def parse_facility_entry_racks(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        out = [str(r).strip() for r in raw if str(r).strip()]
+        return out or list(DEFAULT_FACILITY_ENTRY_RACKS)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                out = [str(r).strip() for r in parsed if str(r).strip()]
+                return out or list(DEFAULT_FACILITY_ENTRY_RACKS)
+        except json.JSONDecodeError:
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+            return parts or list(DEFAULT_FACILITY_ENTRY_RACKS)
+    return list(DEFAULT_FACILITY_ENTRY_RACKS)
 
 KEY_WEIGH = "processing_weigh_seconds_per_bag"
 KEY_SORT = "processing_sort_seconds_per_bag"
@@ -15,6 +34,7 @@ KEY_WASHING_MINUTES = "washing_minutes"
 KEY_DRYING_MINUTES = "drying_minutes"
 KEY_REJECT_AFTER_CREATE_ISSUE = "reject_after_create_issue_minutes"
 KEY_WEIGHT_DIFFERENCE_THRESHOLD = "weight_difference_threshold_lbs"
+KEY_FACILITY_ENTRY_RACKS = "facility_entry_racks"
 
 DEFAULT_WEIGH = 30
 DEFAULT_SORT = 180
@@ -95,6 +115,9 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
         _get_setting(cursor, org, KEY_WEIGHT_DIFFERENCE_THRESHOLD),
         DEFAULT_WEIGHT_DIFFERENCE_THRESHOLD_LBS,
     )
+    facility_entry_racks = parse_facility_entry_racks(
+        _get_setting(cursor, org, KEY_FACILITY_ENTRY_RACKS)
+    )
     total = weigh + sort + wash + dry
     return {
         "processing_weigh_seconds_per_bag": weigh,
@@ -106,6 +129,7 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
         "drying_minutes": drying_minutes,
         "reject_after_create_issue_minutes": reject_after_issue,
         "weight_difference_threshold_lbs": weight_diff,
+        "facility_entry_racks": facility_entry_racks,
         "total_seconds_per_bag": total,
         "total_minutes_per_bag": round(total / 60.0, 2),
     }
@@ -130,4 +154,9 @@ def put_processing_settings(cursor, organization_id: int, payload: dict[str, Any
                 _set_setting(cursor, org, key, str(_float_setting(data[field], 0)))
             else:
                 _set_setting(cursor, org, key, str(_int_setting(data[field], 0)))
+    if "facility_entry_racks" in data and data["facility_entry_racks"] is not None:
+        import json
+
+        racks = parse_facility_entry_racks(data["facility_entry_racks"])
+        _set_setting(cursor, org, KEY_FACILITY_ENTRY_RACKS, json.dumps(racks))
     return get_processing_settings(cursor, org)

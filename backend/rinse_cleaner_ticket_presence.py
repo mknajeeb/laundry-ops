@@ -1025,6 +1025,21 @@ def apply_presence_scrape(
         run_status = status or ("success" if not stats["errors"] else "partial")
         cursor.execute(
             """
+            SELECT COUNT(*) AS active_rows
+            FROM rinse_cleaner_ticket_presence
+            WHERE organization_id=%s AND portal_status=%s AND active=1
+            """,
+            (org, ps),
+        )
+        active_row = cursor.fetchone()
+        if isinstance(active_row, dict):
+            stats["active_rows"] = int(active_row.get("active_rows") or 0)
+        elif active_row:
+            stats["active_rows"] = int(active_row[0] or 0)
+        else:
+            stats["active_rows"] = 0
+        cursor.execute(
+            """
             INSERT INTO rinse_cleaner_ticket_presence_runs (
                 organization_id, portal_status, source_batch_id, source_url, dry_run,
                 rows_found, rows_inserted, rows_updated, rows_unchanged, rows_missing,

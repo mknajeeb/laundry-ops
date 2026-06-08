@@ -165,6 +165,7 @@ def run_presence_scrape_for_org(
             result.scrape_debug = scrape_debug
 
             ensure_presence_tables(cursor)
+            result.finished_at = _utcnow()
             stats = apply_presence_scrape(
                 cursor,
                 org,
@@ -176,7 +177,7 @@ def run_presence_scrape_for_org(
                 mark_missing=mark_missing,
                 run_type=run_type,
                 started_at=result.started_at,
-                finished_at=None,
+                finished_at=result.finished_at,
                 status="success" if not dry_run else "dry_run",
                 scrape_meta=scrape_meta,
             )
@@ -187,7 +188,6 @@ def run_presence_scrape_for_org(
 
             result.stats = stats
             result.status = "success" if not dry_run else "dry_run"
-            result.finished_at = _utcnow()
             _log(
                 f"Presence scrape done rows_found={stats.get('rows_found')} "
                 f"inserted={stats.get('rows_inserted')} updated={stats.get('rows_updated')} "

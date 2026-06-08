@@ -1,9 +1,11 @@
 """Tests for combined At Vendor + Ready for Vendor scheduled sync."""
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from backend.rinse_presence_scrape import PresenceScrapeResult, ready_for_vendor_scrape_enabled
 from backend.rinse_scheduled_scrape import _combine_scheduled_status
+from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY, apply_presence_scrape
 
 
 class TestCombineScheduledStatus:
@@ -34,6 +36,44 @@ class TestReadyForVendorFlag:
     @patch("backend.rinse_presence_scrape.is_feature_enabled", return_value=False)
     def test_disabled(self, _mock):
         assert ready_for_vendor_scrape_enabled(MagicMock(), 3) is False
+
+    def test_veewash_org_default_enables_rfv(self):
+        from backend.tenant_feature_flags import get_tenant_feature_flags
+
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"slug": "veewash"}
+        with patch("backend.tenant_feature_flags.table_exists", return_value=True), patch(
+            "backend.tenant_feature_flags._get_setting", return_value=None
+        ):
+            flags = get_tenant_feature_flags(cursor, 3)
+        assert flags["enable_ready_for_vendor_scrape"] is True
+
+
+class TestZeroRowsPresenceScrape:
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    def test_zero_rows_marks_old_rows_inactive(self, _ensure):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"active_rows": 0}
+        cursor.fetchall.return_value = [{"bag_id": "OLD1"}]
+        stats = apply_presence_scrape(
+            cursor,
+            3,
+            portal_status=PORTAL_STATUS_READY,
+            rows=[],
+            source_batch_id="test-batch",
+            source_url="http://example",
+            dry_run=False,
+            mark_missing=True,
+            run_type="manual",
+            started_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+            status="success",
+        )
+        assert stats["rows_found"] == 0
+        assert stats["rows_missing"] == 1
+        assert stats["active_rows"] == 0
+        update_calls = [c for c in cursor.execute.call_args_list if "SET active=0" in str(c[0][0])]
+        assert update_calls
 
 
 class TestScheduledScrapeRunsBoth:
@@ -109,6 +149,7 @@ class TestScheduledScrapeRunsBoth:
             result = run_scheduled_scrape_for_org(conn, 3, run_type="scheduled")
 
         mock_rfv.assert_called_once()
+        assert mock_rfv.call_args.kwargs.get("mark_missing") is True
         assert result.ready_for_vendor_status == "success"
         assert result.status == "success"
 
