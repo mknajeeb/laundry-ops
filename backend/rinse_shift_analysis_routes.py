@@ -269,7 +269,7 @@ def register_rinse_shift_analysis_routes(
 
     @app.route("/api/rinse/sync/both", methods=["POST"])
     def rinse_sync_both():
-        """Run At Vendor scheduled scrape then Ready for Vendor presence sync (Shift Monitor refresh)."""
+        """Run Ready for Vendor presence sync first, then At Vendor scheduled scrape."""
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
         try:
@@ -285,43 +285,48 @@ def register_rinse_shift_analysis_routes(
             body = request.get_json(silent=True) or {}
             dry_run = bool(body.get("dry_run", False))
 
+            from backend.rinse_presence_scrape import run_presence_scrape_for_org
             from backend.rinse_scheduled_scrape import (
+                _org_slug_name,
                 build_ready_for_vendor_sync_detail,
                 run_scheduled_scrape_for_org,
                 _combine_scheduled_status,
             )
+            from backend.rinse_vendor_config import resolve_rinse_vendor
+
+            slug, org_name = _org_slug_name(cursor, tenant_oid)
+            vendor = resolve_rinse_vendor(tenant_oid, organization_slug=slug)
+
+            rfv_result = run_presence_scrape_for_org(
+                conn,
+                tenant_oid,
+                portal_status="ready_for_vendor",
+                dry_run=dry_run,
+                mark_missing=not dry_run,
+                run_type="manual",
+                organization_slug=slug,
+                organization_name=org_name,
+                rinse_vendor=vendor,
+            )
+            rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+            if not dry_run:
+                conn.commit()
 
             av_result = run_scheduled_scrape_for_org(
                 conn,
                 tenant_oid,
                 run_type="manual",
                 dry_run=dry_run,
+                skip_ready_for_vendor=True,
             )
-            rfv_detail = dict(av_result.detail.get("ready_for_vendor_sync") or {})
-            if not dry_run and not rfv_detail.get("finished_at"):
-                from backend.rinse_presence_scrape import run_presence_scrape_for_org
-
-                rfv_result = run_presence_scrape_for_org(
-                    conn,
-                    tenant_oid,
-                    portal_status="ready_for_vendor",
-                    dry_run=False,
-                    mark_missing=True,
-                    run_type="manual",
-                    organization_slug=av_result.tenant_slug,
-                    organization_name=None,
-                    rinse_vendor=av_result.rinse_vendor or None,
-                )
-                rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
-                av_result.detail["ready_for_vendor_sync"] = rfv_detail
-                av_result.ready_for_vendor_status = rfv_result.status
-                if rfv_result.status == "failed":
-                    av_result.ready_for_vendor_error = rfv_result.error_message
-                av_result.status = _combine_scheduled_status(
-                    av_result.at_vendor_status or av_result.status,
-                    rfv_result.status,
-                )
-                conn.commit()
+            av_result.detail["ready_for_vendor_sync"] = rfv_detail
+            av_result.ready_for_vendor_status = rfv_result.status
+            if rfv_result.status == "failed":
+                av_result.ready_for_vendor_error = rfv_result.error_message
+            av_result.status = _combine_scheduled_status(
+                av_result.at_vendor_status or av_result.status,
+                rfv_result.status,
+            )
             payload = {
                 "organization_id": tenant_oid,
                 "overall_status": av_result.status,
@@ -333,11 +338,7 @@ def register_rinse_shift_analysis_routes(
                     "scan_events_count": av_result.scan_events_count,
                     "error_message": av_result.error_message,
                 },
-                "ready_for_vendor_sync": av_result.detail.get("ready_for_vendor_sync")
-                or {
-                    "status": av_result.ready_for_vendor_status,
-                    "error_message": av_result.ready_for_vendor_error,
-                },
+                "ready_for_vendor_sync": rfv_detail,
             }
             if payload["ready_for_vendor_sync"].get("status") == "disabled":
                 payload["ready_for_vendor_sync"]["skipped_reason"] = (

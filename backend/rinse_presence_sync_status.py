@@ -238,7 +238,22 @@ def get_ready_for_vendor_sync_status(
     elif latest_status == "disabled":
         skipped_reason = "enable_ready_for_vendor_scrape=false"
     elif latest_status == "failed":
-        error_message = str((latest or {}).get("errors_json") or (latest_item or {}).get("error_message") or "")
+        raw_err = (latest or {}).get("errors_json") or (latest_item or {}).get("error_message") or ""
+        if isinstance(raw_err, str):
+            try:
+                parsed = json.loads(raw_err)
+                if isinstance(parsed, list) and parsed:
+                    error_message = "; ".join(str(x) for x in parsed)
+                elif parsed:
+                    error_message = str(parsed)
+                else:
+                    error_message = raw_err.strip() or None
+            except json.JSONDecodeError:
+                error_message = raw_err.strip() or None
+        elif isinstance(raw_err, list) and raw_err:
+            error_message = "; ".join(str(x) for x in raw_err)
+        else:
+            error_message = str(raw_err).strip() if raw_err else None
         sync["latest_failed"] = True
         sync["message"] = f"Ready for Vendor Sync failed: {error_message or 'unknown error'}"
     elif latest_status == "success" and int((latest_item or {}).get("rows_found") or 0) == 0:

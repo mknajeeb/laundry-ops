@@ -333,6 +333,7 @@ def run_scheduled_scrape_for_org(
     *,
     run_type: str = "scheduled",
     dry_run: bool = False,
+    skip_ready_for_vendor: bool = False,
 ) -> ScheduledScrapeResult:
     """
     Full pipeline for one organization. Caller owns conn commit/rollback.
@@ -512,31 +513,32 @@ def run_scheduled_scrape_for_org(
             log.write(f"ERROR: {e}\n")
 
         # Step 2: Ready for Vendor presence sync (presence table only; optional per tenant flag).
-        try:
-            from backend.rinse_presence_scrape import run_presence_scrape_for_org
+        if not skip_ready_for_vendor:
+            try:
+                from backend.rinse_presence_scrape import run_presence_scrape_for_org
 
-            rfv_result = run_presence_scrape_for_org(
-                conn,
-                org_id,
-                portal_status="ready_for_vendor",
-                dry_run=False,
-                mark_missing=True,
-                run_type=run_type,
-                organization_slug=slug,
-                organization_name=org_name,
-                rinse_vendor=vendor,
-                max_pages=env.get("RINSE_MAX_PAGES") or None,
-                log_write=log.write,
-            )
-            result.ready_for_vendor_status = rfv_result.status
-            if rfv_result.status == "failed":
-                result.ready_for_vendor_error = rfv_result.error_message
-            result.detail["ready_for_vendor_sync"] = build_ready_for_vendor_sync_detail(rfv_result)
-        except Exception as rfv_exc:
-            result.ready_for_vendor_status = "failed"
-            result.ready_for_vendor_error = str(rfv_exc)
-            result.detail.setdefault("ready_for_vendor_sync", {})["error_message"] = str(rfv_exc)
-            log.write(f"Ready for Vendor sync ERROR: {rfv_exc}\n")
+                rfv_result = run_presence_scrape_for_org(
+                    conn,
+                    org_id,
+                    portal_status="ready_for_vendor",
+                    dry_run=False,
+                    mark_missing=True,
+                    run_type=run_type,
+                    organization_slug=slug,
+                    organization_name=org_name,
+                    rinse_vendor=vendor,
+                    max_pages=env.get("RINSE_MAX_PAGES") or None,
+                    log_write=log.write,
+                )
+                result.ready_for_vendor_status = rfv_result.status
+                if rfv_result.status == "failed":
+                    result.ready_for_vendor_error = rfv_result.error_message
+                result.detail["ready_for_vendor_sync"] = build_ready_for_vendor_sync_detail(rfv_result)
+            except Exception as rfv_exc:
+                result.ready_for_vendor_status = "failed"
+                result.ready_for_vendor_error = str(rfv_exc)
+                result.detail.setdefault("ready_for_vendor_sync", {})["error_message"] = str(rfv_exc)
+                log.write(f"Ready for Vendor sync ERROR: {rfv_exc}\n")
 
         result.status = _combine_scheduled_status(
             result.at_vendor_status or result.status,

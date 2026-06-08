@@ -232,6 +232,129 @@ class TestScheduledScrapeRunsBoth:
         assert result.status == "partial_success"
 
 
+class TestSyncBothRunsRfvFirst:
+    @patch("backend.rinse_scheduled_scrape.run_scheduled_scrape_for_org")
+    @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
+    def test_rfv_runs_before_at_vendor_with_skip_flag(self, mock_rfv, mock_av):
+        from datetime import datetime
+
+        from backend.rinse_scheduled_scrape import ScheduledScrapeResult
+
+        mock_rfv.return_value = PresenceScrapeResult(
+            organization_id=3,
+            portal_status="ready_for_vendor",
+            status="success",
+            started_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+            stats={"rows_found": 0, "active_rows": 0},
+        )
+        mock_av.return_value = ScheduledScrapeResult(
+            organization_id=3,
+            status="success",
+            at_vendor_status="success",
+        )
+
+        conn = MagicMock()
+        mock_rfv(conn, 3, portal_status="ready_for_vendor", dry_run=False, mark_missing=True)
+        mock_av(conn, 3, run_type="manual", dry_run=False, skip_ready_for_vendor=True)
+
+        assert mock_rfv.call_count == 1
+        assert mock_av.call_count == 1
+        assert mock_rfv.call_args.kwargs.get("mark_missing") is True
+        assert mock_av.call_args.kwargs.get("skip_ready_for_vendor") is True
+
+
+class TestSkipReadyForVendorInScheduled:
+    @patch("backend.rinse_presence_scrape.run_presence_scrape_for_org")
+    @patch("backend.rinse_scheduled_scrape._run_bash_script", return_value=0)
+    @patch("backend.rinse_scheduled_scrape.count_csv_data_rows", return_value=5)
+    @patch("backend.rinse_scheduled_scrape.acquire_scrape_lock", return_value=(True, ""))
+    @patch("backend.rinse_scheduled_scrape.release_scrape_lock")
+    @patch("backend.rinse_scheduled_scrape.finish_scrape_run")
+    @patch("backend.rinse_scheduled_scrape.insert_scrape_run", return_value=99)
+    @patch("backend.rinse_scheduled_scrape.resolve_rinse_vendor", return_value="veewash")
+    @patch("backend.rinse_scheduled_scrape.tenant_script_dir")
+    @patch("backend.rinse_scheduled_scrape.build_run_paths")
+    @patch("backend.rinse_scheduled_scrape._org_slug_name", return_value=("veewash", "VeeWash"))
+    def test_skip_rfv_when_requested(
+        self,
+        _slug,
+        mock_paths,
+        mock_tenant_dir,
+        _vendor,
+        _ins,
+        _fin,
+        _rel,
+        _lock,
+        _count,
+        _bash,
+        mock_rfv,
+    ):
+        from pathlib import Path
+        import tempfile
+
+        from backend.rinse_scheduled_scrape import ScrapePaths, run_scheduled_scrape_for_org
+
+        mock_tenant_dir.return_value.is_dir.return_value = True
+        run_dir = Path(tempfile.mkdtemp())
+        p = ScrapePaths(
+            run_dir=run_dir,
+            portal_csv=run_dir / "portal.csv",
+            scan_tickets_csv=run_dir / "t.csv",
+            scan_events_csv=run_dir / "e.csv",
+            log_path=run_dir / "log",
+        )
+        mock_paths.return_value = p
+        p.portal_csv.write_text("h\n1\n")
+        p.scan_events_csv.write_text("h\n1\n")
+
+        conn = MagicMock()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"c": 5}
+        conn.cursor.return_value = cursor
+
+        with patch("backend.rinse_portal_csv.portal_csv_to_orders_df") as pdf, patch(
+            "backend.rinse_scan_events_upload.parse_scan_events_csv", return_value=(MagicMock(), [])
+        ), patch("backend.rinse_combined_upload.commit_rinse_combined_upload", return_value={"batch_id": 1, "rows_inserted": 5, "portal_absence_allowed": True}), patch(
+            "backend.upload_batch_confirm.confirm_upload_batch_core", return_value={"ok": True}
+        ), patch("backend.rinse_scheduled_scrape._subprocess_env_for_vendor", return_value={"RINSE_MAX_PAGES": "500"}), patch(
+            "backend.rinse_scheduled_scrape._count_accepted_rows", return_value=5
+        ), patch("backend.rinse_scheduled_scrape._count_attention_rows", return_value=0):
+            import pandas as pd
+
+            pdf.return_value = pd.DataFrame([{"ticket_id": "ABC"}])
+            run_scheduled_scrape_for_org(conn, 3, run_type="manual", skip_ready_for_vendor=True)
+
+        mock_rfv.assert_not_called()
+
+
+class TestRecordFailedPresenceRun:
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    def test_record_presence_scrape_run_inserts_failed(self, _ensure):
+        from datetime import datetime
+
+        from backend.rinse_cleaner_ticket_presence import record_presence_scrape_run
+
+        cursor = MagicMock()
+        record_presence_scrape_run(
+            cursor,
+            3,
+            portal_status="ready_for_vendor",
+            source_batch_id="manual-abc",
+            source_url="http://example",
+            run_type="manual",
+            status="failed",
+            started_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+            errors=["Scrape subprocess failed"],
+        )
+        insert_calls = [
+            c for c in cursor.execute.call_args_list if "INSERT INTO rinse_cleaner_ticket_presence_runs" in str(c[0][0])
+        ]
+        assert insert_calls
+        assert "failed" in insert_calls[0][0][1]
+
+
 class TestPresenceWritesOnlyPresenceTable:
     def test_apply_presence_scrape_does_not_touch_staging(self):
         import inspect

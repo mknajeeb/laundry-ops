@@ -859,6 +859,72 @@ def load_presence_portal_snapshot_counts(
     return out
 
 
+def record_presence_scrape_run(
+    cursor,
+    organization_id: int,
+    *,
+    portal_status: str,
+    source_batch_id: str,
+    source_url: str | None = None,
+    run_type: str = "manual",
+    status: str = "failed",
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    rows_found: int = 0,
+    rows_inserted: int = 0,
+    rows_updated: int = 0,
+    rows_unchanged: int = 0,
+    rows_missing: int = 0,
+    errors: Sequence[str] | None = None,
+    scrape_meta: Mapping[str, Any] | None = None,
+    dry_run: bool = False,
+) -> None:
+    """Persist one presence scrape attempt (success or failure) for sync status."""
+    ensure_presence_tables(cursor)
+    org = int(organization_id)
+    run_started = started_at or _utc_now()
+    run_finished = finished_at or _utc_now()
+    duration_seconds = None
+    if run_started and run_finished:
+        duration_seconds = max(0, int((run_finished - run_started).total_seconds()))
+    pages_visited = None
+    if scrape_meta and scrape_meta.get("pages_scraped") is not None:
+        try:
+            pages_visited = int(scrape_meta.get("pages_scraped"))
+        except (TypeError, ValueError):
+            pages_visited = None
+    cursor.execute(
+        """
+        INSERT INTO rinse_cleaner_ticket_presence_runs (
+            organization_id, portal_status, source_batch_id, source_url, dry_run,
+            rows_found, rows_inserted, rows_updated, rows_unchanged, rows_missing,
+            errors_json, run_type, status, started_at, finished_at, duration_seconds,
+            pages_visited, scrape_meta_json
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            org,
+            str(portal_status or "").strip(),
+            source_batch_id,
+            source_url,
+            1 if dry_run else 0,
+            int(rows_found),
+            int(rows_inserted),
+            int(rows_updated),
+            int(rows_unchanged),
+            int(rows_missing),
+            json.dumps(list(errors)) if errors else None,
+            run_type,
+            status,
+            run_started,
+            run_finished,
+            duration_seconds,
+            pages_visited,
+            json.dumps(dict(scrape_meta)) if scrape_meta else None,
+        ),
+    )
+
+
 def apply_presence_scrape(
     cursor,
     organization_id: int,
@@ -1038,17 +1104,6 @@ def apply_presence_scrape(
                     )
 
     if not dry_run:
-        run_started = started_at or now
-        run_finished = finished_at or now
-        duration_seconds = None
-        if run_started and run_finished:
-            duration_seconds = max(0, int((run_finished - run_started).total_seconds()))
-        pages_visited = None
-        if scrape_meta and scrape_meta.get("pages_scraped") is not None:
-            try:
-                pages_visited = int(scrape_meta.get("pages_scraped"))
-            except (TypeError, ValueError):
-                pages_visited = None
         run_status = status or ("success" if not stats["errors"] else "partial")
         cursor.execute(
             """
@@ -1065,34 +1120,24 @@ def apply_presence_scrape(
             stats["active_rows"] = int(active_row[0] or 0)
         else:
             stats["active_rows"] = 0
-        cursor.execute(
-            """
-            INSERT INTO rinse_cleaner_ticket_presence_runs (
-                organization_id, portal_status, source_batch_id, source_url, dry_run,
-                rows_found, rows_inserted, rows_updated, rows_unchanged, rows_missing,
-                errors_json, run_type, status, started_at, finished_at, duration_seconds,
-                pages_visited, scrape_meta_json
-            ) VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                org,
-                ps,
-                batch_id,
-                source_url,
-                stats["rows_found"],
-                stats["rows_inserted"],
-                stats["rows_updated"],
-                stats["rows_unchanged"],
-                stats["rows_missing"],
-                json.dumps(stats["errors"]) if stats["errors"] else None,
-                run_type,
-                run_status,
-                run_started,
-                run_finished,
-                duration_seconds,
-                pages_visited,
-                json.dumps(dict(scrape_meta)) if scrape_meta else None,
-            ),
+        record_presence_scrape_run(
+            cursor,
+            org,
+            portal_status=ps,
+            source_batch_id=batch_id,
+            source_url=source_url,
+            run_type=run_type or "manual",
+            status=run_status,
+            started_at=started_at or now,
+            finished_at=finished_at or now,
+            rows_found=stats["rows_found"],
+            rows_inserted=stats["rows_inserted"],
+            rows_updated=stats["rows_updated"],
+            rows_unchanged=stats["rows_unchanged"],
+            rows_missing=stats["rows_missing"],
+            errors=stats["errors"] or None,
+            scrape_meta=scrape_meta,
+            dry_run=False,
         )
 
     return stats

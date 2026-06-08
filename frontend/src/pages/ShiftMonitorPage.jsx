@@ -36,7 +36,7 @@ import {
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
 
 const ACCENT = "#0097b2";
-const SYNC_TIMEOUT_MS = 120000;
+const SYNC_TIMEOUT_MS = 1800000;
 
 function MonitorNav() {
   return (
@@ -343,7 +343,7 @@ export default function ShiftMonitorPage({ user }) {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => {
       setSyncRunning(false);
-      setSyncMessage("Sync timed out — check Scheduled Rinse Sync for status.");
+      setSyncMessage("Sync timed out after 30 minutes — check Scheduled Rinse Sync for status.");
     }, SYNC_TIMEOUT_MS);
     try {
       const res = await runRinseBothSyncs({ dry_run: false });
@@ -470,7 +470,7 @@ export default function ShiftMonitorPage({ user }) {
             <StatCard label="At Vendor Sync" value={avSync.last_refreshed_at_et || avSync.message || "—"} source="orders_staging + scan events" sub={avSyncSub} />
             <StatCard
               label="Ready for Vendor Sync"
-              value={rfvSync.last_refreshed_at_et || rfvSync.last_success_at_et || rfvSync.message || "—"}
+              value={rfvSync.last_refreshed_at_et || rfvSync.message || rfvSync.last_success_at_et || "—"}
               source="rinse_cleaner_ticket_presence"
               sub={rfv.unavailable_reason || rfvSyncSub || (rfvSync.zero_rows_success ? "0 rows — success" : null)}
               warn={!rfvLive || rfvSync?.failed || rfvSync?.latest_failed}

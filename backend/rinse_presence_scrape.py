@@ -22,6 +22,7 @@ from backend.rinse_cleaner_ticket_presence import (
     ensure_presence_tables,
     parse_presence_rows_from_portal_csv,
     read_portal_scrape_meta,
+    record_presence_scrape_run,
 )
 from backend.rinse_vendor_config import rinse_scrape_env_for_organization
 from backend.tenant_feature_flags import is_feature_enabled
@@ -90,10 +91,35 @@ def run_presence_scrape_for_org(
         started_at=_utcnow(),
     )
     cursor = conn.cursor(dictionary=True)
+    batch_id = f"{run_type}-{uuid.uuid4().hex}"
+    source_url: str | None = None
 
     def _log(msg: str) -> None:
         if log_write:
             log_write(msg)
+
+    def _persist_failed_run(
+        *,
+        error_message: str,
+        scrape_meta: dict[str, Any] | None = None,
+    ) -> None:
+        if dry_run or result.status == "disabled":
+            return
+        ensure_presence_tables(cursor)
+        record_presence_scrape_run(
+            cursor,
+            org,
+            portal_status=result.portal_status,
+            source_batch_id=batch_id,
+            source_url=source_url,
+            run_type=run_type,
+            status="failed",
+            started_at=result.started_at,
+            finished_at=result.finished_at or _utcnow(),
+            errors=[error_message],
+            scrape_meta=scrape_meta,
+        )
+        conn.commit()
 
     if portal_status == PORTAL_STATUS_READY and not ready_for_vendor_scrape_enabled(cursor, org):
         result.status = "disabled"
@@ -105,6 +131,7 @@ def run_presence_scrape_for_org(
         result.status = "failed"
         result.error_message = "Rinse scrape disabled (RINSE_BAG_EXPORT_ENABLED not set)"
         result.finished_at = _utcnow()
+        _persist_failed_run(error_message=result.error_message)
         return result
 
     vendor, vendor_env = rinse_scrape_env_for_organization(
@@ -117,7 +144,6 @@ def run_presence_scrape_for_org(
     base_url = vendor_env.get("RINSE_TICKETS_URL") or ""
     source_url = build_tickets_url_for_portal_status(base_url, result.portal_status)
     result.source_url = source_url
-    batch_id = f"{run_type}-{uuid.uuid4().hex}"
 
     extra_env = dict(vendor_env)
     extra_env["RINSE_TICKETS_URL"] = source_url
@@ -141,16 +167,18 @@ def run_presence_scrape_for_org(
             if code != 0:
                 result.status = "failed"
                 result.error_message = "Scrape subprocess failed"
+                scrape_meta = read_portal_scrape_meta(str(meta_path))
                 result.scrape_debug = build_presence_scrape_debug(
                     portal_status=result.portal_status,
                     source_url=source_url,
                     rows=[],
-                    scrape_meta=read_portal_scrape_meta(str(meta_path)),
+                    scrape_meta=scrape_meta,
                     exit_code=code,
                 )
                 if stderr:
                     _log(stderr[-2000:] + "\n")
                 result.finished_at = _utcnow()
+                _persist_failed_run(error_message=result.error_message, scrape_meta=scrape_meta)
                 return result
 
             rows = parse_presence_rows_from_portal_csv(str(csv_path))
@@ -202,4 +230,5 @@ def run_presence_scrape_for_org(
         result.error_message = str(exc)
         result.finished_at = _utcnow()
         _log(f"Presence scrape ERROR: {exc}\n")
+        _persist_failed_run(error_message=result.error_message)
         return result

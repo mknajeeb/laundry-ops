@@ -505,9 +505,10 @@ def _build_ready_for_vendor_section(
     skipped_reason = sync.get("skipped_reason")
     error_message = sync.get("error") or sync.get("error_message")
     stale = bool(sync.get("stale"))
+    last_success_at = sync.get("last_success_at")
     last_refreshed_at = (
-        sync.get("last_success_at")
-        or sync.get("last_refreshed_at")
+        sync.get("last_refreshed_at")
+        or last_success_at
         or _presence_last_refreshed(pending)
     )
     base_sync = sync if sync else _build_sync_status(
@@ -545,9 +546,10 @@ def _build_ready_for_vendor_section(
             f"Ready for Vendor Sync failed: {error_message or 'unknown error'}"
         )
     if stale:
+        stale_ref = last_refreshed_at or last_success_at or "unknown"
         return _unavailable(
             (
-                f"Ready for Vendor sync stale — last refresh {last_refreshed_at or 'unknown'}. "
+                f"Ready for Vendor sync stale — last refresh {stale_ref}. "
                 "Refresh Both Syncs before using live counts."
             )
         )
