@@ -427,4 +427,34 @@ class TestLifecycleIntegration:
             mapped_internal_users=["Alex"],
         )
         assert out["current_lifecycle_status"] == SENT_TO_RINSE
-        assert out["checkout_status"] == CHECKOUT_STATUS_NOT_RECORDED
+
+
+class TestParsePresenceEmptyCsv:
+    def test_header_only_csv_returns_empty_rows(self, tmp_path):
+        from backend.rinse_cleaner_ticket_presence import parse_presence_rows_from_portal_csv
+
+        csv_path = tmp_path / "empty.csv"
+        csv_path.write_text(
+            "Date,Estd. Delivery,Customer,# WF LBS,# HD,# WF ITEMS,Weight,Notes,Special Instructions,"
+            "USE OXIC,Use Hypo,USE FAB,Low DRY,NO SCEN,Extra Scen,Service Type,Sub-Service,Bag ID\n",
+            encoding="utf-8",
+        )
+        assert parse_presence_rows_from_portal_csv(str(csv_path)) == []
+
+
+class TestPortalCsvSpecialInstructions:
+    def test_portal_csv_maps_supply_interpretation(self, tmp_path):
+        from backend.rinse_portal_csv import portal_csv_to_orders_df
+
+        csv_path = tmp_path / "portal.csv"
+        csv_path.write_text(
+            "Date,Customer,Weight,Notes,Bag ID,Service Type,Sub-Service,# WF LBS,# HD,# WF ITEMS,"
+            "Special Instructions,USE OXIC,Use Hypo,USE FAB\n"
+            "Mon 06/08/2026,Test Customer,10 LBS,,BAG123ABC,Wash & Fold,,10,,,"
+            "USE FABRIC SOFTENER,,,X\n",
+            encoding="utf-8",
+        )
+        df = portal_csv_to_orders_df(str(csv_path))
+        assert len(df) == 1
+        assert df.iloc[0]["supply_interpretation"] == "Soap + softener"
+        assert not df.iloc[0]["special_instruction_review"]

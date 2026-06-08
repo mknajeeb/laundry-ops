@@ -260,12 +260,15 @@ def build_presence_scrape_debug(
 def parse_presence_rows_from_portal_csv(csv_path: str) -> list[dict[str, Any]]:
     import pandas as pd
 
+    from backend.rinse_portal_csv import _ticket_id_from_bag, _cell, portal_csv_has_data_rows
+
     raw_df = pd.read_csv(csv_path, encoding="utf-8-sig")
     raw_df.columns = [str(c).strip() for c in raw_df.columns]
+    if raw_df.empty or not portal_csv_has_data_rows(raw_df):
+        return []
+
     raw_by_bag: dict[str, dict[str, Any]] = {}
     for _, raw_r in raw_df.iterrows():
-        from backend.rinse_portal_csv import _ticket_id_from_bag, _cell
-
         bag = _cell(raw_r, "Bag ID")
         bid = _ticket_id_from_bag(bag)
         if bid:
@@ -273,9 +276,19 @@ def parse_presence_rows_from_portal_csv(csv_path: str) -> list[dict[str, Any]]:
                 "date_raw": _cell(raw_r, "Date"),
                 "customer": _cell(raw_r, "Customer"),
                 "service_type_raw": _cell(raw_r, "Service Type"),
+                "special_instructions": _cell(raw_r, "Special Instructions"),
+                "use_oxic": _cell(raw_r, "USE OXIC"),
+                "use_hypo": _cell(raw_r, "Use Hypo"),
+                "use_fab": _cell(raw_r, "USE FAB"),
+                "notes": _cell(raw_r, "Notes"),
             }
 
-    df = portal_csv_to_orders_df(csv_path)
+    try:
+        df = portal_csv_to_orders_df(csv_path)
+    except ValueError as exc:
+        if "No portal rows" in str(exc):
+            return []
+        raise
     rows: list[dict[str, Any]] = []
     for _, r in df.iterrows():
         bag_id = normalize_bag_id(r.get("ticket_id") or r.get("Bag ID"))
@@ -304,6 +317,16 @@ def parse_presence_rows_from_portal_csv(csv_path: str) -> list[dict[str, Any]]:
         else:
             rush = None
         svc = str(r.get("ServiceType") or raw.get("service_type_raw") or "").strip().upper() or None
+        from backend.rinse_special_instructions import build_special_instructions_raw, interpret_special_instructions
+
+        si_raw = build_special_instructions_raw(
+            special_instructions_col=raw.get("special_instructions"),
+            use_oxic=raw.get("use_oxic"),
+            use_hypo=raw.get("use_hypo"),
+            use_fab=raw.get("use_fab"),
+            notes=raw.get("notes"),
+        )
+        si_parsed = interpret_special_instructions(si_raw)
         rows.append(
             {
                 "bag_id": bag_id,
@@ -318,6 +341,10 @@ def parse_presence_rows_from_portal_csv(csv_path: str) -> list[dict[str, Any]]:
                     "service_type": svc,
                     "rush_type": rush,
                     "ticket_id": bag_id,
+                    "special_instructions_raw": si_parsed.get("special_instructions_raw"),
+                    "supply_interpretation": si_parsed.get("supply_interpretation"),
+                    "supplies_used": si_parsed.get("supplies_used"),
+                    "special_instruction_review": si_parsed.get("special_instruction_review"),
                 },
             }
         )

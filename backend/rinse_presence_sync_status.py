@@ -103,7 +103,10 @@ def _latest_success_presence_run(cursor, organization_id: int, portal_status: st
         SELECT *
         FROM rinse_cleaner_ticket_presence_runs
         WHERE organization_id = %s AND portal_status = %s AND dry_run = 0
-          AND status IN ('success', 'partial')
+          AND (
+            status IN ('success', 'partial')
+            OR (status IS NULL AND (errors_json IS NULL OR errors_json = '' OR errors_json = '[]'))
+          )
         ORDER BY COALESCE(finished_at, created_at) DESC, id DESC
         LIMIT 1
         """,
@@ -218,8 +221,9 @@ def get_ready_for_vendor_sync_status(
     last_success = _latest_success_presence_run(cursor, org, PORTAL_STATUS_READY) if enabled else None
     active_rows = _count_active_presence_rows(cursor, org, PORTAL_STATUS_READY) if enabled else 0
 
+    # Staleness reflects the latest run attempt; last_success_at tracks last good scrape.
     sync = build_sync_status_from_run(
-        last_success or latest,
+        latest or last_success,
         sync_name="Ready for Vendor Sync",
         enabled=enabled,
         evaluation_time=evaluation_time,

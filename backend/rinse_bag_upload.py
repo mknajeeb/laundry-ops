@@ -31,6 +31,30 @@ def _ensure_ticket_id_columns(cursor) -> None:
         )
 
 
+def _ensure_special_instruction_columns(cursor) -> None:
+    if not table_exists(cursor, "orders_staging"):
+        return
+    for col, ddl in (
+        ("special_instructions_raw", "TEXT NULL"),
+        ("supply_interpretation", "VARCHAR(128) NULL"),
+        ("special_instruction_review", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ):
+        if not table_has_column(cursor, "orders_staging", col):
+            cursor.execute(f"ALTER TABLE orders_staging ADD COLUMN {col} {ddl}")
+
+
+def _ensure_upload_batch_rows_special_instruction_columns(cursor) -> None:
+    if not table_exists(cursor, "upload_batch_rows"):
+        return
+    for col, ddl in (
+        ("special_instructions_raw", "TEXT NULL"),
+        ("supply_interpretation", "VARCHAR(128) NULL"),
+        ("special_instruction_review", "TINYINT(1) NOT NULL DEFAULT 0"),
+    ):
+        if not table_has_column(cursor, "upload_batch_rows", col):
+            cursor.execute(f"ALTER TABLE upload_batch_rows ADD COLUMN {col} {ddl}")
+
+
 def _ensure_registry_v2_columns(cursor) -> None:
     ensure_rinse_bag_registry_table(cursor)
     for col, ddl in (
@@ -402,6 +426,23 @@ def update_staging_from_upload_row(
     if cap.get("has_ticket_id") and tid:
         set_parts.append("ticket_id = %s")
         args.append(tid[:120])
+
+    _ensure_special_instruction_columns(cursor)
+    if table_has_column(cursor, "orders_staging", "special_instructions_raw"):
+        set_parts.extend(
+            [
+                "special_instructions_raw = %s",
+                "supply_interpretation = %s",
+                "special_instruction_review = %s",
+            ]
+        )
+        args.extend(
+            [
+                row.get("special_instructions_raw"),
+                row.get("supply_interpretation"),
+                1 if row.get("special_instruction_review") else 0,
+            ]
+        )
 
     args.append(int(staging_id))
     sql = f"UPDATE orders_staging SET {', '.join(set_parts)} WHERE id = %s"

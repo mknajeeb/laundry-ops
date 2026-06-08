@@ -64,6 +64,21 @@ def insert_staging_from_upload_row(
         vals.append("%s")
         args.append(tid[:120])
 
+    from backend.rinse_bag_upload import _ensure_special_instruction_columns
+    from backend.ta_helpers import table_has_column
+
+    _ensure_special_instruction_columns(cursor)
+    if table_has_column(cursor, "orders_staging", "special_instructions_raw"):
+        cols.extend(["special_instructions_raw", "supply_interpretation", "special_instruction_review"])
+        vals.extend(["%s", "%s", "%s"])
+        args.extend(
+            [
+                row.get("special_instructions_raw"),
+                row.get("supply_interpretation"),
+                1 if row.get("special_instruction_review") else 0,
+            ]
+        )
+
     cursor.execute(
         f"""
         INSERT INTO orders_staging ({", ".join(cols)})

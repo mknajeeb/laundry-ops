@@ -107,6 +107,9 @@ def confirm_upload_batch_core(
         reclassify_checkout_batch_upload_rows(cursor, tenant_oid, batch_id)
 
     ubr_tid_sel = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
+    ubr_si_sel = ""
+    if table_has_column(cursor, "upload_batch_rows", "special_instructions_raw"):
+        ubr_si_sel = ", special_instructions_raw, supply_interpretation, special_instruction_review"
     cursor.execute(
         f"""
         SELECT
@@ -117,6 +120,7 @@ def confirm_upload_batch_core(
             service_type,
             rush_type
             {ubr_tid_sel}
+            {ubr_si_sel}
         FROM upload_batch_rows
         WHERE upload_batch_id = %s
         AND row_status IN ('ACCEPTED', 'OVERRIDDEN')

@@ -43,6 +43,19 @@ def _cell(row: pd.Series, key: str):
     return s if s else None
 
 
+def portal_csv_has_data_rows(raw: pd.DataFrame) -> bool:
+    """True when CSV has at least one row with customer and bag id (header-only = False)."""
+    if raw is None or raw.empty:
+        return False
+    cols = {str(c).strip() for c in raw.columns}
+    if "Customer" not in cols or "Bag ID" not in cols:
+        return False
+    for _, r in raw.iterrows():
+        if _cell(r, "Customer") and _ticket_id_from_bag(_cell(r, "Bag ID")):
+            return True
+    return False
+
+
 def parse_portal_date(val: str | None) -> date | None:
     """Portal Date column is often 'Tue 4/14' or 'Tue 04/14/2026'; may include 'TODAY' from Rinse."""
     if val is None:
@@ -175,6 +188,16 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
         )
         rush_parsed = parse_rush_flag_from_portal_cells(cells)
         rush = rush_parsed if rush_parsed else "NON-RUSH"
+        from backend.rinse_special_instructions import build_special_instructions_raw, interpret_special_instructions
+
+        si_raw = build_special_instructions_raw(
+            special_instructions_col=_cell(r, "Special Instructions"),
+            use_oxic=_cell(r, "USE OXIC"),
+            use_hypo=_cell(r, "Use Hypo"),
+            use_fab=_cell(r, "USE FAB"),
+            notes=notes,
+        )
+        si_parsed = interpret_special_instructions(si_raw)
         out_rows.append(
             {
                 "Date_Clean": d,
@@ -183,6 +206,10 @@ def portal_csv_to_orders_df(csv_path: str) -> pd.DataFrame:
                 "ServiceType": st,
                 "RushType": rush,
                 "ticket_id": ticket_id,
+                "special_instructions_raw": si_parsed.get("special_instructions_raw"),
+                "supply_interpretation": si_parsed.get("supply_interpretation"),
+                "supplies_used": si_parsed.get("supplies_used"),
+                "special_instruction_review": si_parsed.get("special_instruction_review"),
             }
         )
 

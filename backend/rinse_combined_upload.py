@@ -347,6 +347,7 @@ def insert_upload_batch_rows_from_orders_df(
     from backend.rinse_bag_completion import classify_portal_upload_row, normalize_bag_id
     from backend.rinse_bag_upload import (
         _ensure_ticket_id_columns,
+        _ensure_upload_batch_rows_special_instruction_columns,
         find_active_staging_for_portal_upload,
     )
 
@@ -358,6 +359,7 @@ def insert_upload_batch_rows_from_orders_df(
     from backend.ta_helpers import table_exists
 
     _ensure_ticket_id_columns(cursor)
+    _ensure_upload_batch_rows_special_instruction_columns(cursor)
     if table_has_column(cursor, "upload_batch_rows", "ticket_id"):
         pass
     elif table_exists(cursor, "upload_batch_rows"):
@@ -372,6 +374,7 @@ def insert_upload_batch_rows_from_orders_df(
     needs_attention = 0
     has_ticket_source = "ticket_id" in orders_df.columns
     has_ubr_ticket = table_has_column(cursor, "upload_batch_rows", "ticket_id")
+    has_ubr_si = table_has_column(cursor, "upload_batch_rows", "special_instructions_raw")
     include_tid = bool(has_ticket_source and has_ubr_ticket)
     has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
 
@@ -468,8 +471,19 @@ def insert_upload_batch_rows_from_orders_df(
                     ticket_id = ts if ts else None
 
         if include_tid:
+            si_cols = ""
+            si_vals = ""
+            si_args: list[Any] = []
+            if has_ubr_si:
+                si_cols = ", special_instructions_raw, supply_interpretation, special_instruction_review"
+                si_vals = ", %s, %s, %s"
+                si_args = [
+                    row.get("special_instructions_raw"),
+                    row.get("supply_interpretation"),
+                    1 if row.get("special_instruction_review") else 0,
+                ]
             cursor.execute(
-                """
+                f"""
                 INSERT INTO upload_batch_rows
                 (
                     upload_batch_id,
@@ -480,11 +494,12 @@ def insert_upload_batch_rows_from_orders_df(
                     rush_type,
                     row_status,
                     reason,
-                    ticket_id,
+                    ticket_id
+                    {si_cols},
                     created_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s{si_vals}, NOW(), NOW())
                 """,
                 (
                     upload_batch_id,
@@ -496,11 +511,23 @@ def insert_upload_batch_rows_from_orders_df(
                     row_status,
                     reason,
                     ticket_id,
+                    *si_args,
                 ),
             )
         else:
+            si_cols = ""
+            si_vals = ""
+            si_args = []
+            if has_ubr_si:
+                si_cols = ", special_instructions_raw, supply_interpretation, special_instruction_review"
+                si_vals = ", %s, %s, %s"
+                si_args = [
+                    row.get("special_instructions_raw"),
+                    row.get("supply_interpretation"),
+                    1 if row.get("special_instruction_review") else 0,
+                ]
             cursor.execute(
-                """
+                f"""
                 INSERT INTO upload_batch_rows
                 (
                     upload_batch_id,
@@ -510,11 +537,12 @@ def insert_upload_batch_rows_from_orders_df(
                     service_type,
                     rush_type,
                     row_status,
-                    reason,
+                    reason
+                    {si_cols},
                     created_at,
                     updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s{si_vals}, NOW(), NOW())
                 """,
                 (
                     upload_batch_id,
@@ -525,6 +553,7 @@ def insert_upload_batch_rows_from_orders_df(
                     rush_type,
                     row_status,
                     reason,
+                    *si_args,
                 ),
             )
 

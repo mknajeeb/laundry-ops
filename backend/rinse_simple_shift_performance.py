@@ -244,6 +244,14 @@ def _load_bag_metadata(
                 staging_cols.append("os.status")
             else:
                 staging_cols.append("NULL AS status")
+            if table_has_column(cursor, "orders_staging", "special_instructions_raw"):
+                staging_cols.extend(
+                    [
+                        "os.special_instructions_raw",
+                        "os.supply_interpretation",
+                        "os.special_instruction_review",
+                    ]
+                )
             cursor.execute(
                 f"""
                 SELECT {", ".join(staging_cols)}
@@ -1147,6 +1155,9 @@ def _record_from_bag(
         "scan_event_count": len(events),
         "drilldown_tags": sorted(tags),
         "checkout_status": row_meta.get("checkout_status"),
+        "special_instructions_raw": row_meta.get("special_instructions_raw"),
+        "supply_interpretation": row_meta.get("supply_interpretation"),
+        "special_instruction_review": bool(row_meta.get("special_instruction_review")),
         "source": "Scan events" if events else "Portal scrape",
     }
 

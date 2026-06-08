@@ -1160,6 +1160,19 @@ function finalizePortalHd({ rawFourth, combined, serviceType }) {
   return "NA";
 }
 
+function extractSpecialInstructionsFromText(combined) {
+  const text = String(combined || "");
+  const labeled =
+    text.match(
+      /\bSpecial\s+Instructions\s*:?\s*([\s\S]*?)(?=\n\s*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|$))/i,
+    ) ||
+    text.match(/\bSpecial\s+Instructions\s*:?\s*([^\n]+)/i);
+  if (labeled && labeled[1]) {
+    return labeled[1].replace(/\s+/g, " ").trim().slice(0, 500);
+  }
+  return "";
+}
+
 /** Portal CSV: first four `<td>`s (or first four logical lines) go out raw; bag parens raw. */
 function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts = null, bagDisplay = "") {
   let combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
@@ -1289,6 +1302,8 @@ function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts =
     combined.match(/\bWF\s*ITEMS\s*:?\s*(\d+)\b/i);
   if (wfItemsM) wf_items = wfItemsM[1];
 
+  const special_instructions = extractSpecialInstructionsFromText(combined);
+
   return {
     date_display,
     estd_delivery,
@@ -1298,6 +1313,7 @@ function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts =
     hd_count,
     wf_items,
     notes_summary: notes,
+    special_instructions,
     bag_service: bagParts.bag_service,
     bag_subservice: bagParts.bag_subservice,
     service_type: bagParts.service_type,
@@ -1322,6 +1338,7 @@ function portalHeaderRow() {
     "# WF ITEMS",
     "Weight",
     "Notes",
+    "Special Instructions",
     "USE OXIC",
     "Use Hypo",
     "USE FAB",
@@ -1345,6 +1362,7 @@ function portalDataRow(portal, bagDisplay) {
     portal.wf_items || "",
     portal.weight_display,
     portal.notes_summary,
+    portal.special_instructions || "",
     portal.USE_OXIC,
     portal.Use_Hypo,
     portal.USE_FAB,
