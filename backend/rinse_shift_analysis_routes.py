@@ -278,7 +278,11 @@ def register_rinse_shift_analysis_routes(
             body = request.get_json(silent=True) or {}
             dry_run = bool(body.get("dry_run", False))
 
-            from backend.rinse_scheduled_scrape import run_scheduled_scrape_for_org
+            from backend.rinse_scheduled_scrape import (
+                build_ready_for_vendor_sync_detail,
+                run_scheduled_scrape_for_org,
+                _combine_scheduled_status,
+            )
 
             av_result = run_scheduled_scrape_for_org(
                 conn,
@@ -286,6 +290,31 @@ def register_rinse_shift_analysis_routes(
                 run_type="manual",
                 dry_run=dry_run,
             )
+            rfv_detail = dict(av_result.detail.get("ready_for_vendor_sync") or {})
+            if not dry_run and not rfv_detail.get("finished_at"):
+                from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
+                rfv_result = run_presence_scrape_for_org(
+                    conn,
+                    tenant_oid,
+                    portal_status="ready_for_vendor",
+                    dry_run=False,
+                    mark_missing=True,
+                    run_type="manual",
+                    organization_slug=av_result.tenant_slug,
+                    organization_name=None,
+                    rinse_vendor=av_result.rinse_vendor or None,
+                )
+                rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+                av_result.detail["ready_for_vendor_sync"] = rfv_detail
+                av_result.ready_for_vendor_status = rfv_result.status
+                if rfv_result.status == "failed":
+                    av_result.ready_for_vendor_error = rfv_result.error_message
+                av_result.status = _combine_scheduled_status(
+                    av_result.at_vendor_status or av_result.status,
+                    rfv_result.status,
+                )
+                conn.commit()
             payload = {
                 "organization_id": tenant_oid,
                 "overall_status": av_result.status,

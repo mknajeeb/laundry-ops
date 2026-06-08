@@ -300,12 +300,31 @@ def _combine_scheduled_status(at_vendor_status: str, rfv_status: str | None) -> 
     if rfv_status is None or rfv_status == "disabled":
         return at_vendor_status
     if rfv_status in ("success", "dry_run"):
-        return at_vendor_status if av_ok else "failed"
+        return at_vendor_status if av_ok else "partial_success"
     if av_ok and rfv_status == "failed":
         return "partial_success"
     if not av_ok:
         return "failed"
     return at_vendor_status
+
+
+def build_ready_for_vendor_sync_detail(rfv_result) -> dict[str, Any]:
+    """Serialize Ready for Vendor presence scrape result for API payloads."""
+    return {
+        "status": rfv_result.status,
+        "skipped_reason": rfv_result.skipped_reason,
+        "error_message": rfv_result.error_message,
+        "rows_found": (rfv_result.stats or {}).get("rows_found"),
+        "rows_inserted": (rfv_result.stats or {}).get("rows_inserted"),
+        "rows_updated": (rfv_result.stats or {}).get("rows_updated"),
+        "rows_missing": (rfv_result.stats or {}).get("rows_missing"),
+        "active_rows": (rfv_result.stats or {}).get("active_rows"),
+        "stats": rfv_result.stats,
+        "scrape_debug": rfv_result.scrape_debug,
+        "started_at": rfv_result.started_at.isoformat() if rfv_result.started_at else None,
+        "finished_at": rfv_result.finished_at.isoformat() if rfv_result.finished_at else None,
+        "duration_seconds": rfv_result.duration_seconds,
+    }
 
 
 def run_scheduled_scrape_for_org(
@@ -330,6 +349,7 @@ def run_scheduled_scrape_for_org(
 
     tenant_dir = tenant_script_dir(vendor)
     if not tenant_dir.is_dir():
+        result.at_vendor_status = "failed"
         result.error_message = f"Missing tenant scripts: {tenant_dir}"
         return result
 
@@ -340,6 +360,7 @@ def run_scheduled_scrape_for_org(
 
     if dry_run:
         result.status = "skipped"
+        result.at_vendor_status = "skipped"
         result.detail = {"dry_run": True, "paths": str(paths.run_dir)}
         return result
 
@@ -356,6 +377,7 @@ def run_scheduled_scrape_for_org(
         )
         conn.commit()
         result.status = "skipped"
+        result.at_vendor_status = "skipped"
         result.error_message = lock_reason
         return result
 
@@ -509,21 +531,7 @@ def run_scheduled_scrape_for_org(
             result.ready_for_vendor_status = rfv_result.status
             if rfv_result.status == "failed":
                 result.ready_for_vendor_error = rfv_result.error_message
-            result.detail["ready_for_vendor_sync"] = {
-                "status": rfv_result.status,
-                "skipped_reason": rfv_result.skipped_reason,
-                "error_message": rfv_result.error_message,
-                "rows_found": (rfv_result.stats or {}).get("rows_found"),
-                "rows_inserted": (rfv_result.stats or {}).get("rows_inserted"),
-                "rows_updated": (rfv_result.stats or {}).get("rows_updated"),
-                "rows_missing": (rfv_result.stats or {}).get("rows_missing"),
-                "active_rows": (rfv_result.stats or {}).get("active_rows"),
-                "stats": rfv_result.stats,
-                "scrape_debug": rfv_result.scrape_debug,
-                "started_at": rfv_result.started_at.isoformat() if rfv_result.started_at else None,
-                "finished_at": rfv_result.finished_at.isoformat() if rfv_result.finished_at else None,
-                "duration_seconds": rfv_result.duration_seconds,
-            }
+            result.detail["ready_for_vendor_sync"] = build_ready_for_vendor_sync_detail(rfv_result)
         except Exception as rfv_exc:
             result.ready_for_vendor_status = "failed"
             result.ready_for_vendor_error = str(rfv_exc)

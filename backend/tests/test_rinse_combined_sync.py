@@ -18,8 +18,11 @@ class TestCombineScheduledStatus:
     def test_at_vendor_needs_attention_rfv_failed_partial(self):
         assert _combine_scheduled_status("needs_attention", "failed") == "partial_success"
 
+    def test_at_vendor_failed_rfv_success_partial(self):
+        assert _combine_scheduled_status("failed", "success") == "partial_success"
+        assert _combine_scheduled_status("skipped", "success") == "partial_success"
+
     def test_at_vendor_failed_overall_failed(self):
-        assert _combine_scheduled_status("failed", "success") == "failed"
         assert _combine_scheduled_status("failed", "failed") == "failed"
 
     def test_rfv_disabled_uses_at_vendor_only(self):
