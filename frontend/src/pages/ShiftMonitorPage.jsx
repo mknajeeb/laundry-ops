@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
+import FacilityManagementTracker from "../components/shift/FacilityManagementTracker";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
@@ -258,6 +259,14 @@ function RecordRow({ row, expanded, onToggle }) {
               </>
             )}
           </Box>
+          {row.facility_entered_date ? (
+            <Typography variant="caption" display="block">
+              Entered: {row.facility_entered_date}
+              {row.facility_status ? ` · ${row.facility_status.replace(/_/g, " ")}` : ""}
+              {row.facility_left_sent ? " · Left/Sent" : ""}
+              {row.facility_still_at_facility ? " · Still at facility" : ""}
+            </Typography>
+          ) : null}
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
             {row.source}
           </Typography>
@@ -391,7 +400,6 @@ export default function ShiftMonitorPage({ user }) {
   const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
   const rinseSync = rinseSyncBanner(data);
   const rfvCounts = sectionSplitCounts(rfv, rushFilter);
-  const facilityCounts = sectionSplitCounts(facility, rushFilter);
   const pipelineCounts = sectionSplitCounts(pipeline, rushFilter);
   const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
   const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
@@ -469,35 +477,15 @@ export default function ShiftMonitorPage({ user }) {
             />
           </Section>
 
-          <Section
-            title="Facility Tracker Today"
-            description="Bags that entered today — facility entry rack scan on selected date (kept even if completed or sent)"
+          <Box sx={{ mb: 1 }}>
+            <RushFilterChips value={rushFilter} onChange={setRushFilter} />
+          </Box>
+          <FacilityManagementTracker
+            tracker={facility}
             rushFilter={rushFilter}
-            onRushFilterChange={setRushFilter}
-            alert={
-              facility.entry_racks?.length ? (
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                  Entry racks: {facility.entry_racks.join(", ")}
-                </Typography>
-              ) : null
-            }
-          >
-            <StatCard
-              label="Total Entered Today"
-              value={facilityCounts.total}
-              source={facility.source || "Scan events"}
-              onClick={() => openDrilldown("facility_tracker")}
-              active={filterTag === "facility_tracker"}
-            />
-            <StatCard label="Rush WF" value={rushFilter === "non_rush" ? 0 : facility.rush_wf} onClick={() => openDrilldown("facility_rush_wf")} active={filterTag === "facility_rush_wf"} />
-            <StatCard label="Rush HD" value={rushFilter === "non_rush" ? 0 : facility.rush_hd} onClick={() => openDrilldown("facility_rush_hd")} active={filterTag === "facility_rush_hd"} />
-            <StatCard label="Non-Rush WF" value={rushFilter === "rush" ? 0 : facility.nonrush_wf} onClick={() => openDrilldown("facility_nonrush_wf")} active={filterTag === "facility_nonrush_wf"} />
-            <StatCard label="Non-Rush HD" value={rushFilter === "rush" ? 0 : facility.nonrush_hd} onClick={() => openDrilldown("facility_nonrush_hd")} active={filterTag === "facility_nonrush_hd"} />
-            <StatCard label="Unknown / Review" value={rushFilter === "all" ? facility.unknown_needs_review : 0} onClick={() => openDrilldown("facility_unknown_needs_review")} />
-            <StatCard label="Completed Today from Entered Bags" value={facility.completed ?? 0} source="Scan completion rules" onClick={() => openDrilldown("facility_tracker")} />
-            <StatCard label="Still Active from Entered Bags" value={facility.still_active ?? 0} source="Current work pipeline" onClick={() => openDrilldown("facility_tracker")} />
-            <StatCard label="Sent / Left from Entered Bags" value={facility.sent_or_left ?? facility.sent_or_checked_out ?? 0} source="Lifecycle / scan / scrape" />
-          </Section>
+            onDrilldown={openDrilldown}
+            activeTag={filterTag}
+          />
 
           <Section
             title="Current Work Pipeline Now"

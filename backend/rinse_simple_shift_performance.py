@@ -1387,20 +1387,16 @@ def _build_debug_audit(
         },
         "dashboard_vs_monitor": dict(dashboard_reconciliation or {}),
         "facility_tracker_today": {
-            "entered_today_ids": sorted((facility_tracker or {}).get("bag_ids") or []),
-            "completed_ids": sorted((facility_tracker or {}).get("completed_ids") or []),
-            "still_active_ids": sorted((facility_tracker or {}).get("still_active_ids") or []),
-            "sent_or_left_ids": sorted((facility_tracker or {}).get("sent_or_left_ids") or []),
-            "source": (facility_tracker or {}).get("source"),
-            "entry_racks": (facility_tracker or {}).get("entry_racks"),
-            "bag_ids": sorted((facility_tracker or {}).get("bag_ids") or []),
-            "rush_wf_ids": sorted((facility_tracker or {}).get("rush_wf_ids") or []),
-            "rush_hd_ids": sorted((facility_tracker or {}).get("rush_hd_ids") or []),
-            "nonrush_wf_ids": sorted((facility_tracker or {}).get("nonrush_wf_ids") or []),
-            "nonrush_hd_ids": sorted((facility_tracker or {}).get("nonrush_hd_ids") or []),
-            "unknown_ids": sorted((facility_tracker or {}).get("unknown_ids") or []),
-            "missing_staging_ids": sorted((facility_tracker or {}).get("missing_staging_ids") or []),
-            "total": (facility_tracker or {}).get("total"),
+            "entered_today_ids": sorted((facility_tracker.get("entered_today") or {}).get("bag_ids") or []),
+            "carryover_ids": sorted((facility_tracker.get("carryover") or {}).get("bag_ids") or []),
+            "total_workload_ids": sorted((facility_tracker.get("total_workload") or {}).get("bag_ids") or []),
+            "reconciliation": facility_tracker.get("reconciliation"),
+            "entered_today": facility_tracker.get("entered_today"),
+            "carryover": facility_tracker.get("carryover"),
+            "total_workload": facility_tracker.get("total_workload"),
+            "entry_racks": facility_tracker.get("entry_racks"),
+            "bag_ids": sorted(facility_tracker.get("bag_ids") or []),
+            "total": facility_tracker.get("total"),
         },
         "current_work_pipeline": {
             "active_now_ids": sorted(active_work.get("bag_ids") or []),
@@ -1595,10 +1591,11 @@ def build_simple_shift_performance_payload(
         get_dashboard_active_staging_snapshot,
     )
     from backend.rinse_facility_tracker import (
-        build_facility_tracker_section,
+        apply_facility_management_drilldown_tags,
+        build_facility_management_tracker,
         build_scope_overlap_debug,
-        enrich_facility_tracker_status,
         load_facility_entry_bag_ids,
+        load_first_facility_entry_dates,
     )
     from backend.rinse_presence_sync_status import get_ready_for_vendor_sync_status
     from backend.rinse_shift_analysis import resolve_effective_rush_for_row
@@ -1623,6 +1620,10 @@ def build_simple_shift_performance_payload(
         period_end=period_end,
         entry_racks=entry_racks,
     )
+    first_entry_dates = load_first_facility_entry_dates(
+        cursor, org, entry_racks=entry_racks, through_date=target_date
+    )
+    carryover_candidates = {bid for bid, d in first_entry_dates.items() if d < target_date}
 
     pending = get_pending_bag_status(
         cursor, org, target_date=target_date, evaluation_time=evaluation_time
@@ -1658,6 +1659,7 @@ def build_simple_shift_performance_payload(
         | set(incoming_rows.keys())
         | set(pending_by_bag.keys())
         | set(facility_entry_ids)
+        | set(carryover_candidates)
     )
 
     meta_by_bag = _load_bag_metadata(cursor, org, all_bag_ids)
@@ -1668,18 +1670,11 @@ def build_simple_shift_performance_payload(
         merged["effective_rush"] = resolve_effective_rush_for_row(merged, target_date)
         meta_by_bag[bid] = merged
 
-    facility_tracker = build_facility_tracker_section(
-        facility_entry_ids,
-        meta_by_bag,
-        target_date,
-        entry_racks=entry_racks,
-        period_start=period_start,
-        period_end=period_end,
-    )
     events_by_bag = _load_scan_events_for_bags(cursor, org, all_bag_ids)
     user_maps = _load_rinse_user_maps(cursor, org)
 
     records: list[dict[str, Any]] = []
+    completions_by_bag: dict[str, Any] = {}
     all_credits: list[BagActivityCredit] = []
     split = _split_counts()
     scope_b_completed = 0
@@ -1702,6 +1697,7 @@ def build_simple_shift_performance_payload(
         in_staging = bid in active_candidates
         in_facility_tracker = bid in facility_entry_ids
         completion = evaluate_bag_completion_v2(events)
+        completions_by_bag[bid] = completion
         in_pipeline = bag_is_pipeline_eligible(pending_row, completion, meta, events)
         if in_pipeline:
             pipeline_bag_ids.add(bid)
@@ -1797,6 +1793,25 @@ def build_simple_shift_performance_payload(
         }
     rush_checkout = _build_rush_checkout_section(pending, records)
     records_by_bag = {str(r.get("bag_id") or "").strip().upper(): r for r in records if r.get("bag_id")}
+    facility_tracker = build_facility_management_tracker(
+        cursor,
+        org,
+        target_date=target_date,
+        entry_racks=entry_racks,
+        meta_by_bag=meta_by_bag,
+        records_by_bag=records_by_bag,
+        pending_by_bag=pending_by_bag,
+        events_by_bag=events_by_bag,
+        completions_by_bag=completions_by_bag,
+    )
+    apply_facility_management_drilldown_tags(
+        records,
+        facility_tracker,
+        pending_by_bag=pending_by_bag,
+        events_by_bag=events_by_bag,
+        completions_by_bag=completions_by_bag,
+        first_entry_dates=first_entry_dates,
+    )
     pipeline_debug = build_current_work_pipeline_debug(
         facility_bag_ids=facility_entry_ids,
         pipeline_bag_ids=pipeline_bag_ids,
@@ -1804,18 +1819,12 @@ def build_simple_shift_performance_payload(
         completed_excluded=completed_excluded,
         sent_excluded=sent_excluded,
     )
-    facility_tracker = enrich_facility_tracker_status(
-        facility_tracker,
-        bag_ids=facility_entry_ids,
-        records_by_bag=records_by_bag,
-        active_bag_ids=pipeline_bag_ids,
-        staging_bag_ids=dashboard_snapshot.get("unique_bag_ids") or [],
-    )
     scope_overlap = build_scope_overlap_debug(
         facility_bag_ids=facility_entry_ids,
         active_bag_ids=pipeline_bag_ids,
         records_by_bag=records_by_bag,
         pipeline_debug=pipeline_debug,
+        management_tracker=facility_tracker,
     )
     dashboard_reconciliation = build_dashboard_vs_monitor_reconciliation(
         dashboard_snapshot,
