@@ -95,19 +95,24 @@ jobs:
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1D4160C7070D4EB49054DE2E4C8AE35C }}
 
       # Stops Oryx from replacing wwwroot with only build output (fixes missing scripts/).
-      # Set repo variable AZURE_WEBAPP_RESOURCE_GROUP (Settings → Secrets and variables → Actions → Variables).
-      # Optional; GitHub OIDC principal may lack permission — do not fail the whole deploy.
-      - name: Disable server Oryx rebuild (extract zip as-is)
-        if: ${{ vars.AZURE_WEBAPP_RESOURCE_GROUP != '' }}
-        continue-on-error: true
+      - name: Configure Web App for reliable zip deploy
         uses: azure/cli@v2
         with:
           azcliversion: 2.63.0
           inlineScript: |
+            RG=$(az webapp list --query "[?name=='laundryops-api'].resourceGroup | [0]" -o tsv)
+            if [ -z "$RG" ]; then
+              echo "Could not resolve resource group for laundryops-api"
+              exit 1
+            fi
+            echo "RESOURCE_GROUP=$RG" >> "$GITHUB_ENV"
             az webapp config appsettings set \
-              --resource-group "${{ vars.AZURE_WEBAPP_RESOURCE_GROUP }}" \
+              --resource-group "$RG" \
               --name laundryops-api \
-              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false
+              --settings \
+                SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+                GITHUB_SHA=${{ github.sha }} \
+                BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
@@ -116,3 +121,19 @@ jobs:
           app-name: 'laundryops-api'
           package: './deploy_pkg'
           restart: true
+
+      - name: Restart API and verify health build stamp
+        uses: azure/cli@v2
+        with:
+          azcliversion: 2.63.0
+          inlineScript: |
+            az webapp restart --resource-group "$RESOURCE_GROUP" --name laundryops-api
+            API="https://laundryops-api-dscucxa8c6dbghd9.centralus-01.azurewebsites.net"
+            for i in 1 2 3 4 5 6; do
+              sleep 15
+              BODY=$(curl -sf "$API/health" || true)
+              echo "health attempt $i: $BODY"
+              echo "$BODY" | grep -q "${{ github.sha }}" && exit 0
+            done
+            echo "API /health did not report git_sha ${{ github.sha }} after restart"
+            exit 1

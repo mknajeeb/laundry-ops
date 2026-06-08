@@ -126,7 +126,16 @@ start_daily_reset_scheduler(app)
 @app.route("/health", methods=["GET"])
 def health():
     """Liveness probe; does not touch the database."""
-    return jsonify({"status": "ok"}), 200
+    import os
+
+    out = {"status": "ok"}
+    git_sha = (os.environ.get("GITHUB_SHA") or os.environ.get("BUILD_SHA") or "").strip()
+    build_time = (os.environ.get("BUILD_TIME") or "").strip()
+    if git_sha:
+        out["git_sha"] = git_sha
+    if build_time:
+        out["build_time"] = build_time
+    return jsonify(out), 200
 
 
 def _trigger_daily_operational_reset_if_needed(conn, tenant_oid: int):
