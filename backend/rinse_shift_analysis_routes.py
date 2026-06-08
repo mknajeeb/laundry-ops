@@ -210,12 +210,19 @@ def register_rinse_shift_analysis_routes(
             if not isinstance(period_start, date) or not isinstance(period_end, date):
                 return jsonify({"error": "date_start and date_end required"}), 400
             eval_at = _parse_evaluation_time(request.args.get("evaluation_time"))
+            include_debug = str(request.args.get("include_debug") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             payload = build_simple_shift_performance_payload(
                 cursor,
                 tenant_oid,
                 period_start=period_start,
                 period_end=period_end,
                 evaluation_time=eval_at,
+                include_debug=include_debug,
+                slim_records=True,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:

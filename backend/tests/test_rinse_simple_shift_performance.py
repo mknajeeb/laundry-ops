@@ -725,7 +725,7 @@ class TestActiveWorkCountLogic:
         }
         cursor = MagicMock()
         payload = build_simple_shift_performance_payload(
-            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4), include_debug=True
         )
         assert payload["current_work_pipeline"]["total"] == 1
         assert _count_tag(payload["records"], "pipeline_work") == 1
@@ -838,7 +838,7 @@ class TestActiveWorkCountLogic:
         }
         cursor = MagicMock()
         payload = build_simple_shift_performance_payload(
-            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4), include_debug=True
         )
         assert _count_tag(payload["records"], "yet_to_fold") == 1
         folded = next(r for r in payload["records"] if r["bag_id"] == "FOLDED")
@@ -908,7 +908,7 @@ class TestActiveWorkCountLogic:
         }
         cursor = MagicMock()
         payload = build_simple_shift_performance_payload(
-            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4)
+            cursor, 1, period_start=date(2026, 6, 4), period_end=date(2026, 6, 4), include_debug=True
         )
         assert payload["current_work_pipeline"]["total"] == 1
         assert _count_tag(payload["records"], "pipeline_work") == 1
@@ -1112,7 +1112,7 @@ class TestDashboardSourceOfTruth:
             "checkout_summary": {"rush": {}},
         }
         payload = build_simple_shift_performance_payload(
-            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7)
+            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7), include_debug=True
         )
         active = payload["current_active_work"]
         assert active["counts_add_up"] is True

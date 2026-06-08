@@ -534,7 +534,7 @@ export const getFoldingEmployeeAnalysis = (params = {}) =>
   axios.get(`${API_BASE}/rinse/folding/employee-analysis`, { params, timeout: 30000 });
 
 export const getShiftAnalysisSimple = (params = {}) =>
-  axios.get(`${API_BASE}/rinse/shift-analysis/simple`, { params, timeout: 60000 });
+  axios.get(`${API_BASE}/rinse/shift-analysis/simple`, { params, timeout: 120000 });
 
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });

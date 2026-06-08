@@ -37,6 +37,28 @@ class TestFacilityEntryRack:
         assert ids == {"A1"}
 
 
+class TestFirstFacilityEntryDates:
+    def test_uses_grouped_sql_with_rack_filter(self):
+        from backend.rinse_facility_tracker import load_first_facility_entry_dates
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {"bag_id": "OLD1", "first_scan": datetime(2026, 6, 1, 10, 0, 0)},
+        ]
+        with patch("backend.rinse_facility_tracker.table_exists", return_value=True):
+            out = load_first_facility_entry_dates(
+                cursor,
+                3,
+                entry_racks=["VeeWash Dirty"],
+                through_date=date(2026, 6, 8),
+            )
+        assert out.get("OLD1") == date(2026, 6, 1)
+        sql = cursor.execute.call_args[0][0]
+        assert "MIN(scanned_at_parsed)" in sql
+        assert "GROUP BY bag_id" in sql
+        assert "scanned_at_parsed >=" in sql
+
+
 class TestFacilityStatus:
     def test_pending_vs_left_sent(self):
         pending_rec = {"bag_id": "P1", "completed": False}

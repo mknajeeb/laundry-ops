@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 
 from backend.rinse_folding_et import naive_et_day_end_exclusive, naive_et_day_start, period_datetime_bounds_et
@@ -14,6 +14,8 @@ from backend.ta_helpers import table_exists
 
 _STATUS_KEYS = ("pending", "completed", "left_sent", "still_at_facility")
 _BUCKET_KEYS = ("rush_wf", "rush_hd", "nonrush_wf", "nonrush_hd", "unknown_needs_review")
+# Carryover only needs recent entry history — full-table scans were stalling Shift Monitor.
+FACILITY_ENTRY_LOOKBACK_DAYS = 120
 
 
 def _entry_rack_keys(entry_racks: Iterable[str]) -> set[str]:
@@ -89,6 +91,7 @@ def load_first_facility_entry_dates(
     *,
     entry_racks: Iterable[str] | None = None,
     through_date: date | None = None,
+    lookback_days: int = FACILITY_ENTRY_LOOKBACK_DAYS,
 ) -> dict[str, date]:
     """First ET date each bag scanned a configured facility entry rack."""
     if not table_exists(cursor, "rinse_bag_scan_events"):
@@ -100,22 +103,37 @@ def load_first_facility_entry_dates(
 
     org = int(organization_id)
     end_exclusive = naive_et_day_end_exclusive(through_date) if through_date else None
+    lookback = max(1, int(lookback_days or FACILITY_ENTRY_LOOKBACK_DAYS))
+    start_dt = None
+    if through_date is not None:
+        start_dt = naive_et_day_start(through_date - timedelta(days=lookback))
+    elif end_exclusive is not None:
+        start_dt = end_exclusive - timedelta(days=lookback)
+
     params: list[Any] = [org]
-    end_clause = ""
+    clauses = [
+        "organization_id = %s",
+        "scanned_at_parsed IS NOT NULL",
+        "bag_id IS NOT NULL AND TRIM(bag_id) != ''",
+        "rack IS NOT NULL AND TRIM(rack) != ''",
+    ]
+    if start_dt is not None:
+        clauses.append("scanned_at_parsed >= %s")
+        params.append(start_dt)
     if end_exclusive is not None:
-        end_clause = " AND scanned_at_parsed < %s"
+        clauses.append("scanned_at_parsed < %s")
         params.append(end_exclusive)
+
+    rack_placeholders = ",".join(["%s"] * len(rack_keys))
+    clauses.append(f"LOWER(TRIM(rack)) IN ({rack_placeholders})")
+    params.extend(sorted(rack_keys))
 
     cursor.execute(
         f"""
-        SELECT bag_id, rack, scanned_at_parsed
+        SELECT bag_id, MIN(scanned_at_parsed) AS first_scan
         FROM rinse_bag_scan_events
-        WHERE organization_id = %s
-          AND scanned_at_parsed IS NOT NULL
-          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
-          AND rack IS NOT NULL AND TRIM(rack) != ''
-          {end_clause}
-        ORDER BY bag_id, scanned_at_parsed
+        WHERE {" AND ".join(clauses)}
+        GROUP BY bag_id
         """,
         tuple(params),
     )
@@ -123,18 +141,14 @@ def load_first_facility_entry_dates(
     for row in cursor.fetchall() or []:
         if not isinstance(row, dict):
             continue
-        if not rack_is_facility_entry(row.get("rack"), racks):
-            continue
         bid = str(row.get("bag_id") or "").strip().upper()
         if not bid:
             continue
-        ts = row.get("scanned_at_parsed")
+        ts = row.get("first_scan")
         if not isinstance(ts, datetime):
             continue
         d = _scan_et_date(ts)
-        if d is None:
-            continue
-        if bid not in out or d < out[bid]:
+        if d is not None:
             out[bid] = d
     return out
 

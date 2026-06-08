@@ -561,7 +561,7 @@ export default function ShiftMonitorPage({ user }) {
             </Alert>
           ) : null}
 
-          <Accordion sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }}>
+          <Accordion sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }} TransitionProps={{ unmountOnExit: true }}>
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography fontWeight={700}>Advanced / Debug</Typography>
             </AccordionSummary>

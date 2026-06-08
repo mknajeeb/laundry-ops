@@ -1589,6 +1589,8 @@ def build_simple_shift_performance_payload(
     period_start: date,
     period_end: date,
     evaluation_time: datetime | None = None,
+    include_debug: bool = False,
+    slim_records: bool = False,
 ) -> dict[str, Any]:
     org = int(organization_id)
     settings = get_processing_settings(cursor, org)
@@ -1842,21 +1844,25 @@ def build_simple_shift_performance_payload(
         active_work,
         monitor_bag_ids=sorted(pipeline_bag_ids),
     )
-    debug_audit = _build_debug_audit(
-        pending=pending,
-        ready_for_vendor=ready_for_vendor,
-        active_work=active_work,
-        rush_checkout=rush_checkout,
-        records=records,
-        employee_diagnostics=employee_diagnostics,
-        shift_status=shift_status,
-        events_by_bag=events_by_bag,
-        dashboard_snapshot=dashboard_snapshot,
-        dashboard_reconciliation=dashboard_reconciliation,
-        facility_tracker=facility_tracker,
-        scope_overlap=scope_overlap,
-        pipeline_debug=pipeline_debug,
-        rfv_sync=rfv_sync,
+    debug_audit = (
+        _build_debug_audit(
+            pending=pending,
+            ready_for_vendor=ready_for_vendor,
+            active_work=active_work,
+            rush_checkout=rush_checkout,
+            records=records,
+            employee_diagnostics=employee_diagnostics,
+            shift_status=shift_status,
+            events_by_bag=events_by_bag,
+            dashboard_snapshot=dashboard_snapshot,
+            dashboard_reconciliation=dashboard_reconciliation,
+            facility_tracker=facility_tracker,
+            scope_overlap=scope_overlap,
+            pipeline_debug=pipeline_debug,
+            rfv_sync=rfv_sync,
+        )
+        if include_debug
+        else None
     )
 
     sections_under_review = {
@@ -1876,9 +1882,12 @@ def build_simple_shift_performance_payload(
         "current_work_pipeline": work_pipeline,
         "current_active_work": work_pipeline,
         "current_active_work_now": work_pipeline,
-        "dashboard_active_staging": dashboard_snapshot,
+        "dashboard_active_staging": {
+            k: v for k, v in dashboard_snapshot.items() if k != "rows"
+        }
+        | {"row_count": len(dashboard_snapshot.get("rows") or [])},
         "dashboard_reconciliation": dashboard_reconciliation,
-        "scope_overlap": scope_overlap,
+        "scope_overlap": scope_overlap if include_debug else None,
         "facility_entry_racks": entry_racks,
         "sections_under_review": sections_under_review,
         "rinse_sync": rinse_sync,
@@ -1897,7 +1906,11 @@ def build_simple_shift_performance_payload(
         "employee_diagnostics": employee_diagnostics,
         "exceptions_summary": exceptions_summary,
         "debug_audit": debug_audit,
-        "records": records,
+        "records": (
+            [{k: v for k, v in r.items() if k != "activities"} for r in records]
+            if slim_records
+            else records
+        ),
         "settings": {
             "weight_difference_threshold_lbs": threshold,
             "washing_minutes": settings.get("washing_minutes"),
