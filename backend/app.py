@@ -128,7 +128,7 @@ def health():
     """Liveness probe; does not touch the database."""
     import os
 
-    out = {"status": "ok"}
+    out = {"status": "ok", "api_marker": "shift-monitor-v2"}
     git_sha = (os.environ.get("GITHUB_SHA") or os.environ.get("BUILD_SHA") or "").strip()
     build_time = (os.environ.get("BUILD_TIME") or "").strip()
     if git_sha:
