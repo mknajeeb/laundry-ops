@@ -49,6 +49,26 @@ class TestUploadBatchRowInsertSql(unittest.TestCase):
         args = special_instruction_insert_args(row, include=True)
         self.assertEqual(args, [None, None, 0])
 
+    def test_special_instruction_args_empty_strings(self):
+        row = pd.Series(
+            {
+                "special_instructions_raw": "",
+                "supply_interpretation": "   ",
+                "special_instruction_review": False,
+            }
+        )
+        args = special_instruction_insert_args(row, include=True)
+        self.assertEqual(args, ["", "   ", 0])
+
+    def test_special_instruction_args_missing_fields(self):
+        row = pd.Series({"Date_Clean": "2026-06-09"})
+        args = special_instruction_insert_args(row, include=True)
+        self.assertEqual(args, [None, None, 0])
+
+    def test_null_if_na_none_and_blank(self):
+        self.assertIsNone(null_if_na(None))
+        self.assertEqual(null_if_na(""), "")
+
 
 if __name__ == "__main__":
     unittest.main()
