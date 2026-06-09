@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_lifecycle_status import (
     ASSIGNED_NOT_SENT_TO_VENDOR,
@@ -276,18 +276,18 @@ def _attach_wf_bucket_reconciliation(groups: dict[str, Any]) -> dict[str, Any]:
 def _derive_hd_basic_status(
     row: Mapping[str, Any],
     lifecycle: Mapping[str, Any],
+    events: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
-    """Basic HD lifecycle status when full WF scan flow does not apply."""
-    status = str(lifecycle.get("current_lifecycle_status") or "").strip()
-    if status in LIFECYCLE_COMPLETED_STATUSES:
-        if status == SENT_TO_RINSE:
-            return "sent_to_rinse"
-        return "processed_completed"
-    if status == SENT_TO_VENDOR or row.get("at_vendor_presence"):
-        return "at_vendor"
-    if int(row.get("is_completed") or 0) == 1:
-        return "processed_completed"
-    return "pending"
+    """HD production stage — never WF weighing lifecycle statuses."""
+    from backend.rinse_hd_production_status import derive_hd_production_status
+
+    hd = derive_hd_production_status(
+        events or [],
+        at_vendor_presence=bool(row.get("at_vendor_presence")),
+        logistics_status=row.get("logistics_status"),
+        lifecycle_status=lifecycle.get("current_lifecycle_status"),
+    )
+    return str(hd.get("hd_stage") or "HD_NOT_STARTED")
 
 
 def _accumulate_hd_lifecycle_group(group: dict[str, Any], *, hd_status: str, needs_review: bool, has_exceptions: bool) -> None:
@@ -1838,7 +1838,27 @@ def build_lifecycle_pending_payload(
                 "stage_detail": {},
             }
             lifecycle_fallback = True
-        hd_status = _derive_hd_basic_status(row, lifecycle)
+        hd_status = _derive_hd_basic_status(row, lifecycle, events_by_bag.get(bid) or [])
+        from backend.rinse_hd_production_status import (
+            HD_STAGE_LABELS,
+            derive_hd_production_status,
+        )
+
+        hd_detail = derive_hd_production_status(
+            events_by_bag.get(bid) or [],
+            at_vendor_presence=bool(row.get("at_vendor_presence")),
+            logistics_status=row.get("logistics_status"),
+            lifecycle_status=lifecycle.get("current_lifecycle_status"),
+        )
+        hd_group_status = hd_status
+        if hd_status in ("HD_SENT_LEFT",):
+            hd_group_status = "sent_to_rinse"
+        elif hd_status in ("HD_STILL_AT_FACILITY", "HD_COMPLETED"):
+            hd_group_status = "processed_completed"
+        elif hd_status in ("HD_STARTED_CLEANING", "HD_NOT_STARTED"):
+            hd_group_status = "at_vendor" if row.get("at_vendor_presence") else "pending"
+        else:
+            hd_group_status = "pending"
         exception_flags = list(lifecycle.get("exception_flags") or [])
         needs_review = bool(lifecycle.get("needs_review")) or lifecycle_fallback
         has_exceptions = len(exception_flags) > 0
@@ -1850,7 +1870,7 @@ def build_lifecycle_pending_payload(
             hd_target = hd_unknown_rush
         _accumulate_hd_lifecycle_group(
             hd_target,
-            hd_status=hd_status,
+            hd_status=hd_group_status,
             needs_review=needs_review,
             has_exceptions=has_exceptions,
         )
@@ -1864,15 +1884,21 @@ def build_lifecycle_pending_payload(
                 "rush_label": rush_label,
                 "group": group_key,
                 "record_scope": "hd_lifecycle",
-                "hd_lifecycle_status": hd_status,
-                "current_lifecycle_status": lifecycle.get("current_lifecycle_status"),
+                "hd_lifecycle_status": hd_group_status,
+                "hd_stage": hd_status,
+                "hd_stage_label": HD_STAGE_LABELS.get(hd_status, hd_status),
+                "current_lifecycle_status": hd_status,
+                "lifecycle_status_label": HD_STAGE_LABELS.get(hd_status, hd_status),
+                "wf_lifecycle_status_raw": lifecycle.get("current_lifecycle_status"),
                 "needs_review": needs_review,
                 "exception_flags": exception_flags,
                 "operational_flags": lifecycle.get("operational_flags") or {},
-                "is_completed": hd_status in ("processed_completed", "sent_to_rinse"),
+                "is_completed": hd_status in ("HD_COMPLETED", "HD_STILL_AT_FACILITY", "HD_SENT_LEFT"),
                 "in_active_staging": bool(row.get("in_active_staging")),
                 "registry_supplement": bool(row.get("registry_supplement")),
                 "logistics_status": row.get("logistics_status"),
+                "date_clean": row.get("date_clean"),
+                "hd_production_detail": hd_detail,
             }
         )
 

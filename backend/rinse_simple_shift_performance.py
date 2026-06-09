@@ -36,8 +36,8 @@ from backend.rinse_bag_lifecycle_status import (
 from backend.rinse_folding_et import naive_et_day_end_exclusive, period_datetime_bounds_et
 from backend.rinse_processing_productivity import _load_shift_sessions, _shift_effective_clock_out
 from backend.rinse_processing_settings import get_processing_settings
-from backend.rinse_scan_purpose import is_start_cleaning_purpose, is_weight_entry_purpose
-from backend.rinse_bag_stage_bounds import first_start_cleaning_after, gaming_events_from_records, lifecycle_anchor, events_on_or_after
+from backend.rinse_scan_purpose import is_add_photos_purpose, is_drying_purpose, is_start_cleaning_purpose, is_weight_entry_purpose
+from backend.rinse_bag_stage_bounds import first_start_cleaning_after, first_weight_after_anchor, gaming_events_from_records, lifecycle_anchor, events_on_or_after
 from backend.rinse_scan_time import RINSE_SCAN_SOURCE_TIMEZONE, naive_system_utc
 from backend.rinse_shift_analysis import (
     LIFECYCLE_COMPLETED_STATUSES,
@@ -123,10 +123,13 @@ def _qualifies_yet_to_fold(
     events: Sequence[Mapping[str, Any]],
     completion: Any,
 ) -> bool:
-    """Post-wash / in-process bags not yet completed on our side."""
+    """Post-wash / in-process WF bags not yet completed on our side."""
     if completion.completed:
         return False
     if not pending_row:
+        return False
+    svc = str(pending_row.get("service_type") or "").strip().upper()
+    if svc == "HD":
         return False
     status = str(pending_row.get("current_lifecycle_status") or "")
     if status in LIFECYCLE_COMPLETED_STATUSES or status in _PRE_FOLD_LIFECYCLE:
@@ -624,20 +627,26 @@ def _build_work_pipeline_section(
     nonrush_pending = sum(1 for r in recs if r.get("rush_label") == "Non-Rush" and "pipeline_work" in (r.get("drilldown_tags") or []))
     section["rush_pending"] = rush_pending
     section["nonrush_pending"] = nonrush_pending
-    section["pending_wash_rush"] = _count_tag(recs, "pending_wash_rush")
-    section["pending_wash_nonrush"] = _count_tag(recs, "pending_wash_nonrush")
-    section["pending_wash_total"] = _count_tag(recs, "pending_wash")
-    section["yet_to_fold"] = _count_tag(recs, "yet_to_fold")
+    section["pending_wash_rush"] = _count_tag(recs, "wf_pending_wash_rush")
+    section["pending_wash_nonrush"] = _count_tag(recs, "wf_pending_wash_nonrush")
+    section["pending_wash_total"] = _count_tag(
+        [r for r in recs if r.get("service_type") == "WF"], "pending_wash"
+    )
+    section["yet_to_fold"] = _count_tag([r for r in recs if r.get("service_type") == "WF"], "wf_pending_folding")
     section["issues"] = _count_tag(recs, "issues")
     section["workitems"] = _count_tag(recs, "workitems")
     section["last_rush_wash"] = last_rush_wash
     section["last_nonrush_wash"] = last_nonrush_wash
     section["last_wash_overall"] = last_wash_overall
     section["pending_wash_rush_ids"] = sorted(
-        str(r.get("bag_id")) for r in recs if "pending_wash_rush" in (r.get("drilldown_tags") or [])
+        str(r.get("bag_id"))
+        for r in recs
+        if "wf_pending_wash_rush" in (r.get("drilldown_tags") or [])
     )
     section["pending_wash_nonrush_ids"] = sorted(
-        str(r.get("bag_id")) for r in recs if "pending_wash_nonrush" in (r.get("drilldown_tags") or [])
+        str(r.get("bag_id"))
+        for r in recs
+        if "wf_pending_wash_nonrush" in (r.get("drilldown_tags") or [])
     )
     return section
 
@@ -1028,6 +1037,78 @@ def _rush_label(bucket: str | None) -> str:
     return "Unknown"
 
 
+def _wf_stage_audit_fields(
+    events: Sequence[Mapping[str, Any]],
+    completion: Any,
+    wdiff: Any,
+) -> dict[str, Any]:
+    """WF-only drilldown audit fields (never applied to HD)."""
+    timeline = gaming_events_from_records(events)
+    anchor_ts, _ = lifecycle_anchor(timeline)
+    anchored = events_on_or_after(timeline, anchor_ts) if anchor_ts else list(timeline)
+    _, fw_ts = first_weight_after_anchor(anchored)
+    sorted_ts = None
+    if fw_ts is not None:
+        for ev in anchored:
+            if not is_add_photos_purpose(ev.get("purpose")):
+                continue
+            ts = ev.get("scanned_at_parsed")
+            if isinstance(ts, datetime) and ts > fw_ts:
+                sorted_ts = ts
+                break
+    sc_ev = first_start_cleaning_after(anchored, after_ts=fw_ts)
+    sc_ts = sc_ev.get("scanned_at_parsed") if isinstance(sc_ev, dict) else None
+    dry_ts = None
+    for ev in anchored:
+        if not is_drying_purpose(ev.get("purpose")):
+            continue
+        ts = ev.get("scanned_at_parsed")
+        if isinstance(ts, datetime):
+            dry_ts = ts
+            break
+    clean_ts = None
+    for ev in timeline:
+        rack = str(ev.get("rack") or "").lower()
+        if "clean" in rack and "dirty" not in rack:
+            ts = ev.get("scanned_at_parsed")
+            if isinstance(ts, datetime):
+                clean_ts = ts
+    completion_signal = completion.completion_kind or completion.exception_code
+    return {
+        "first_weight_time": (
+            wdiff.first_weight_at.isoformat()
+            if isinstance(wdiff.first_weight_at, datetime)
+            else (fw_ts.isoformat() if isinstance(fw_ts, datetime) else None)
+        ),
+        "first_weight_value": wdiff.first_weight_lbs,
+        "second_weight_time": (
+            wdiff.second_weight_at.isoformat() if isinstance(wdiff.second_weight_at, datetime) else None
+        ),
+        "second_weight_value": wdiff.second_weight_lbs,
+        "start_cleaning_time": sc_ts.isoformat() if isinstance(sc_ts, datetime) else None,
+        "drying_time": dry_ts.isoformat() if isinstance(dry_ts, datetime) else None,
+        "clean_rack_time": clean_ts.isoformat() if isinstance(clean_ts, datetime) else None,
+        "sorted_time": sorted_ts.isoformat() if isinstance(sorted_ts, datetime) else None,
+        "completion_signal": completion_signal,
+    }
+
+
+def _last_scan_fields(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    last_ev: Mapping[str, Any] | None = None
+    last_ts: datetime | None = None
+    for ev in events:
+        ts = ev.get("scanned_at_parsed")
+        if isinstance(ts, datetime) and (last_ts is None or ts > last_ts):
+            last_ts = ts
+            last_ev = ev
+    if not isinstance(last_ev, dict):
+        return {"last_scan_purpose": None, "last_scan_rack": None}
+    return {
+        "last_scan_purpose": last_ev.get("purpose"),
+        "last_scan_rack": last_ev.get("rack"),
+    }
+
+
 def _record_from_bag(
     *,
     bid: str,
@@ -1058,6 +1139,9 @@ def _record_from_bag(
     has_weigh = any(c.role == ROLE_WEIGHING for c in credits)
     has_start_cleaning = any(is_start_cleaning_purpose(ev.get("purpose")) for ev in events)
     is_rush = _rush_bucket_key(str(merged.get("effective_rush") or merged.get("rush_type") or "")) == "rush"
+    svc = _normalized_service_type(merged) or "UNKNOWN"
+    is_wf = svc == "WF"
+    is_hd = svc == "HD"
     tags: set[str] = set()
     if in_incoming:
         tags.add("ready_for_vendor")
@@ -1076,34 +1160,65 @@ def _record_from_bag(
             if bucket.startswith("unknown") or bucket == "unknown_service":
                 tags.add("facility_unknown_needs_review")
     active_eligible = in_pipeline
+    hd_production: dict[str, Any] | None = None
     if in_pipeline:
         tags.add("pipeline_work")
         tags.add("active_work")
         if bucket:
             tags.add(f"pipeline_{bucket}")
             tags.add(f"active_{bucket}")
-        if has_weigh:
-            tags.add("shift_weighed")
-        else:
-            tags.add("shift_not_weighed")
-        if not has_start_cleaning:
-            tags.add("pending_wash")
-            if is_rush:
-                tags.add("pending_wash_rush")
-            elif rec_rush_label := _rush_label(bucket):
-                if rec_rush_label == "Non-Rush":
-                    tags.add("pending_wash_nonrush")
-        if _qualifies_yet_to_fold(pending_row, events, completion):
-            tags.add("yet_to_fold")
+        if is_wf:
+            tags.add("wip_wf")
+            if has_weigh:
+                tags.add("shift_weighed")
+                tags.add("wf_weighed")
+            else:
+                tags.add("shift_not_weighed")
+                tags.add("wf_not_weighed")
+            if not has_start_cleaning:
+                tags.add("pending_wash")
+                if is_rush:
+                    tags.add("pending_wash_rush")
+                    tags.add("wf_pending_wash_rush")
+                elif rec_rush_label := _rush_label(bucket):
+                    if rec_rush_label == "Non-Rush":
+                        tags.add("pending_wash_nonrush")
+                        tags.add("wf_pending_wash_nonrush")
+            if _qualifies_yet_to_fold(pending_row, events, completion):
+                tags.add("yet_to_fold")
+                tags.add("wf_pending_folding")
+        elif is_hd:
+            from backend.rinse_hd_production_status import (
+                derive_hd_production_status,
+                hd_stage_drilldown_tag,
+            )
+
+            hd_production = derive_hd_production_status(
+                events,
+                at_vendor_presence=bool(row_meta.get("at_vendor_presence")),
+                logistics_status=merged.get("logistics_status") or merged.get("status"),
+                lifecycle_status=row_meta.get("current_lifecycle_status"),
+            )
+            tags.add("wip_hd")
+            stage_tag = hd_stage_drilldown_tag(str(hd_production.get("hd_stage") or ""))
+            tags.add(stage_tag)
+            if hd_production.get("hd_completed"):
+                tags.add("hd_completed")
+            if hd_production.get("sent_left"):
+                tags.add("hd_sent_left")
+            elif hd_production.get("hd_completed"):
+                tags.add("hd_still_at_facility")
+    if is_wf and wdiff.flagged:
+        tags.add("weight_difference")
+    elif is_wf and active_eligible and wdiff.unavailable_reason:
+        tags.add("weight_difference_unavailable")
     if any(c.role == ROLE_ISSUES for c in period_credits):
         tags.add("issues")
     if any(c.role == ROLE_WORKITEMS for c in period_credits):
         tags.add("workitems")
-    if wdiff.flagged:
-        tags.add("weight_difference")
-    elif active_eligible and wdiff.unavailable_reason:
-        tags.add("weight_difference_unavailable")
-    if completion.exception_code == "COMPLETED_WITHOUT_FINAL_CLEAN_SCAN":
+        if is_hd:
+            tags.add("hd_workitems")
+    if is_wf and completion.exception_code == "COMPLETED_WITHOUT_FINAL_CLEAN_SCAN":
         tags.add("completed_without_clean")
     if bucket and (bucket.startswith("unknown") or bucket == "unknown_service"):
         tags.add("unknown_speed_service")
@@ -1115,7 +1230,9 @@ def _record_from_bag(
             last_scan = ts
             last_employee = ev.get("user_name")
     status = str(row_meta.get("current_lifecycle_status") or "")
-    if not status and completion.completed:
+    if is_hd and hd_production:
+        status = str(hd_production.get("hd_stage") or status)
+    elif not status and completion.completed and is_wf:
         status = FOLDED_COMPLETED
     primary_employee = None
     for role in (ROLE_FOLDING, ROLE_WASHING, ROLE_SORTING, ROLE_WEIGHING):
@@ -1126,6 +1243,17 @@ def _record_from_bag(
     flag_set = {f for c in credits for f in c.flags}
     if completion.exception_code:
         flag_set.add(completion.exception_code)
+    last_scan_meta = _last_scan_fields(events)
+    wf_audit = _wf_stage_audit_fields(events, completion, wdiff) if is_wf else {}
+    hd_audit: dict[str, Any] = {}
+    if is_hd and hd_production:
+        hd_audit = {
+            "workitem_time": hd_production.get("workitem_time"),
+            "add_photos_time_after_workitem": hd_production.get("add_photos_time_after_workitem"),
+            "hd_started": hd_production.get("hd_started"),
+            "hd_completed": hd_production.get("hd_completed"),
+            "sent_left_signal": hd_production.get("sent_left_signal"),
+        }
     return {
         "bag_id": bid,
         "customer": customer,
@@ -1137,8 +1265,20 @@ def _record_from_bag(
             if hasattr(merged.get("date_clean"), "isoformat")
             else merged.get("date_clean")
         ),
-        "current_status": status or row_meta.get("lifecycle_status_label"),
+        "current_status": (
+            (hd_production.get("hd_stage_label") if is_hd and hd_production else None)
+            or status
+            or row_meta.get("lifecycle_status_label")
+        ),
+        "hd_stage": hd_production.get("hd_stage") if hd_production else row_meta.get("hd_stage"),
+        "hd_stage_label": hd_production.get("hd_stage_label") if hd_production else row_meta.get("hd_stage_label"),
+        "view_date": row_meta.get("view_date"),
+        "effective_rush": merged.get("effective_rush"),
+        "rush_type_raw": merged.get("rush_type") or merged.get("rush_label"),
         "last_scan_time": last_scan.isoformat() if isinstance(last_scan, datetime) else None,
+        "last_scan_purpose": last_scan_meta.get("last_scan_purpose"),
+        "last_scan_rack": last_scan_meta.get("last_scan_rack"),
+        "raw_status": row_meta.get("current_lifecycle_status"),
         "employee": primary_employee or last_employee,
         "flags": sorted(flag_set),
         "completed": completion.completed,
@@ -1179,6 +1319,8 @@ def _record_from_bag(
         "supply_interpretation": row_meta.get("supply_interpretation"),
         "special_instruction_review": bool(row_meta.get("special_instruction_review")),
         "source": "Scan events" if events else "Portal scrape",
+        **wf_audit,
+        **hd_audit,
     }
 
 
@@ -1235,19 +1377,29 @@ def _metric_split_counts(
 
 def _build_shift_status(records: list[dict[str, Any]], *, threshold: float, last_rush_wash: dict | None) -> dict[str, Any]:
     active_records = [r for r in records if r.get("in_scope_a_active")]
-    flagged = _count_tag(records, "weight_difference")
-    unavailable = _count_tag(active_records, "weight_difference_unavailable")
+    wf_active = [r for r in active_records if r.get("service_type") == "WF"]
+    hd_active = [r for r in active_records if r.get("service_type") == "HD"]
+    flagged = _count_tag([r for r in records if r.get("service_type") == "WF"], "weight_difference")
+    unavailable = _count_tag(wf_active, "weight_difference_unavailable")
     return {
-        "weighed": _metric_split_counts(active_records, "shift_weighed", active_only=True),
-        "not_weighed": _metric_split_counts(active_records, "shift_not_weighed", active_only=True),
+        "weighed": _metric_split_counts(wf_active, "wf_weighed", active_only=True),
+        "not_weighed": _metric_split_counts(wf_active, "wf_not_weighed", active_only=True),
         "issues": _metric_split_counts(records, "issues"),
         "workitems": _metric_split_counts(records, "workitems"),
         "weight_difference": {
             "flagged": flagged,
             "unavailable": unavailable,
             "all": flagged,
-            "rush": _count_tag_by_rush(records, "weight_difference", rush_filter="rush"),
-            "non_rush": _count_tag_by_rush(records, "weight_difference", rush_filter="non_rush"),
+            "rush": _count_tag_by_rush(
+                [r for r in records if r.get("service_type") == "WF"],
+                "weight_difference",
+                rush_filter="rush",
+            ),
+            "non_rush": _count_tag_by_rush(
+                [r for r in records if r.get("service_type") == "WF"],
+                "weight_difference",
+                rush_filter="non_rush",
+            ),
         },
         "weight_difference_threshold_lbs": threshold,
         "weight_difference_status": (
@@ -1255,10 +1407,128 @@ def _build_shift_status(records: list[dict[str, Any]], *, threshold: float, last
             if flagged
             else ("unavailable" if unavailable else "none")
         ),
-        "rush_pending_wash": _metric_split_counts(active_records, "rush_pending_wash", active_only=True, rush_only_metric=True),
+        "rush_pending_wash": _metric_split_counts(wf_active, "wf_pending_wash_rush", active_only=True, rush_only_metric=True),
         "last_rush_wash": last_rush_wash,
-        "yet_to_fold": _metric_split_counts(active_records, "yet_to_fold", active_only=True),
-        "source": "Scan events + At Vendor staging",
+        "yet_to_fold": _metric_split_counts(wf_active, "wf_pending_folding", active_only=True),
+        "wf_pipeline_total": len(wf_active),
+        "hd_pipeline_total": len(hd_active),
+        "source": "WF-only weighing/folding; HD uses separate wip_hd stages",
+    }
+
+
+def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dict[str, Any]:
+    """WIP split by WF and HD — pipeline bags only (not facility workload history)."""
+    pipeline = [r for r in records if r.get("in_pipeline")]
+    wf = [r for r in pipeline if r.get("service_type") == "WF"]
+    hd = [r for r in pipeline if r.get("service_type") == "HD"]
+
+    def _cards(rows: list[dict[str, Any]], spec: list[tuple[str, str]]) -> dict[str, int]:
+        return {key: _count_tag(rows, tag) for key, tag in spec}
+
+    wf_cards = _cards(
+        wf,
+        [
+            ("total", "wip_wf"),
+            ("weighed", "wf_weighed"),
+            ("not_weighed", "wf_not_weighed"),
+            ("pending_wash_rush", "wf_pending_wash_rush"),
+            ("pending_wash_nonrush", "wf_pending_wash_nonrush"),
+            ("pending_folding", "wf_pending_folding"),
+        ],
+    )
+    wf_cards["total"] = len(wf)
+
+    hd_cards = _cards(
+        hd,
+        [
+            ("not_started", "hd_not_started"),
+            ("started_cleaning", "hd_started_cleaning"),
+            ("completed", "hd_completed"),
+            ("sent_left", "hd_sent_left"),
+            ("still_at_facility", "hd_still_at_facility"),
+        ],
+    )
+    hd_cards["total"] = len(hd)
+
+    rush_wip = sum(1 for r in pipeline if r.get("rush_label") == "Rush")
+    non_rush_wip = sum(1 for r in pipeline if r.get("rush_label") == "Non-Rush")
+
+    return {
+        "view_date": target_date.isoformat(),
+        "summary": {
+            "total": len(pipeline),
+            "wf_total": len(wf),
+            "hd_total": len(hd),
+            "rush_total": rush_wip,
+            "non_rush_total": non_rush_wip,
+        },
+        "wf": wf_cards,
+        "hd": hd_cards,
+    }
+
+
+def _build_stage_audit(records: list[dict[str, Any]]) -> dict[str, Any]:
+    from backend.rinse_bag_lifecycle_status import PENDING_WEIGHING, WEIGHED_NOT_STARTED
+    from backend.rinse_hd_production_status import is_hd_wrongly_in_wf_weighing
+
+    wf_ids: list[str] = []
+    hd_ids: list[str] = []
+    hd_wrongly: list[str] = []
+    wf_weighed: list[str] = []
+    wf_not_weighed: list[str] = []
+    hd_not_started: list[str] = []
+    hd_started: list[str] = []
+    hd_completed: list[str] = []
+    unknown_svc: list[str] = []
+    missing_edd: list[str] = []
+
+    for rec in records:
+        bid = str(rec.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        svc = str(rec.get("service_type") or "").strip().upper()
+        tags = rec.get("drilldown_tags") or []
+        if svc == "WF":
+            wf_ids.append(bid)
+            if "wf_weighed" in tags:
+                wf_weighed.append(bid)
+            if "wf_not_weighed" in tags:
+                wf_not_weighed.append(bid)
+        elif svc == "HD":
+            hd_ids.append(bid)
+            if "hd_not_started" in tags:
+                hd_not_started.append(bid)
+            if "hd_started_cleaning" in tags:
+                hd_started.append(bid)
+            if "hd_completed" in tags or "hd_still_at_facility" in tags:
+                hd_completed.append(bid)
+        else:
+            unknown_svc.append(bid)
+        if not rec.get("date_clean"):
+            missing_edd.append(bid)
+        if is_hd_wrongly_in_wf_weighing(
+            service_type=svc,
+            lifecycle_status=rec.get("current_status") or rec.get("current_lifecycle_status"),
+            drilldown_tags=tags,
+        ):
+            hd_wrongly.append(bid)
+        status = str(rec.get("current_status") or "").upper()
+        if svc == "HD" and status in (PENDING_WEIGHING, WEIGHED_NOT_STARTED):
+            if bid not in hd_wrongly:
+                hd_wrongly.append(bid)
+
+    return {
+        "wf_ids": sorted(set(wf_ids)),
+        "hd_ids": sorted(set(hd_ids)),
+        "hd_wrongly_in_weighing_ids": sorted(set(hd_wrongly)),
+        "wf_weighed_ids": sorted(set(wf_weighed)),
+        "wf_not_weighed_ids": sorted(set(wf_not_weighed)),
+        "hd_not_started_ids": sorted(set(hd_not_started)),
+        "hd_started_ids": sorted(set(hd_started)),
+        "hd_completed_ids": sorted(set(hd_completed)),
+        "records_with_unknown_service": sorted(set(unknown_svc)),
+        "records_with_missing_edd": sorted(set(missing_edd)),
+        "reconciliation_ok": len(hd_wrongly) == 0,
     }
 
 
@@ -1379,7 +1649,7 @@ def _build_debug_audit(
             "completion_kind": rec.get("completion_kind"),
             "completion_exception": rec.get("completion_exception"),
         }
-        if "yet_to_fold" in (rec.get("drilldown_tags") or []):
+        if "wf_pending_folding" in (rec.get("drilldown_tags") or []):
             yet_to_fold_ids.append(bid)
         if rec.get("completed") and "yet_to_fold" not in (rec.get("drilldown_tags") or []):
             if rec.get("in_scope_a_active") or rec.get("in_ready_for_vendor"):
@@ -1406,6 +1676,7 @@ def _build_debug_audit(
             elif bad:
                 non_parseable.append({"bag_id": bid, "issue": "non_parseable_weight_values"})
 
+    stage_audit = _build_stage_audit(records)
     return {
         "ready_for_vendor_sync": {
             "latest_attempt_at": (rfv_sync or {}).get("latest_attempt_at") or (rfv_sync or {}).get("last_refreshed_at"),
@@ -1554,12 +1825,14 @@ def _build_debug_audit(
             "status": shift_status.get("weight_difference_status"),
         },
         "drilldown_tag_counts": _drilldown_tag_counts(records),
+        "stage_audit": stage_audit,
         "reconciliation_status": {
             "ready_for_vendor_counts_add_up": ready_for_vendor.get("counts_add_up"),
             "ready_for_vendor_rush_nonrush": ready_for_vendor.get("rush_nonrush_reconciled"),
             "facility_total_equals_entered_plus_carryover": (facility_tracker or {}).get("reconciliation", {}).get(
                 "total_equals_entered_plus_carryover"
             ),
+            "hd_weighing_separation_ok": stage_audit.get("reconciliation_ok"),
         },
     }
 
@@ -1609,10 +1882,16 @@ def _align_pipeline_counts(section: dict[str, Any], records: list[dict[str, Any]
     section["nonrush_pending"] = sum(
         1 for r in records if r.get("rush_label") == "Non-Rush" and "pipeline_work" in (r.get("drilldown_tags") or [])
     )
-    section["pending_wash_rush"] = _count_tag(records, "pending_wash_rush")
-    section["pending_wash_nonrush"] = _count_tag(records, "pending_wash_nonrush")
-    section["pending_wash_total"] = _count_tag(records, "pending_wash")
-    section["yet_to_fold"] = _count_tag(records, "yet_to_fold")
+    section["pending_wash_rush"] = _count_tag(
+        [r for r in records if r.get("service_type") == "WF"], "wf_pending_wash_rush"
+    )
+    section["pending_wash_nonrush"] = _count_tag(
+        [r for r in records if r.get("service_type") == "WF"], "wf_pending_wash_nonrush"
+    )
+    section["pending_wash_total"] = _count_tag(
+        [r for r in records if r.get("service_type") == "WF"], "pending_wash"
+    )
+    section["yet_to_fold"] = _count_tag([r for r in records if r.get("service_type") == "WF"], "wf_pending_folding")
     section["issues"] = _count_tag(records, "issues")
     section["workitems"] = _count_tag(records, "workitems")
     _finalize_section_counts(section)
@@ -1623,13 +1902,41 @@ def _align_active_work_counts(section: dict[str, Any], records: list[dict[str, A
 
 
 def _build_exceptions_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    wf_records = [r for r in records if r.get("service_type") == "WF"]
+    hd_records = [r for r in records if r.get("service_type") == "HD"]
     return {
-        "completed_without_clean_rack": {"count": _count_tag(records, "completed_without_clean"), "drilldown_filter": "completed_without_clean", "source": "Scan events"},
+        "completed_without_clean_rack": {
+            "count": _count_tag(wf_records, "completed_without_clean"),
+            "drilldown_filter": "completed_without_clean",
+            "source": "WF scan events",
+        },
         "create_issue": {"count": _count_tag(records, "issues"), "drilldown_filter": "issues", "source": "Scan events"},
         "workitems": {"count": _count_tag(records, "workitems"), "drilldown_filter": "workitems", "source": "Scan events"},
-        "weight_difference": {"count": _count_tag(records, "weight_difference"), "drilldown_filter": "weight_difference", "source": "Scan events"},
-        "unknown_service_speed": {"count": _count_tag(records, "unknown_speed_service"), "drilldown_filter": "unknown_speed_service", "source": "Portal scrape"},
-        "checkout_not_recorded": {"count": _count_tag(records, "checkout_not_recorded"), "drilldown_filter": "checkout_not_recorded", "source": "Checkout staging"},
+        "weight_difference": {
+            "count": _count_tag(wf_records, "weight_difference"),
+            "drilldown_filter": "weight_difference",
+            "source": "WF only",
+        },
+        "hd_started_no_completion": {
+            "count": sum(
+                1
+                for r in hd_records
+                if "hd_started_cleaning" in (r.get("drilldown_tags") or [])
+                and "hd_completed" not in (r.get("drilldown_tags") or [])
+            ),
+            "drilldown_filter": "hd_started_cleaning",
+            "source": "HD scan events",
+        },
+        "unknown_service_speed": {
+            "count": _count_tag(records, "unknown_speed_service"),
+            "drilldown_filter": "unknown_speed_service",
+            "source": "Portal scrape",
+        },
+        "checkout_not_recorded": {
+            "count": _count_tag(records, "checkout_not_recorded"),
+            "drilldown_filter": "checkout_not_recorded",
+            "source": "Checkout staging",
+        },
     }
 
 
@@ -1756,6 +2063,7 @@ def build_simple_shift_performance_payload(
         if pending_row:
             meta = {**meta, **{k: v for k, v in pending_row.items() if v is not None}}
         meta["effective_rush"] = resolve_effective_rush_for_row(meta, target_date)
+        meta["view_date"] = target_date.isoformat()
         events = events_by_bag.get(bid) or []
         in_incoming = bid in incoming_rows
         in_staging = bid in active_candidates
@@ -1835,6 +2143,8 @@ def build_simple_shift_performance_payload(
     active_work = work_pipeline
 
     shift_status = _build_shift_status(records, threshold=threshold, last_rush_wash=last_rush_wash)
+    wip_sections = _build_wip_sections(records, target_date)
+    stage_audit = _build_stage_audit(records)
 
     employee_summary, employee_diagnostics = _build_employee_activity_summary(
         cursor, org, credits=all_credits, period_start=period_start, period_end=period_end, user_maps=user_maps
@@ -1918,10 +2228,11 @@ def build_simple_shift_performance_payload(
     )
 
     sections_under_review = {
-        "shift_status": True,
+        "shift_status": not stage_audit.get("reconciliation_ok", True),
+        "wip": not stage_audit.get("reconciliation_ok", True),
         "employee_activity": True,
         "rush_checkout": True,
-        "exceptions": True,
+        "exceptions": False,
         "ready_for_vendor_live": bool(ready_for_vendor.get("live")),
     }
 
@@ -1953,6 +2264,8 @@ def build_simple_shift_performance_payload(
             "source": "Scan events",
         },
         "shift_status": shift_status,
+        "wip": wip_sections,
+        "stage_audit": stage_audit if include_debug else {"reconciliation_ok": stage_audit.get("reconciliation_ok")},
         "employee_activity_summary": employee_summary,
         "employee_cards": employee_cards,
         "employee_diagnostics": employee_diagnostics,

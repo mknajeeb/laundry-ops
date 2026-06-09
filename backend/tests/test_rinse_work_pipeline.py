@@ -209,7 +209,7 @@ class TestPipelinePayload:
             MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7), include_debug=True
         )
         pipeline = payload["current_work_pipeline"]
-        assert pipeline["pending_wash_nonrush"] == _count_tag(payload["records"], "pending_wash_nonrush") == 1
+        assert pipeline["pending_wash_nonrush"] == _count_tag(payload["records"], "wf_pending_wash_nonrush") == 1
         assert pipeline["pending_wash_rush"] == 0
         assert pipeline["last_rush_wash"]["bag_id"] == "R1"
         assert pipeline["last_rush_wash"]["employee"] == "Alice"

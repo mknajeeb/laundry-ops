@@ -41,33 +41,96 @@ export function CollapsibleDashboardSection({ title, description, defaultExpande
   );
 }
 
-export function WipPreviewSection({ shiftStatus, pipeline, underReview }) {
-  const weighed = shiftMetricValue(shiftStatus?.weighed);
-  const notWeighed = shiftMetricValue(shiftStatus?.not_weighed);
-  const yetToFold = shiftMetricValue(shiftStatus?.yet_to_fold);
-  const pendingWashRush = pipeline?.pending_wash_rush;
-  const pendingWashNonRush = pipeline?.pending_wash_nonrush;
-  const hasCounts = [weighed, notWeighed, yetToFold, pendingWashRush, pendingWashNonRush].some((v) => v != null && v > 0);
+function WipCardGrid({ items, onDrilldown, activeTag }) {
+  return (
+    <Box
+      sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(3, 1fr)", md: "repeat(4, 1fr)" },
+        gap: 1,
+      }}
+    >
+      {items.map(({ label, value, tag }) => (
+        <ShiftCountCard
+          key={label}
+          label={label}
+          value={value ?? 0}
+          onClick={tag && onDrilldown ? () => onDrilldown(tag) : undefined}
+          active={tag && activeTag === tag}
+          compact
+        />
+      ))}
+    </Box>
+  );
+}
+
+export function WipPreviewSection({ wip, shiftStatus, pipeline, underReview, onDrilldown, activeTag }) {
+  const summary = wip?.summary || {};
+  const wf = wip?.wf || {};
+  const hd = wip?.hd || {};
+  const hasWipPayload = Boolean(wip?.summary);
+
+  const summaryItems = [
+    { label: "Total WIP", value: summary.total },
+    { label: "WF WIP", value: summary.wf_total ?? wf.total },
+    { label: "HD WIP", value: summary.hd_total ?? hd.total },
+    { label: "Rush WIP", value: summary.rush_total, tag: "pipeline_work" },
+    { label: "Non-Rush WIP", value: summary.non_rush_total },
+  ];
+
+  const wfItems = [
+    { label: "WF Total", value: wf.total, tag: "wip_wf" },
+    { label: "WF Weighed", value: wf.weighed, tag: "wf_weighed" },
+    { label: "WF Not Weighed", value: wf.not_weighed, tag: "wf_not_weighed" },
+    { label: "WF Pending Wash — Rush", value: wf.pending_wash_rush ?? pipeline?.pending_wash_rush, tag: "wf_pending_wash_rush" },
+    { label: "WF Pending Wash — Non-Rush", value: wf.pending_wash_nonrush ?? pipeline?.pending_wash_nonrush, tag: "wf_pending_wash_nonrush" },
+    { label: "WF Pending Folding", value: wf.pending_folding ?? shiftMetricValue(shiftStatus?.yet_to_fold), tag: "wf_pending_folding" },
+  ];
+
+  const hdItems = [
+    { label: "HD Total", value: hd.total, tag: "wip_hd" },
+    { label: "HD Not Started", value: hd.not_started, tag: "hd_not_started" },
+    { label: "HD Started Cleaning", value: hd.started_cleaning, tag: "hd_started_cleaning" },
+    { label: "HD Completed", value: hd.completed, tag: "hd_completed" },
+    { label: "HD Sent / Left", value: hd.sent_left, tag: "hd_sent_left" },
+    { label: "HD Still at Facility", value: hd.still_at_facility, tag: "hd_still_at_facility" },
+  ];
+
+  const hasCounts =
+    hasWipPayload &&
+    [...summaryItems, ...wfItems, ...hdItems].some((item) => Number(item.value || 0) > 0);
 
   return (
     <CollapsibleDashboardSection
       title="WIP — Work In Process"
-      description="Weighing through folding / HD cleaning progress"
-      underReview={!hasCounts}
+      description="WF weighing/folding and HD cleaning progress — separate workflows"
+      underReview={underReview && !hasCounts}
+      defaultExpanded
     >
       {hasCounts ? (
-        <Box
-          sx={{
-            display: "grid",
-            gridTemplateColumns: { xs: "repeat(2, 1fr)", sm: "repeat(3, 1fr)", md: "repeat(4, 1fr)" },
-            gap: 1,
-          }}
-        >
-          <ShiftCountCard label="Weighed" value={weighed ?? 0} compact />
-          <ShiftCountCard label="Not Weighed" value={notWeighed ?? 0} compact />
-          <ShiftCountCard label="Pending Wash — Rush" value={pendingWashRush ?? 0} compact />
-          <ShiftCountCard label="Pending Wash — Non-Rush" value={pendingWashNonRush ?? 0} compact />
-          <ShiftCountCard label="Yet to Fold" value={yetToFold ?? 0} compact />
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Box>
+            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+              WIP Summary
+            </Typography>
+            <WipCardGrid items={summaryItems} onDrilldown={onDrilldown} activeTag={activeTag} />
+          </Box>
+          <Accordion disableGutters elevation={0} sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, "&:before": { display: "none" } }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography fontWeight={600}>WF WIP ({wf.total ?? 0})</Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <WipCardGrid items={wfItems} onDrilldown={onDrilldown} activeTag={activeTag} />
+            </AccordionDetails>
+          </Accordion>
+          <Accordion disableGutters elevation={0} sx={{ border: "1px solid", borderColor: "divider", borderRadius: 1, "&:before": { display: "none" } }}>
+            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+              <Typography fontWeight={600}>HD WIP ({hd.total ?? 0})</Typography>
+            </AccordionSummary>
+            <AccordionDetails>
+              <WipCardGrid items={hdItems} onDrilldown={onDrilldown} activeTag={activeTag} />
+            </AccordionDetails>
+          </Accordion>
         </Box>
       ) : null}
     </CollapsibleDashboardSection>
@@ -87,7 +150,7 @@ export function MonitorPreviewSection({ pipeline, underReview, onDrilldown, acti
   return (
     <CollapsibleDashboardSection
       title="Monitor"
-      description="Last scan milestones and pending wash signals"
+      description="Last scan milestones and pending wash signals (WF pending wash; HD uses HD WIP)"
       underReview={!hasMonitor}
     >
       {hasMonitor ? (
@@ -101,8 +164,8 @@ export function MonitorPreviewSection({ pipeline, underReview, onDrilldown, acti
           <ShiftCountCard label="Last Rush Wash" value=" " sub={formatLastWash(pipeline?.last_rush_wash, "—")} compact />
           <ShiftCountCard label="Last Non-Rush Wash" value=" " sub={formatLastWash(pipeline?.last_nonrush_wash, "—")} compact />
           <ShiftCountCard label="Last Wash Overall" value=" " sub={formatLastWash(pipeline?.last_wash_overall, "—")} compact />
-          <ShiftCountCard label="Pending Wash — Rush" value={pipeline?.pending_wash_rush ?? 0} onClick={() => onDrilldown?.("pending_wash_rush")} active={activeTag === "pending_wash_rush"} compact />
-          <ShiftCountCard label="Pending Wash — Non-Rush" value={pipeline?.pending_wash_nonrush ?? 0} onClick={() => onDrilldown?.("pending_wash_nonrush")} active={activeTag === "pending_wash_nonrush"} compact />
+          <ShiftCountCard label="Pending Wash — Rush (WF)" value={pipeline?.pending_wash_rush ?? 0} onClick={() => onDrilldown?.("wf_pending_wash_rush")} active={activeTag === "wf_pending_wash_rush"} compact />
+          <ShiftCountCard label="Pending Wash — Non-Rush (WF)" value={pipeline?.pending_wash_nonrush ?? 0} onClick={() => onDrilldown?.("wf_pending_wash_nonrush")} active={activeTag === "wf_pending_wash_nonrush"} compact />
           <ShiftCountCard label="Create Issue" value={pipeline?.issues ?? 0} onClick={() => onDrilldown?.("issues")} active={activeTag === "issues"} compact />
           <ShiftCountCard label="Workitems Added" value={pipeline?.workitems ?? 0} onClick={() => onDrilldown?.("workitems")} active={activeTag === "workitems"} compact />
         </Box>
@@ -118,7 +181,7 @@ export function ExceptionsPreviewSection({ exceptions, underReview, onDrilldown,
   const hasData = items.length > 0;
 
   return (
-    <CollapsibleDashboardSection title="Exceptions" description="Scan gaps, weight issues, and review queues" underReview={!hasData}>
+    <CollapsibleDashboardSection title="Exceptions" description="Scan gaps, weight issues, and review queues" underReview={underReview && !hasData}>
       {hasData ? (
         <Box
           sx={{

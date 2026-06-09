@@ -417,6 +417,7 @@ export default function ShiftMonitorPage({ user }) {
   const facility = data?.facility_tracker_today || {};
   const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
   const shiftStatus = data?.shift_status || {};
+  const wip = data?.wip || {};
   const underReview = data?.sections_under_review || {};
   const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
   const rinseSync = rinseSyncBanner(data);
@@ -525,7 +526,14 @@ export default function ShiftMonitorPage({ user }) {
             activeTag={filterTag}
           />
 
-          <WipPreviewSection shiftStatus={shiftStatus} pipeline={pipeline} underReview={underReview.shift_status} />
+          <WipPreviewSection
+            wip={wip}
+            shiftStatus={shiftStatus}
+            pipeline={pipeline}
+            underReview={underReview.wip ?? underReview.shift_status}
+            onDrilldown={openDrilldown}
+            activeTag={filterTag}
+          />
           <MonitorPreviewSection pipeline={pipeline} underReview={underReview.shift_status} onDrilldown={openDrilldown} activeTag={filterTag} />
           <ExceptionsPreviewSection exceptions={data.exceptions_summary} underReview={underReview.exceptions} onDrilldown={openDrilldown} activeTag={filterTag} />
           <EmployeeActivityPlaceholder />
