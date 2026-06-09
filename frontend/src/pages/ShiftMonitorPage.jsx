@@ -192,6 +192,11 @@ function RecordRow({ row, expanded, onToggle }) {
           <Typography variant="caption" display="block">
             {formatDateTime(row.last_scan_time)}
           </Typography>
+          {row.date_clean ? (
+            <Typography variant="caption" color="text.secondary" display="block">
+              EDD {row.date_clean}
+            </Typography>
+          ) : null}
         </Box>
       </Stack>
       <Collapse in={expanded}>

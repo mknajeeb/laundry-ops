@@ -195,13 +195,24 @@ def _parse_row_date(raw: Any) -> date | None:
 
 def resolve_effective_rush_for_row(row: Mapping[str, Any], target_date: date) -> str:
     """
-    Rush rule for Shift Monitor / lifecycle: rush_type, RUSH text / ⚡ in portal cells,
-    then date_clean (EDD) before target_date => RUSH.
+    Rush rule for Shift Monitor / lifecycle:
+    - Explicit RUSH text / ⚡ in portal cells => RUSH
+    - date_clean (EDD) after target_date => NON-RUSH (future delivery)
+    - date_clean before target_date => RUSH (overdue carryover)
+    - date_clean on target_date => use stored rush_type / NON-RUSH default
     """
     cells = [row.get("name_clean"), row.get("notes")]
     parsed = parse_rush_flag_from_portal_cells([c for c in cells if c is not None])
     if parsed == "RUSH":
         return "RUSH"
+
+    dc = _parse_row_date(row.get("date_clean"))
+    if dc is not None:
+        if dc > target_date:
+            return "NON-RUSH"
+        if dc < target_date:
+            return "RUSH"
+
     er = str(row.get("effective_rush") or "").upper().strip()
     if er == "RUSH":
         return "RUSH"
@@ -214,9 +225,8 @@ def resolve_effective_rush_for_row(row: Mapping[str, Any], target_date: date) ->
         return "NON-RUSH"
     if rt == "NON-RUSH":
         return "NON-RUSH"
-    dc = _parse_row_date(row.get("date_clean"))
     if dc is not None:
-        return "RUSH" if dc < target_date else "NON-RUSH"
+        return "NON-RUSH"
     return PRESENCE_RUSH_UNKNOWN
 
 
@@ -1153,11 +1163,7 @@ def load_active_staging_population_rows(
     has_date = table_has_column(cursor, "orders_staging", "date_clean")
     has_weight = table_has_column(cursor, "orders_staging", "weight_num")
     logistics_expr = _staging_logistics_expr(cursor, "s")
-    rush_s = (
-        effective_rush_expr("s", date_col="date_clean")
-        if has_rush
-        else "CASE WHEN s.date_clean < CURDATE() THEN 'RUSH' ELSE 'NON-RUSH' END"
-    )
+    rush_col = "s.rush_type" if has_rush else "NULL"
     svc_s = _service_expr("s")
     org_clause = " AND s.organization_id = %s" if has_org else ""
     args: list[Any] = [org] if has_org else []
@@ -1172,7 +1178,7 @@ def load_active_staging_population_rows(
         SELECT
             s.ticket_id AS bag_id,
             {svc_s} AS service_type,
-            UPPER({rush_s}) AS staging_rush,
+            {rush_col} AS rush_type,
             {name_col} AS name_clean,
             {notes_col} AS notes,
             {date_col} AS date_clean,
@@ -1201,12 +1207,11 @@ def load_active_staging_population_rows(
         svc = str(row.get("service_type") or "WF").upper()
         if svc not in ("WF", "HD"):
             svc = "WF"
-        st_rush = str(row.get("staging_rush") or row.get("effective_rush") or "").upper().strip()
+        st_rush = str(row.get("rush_type") or "").upper().strip()
         resolved = resolve_effective_rush_for_row(
             {
                 **row,
                 "service_type": svc,
-                "effective_rush": st_rush or None,
                 "rush_type": st_rush or None,
             },
             td,

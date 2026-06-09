@@ -481,6 +481,17 @@ def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
     parsed = parse_rush_flag_from_portal_cells([c for c in cells if c is not None])
     if parsed == "RUSH":
         return "RUSH"
+
+    edd = _parse_presence_date(row.get("estimated_delivery_date"))
+    if edd is None:
+        rj = _presence_raw_row_json(row)
+        edd = _parse_presence_date(rj.get("Date_Clean"))
+    if edd is not None:
+        if edd > target_date:
+            return "NON-RUSH"
+        if edd < target_date:
+            return "RUSH"
+
     rf = str(row.get("rush_flag") or "").strip().upper()
     if rf == "RUSH":
         return "RUSH"
@@ -493,12 +504,8 @@ def _presence_effective_rush(row: Mapping[str, Any], target_date: date) -> str:
         return "RUSH"
     if rush_from_json == "NON-RUSH":
         return "NON-RUSH"
-    edd = _parse_presence_date(row.get("estimated_delivery_date"))
-    if edd is None:
-        rj = _presence_raw_row_json(row)
-        edd = _parse_presence_date(rj.get("Date_Clean"))
     if edd is not None:
-        return "RUSH" if edd < target_date else "NON-RUSH"
+        return "NON-RUSH"
     return PRESENCE_RUSH_UNKNOWN
 
 

@@ -678,6 +678,28 @@ class TestActiveWorkCountLogic:
         }
         assert resolve_effective_rush_for_row(row, date(2026, 6, 4)) == "RUSH"
 
+    def test_future_delivery_date_not_rush_even_if_stored_rush_type(self):
+        from datetime import date
+        from backend.rinse_shift_analysis import resolve_effective_rush_for_row
+
+        row = {
+            "name_clean": "Customer Name",
+            "date_clean": date(2026, 6, 11),
+            "rush_type": "RUSH",
+        }
+        assert resolve_effective_rush_for_row(row, date(2026, 6, 9)) == "NON-RUSH"
+
+    def test_overdue_delivery_date_is_rush(self):
+        from datetime import date
+        from backend.rinse_shift_analysis import resolve_effective_rush_for_row
+
+        row = {
+            "name_clean": "Customer Name",
+            "date_clean": date(2026, 6, 7),
+            "rush_type": "NON-RUSH",
+        }
+        assert resolve_effective_rush_for_row(row, date(2026, 6, 9)) == "RUSH"
+
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")

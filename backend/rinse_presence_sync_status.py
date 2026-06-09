@@ -259,6 +259,8 @@ def get_ready_for_vendor_sync_status(
     elif latest_status == "success" and int((latest_item or {}).get("rows_found") or 0) == 0:
         sync["zero_rows_success"] = True
         sync["message"] = "Ready for Vendor Sync returned 0 rows successfully"
+        sync["stale"] = False
+        sync["stale_reason"] = None
 
     rows_found = None
     if latest_item and latest_item.get("rows_found") is not None:
@@ -354,6 +356,16 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         stale = age_min > RINSE_SYNC_STALE_MINUTES
     run_status = str(latest.get("status") or "unknown")
     failed = run_status == "failed"
+    in_progress = run_status == "running"
+    if in_progress and isinstance(started_raw, datetime):
+        s = naive_system_utc(started_raw)
+        if s is not None:
+            running_min = max(0, int((now - s).total_seconds()) // 60)
+            if running_min > RINSE_SYNC_STALE_MINUTES:
+                in_progress = False
+                failed = True
+                run_status = "failed"
+                stale = True
     cursor.execute(
         """
         SELECT id, status, started_at, finished_at, duration_seconds,
@@ -383,7 +395,12 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "enabled": True,
         "status": run_status,
         "failed": failed,
-        "message": f"At Vendor Sync: {last_et or last_fmt or '—'}",
+        "in_progress": in_progress,
+        "message": (
+            f"At Vendor Sync: in progress ({last_et or 'started'})"
+            if in_progress
+            else f"At Vendor Sync: {last_et or last_fmt or '—'}"
+        ),
         "stale": stale or failed,
         "stale_reason": (
             "At Vendor Sync failed"

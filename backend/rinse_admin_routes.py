@@ -97,6 +97,8 @@ def register_rinse_admin_routes(
                 "completion/folding recompute finish — not at job start time."
             )
             return jsonify(json_safe_system(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()
             conn.close()

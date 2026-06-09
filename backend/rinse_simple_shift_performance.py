@@ -545,7 +545,7 @@ def _build_ready_for_vendor_section(
         return _unavailable(
             f"Ready for Vendor Sync failed: {error_message or 'unknown error'}"
         )
-    if stale:
+    if stale and not sync.get("zero_rows_success"):
         stale_ref = last_refreshed_at or last_success_at or "unknown"
         return _unavailable(
             (
@@ -1119,6 +1119,11 @@ def _record_from_bag(
         "service_type": _normalized_service_type(merged) or "UNKNOWN",
         "rush_bucket": bucket,
         "rush_label": _rush_label(bucket),
+        "date_clean": (
+            merged.get("date_clean").isoformat()
+            if hasattr(merged.get("date_clean"), "isoformat")
+            else merged.get("date_clean")
+        ),
         "current_status": status or row_meta.get("lifecycle_status_label"),
         "last_scan_time": last_scan.isoformat() if isinstance(last_scan, datetime) else None,
         "employee": primary_employee or last_employee,

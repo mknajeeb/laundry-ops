@@ -43,6 +43,14 @@ class TestRushParsing:
         assert _presence_effective_rush(row, date(2026, 6, 4)) == "RUSH"
         assert _presence_effective_rush(row, date(2026, 6, 3)) == "NON-RUSH"
 
+    def test_presence_future_delivery_not_rush(self):
+        row = {
+            "rush_flag": "RUSH",
+            "estimated_delivery_date": date(2026, 6, 11),
+            "raw_row_json": {},
+        }
+        assert _presence_effective_rush(row, date(2026, 6, 9)) == "NON-RUSH"
+
     def test_presence_effective_rush_from_raw_json_text(self):
         row = {
             "rush_flag": None,
