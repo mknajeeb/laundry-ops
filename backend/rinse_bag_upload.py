@@ -13,7 +13,7 @@ from backend.rinse_bag_registry import (
     get_registry_row,
     is_bag_already_completed,
 )
-from backend.ta_helpers import table_exists, table_has_column
+from backend.ta_helpers import invalidate_schema_cache, table_exists, table_has_column
 
 
 def _ensure_ticket_id_columns(cursor) -> None:
@@ -34,6 +34,7 @@ def _ensure_ticket_id_columns(cursor) -> None:
 def _ensure_special_instruction_columns(cursor) -> None:
     if not table_exists(cursor, "orders_staging"):
         return
+    changed = False
     for col, ddl in (
         ("special_instructions_raw", "TEXT NULL"),
         ("supply_interpretation", "VARCHAR(128) NULL"),
@@ -41,11 +42,15 @@ def _ensure_special_instruction_columns(cursor) -> None:
     ):
         if not table_has_column(cursor, "orders_staging", col):
             cursor.execute(f"ALTER TABLE orders_staging ADD COLUMN {col} {ddl}")
+            changed = True
+    if changed:
+        invalidate_schema_cache()
 
 
 def _ensure_upload_batch_rows_special_instruction_columns(cursor) -> None:
     if not table_exists(cursor, "upload_batch_rows"):
         return
+    changed = False
     for col, ddl in (
         ("special_instructions_raw", "TEXT NULL"),
         ("supply_interpretation", "VARCHAR(128) NULL"),
@@ -53,6 +58,9 @@ def _ensure_upload_batch_rows_special_instruction_columns(cursor) -> None:
     ):
         if not table_has_column(cursor, "upload_batch_rows", col):
             cursor.execute(f"ALTER TABLE upload_batch_rows ADD COLUMN {col} {ddl}")
+            changed = True
+    if changed:
+        invalidate_schema_cache()
 
 
 def _ensure_registry_v2_columns(cursor) -> None:
@@ -429,6 +437,8 @@ def update_staging_from_upload_row(
 
     _ensure_special_instruction_columns(cursor)
     if table_has_column(cursor, "orders_staging", "special_instructions_raw"):
+        from backend.rinse_upload_sql import bool_sql_flag, null_if_na
+
         set_parts.extend(
             [
                 "special_instructions_raw = %s",
@@ -438,9 +448,9 @@ def update_staging_from_upload_row(
         )
         args.extend(
             [
-                row.get("special_instructions_raw"),
-                row.get("supply_interpretation"),
-                1 if row.get("special_instruction_review") else 0,
+                null_if_na(row.get("special_instructions_raw")),
+                null_if_na(row.get("supply_interpretation")),
+                bool_sql_flag(row.get("special_instruction_review")),
             ]
         )
 

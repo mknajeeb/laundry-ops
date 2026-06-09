@@ -69,13 +69,15 @@ def insert_staging_from_upload_row(
 
     _ensure_special_instruction_columns(cursor)
     if table_has_column(cursor, "orders_staging", "special_instructions_raw"):
+        from backend.rinse_upload_sql import bool_sql_flag, null_if_na
+
         cols.extend(["special_instructions_raw", "supply_interpretation", "special_instruction_review"])
         vals.extend(["%s", "%s", "%s"])
         args.extend(
             [
-                row.get("special_instructions_raw"),
-                row.get("supply_interpretation"),
-                1 if row.get("special_instruction_review") else 0,
+                null_if_na(row.get("special_instructions_raw")),
+                null_if_na(row.get("supply_interpretation")),
+                bool_sql_flag(row.get("special_instruction_review")),
             ]
         )
 

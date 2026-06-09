@@ -351,6 +351,13 @@ def insert_upload_batch_rows_from_orders_df(
         find_active_staging_for_portal_upload,
     )
 
+    from backend.rinse_upload_sql import (
+        build_upload_batch_row_insert_sql,
+        null_if_na,
+        special_instruction_insert_args,
+        upload_batch_rows_timestamp_fragments,
+    )
+
     if pre_existing_completed_bag_ids is None:
         pre_existing_completed_bag_ids = collect_pre_existing_completed_bag_ids(
             cursor, tenant_oid, orders_df
@@ -366,6 +373,9 @@ def insert_upload_batch_rows_from_orders_df(
         cursor.execute(
             "ALTER TABLE upload_batch_rows ADD COLUMN ticket_id VARCHAR(120) NULL"
         )
+        from backend.ta_helpers import invalidate_schema_cache
+
+        invalidate_schema_cache()
 
     cap = schema.cap
     active_where = _active_staging_where_sql(cursor)
@@ -373,16 +383,25 @@ def insert_upload_batch_rows_from_orders_df(
     rejected = 0
     needs_attention = 0
     has_ticket_source = "ticket_id" in orders_df.columns
-    has_ubr_ticket = table_has_column(cursor, "upload_batch_rows", "ticket_id")
-    has_ubr_si = table_has_column(cursor, "upload_batch_rows", "special_instructions_raw")
+    from backend.ta_helpers import table_has_column as ta_table_has_column
+
+    has_ubr_ticket = ta_table_has_column(cursor, "upload_batch_rows", "ticket_id")
+    has_ubr_si = ta_table_has_column(cursor, "upload_batch_rows", "special_instructions_raw")
     include_tid = bool(has_ticket_source and has_ubr_ticket)
-    has_staging_org = table_has_column(cursor, "orders_staging", "organization_id")
+    has_staging_org = ta_table_has_column(cursor, "orders_staging", "organization_id")
+    ts_cols_sql, ts_vals_sql = upload_batch_rows_timestamp_fragments(cursor)
+    insert_sql = build_upload_batch_row_insert_sql(
+        include_ticket_id=include_tid,
+        include_special_instructions=has_ubr_si,
+        timestamp_cols_sql=ts_cols_sql,
+        timestamp_vals_sql=ts_vals_sql,
+    )
 
     for _, row in orders_df.iterrows():
         date_clean = row.get("Date_Clean")
         name_clean = row.get("Name_Clean")
         weight_num = row.get("Weight_Num")
-        service_type = row.get("ServiceType")
+        service_type = null_if_na(row.get("ServiceType")) or "WF"
         rush_type_raw = row.get("RushType")
 
         if pd.isna(date_clean) or pd.isna(name_clean):
@@ -471,91 +490,31 @@ def insert_upload_batch_rows_from_orders_df(
                     ticket_id = ts if ts else None
 
         if include_tid:
-            si_cols = ""
-            si_vals = ""
-            si_args: list[Any] = []
-            if has_ubr_si:
-                si_cols = ", special_instructions_raw, supply_interpretation, special_instruction_review"
-                si_vals = ", %s, %s, %s"
-                si_args = [
-                    row.get("special_instructions_raw"),
-                    row.get("supply_interpretation"),
-                    1 if row.get("special_instruction_review") else 0,
-                ]
-            cursor.execute(
-                f"""
-                INSERT INTO upload_batch_rows
-                (
-                    upload_batch_id,
-                    date_clean,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    row_status,
-                    reason,
-                    ticket_id
-                    {si_cols},
-                    created_at,
-                    updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s{si_vals}, NOW(), NOW())
-                """,
-                (
-                    upload_batch_id,
-                    row_date,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    row_status,
-                    reason,
-                    ticket_id,
-                    *si_args,
-                ),
-            )
+            row_args: list[Any] = [
+                upload_batch_id,
+                row_date,
+                name_clean,
+                null_if_na(weight_num),
+                service_type,
+                rush_type,
+                row_status,
+                reason,
+                ticket_id,
+                *special_instruction_insert_args(row, include=has_ubr_si),
+            ]
         else:
-            si_cols = ""
-            si_vals = ""
-            si_args = []
-            if has_ubr_si:
-                si_cols = ", special_instructions_raw, supply_interpretation, special_instruction_review"
-                si_vals = ", %s, %s, %s"
-                si_args = [
-                    row.get("special_instructions_raw"),
-                    row.get("supply_interpretation"),
-                    1 if row.get("special_instruction_review") else 0,
-                ]
-            cursor.execute(
-                f"""
-                INSERT INTO upload_batch_rows
-                (
-                    upload_batch_id,
-                    date_clean,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    row_status,
-                    reason
-                    {si_cols},
-                    created_at,
-                    updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s{si_vals}, NOW(), NOW())
-                """,
-                (
-                    upload_batch_id,
-                    row_date,
-                    name_clean,
-                    weight_num,
-                    service_type,
-                    rush_type,
-                    row_status,
-                    reason,
-                    *si_args,
-                ),
-            )
+            row_args = [
+                upload_batch_id,
+                row_date,
+                name_clean,
+                null_if_na(weight_num),
+                service_type,
+                rush_type,
+                row_status,
+                reason,
+                *special_instruction_insert_args(row, include=has_ubr_si),
+            ]
+        cursor.execute(insert_sql, tuple(row_args))
 
     return {
         "rows_inserted": inserted,
