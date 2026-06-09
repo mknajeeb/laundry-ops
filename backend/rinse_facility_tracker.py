@@ -409,7 +409,7 @@ def build_facility_management_tracker(
         first_entry_dates=first_entry_dates,
     )
     entered = _build_management_section_block(
-        entered_today_ids, prefix="ft_entered", title="Entered Today", **common
+        entered_today_ids, prefix="ft_entered", title="Received Today", **common
     )
     carryover = _build_management_section_block(
         carryover_ids, prefix="ft_carryover", title="Carryover", **common
@@ -493,6 +493,10 @@ def apply_facility_management_drilldown_tags(
             tags.add(f"{prefix}_{status}")
             tags.add(f"{prefix}_{bucket}")
             tags.add(f"{prefix}_{bucket}_{status}")
+            if bucket.startswith("rush"):
+                tags.add(f"{prefix}_rush")
+            elif bucket.startswith("nonrush"):
+                tags.add(f"{prefix}_non_rush")
             if bucket == "unknown_needs_review":
                 tags.add(f"{prefix}_unknown_needs_review")
             if prefix == "ft_entered":

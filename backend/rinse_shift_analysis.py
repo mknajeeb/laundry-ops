@@ -199,7 +199,7 @@ def resolve_effective_rush_for_row(row: Mapping[str, Any], target_date: date) ->
     - Explicit RUSH text / ⚡ in portal cells => RUSH
     - date_clean (EDD) after target_date => NON-RUSH (future delivery)
     - date_clean before target_date => RUSH (overdue carryover)
-    - date_clean on target_date => use stored rush_type / NON-RUSH default
+    - date_clean on target_date => RUSH if rush flag / ⚡ / stored rush_type says RUSH; else NON-RUSH
     """
     cells = [row.get("name_clean"), row.get("notes")]
     parsed = parse_rush_flag_from_portal_cells([c for c in cells if c is not None])

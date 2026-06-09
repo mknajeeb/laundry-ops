@@ -154,8 +154,43 @@ class TestManagementTracker:
         tags = set(records[0]["drilldown_tags"])
         assert "ft_entered" in tags
         assert "ft_entered_pending" in tags
+        assert "ft_entered_rush" in tags
         assert "ft_total" in tags
         assert records[0]["facility_entered_date"] == "2026-06-07"
+
+    def test_management_block_reconciliation_fields(self):
+        from backend.rinse_facility_tracker import _build_management_section_block
+
+        block = _build_management_section_block(
+            ["R1", "N1"],
+            {
+                "R1": {"bag_id": "R1", "service_type": "WF", "rush_type": "RUSH"},
+                "N1": {"bag_id": "N1", "service_type": "WF", "rush_type": "NON-RUSH"},
+            },
+            date(2026, 6, 7),
+            prefix="ft_entered",
+            title="Received Today",
+            records_by_bag={
+                "R1": {"bag_id": "R1", "completed": False},
+                "N1": {"bag_id": "N1", "completed": True},
+            },
+            pending_by_bag={},
+            events_by_bag={"R1": [], "N1": []},
+            completions_by_bag={
+                "R1": evaluate_bag_completion_v2([]),
+                "N1": evaluate_bag_completion_v2([
+                    {"purpose": "move-bag", "rack": "Clean", "scanned_at_parsed": datetime(2026, 6, 7, 10)}
+                ]),
+            },
+        )
+        assert block["total"] == 2
+        assert block["rush_total"] == 1
+        assert block["rush_wf"] + block["rush_hd"] == block["rush_total"]
+        assert block["nonrush_wf"] + block["nonrush_hd"] == 1
+        assert block["status"]["pending"] + block["status"]["completed"] == block["total"]
+        assert block["status"]["left_sent"] + block["status"]["still_at_facility"] == block["status"]["completed"]
+        assert block["counts_add_up"] is True
+        assert block["status_reconciled"] is True
 
 
 class TestPayloadFacilityTracker:

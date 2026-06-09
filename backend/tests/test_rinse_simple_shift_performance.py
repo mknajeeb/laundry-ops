@@ -499,9 +499,13 @@ class TestDrilldownCountIntegrity:
         rfv = payload["ready_for_vendor"]
         records = payload["records"]
         assert rfv["total"] == _count_tag(records, "ready_for_vendor") == 3
+        assert rfv["rush_total"] == _count_tag(records, "rfv_rush") == 2
+        assert rfv["nonrush_total"] == _count_tag(records, "rfv_non_rush") == 1
         assert rfv["rush_wf"] == _count_tag(records, "rfv_rush_wf") == 1
         assert rfv["rush_hd"] == _count_tag(records, "rfv_rush_hd") == 1
         assert rfv["nonrush_wf"] == _count_tag(records, "rfv_nonrush_wf") == 1
+        assert rfv["rush_wf"] + rfv["rush_hd"] == rfv["rush_total"]
+        assert rfv["nonrush_wf"] + rfv["nonrush_hd"] == rfv["nonrush_total"]
 
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
@@ -699,6 +703,28 @@ class TestActiveWorkCountLogic:
             "rush_type": "NON-RUSH",
         }
         assert resolve_effective_rush_for_row(row, date(2026, 6, 9)) == "RUSH"
+
+    def test_due_today_stored_rush_type_is_rush(self):
+        from datetime import date
+        from backend.rinse_shift_analysis import resolve_effective_rush_for_row
+
+        row = {
+            "name_clean": "Customer Name",
+            "date_clean": date(2026, 6, 9),
+            "rush_type": "RUSH",
+        }
+        assert resolve_effective_rush_for_row(row, date(2026, 6, 9)) == "RUSH"
+
+    def test_due_today_without_rush_signals_is_non_rush(self):
+        from datetime import date
+        from backend.rinse_shift_analysis import resolve_effective_rush_for_row
+
+        row = {
+            "name_clean": "Customer Name",
+            "date_clean": date(2026, 6, 9),
+            "rush_type": "NON-RUSH",
+        }
+        assert resolve_effective_rush_for_row(row, date(2026, 6, 9)) == "NON-RUSH"
 
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")

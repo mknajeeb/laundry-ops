@@ -448,8 +448,17 @@ def _finalize_section_counts(section: dict[str, Any]) -> None:
         + int(section.get("unknown_needs_review") or 0)
     )
     total = int(section.get("total") or 0)
+    rush_total = int(section.get("rush_wf") or 0) + int(section.get("rush_hd") or 0)
+    nonrush_total = (
+        int(section.get("nonrush_wf") or 0)
+        + int(section.get("nonrush_hd") or 0)
+        + int(section.get("unknown_needs_review") or 0)
+    )
+    section["rush_total"] = rush_total
+    section["nonrush_total"] = nonrush_total
     section["split_sum"] = parts
     section["counts_add_up"] = total == parts
+    section["rush_nonrush_reconciled"] = total == rush_total + nonrush_total
     section["unreconciled"] = max(0, total - parts) if total != parts else 0
 
 
@@ -1054,6 +1063,10 @@ def _record_from_bag(
         tags.add("ready_for_vendor")
         if bucket:
             tags.add(f"rfv_{bucket}")
+            if bucket.startswith("rush"):
+                tags.add("rfv_rush")
+            elif bucket.startswith("nonrush"):
+                tags.add("rfv_non_rush")
             if bucket.startswith("unknown") or bucket == "unknown_service":
                 tags.add("rfv_unknown_needs_review")
     if in_facility_tracker:
@@ -1540,11 +1553,31 @@ def _build_debug_audit(
             "unavailable": shift_status.get("weight_difference", {}).get("unavailable"),
             "status": shift_status.get("weight_difference_status"),
         },
+        "drilldown_tag_counts": _drilldown_tag_counts(records),
+        "reconciliation_status": {
+            "ready_for_vendor_counts_add_up": ready_for_vendor.get("counts_add_up"),
+            "ready_for_vendor_rush_nonrush": ready_for_vendor.get("rush_nonrush_reconciled"),
+            "facility_total_equals_entered_plus_carryover": (facility_tracker or {}).get("reconciliation", {}).get(
+                "total_equals_entered_plus_carryover"
+            ),
+        },
     }
+
+
+def _drilldown_tag_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for rec in records:
+        for tag in rec.get("drilldown_tags") or []:
+            counts[str(tag)] += 1
+    return dict(sorted(counts.items()))
 
 
 def _align_ready_for_vendor_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
     section["total"] = _count_tag(records, "ready_for_vendor")
+    section["rush_total"] = _count_tag(records, "rfv_rush")
+    section["nonrush_total"] = _count_tag(records, "rfv_non_rush")
     section["rush_wf"] = _count_tag(records, "rfv_rush_wf")
     section["rush_hd"] = _count_tag(records, "rfv_rush_hd")
     section["nonrush_wf"] = _count_tag(records, "rfv_nonrush_wf")

@@ -133,7 +133,7 @@ class TestPipelinePayload:
             "checkout_summary": {"rush": {}},
         }
         payload = build_simple_shift_performance_payload(
-            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7)
+            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7), include_debug=True
         )
         assert payload["facility_tracker_today"]["total"] == 1
         assert payload["current_work_pipeline"]["total"] == 2
@@ -206,7 +206,7 @@ class TestPipelinePayload:
             "checkout_summary": {"rush": {}},
         }
         payload = build_simple_shift_performance_payload(
-            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7)
+            MagicMock(), 1, period_start=date(2026, 6, 7), period_end=date(2026, 6, 7), include_debug=True
         )
         pipeline = payload["current_work_pipeline"]
         assert pipeline["pending_wash_nonrush"] == _count_tag(payload["records"], "pending_wash_nonrush") == 1
