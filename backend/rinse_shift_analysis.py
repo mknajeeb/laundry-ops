@@ -201,33 +201,55 @@ def resolve_effective_rush_for_row(row: Mapping[str, Any], target_date: date) ->
     - date_clean before target_date => RUSH (overdue carryover)
     - date_clean on target_date => RUSH if rush flag / ⚡ / stored rush_type says RUSH; else NON-RUSH
     """
+    return str(explain_effective_rush_for_row(row, target_date).get("effective_rush") or PRESENCE_RUSH_UNKNOWN)
+
+
+def explain_effective_rush_for_row(row: Mapping[str, Any], target_date: date) -> dict[str, Any]:
+    """Effective rush plus human-readable audit for drilldown rows."""
     cells = [row.get("name_clean"), row.get("notes")]
     parsed = parse_rush_flag_from_portal_cells([c for c in cells if c is not None])
-    if parsed == "RUSH":
-        return "RUSH"
-
     dc = _parse_row_date(row.get("date_clean"))
-    if dc is not None:
-        if dc > target_date:
-            return "NON-RUSH"
-        if dc < target_date:
-            return "RUSH"
+    dc_iso = dc.isoformat() if dc is not None else None
+    rt = str(row.get("rush_type") or row.get("rush_label") or "").strip() or None
+    rule = "unknown"
+    effective = PRESENCE_RUSH_UNKNOWN
 
-    er = str(row.get("effective_rush") or "").upper().strip()
-    if er == "RUSH":
-        return "RUSH"
-    rt = str(row.get("rush_type") or "").upper().strip()
-    if rt == "RUSH":
-        return "RUSH"
-    if parsed == "NON-RUSH":
-        return "NON-RUSH"
-    if er == "NON-RUSH":
-        return "NON-RUSH"
-    if rt == "NON-RUSH":
-        return "NON-RUSH"
-    if dc is not None:
-        return "NON-RUSH"
-    return PRESENCE_RUSH_UNKNOWN
+    if dc is not None and dc > target_date:
+        effective = "NON-RUSH"
+        rule = f"Due date {dc_iso} is after view date {target_date.isoformat()} (future EDD = Non-Rush)"
+    elif dc is not None and dc < target_date:
+        effective = "RUSH"
+        rule = f"Due date {dc_iso} is before view date {target_date.isoformat()} (overdue carryover)"
+    elif dc == target_date:
+        if parsed == "RUSH" or str(row.get("effective_rush") or "").upper() == "RUSH" or str(row.get("rush_type") or "").upper() == "RUSH":
+            effective = "RUSH"
+            rule = f"Same-day due date with rush flag/text/rush_type on view date {target_date.isoformat()}"
+        else:
+            effective = "NON-RUSH"
+            rule = f"Same-day due date without rush flag on view date {target_date.isoformat()}"
+    elif parsed == "RUSH":
+        effective = "RUSH"
+        rule = "Explicit rush flag or ⚡ in portal text"
+    elif str(row.get("effective_rush") or "").upper() == "RUSH" or str(row.get("rush_type") or "").upper() == "RUSH":
+        effective = "RUSH"
+        rule = "Stored effective_rush or rush_type indicates RUSH"
+    elif parsed == "NON-RUSH" or str(row.get("effective_rush") or "").upper() == "NON-RUSH" or str(row.get("rush_type") or "").upper() == "NON-RUSH":
+        effective = "NON-RUSH"
+        rule = "Stored rush fields indicate Non-Rush"
+    elif dc is not None:
+        effective = "NON-RUSH"
+        rule = f"Due date present ({dc_iso}) with no rush signal"
+
+    label = "Rush" if effective == "RUSH" else ("Non-Rush" if effective == "NON-RUSH" else "Unknown")
+    return {
+        "effective_rush": effective,
+        "computed_rush_label": label,
+        "computed_rush_rule": rule,
+        "view_date": target_date.isoformat(),
+        "date_clean": dc_iso,
+        "rush_type_raw": rt,
+        "rush_flag_parsed": parsed,
+    }
 
 
 def _accumulate_incoming_group(group: dict[str, int], row: Mapping[str, Any]) -> None:

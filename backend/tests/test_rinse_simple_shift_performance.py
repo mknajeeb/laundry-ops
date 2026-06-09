@@ -1250,3 +1250,83 @@ class TestDashboardSourceOfTruth:
         assert recon["rush_hd_ids"] == ["RH1"]
         assert recon["nonrush_wf_ids"] == ["NW1"]
         assert recon["nonrush_hd_ids"] == ["NH1"]
+
+
+class TestDrilldownContract:
+    def test_make_drilldown_card_parity(self):
+        from backend.rinse_simple_shift_performance import _make_drilldown_card
+
+        records = [{"bag_id": "A", "drilldown_tags": ["wf_weighed"]}]
+        ok = _make_drilldown_card("WF Weighed", 1, "wf_weighed", records)
+        assert ok["clickable"] is True
+        assert ok["needs_review"] is False
+        bad = _make_drilldown_card("WF Weighed", 2, "wf_weighed", records)
+        assert bad["clickable"] is False
+        assert bad["needs_review"] is True
+
+    def test_under_review_card_not_clickable(self):
+        from backend.rinse_simple_shift_performance import _make_drilldown_card
+
+        card = _make_drilldown_card("WF Sorted", None, None, [], under_review=True)
+        assert card["clickable"] is False
+        assert card["needs_review"] is True
+
+    @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
+    @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    def test_wip_cards_have_drilldown_tags(
+        self,
+        mock_settings,
+        mock_maps,
+        mock_meta,
+        mock_events,
+        mock_scope_b,
+        mock_pending,
+        mock_dashboard,
+        mock_rfv_sync,
+    ):
+        from datetime import date
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {}
+        mock_scope_b.return_value = []
+        mock_meta.return_value = {}
+        mock_events.return_value = {"WF1": _sv(), "HD1": _sv()}
+        mock_rfv_sync.return_value = _FRESH_RFV_SYNC
+        mock_dashboard.return_value = _make_dashboard_snapshot([
+            {"bag_id": "WF1", "service_type": "WF", "effective_rush": "NON-RUSH"},
+            {"bag_id": "HD1", "service_type": "HD", "effective_rush": "RUSH"},
+        ])
+        mock_pending.return_value = {
+            "rows": [
+                {"bag_id": "WF1", "record_scope": "wf_lifecycle", "service_type": "WF", "effective_rush": "NON-RUSH", "current_lifecycle_status": "PENDING_WEIGHING", "in_active_staging": True},
+                {"bag_id": "HD1", "record_scope": "hd_lifecycle", "service_type": "HD", "effective_rush": "RUSH", "current_lifecycle_status": "HD_NOT_STARTED", "at_vendor_presence": True, "in_active_staging": True},
+            ],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 1}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 1}}},
+            "checkout_summary": {"rush": {}},
+        }
+        payload = build_simple_shift_performance_payload(
+            MagicMock(), 1, period_start=date(2026, 6, 9), period_end=date(2026, 6, 9), include_debug=True
+        )
+        wf_card = next(c for c in payload["wip"]["wf_cards"] if c["label"] == "WF Not Weighed")
+        hd_card = next(c for c in payload["wip"]["hd_cards"] if c["label"] == "HD Not Started")
+        assert wf_card["clickable"] is True
+        assert hd_card["clickable"] is True
+        assert payload["wip"]["parity_ok"] is True
+        rec_wf = next(r for r in payload["records"] if r["bag_id"] == "WF1")
+        rec_hd = next(r for r in payload["records"] if r["bag_id"] == "HD1")
+        assert rec_wf.get("view_date") is not None
+        assert rec_wf.get("last_activity_time") is not None
+        assert rec_wf.get("computed_rush_rule") is not None
+        assert "wf_not_weighed" in rec_wf["drilldown_tags"]
+        assert "hd_not_started" in rec_hd["drilldown_tags"]
+        assert "wf_weighed" not in rec_hd["drilldown_tags"]
+        assert "hd_not_started" not in rec_wf["drilldown_tags"]

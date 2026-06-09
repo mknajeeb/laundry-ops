@@ -69,15 +69,63 @@ export function shiftMetricLabel(metricKey, rushFilter = "all") {
 
 export function formatLastWash(entry, emptyLabel = "No wash started yet") {
   if (!entry || (!entry.at && !entry.time)) return emptyLabel;
-  const parts = [
-    entry.time || entry.at,
-    entry.bag_id,
-    entry.customer || "—",
-    entry.employee || entry.user || "—",
-    entry.service_type,
-    entry.rush_label,
+  const when = formatEtDateTime(entry.at || entry.time);
+  const due = entry.due_date || entry.date_clean ? formatEtDate(entry.due_date || entry.date_clean) : null;
+  const lines = [
+    when,
+    [entry.customer || "—", entry.employee || entry.user || "—"].filter(Boolean).join(" · "),
+    [entry.service_type, entry.rush_label || entry.computed_rush_label].filter(Boolean).join(" · "),
+    due ? `Due: ${due}` : null,
   ].filter(Boolean);
-  return parts.join(" · ");
+  return lines.join("\n");
+}
+
+const ET_TZ = "America/New_York";
+
+export function formatEtDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString("en-US", {
+    timeZone: ET_TZ,
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  });
+}
+
+export function formatEtDate(iso) {
+  if (!iso) return "—";
+  const raw = String(iso).slice(0, 10);
+  const [y, mo, da] = raw.split("-").map(Number);
+  if (!y || !mo || !da) return String(iso);
+  return new Date(y, mo - 1, da).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+export function formatDueDateRow(row) {
+  const due = row?.due_date || row?.date_clean;
+  if (!due) return "Due: —";
+  return `Due: ${formatEtDate(due)}`;
+}
+
+export function formatLastActivityRow(row) {
+  const t = row?.last_activity_time || row?.last_scan_time;
+  if (!t) return "Last Activity: —";
+  return `Last Activity: ${formatEtDateTime(t)}`;
+}
+
+export function formatRushAuditRow(row) {
+  const parts = [];
+  if (row?.view_date) parts.push(`View Date: ${formatEtDate(row.view_date)}`);
+  if (row?.computed_rush_rule) parts.push(row.computed_rush_rule);
+  else if (row?.rush_type_raw) parts.push(`Raw rush_type: ${row.rush_type_raw}`);
+  return parts.join(" · ") || null;
 }
 
 export function formatShiftDateLabel(dateStart, dateEnd) {

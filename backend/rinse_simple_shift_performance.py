@@ -1167,6 +1167,10 @@ def _record_from_bag(
         if bucket:
             tags.add(f"pipeline_{bucket}")
             tags.add(f"active_{bucket}")
+        if is_rush:
+            tags.add("wip_rush")
+        elif _rush_label(bucket) == "Non-Rush":
+            tags.add("wip_non_rush")
         if is_wf:
             tags.add("wip_wf")
             if has_weigh:
@@ -1254,29 +1258,54 @@ def _record_from_bag(
             "hd_completed": hd_production.get("hd_completed"),
             "sent_left_signal": hd_production.get("sent_left_signal"),
         }
+    rush_audit: dict[str, Any] = {}
+    vd_raw = merged.get("view_date")
+    if vd_raw:
+        try:
+            from backend.rinse_shift_analysis import explain_effective_rush_for_row
+
+            if isinstance(vd_raw, date):
+                td = vd_raw
+            else:
+                td = date.fromisoformat(str(vd_raw)[:10])
+            rush_audit = explain_effective_rush_for_row(merged, td)
+        except Exception:
+            rush_audit = {}
+    due_date = rush_audit.get("date_clean") or (
+        merged.get("date_clean").isoformat()
+        if hasattr(merged.get("date_clean"), "isoformat")
+        else merged.get("date_clean")
+    )
     return {
         "bag_id": bid,
         "customer": customer,
         "service_type": _normalized_service_type(merged) or "UNKNOWN",
         "rush_bucket": bucket,
         "rush_label": _rush_label(bucket),
-        "date_clean": (
-            merged.get("date_clean").isoformat()
-            if hasattr(merged.get("date_clean"), "isoformat")
-            else merged.get("date_clean")
-        ),
+        "date_clean": due_date,
+        "due_date": due_date,
         "current_status": (
+            (hd_production.get("hd_stage_label") if is_hd and hd_production else None)
+            or status
+            or row_meta.get("lifecycle_status_label")
+        ),
+        "current_stage": (
             (hd_production.get("hd_stage_label") if is_hd and hd_production else None)
             or status
             or row_meta.get("lifecycle_status_label")
         ),
         "hd_stage": hd_production.get("hd_stage") if hd_production else row_meta.get("hd_stage"),
         "hd_stage_label": hd_production.get("hd_stage_label") if hd_production else row_meta.get("hd_stage_label"),
-        "view_date": row_meta.get("view_date"),
-        "effective_rush": merged.get("effective_rush"),
-        "rush_type_raw": merged.get("rush_type") or merged.get("rush_label"),
+        "view_date": rush_audit.get("view_date") or row_meta.get("view_date"),
+        "effective_rush": rush_audit.get("effective_rush") or merged.get("effective_rush"),
+        "computed_rush_label": rush_audit.get("computed_rush_label") or _rush_label(bucket),
+        "computed_rush_rule": rush_audit.get("computed_rush_rule"),
+        "rush_type_raw": rush_audit.get("rush_type_raw") or merged.get("rush_type") or merged.get("rush_label"),
+        "rush_flag_parsed": rush_audit.get("rush_flag_parsed"),
         "last_scan_time": last_scan.isoformat() if isinstance(last_scan, datetime) else None,
+        "last_activity_time": last_scan.isoformat() if isinstance(last_scan, datetime) else None,
         "last_scan_purpose": last_scan_meta.get("last_scan_purpose"),
+        "last_activity_purpose": last_scan_meta.get("last_scan_purpose"),
         "last_scan_rack": last_scan_meta.get("last_scan_rack"),
         "raw_status": row_meta.get("current_lifecycle_status"),
         "employee": primary_employee or last_employee,
@@ -1326,6 +1355,146 @@ def _record_from_bag(
 
 def _count_tag(records: list[dict[str, Any]], tag: str) -> int:
     return sum(1 for r in records if tag in (r.get("drilldown_tags") or []))
+
+
+def _make_drilldown_card(
+    label: str,
+    count: int | None,
+    drilldown_tag: str | None,
+    records: list[dict[str, Any]],
+    *,
+    under_review: bool = False,
+    under_review_reason: str | None = None,
+) -> dict[str, Any]:
+    """Unified drilldown contract: visible count must equal drilldown record count."""
+    records_count = _count_tag(records, drilldown_tag) if drilldown_tag else None
+    if count is None or drilldown_tag is None:
+        return {
+            "label": label,
+            "count": None,
+            "drilldown_tag": drilldown_tag,
+            "records_count": records_count,
+            "clickable": False,
+            "needs_review": True,
+            "under_review_reason": under_review_reason or "Under Review",
+        }
+    parity = int(count) == int(records_count or 0)
+    clickable = bool(drilldown_tag) and parity and not under_review
+    return {
+        "label": label,
+        "count": int(count),
+        "drilldown_tag": drilldown_tag,
+        "records_count": int(records_count or 0),
+        "clickable": clickable,
+        "needs_review": under_review or not parity,
+        "under_review_reason": under_review_reason if under_review else (None if parity else "Count does not match drilldown rows"),
+    }
+
+
+def _cards_parity_ok(cards: Sequence[Mapping[str, Any]]) -> bool:
+    actionable = [c for c in cards if c.get("drilldown_tag") and c.get("count") is not None]
+    if not actionable:
+        return True
+    return all(not c.get("needs_review") for c in actionable)
+
+
+def _build_facility_block_cards(
+    block: Mapping[str, Any],
+    records: list[dict[str, Any]],
+    prefix: str,
+) -> list[dict[str, Any]]:
+    status = block.get("status") or {}
+    cards = [
+        _make_drilldown_card("Total", block.get("total"), prefix, records),
+        _make_drilldown_card("Rush", block.get("rush_total"), f"{prefix}_rush", records),
+        _make_drilldown_card("Non-Rush", block.get("nonrush_total"), f"{prefix}_non_rush", records),
+        _make_drilldown_card("Rush WF", block.get("rush_wf"), f"{prefix}_rush_wf", records),
+        _make_drilldown_card("Rush HD", block.get("rush_hd"), f"{prefix}_rush_hd", records),
+        _make_drilldown_card("Non-Rush WF", block.get("nonrush_wf"), f"{prefix}_nonrush_wf", records),
+        _make_drilldown_card("Non-Rush HD", block.get("nonrush_hd"), f"{prefix}_nonrush_hd", records),
+        _make_drilldown_card("Pending", status.get("pending"), f"{prefix}_pending", records),
+        _make_drilldown_card("Completed", status.get("completed"), f"{prefix}_completed", records),
+        _make_drilldown_card("Sent / Left", status.get("left_sent"), f"{prefix}_left_sent", records),
+        _make_drilldown_card("Still at Facility", status.get("still_at_facility"), f"{prefix}_still_at_facility", records),
+    ]
+    unknown = int(block.get("unknown_needs_review") or 0)
+    if unknown:
+        cards.append(
+            _make_drilldown_card(
+                "Unknown / Review",
+                unknown,
+                f"{prefix}_unknown_needs_review",
+                records,
+            )
+        )
+    return cards
+
+
+def _attach_facility_drilldown_cards(tracker: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    for key in ("entered_today", "carryover", "total_workload"):
+        block = tracker.get(key)
+        if not isinstance(block, dict):
+            continue
+        prefix = str(block.get("drilldown_prefix") or "ft_total")
+        block["cards"] = _build_facility_block_cards(block, records, prefix)
+        block["parity_ok"] = _cards_parity_ok(block["cards"])
+    total = tracker.get("total_workload") or {}
+    entered = tracker.get("entered_today") or {}
+    carryover = tracker.get("carryover") or {}
+    total_status = total.get("status") or {}
+    tracker["summary_cards"] = [
+        _make_drilldown_card("Total Workload", total.get("total"), "ft_total", records),
+        _make_drilldown_card("Received Today", entered.get("total"), "ft_entered", records),
+        _make_drilldown_card("Carryover", carryover.get("total"), "ft_carryover", records),
+        _make_drilldown_card("Pending", total_status.get("pending"), "ft_total_pending", records),
+        _make_drilldown_card("Completed", total_status.get("completed"), "ft_total_completed", records),
+        _make_drilldown_card("Sent / Left", total_status.get("left_sent"), "ft_total_left_sent", records),
+    ]
+    tracker["summary_parity_ok"] = _cards_parity_ok(tracker["summary_cards"])
+
+
+def _build_rfv_drilldown_cards(section: Mapping[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not section.get("live"):
+        return []
+    return [
+        _make_drilldown_card("Total", section.get("total"), "ready_for_vendor", records),
+        _make_drilldown_card("Rush", section.get("rush_total"), "rfv_rush", records),
+        _make_drilldown_card("Non-Rush", section.get("nonrush_total"), "rfv_non_rush", records),
+        _make_drilldown_card("Rush WF", section.get("rush_wf"), "rfv_rush_wf", records),
+        _make_drilldown_card("Rush HD", section.get("rush_hd"), "rfv_rush_hd", records),
+        _make_drilldown_card("Non-Rush WF", section.get("nonrush_wf"), "rfv_nonrush_wf", records),
+        _make_drilldown_card("Non-Rush HD", section.get("nonrush_hd"), "rfv_nonrush_hd", records),
+    ]
+
+
+def _attach_rfv_drilldown_cards(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
+    section["cards"] = _build_rfv_drilldown_cards(section, records)
+    section["parity_ok"] = _cards_parity_ok(section.get("cards") or [])
+
+
+def _build_drilldown_parity_audit(payload_sections: Mapping[str, Any]) -> dict[str, Any]:
+    mismatches: list[dict[str, Any]] = []
+    for section_name, section in payload_sections.items():
+        cards = section.get("cards") if isinstance(section, dict) else None
+        if not cards:
+            continue
+        for card in cards:
+            if card.get("needs_review"):
+                mismatches.append(
+                    {
+                        "section": section_name,
+                        "label": card.get("label"),
+                        "drilldown_tag": card.get("drilldown_tag"),
+                        "count": card.get("count"),
+                        "records_count": card.get("records_count"),
+                        "reason": card.get("under_review_reason"),
+                    }
+                )
+    return {
+        "ok": len(mismatches) == 0,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+    }
 
 
 def _record_matches_rush(rec: Mapping[str, Any], rush_filter: str | None) -> bool:
@@ -1425,10 +1594,9 @@ def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dic
     def _cards(rows: list[dict[str, Any]], spec: list[tuple[str, str]]) -> dict[str, int]:
         return {key: _count_tag(rows, tag) for key, tag in spec}
 
-    wf_cards = _cards(
+    wf_counts = _cards(
         wf,
         [
-            ("total", "wip_wf"),
             ("weighed", "wf_weighed"),
             ("not_weighed", "wf_not_weighed"),
             ("pending_wash_rush", "wf_pending_wash_rush"),
@@ -1436,9 +1604,9 @@ def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dic
             ("pending_folding", "wf_pending_folding"),
         ],
     )
-    wf_cards["total"] = len(wf)
+    wf_counts["total"] = len(wf)
 
-    hd_cards = _cards(
+    hd_counts = _cards(
         hd,
         [
             ("not_started", "hd_not_started"),
@@ -1448,10 +1616,36 @@ def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dic
             ("still_at_facility", "hd_still_at_facility"),
         ],
     )
-    hd_cards["total"] = len(hd)
+    hd_counts["total"] = len(hd)
 
-    rush_wip = sum(1 for r in pipeline if r.get("rush_label") == "Rush")
-    non_rush_wip = sum(1 for r in pipeline if r.get("rush_label") == "Non-Rush")
+    summary_cards = [
+        _make_drilldown_card("Total WIP", len(pipeline), "pipeline_work", records),
+        _make_drilldown_card("WF WIP", len(wf), "wip_wf", records),
+        _make_drilldown_card("HD WIP", len(hd), "wip_hd", records),
+        _make_drilldown_card("Rush WIP", _count_tag(pipeline, "wip_rush"), "wip_rush", records),
+        _make_drilldown_card("Non-Rush WIP", _count_tag(pipeline, "wip_non_rush"), "wip_non_rush", records),
+    ]
+    wf_cards = [
+        _make_drilldown_card("WF Total", wf_counts["total"], "wip_wf", records),
+        _make_drilldown_card("WF Weighed", wf_counts["weighed"], "wf_weighed", records),
+        _make_drilldown_card("WF Not Weighed", wf_counts["not_weighed"], "wf_not_weighed", records),
+        _make_drilldown_card("WF Pending Wash — Rush", wf_counts["pending_wash_rush"], "wf_pending_wash_rush", records),
+        _make_drilldown_card("WF Pending Wash — Non-Rush", wf_counts["pending_wash_nonrush"], "wf_pending_wash_nonrush", records),
+        _make_drilldown_card("WF Pending Folding", wf_counts["pending_folding"], "wf_pending_folding", records),
+        _make_drilldown_card("WF Sorted", None, None, records, under_review=True, under_review_reason="WF sorted stage not verified yet"),
+        _make_drilldown_card("WF Not Sorted", None, None, records, under_review=True, under_review_reason="WF sorted stage not verified yet"),
+        _make_drilldown_card("WF Washed", None, None, records, under_review=True, under_review_reason="WF washed stage not verified yet"),
+        _make_drilldown_card("WF Dried", None, None, records, under_review=True, under_review_reason="WF dried stage not verified yet"),
+        _make_drilldown_card("WF Pending Drying", None, None, records, under_review=True, under_review_reason="WF dried stage not verified yet"),
+    ]
+    hd_cards = [
+        _make_drilldown_card("HD Total", hd_counts["total"], "wip_hd", records),
+        _make_drilldown_card("HD Not Started", hd_counts["not_started"], "hd_not_started", records),
+        _make_drilldown_card("HD Started Cleaning", hd_counts["started_cleaning"], "hd_started_cleaning", records),
+        _make_drilldown_card("HD Completed", hd_counts["completed"], "hd_completed", records),
+        _make_drilldown_card("HD Sent / Left", hd_counts["sent_left"], "hd_sent_left", records),
+        _make_drilldown_card("HD Still at Facility", hd_counts["still_at_facility"], "hd_still_at_facility", records),
+    ]
 
     return {
         "view_date": target_date.isoformat(),
@@ -1459,11 +1653,15 @@ def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dic
             "total": len(pipeline),
             "wf_total": len(wf),
             "hd_total": len(hd),
-            "rush_total": rush_wip,
-            "non_rush_total": non_rush_wip,
+            "rush_total": _count_tag(pipeline, "wip_rush"),
+            "non_rush_total": _count_tag(pipeline, "wip_non_rush"),
         },
-        "wf": wf_cards,
-        "hd": hd_cards,
+        "summary_cards": summary_cards,
+        "wf": wf_counts,
+        "wf_cards": wf_cards,
+        "hd": hd_counts,
+        "hd_cards": hd_cards,
+        "parity_ok": _cards_parity_ok(summary_cards + wf_cards + hd_cards),
     }
 
 
@@ -1895,6 +2093,12 @@ def _align_pipeline_counts(section: dict[str, Any], records: list[dict[str, Any]
     section["issues"] = _count_tag(records, "issues")
     section["workitems"] = _count_tag(records, "workitems")
     _finalize_section_counts(section)
+    section["monitor_cards"] = [
+        _make_drilldown_card("Pending Wash — Rush (WF)", section.get("pending_wash_rush"), "wf_pending_wash_rush", records),
+        _make_drilldown_card("Pending Wash — Non-Rush (WF)", section.get("pending_wash_nonrush"), "wf_pending_wash_nonrush", records),
+        _make_drilldown_card("Create Issue", section.get("issues"), "issues", records),
+        _make_drilldown_card("Workitems Added", section.get("workitems"), "workitems", records),
+    ]
 
 
 def _align_active_work_counts(section: dict[str, Any], records: list[dict[str, Any]]) -> None:
@@ -2153,6 +2357,7 @@ def build_simple_shift_performance_payload(
     exceptions_summary = _build_exceptions_summary(records)
     if ready_for_vendor.get("live"):
         _align_ready_for_vendor_counts(ready_for_vendor, records)
+        _attach_rfv_drilldown_cards(ready_for_vendor, records)
     rinse_sync = _attach_section_sync_statuses(
         cursor,
         org,
@@ -2186,6 +2391,7 @@ def build_simple_shift_performance_payload(
         completions_by_bag=completions_by_bag,
         first_entry_dates=first_entry_dates,
     )
+    _attach_facility_drilldown_cards(facility_tracker, records)
     pipeline_debug = build_current_work_pipeline_debug(
         facility_bag_ids=facility_entry_ids,
         pipeline_bag_ids=pipeline_bag_ids,
@@ -2229,12 +2435,28 @@ def build_simple_shift_performance_payload(
 
     sections_under_review = {
         "shift_status": not stage_audit.get("reconciliation_ok", True),
-        "wip": not stage_audit.get("reconciliation_ok", True),
+        "wip": not wip_sections.get("parity_ok", True) or not stage_audit.get("reconciliation_ok", True),
         "employee_activity": True,
         "rush_checkout": True,
         "exceptions": False,
         "ready_for_vendor_live": bool(ready_for_vendor.get("live")),
+        "facility_workload": not all(
+            (facility_tracker.get(k) or {}).get("parity_ok", True)
+            for k in ("entered_today", "carryover", "total_workload")
+        ),
     }
+
+    drilldown_parity = _build_drilldown_parity_audit(
+        {
+            "ready_for_vendor": ready_for_vendor,
+            "wip": wip_sections,
+            "facility_entered": facility_tracker.get("entered_today") or {},
+            "facility_carryover": facility_tracker.get("carryover") or {},
+            "facility_total": facility_tracker.get("total_workload") or {},
+        }
+    )
+    if debug_audit is not None:
+        debug_audit["drilldown_parity"] = drilldown_parity
 
     return {
         "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
@@ -2271,6 +2493,7 @@ def build_simple_shift_performance_payload(
         "employee_diagnostics": employee_diagnostics,
         "exceptions_summary": exceptions_summary,
         "debug_audit": debug_audit,
+        "drilldown_parity": drilldown_parity if include_debug else {"ok": drilldown_parity.get("ok")},
         "records": (
             [{k: v for k, v in r.items() if k != "activities"} for r in records]
             if slim_records

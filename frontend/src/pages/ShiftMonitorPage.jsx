@@ -37,6 +37,9 @@ import {
   formatShiftDateLabel,
   syncStatusSubtext,
   rinseSyncBanner,
+  formatDueDateRow,
+  formatLastActivityRow,
+  formatRushAuditRow,
 } from "../utils/shiftMonitorHelpers";
 
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
@@ -100,18 +103,30 @@ function RecordRow({ row, expanded, onToggle }) {
   return (
     <Paper elevation={0} sx={{ p: 1.5, mb: 1, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" onClick={onToggle} sx={{ cursor: "pointer" }}>
-        <Box>
+        <Box sx={{ flex: 1 }}>
           <Typography variant="subtitle2" fontWeight={800}>
             {row.bag_id}
           </Typography>
-          <Typography variant="body2" color="text.secondary">
+          <Typography variant="body2" color="primary.main" fontWeight={600}>
             {row.customer || "—"}
           </Typography>
+          <Typography variant="body2" fontWeight={700} sx={{ mt: 0.75 }}>
+            {formatDueDateRow(row)}
+          </Typography>
+          <Typography variant="body2" fontWeight={600}>
+            {formatLastActivityRow(row)}
+            {row.last_activity_purpose || row.last_scan_purpose ? ` · ${row.last_activity_purpose || row.last_scan_purpose}` : ""}
+          </Typography>
           <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mt: 0.5 }}>
-            <Chip size="small" label={row.rush_label || "—"} />
+            <Chip size="small" label={row.computed_rush_label || row.rush_label || "—"} />
             <Chip size="small" label={row.service_type || "WF"} variant="outlined" />
             {row.needs_review ? <Chip size="small" color="warning" label="Review" /> : null}
           </Stack>
+          {formatRushAuditRow(row) ? (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              {formatRushAuditRow(row)}
+            </Typography>
+          ) : null}
           {hasSpecial ? (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
               {row.special_instructions_raw || "—"}
@@ -120,18 +135,13 @@ function RecordRow({ row, expanded, onToggle }) {
             </Typography>
           ) : null}
         </Box>
-        <Box textAlign="right">
+        <Box textAlign="right" sx={{ minWidth: 120 }}>
+          <Typography variant="body2" fontWeight={700}>
+            {row.current_stage || row.current_status || "—"}
+          </Typography>
           <Typography variant="caption" color="text.secondary" display="block">
-            {row.current_status || "—"}
+            {row.employee || "—"}
           </Typography>
-          <Typography variant="caption" display="block">
-            {formatDateTime(row.last_scan_time)}
-          </Typography>
-          {row.date_clean ? (
-            <Typography variant="caption" color="text.secondary" display="block">
-              EDD {row.date_clean}
-            </Typography>
-          ) : null}
         </Box>
       </Stack>
       <Collapse in={expanded}>
@@ -533,6 +543,7 @@ export default function ShiftMonitorPage({ user }) {
             underReview={underReview.wip ?? underReview.shift_status}
             onDrilldown={openDrilldown}
             activeTag={filterTag}
+            rushFilter={rushFilter}
           />
           <MonitorPreviewSection pipeline={pipeline} underReview={underReview.shift_status} onDrilldown={openDrilldown} activeTag={filterTag} />
           <ExceptionsPreviewSection exceptions={data.exceptions_summary} underReview={underReview.exceptions} onDrilldown={openDrilldown} activeTag={filterTag} />

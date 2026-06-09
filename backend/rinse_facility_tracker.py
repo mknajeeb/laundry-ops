@@ -493,6 +493,8 @@ def apply_facility_management_drilldown_tags(
             tags.add(f"{prefix}_{status}")
             tags.add(f"{prefix}_{bucket}")
             tags.add(f"{prefix}_{bucket}_{status}")
+            if status in ("left_sent", "still_at_facility"):
+                tags.add(f"{prefix}_completed")
             if bucket.startswith("rush"):
                 tags.add(f"{prefix}_rush")
             elif bucket.startswith("nonrush"):

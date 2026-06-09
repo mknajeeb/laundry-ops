@@ -2,7 +2,7 @@ import { Paper, Typography } from "@mui/material";
 
 const ACCENT = "#0097b2";
 
-export default function ShiftCountCard({ label, value, sub, onClick, active, warn, compact, disabled }) {
+export default function ShiftCountCard({ label, value, sub, onClick, active, warn, compact, disabled, subPreLine }) {
   if (disabled) return null;
   const display = value ?? "—";
   return (
@@ -27,7 +27,7 @@ export default function ShiftCountCard({ label, value, sub, onClick, active, war
         {label}
       </Typography>
       {sub ? (
-        <Typography variant="caption" color="text.secondary" display="block">
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ whiteSpace: subPreLine ? "pre-line" : undefined }}>
           {sub}
         </Typography>
       ) : null}
