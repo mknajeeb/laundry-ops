@@ -3,6 +3,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+from backend.tests.rinse_snapshot_test_helpers import patch_unified_loaders_from_pending
+
 from backend.rinse_bag_activity_rules import (
     ROLE_DRYING,
     ROLE_FOLDING,
@@ -959,9 +961,10 @@ class TestActiveWorkCountLogic:
             "checkout_summary": {"rush": {}},
         }
         cursor = MagicMock()
-        payload = build_simple_shift_performance_payload(
-            cursor, 1, period_start=date(2026, 6, 9), period_end=date(2026, 6, 9), include_debug=True
-        )
+        with patch_unified_loaders_from_pending(mock_pending.return_value):
+            payload = build_simple_shift_performance_payload(
+                cursor, 1, period_start=date(2026, 6, 9), period_end=date(2026, 6, 9), include_debug=True
+            )
         hd = next(r for r in payload["records"] if r["bag_id"] == "EFX3SHSDC1")
         assert hd["service_type"] == "HD"
         assert "PENDING_WEIGHING" not in str(hd.get("current_status") or "").upper()
@@ -1313,9 +1316,10 @@ class TestDrilldownContract:
             "hd_lifecycle": {"groups": {"combined": {"total": 1}}},
             "checkout_summary": {"rush": {}},
         }
-        payload = build_simple_shift_performance_payload(
-            MagicMock(), 1, period_start=date(2026, 6, 9), period_end=date(2026, 6, 9), include_debug=True
-        )
+        with patch_unified_loaders_from_pending(mock_pending.return_value):
+            payload = build_simple_shift_performance_payload(
+                MagicMock(), 1, period_start=date(2026, 6, 9), period_end=date(2026, 6, 9), include_debug=True
+            )
         wf_card = next(c for c in payload["wip"]["wf_cards"] if c["label"] == "WF Not Weighed")
         hd_card = next(c for c in payload["wip"]["hd_cards"] if c["label"] == "HD Not Started")
         assert wf_card["clickable"] is True

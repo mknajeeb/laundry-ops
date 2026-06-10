@@ -1348,6 +1348,9 @@ def _record_from_bag(
         "supply_interpretation": row_meta.get("supply_interpretation"),
         "special_instruction_review": bool(row_meta.get("special_instruction_review")),
         "source": "Scan events" if events else "Portal scrape",
+        "source_seen_in": list(merged.get("source_seen_in") or []),
+        "baseline_inclusion_reason": merged.get("baseline_inclusion_reason"),
+        "live_dashboard": merged.get("live_dashboard"),
         **wf_audit,
         **hd_audit,
     }
@@ -1474,22 +1477,28 @@ def _attach_rfv_drilldown_cards(section: dict[str, Any], records: list[dict[str,
 
 def _build_drilldown_parity_audit(payload_sections: Mapping[str, Any]) -> dict[str, Any]:
     mismatches: list[dict[str, Any]] = []
+    card_keys = ("cards", "breakdown_cards", "summary_cards", "wf_cards", "hd_cards", "monitor_cards")
     for section_name, section in payload_sections.items():
-        cards = section.get("cards") if isinstance(section, dict) else None
-        if not cards:
+        if not isinstance(section, dict):
             continue
-        for card in cards:
-            if card.get("needs_review"):
+        for key in card_keys:
+            cards = section.get(key)
+            if not cards:
+                continue
+            for card in cards:
+                if not card.get("needs_review") or not card.get("drilldown_tag"):
+                    continue
                 mismatches.append(
-                    {
-                        "section": section_name,
-                        "label": card.get("label"),
-                        "drilldown_tag": card.get("drilldown_tag"),
-                        "count": card.get("count"),
-                        "records_count": card.get("records_count"),
-                        "reason": card.get("under_review_reason"),
-                    }
-                )
+                        {
+                            "section": section_name,
+                            "card_group": key,
+                            "label": card.get("label"),
+                            "drilldown_tag": card.get("drilldown_tag"),
+                            "count": card.get("count"),
+                            "records_count": card.get("records_count"),
+                            "reason": card.get("under_review_reason"),
+                        }
+                    )
     return {
         "ok": len(mismatches) == 0,
         "mismatch_count": len(mismatches),
@@ -1585,76 +1594,468 @@ def _build_shift_status(records: list[dict[str, Any]], *, threshold: float, last
     }
 
 
+def _apply_current_facility_snapshot_tags(
+    records: list[dict[str, Any]],
+    *,
+    at_facility_ids: set[str],
+    at_facility_meta: Mapping[str, Mapping[str, Any]] | None = None,
+    pending_by_bag: Mapping[str, Mapping[str, Any]],
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+    completions_by_bag: Mapping[str, Any],
+    meta_by_bag: Mapping[str, Mapping[str, Any]],
+    qualifies_yet_to_fold: Any,
+) -> None:
+    """Tag unified at-VeeWash bags for Current Facility Snapshot + in-progress WIP."""
+    from backend.rinse_current_facility_snapshot import (
+        CFS_COMPLETED_STILL,
+        CFS_IN_PROGRESS,
+        CFS_SENT_LEFT,
+        bag_is_operationally_complete,
+        bag_is_sent_left_from_facility,
+        classify_current_facility_bag,
+        hd_in_progress_bucket_and_reason,
+        wf_in_progress_bucket_and_reason,
+    )
+    from backend.rinse_current_facility_snapshot import (
+        _has_drying as cfs_has_drying,
+        _has_start_cleaning as cfs_has_start_cleaning,
+        _has_weight_entry as cfs_has_weight_entry,
+    )
+    from backend.rinse_hd_production_status import derive_hd_production_status
+
+    for rec in records:
+        bid = str(rec.get("bag_id") or "").strip().upper()
+        if bid not in at_facility_ids:
+            continue
+        unified_row = (at_facility_meta or {}).get(bid) or {}
+        if unified_row.get("source_seen_in"):
+            rec["source_seen_in"] = list(unified_row["source_seen_in"])
+        events = events_by_bag.get(bid) or []
+        pending_row = pending_by_bag.get(bid)
+        meta = meta_by_bag.get(bid) or {}
+        completion = completions_by_bag.get(bid)
+        svc = str(rec.get("service_type") or unified_row.get("service_type") or "").upper()
+        in_staging = bool((pending_row or {}).get("in_active_staging") or unified_row.get("in_active_staging"))
+        sent_left = bag_is_sent_left_from_facility(pending_row, completion, meta, events)
+        op_complete = bag_is_operationally_complete(
+            service_type=svc,
+            completion=completion,
+            events=events,
+            pending_row=pending_row,
+            meta=meta,
+        )
+        category = classify_current_facility_bag(
+            in_active_staging=True,
+            sent_left=sent_left,
+            operationally_complete=op_complete,
+        )
+        tags = set(rec.get("drilldown_tags") or [])
+        bucket = str(rec.get("rush_bucket") or "")
+        rec["facility_snapshot_category"] = category
+        rec["in_facility_snapshot"] = category in (CFS_IN_PROGRESS, CFS_COMPLETED_STILL)
+        if not in_staging and "orders_staging" not in (rec.get("source_seen_in") or []):
+            rec["snapshot_bucket_reason"] = (
+                rec.get("snapshot_bucket_reason")
+                or "At VeeWash via registry/presence — not in active orders_staging"
+            )
+        if category == CFS_SENT_LEFT:
+            tags.add("cfs_sent_left")
+            rec["wip_bucket"] = None
+            rec["wip_bucket_reason"] = "Sent/left — excluded from At Facility Total"
+            rec["drilldown_tags"] = sorted(tags)
+            continue
+        tags.add("cfs_total")
+        if bucket:
+            tags.add(f"cfs_total_{bucket}")
+            if bucket.startswith("rush"):
+                tags.add("cfs_total_rush")
+            elif bucket.startswith("nonrush"):
+                tags.add("cfs_total_non_rush")
+        if category == CFS_IN_PROGRESS:
+            tags.add("cfs_in_progress")
+            if bucket.startswith("rush"):
+                tags.add("cfs_in_progress_rush")
+            elif bucket.startswith("nonrush"):
+                tags.add("cfs_in_progress_non_rush")
+            if svc == "WF":
+                tags.add("wip_wf_in_progress")
+                has_weigh = cfs_has_weight_entry(events) or any(
+                    t in tags for t in ("wf_weighed", "shift_weighed")
+                )
+                has_sc = cfs_has_start_cleaning(events)
+                has_dry = cfs_has_drying(events)
+                pending_fold = qualifies_yet_to_fold(pending_row, events, completion)
+                wip_tag, reason = wf_in_progress_bucket_and_reason(
+                    has_weigh=has_weigh,
+                    has_start_cleaning=has_sc,
+                    has_drying=has_dry,
+                    pending_folding=pending_fold,
+                )
+                tags.add(wip_tag)
+                rec["wip_bucket"] = wip_tag
+                rec["wip_bucket_reason"] = reason
+                rec["snapshot_bucket_reason"] = reason
+            elif svc == "HD":
+                tags.add("wip_hd_in_progress")
+                hd_prod = derive_hd_production_status(
+                    events,
+                    at_vendor_presence=True,
+                    logistics_status=meta.get("logistics_status") or meta.get("status"),
+                    lifecycle_status=(pending_row or {}).get("current_lifecycle_status"),
+                )
+                wip_tag, reason = hd_in_progress_bucket_and_reason(hd_production=hd_prod)
+                tags.add(wip_tag)
+                rec["wip_bucket"] = wip_tag
+                rec["wip_bucket_reason"] = reason
+                rec["snapshot_bucket_reason"] = reason
+        elif category == CFS_COMPLETED_STILL:
+            tags.add("cfs_completed_still_at_facility")
+            tags.add("cfs_completed_still")
+            rec["wip_bucket"] = None
+            rec["wip_bucket_reason"] = "Operationally complete but still at VeeWash (not sent/left)"
+            rec["snapshot_bucket_reason"] = rec["wip_bucket_reason"]
+        rec["drilldown_tags"] = sorted(tags)
+
+
+def _apply_due_today_snapshot_tags(
+    records: list[dict[str, Any]],
+    *,
+    today: date,
+    due_today_ids: set[str] | None = None,
+    due_today_meta: Mapping[str, Mapping[str, Any]] | None = None,
+    pending_by_bag: Mapping[str, Mapping[str, Any]],
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+    completions_by_bag: Mapping[str, Any],
+    meta_by_bag: Mapping[str, Mapping[str, Any]],
+) -> None:
+    from backend.rinse_current_facility_snapshot import (
+        SCAN_DTS_COMPLETED,
+        SCAN_DTS_TOTAL,
+        SCAN_DTS_YET_TO_PROCESS,
+        bag_is_due_today_processed,
+        bag_is_operationally_complete,
+        bag_is_sent_left_from_facility,
+        parse_record_date,
+        record_is_due_today,
+    )
+
+    due_today_ids = due_today_ids or set()
+    due_today_meta = due_today_meta or {}
+
+    for rec in records:
+        bid = str(rec.get("bag_id") or "").strip().upper()
+        pending_row = pending_by_bag.get(bid)
+        meta = meta_by_bag.get(bid) or {}
+        unified_dt = due_today_meta.get(bid) or {}
+        if unified_dt.get("source_seen_in"):
+            existing = list(rec.get("source_seen_in") or [])
+            for s in unified_dt["source_seen_in"]:
+                if s not in existing:
+                    existing.append(s)
+            rec["source_seen_in"] = existing
+        if not rec.get("date_clean"):
+            dc_raw = (pending_row or {}).get("date_clean") or meta.get("date_clean")
+            dc = parse_record_date(dc_raw)
+            if dc:
+                iso = dc.isoformat()
+                rec["date_clean"] = iso
+                rec["due_date"] = iso
+        is_due = bid in due_today_ids or record_is_due_today(rec, today)
+        if not is_due:
+            dc = parse_record_date(
+                (pending_row or {}).get("date_clean") or meta.get("date_clean") or rec.get("due_date")
+            )
+            if dc != today:
+                continue
+        events = events_by_bag.get(bid) or []
+        pending_row = pending_by_bag.get(bid)
+        meta = meta_by_bag.get(bid) or {}
+        completion = completions_by_bag.get(bid)
+        svc = str(rec.get("service_type") or "").upper()
+        bucket = str(rec.get("rush_bucket") or "")
+        sent_left = bag_is_sent_left_from_facility(pending_row, completion, meta, events)
+        op_complete = bag_is_operationally_complete(
+            service_type=svc,
+            completion=completion,
+            events=events,
+            pending_row=pending_row,
+            meta=meta,
+        )
+        processed = bag_is_due_today_processed(
+            operationally_complete=op_complete,
+            sent_left=sent_left,
+        )
+        tags = set(rec.get("drilldown_tags") or [])
+        tags.add("dts_total")
+        tags.add(SCAN_DTS_TOTAL)
+        if bucket:
+            tags.add(f"dts_total_{bucket}")
+            if bucket.startswith("rush"):
+                tags.add("dts_total_rush")
+            elif bucket.startswith("nonrush"):
+                tags.add("dts_total_non_rush")
+        if processed:
+            tags.add("dts_completed_processed")
+            tags.add(SCAN_DTS_COMPLETED)
+            rec["scan_dts_bucket_reason"] = "Scan-inferred: due today — operationally complete or sent/left (scan evidence)"
+            rec["due_today_bucket_reason"] = rec["scan_dts_bucket_reason"]
+        else:
+            tags.add("dts_yet_to_process")
+            tags.add(SCAN_DTS_YET_TO_PROCESS)
+            rec["scan_dts_bucket_reason"] = "Scan-inferred: due today — not yet complete by scan rules"
+            rec["due_today_bucket_reason"] = rec["scan_dts_bucket_reason"]
+            if "ready_for_vendor_presence" in (rec.get("source_seen_in") or []):
+                tags.add("due_today_rfv_or_incoming")
+            if "orders_staging" not in (rec.get("source_seen_in") or []):
+                tags.add("due_today_missing_from_staging")
+            if bucket.startswith("rush"):
+                tags.add("dts_rush_pending")
+            elif bucket.startswith("nonrush"):
+                tags.add("dts_non_rush_pending")
+            if svc == "WF":
+                tags.add("dts_wf_pending")
+            elif svc == "HD":
+                tags.add("dts_hd_pending")
+        if not rec.get("snapshot_bucket_reason"):
+            rec["snapshot_bucket_reason"] = rec.get("due_today_bucket_reason")
+        rec["drilldown_tags"] = sorted(tags)
+
+
+def _build_current_facility_snapshot_section(
+    records: list[dict[str, Any]],
+    dashboard_snapshot: Mapping[str, Any],
+    *,
+    rinse_home_at_veewash: int | None = None,
+    rinse_home_yet_to_process: int | None = None,
+    vendor_home_view: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    from backend.rinse_current_facility_snapshot import (
+        VENDOR_HOME_REFERENCE,
+        build_vendor_home_reconciliation,
+        manual_vendor_home_counts,
+    )
+
+    at_facility = _count_tag(records, "cfs_total")
+    in_progress = _count_tag(records, "cfs_in_progress")
+    completed_still = _count_tag(records, "cfs_completed_still_at_facility")
+    sent_left = _count_tag(records, "cfs_sent_left")
+    staging_total = int(dashboard_snapshot.get("unique_bag_count") or dashboard_snapshot.get("total_orders") or 0)
+
+    internal_cards = [
+        _make_drilldown_card("Dashboard At Facility", at_facility, "cfs_total", records),
+        _make_drilldown_card("Scan-Inferred In Progress", in_progress, "cfs_in_progress", records),
+        _make_drilldown_card("Scan-Inferred Completed Still at Facility", completed_still, "cfs_completed_still_at_facility", records),
+    ]
+    breakdown_cards = [
+        _make_drilldown_card("Rush", _count_tag(records, "cfs_total_rush"), "cfs_total_rush", records),
+        _make_drilldown_card("Non-Rush", _count_tag(records, "cfs_total_non_rush"), "cfs_total_non_rush", records),
+        _make_drilldown_card("Rush WF", _count_tag(records, "cfs_total_rush_wf"), "cfs_total_rush_wf", records),
+        _make_drilldown_card("Rush HD", _count_tag(records, "cfs_total_rush_hd"), "cfs_total_rush_hd", records),
+        _make_drilldown_card("Non-Rush WF", _count_tag(records, "cfs_total_nonrush_wf"), "cfs_total_nonrush_wf", records),
+        _make_drilldown_card("Non-Rush HD", _count_tag(records, "cfs_total_nonrush_hd"), "cfs_total_nonrush_hd", records),
+    ]
+
+    internal_scan_view = {
+        "source": "internal_scan_events",
+        "description": "Operational scan-inferred status — not Vendor Home portal state",
+        "at_facility_total": at_facility,
+        "in_progress": in_progress,
+        "completed_still_at_facility": completed_still,
+        "sent_left": sent_left,
+        "cards": internal_cards,
+        "breakdown_cards": breakdown_cards,
+        "parity_ok": _cards_parity_ok(internal_cards + breakdown_cards),
+        "identity_ok": in_progress + completed_still == at_facility,
+    }
+
+    vh_view = dict(vendor_home_view or {})
+    manual = manual_vendor_home_counts()
+    ref_at = rinse_home_at_veewash if rinse_home_at_veewash is not None else manual.get("at_veewash_total")
+    ref_proc = rinse_home_yet_to_process if rinse_home_yet_to_process is not None else manual.get("at_veewash_yet_to_process")
+
+    reconciliation = build_vendor_home_reconciliation(
+        at_facility=at_facility,
+        in_progress=in_progress,
+        completed_still=completed_still,
+        rinse_home_at_veewash=ref_at,
+        rinse_home_yet_to_process=ref_proc,
+    )
+    reconciliation["staging_unique_bag_count"] = staging_total
+    reconciliation["sent_left"] = sent_left
+    reconciliation["vendor_home_view_source"] = vh_view.get("source", "manual_screenshot")
+    reconciliation["internal_scan_at_facility"] = at_facility
+    reconciliation["internal_scan_in_progress"] = in_progress
+    reconciliation["ok"] = bool(internal_scan_view["identity_ok"])
+    reconciliation["vendor_home_parity_ok"] = False
+    reconciliation["comparison_status"] = "Needs Review — Vendor Home uses portal state; internal scan view differs"
+
+    return {
+        "source": "vendor_home_parity + internal_scan",
+        "description": "Vendor Home portal view vs scan-inferred operational view",
+        "vendor_home_view": vh_view,
+        "internal_scan_view": internal_scan_view,
+        "at_facility_total": at_facility,
+        "in_progress": in_progress,
+        "completed_still_at_facility": completed_still,
+        "sent_left": sent_left,
+        "sent_left_excluded_from_total": sent_left,
+        "cards": internal_cards,
+        "breakdown_cards": breakdown_cards,
+        "parity_ok": internal_scan_view["parity_ok"],
+        "reconciliation": reconciliation,
+        "vendor_home_reconciliation": reconciliation,
+    }
+
+
+def _build_due_today_snapshot_section(
+    records: list[dict[str, Any]],
+    *,
+    today: date,
+    vendor_home_view: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    from backend.rinse_current_facility_snapshot import (
+        SCAN_DTS_COMPLETED,
+        SCAN_DTS_TOTAL,
+        SCAN_DTS_YET_TO_PROCESS,
+        build_due_today_reconciliation,
+        manual_vendor_home_counts,
+    )
+
+    due_total = _count_tag(records, SCAN_DTS_TOTAL)
+    yet_to_process = _count_tag(records, SCAN_DTS_YET_TO_PROCESS)
+    completed = _count_tag(records, SCAN_DTS_COMPLETED)
+
+    internal_cards = [
+        _make_drilldown_card("Dashboard Due Today Total", due_total, SCAN_DTS_TOTAL, records),
+        _make_drilldown_card("Scan-Inferred Due Today Pending", yet_to_process, SCAN_DTS_YET_TO_PROCESS, records),
+        _make_drilldown_card("Scan-Inferred Due Today Completed", completed, SCAN_DTS_COMPLETED, records),
+    ]
+    breakdown_cards = [
+        _make_drilldown_card("Rush Due Today", _count_tag(records, "dts_total_rush"), "dts_total_rush", records),
+        _make_drilldown_card("Non-Rush Due Today", _count_tag(records, "dts_total_non_rush"), "dts_total_non_rush", records),
+        _make_drilldown_card("Rush WF Due Today", _count_tag(records, "dts_total_rush_wf"), "dts_total_rush_wf", records),
+        _make_drilldown_card("Rush HD Due Today", _count_tag(records, "dts_total_rush_hd"), "dts_total_rush_hd", records),
+        _make_drilldown_card("Non-Rush WF Due Today", _count_tag(records, "dts_total_nonrush_wf"), "dts_total_nonrush_wf", records),
+        _make_drilldown_card("Non-Rush HD Due Today", _count_tag(records, "dts_total_nonrush_hd"), "dts_total_nonrush_hd", records),
+    ]
+
+    internal_scan_view = {
+        "source": "internal_scan_events",
+        "description": "Scan-inferred due-today status — not Vendor Home portal processing state",
+        "due_today_total": due_total,
+        "due_today_yet_to_process": yet_to_process,
+        "due_today_completed_processed": completed,
+        "cards": internal_cards,
+        "breakdown_cards": breakdown_cards,
+        "parity_ok": _cards_parity_ok(internal_cards + breakdown_cards),
+        "identity_ok": yet_to_process + completed == due_total,
+    }
+
+    vh_view = dict(vendor_home_view or {})
+    manual = manual_vendor_home_counts()
+    reconciliation = build_due_today_reconciliation(
+        due_today_total=due_total,
+        yet_to_process=yet_to_process,
+        completed_processed=completed,
+        rinse_due_today_total=manual.get("due_today_total"),
+        rinse_due_today_yet_to_process=manual.get("due_today_yet_to_process"),
+    )
+    reconciliation["vendor_home_view_source"] = vh_view.get("source", "manual_screenshot")
+    reconciliation["internal_scan_due_today"] = due_total
+    reconciliation["internal_scan_pending"] = yet_to_process
+    reconciliation["ok"] = bool(internal_scan_view["identity_ok"])
+    reconciliation["vendor_home_parity_ok"] = False
+    reconciliation["comparison_status"] = "Needs Review — Vendor Home due-today pending uses portal state"
+
+    return {
+        "source": "vendor_home_parity + internal_scan",
+        "description": "Vendor Home due-today view vs scan-inferred due-today view",
+        "view_date": today.isoformat(),
+        "vendor_home_view": vh_view,
+        "internal_scan_view": internal_scan_view,
+        "due_today_total": due_total,
+        "due_today_yet_to_process": yet_to_process,
+        "due_today_completed_processed": completed,
+        "cards": internal_cards,
+        "breakdown_cards": breakdown_cards,
+        "parity_ok": internal_scan_view["parity_ok"],
+        "reconciliation": reconciliation,
+    }
+
+
+def _build_due_today_wip_section(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Due Today WIP — scan-inferred yet-to-process due today only."""
+    from backend.rinse_current_facility_snapshot import SCAN_DTS_YET_TO_PROCESS
+
+    pending = [r for r in records if SCAN_DTS_YET_TO_PROCESS in (r.get("drilldown_tags") or [])]
+    wf_pending = [r for r in pending if r.get("service_type") == "WF"]
+    hd_pending = [r for r in pending if r.get("service_type") == "HD"]
+    rush_pending = [r for r in pending if r.get("rush_label") == "Rush"]
+    nonrush_pending = [r for r in pending if r.get("rush_label") == "Non-Rush"]
+
+    cards = [
+        _make_drilldown_card("Scan-Inferred Due Today Pending", len(pending), SCAN_DTS_YET_TO_PROCESS, records),
+        _make_drilldown_card("Due Today WF Pending", len(wf_pending), "dts_wf_pending", records),
+        _make_drilldown_card("Due Today HD Pending", len(hd_pending), "dts_hd_pending", records),
+        _make_drilldown_card("Due Today Rush Pending", len(rush_pending), "dts_rush_pending", records),
+        _make_drilldown_card("Due Today Non-Rush Pending", len(nonrush_pending), "dts_non_rush_pending", records),
+    ]
+    return {
+        "scope": SCAN_DTS_YET_TO_PROCESS,
+        "summary": {"total": len(pending), "wf": len(wf_pending), "hd": len(hd_pending)},
+        "cards": cards,
+        "parity_ok": _cards_parity_ok(cards),
+    }
+
+
 def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dict[str, Any]:
-    """WIP split by WF and HD — pipeline bags only (not facility workload history)."""
-    pipeline = [r for r in records if r.get("in_pipeline")]
-    wf = [r for r in pipeline if r.get("service_type") == "WF"]
-    hd = [r for r in pipeline if r.get("service_type") == "HD"]
+    """WIP — in-progress at facility only (Yet to Process), not day workload history."""
+    in_progress = [r for r in records if "cfs_in_progress" in (r.get("drilldown_tags") or [])]
+    wf = [r for r in in_progress if r.get("service_type") == "WF"]
+    hd = [r for r in in_progress if r.get("service_type") == "HD"]
 
-    def _cards(rows: list[dict[str, Any]], spec: list[tuple[str, str]]) -> dict[str, int]:
-        return {key: _count_tag(rows, tag) for key, tag in spec}
-
-    wf_counts = _cards(
-        wf,
-        [
-            ("weighed", "wf_weighed"),
-            ("not_weighed", "wf_not_weighed"),
-            ("pending_wash_rush", "wf_pending_wash_rush"),
-            ("pending_wash_nonrush", "wf_pending_wash_nonrush"),
-            ("pending_folding", "wf_pending_folding"),
-        ],
-    )
-    wf_counts["total"] = len(wf)
-
-    hd_counts = _cards(
-        hd,
-        [
-            ("not_started", "hd_not_started"),
-            ("started_cleaning", "hd_started_cleaning"),
-            ("completed", "hd_completed"),
-            ("sent_left", "hd_sent_left"),
-            ("still_at_facility", "hd_still_at_facility"),
-        ],
-    )
-    hd_counts["total"] = len(hd)
+    wf_counts = {
+        "total": len(wf),
+        "not_weighed": _count_tag(wf, "wf_not_weighed"),
+        "weighed_not_started": _count_tag(wf, "wf_weighed_not_started"),
+        "started_washing": _count_tag(wf, "wf_started_washing"),
+        "pending_drying": _count_tag(wf, "wf_pending_drying"),
+        "pending_folding": _count_tag(wf, "wf_pending_folding"),
+    }
+    hd_counts = {
+        "total": len(hd),
+        "not_started": _count_tag(hd, "hd_not_started"),
+        "started_cleaning": _count_tag(hd, "hd_started_cleaning"),
+    }
 
     summary_cards = [
-        _make_drilldown_card("Total WIP", len(pipeline), "pipeline_work", records),
-        _make_drilldown_card("WF WIP", len(wf), "wip_wf", records),
-        _make_drilldown_card("HD WIP", len(hd), "wip_hd", records),
-        _make_drilldown_card("Rush WIP", _count_tag(pipeline, "wip_rush"), "wip_rush", records),
-        _make_drilldown_card("Non-Rush WIP", _count_tag(pipeline, "wip_non_rush"), "wip_non_rush", records),
+        _make_drilldown_card("Scan-Inferred In Progress", len(in_progress), "cfs_in_progress", records),
+        _make_drilldown_card("WF Scan-Inferred In Progress", len(wf), "wip_wf_in_progress", records),
+        _make_drilldown_card("HD Scan-Inferred In Progress", len(hd), "wip_hd_in_progress", records),
     ]
     wf_cards = [
-        _make_drilldown_card("WF Total", wf_counts["total"], "wip_wf", records),
-        _make_drilldown_card("WF Weighed", wf_counts["weighed"], "wf_weighed", records),
+        _make_drilldown_card("WF Scan-Inferred In Progress", wf_counts["total"], "wip_wf_in_progress", records),
         _make_drilldown_card("WF Not Weighed", wf_counts["not_weighed"], "wf_not_weighed", records),
-        _make_drilldown_card("WF Pending Wash — Rush", wf_counts["pending_wash_rush"], "wf_pending_wash_rush", records),
-        _make_drilldown_card("WF Pending Wash — Non-Rush", wf_counts["pending_wash_nonrush"], "wf_pending_wash_nonrush", records),
+        _make_drilldown_card("WF Weighed — Not Started", wf_counts["weighed_not_started"], "wf_weighed_not_started", records),
+        _make_drilldown_card("WF Started Washing", wf_counts["started_washing"], "wf_started_washing", records),
+        _make_drilldown_card("WF Pending Drying", wf_counts["pending_drying"], "wf_pending_drying", records),
         _make_drilldown_card("WF Pending Folding", wf_counts["pending_folding"], "wf_pending_folding", records),
-        _make_drilldown_card("WF Sorted", None, None, records, under_review=True, under_review_reason="WF sorted stage not verified yet"),
-        _make_drilldown_card("WF Not Sorted", None, None, records, under_review=True, under_review_reason="WF sorted stage not verified yet"),
-        _make_drilldown_card("WF Washed", None, None, records, under_review=True, under_review_reason="WF washed stage not verified yet"),
-        _make_drilldown_card("WF Dried", None, None, records, under_review=True, under_review_reason="WF dried stage not verified yet"),
-        _make_drilldown_card("WF Pending Drying", None, None, records, under_review=True, under_review_reason="WF dried stage not verified yet"),
+        _make_drilldown_card("WF Completed", None, None, records, under_review=True, under_review_reason="Completed WF are not in Yet to Process scope"),
     ]
     hd_cards = [
-        _make_drilldown_card("HD Total", hd_counts["total"], "wip_hd", records),
+        _make_drilldown_card("HD Scan-Inferred In Progress", hd_counts["total"], "wip_hd_in_progress", records),
         _make_drilldown_card("HD Not Started", hd_counts["not_started"], "hd_not_started", records),
         _make_drilldown_card("HD Started Cleaning", hd_counts["started_cleaning"], "hd_started_cleaning", records),
-        _make_drilldown_card("HD Completed", hd_counts["completed"], "hd_completed", records),
-        _make_drilldown_card("HD Sent / Left", hd_counts["sent_left"], "hd_sent_left", records),
-        _make_drilldown_card("HD Still at Facility", hd_counts["still_at_facility"], "hd_still_at_facility", records),
+        _make_drilldown_card("HD Completed", None, None, records, under_review=True, under_review_reason="Completed HD are not in Yet to Process scope"),
     ]
 
     return {
         "view_date": target_date.isoformat(),
+        "scope": "cfs_in_progress",
         "summary": {
-            "total": len(pipeline),
+            "total": len(in_progress),
             "wf_total": len(wf),
             "hd_total": len(hd),
-            "rush_total": _count_tag(pipeline, "wip_rush"),
-            "non_rush_total": _count_tag(pipeline, "wip_non_rush"),
         },
         "summary_cards": summary_cards,
         "wf": wf_counts,
@@ -1814,6 +2215,10 @@ def _build_debug_audit(
     pipeline_debug: Mapping[str, Any] | None = None,
     rfv_sync: Mapping[str, Any] | None = None,
     av_sync: Mapping[str, Any] | None = None,
+    current_facility_snapshot: Mapping[str, Any] | None = None,
+    due_today_snapshot: Mapping[str, Any] | None = None,
+    unified_at_meta: Mapping[str, Any] | None = None,
+    gap_analysis: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     incoming_rows = [r for r in ((pending.get("incoming") or {}).get("rows") or []) if isinstance(r, dict)]
     unknown_why: list[str] = []
@@ -1875,6 +2280,22 @@ def _build_debug_audit(
                 non_parseable.append({"bag_id": bid, "issue": "non_parseable_weight_values"})
 
     stage_audit = _build_stage_audit(records)
+    from backend.rinse_current_facility_snapshot import (
+        build_due_today_debug_ids,
+        build_snapshot_debug_ids,
+        build_vendor_home_debug_audit,
+    )
+
+    cfs_reconciliation = (current_facility_snapshot or {}).get("reconciliation") or {}
+    dts_reconciliation = (due_today_snapshot or {}).get("reconciliation") or {}
+    vendor_home_debug = build_vendor_home_debug_audit(
+        cfs_reconciliation=cfs_reconciliation,
+        dts_reconciliation=dts_reconciliation,
+        cfs_debug_ids=build_snapshot_debug_ids(records),
+        dts_debug_ids=build_due_today_debug_ids(records),
+        gap_analysis=gap_analysis,
+        unified_meta=unified_at_meta,
+    )
     return {
         "ready_for_vendor_sync": {
             "latest_attempt_at": (rfv_sync or {}).get("latest_attempt_at") or (rfv_sync or {}).get("last_refreshed_at"),
@@ -2031,7 +2452,14 @@ def _build_debug_audit(
                 "total_equals_entered_plus_carryover"
             ),
             "hd_weighing_separation_ok": stage_audit.get("reconciliation_ok"),
+            "current_facility_snapshot_ok": cfs_reconciliation.get("ok"),
+            "due_today_snapshot_ok": dts_reconciliation.get("ok"),
         },
+        "vendor_home_reconciliation": cfs_reconciliation,
+        "vendor_home_debug": vendor_home_debug,
+        "vendor_home_gap_analysis": gap_analysis,
+        "current_facility_snapshot": build_snapshot_debug_ids(records),
+        "due_today_snapshot_debug": build_due_today_debug_ids(records),
     }
 
 
@@ -2159,8 +2587,12 @@ def build_simple_shift_performance_payload(
     threshold = float(settings.get("weight_difference_threshold_lbs") or 5.0)
     start_dt, _end_incl = period_datetime_bounds_et(period_start, period_end)
     end_exclusive = naive_et_day_end_exclusive(period_end)
-    target_date = period_end
+    from backend.rinse_scheduled_scrape import _today_et
 
+    target_date = period_end
+    today_et = _today_et()
+
+    from backend.rinse_current_facility_snapshot import load_unified_at_facility_population, load_unified_due_today_population
     from backend.rinse_dashboard_staging import (
         build_dashboard_vs_monitor_reconciliation,
         get_dashboard_active_staging_snapshot,
@@ -2185,6 +2617,25 @@ def build_simple_shift_performance_payload(
     eval_at = naive_system_utc(
         evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
     )
+
+    from backend.rinse_shift_monitor_baseline import (
+        apply_live_baseline_to_pending_incoming,
+        build_baseline_context,
+        build_baseline_debug_block,
+        compute_excluded_pre_baseline_only,
+        filter_events_by_bag_after_baseline,
+        format_baseline_banner_et,
+        get_shift_monitor_baseline,
+        load_live_at_facility_population,
+        load_live_due_today_population,
+        load_live_rfv_incoming_rows,
+    )
+
+    baseline_settings = get_shift_monitor_baseline(cursor, org)
+    baseline_ctx = build_baseline_context(cursor, org, baseline_settings)
+    baseline_start_naive_et = baseline_ctx["baseline_start_naive_et"]
+    use_live_baseline = bool(baseline_settings.get("active"))
+
     dashboard_snapshot = get_dashboard_active_staging_snapshot(cursor, org)
     rfv_sync = get_ready_for_vendor_sync_status(cursor, org, evaluation_time=eval_at)
     entry_racks = settings.get("facility_entry_racks") or ["VeeWash Dirty"]
@@ -2203,7 +2654,30 @@ def build_simple_shift_performance_payload(
     pending = get_pending_bag_status(
         cursor, org, target_date=target_date, evaluation_time=evaluation_time
     )
+    live_rfv_rows, live_rfv_meta = load_live_rfv_incoming_rows(
+        cursor, org, target_date=target_date, baseline_ctx=baseline_ctx
+    )
+    if use_live_baseline:
+        pending = apply_live_baseline_to_pending_incoming(
+            pending, live_rfv_rows, baseline_ctx=baseline_ctx
+        )
     ready_for_vendor = _build_ready_for_vendor_section(pending, rfv_sync=rfv_sync)
+    if use_live_baseline and baseline_ctx.get("rfv_scrape_ready") and not live_rfv_rows:
+        ready_for_vendor = {
+            **ready_for_vendor,
+            "live": True,
+            "under_review": False,
+            "total": 0,
+            "rush_wf": 0,
+            "rush_hd": 0,
+            "nonrush_wf": 0,
+            "nonrush_hd": 0,
+            "unknown_needs_review": 0,
+            "zero_rows_success": True,
+            "live_baseline": True,
+            "data_quality_warning": "Ready for Vendor = 0 after post-baseline RFV scrape",
+        }
+        _finalize_section_counts(ready_for_vendor)
     scope_a = _build_scope_a(pending)
 
     incoming_rows = {
@@ -2226,18 +2700,82 @@ def build_simple_shift_performance_payload(
         for b in (dashboard_snapshot.get("unique_bag_ids") or [])
         if b
     }
+    legacy_unified_at: dict[str, dict[str, Any]] = {}
+    excluded_pre_baseline_count = 0
+    excluded_pre_baseline_samples: list[dict[str, Any]] = []
+    live_rfv_bids: set[str] = set()
+    if use_live_baseline:
+        legacy_unified_at, _legacy_meta = load_unified_at_facility_population(cursor, org, target_date=today_et)
+        unified_at_facility, unified_at_meta = load_live_at_facility_population(
+            cursor, org, target_date=today_et, baseline_ctx=baseline_ctx
+        )
+        unified_at_meta["live_baseline"] = True
+        unified_at_meta["legacy_unified_total"] = len(legacy_unified_at)
+        live_rfv_bids = {str(r.get("bag_id") or "").strip().upper() for r in live_rfv_rows if r.get("bag_id")}
+        excluded_pre_baseline_count, excluded_pre_baseline_samples = compute_excluded_pre_baseline_only(
+            legacy_unified_at=legacy_unified_at,
+            live_at_facility=unified_at_facility,
+            live_due_today={},
+            live_rfv_bids=live_rfv_bids,
+        )
+        unified_at_meta["excluded_pre_baseline_only_count"] = excluded_pre_baseline_count
+    else:
+        unified_at_facility, unified_at_meta = load_unified_at_facility_population(cursor, org, target_date=today_et)
+    at_facility_ids = set(unified_at_facility.keys())
+    if use_live_baseline:
+        unified_due_today, unified_due_meta = load_live_due_today_population(
+            cursor,
+            org,
+            today_et,
+            baseline_ctx=baseline_ctx,
+            live_at_facility=unified_at_facility,
+            live_rfv_rows=live_rfv_rows,
+        )
+        unified_due_meta["live_baseline"] = True
+        _, excluded_due_samples = compute_excluded_pre_baseline_only(
+            legacy_unified_at=legacy_unified_at,
+            live_at_facility={},
+            live_due_today=unified_due_today,
+            live_rfv_bids=live_rfv_bids,
+        )
+        excluded_pre_baseline_count = max(excluded_pre_baseline_count, len(excluded_due_samples))
+    else:
+        unified_due_today, unified_due_meta = load_unified_due_today_population(cursor, org, today_et)
+    due_today_ids = set(unified_due_today.keys())
+    for bid, row in unified_at_facility.items():
+        pending_by_bag[bid] = {**(pending_by_bag.get(bid) or {}), **row}
+    for bid, row in unified_due_today.items():
+        pending_by_bag[bid] = {**(pending_by_bag.get(bid) or {}), **row}
+        due_today_ids.add(bid)
+
     scope_b_ids = _load_bag_ids_with_et_activity(
         cursor, org, period_start=period_start, period_end=period_end
     )
-    all_bag_ids = sorted(
-        set(scope_b_ids)
-        | set(incoming_rows.keys())
-        | set(pending_by_bag.keys())
-        | set(facility_entry_ids)
-        | set(carryover_candidates)
-    )
+    live_dashboard_ids = at_facility_ids | due_today_ids | set(incoming_rows.keys())
+    if use_live_baseline:
+        pending_by_bag = {k: v for k, v in pending_by_bag.items() if k in live_dashboard_ids}
+        all_bag_ids = sorted(
+            live_dashboard_ids
+            | (set(scope_b_ids) & live_dashboard_ids)
+            | (set(facility_entry_ids) & live_dashboard_ids)
+        )
+    else:
+        all_bag_ids = sorted(
+            set(scope_b_ids)
+            | set(incoming_rows.keys())
+            | set(pending_by_bag.keys())
+            | set(facility_entry_ids)
+            | set(carryover_candidates)
+            | set(active_candidates)
+            | set(at_facility_ids)
+            | set(due_today_ids)
+        )
 
     meta_by_bag = _load_bag_metadata(cursor, org, all_bag_ids)
+    for bid, row in unified_at_facility.items():
+        meta_by_bag[bid] = {**(meta_by_bag.get(bid) or {"bag_id": bid}), **{k: v for k, v in row.items() if v is not None}}
+    for bid, row in unified_due_today.items():
+        meta_by_bag[bid] = {**(meta_by_bag.get(bid) or {"bag_id": bid}), **{k: v for k, v in row.items() if v is not None}}
     for bid in all_bag_ids:
         base = meta_by_bag.get(bid) or {"bag_id": bid}
         pending_row = pending_by_bag.get(bid)
@@ -2246,6 +2784,8 @@ def build_simple_shift_performance_payload(
         meta_by_bag[bid] = merged
 
     events_by_bag = _load_scan_events_for_bags(cursor, org, all_bag_ids)
+    if use_live_baseline:
+        events_by_bag = filter_events_by_bag_after_baseline(events_by_bag, baseline_start_naive_et)
     user_maps = _load_rinse_user_maps(cursor, org)
 
     records: list[dict[str, Any]] = []
@@ -2334,6 +2874,27 @@ def build_simple_shift_performance_payload(
             elif rush_label == "Non-Rush":
                 last_nonrush_wash = update_last_wash_if_newer(last_nonrush_wash, detail)
 
+    _apply_current_facility_snapshot_tags(
+        records,
+        at_facility_ids=at_facility_ids,
+        at_facility_meta=unified_at_facility,
+        pending_by_bag=pending_by_bag,
+        events_by_bag=events_by_bag,
+        completions_by_bag=completions_by_bag,
+        meta_by_bag=meta_by_bag,
+        qualifies_yet_to_fold=_qualifies_yet_to_fold,
+    )
+    _apply_due_today_snapshot_tags(
+        records,
+        today=today_et,
+        due_today_ids=due_today_ids,
+        due_today_meta=unified_due_today,
+        pending_by_bag=pending_by_bag,
+        events_by_bag=events_by_bag,
+        completions_by_bag=completions_by_bag,
+        meta_by_bag=meta_by_bag,
+    )
+
     work_pipeline = _build_work_pipeline_section(
         pipeline_bag_ids,
         meta_by_bag,
@@ -2347,7 +2908,72 @@ def build_simple_shift_performance_payload(
     active_work = work_pipeline
 
     shift_status = _build_shift_status(records, threshold=threshold, last_rush_wash=last_rush_wash)
+
+    from backend.rinse_current_facility_snapshot import (
+        apply_portal_vendor_home_tags_on_records,
+        backfill_record_due_dates,
+        build_vendor_home_parity,
+        build_vendor_home_view_section,
+        load_portal_vendor_home_counts,
+        load_presence_edd_by_bag,
+    )
+
+    portal_counts, presence_meta, at_vendor_presence_rows, due_today_portal_rows = load_portal_vendor_home_counts(
+        cursor, org, today_et
+    )
+    apply_portal_vendor_home_tags_on_records(
+        records,
+        at_vendor_rows=at_vendor_presence_rows,
+        due_today_portal_rows=due_today_portal_rows,
+    )
+    presence_edd_by_bag = load_presence_edd_by_bag(cursor, org)
+    edd_backfill_stats = backfill_record_due_dates(
+        records, meta_by_bag, presence_edd_by_bag=presence_edd_by_bag
+    )
+
+    vendor_home_view = build_vendor_home_view_section(
+        portal_counts=portal_counts,
+        presence_meta=presence_meta,
+        records=records,
+        record_count_fn=_count_tag,
+    )
+
+    current_facility_snapshot = _build_current_facility_snapshot_section(
+        records, dashboard_snapshot, vendor_home_view=vendor_home_view
+    )
+    due_today_snapshot = _build_due_today_snapshot_section(
+        records, today=today_et, vendor_home_view=vendor_home_view
+    )
+    due_today_wip = _build_due_today_wip_section(records)
+    due_today_snapshot["wip"] = due_today_wip
     wip_sections = _build_wip_sections(records, target_date)
+    from backend.rinse_current_facility_snapshot import build_vendor_home_gap_analysis
+
+    gap_analysis = build_vendor_home_gap_analysis(
+        records=records,
+        unified_at_facility=unified_at_facility,
+        unified_due_today=unified_due_today,
+        cfs_reconciliation=current_facility_snapshot.get("reconciliation") or {},
+        dts_reconciliation=due_today_snapshot.get("reconciliation") or {},
+        unified_meta=unified_at_meta,
+    )
+    current_facility_snapshot["gap_analysis"] = gap_analysis
+    due_today_snapshot["gap_analysis"] = gap_analysis
+
+    vendor_home_parity = build_vendor_home_parity(
+        vendor_home_view=vendor_home_view,
+        internal_scan_view={
+            "at_facility_total": current_facility_snapshot.get("at_facility_total"),
+            "in_progress": current_facility_snapshot.get("in_progress"),
+            "completed_still_at_facility": current_facility_snapshot.get("completed_still_at_facility"),
+            "due_today_total": due_today_snapshot.get("due_today_total"),
+            "due_today_yet_to_process": due_today_snapshot.get("due_today_yet_to_process"),
+            "due_today_completed": due_today_snapshot.get("due_today_completed_processed"),
+        },
+        presence_meta=presence_meta,
+        portal_counts=portal_counts,
+    )
+    vendor_home_parity["edd_backfill"] = edd_backfill_stats
     stage_audit = _build_stage_audit(records)
 
     employee_summary, employee_diagnostics = _build_employee_activity_summary(
@@ -2428,12 +3054,19 @@ def build_simple_shift_performance_payload(
             pipeline_debug=pipeline_debug,
             rfv_sync=rfv_sync,
             av_sync=rinse_sync.get("at_vendor") if isinstance(rinse_sync, dict) else None,
+            current_facility_snapshot=current_facility_snapshot,
+            due_today_snapshot=due_today_snapshot,
+            unified_at_meta=unified_at_meta,
+            gap_analysis=gap_analysis,
         )
         if include_debug
         else None
     )
 
     sections_under_review = {
+        "current_facility_snapshot": True,
+        "due_today_snapshot": True,
+        "vendor_home_parity": not vendor_home_parity.get("reconciled"),
         "shift_status": not stage_audit.get("reconciliation_ok", True),
         "wip": not wip_sections.get("parity_ok", True) or not stage_audit.get("reconciliation_ok", True),
         "employee_activity": True,
@@ -2448,6 +3081,9 @@ def build_simple_shift_performance_payload(
 
     drilldown_parity = _build_drilldown_parity_audit(
         {
+            "current_facility_snapshot": current_facility_snapshot,
+            "due_today_snapshot": due_today_snapshot,
+            "due_today_wip": due_today_wip,
             "ready_for_vendor": ready_for_vendor,
             "wip": wip_sections,
             "facility_entered": facility_tracker.get("entered_today") or {},
@@ -2457,6 +3093,26 @@ def build_simple_shift_performance_payload(
     )
     if debug_audit is not None:
         debug_audit["drilldown_parity"] = drilldown_parity
+        if use_live_baseline:
+            debug_audit["live_baseline"] = build_baseline_debug_block(
+                baseline_ctx=baseline_ctx,
+                live_record_count=len(records),
+                excluded_pre_baseline_only_count=excluded_pre_baseline_count,
+                excluded_samples=excluded_pre_baseline_samples,
+            )
+
+    baseline_payload = {
+        **baseline_ctx,
+        "banner_title": format_baseline_banner_et(baseline_ctx),
+        "banner_subtitle": (
+            "Using latest post-baseline Rinse scrape + post-baseline scans"
+            if baseline_ctx.get("at_vendor_scrape_ready")
+            else baseline_ctx.get("needs_refresh_reason")
+        ),
+        "banner_footer": "Historical data kept for audit only",
+        "live_dashboard_record_count": len(records),
+        "excluded_pre_baseline_only_count": excluded_pre_baseline_count,
+    }
 
     return {
         "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
@@ -2486,6 +3142,12 @@ def build_simple_shift_performance_payload(
             "source": "Scan events",
         },
         "shift_status": shift_status,
+        "current_facility_snapshot": current_facility_snapshot,
+        "due_today_snapshot": due_today_snapshot,
+        "vendor_home_parity": vendor_home_parity,
+        "vendor_home_gap_analysis": gap_analysis,
+        "live_baseline": baseline_payload,
+        "unified_at_facility_meta": unified_at_meta,
         "wip": wip_sections,
         "stage_audit": stage_audit if include_debug else {"reconciliation_ok": stage_audit.get("reconciliation_ok")},
         "employee_activity_summary": employee_summary,
@@ -2504,5 +3166,8 @@ def build_simple_shift_performance_payload(
             "washing_minutes": settings.get("washing_minutes"),
             "drying_minutes": settings.get("drying_minutes"),
             "reject_after_create_issue_minutes": settings.get("reject_after_create_issue_minutes"),
+            "shift_monitor_baseline_start_at_et": baseline_settings.get("shift_monitor_baseline_start_at_et"),
+            "baseline_source": baseline_settings.get("baseline_source"),
+            "baseline_note": baseline_settings.get("baseline_note"),
         },
     }

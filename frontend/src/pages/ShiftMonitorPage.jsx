@@ -18,11 +18,15 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
 import ReadyForVendorSection from "../components/shift/ReadyForVendorSection";
+import LiveBaselineBanner from "../components/shift/LiveBaselineBanner";
+import VendorHomeComparisonSection from "../components/shift/VendorHomeComparisonSection";
+import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilitySnapshotSection";
+import DueTodaySnapshotSection from "../components/shift/DueTodaySnapshotSection";
+import FacilityWipSection from "../components/shift/FacilityWipSection";
 import FacilityWorkloadSection from "../components/shift/FacilityWorkloadSection";
 import ShiftCountCard from "../components/shift/ShiftCountCard";
 import RushFilterChips from "../components/shift/RushFilterChips";
 import {
-  WipPreviewSection,
   MonitorPreviewSection,
   ExceptionsPreviewSection,
   EmployeeActivityPlaceholder,
@@ -110,13 +114,32 @@ function RecordRow({ row, expanded, onToggle }) {
           <Typography variant="body2" color="primary.main" fontWeight={600}>
             {row.customer || "—"}
           </Typography>
-          <Typography variant="body2" fontWeight={700} sx={{ mt: 0.75 }}>
+          <Typography variant="body2" color="primary.main" fontWeight={700} sx={{ mt: 0.5 }}>
             {formatDueDateRow(row)}
           </Typography>
-          <Typography variant="body2" fontWeight={600}>
+          <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
             {formatLastActivityRow(row)}
-            {row.last_activity_purpose || row.last_scan_purpose ? ` · ${row.last_activity_purpose || row.last_scan_purpose}` : ""}
           </Typography>
+          {row.last_activity_purpose || row.last_scan_purpose ? (
+            <Typography variant="body2" color="text.secondary" fontWeight={600}>
+              {row.last_activity_purpose || row.last_scan_purpose}
+            </Typography>
+          ) : null}
+          {row.baseline_inclusion_reason ? (
+            <Typography variant="body2" color="info.main" fontWeight={600} sx={{ mt: 0.5 }}>
+              Baseline: {row.baseline_inclusion_reason}
+            </Typography>
+          ) : null}
+          {(row.snapshot_bucket_reason || row.wip_bucket_reason || row.due_today_bucket_reason || row.scan_dts_bucket_reason || row.vendor_home_bucket_reason) ? (
+            <Typography variant="body2" color="warning.dark" fontWeight={700} sx={{ mt: 0.75 }}>
+              Why: {row.vendor_home_bucket_reason || row.scan_dts_bucket_reason || row.snapshot_bucket_reason || row.wip_bucket_reason || row.due_today_bucket_reason}
+            </Typography>
+          ) : null}
+          {row.source_seen_in?.length ? (
+            <Typography variant="body2" color="text.secondary" fontWeight={600} sx={{ mt: 0.5 }}>
+              Source: {row.source_seen_in.join(", ")}
+            </Typography>
+          ) : null}
           <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mt: 0.5 }}>
             <Chip size="small" label={row.computed_rush_label || row.rush_label || "—"} />
             <Chip size="small" label={row.service_type || "WF"} variant="outlined" />
@@ -250,6 +273,16 @@ function AdvancedDebugSection({ data, user }) {
         <Typography fontWeight={700}>Advanced Debug</Typography>
       </AccordionSummary>
       <AccordionDetails>
+        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
+          Vendor Home reconciliation
+        </Typography>
+        <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
+          {JSON.stringify(audit.vendor_home_debug || {
+            vendor_home_reference: audit.vendor_home_reconciliation,
+            current_facility_snapshot: audit.current_facility_snapshot,
+            due_today_snapshot: audit.due_today_snapshot_debug,
+          }, null, 2)}
+        </Box>
         <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
           Sync & reconciliation
         </Typography>
@@ -425,9 +458,10 @@ export default function ShiftMonitorPage({ user }) {
 
   const rfv = data?.ready_for_vendor || {};
   const facility = data?.facility_tracker_today || {};
-  const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
-  const shiftStatus = data?.shift_status || {};
+  const cfs = data?.current_facility_snapshot || {};
+  const dts = data?.due_today_snapshot || {};
   const wip = data?.wip || {};
+  const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
   const underReview = data?.sections_under_review || {};
   const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
   const rinseSync = rinseSyncBanner(data);
@@ -513,6 +547,24 @@ export default function ShiftMonitorPage({ user }) {
             </Box>
           </Box>
 
+          <LiveBaselineBanner baseline={data?.live_baseline} />
+
+          <VendorHomeComparisonSection parity={data?.vendor_home_parity} presence={data?.vendor_home_parity?.presence} />
+
+          <CurrentFacilitySnapshotSection
+            snapshot={cfs}
+            rushFilter={rushFilter}
+            onDrilldown={openDrilldown}
+            activeTag={filterTag}
+          />
+
+          <DueTodaySnapshotSection
+            snapshot={dts}
+            rushFilter={rushFilter}
+            onDrilldown={openDrilldown}
+            activeTag={filterTag}
+          />
+
           <ReadyForVendorSection
             rfv={rfv}
             rfvLive={rfvLive}
@@ -536,15 +588,13 @@ export default function ShiftMonitorPage({ user }) {
             activeTag={filterTag}
           />
 
-          <WipPreviewSection
+          <FacilityWipSection
             wip={wip}
-            shiftStatus={shiftStatus}
-            pipeline={pipeline}
-            underReview={underReview.wip ?? underReview.shift_status}
+            rushFilter={rushFilter}
             onDrilldown={openDrilldown}
             activeTag={filterTag}
-            rushFilter={rushFilter}
           />
+
           <MonitorPreviewSection pipeline={pipeline} underReview={underReview.shift_status} onDrilldown={openDrilldown} activeTag={filterTag} />
           <ExceptionsPreviewSection exceptions={data.exceptions_summary} underReview={underReview.exceptions} onDrilldown={openDrilldown} activeTag={filterTag} />
           <EmployeeActivityPlaceholder />

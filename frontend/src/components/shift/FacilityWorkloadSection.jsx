@@ -83,10 +83,10 @@ export default function FacilityWorkloadSection({ tracker, rushFilter, onDrilldo
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
         <Box>
           <Typography variant="h6" fontWeight={800}>
-            At Vendor / Facility Workload
+            Selected Day Workload
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Bags at the facility for the selected ET day — entry rack: {tracker.entry_racks?.join(", ") || "VeeWash Dirty"}
+            Historical facility workload for the selected ET day — entry rack: {tracker.entry_racks?.join(", ") || "VeeWash Dirty"}
           </Typography>
         </Box>
         {trackerReconciled(tracker) ? (
@@ -112,7 +112,7 @@ export default function FacilityWorkloadSection({ tracker, rushFilter, onDrilldo
           defaultExpanded
         />
         <Divider sx={{ my: 0.5 }} />
-        <WorkloadBreakdown block={{ ...carryover, title: "Carryover" }} rushFilter={rushFilter} onDrilldown={onDrilldown} activeTag={activeTag} />
+        <WorkloadBreakdown block={{ ...carryover, title: "Historical Carryover / Under Review" }} rushFilter={rushFilter} onDrilldown={onDrilldown} activeTag={activeTag} />
         <Divider sx={{ my: 0.5 }} />
         <WorkloadBreakdown block={{ ...total, title: "Total Workload" }} rushFilter={rushFilter} onDrilldown={onDrilldown} activeTag={activeTag} />
       </Paper>
