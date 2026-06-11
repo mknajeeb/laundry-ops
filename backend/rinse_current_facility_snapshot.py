@@ -61,15 +61,15 @@ PORTAL_VH_DTS_PENDING = "portal_vh_dts_pending"
 # Manual Vendor Home reference until direct scrape is available.
 VENDOR_HOME_REFERENCE = {
     "source": "manual_screenshot",
-    "reference_date": "2026-06-10",
-    "at_veewash_total": 28,
-    "at_veewash_yet_to_process": 15,
-    "due_today_total": 0,
-    "due_today_yet_to_process": 0,
+    "reference_date": "2026-06-11",
+    "at_veewash_total": 48,
+    "at_veewash_yet_to_process": 26,
+    "due_today_total": 30,
+    "due_today_yet_to_process": 25,
     "vendor_home_reference_source": "manual_screenshot",
     # Legacy keys for backward compatibility
-    "rinse_home_at_veewash": 28,
-    "rinse_home_yet_to_process": 15,
+    "rinse_home_at_veewash": 48,
+    "rinse_home_yet_to_process": 26,
 }
 
 

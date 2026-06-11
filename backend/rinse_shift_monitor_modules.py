@@ -351,6 +351,60 @@ def build_shift_monitor_modules(
     at_total = int(portal.get("at_veewash_total") or manual.get("at_veewash_total") or 0)
     at_pending = int(portal.get("at_veewash_yet_to_process") or manual.get("at_veewash_yet_to_process") or 0)
     at_processed = max(0, at_total - at_pending)
+    due_total = int(portal.get("due_today_total") or manual.get("due_today_total") or 0)
+    due_pending = int(portal.get("due_today_yet_to_process") or manual.get("due_today_yet_to_process") or 0)
+    due_processed = max(0, due_total - due_pending)
+
+    summary_only_portal_cards = [
+        {
+            "id": "portal_at",
+            "label": "At VeeWash",
+            "count": at_total,
+            "clickable": False,
+            "informational": True,
+            "module_tag": None,
+        },
+        {
+            "id": "portal_pending",
+            "label": "Pending Processing",
+            "count": at_pending,
+            "clickable": False,
+            "informational": True,
+            "module_tag": None,
+        },
+        {
+            "id": "portal_processed",
+            "label": "Processed / Not Pending",
+            "count": at_processed,
+            "clickable": False,
+            "informational": True,
+            "module_tag": None,
+        },
+        {
+            "id": "portal_due_today",
+            "label": "Due Today",
+            "count": due_total,
+            "clickable": False,
+            "informational": True,
+            "module_tag": None,
+        },
+        {
+            "id": "portal_due_today_pending",
+            "label": "Due Today Pending",
+            "count": due_pending,
+            "clickable": False,
+            "informational": True,
+            "module_tag": None,
+        },
+        {
+            "id": "portal_due_today_processed",
+            "label": "Due Today Processed / Not Pending",
+            "count": due_processed,
+            "clickable": False,
+            "informational": True,
+            "module_tag": None,
+        },
+    ]
 
     if record_level_portal:
         portal_at = len(filter_module_records(records, module_tag=MOD_PORTAL_AT))
@@ -365,32 +419,7 @@ def build_shift_monitor_modules(
         portal_note = None
     else:
         portal_at, portal_pending, portal_processed = at_total, at_pending, at_processed
-        portal_cards = [
-            {
-                "id": "portal_at",
-                "label": "At VeeWash",
-                "count": at_total,
-                "clickable": False,
-                "informational": True,
-                "module_tag": None,
-            },
-            {
-                "id": "portal_pending",
-                "label": "Pending Processing",
-                "count": at_pending,
-                "clickable": False,
-                "informational": True,
-                "module_tag": None,
-            },
-            {
-                "id": "portal_processed",
-                "label": "Processed / Not Pending",
-                "count": at_processed,
-                "clickable": False,
-                "informational": True,
-                "module_tag": None,
-            },
-        ]
+        portal_cards = summary_only_portal_cards
         portal_mode = "summary_only"
         portal_note = "Portal filters unavailable because only summary counts are available."
 
@@ -508,6 +537,9 @@ def build_shift_monitor_modules(
                 "at_veewash": portal_at,
                 "pending_processing": portal_pending,
                 "processed": portal_processed,
+                "due_today": due_total,
+                "due_today_pending": due_pending,
+                "due_today_processed": due_processed,
             },
             "cards": portal_cards,
         },

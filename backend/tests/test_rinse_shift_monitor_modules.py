@@ -121,9 +121,14 @@ class TestPortalSnapshot:
         portal = modules["portal_snapshot"]
         assert portal["mode"] == "summary_only"
         assert portal["filters_enabled"] is False
-        assert portal["summary"]["at_veewash"] == 28
-        assert portal["summary"]["pending_processing"] == 15
-        assert portal["summary"]["processed"] == 13
+        assert portal["summary"]["at_veewash"] == 48
+        assert portal["summary"]["pending_processing"] == 26
+        assert portal["summary"]["processed"] == 22
+        assert portal["summary"]["due_today"] == 30
+        assert portal["summary"]["due_today_pending"] == 25
+        assert portal["summary"]["due_today_processed"] == 5
+        assert len(portal["cards"]) == 6
+        assert all(not c.get("clickable") for c in portal["cards"])
 
     def test_service_filter_hides_wf_cards(self):
         cards = [

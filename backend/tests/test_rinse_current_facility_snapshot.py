@@ -602,7 +602,7 @@ class TestUnifiedSnapshotPopulation:
         assert (payload["due_today_snapshot"].get("reconciliation") or {}).get("ok") is True
         assert (payload["due_today_snapshot"].get("reconciliation") or {}).get("vendor_home_parity_ok") is False
         parity = payload.get("vendor_home_parity") or {}
-        assert parity.get("due_today_yet_to_process") == 0
+        assert parity.get("due_today_yet_to_process") == 25
         assert parity.get("internal_scan", {}).get("due_today_yet_to_process") == 1
         vh_due_cards = (payload["due_today_snapshot"].get("vendor_home_view") or {}).get("due_today_cards") or []
         assert all(not c.get("clickable") for c in vh_due_cards)
@@ -633,7 +633,7 @@ class TestVendorHomeParitySplit:
             record_count_fn=_count,
         )
         assert section["manual_reference_only"] is True
-        assert section["at_veewash_yet_to_process"] == 15
+        assert section["at_veewash_yet_to_process"] == 26
         for card in section["cards"] + section["due_today_cards"]:
             assert card.get("clickable") is False
             assert card.get("manual_reference_only") is True
@@ -663,7 +663,7 @@ class TestVendorHomeParitySplit:
         )
         assert parity["reconciled"] is False
         assert parity["needs_review"] is True
-        assert parity["due_today_yet_to_process"] == 0
+        assert parity["due_today_yet_to_process"] == 25
         assert parity["internal_scan"]["due_today_yet_to_process"] == 4
         assert "presence" in parity["reason"].lower() or "portal" in parity["reason"].lower()
         assert parity["comparison"]["due_today"]["status"] == "Needs Review"
@@ -757,7 +757,7 @@ class TestVendorHomeParitySplit:
         dts = payload["due_today_snapshot"]
         assert _count_tag(payload["records"], SCAN_DTS_YET_TO_PROCESS) == 1
         assert dts["due_today_yet_to_process"] == 1
-        assert parity["due_today_yet_to_process"] == 0
+        assert parity["due_today_yet_to_process"] == 25
         assert parity["internal_scan"]["due_today_yet_to_process"] == 1
         internal_cards = (dts.get("internal_scan_view") or {}).get("cards") or dts.get("cards") or []
         for card in internal_cards:
