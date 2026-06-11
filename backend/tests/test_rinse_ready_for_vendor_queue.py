@@ -177,3 +177,28 @@ class TestNormalizeRfvPresenceRow:
         )
         assert out["has_today_label"] is False
         assert out["rush_bucket"] == RFV_NON_RUSH
+
+
+class TestRfvCards:
+    def test_unknown_review_card_included(self):
+        from backend.rinse_ready_for_vendor_queue import _build_rfv_cards
+
+        section = {
+            "live": True,
+            "total": 2,
+            "rush_total": 1,
+            "nonrush_total": 0,
+            "wf_total": 1,
+            "hd_total": 0,
+            "rush_wf": 1,
+            "rush_hd": 0,
+            "nonrush_wf": 0,
+            "nonrush_hd": 0,
+            "unknown_needs_review": 1,
+        }
+        rows = [
+            {"bag_id": "A", "drilldown_tags": ["ready_for_vendor", "rfv_rush_wf"]},
+            {"bag_id": "B", "drilldown_tags": ["ready_for_vendor", "rfv_unknown_needs_review"]},
+        ]
+        labels = [c["label"] for c in _build_rfv_cards(section, rows)]
+        assert "Unknown Review" in labels

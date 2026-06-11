@@ -1128,6 +1128,11 @@ class TestActiveWorkCountLogic:
 
 
 class TestDashboardSourceOfTruth:
+    @patch("backend.rinse_at_vendor_module.build_at_vendor_module")
+    @patch("backend.rinse_ready_for_vendor_queue._load_active_rfv_presence_rows")
+    @patch("backend.rinse_shift_monitor_baseline.latest_rfv_scrape_after_baseline")
+    @patch("backend.rinse_shift_monitor_baseline.get_shift_monitor_baseline")
+    @patch("backend.rinse_shift_monitor_baseline.build_baseline_context")
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
@@ -1146,9 +1151,38 @@ class TestDashboardSourceOfTruth:
         mock_pending,
         mock_dashboard,
         mock_rfv_sync,
+        mock_baseline_ctx,
+        mock_baseline_settings,
+        mock_rfv_run,
+        mock_active_rfv,
+        mock_at_vendor,
     ):
-        from datetime import date
+        from datetime import date, datetime
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_baseline_settings.return_value = {
+            "active": True,
+            "shift_monitor_baseline_start_at_et": "2020-01-01 00:00:00",
+        }
+        mock_baseline_ctx.return_value = {
+            "active": True,
+            "rfv_scrape_ready": True,
+            "baseline_start_naive_et": datetime(2020, 1, 1),
+        }
+        mock_rfv_run.return_value = {"id": 1, "finished_at": datetime(2026, 6, 7, 8, 0)}
+        mock_active_rfv.return_value = [
+            {"bag_id": "RFV1", "estimated_delivery_date": date(2026, 6, 7), "service_type": "WF"}
+        ]
+        mock_at_vendor.return_value = {
+            "selected_date_et": "2026-06-07",
+            "rows": [],
+            "cards": [],
+            "total": 0,
+            "pending": 0,
+            "completed": 0,
+            "changed_to_rush": 0,
+            "total_equals_pending_plus_completed": True,
+        }
 
         mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
         mock_maps.return_value = {}

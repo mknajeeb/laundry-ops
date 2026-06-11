@@ -90,6 +90,80 @@ function RfvRecordRow({ row }) {
   );
 }
 
+function AtVendorRecordRow({ row, changedRushDrilldown = false }) {
+  const rushLabel = row.rush_label
+    || (row.rush_bucket === "RUSH" ? "Rush" : row.rush_bucket === "NON_RUSH" ? "Non-Rush" : "Unknown Review");
+  const serviceLabel = row.service_bucket || row.service_type || "—";
+  const statusLabel = row.at_vendor_status || (row.facility_status
+    ? row.facility_status.charAt(0).toUpperCase() + row.facility_status.slice(1)
+    : "—");
+  const reason = row.changed_to_rush_reason || row.status_reason || row.reason || row.rush_reason || "—";
+
+  return (
+    <Paper elevation={0} sx={{ p: 1.5, mb: 1, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800}>
+        {row.bag_id}
+      </Typography>
+      <Typography variant="body2" color="primary.main" fontWeight={600}>
+        {row.customer_name || row.customer || "—"}
+      </Typography>
+      <Typography variant="body2" sx={{ mt: 0.5 }}>
+        Service type: {serviceLabel}
+      </Typography>
+      <Typography variant="body2">
+        Rush / Non-Rush: {rushLabel}
+      </Typography>
+      <Typography variant="body2">
+        Estimated delivery date: {row.estimated_delivery_date || row.date_clean || "—"}
+      </Typography>
+      <Typography variant="body2">
+        TODAY label: {row.today_label || (row.has_today_label ? "yes" : "no")}
+      </Typography>
+      <Typography variant="body2">
+        sent-to-vendor time: {row.sent_to_vendor_time_et || formatEtDateTime(row.sent_to_vendor_time) || "—"}
+      </Typography>
+      {!changedRushDrilldown ? (
+        <>
+          <Typography variant="body2">
+            Completion signal: {row.completion_signal || "—"}
+          </Typography>
+          {row.completion_time_et ? (
+            <Typography variant="body2" color="text.secondary">
+              Completed at: {row.completion_time_et}
+            </Typography>
+          ) : null}
+        </>
+      ) : null}
+      <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
+        Status: {statusLabel}
+      </Typography>
+      {changedRushDrilldown ? (
+        <>
+          {row.previous_edd ? (
+            <Typography variant="body2">
+              Previous EDD: {row.previous_edd}
+            </Typography>
+          ) : null}
+          <Typography variant="body2">
+            Current rush bucket: {rushLabel}
+          </Typography>
+          {row.previous_rush_bucket ? (
+            <Typography variant="body2">
+              Previous rush bucket: {row.previous_rush_bucket === "RUSH" ? "Rush" : row.previous_rush_bucket === "NON_RUSH" ? "Non-Rush" : row.previous_rush_bucket}
+            </Typography>
+          ) : null}
+          <Typography variant="body2">
+            Selected ET date: {row.selected_date_et || "—"}
+          </Typography>
+        </>
+      ) : null}
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+        Reason: {reason}
+      </Typography>
+    </Paper>
+  );
+}
+
 function RecordRow({ row, expanded, onToggle }) {
   const wd = row.weight_difference || {};
   const [detail, setDetail] = useState(null);
@@ -420,6 +494,7 @@ export default function ShiftMonitorPage({ user }) {
   }, [load]);
 
   const records = data?.records || [];
+  const atVendorRecords = data?.at_vendor_module?.rows || [];
   const modules = data?.shift_monitor_modules || {};
   const opsLabel = modules.operations_window?.label;
   const rfv = data?.ready_for_vendor || {};
@@ -430,12 +505,13 @@ export default function ShiftMonitorPage({ user }) {
       return filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, rfvRushFilter);
     }
     const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
-    return filterModuleRecords(records, {
+    const sourceRecords = drilldown.moduleKey === "facility_status" ? atVendorRecords : records;
+    return filterModuleRecords(sourceRecords, {
       moduleTag: drilldown.moduleTag,
       rushFilter: f.rush,
       serviceFilter: f.service,
     });
-  }, [records, drilldown, moduleFilters, rfv.rows, rfvRushFilter]);
+  }, [records, atVendorRecords, drilldown, moduleFilters, rfv.rows, rfvRushFilter]);
 
   const openDrilldown = (ctx) => {
     setDrilldown(ctx);
@@ -597,7 +673,7 @@ export default function ShiftMonitorPage({ user }) {
               key={key}
               moduleKey={key}
               module={modules[key]}
-              records={records}
+              records={key === "facility_status" ? atVendorRecords : records}
               rushFilter={moduleFilters[key]?.rush || "all"}
               serviceFilter={moduleFilters[key]?.service || "all"}
               onRushChange={(v) => setModuleFilter(key, { rush: v })}
@@ -636,14 +712,22 @@ export default function ShiftMonitorPage({ user }) {
         <Box sx={{ overflow: "auto", flex: 1 }}>
           {drilldown?.type === "rfv"
             ? filtered.map((row) => <RfvRecordRow key={row.bag_id} row={row} />)
-            : filtered.map((row) => (
-              <RecordRow
-                key={row.bag_id}
-                row={row}
-                expanded={expandedBag === row.bag_id}
-                onToggle={() => setExpandedBag((b) => (b === row.bag_id ? null : row.bag_id))}
-              />
-            ))}
+            : drilldown?.moduleKey === "facility_status"
+              ? filtered.map((row) => (
+                <AtVendorRecordRow
+                  key={row.bag_id}
+                  row={row}
+                  changedRushDrilldown={drilldown?.moduleTag === "mod_at_vendor_changed_rush"}
+                />
+              ))
+              : filtered.map((row) => (
+                <RecordRow
+                  key={row.bag_id}
+                  row={row}
+                  expanded={expandedBag === row.bag_id}
+                  onToggle={() => setExpandedBag((b) => (b === row.bag_id ? null : row.bag_id))}
+                />
+              ))}
           {filtered.length === 0 ? (
             <Typography variant="body2" color="text.secondary">No records for this filter.</Typography>
           ) : null}

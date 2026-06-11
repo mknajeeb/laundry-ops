@@ -44,6 +44,7 @@ export function filterCardsForScope(cards, serviceFilter = "all") {
 export function getModuleCardCount(records, card, rushFilter, serviceFilter, module) {
   if (card.informational || !card.module_tag) return card.count ?? 0;
   if (module?.mode === "summary_only" || module?.filters_enabled === false) return card.count ?? 0;
+  if (card.id === "av_changed_rush" && rushFilter === "non_rush") return 0;
   if (card.id === "mon_weight" && serviceFilter === "hd") return 0;
   return filterModuleRecords(records, {
     moduleTag: card.module_tag,

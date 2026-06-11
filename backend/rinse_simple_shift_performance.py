@@ -3002,8 +3002,10 @@ def build_simple_shift_performance_payload(
     vendor_home_parity["edd_backfill"] = edd_backfill_stats
     stage_audit = _build_stage_audit(records)
 
+    from backend.rinse_at_vendor_module import build_at_vendor_module
     from backend.rinse_shift_monitor_modules import apply_module_tags, build_shift_monitor_modules
 
+    at_vendor_module = build_at_vendor_module(cursor, org, selected_date_et=period_end)
     apply_module_tags(records, events_by_bag=events_by_bag)
     shift_monitor_modules = build_shift_monitor_modules(
         records,
@@ -3018,6 +3020,7 @@ def build_simple_shift_performance_payload(
         last_nonrush_wash=last_nonrush_wash,
         last_wash_overall=last_wash_overall,
         today_et=today_et,
+        at_vendor_module=at_vendor_module,
     )
 
     employee_summary, employee_diagnostics = _build_employee_activity_summary(
@@ -3160,6 +3163,7 @@ def build_simple_shift_performance_payload(
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
         "ready_for_vendor": ready_for_vendor,
+        "at_vendor_module": at_vendor_module,
         "facility_tracker_today": facility_tracker,
         "current_work_pipeline": work_pipeline,
         "current_active_work": work_pipeline,

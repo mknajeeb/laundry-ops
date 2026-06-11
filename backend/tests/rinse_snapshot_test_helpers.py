@@ -150,5 +150,22 @@ def patch_unified_loaders_from_pending(pending_response: dict, *, today: Optiona
     ), patch(
         "backend.rinse_shift_monitor_baseline.latest_rfv_scrape_after_baseline",
         return_value={"id": 1, "finished_at": datetime(2026, 6, 10, 12, 0, 0)},
+    ), patch(
+        "backend.rinse_at_vendor_module.build_at_vendor_module",
+        return_value={
+            "selected_date_et": today.isoformat() if today else date(2026, 6, 10).isoformat(),
+            "rows": [],
+            "cards": [
+                {"id": "av_total", "label": "Total Bags", "module_tag": "mod_at_vendor_total", "count": 0, "records_count": 0, "clickable": True},
+                {"id": "av_pending", "label": "Pending", "module_tag": "mod_at_vendor_pending", "count": 0, "records_count": 0, "clickable": True},
+                {"id": "av_completed", "label": "Completed", "module_tag": "mod_at_vendor_completed", "count": 0, "records_count": 0, "clickable": True},
+                {"id": "av_changed_rush", "label": "Changed to Rush", "module_tag": "mod_at_vendor_changed_rush", "count": 0, "records_count": 0, "clickable": True, "highlight": True},
+            ],
+            "total": 0,
+            "pending": 0,
+            "completed": 0,
+            "changed_to_rush": 0,
+            "total_equals_pending_plus_completed": True,
+        },
     ):
         yield

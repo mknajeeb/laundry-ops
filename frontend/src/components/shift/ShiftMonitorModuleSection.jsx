@@ -19,7 +19,10 @@ export default function ShiftMonitorModuleSection({
   if (!module) return null;
 
   const filtersEnabled = module.filters_enabled !== false;
-  const cards = filterCardsForScope(module.cards || [], serviceFilter);
+  let cards = filterCardsForScope(module.cards || [], serviceFilter);
+  if (moduleKey === "facility_status" && rushFilter === "non_rush") {
+    cards = cards.filter((c) => c.id !== "av_changed_rush");
+  }
   const subtitle = module.subtitle || (moduleKey !== "portal_snapshot" ? operationsLabel : null);
 
   const openDrilldown = (card) => {
@@ -83,6 +86,7 @@ export default function ShiftMonitorModuleSection({
             );
           }
           const parityMismatch = clickable && card.records_count != null && count !== card.records_count;
+          const highlight = Boolean(card.highlight);
           return (
             <ShiftCountCard
               key={card.id}
@@ -90,8 +94,8 @@ export default function ShiftMonitorModuleSection({
               value={count ?? card.count ?? "—"}
               onClick={clickable ? () => openDrilldown(card) : undefined}
               active={active}
-              warn={parityMismatch || (card.needs_review && clickable)}
-              sub={parityMismatch ? "Needs Review" : undefined}
+              warn={parityMismatch || (card.needs_review && clickable) || highlight}
+              sub={highlight ? "Pending urgency" : parityMismatch ? "Needs Review" : undefined}
               compact
             />
           );

@@ -34,9 +34,16 @@ MOD_PORTAL_AT = "mod_portal_at_veewash"
 MOD_PORTAL_PENDING = "mod_portal_pending_processing"
 MOD_PORTAL_PROCESSED = "mod_portal_processed"
 
-MOD_FACILITY_TOTAL = "mod_facility_total"
-MOD_FACILITY_PENDING = "mod_facility_pending"
-MOD_FACILITY_PROCESSED = "mod_facility_processed"
+from backend.rinse_at_vendor_module import (
+    MOD_AT_VENDOR_CHANGED_RUSH,
+    MOD_AT_VENDOR_COMPLETED,
+    MOD_AT_VENDOR_PENDING,
+    MOD_AT_VENDOR_TOTAL,
+)
+
+MOD_FACILITY_TOTAL = MOD_AT_VENDOR_TOTAL
+MOD_FACILITY_PENDING = MOD_AT_VENDOR_PENDING
+MOD_FACILITY_PROCESSED = MOD_AT_VENDOR_COMPLETED
 MOD_FACILITY_SENT = "mod_facility_sent"
 
 MOD_PROD_TOTAL = "mod_prod_total_pending"
@@ -343,6 +350,7 @@ def build_shift_monitor_modules(
     last_nonrush_wash: Mapping[str, Any] | None,
     last_wash_overall: Mapping[str, Any] | None,
     today_et: date,
+    at_vendor_module: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     manual = manual_vendor_home_counts()
     portal = dict(portal_counts or {}) if portal_list_available and portal_counts else {}
@@ -429,11 +437,22 @@ def build_shift_monitor_modules(
         else f"Selected ET Operations — {period_start.isoformat()} 12:00 AM ET to 11:59:59 PM ET"
     )
 
-    facility_cards = [
-        _card("fac_total", "Total Orders", MOD_FACILITY_TOTAL, records),
-        _card("fac_pending", "Pending", MOD_FACILITY_PENDING, records),
-        _card("fac_processed", "Processed", MOD_FACILITY_PROCESSED, records),
-        _card("fac_sent", "Sent", MOD_FACILITY_SENT, records),
+    av = dict(at_vendor_module or {})
+    av_rows = list(av.get("rows") or [])
+    av_selected = av.get("selected_date_et") or period_end.isoformat()
+    facility_cards = list(av.get("cards") or []) or [
+        _card("av_total", "Total Bags", MOD_AT_VENDOR_TOTAL, av_rows),
+        _card("av_pending", "Pending", MOD_AT_VENDOR_PENDING, av_rows),
+        _card("av_completed", "Completed", MOD_AT_VENDOR_COMPLETED, av_rows),
+        {
+            "id": "av_changed_rush",
+            "label": "Changed to Rush",
+            "module_tag": MOD_AT_VENDOR_CHANGED_RUSH,
+            "count": int(av.get("changed_to_rush") or 0),
+            "records_count": int(av.get("changed_to_rush") or 0),
+            "clickable": True,
+            "highlight": True,
+        },
     ]
 
     production_cards = [
@@ -544,9 +563,11 @@ def build_shift_monitor_modules(
             "cards": portal_cards,
         },
         "facility_status": {
-            "title": "At VeeWash / Facility Status",
-            "subtitle": "Current Facility Snapshot",
+            "title": "At Vendor",
+            "subtitle": f"Selected ET day — {av_selected}",
+            "filters_enabled": True,
             "cards": facility_cards,
+            "rows_source": "at_vendor_module",
         },
         "production_stage": {
             "title": "Pending / Production Stage",

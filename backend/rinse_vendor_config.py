@@ -70,6 +70,10 @@ def resolve_rinse_vendor(
             return "veewash"
 
     slug = (organization_slug or "").strip().lower()
+    if slug == "veewash":
+        return "veewash"
+    if slug == "washpro":
+        return "washpro"
     washpro_slugs = _parse_slug_set(os.getenv("RINSE_WASHPRO_ORG_SLUGS"))
     veewash_slugs = _parse_slug_set(os.getenv("RINSE_VEEWASH_ORG_SLUGS"))
     if slug and slug in washpro_slugs:

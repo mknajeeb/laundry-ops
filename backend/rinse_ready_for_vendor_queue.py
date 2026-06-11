@@ -367,6 +367,7 @@ def _build_rfv_cards(section: Mapping[str, Any], rows: Sequence[Mapping[str, Any
         _make_rfv_card("Rush HD", section.get("rush_hd"), "rfv_rush_hd", rows),
         _make_rfv_card("Non-Rush WF", section.get("nonrush_wf"), "rfv_nonrush_wf", rows),
         _make_rfv_card("Non-Rush HD", section.get("nonrush_hd"), "rfv_nonrush_hd", rows),
+        _make_rfv_card("Unknown Review", section.get("unknown_needs_review"), "rfv_unknown_needs_review", rows),
     ]
 
 
@@ -479,7 +480,9 @@ def build_ready_for_vendor_queue(
         return _unavailable(f"Ready for Vendor Sync skipped: {skipped_reason or 'feature flag disabled'}")
     if latest_status == "failed" or sync.get("latest_failed"):
         return _unavailable(f"Ready for Vendor Sync failed: {error_message or 'unknown error'}")
-    if stale and not sync.get("zero_rows_success"):
+    active_probe = _load_active_rfv_presence_rows(cursor, org)
+    zero_active_rows = len(active_probe) == 0
+    if stale and not sync.get("zero_rows_success") and not zero_active_rows:
         stale_ref = last_refreshed_at or "unknown"
         return _unavailable(
             f"Ready for Vendor sync stale — last refresh {stale_ref}. Refresh Both Syncs before using live counts."
@@ -487,12 +490,16 @@ def build_ready_for_vendor_queue(
     if not baseline_ctx.get("rfv_scrape_ready") or scrape_time_et is None:
         return _unavailable("No post-baseline RFV scrape — live snapshot unavailable")
 
-    raw_rows = _load_active_rfv_presence_rows(cursor, org)
+    raw_rows = active_probe
     meta["active_rows"] = len(raw_rows)
 
-    normalized: list[dict[str, Any]] = [
-        normalize_rfv_presence_row(r, scrape_time_et=scrape_time_et, cutoff_time=cutoff_time) for r in raw_rows
-    ]
+    if raw_rows:
+        normalized = [
+            normalize_rfv_presence_row(r, scrape_time_et=scrape_time_et, cutoff_time=cutoff_time)
+            for r in raw_rows
+        ]
+    else:
+        normalized = []
     counts = _aggregate_counts(normalized)
 
     section: dict[str, Any] = {
