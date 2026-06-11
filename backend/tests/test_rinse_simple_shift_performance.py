@@ -447,6 +447,7 @@ class TestSimplePayloadScopes:
 
 
 class TestDrilldownCountIntegrity:
+    @patch("backend.rinse_ready_for_vendor_queue.build_ready_for_vendor_queue")
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")
     @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
@@ -465,6 +466,7 @@ class TestDrilldownCountIntegrity:
         mock_pending,
         mock_dashboard,
         mock_rfv_sync,
+        mock_rfv_queue,
     ):
         from datetime import date
         from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload, _count_tag
@@ -476,20 +478,51 @@ class TestDrilldownCountIntegrity:
         mock_events.return_value = {}
         mock_dashboard.return_value = _make_dashboard_snapshot([])
         mock_rfv_sync.return_value = _FRESH_RFV_SYNC
-        mock_pending.return_value = {
-            "rows": [
-                {"bag_id": "R1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
-                {"bag_id": "R2", "record_scope": "incoming", "service_type": "HD", "effective_rush": "RUSH"},
-                {"bag_id": "N1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "NON-RUSH"},
-            ],
-            "incoming": {
-                "rows": [
-                    {"bag_id": "R1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "RUSH"},
-                    {"bag_id": "R2", "record_scope": "incoming", "service_type": "HD", "effective_rush": "RUSH"},
-                    {"bag_id": "N1", "record_scope": "incoming", "service_type": "WF", "effective_rush": "NON-RUSH"},
-                ],
-                "groups": {"combined": {}},
+        rfv_rows = [
+            {
+                "bag_id": "R1",
+                "rush_bucket": "RUSH",
+                "service_bucket": "WF",
+                "drilldown_tags": ["ready_for_vendor", "rfv_rush", "rfv_wf", "rfv_rush_wf"],
             },
+            {
+                "bag_id": "R2",
+                "rush_bucket": "RUSH",
+                "service_bucket": "HD",
+                "drilldown_tags": ["ready_for_vendor", "rfv_rush", "rfv_hd", "rfv_rush_hd"],
+            },
+            {
+                "bag_id": "N1",
+                "rush_bucket": "NON_RUSH",
+                "service_bucket": "WF",
+                "drilldown_tags": ["ready_for_vendor", "rfv_non_rush", "rfv_wf", "rfv_nonrush_wf"],
+            },
+        ]
+        mock_rfv_queue.return_value = {
+            "section": {
+                "live": True,
+                "total": 3,
+                "rush_total": 2,
+                "nonrush_total": 1,
+                "rush_wf": 1,
+                "rush_hd": 1,
+                "nonrush_wf": 1,
+                "nonrush_hd": 0,
+                "wf_total": 2,
+                "hd_total": 1,
+                "unknown_needs_review": 0,
+                "rows": rfv_rows,
+                "uses_scans": False,
+                "snapshot_only": True,
+            },
+            "rows": rfv_rows,
+            "bag_ids": {"R1", "R2", "N1"},
+            "meta": {"uses_scans": False},
+            "legacy_incoming_rows": [],
+        }
+        mock_pending.return_value = {
+            "rows": [],
+            "incoming": {"rows": [], "groups": {"combined": {}}},
             "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
             "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
             "checkout_rush": {},
@@ -500,14 +533,16 @@ class TestDrilldownCountIntegrity:
         )
         rfv = payload["ready_for_vendor"]
         records = payload["records"]
-        assert rfv["total"] == _count_tag(records, "ready_for_vendor") == 3
-        assert rfv["rush_total"] == _count_tag(records, "rfv_rush") == 2
-        assert rfv["nonrush_total"] == _count_tag(records, "rfv_non_rush") == 1
-        assert rfv["rush_wf"] == _count_tag(records, "rfv_rush_wf") == 1
-        assert rfv["rush_hd"] == _count_tag(records, "rfv_rush_hd") == 1
-        assert rfv["nonrush_wf"] == _count_tag(records, "rfv_nonrush_wf") == 1
+        assert rfv["total"] == _count_tag(rfv_rows, "ready_for_vendor") == 3
+        assert rfv["rush_total"] == _count_tag(rfv_rows, "rfv_rush") == 2
+        assert rfv["nonrush_total"] == _count_tag(rfv_rows, "rfv_non_rush") == 1
+        assert rfv["rush_wf"] == _count_tag(rfv_rows, "rfv_rush_wf") == 1
+        assert rfv["rush_hd"] == _count_tag(rfv_rows, "rfv_rush_hd") == 1
+        assert rfv["nonrush_wf"] == _count_tag(rfv_rows, "rfv_nonrush_wf") == 1
         assert rfv["rush_wf"] + rfv["rush_hd"] == rfv["rush_total"]
         assert rfv["nonrush_wf"] + rfv["nonrush_hd"] == rfv["nonrush_total"]
+        assert _count_tag(records, "ready_for_vendor") == 0
+        assert rfv.get("uses_scans") is False
 
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
     @patch("backend.rinse_dashboard_staging.get_dashboard_active_staging_snapshot")

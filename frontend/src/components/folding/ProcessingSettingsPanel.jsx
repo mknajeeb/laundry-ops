@@ -55,6 +55,10 @@ function DurationField({ label, minutes, seconds, onChange }) {
   );
 }
 
+function isValidRfvCutoff(value) {
+  return /^\d{2}:\d{2}$/.test(String(value || "").trim());
+}
+
 export default function ProcessingSettingsPanel() {
   const [fields, setFields] = useState(null);
   const [message, setMessage] = useState("");
@@ -75,6 +79,8 @@ export default function ProcessingSettingsPanel() {
         dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         weightDiffLbs: d.weight_difference_threshold_lbs ?? 5,
+        rfvRushCutoff: d.rfv_rush_cutoff_time_et ?? "07:00",
+        rfvRushCutoffInvalidStored: Boolean(d.rfv_rush_cutoff_invalid_stored),
         totalMinutes: d.total_minutes_per_bag,
       });
     } catch (e) {
@@ -88,6 +94,10 @@ export default function ProcessingSettingsPanel() {
 
   const save = async () => {
     if (!fields) return;
+    if (!isValidRfvCutoff(fields.rfvRushCutoff)) {
+      setMessage("Invalid Ready for Vendor Rush Cutoff Time — use HH:MM (e.g. 07:00). Previous value kept.");
+      return;
+    }
     try {
       setLoading(true);
       setMessage("");
@@ -101,6 +111,7 @@ export default function ProcessingSettingsPanel() {
         drying_minutes: Math.max(1, Number(fields.dryingMinutes) || 45),
         reject_after_create_issue_minutes: Math.max(1, Number(fields.rejectAfterIssueMinutes) || 45),
         weight_difference_threshold_lbs: Math.max(0, Number(fields.weightDiffLbs) || 5),
+        rfv_rush_cutoff_time_et: String(fields.rfvRushCutoff || "07:00").trim(),
       };
       const res = await putProcessingSettings(body);
       const d = res.data || {};
@@ -114,6 +125,8 @@ export default function ProcessingSettingsPanel() {
         dryingMinutes: d.drying_minutes ?? 45,
         rejectAfterIssueMinutes: d.reject_after_create_issue_minutes ?? 45,
         weightDiffLbs: d.weight_difference_threshold_lbs ?? 5,
+        rfvRushCutoff: d.rfv_rush_cutoff_time_et ?? "07:00",
+        rfvRushCutoffInvalidStored: Boolean(d.rfv_rush_cutoff_invalid_stored),
         totalMinutes: d.total_minutes_per_bag,
       });
       setMessage("Processing time settings saved.");
@@ -145,6 +158,11 @@ export default function ProcessingSettingsPanel() {
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
         Default expected durations and reject windows for wash &amp; fold lifecycle stages.
       </Typography>
+      {fields.rfvRushCutoffInvalidStored ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Stored Ready for Vendor Rush Cutoff Time was invalid — using default 07:00 ET until you save a valid value.
+        </Alert>
+      ) : null}
       {message ? (
         <Alert
           severity={message.includes("saved") ? "success" : "error"}
@@ -212,6 +230,23 @@ export default function ProcessingSettingsPanel() {
             value={fields.rejectMinutes ?? 30}
             onChange={(e) => setFields({ ...fields, rejectMinutes: e.target.value })}
             inputProps={{ min: 1 }}
+            fullWidth
+          />
+        </Grid>
+      </Grid>
+
+      <Typography variant="subtitle1" fontWeight={800} gutterBottom sx={{ mt: 1 }}>
+        Ready for Vendor
+      </Typography>
+      <Grid container spacing={2} sx={{ mb: 3 }}>
+        <Grid item xs={12} sm={6} md={4}>
+          <TextField
+            size="small"
+            label="Ready for Vendor Rush Cutoff Time"
+            helperText="Before this ET time, RFV Rush includes TODAY/past-due/same-day orders only. At or after this ET time, next-day RFV orders also count as Rush. America/New_York. Format HH:MM."
+            value={fields.rfvRushCutoff ?? "07:00"}
+            onChange={(e) => setFields({ ...fields, rfvRushCutoff: e.target.value })}
+            placeholder="07:00"
             fullWidth
           />
         </Grid>

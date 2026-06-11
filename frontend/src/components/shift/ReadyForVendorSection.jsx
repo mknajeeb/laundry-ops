@@ -1,10 +1,12 @@
 import { Alert, Box, Typography } from "@mui/material";
 import DrilldownCardGrid from "./DrilldownCardGrid";
+import RushFilterChips from "./RushFilterChips";
 
 export default function ReadyForVendorSection({
   rfv,
   rfvSync,
   rushFilter,
+  onRushChange,
   onDrilldown,
   activeTag,
 }) {
@@ -31,6 +33,14 @@ export default function ReadyForVendorSection({
         <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
           {rfv?.unavailable_reason || rfvSync?.message || "Ready for Vendor sync unavailable — refresh syncs"}
         </Alert>
+      ) : null}
+      {onRushChange ? (
+        <Box sx={{ mb: 1 }}>
+          <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25 }}>
+            Rush
+          </Typography>
+          <RushFilterChips value={rushFilter} onChange={onRushChange} />
+        </Box>
       ) : null}
       <DrilldownCardGrid cards={cards} onDrilldown={onDrilldown} activeTag={activeTag} rushFilter={rushFilter} />
     </Box>

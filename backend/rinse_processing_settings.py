@@ -35,6 +35,7 @@ KEY_DRYING_MINUTES = "drying_minutes"
 KEY_REJECT_AFTER_CREATE_ISSUE = "reject_after_create_issue_minutes"
 KEY_WEIGHT_DIFFERENCE_THRESHOLD = "weight_difference_threshold_lbs"
 KEY_FACILITY_ENTRY_RACKS = "facility_entry_racks"
+KEY_RFV_RUSH_CUTOFF = "rfv_rush_cutoff_time_et"
 
 DEFAULT_WEIGH = 30
 DEFAULT_SORT = 180
@@ -45,6 +46,61 @@ DEFAULT_WASHING_MINUTES = 30
 DEFAULT_DRYING_MINUTES = 45
 DEFAULT_REJECT_AFTER_CREATE_ISSUE = 45
 DEFAULT_WEIGHT_DIFFERENCE_THRESHOLD_LBS = 5.0
+DEFAULT_RFV_RUSH_CUTOFF = "07:00"
+
+
+def parse_rfv_rush_cutoff_time_et(raw: Any) -> tuple[str, Any] | None:
+    """Parse HH:MM (or HH:MM:SS) ET cutoff. Returns (normalized HH:MM label, time) or None."""
+    from datetime import datetime, time
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    for fmt, n in (("%H:%M:%S", 8), ("%H:%M", 5)):
+        try:
+            parsed = datetime.strptime(text[:n], fmt)
+            t = parsed.time()
+            return t.strftime("%H:%M"), t
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_rfv_rush_cutoff_setting(cursor, organization_id: int) -> dict[str, Any]:
+    """Runtime RFV rush cutoff — settings value with safe default fallback."""
+    from datetime import datetime
+
+    org = int(organization_id)
+    default_t = parse_rfv_rush_cutoff_time_et(DEFAULT_RFV_RUSH_CUTOFF)
+    default_time = default_t[1] if default_t else datetime.strptime("07:00", "%H:%M").time()
+    raw = _get_setting(cursor, org, KEY_RFV_RUSH_CUTOFF)
+    if raw is None or not str(raw).strip():
+        return {
+            "rfv_rush_cutoff_time_et": DEFAULT_RFV_RUSH_CUTOFF,
+            "rfv_rush_cutoff_source": "default",
+            "cutoff_time": default_time,
+            "stored_raw": None,
+        }
+    parsed = parse_rfv_rush_cutoff_time_et(raw)
+    if parsed:
+        return {
+            "rfv_rush_cutoff_time_et": parsed[0],
+            "rfv_rush_cutoff_source": "settings",
+            "cutoff_time": parsed[1],
+            "stored_raw": str(raw).strip(),
+        }
+    return {
+        "rfv_rush_cutoff_time_et": DEFAULT_RFV_RUSH_CUTOFF,
+        "rfv_rush_cutoff_source": "default",
+        "cutoff_time": default_time,
+        "stored_raw": str(raw).strip(),
+        "rfv_rush_cutoff_invalid_stored": True,
+    }
+
+
+def get_rfv_rush_cutoff_time_et(cursor, organization_id: int):
+    """Return cutoff as datetime.time (fallback 07:00 ET)."""
+    return resolve_rfv_rush_cutoff_setting(cursor, organization_id)["cutoff_time"]
 
 
 def _get_setting(cursor, organization_id: int, key: str) -> str | None:
@@ -118,6 +174,7 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
     facility_entry_racks = parse_facility_entry_racks(
         _get_setting(cursor, org, KEY_FACILITY_ENTRY_RACKS)
     )
+    rfv_cutoff = resolve_rfv_rush_cutoff_setting(cursor, org)
     total = weigh + sort + wash + dry
     return {
         "processing_weigh_seconds_per_bag": weigh,
@@ -130,6 +187,9 @@ def get_processing_settings(cursor, organization_id: int) -> dict[str, Any]:
         "reject_after_create_issue_minutes": reject_after_issue,
         "weight_difference_threshold_lbs": weight_diff,
         "facility_entry_racks": facility_entry_racks,
+        "rfv_rush_cutoff_time_et": rfv_cutoff["rfv_rush_cutoff_time_et"],
+        "rfv_rush_cutoff_source": rfv_cutoff["rfv_rush_cutoff_source"],
+        "rfv_rush_cutoff_invalid_stored": bool(rfv_cutoff.get("rfv_rush_cutoff_invalid_stored")),
         "total_seconds_per_bag": total,
         "total_minutes_per_bag": round(total / 60.0, 2),
     }
@@ -159,4 +219,11 @@ def put_processing_settings(cursor, organization_id: int, payload: dict[str, Any
 
         racks = parse_facility_entry_racks(data["facility_entry_racks"])
         _set_setting(cursor, org, KEY_FACILITY_ENTRY_RACKS, json.dumps(racks))
+    if "rfv_rush_cutoff_time_et" in data and data["rfv_rush_cutoff_time_et"] is not None:
+        parsed = parse_rfv_rush_cutoff_time_et(data["rfv_rush_cutoff_time_et"])
+        if not parsed:
+            raise ValueError(
+                "Invalid Ready for Vendor Rush Cutoff Time — use HH:MM in America/New_York (e.g. 07:00)."
+            )
+        _set_setting(cursor, org, KEY_RFV_RUSH_CUTOFF, parsed[0])
     return get_processing_settings(cursor, org)

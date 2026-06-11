@@ -19,6 +19,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
 import LiveBaselineBanner from "../components/shift/LiveBaselineBanner";
 import SyncStatusSection from "../components/shift/SyncStatusSection";
+import ReadyForVendorSection from "../components/shift/ReadyForVendorSection";
 import ShiftMonitorModuleSection from "../components/shift/ShiftMonitorModuleSection";
 import VendorHomeComparisonSection from "../components/shift/VendorHomeComparisonSection";
 import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilitySnapshotSection";
@@ -32,6 +33,7 @@ import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import {
   filterModuleRecords,
+  filterRfvRecords,
   formatShiftDateLabel,
   formatDueDateRow,
   formatLastActivityRow,
@@ -57,6 +59,34 @@ function MonitorNav() {
         </Button>
       ))}
     </Stack>
+  );
+}
+
+function RfvRecordRow({ row }) {
+  return (
+    <Paper elevation={0} sx={{ p: 1.5, mb: 1, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800}>
+        {row.bag_id}
+      </Typography>
+      <Typography variant="body2" color="primary.main" fontWeight={600}>
+        {row.customer_name || "—"}
+      </Typography>
+      <Typography variant="body2" sx={{ mt: 0.5 }}>
+        Estimated delivery: {row.estimated_delivery_raw || "—"}
+      </Typography>
+      <Typography variant="body2">
+        EDD (ET): {row.estimated_delivery_date_et || "—"}
+      </Typography>
+      <Typography variant="body2">
+        TODAY label: {row.has_today_label ? "yes" : "no"}
+      </Typography>
+      <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>
+        {row.rush_label || row.rush_bucket || "—"} · {row.service_bucket || row.service_type || "—"}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+        {row.reason || row.source}
+      </Typography>
+    </Paper>
   );
 }
 
@@ -354,6 +384,7 @@ export default function ShiftMonitorPage({ user }) {
     exceptions: { rush: "all", service: "all" },
     monitor: { rush: "all", service: "all" },
   });
+  const [rfvRushFilter, setRfvRushFilter] = useState("all");
   const [expandedBag, setExpandedBag] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const initialToday = todayRange();
@@ -391,19 +422,35 @@ export default function ShiftMonitorPage({ user }) {
   const records = data?.records || [];
   const modules = data?.shift_monitor_modules || {};
   const opsLabel = modules.operations_window?.label;
+  const rfv = data?.ready_for_vendor || {};
 
   const filtered = useMemo(() => {
-    if (!drilldown?.moduleTag) return [];
+    if (!drilldown) return [];
+    if (drilldown.type === "rfv") {
+      return filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, rfvRushFilter);
+    }
     const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
     return filterModuleRecords(records, {
       moduleTag: drilldown.moduleTag,
       rushFilter: f.rush,
       serviceFilter: f.service,
     });
-  }, [records, drilldown, moduleFilters]);
+  }, [records, drilldown, moduleFilters, rfv.rows, rfvRushFilter]);
 
   const openDrilldown = (ctx) => {
     setDrilldown(ctx);
+    setDrawerOpen(true);
+  };
+
+  const openRfvDrilldown = (tagOrCtx) => {
+    const tag = typeof tagOrCtx === "string" ? tagOrCtx : (tagOrCtx?.drilldown_tag || tagOrCtx?.drilldownTag);
+    const cardLabel = typeof tagOrCtx === "string" ? tag : (tagOrCtx?.label || tagOrCtx?.cardLabel || tag);
+    setDrilldown({
+      type: "rfv",
+      drilldownTag: tag,
+      cardLabel,
+      moduleTitle: "Ready for Vendor",
+    });
     setDrawerOpen(true);
   };
 
@@ -470,10 +517,9 @@ export default function ShiftMonitorPage({ user }) {
     }
   };
 
-  const rfv = data?.ready_for_vendor || {};
+  const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
   const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
   const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
-  const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
   const cfs = data?.current_facility_snapshot || {};
   const dts = data?.due_today_snapshot || {};
   const facilityTracker = data?.facility_tracker_today || {};
@@ -535,6 +581,15 @@ export default function ShiftMonitorPage({ user }) {
             onRefresh={runRinseSync}
           />
 
+          <ReadyForVendorSection
+            rfv={rfv}
+            rfvSync={rfvSync}
+            rushFilter={rfvRushFilter}
+            onRushChange={setRfvRushFilter}
+            onDrilldown={openRfvDrilldown}
+            activeTag={drilldown?.type === "rfv" ? drilldown.drilldownTag : null}
+          />
+
           <LiveBaselineBanner baseline={data?.live_baseline} />
 
           {moduleKeys.map((key) => (
@@ -569,7 +624,9 @@ export default function ShiftMonitorPage({ user }) {
               {drilldown?.moduleTitle || "Records"} — {drilldown?.cardLabel || ""}
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block">
-              Rush: {moduleFilters[drilldown?.moduleKey]?.rush || "all"} · Service: {moduleFilters[drilldown?.moduleKey]?.service || "all"} · Count: {filtered.length}
+              {drilldown?.type === "rfv"
+                ? `Rush: ${rfvRushFilter} · Count: ${filtered.length}`
+                : `Rush: ${moduleFilters[drilldown?.moduleKey]?.rush || "all"} · Service: ${moduleFilters[drilldown?.moduleKey]?.service || "all"} · Count: ${filtered.length}`}
             </Typography>
           </Box>
           <IconButton onClick={() => setDrawerOpen(false)} aria-label="Close">
@@ -577,14 +634,16 @@ export default function ShiftMonitorPage({ user }) {
           </IconButton>
         </Stack>
         <Box sx={{ overflow: "auto", flex: 1 }}>
-          {filtered.map((row) => (
-            <RecordRow
-              key={row.bag_id}
-              row={row}
-              expanded={expandedBag === row.bag_id}
-              onToggle={() => setExpandedBag((b) => (b === row.bag_id ? null : row.bag_id))}
-            />
-          ))}
+          {drilldown?.type === "rfv"
+            ? filtered.map((row) => <RfvRecordRow key={row.bag_id} row={row} />)
+            : filtered.map((row) => (
+              <RecordRow
+                key={row.bag_id}
+                row={row}
+                expanded={expandedBag === row.bag_id}
+                onToggle={() => setExpandedBag((b) => (b === row.bag_id ? null : row.bag_id))}
+              />
+            ))}
           {filtered.length === 0 ? (
             <Typography variant="body2" color="text.secondary">No records for this filter.</Typography>
           ) : null}

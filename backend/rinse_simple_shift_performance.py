@@ -2663,8 +2663,8 @@ def build_simple_shift_performance_payload(
         get_shift_monitor_baseline,
         load_live_at_facility_population,
         load_live_due_today_population,
-        load_live_rfv_incoming_rows,
     )
+    from backend.rinse_ready_for_vendor_queue import build_ready_for_vendor_queue
 
     baseline_settings = get_shift_monitor_baseline(cursor, org)
     baseline_ctx = build_baseline_context(cursor, org, baseline_settings)
@@ -2689,30 +2689,16 @@ def build_simple_shift_performance_payload(
     pending = get_pending_bag_status(
         cursor, org, target_date=target_date, evaluation_time=evaluation_time
     )
-    live_rfv_rows, live_rfv_meta = load_live_rfv_incoming_rows(
-        cursor, org, target_date=target_date, baseline_ctx=baseline_ctx
+    rfv_queue = build_ready_for_vendor_queue(
+        cursor, org, baseline_ctx=baseline_ctx, rfv_sync=rfv_sync
     )
+    ready_for_vendor = rfv_queue["section"]
+    rfv_bag_ids: set[str] = set(rfv_queue.get("bag_ids") or set())
+    live_rfv_rows = list(rfv_queue.get("legacy_incoming_rows") or [])
     if use_live_baseline:
         pending = apply_live_baseline_to_pending_incoming(
-            pending, live_rfv_rows, baseline_ctx=baseline_ctx
+            pending, [], baseline_ctx=baseline_ctx
         )
-    ready_for_vendor = _build_ready_for_vendor_section(pending, rfv_sync=rfv_sync)
-    if use_live_baseline and baseline_ctx.get("rfv_scrape_ready") and not live_rfv_rows:
-        ready_for_vendor = {
-            **ready_for_vendor,
-            "live": True,
-            "under_review": False,
-            "total": 0,
-            "rush_wf": 0,
-            "rush_hd": 0,
-            "nonrush_wf": 0,
-            "nonrush_hd": 0,
-            "unknown_needs_review": 0,
-            "zero_rows_success": True,
-            "live_baseline": True,
-            "data_quality_warning": "Ready for Vendor = 0 after post-baseline RFV scrape",
-        }
-        _finalize_section_counts(ready_for_vendor)
     scope_a = _build_scope_a(pending)
 
     incoming_rows = {
@@ -2746,7 +2732,7 @@ def build_simple_shift_performance_payload(
         )
         unified_at_meta["live_baseline"] = True
         unified_at_meta["legacy_unified_total"] = len(legacy_unified_at)
-        live_rfv_bids = {str(r.get("bag_id") or "").strip().upper() for r in live_rfv_rows if r.get("bag_id")}
+        live_rfv_bids = set(rfv_bag_ids)
         excluded_pre_baseline_count, excluded_pre_baseline_samples = compute_excluded_pre_baseline_only(
             legacy_unified_at=legacy_unified_at,
             live_at_facility=unified_at_facility,
@@ -2786,7 +2772,7 @@ def build_simple_shift_performance_payload(
     scope_b_ids = _load_bag_ids_with_et_activity(
         cursor, org, period_start=period_start, period_end=period_end
     )
-    live_dashboard_ids = at_facility_ids | due_today_ids | set(incoming_rows.keys())
+    live_dashboard_ids = (at_facility_ids | due_today_ids | set(incoming_rows.keys())) - rfv_bag_ids
     if use_live_baseline:
         pending_by_bag = {k: v for k, v in pending_by_bag.items() if k in live_dashboard_ids}
         all_bag_ids = sorted(
@@ -2796,14 +2782,15 @@ def build_simple_shift_performance_payload(
         )
     else:
         all_bag_ids = sorted(
-            set(scope_b_ids)
+            (set(scope_b_ids)
             | set(incoming_rows.keys())
             | set(pending_by_bag.keys())
             | set(facility_entry_ids)
             | set(carryover_candidates)
             | set(active_candidates)
             | set(at_facility_ids)
-            | set(due_today_ids)
+            | set(due_today_ids))
+            - rfv_bag_ids
         )
 
     meta_by_bag = _load_bag_metadata(cursor, org, all_bag_ids)
@@ -3038,9 +3025,6 @@ def build_simple_shift_performance_payload(
     )
     employee_cards = _build_employee_cards(employee_summary)
     exceptions_summary = _build_exceptions_summary(records)
-    if ready_for_vendor.get("live"):
-        _align_ready_for_vendor_counts(ready_for_vendor, records)
-        _attach_rfv_drilldown_cards(ready_for_vendor, records)
     rinse_sync = _attach_section_sync_statuses(
         cursor,
         org,

@@ -69,6 +69,14 @@ export function filterRecords(records, tag, rushFilter = "all") {
   return filterByRush(out, rushFilter);
 }
 
+export function filterRfvRecords(rows, tag, rushFilter = "all") {
+  let out = rows || [];
+  if (tag) {
+    out = out.filter((r) => (r.drilldown_tags || []).includes(tag));
+  }
+  return out.filter((r) => matchesRushFilter(r, rushFilter) && matchesServiceFilter(r, "all"));
+}
+
 export function sectionSplitCounts(section, rushFilter = "all") {
   if (!section || section.live === false) {
     return { total: null, wf: null, hd: null, unknown: null, unavailable: true };

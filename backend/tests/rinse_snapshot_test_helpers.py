@@ -130,8 +130,20 @@ def patch_unified_loaders_from_pending(pending_response: dict, *, today: Optiona
         "backend.rinse_shift_monitor_baseline.load_live_due_today_population",
         side_effect=_live_due,
     ), patch(
-        "backend.rinse_shift_monitor_baseline.load_live_rfv_incoming_rows",
-        return_value=([], {"rfv_scrape_ready": True, "row_count": 0}),
+        "backend.rinse_ready_for_vendor_queue.build_ready_for_vendor_queue",
+        return_value={
+            "section": {
+                "live": True,
+                "total": 0,
+                "rows": [],
+                "uses_scans": False,
+                "snapshot_only": True,
+            },
+            "rows": [],
+            "bag_ids": set(),
+            "meta": {"uses_scans": False},
+            "legacy_incoming_rows": [],
+        },
     ), patch(
         "backend.rinse_shift_monitor_baseline.latest_at_vendor_scrape_after_baseline",
         return_value={"id": 1, "finished_at": datetime(2026, 6, 10, 12, 0, 0), "imported_batch_id": 1},
