@@ -76,6 +76,79 @@ class TestCurrentFacilitySnapshotLogic:
             operationally_complete=False,
         ) == CFS_SENT_LEFT
 
+    def test_load_out_counts_as_sent_left_even_when_staging_active(self):
+        from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+        from backend.rinse_current_facility_snapshot import (
+            bag_is_operationally_complete,
+            bag_is_sent_left_from_facility,
+            scan_events_indicate_sent_left,
+        )
+
+        events = [
+            _ev("weight-entry", T1),
+            _ev("start-cleaning", T2),
+            _ev("load-out", T3),
+        ]
+        completion = evaluate_bag_completion_v2(events)
+        pending = {"in_active_staging": True, "current_lifecycle_status": "FOLDED_COMPLETED"}
+        assert scan_events_indicate_sent_left(events) is True
+        assert bag_is_sent_left_from_facility(
+            pending,
+            completion,
+            {},
+            events,
+            completion_events=events,
+        ) is True
+
+    def test_full_event_history_completes_when_post_baseline_weight_missing(self):
+        from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
+        from backend.rinse_current_facility_snapshot import bag_is_operationally_complete
+        from backend.rinse_shift_monitor_baseline import filter_events_after_baseline
+
+        baseline = datetime(2026, 6, 10, 0, 0, 0)
+        full = _sv(
+            _ev("weight-entry", datetime(2026, 6, 9, 9, 46)),
+            _ev("weight-entry", datetime(2026, 6, 9, 10, 0)),
+            _ev("start-cleaning", datetime(2026, 6, 10, 10, 15)),
+            _ev("complete-cleaning", datetime(2026, 6, 10, 15, 25), rack="Folding-5-VW"),
+        )
+        filtered = filter_events_after_baseline(full, baseline)
+        completion_filtered = evaluate_bag_completion_v2(filtered)
+        completion_full = evaluate_bag_completion_v2(full)
+        assert completion_filtered.completed is False
+        assert completion_full.completed is True
+        assert bag_is_operationally_complete(
+            service_type="WF",
+            completion=completion_filtered,
+            events=filtered,
+            pending_row={"current_lifecycle_status": "FOLDED_COMPLETED", "in_active_staging": True},
+            meta={},
+            completion_events=full,
+        ) is True
+
+    def test_folded_completed_lifecycle_fallback_when_no_scan_completion(self):
+        from backend.rinse_bag_activity_rules import BagCompletionResult
+        from backend.rinse_current_facility_snapshot import bag_is_operationally_complete
+
+        completion = BagCompletionResult(
+            completed=False,
+            via_clean_rack=False,
+            completion_at=None,
+            completion_user=None,
+            completion_kind=None,
+            exception_code=None,
+            needs_review=False,
+        )
+        assert bag_is_operationally_complete(
+            service_type="WF",
+            completion=completion,
+            events=[],
+            pending_row={"current_lifecycle_status": "FOLDED_COMPLETED", "in_active_staging": True},
+            meta={},
+            completion_events=[],
+            record={"current_stage": "FOLDED_COMPLETED"},
+        ) is True
+
 
 class TestCurrentFacilitySnapshotPayload:
     @patch("backend.rinse_presence_sync_status.get_ready_for_vendor_sync_status")
@@ -529,7 +602,7 @@ class TestUnifiedSnapshotPopulation:
         assert (payload["due_today_snapshot"].get("reconciliation") or {}).get("ok") is True
         assert (payload["due_today_snapshot"].get("reconciliation") or {}).get("vendor_home_parity_ok") is False
         parity = payload.get("vendor_home_parity") or {}
-        assert parity.get("due_today_yet_to_process") == 34
+        assert parity.get("due_today_yet_to_process") == 0
         assert parity.get("internal_scan", {}).get("due_today_yet_to_process") == 1
         vh_due_cards = (payload["due_today_snapshot"].get("vendor_home_view") or {}).get("due_today_cards") or []
         assert all(not c.get("clickable") for c in vh_due_cards)
@@ -560,7 +633,7 @@ class TestVendorHomeParitySplit:
             record_count_fn=_count,
         )
         assert section["manual_reference_only"] is True
-        assert section["at_veewash_yet_to_process"] == 42
+        assert section["at_veewash_yet_to_process"] == 15
         for card in section["cards"] + section["due_today_cards"]:
             assert card.get("clickable") is False
             assert card.get("manual_reference_only") is True
@@ -590,7 +663,7 @@ class TestVendorHomeParitySplit:
         )
         assert parity["reconciled"] is False
         assert parity["needs_review"] is True
-        assert parity["due_today_yet_to_process"] == 34
+        assert parity["due_today_yet_to_process"] == 0
         assert parity["internal_scan"]["due_today_yet_to_process"] == 4
         assert "presence" in parity["reason"].lower() or "portal" in parity["reason"].lower()
         assert parity["comparison"]["due_today"]["status"] == "Needs Review"
@@ -684,7 +757,7 @@ class TestVendorHomeParitySplit:
         dts = payload["due_today_snapshot"]
         assert _count_tag(payload["records"], SCAN_DTS_YET_TO_PROCESS) == 1
         assert dts["due_today_yet_to_process"] == 1
-        assert parity["due_today_yet_to_process"] == 34
+        assert parity["due_today_yet_to_process"] == 0
         assert parity["internal_scan"]["due_today_yet_to_process"] == 1
         internal_cards = (dts.get("internal_scan_view") or {}).get("cards") or dts.get("cards") or []
         for card in internal_cards:

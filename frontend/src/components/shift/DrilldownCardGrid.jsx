@@ -1,6 +1,6 @@
 import ShiftCountCard from "./ShiftCountCard";
 
-/** Render backend drilldown contract cards — clickable only when parity OK. */
+/** Render backend drilldown contract cards. */
 export default function DrilldownCardGrid({ cards, onDrilldown, activeTag, compact = true, rushFilter = "all" }) {
   if (!cards?.length) return null;
 
@@ -24,15 +24,24 @@ export default function DrilldownCardGrid({ cards, onDrilldown, activeTag, compa
     >
       {visible.map((card) => {
         const tag = card.drilldown_tag;
-        const clickable = Boolean(card.clickable && tag && onDrilldown);
-        const value = card.needs_review ? "Review" : card.count ?? "—";
+        const parityMismatch =
+          tag
+          && card.count != null
+          && card.records_count != null
+          && card.records_count !== card.count;
+        const showReview = Boolean(
+          card.needs_review
+          && (parityMismatch || card.sync_stale || card.sync_failed || card.source_missing),
+        );
+        const clickable = Boolean((card.clickable !== false) && tag && onDrilldown && !showReview);
+        const value = showReview ? "Review" : card.count ?? "—";
         return (
           <ShiftCountCard
-            key={`${card.label}-${tag || "review"}`}
+            key={`${card.label}-${tag || "static"}`}
             label={card.label}
             value={value}
             sub={
-              card.needs_review
+              showReview
                 ? card.under_review_reason || "Needs Review"
                 : card.records_count != null && card.count != null && card.records_count !== card.count
                   ? `Rows ${card.records_count}`
@@ -40,7 +49,7 @@ export default function DrilldownCardGrid({ cards, onDrilldown, activeTag, compa
             }
             onClick={clickable ? () => onDrilldown(tag) : undefined}
             active={tag && activeTag === tag}
-            warn={card.needs_review}
+            warn={showReview}
             compact={compact}
           />
         );

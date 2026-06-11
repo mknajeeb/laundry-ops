@@ -4,6 +4,54 @@ export const RUSH_FILTERS = [
   { id: "non_rush", label: "Non-Rush" },
 ];
 
+export const SERVICE_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "wf", label: "WF" },
+  { id: "hd", label: "HD" },
+];
+
+export function matchesRushFilter(rec, rushFilter) {
+  if (!rushFilter || rushFilter === "all") return true;
+  const rb = rec.rush_bucket || (rec.rush_label === "Rush" ? "RUSH" : rec.rush_label === "Non-Rush" ? "NON_RUSH" : "");
+  if (rushFilter === "rush") return rb === "RUSH";
+  if (rushFilter === "non_rush") return rb === "NON_RUSH";
+  return true;
+}
+
+export function matchesServiceFilter(rec, serviceFilter) {
+  if (!serviceFilter || serviceFilter === "all") return true;
+  const sb = String(rec.service_bucket || rec.service_type || "").toUpperCase();
+  if (serviceFilter === "wf") return sb === "WF";
+  if (serviceFilter === "hd") return sb === "HD";
+  return true;
+}
+
+export function filterModuleRecords(records, { moduleTag, rushFilter = "all", serviceFilter = "all" } = {}) {
+  return (records || []).filter((r) => {
+    if (moduleTag && !(r.module_tags || []).includes(moduleTag)) return false;
+    return matchesRushFilter(r, rushFilter) && matchesServiceFilter(r, serviceFilter);
+  });
+}
+
+export function filterCardsForScope(cards, serviceFilter = "all") {
+  return (cards || []).filter((card) => {
+    if (serviceFilter === "hd" && card.wf_only) return false;
+    if (serviceFilter === "wf" && card.hd_only) return false;
+    return true;
+  });
+}
+
+export function getModuleCardCount(records, card, rushFilter, serviceFilter, module) {
+  if (card.informational || !card.module_tag) return card.count ?? 0;
+  if (module?.mode === "summary_only" || module?.filters_enabled === false) return card.count ?? 0;
+  if (card.id === "mon_weight" && serviceFilter === "hd") return 0;
+  return filterModuleRecords(records, {
+    moduleTag: card.module_tag,
+    rushFilter,
+    serviceFilter,
+  }).length;
+}
+
 export function filterByRush(records, rushFilter) {
   if (!rushFilter || rushFilter === "all") return records || [];
   return (records || []).filter((r) => {
@@ -115,7 +163,7 @@ export function formatDueDateRow(row) {
 }
 
 export function formatLastActivityRow(row) {
-  const t = row?.last_activity_time || row?.last_scan_time;
+  const t = row?.last_activity_time_et || row?.last_activity_time || row?.last_scan_time;
   if (!t) return "Last Activity: —";
   return `Last Activity: ${formatEtDateTime(t)}`;
 }
@@ -126,6 +174,18 @@ export function formatRushAuditRow(row) {
   if (row?.computed_rush_rule) parts.push(row.computed_rush_rule);
   else if (row?.rush_type_raw) parts.push(`Raw rush_type: ${row.rush_type_raw}`);
   return parts.join(" · ") || null;
+}
+
+export function formatRecordReason(row) {
+  return (
+    row?.baseline_inclusion_reason
+    || row?.vendor_home_bucket_reason
+    || row?.scan_dts_bucket_reason
+    || row?.snapshot_bucket_reason
+    || row?.wip_bucket_reason
+    || row?.due_today_bucket_reason
+    || null
+  );
 }
 
 export function formatShiftDateLabel(dateStart, dateEnd) {

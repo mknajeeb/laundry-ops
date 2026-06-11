@@ -17,33 +17,27 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CloseIcon from "@mui/icons-material/Close";
-import ReadyForVendorSection from "../components/shift/ReadyForVendorSection";
 import LiveBaselineBanner from "../components/shift/LiveBaselineBanner";
+import SyncStatusSection from "../components/shift/SyncStatusSection";
+import ShiftMonitorModuleSection from "../components/shift/ShiftMonitorModuleSection";
 import VendorHomeComparisonSection from "../components/shift/VendorHomeComparisonSection";
 import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilitySnapshotSection";
 import DueTodaySnapshotSection from "../components/shift/DueTodaySnapshotSection";
-import FacilityWipSection from "../components/shift/FacilityWipSection";
 import FacilityWorkloadSection from "../components/shift/FacilityWorkloadSection";
-import ShiftCountCard from "../components/shift/ShiftCountCard";
-import RushFilterChips from "../components/shift/RushFilterChips";
-import {
-  MonitorPreviewSection,
-  ExceptionsPreviewSection,
-  EmployeeActivityPlaceholder,
-} from "../components/shift/DashboardPreviewSections";
+import { EmployeeActivityPlaceholder } from "../components/shift/DashboardPreviewSections";
 import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import {
-  filterRecords,
+  filterModuleRecords,
   formatShiftDateLabel,
-  syncStatusSubtext,
-  rinseSyncBanner,
   formatDueDateRow,
   formatLastActivityRow,
   formatRushAuditRow,
+  formatRecordReason,
+  formatEtDateTime,
 } from "../utils/shiftMonitorHelpers";
 
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
@@ -112,7 +106,7 @@ function RecordRow({ row, expanded, onToggle }) {
             {row.bag_id}
           </Typography>
           <Typography variant="body2" color="primary.main" fontWeight={600}>
-            {row.customer || "—"}
+            {row.customer_name || row.customer || "—"}
           </Typography>
           <Typography variant="body2" color="primary.main" fontWeight={700} sx={{ mt: 0.5 }}>
             {formatDueDateRow(row)}
@@ -125,14 +119,9 @@ function RecordRow({ row, expanded, onToggle }) {
               {row.last_activity_purpose || row.last_scan_purpose}
             </Typography>
           ) : null}
-          {row.baseline_inclusion_reason ? (
-            <Typography variant="body2" color="info.main" fontWeight={600} sx={{ mt: 0.5 }}>
-              Baseline: {row.baseline_inclusion_reason}
-            </Typography>
-          ) : null}
-          {(row.snapshot_bucket_reason || row.wip_bucket_reason || row.due_today_bucket_reason || row.scan_dts_bucket_reason || row.vendor_home_bucket_reason) ? (
-            <Typography variant="body2" color="warning.dark" fontWeight={700} sx={{ mt: 0.75 }}>
-              Why: {row.vendor_home_bucket_reason || row.scan_dts_bucket_reason || row.snapshot_bucket_reason || row.wip_bucket_reason || row.due_today_bucket_reason}
+          {(row.snapshot_bucket_reason || row.wip_bucket_reason || row.due_today_bucket_reason || row.scan_dts_bucket_reason || row.vendor_home_bucket_reason || row.baseline_inclusion_reason) ? (
+            <Typography variant="body2" color="text.secondary" fontWeight={600} sx={{ mt: 0.75 }}>
+              Reason: {formatRecordReason(row)}
             </Typography>
           ) : null}
           {row.source_seen_in?.length ? (
@@ -141,8 +130,8 @@ function RecordRow({ row, expanded, onToggle }) {
             </Typography>
           ) : null}
           <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mt: 0.5 }}>
-            <Chip size="small" label={row.computed_rush_label || row.rush_label || "—"} />
-            <Chip size="small" label={row.service_type || "WF"} variant="outlined" />
+            <Chip size="small" label={row.rush_bucket === "RUSH" ? "Rush" : row.rush_bucket === "NON_RUSH" ? "Non-Rush" : row.computed_rush_label || row.rush_label || "—"} />
+            <Chip size="small" label={row.service_bucket || row.service_type || "WF"} variant="outlined" />
             {row.needs_review ? <Chip size="small" color="warning" label="Review" /> : null}
           </Stack>
           {formatRushAuditRow(row) ? (
@@ -163,7 +152,7 @@ function RecordRow({ row, expanded, onToggle }) {
             {row.current_stage || row.current_status || "—"}
           </Typography>
           <Typography variant="caption" color="text.secondary" display="block">
-            {row.employee || "—"}
+            {row.employee || row.last_activity_user || "—"}
           </Typography>
         </Box>
       </Stack>
@@ -261,11 +250,12 @@ function RecordRow({ row, expanded, onToggle }) {
   );
 }
 
-function AdvancedDebugSection({ data, user }) {
+function AdvancedDebugSection({ data, user, cfs, dts, facilityTracker }) {
   const audit = data?.debug_audit || {};
   const facility = audit.facility_tracker_today || {};
   const recon = audit.reconciliation_status || {};
   const tagCounts = audit.drilldown_tag_counts || {};
+  const debugRush = "all";
 
   return (
     <Accordion defaultExpanded={false} sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }} TransitionProps={{ unmountOnExit: true }}>
@@ -273,18 +263,30 @@ function AdvancedDebugSection({ data, user }) {
         <Typography fontWeight={700}>Advanced Debug</Typography>
       </AccordionSummary>
       <AccordionDetails>
-        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
-          Vendor Home reconciliation
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
+          Vendor Home vs Internal Scan (reconciliation)
         </Typography>
-        <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
-          {JSON.stringify(audit.vendor_home_debug || {
-            vendor_home_reference: audit.vendor_home_reconciliation,
-            current_facility_snapshot: audit.current_facility_snapshot,
-            due_today_snapshot: audit.due_today_snapshot_debug,
-          }, null, 2)}
-        </Box>
-        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5 }}>
-          Sync & reconciliation
+        <VendorHomeComparisonSection parity={data?.vendor_home_parity} presence={data?.vendor_home_parity?.presence} />
+
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1, mt: 2 }}>
+          Current Facility Snapshot (A/B)
+        </Typography>
+        <CurrentFacilitySnapshotSection snapshot={cfs} rushFilter={debugRush} onDrilldown={() => {}} activeTag={null} />
+
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1, mt: 2 }}>
+          Due Today Snapshot (A/B)
+        </Typography>
+        <DueTodaySnapshotSection snapshot={dts} rushFilter={debugRush} onDrilldown={() => {}} activeTag={null} />
+
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1, mt: 2 }}>
+          Historical Workload
+        </Typography>
+        <FacilityWorkloadSection tracker={facilityTracker} rushFilter={debugRush} onDrilldown={() => {}} activeTag={null} />
+
+        <EmployeeActivityPlaceholder />
+
+        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.5, mt: 2 }}>
+          Sync & reconciliation JSON
         </Typography>
         <Box component="pre" sx={{ fontSize: 11, overflow: "auto", mb: 2, p: 1, bgcolor: "action.hover", borderRadius: 1 }}>
           {JSON.stringify(
@@ -292,6 +294,7 @@ function AdvancedDebugSection({ data, user }) {
               ready_for_vendor_sync: audit.ready_for_vendor_sync,
               at_vendor_sync: audit.at_vendor_sync,
               reconciliation_status: recon,
+              live_baseline: audit.live_baseline,
             },
             null,
             2,
@@ -306,10 +309,6 @@ function AdvancedDebugSection({ data, user }) {
               received_today_ids: facility.entered_today_ids,
               carryover_ids: facility.carryover_ids,
               total_workload_ids: facility.total_workload_ids,
-              rush_wf_ids: data?.facility_tracker_today?.total_workload?.rush_wf_ids,
-              rush_hd_ids: data?.facility_tracker_today?.total_workload?.rush_hd_ids,
-              nonrush_wf_ids: data?.facility_tracker_today?.total_workload?.nonrush_wf_ids,
-              nonrush_hd_ids: data?.facility_tracker_today?.total_workload?.nonrush_hd_ids,
             },
             null,
             2,
@@ -347,8 +346,14 @@ export default function ShiftMonitorPage({ user }) {
   const [syncMessage, setSyncMessage] = useState("");
   const [syncRunning, setSyncRunning] = useState(false);
   const syncTimerRef = useRef(null);
-  const [filterTag, setFilterTag] = useState(searchParams.get("filter") || null);
-  const [rushFilter, setRushFilter] = useState("all");
+  const [drilldown, setDrilldown] = useState(null);
+  const [moduleFilters, setModuleFilters] = useState({
+    portal_snapshot: { rush: "all", service: "all" },
+    facility_status: { rush: "all", service: "all" },
+    production_stage: { rush: "all", service: "all" },
+    exceptions: { rush: "all", service: "all" },
+    monitor: { rush: "all", service: "all" },
+  });
   const [expandedBag, setExpandedBag] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const initialToday = todayRange();
@@ -384,20 +389,29 @@ export default function ShiftMonitorPage({ user }) {
   }, [load]);
 
   const records = data?.records || [];
-  const filtered = useMemo(
-    () => filterRecords(records, filterTag, rushFilter),
-    [records, filterTag, rushFilter],
-  );
+  const modules = data?.shift_monitor_modules || {};
+  const opsLabel = modules.operations_window?.label;
 
-  const openDrilldown = (tag) => {
-    setFilterTag(tag);
-    setDrawerOpen(true);
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (tag) next.set("filter", tag);
-      else next.delete("filter");
-      return next;
+  const filtered = useMemo(() => {
+    if (!drilldown?.moduleTag) return [];
+    const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
+    return filterModuleRecords(records, {
+      moduleTag: drilldown.moduleTag,
+      rushFilter: f.rush,
+      serviceFilter: f.service,
     });
+  }, [records, drilldown, moduleFilters]);
+
+  const openDrilldown = (ctx) => {
+    setDrilldown(ctx);
+    setDrawerOpen(true);
+  };
+
+  const setModuleFilter = (moduleKey, patch) => {
+    setModuleFilters((prev) => ({
+      ...prev,
+      [moduleKey]: { ...(prev[moduleKey] || { rush: "all", service: "all" }), ...patch },
+    }));
   };
 
   const runRinseSync = async () => {
@@ -457,19 +471,14 @@ export default function ShiftMonitorPage({ user }) {
   };
 
   const rfv = data?.ready_for_vendor || {};
-  const facility = data?.facility_tracker_today || {};
-  const cfs = data?.current_facility_snapshot || {};
-  const dts = data?.due_today_snapshot || {};
-  const wip = data?.wip || {};
   const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
-  const underReview = data?.sections_under_review || {};
-  const rfvLive = rfv.live !== false && underReview.ready_for_vendor_live !== false;
-  const rinseSync = rinseSyncBanner(data);
   const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
   const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
-  const rfvSyncSub = syncStatusSubtext({ sync_status: rfvSync, last_refreshed_at: rfv.last_refreshed_at }, "Ready for Vendor Sync");
-  const avSyncSub = syncStatusSubtext({ sync_status: avSync }, "At Vendor Sync");
-  const rfvSyncStale = rfvSync?.stale && (rfv.last_refreshed_at || rfvSync.last_refreshed_at);
+  const cfs = data?.current_facility_snapshot || {};
+  const dts = data?.due_today_snapshot || {};
+  const facilityTracker = data?.facility_tracker_today || {};
+
+  const moduleKeys = ["portal_snapshot", "facility_status", "production_stage", "exceptions", "monitor"];
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -507,16 +516,7 @@ export default function ShiftMonitorPage({ user }) {
         <Button variant="contained" size="small" onClick={load} disabled={loading} sx={{ alignSelf: { xs: "stretch", sm: "center" } }}>
           Apply
         </Button>
-        <Button variant="outlined" size="small" onClick={runRinseSync} disabled={syncRunning || loading}>
-          {syncRunning ? "Refreshing…" : "Refresh Both Syncs"}
-        </Button>
       </Stack>
-
-      {data?.rinse_sync ? (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-          {rinseSync.lines.filter(Boolean).join(" · ")}
-        </Typography>
-      ) : null}
 
       {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
       {syncMessage ? <Alert severity="info" sx={{ mb: 2 }}>{syncMessage}</Alert> : null}
@@ -526,80 +526,34 @@ export default function ShiftMonitorPage({ user }) {
 
       {data ? (
         <>
-          <Box sx={{ mb: 2.5 }}>
-            <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>
-              Sync Status
-            </Typography>
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
-                gap: 1,
-              }}
-            >
-              <ShiftCountCard label="At Vendor Sync" value={avSync.last_refreshed_at_et || avSync.message || "—"} sub={avSyncSub} />
-              <ShiftCountCard
-                label="Ready for Vendor Sync"
-                value={rfvSync.last_refreshed_at_et || rfvSync.message || rfvSync.last_success_at_et || "—"}
-                sub={rfv.unavailable_reason || rfvSyncSub || (rfvSync.zero_rows_success ? "0 rows — success" : null)}
-                warn={!rfvLive || rfvSync?.failed || rfvSync?.latest_failed}
-              />
-            </Box>
-          </Box>
+          <SyncStatusSection
+            avSync={avSync}
+            rfvSync={rfvSync}
+            rfv={rfv}
+            syncRunning={syncRunning}
+            loading={loading}
+            onRefresh={runRinseSync}
+          />
 
           <LiveBaselineBanner baseline={data?.live_baseline} />
 
-          <VendorHomeComparisonSection parity={data?.vendor_home_parity} presence={data?.vendor_home_parity?.presence} />
+          {moduleKeys.map((key) => (
+            <ShiftMonitorModuleSection
+              key={key}
+              moduleKey={key}
+              module={modules[key]}
+              records={records}
+              rushFilter={moduleFilters[key]?.rush || "all"}
+              serviceFilter={moduleFilters[key]?.service || "all"}
+              onRushChange={(v) => setModuleFilter(key, { rush: v })}
+              onServiceChange={(v) => setModuleFilter(key, { service: v })}
+              onDrilldown={openDrilldown}
+              activeTag={drilldown}
+              operationsLabel={key === "monitor" ? opsLabel : undefined}
+            />
+          ))}
 
-          <CurrentFacilitySnapshotSection
-            snapshot={cfs}
-            rushFilter={rushFilter}
-            onDrilldown={openDrilldown}
-            activeTag={filterTag}
-          />
-
-          <DueTodaySnapshotSection
-            snapshot={dts}
-            rushFilter={rushFilter}
-            onDrilldown={openDrilldown}
-            activeTag={filterTag}
-          />
-
-          <ReadyForVendorSection
-            rfv={rfv}
-            rfvLive={rfvLive}
-            rfvSync={rfvSync}
-            rfvSyncSub={rfvSyncSub}
-            rfvSyncStale={rfvSyncStale}
-            rushFilter={rushFilter}
-            onRushFilterChange={setRushFilter}
-            onDrilldown={openDrilldown}
-            activeTag={filterTag}
-          />
-
-          <Box sx={{ mb: 1 }}>
-            <RushFilterChips value={rushFilter} onChange={setRushFilter} />
-          </Box>
-
-          <FacilityWorkloadSection
-            tracker={facility}
-            rushFilter={rushFilter}
-            onDrilldown={openDrilldown}
-            activeTag={filterTag}
-          />
-
-          <FacilityWipSection
-            wip={wip}
-            rushFilter={rushFilter}
-            onDrilldown={openDrilldown}
-            activeTag={filterTag}
-          />
-
-          <MonitorPreviewSection pipeline={pipeline} underReview={underReview.shift_status} onDrilldown={openDrilldown} activeTag={filterTag} />
-          <ExceptionsPreviewSection exceptions={data.exceptions_summary} underReview={underReview.exceptions} onDrilldown={openDrilldown} activeTag={filterTag} />
-          <EmployeeActivityPlaceholder />
-
-          <AdvancedDebugSection data={data} user={user} />
+          <AdvancedDebugSection data={data} user={user} cfs={cfs} dts={dts} facilityTracker={facilityTracker} />
         </>
       ) : null}
 
@@ -610,16 +564,17 @@ export default function ShiftMonitorPage({ user }) {
         PaperProps={{ sx: { height: "70vh", borderTopLeftRadius: 16, borderTopRightRadius: 16, p: 2 } }}
       >
         <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-          <Typography variant="h6" fontWeight={800}>
-            Records ({filtered.length})
-          </Typography>
+          <Box>
+            <Typography variant="h6" fontWeight={800}>
+              {drilldown?.moduleTitle || "Records"} — {drilldown?.cardLabel || ""}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block">
+              Rush: {moduleFilters[drilldown?.moduleKey]?.rush || "all"} · Service: {moduleFilters[drilldown?.moduleKey]?.service || "all"} · Count: {filtered.length}
+            </Typography>
+          </Box>
           <IconButton onClick={() => setDrawerOpen(false)} aria-label="Close">
             <CloseIcon />
           </IconButton>
-        </Stack>
-        <Stack direction="row" spacing={1} sx={{ mb: 1 }} flexWrap="wrap">
-          {filterTag ? <Chip label={filterTag} onDelete={() => setFilterTag(null)} /> : null}
-          {rushFilter !== "all" ? <Chip label={rushFilter === "rush" ? "Rush" : "Non-Rush"} size="small" /> : null}
         </Stack>
         <Box sx={{ overflow: "auto", flex: 1 }}>
           {filtered.map((row) => (

@@ -1145,6 +1145,10 @@ def _record_from_bag(
     tags: set[str] = set()
     if in_incoming:
         tags.add("ready_for_vendor")
+        if is_wf:
+            tags.add("rfv_wf")
+        elif is_hd:
+            tags.add("rfv_hd")
         if bucket:
             tags.add(f"rfv_{bucket}")
             if bucket.startswith("rush"):
@@ -1460,13 +1464,11 @@ def _build_rfv_drilldown_cards(section: Mapping[str, Any], records: list[dict[st
     if not section.get("live"):
         return []
     return [
-        _make_drilldown_card("Total", section.get("total"), "ready_for_vendor", records),
+        _make_drilldown_card("Ready for Vendor Total", section.get("total"), "ready_for_vendor", records),
         _make_drilldown_card("Rush", section.get("rush_total"), "rfv_rush", records),
         _make_drilldown_card("Non-Rush", section.get("nonrush_total"), "rfv_non_rush", records),
-        _make_drilldown_card("Rush WF", section.get("rush_wf"), "rfv_rush_wf", records),
-        _make_drilldown_card("Rush HD", section.get("rush_hd"), "rfv_rush_hd", records),
-        _make_drilldown_card("Non-Rush WF", section.get("nonrush_wf"), "rfv_nonrush_wf", records),
-        _make_drilldown_card("Non-Rush HD", section.get("nonrush_hd"), "rfv_nonrush_hd", records),
+        _make_drilldown_card("WF", section.get("wf_total"), "rfv_wf", records),
+        _make_drilldown_card("HD", section.get("hd_total"), "rfv_hd", records),
     ]
 
 
@@ -1604,6 +1606,7 @@ def _apply_current_facility_snapshot_tags(
     completions_by_bag: Mapping[str, Any],
     meta_by_bag: Mapping[str, Mapping[str, Any]],
     qualifies_yet_to_fold: Any,
+    completion_events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> None:
     """Tag unified at-VeeWash bags for Current Facility Snapshot + in-progress WIP."""
     from backend.rinse_current_facility_snapshot import (
@@ -1631,18 +1634,27 @@ def _apply_current_facility_snapshot_tags(
         if unified_row.get("source_seen_in"):
             rec["source_seen_in"] = list(unified_row["source_seen_in"])
         events = events_by_bag.get(bid) or []
+        completion_events = (completion_events_by_bag or events_by_bag).get(bid) or []
         pending_row = pending_by_bag.get(bid)
         meta = meta_by_bag.get(bid) or {}
         completion = completions_by_bag.get(bid)
         svc = str(rec.get("service_type") or unified_row.get("service_type") or "").upper()
         in_staging = bool((pending_row or {}).get("in_active_staging") or unified_row.get("in_active_staging"))
-        sent_left = bag_is_sent_left_from_facility(pending_row, completion, meta, events)
+        sent_left = bag_is_sent_left_from_facility(
+            pending_row,
+            completion,
+            meta,
+            events,
+            completion_events=completion_events,
+        )
         op_complete = bag_is_operationally_complete(
             service_type=svc,
             completion=completion,
             events=events,
             pending_row=pending_row,
             meta=meta,
+            completion_events=completion_events,
+            record=rec,
         )
         category = classify_current_facility_bag(
             in_active_staging=True,
@@ -1660,6 +1672,8 @@ def _apply_current_facility_snapshot_tags(
             )
         if category == CFS_SENT_LEFT:
             tags.add("cfs_sent_left")
+            if svc == "HD":
+                tags.add("hd_sent_left")
             rec["wip_bucket"] = None
             rec["wip_bucket_reason"] = "Sent/left — excluded from At Facility Total"
             rec["drilldown_tags"] = sorted(tags)
@@ -1711,6 +1725,10 @@ def _apply_current_facility_snapshot_tags(
         elif category == CFS_COMPLETED_STILL:
             tags.add("cfs_completed_still_at_facility")
             tags.add("cfs_completed_still")
+            if svc == "WF":
+                tags.add("wf_completed_by_scan")
+            elif svc == "HD":
+                tags.add("hd_completed")
             rec["wip_bucket"] = None
             rec["wip_bucket_reason"] = "Operationally complete but still at VeeWash (not sent/left)"
             rec["snapshot_bucket_reason"] = rec["wip_bucket_reason"]
@@ -1727,6 +1745,7 @@ def _apply_due_today_snapshot_tags(
     events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
     completions_by_bag: Mapping[str, Any],
     meta_by_bag: Mapping[str, Mapping[str, Any]],
+    completion_events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> None:
     from backend.rinse_current_facility_snapshot import (
         SCAN_DTS_COMPLETED,
@@ -1768,18 +1787,27 @@ def _apply_due_today_snapshot_tags(
             if dc != today:
                 continue
         events = events_by_bag.get(bid) or []
+        completion_events = (completion_events_by_bag or events_by_bag).get(bid) or []
         pending_row = pending_by_bag.get(bid)
         meta = meta_by_bag.get(bid) or {}
         completion = completions_by_bag.get(bid)
         svc = str(rec.get("service_type") or "").upper()
         bucket = str(rec.get("rush_bucket") or "")
-        sent_left = bag_is_sent_left_from_facility(pending_row, completion, meta, events)
+        sent_left = bag_is_sent_left_from_facility(
+            pending_row,
+            completion,
+            meta,
+            events,
+            completion_events=completion_events,
+        )
         op_complete = bag_is_operationally_complete(
             service_type=svc,
             completion=completion,
             events=events,
             pending_row=pending_row,
             meta=meta,
+            completion_events=completion_events,
+            record=rec,
         )
         processed = bag_is_due_today_processed(
             operationally_complete=op_complete,
@@ -2033,20 +2061,25 @@ def _build_wip_sections(records: list[dict[str, Any]], target_date: date) -> dic
         _make_drilldown_card("WF Scan-Inferred In Progress", len(wf), "wip_wf_in_progress", records),
         _make_drilldown_card("HD Scan-Inferred In Progress", len(hd), "wip_hd_in_progress", records),
     ]
+    wf_completed = _count_tag(records, "wf_completed_by_scan")
+    hd_completed = _count_tag(records, "hd_completed")
+    hd_sent_left = _count_tag(records, "hd_sent_left")
+
     wf_cards = [
-        _make_drilldown_card("WF Scan-Inferred In Progress", wf_counts["total"], "wip_wf_in_progress", records),
+        _make_drilldown_card("WF Total In Progress", wf_counts["total"], "wip_wf_in_progress", records),
         _make_drilldown_card("WF Not Weighed", wf_counts["not_weighed"], "wf_not_weighed", records),
         _make_drilldown_card("WF Weighed — Not Started", wf_counts["weighed_not_started"], "wf_weighed_not_started", records),
         _make_drilldown_card("WF Started Washing", wf_counts["started_washing"], "wf_started_washing", records),
         _make_drilldown_card("WF Pending Drying", wf_counts["pending_drying"], "wf_pending_drying", records),
         _make_drilldown_card("WF Pending Folding", wf_counts["pending_folding"], "wf_pending_folding", records),
-        _make_drilldown_card("WF Completed", None, None, records, under_review=True, under_review_reason="Completed WF are not in Yet to Process scope"),
+        _make_drilldown_card("WF Completed by Scan", wf_completed, "wf_completed_by_scan", records),
     ]
     hd_cards = [
-        _make_drilldown_card("HD Scan-Inferred In Progress", hd_counts["total"], "wip_hd_in_progress", records),
+        _make_drilldown_card("HD Total In Progress", hd_counts["total"], "wip_hd_in_progress", records),
         _make_drilldown_card("HD Not Started", hd_counts["not_started"], "hd_not_started", records),
         _make_drilldown_card("HD Started Cleaning", hd_counts["started_cleaning"], "hd_started_cleaning", records),
-        _make_drilldown_card("HD Completed", None, None, records, under_review=True, under_review_reason="Completed HD are not in Yet to Process scope"),
+        _make_drilldown_card("HD Completed", hd_completed, "hd_completed", records),
+        _make_drilldown_card("HD Sent / Left", hd_sent_left, "hd_sent_left", records),
     ]
 
     return {
@@ -2481,6 +2514,8 @@ def _align_ready_for_vendor_counts(section: dict[str, Any], records: list[dict[s
     section["rush_hd"] = _count_tag(records, "rfv_rush_hd")
     section["nonrush_wf"] = _count_tag(records, "rfv_nonrush_wf")
     section["nonrush_hd"] = _count_tag(records, "rfv_nonrush_hd")
+    section["wf_total"] = _count_tag(records, "rfv_wf")
+    section["hd_total"] = _count_tag(records, "rfv_hd")
     section["unknown_needs_review"] = _count_tag(records, "rfv_unknown_needs_review")
     _finalize_section_counts(section)
     section["data_quality_warning"] = _data_quality_warning(section)
@@ -2784,6 +2819,7 @@ def build_simple_shift_performance_payload(
         meta_by_bag[bid] = merged
 
     events_by_bag = _load_scan_events_for_bags(cursor, org, all_bag_ids)
+    completion_events_by_bag = events_by_bag
     if use_live_baseline:
         events_by_bag = filter_events_by_bag_after_baseline(events_by_bag, baseline_start_naive_et)
     user_maps = _load_rinse_user_maps(cursor, org)
@@ -2809,16 +2845,17 @@ def build_simple_shift_performance_payload(
         meta["effective_rush"] = resolve_effective_rush_for_row(meta, target_date)
         meta["view_date"] = target_date.isoformat()
         events = events_by_bag.get(bid) or []
+        completion_events = completion_events_by_bag.get(bid) or []
         in_incoming = bid in incoming_rows
         in_staging = bid in active_candidates
         in_facility_tracker = bid in facility_entry_ids
-        completion = evaluate_bag_completion_v2(events)
+        completion = evaluate_bag_completion_v2(completion_events)
         completions_by_bag[bid] = completion
-        in_pipeline = bag_is_pipeline_eligible(pending_row, completion, meta, events)
+        in_pipeline = bag_is_pipeline_eligible(pending_row, completion, meta, completion_events)
         if in_pipeline:
             pipeline_bag_ids.add(bid)
         elif in_staging and pending_row:
-            if bag_is_sent_or_left(pending_row, completion, meta, events):
+            if bag_is_sent_or_left(pending_row, completion, meta, completion_events):
                 sent_excluded.append(bid)
             elif completion.completed or str(pending_row.get("current_lifecycle_status") or "").upper() in LIFECYCLE_COMPLETED_STATUSES:
                 completed_excluded.append(bid)
@@ -2883,6 +2920,7 @@ def build_simple_shift_performance_payload(
         completions_by_bag=completions_by_bag,
         meta_by_bag=meta_by_bag,
         qualifies_yet_to_fold=_qualifies_yet_to_fold,
+        completion_events_by_bag=completion_events_by_bag,
     )
     _apply_due_today_snapshot_tags(
         records,
@@ -2893,6 +2931,7 @@ def build_simple_shift_performance_payload(
         events_by_bag=events_by_bag,
         completions_by_bag=completions_by_bag,
         meta_by_bag=meta_by_bag,
+        completion_events_by_bag=completion_events_by_bag,
     )
 
     work_pipeline = _build_work_pipeline_section(
@@ -2975,6 +3014,24 @@ def build_simple_shift_performance_payload(
     )
     vendor_home_parity["edd_backfill"] = edd_backfill_stats
     stage_audit = _build_stage_audit(records)
+
+    from backend.rinse_shift_monitor_modules import apply_module_tags, build_shift_monitor_modules
+
+    apply_module_tags(records, events_by_bag=events_by_bag)
+    shift_monitor_modules = build_shift_monitor_modules(
+        records,
+        events_by_bag=events_by_bag,
+        period_start=period_start,
+        period_end=period_end,
+        period_start_dt=start_dt,
+        period_end_exclusive=end_exclusive,
+        portal_list_available=bool(presence_meta.get("portal_list_available")),
+        portal_counts=portal_counts,
+        last_rush_wash=last_rush_wash,
+        last_nonrush_wash=last_nonrush_wash,
+        last_wash_overall=last_wash_overall,
+        today_et=today_et,
+    )
 
     employee_summary, employee_diagnostics = _build_employee_activity_summary(
         cursor, org, credits=all_credits, period_start=period_start, period_end=period_end, user_maps=user_maps
@@ -3147,6 +3204,7 @@ def build_simple_shift_performance_payload(
         "vendor_home_parity": vendor_home_parity,
         "vendor_home_gap_analysis": gap_analysis,
         "live_baseline": baseline_payload,
+        "shift_monitor_modules": shift_monitor_modules,
         "unified_at_facility_meta": unified_at_meta,
         "wip": wip_sections,
         "stage_audit": stage_audit if include_debug else {"reconciliation_ok": stage_audit.get("reconciliation_ok")},

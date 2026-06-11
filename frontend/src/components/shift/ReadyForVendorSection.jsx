@@ -1,64 +1,38 @@
-import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
-import ShiftCountCard from "./ShiftCountCard";
+import { Alert, Box, Typography } from "@mui/material";
 import DrilldownCardGrid from "./DrilldownCardGrid";
-import RushFilterChips from "./RushFilterChips";
-import { formatDateTime } from "../../utils/foldingFormat";
-import { syncStatusSubtext } from "../../utils/shiftMonitorHelpers";
 
 export default function ReadyForVendorSection({
   rfv,
-  rfvLive,
   rfvSync,
-  rfvSyncSub,
-  rfvSyncStale,
   rushFilter,
-  onRushFilterChange,
   onDrilldown,
   activeTag,
 }) {
-  const syncSub = rfvSyncSub || syncStatusSubtext({ sync_status: rfvSync, last_refreshed_at: rfv?.last_refreshed_at }, "Ready for Vendor Sync");
-  const cards = rfv?.cards;
+  const syncFailed = rfvSync?.failed || rfvSync?.latest_failed;
+  const syncStale = rfvSync?.stale && !rfv?.zero_rows_success && !rfvSync?.zero_rows_success;
+  const showWarning = !rfv?.live || syncFailed || syncStale;
+
+  const cards = rfv?.cards?.length
+    ? rfv.cards
+    : [
+        { label: "Ready for Vendor Total", count: rfv?.total ?? 0, drilldown_tag: "ready_for_vendor", clickable: true, needs_review: false },
+        { label: "Rush", count: (rfv?.rush_wf ?? 0) + (rfv?.rush_hd ?? 0), drilldown_tag: "rfv_rush", clickable: true, needs_review: false },
+        { label: "Non-Rush", count: (rfv?.nonrush_wf ?? 0) + (rfv?.nonrush_hd ?? 0), drilldown_tag: "rfv_non_rush", clickable: true, needs_review: false },
+        { label: "WF", count: (rfv?.rush_wf ?? 0) + (rfv?.nonrush_wf ?? 0), drilldown_tag: "rfv_wf", clickable: true, needs_review: false },
+        { label: "HD", count: (rfv?.rush_hd ?? 0) + (rfv?.nonrush_hd ?? 0), drilldown_tag: "rfv_hd", clickable: true, needs_review: false },
+      ];
 
   return (
     <Box sx={{ mb: 2.5 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
-        <Box>
-          <Typography variant="h6" fontWeight={800}>
-            Ready for Vendor
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Live queue from Ready for Vendor sync — selected ET date rush rules apply
-          </Typography>
-        </Box>
-        {rfvLive && rfv.parity_ok !== false && rfv.counts_add_up ? (
-          <Chip size="small" color="success" variant="outlined" label="Reconciled ✓" />
-        ) : rfvLive ? (
-          <Chip size="small" color="warning" label="Needs Review" />
-        ) : null}
-      </Stack>
-
-      {!rfvLive ? (
-        <Alert severity="warning" sx={{ mb: 1.5 }}>
-          {rfv?.unavailable_reason || "Ready for Vendor: Sync stale"}
-          {rfv?.last_refreshed_at ? ` · Last refresh: ${formatDateTime(rfv.last_refreshed_at)}` : ""}
+      <Typography variant="h6" fontWeight={800} sx={{ mb: 0.5 }}>
+        Ready for Vendor
+      </Typography>
+      {showWarning ? (
+        <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+          {rfv?.unavailable_reason || rfvSync?.message || "Ready for Vendor sync unavailable — refresh syncs"}
         </Alert>
-      ) : rfv.data_quality_warning ? (
-        <Alert severity={rfv.zero_rows_success ? "info" : "error"} sx={{ mb: 1.5 }}>
-          {rfv.data_quality_warning}
-        </Alert>
-      ) : rfvSyncStale ? (
-        <Alert severity="warning" sx={{ mb: 1.5 }}>{syncSub}</Alert>
       ) : null}
-
-      {rfvLive ? <RushFilterChips value={rushFilter} onChange={onRushFilterChange} sx={{ mb: 1 }} /> : null}
-
-      {rfvLive && cards?.length ? (
-        <DrilldownCardGrid cards={cards} onDrilldown={onDrilldown} activeTag={activeTag} rushFilter={rushFilter} compact={false} />
-      ) : rfvLive ? (
-        <ShiftCountCard label="Ready for Vendor" value={rfv.total ?? "—"} sub={syncSub} onClick={() => onDrilldown("ready_for_vendor")} active={activeTag === "ready_for_vendor"} />
-      ) : (
-        <ShiftCountCard label="Ready for Vendor" value="—" sub={rfv?.unavailable_reason || syncSub || "Refresh Both Syncs"} />
-      )}
+      <DrilldownCardGrid cards={cards} onDrilldown={onDrilldown} activeTag={activeTag} rushFilter={rushFilter} />
     </Box>
   );
 }

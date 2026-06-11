@@ -20,10 +20,19 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2
-from backend.rinse_bag_lifecycle_status import SENT_TO_RINSE
-from backend.rinse_scan_purpose import is_drying_purpose, is_start_cleaning_purpose, is_weight_entry_purpose
+from backend.rinse_bag_activity_rules import evaluate_bag_completion_v2, find_strong_completion_evidence_v2
+from backend.rinse_bag_completion import rack_contains_clean
+from backend.rinse_bag_lifecycle_status import FOLDED_COMPLETED, SENT_TO_RINSE
+from backend.rinse_scan_purpose import (
+    is_drying_purpose,
+    is_processed_by_vendor_purpose,
+    is_received_from_vendor_purpose,
+    is_start_cleaning_purpose,
+    is_weight_entry_purpose,
+    scan_purpose_indicates_sent_left,
+)
 from backend.rinse_work_pipeline import bag_is_sent_or_left
+from backend.rinse_shift_analysis import LIFECYCLE_COMPLETED_STATUSES
 from backend.ta_helpers import table_exists, table_has_column
 
 _LOGISTICS_SENT = frozenset({"SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"})
@@ -53,14 +62,14 @@ PORTAL_VH_DTS_PENDING = "portal_vh_dts_pending"
 VENDOR_HOME_REFERENCE = {
     "source": "manual_screenshot",
     "reference_date": "2026-06-10",
-    "at_veewash_total": 59,
-    "at_veewash_yet_to_process": 42,
-    "due_today_total": 49,
-    "due_today_yet_to_process": 34,
+    "at_veewash_total": 28,
+    "at_veewash_yet_to_process": 15,
+    "due_today_total": 0,
+    "due_today_yet_to_process": 0,
     "vendor_home_reference_source": "manual_screenshot",
     # Legacy keys for backward compatibility
-    "rinse_home_at_veewash": 59,
-    "rinse_home_yet_to_process": 42,
+    "rinse_home_at_veewash": 28,
+    "rinse_home_yet_to_process": 15,
 }
 
 
@@ -525,13 +534,88 @@ def _has_drying(events: Sequence[Mapping[str, Any]]) -> bool:
     return any(is_drying_purpose(ev.get("purpose")) for ev in events)
 
 
+def _merged_snapshot_fields(
+    pending_row: Mapping[str, Any] | None,
+    meta: Mapping[str, Any],
+    *,
+    record: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    out = {**dict(meta or {}), **dict(pending_row or {})}
+    if record:
+        for key in (
+            "raw_status",
+            "current_stage",
+            "current_status",
+            "current_lifecycle_status",
+            "completed",
+            "completion_kind",
+        ):
+            val = record.get(key)
+            if val is not None and val != "":
+                out[key] = val
+    return out
+
+
+def scan_events_indicate_sent_left(events: Sequence[Mapping[str, Any]] | None) -> bool:
+    for ev in events or []:
+        if scan_purpose_indicates_sent_left(ev.get("purpose")):
+            return True
+    return False
+
+
+def wf_lifecycle_or_meta_indicates_complete(
+    pending_row: Mapping[str, Any] | None,
+    meta: Mapping[str, Any],
+    *,
+    record: Mapping[str, Any] | None = None,
+) -> bool:
+    merged = _merged_snapshot_fields(pending_row, meta, record=record)
+    status = str(
+        merged.get("current_lifecycle_status")
+        or merged.get("raw_status")
+        or merged.get("current_status")
+        or merged.get("current_stage")
+        or merged.get("lifecycle_status")
+        or ""
+    ).upper()
+    if status in LIFECYCLE_COMPLETED_STATUSES or status == FOLDED_COMPLETED:
+        return True
+    for key in (
+        "processed_by_vendor",
+        "received_from_vendor",
+        "vendor_processed",
+        "vendor_received",
+        "processed_by_vendor_checked",
+        "received_from_vendor_checked",
+    ):
+        val = merged.get(key)
+        if val in (True, 1, "1", "checked", "yes", "true", "Y", "CHECKED"):
+            return True
+    return False
+
+
+def wf_scan_events_indicate_complete(events: Sequence[Mapping[str, Any]] | None) -> bool:
+    for ev in events or []:
+        if rack_contains_clean(ev.get("rack")):
+            return True
+        purpose = ev.get("purpose")
+        if is_processed_by_vendor_purpose(purpose) or is_received_from_vendor_purpose(purpose):
+            return True
+    return find_strong_completion_evidence_v2(events or []) is not None
+
+
 def bag_is_sent_left_from_facility(
     pending_row: Mapping[str, Any] | None,
     completion: Any,
     meta: Mapping[str, Any],
     events: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    completion_events: Sequence[Mapping[str, Any]] | None = None,
 ) -> bool:
     """Sent/left for Current Facility Snapshot — still-at-facility complete bags stay counted."""
+    timeline = list(completion_events if completion_events is not None else (events or []))
+    if scan_events_indicate_sent_left(timeline):
+        return True
     merged: dict[str, Any] = {**dict(meta or {}), **dict(pending_row or {})}
     lifecycle = str(
         merged.get("current_lifecycle_status")
@@ -544,10 +628,17 @@ def bag_is_sent_left_from_facility(
         return True
     if logistics in _LOGISTICS_SENT:
         return True
-    op_complete = bool(completion and getattr(completion, "completed", False))
+    op_complete = bag_is_operationally_complete(
+        service_type=str(merged.get("service_type") or "WF"),
+        completion=completion,
+        events=events or [],
+        pending_row=pending_row,
+        meta=meta,
+        completion_events=timeline,
+    )
     if op_complete and pending_row and pending_row.get("in_active_staging"):
         return False
-    return bag_is_sent_or_left(pending_row, completion, meta, events)
+    return bag_is_sent_or_left(pending_row, completion, meta, timeline)
 
 
 def bag_is_due_today_processed(
@@ -565,19 +656,28 @@ def bag_is_operationally_complete(
     events: Sequence[Mapping[str, Any]],
     pending_row: Mapping[str, Any] | None,
     meta: Mapping[str, Any],
+    completion_events: Sequence[Mapping[str, Any]] | None = None,
+    record: Mapping[str, Any] | None = None,
 ) -> bool:
     svc = str(service_type or "").upper()
+    timeline = list(completion_events if completion_events is not None else events)
     if svc == "HD":
         from backend.rinse_hd_production_status import derive_hd_production_status
 
         hd = derive_hd_production_status(
-            events,
+            timeline,
             at_vendor_presence=True,
             logistics_status=meta.get("logistics_status") or meta.get("status"),
             lifecycle_status=(pending_row or {}).get("current_lifecycle_status"),
         )
         return bool(hd.get("hd_completed"))
-    return bool(completion and getattr(completion, "completed", False))
+    if completion and getattr(completion, "completed", False):
+        return True
+    if wf_lifecycle_or_meta_indicates_complete(pending_row, meta, record=record):
+        return True
+    if wf_scan_events_indicate_complete(timeline):
+        return True
+    return False
 
 
 def classify_current_facility_bag(

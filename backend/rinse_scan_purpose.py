@@ -68,6 +68,21 @@ def is_received_from_vendor_purpose(raw: str | None) -> bool:
     return "received-from-vendor" in normalize_scan_purpose(raw)
 
 
+def is_load_out_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "load-out" or "load-out" in p
+
+
+def is_at_delivery_location_purpose(raw: str | None) -> bool:
+    p = normalize_scan_purpose(raw)
+    return p == "at-delivery-location" or "at-delivery-location" in p
+
+
+def scan_purpose_indicates_sent_left(raw: str | None) -> bool:
+    """Outbound/delivery scan evidence — bag left the facility workflow."""
+    return is_load_out_purpose(raw) or is_at_delivery_location_purpose(raw)
+
+
 def is_processed_by_vendor_purpose(raw: str | None) -> bool:
     p = normalize_scan_purpose(raw)
     return p == "processed-by-vendor" or "processed-by-vendor" in p

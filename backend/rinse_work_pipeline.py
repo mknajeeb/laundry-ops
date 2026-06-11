@@ -10,6 +10,7 @@ from backend.rinse_bag_lifecycle_status import (
     SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN,
     SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
 )
+from backend.rinse_scan_purpose import scan_purpose_indicates_sent_left
 from backend.rinse_shift_analysis import LIFECYCLE_COMPLETED_STATUSES
 
 _LOGISTICS_SENT = frozenset({"SENT_TO_RINSE", "FORCE_CHECKOUT", "CHECKED_OUT"})
@@ -45,6 +46,10 @@ def bag_is_sent_or_left(
             SENT_TO_RINSE_EXTERNAL_USER_AFTER_CLEAN,
             SENT_TO_RINSE_MISSING_FROM_NEXT_PORTAL_SCRAPE,
         }:
+            return True
+    for ev in events or []:
+        purpose = str(ev.get("purpose") or "")
+        if scan_purpose_indicates_sent_left(purpose):
             return True
     if completion and getattr(completion, "completed", False):
         for ev in events or []:
