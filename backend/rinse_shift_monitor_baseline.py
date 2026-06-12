@@ -29,12 +29,27 @@ _UTC = ZoneInfo("UTC")
 KEY_BASELINE_START = "shift_monitor_baseline_start_at_et"
 KEY_BASELINE_SOURCE = "shift_monitor_baseline_source"
 KEY_BASELINE_NOTE = "shift_monitor_baseline_note"
+KEY_BASELINE_PRESENCE_RUN_ID = "shift_monitor_baseline_presence_run_id"
+KEY_BASELINE_SOURCE_BATCH_ID = "shift_monitor_baseline_source_batch_id"
 
 DEFAULT_BASELINE_START_ET = "2026-06-10 00:00:00"
 DEFAULT_BASELINE_SOURCE = "manual_reset"
 DEFAULT_BASELINE_NOTE = (
     "Live dashboard restarted from today ET to avoid historical data contamination"
 )
+
+BASELINE_SOURCE_CLEAN_VEEWASH = "latest_clean_veewash_scrape"
+VEEWASH_LIVE_BASELINE_ORG_ID = 3
+VEEWASH_CLEAN_BASELINE_START_ET = "2026-06-11 20:38:25"
+VEEWASH_CLEAN_BASELINE_PRESENCE_RUN_ID = 6
+VEEWASH_CLEAN_BASELINE_SOURCE_BATCH_ID = (
+    "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84"
+)
+VEEWASH_CLEAN_BASELINE_NOTE = (
+    "Live dashboard baseline anchored to latest clean VeeWash at_vendor presence scrape "
+    "(post Washpro/VeeWash contamination cleanup)"
+)
+CONTAMINATED_PRESENCE_BATCH_PREFIXES = ("manual_verify",)
 
 REASON_IN_AT_VENDOR_SCRAPE = (
     "Included because bag appears in latest At Vendor scrape after baseline."
@@ -95,19 +110,69 @@ def baseline_start_utc_naive(baseline_start_naive_et: datetime) -> datetime:
     return aware.astimezone(_UTC).replace(tzinfo=None)
 
 
+def is_contaminated_presence_batch(source_batch_id: str | None) -> bool:
+    batch = str(source_batch_id or "").strip().lower()
+    if not batch:
+        return False
+    return any(batch.startswith(prefix) for prefix in CONTAMINATED_PRESENCE_BATCH_PREFIXES)
+
+
+def veewash_clean_baseline_defaults() -> dict[str, Any]:
+    start_naive_et = parse_baseline_start_naive_et(VEEWASH_CLEAN_BASELINE_START_ET)
+    return {
+        "shift_monitor_baseline_start_at_et": start_naive_et.strftime("%Y-%m-%d %H:%M:%S"),
+        "baseline_source": BASELINE_SOURCE_CLEAN_VEEWASH,
+        "baseline_note": VEEWASH_CLEAN_BASELINE_NOTE,
+        "baseline_presence_run_id": VEEWASH_CLEAN_BASELINE_PRESENCE_RUN_ID,
+        "baseline_source_batch_id": VEEWASH_CLEAN_BASELINE_SOURCE_BATCH_ID,
+    }
+
+
+def uses_clean_veewash_baseline(baseline_ctx: Mapping[str, Any] | None) -> bool:
+    if not baseline_ctx:
+        return False
+    return str(baseline_ctx.get("baseline_source") or "").strip() == BASELINE_SOURCE_CLEAN_VEEWASH
+
+
 def get_shift_monitor_baseline(cursor, organization_id: int) -> dict[str, Any]:
     org = int(organization_id)
-    start_raw = _get_setting(cursor, org, KEY_BASELINE_START) or DEFAULT_BASELINE_START_ET
+    veewash_defaults = veewash_clean_baseline_defaults() if org == VEEWASH_LIVE_BASELINE_ORG_ID else None
+    start_raw = _get_setting(cursor, org, KEY_BASELINE_START)
+    if start_raw is None and veewash_defaults:
+        start_raw = veewash_defaults["shift_monitor_baseline_start_at_et"]
+    start_raw = start_raw or DEFAULT_BASELINE_START_ET
     start_naive_et = parse_baseline_start_naive_et(start_raw)
-    source = _get_setting(cursor, org, KEY_BASELINE_SOURCE) or DEFAULT_BASELINE_SOURCE
-    note = _get_setting(cursor, org, KEY_BASELINE_NOTE) or DEFAULT_BASELINE_NOTE
+    source = _get_setting(cursor, org, KEY_BASELINE_SOURCE)
+    if source is None and veewash_defaults:
+        source = veewash_defaults["baseline_source"]
+    source = source or DEFAULT_BASELINE_SOURCE
+    note = _get_setting(cursor, org, KEY_BASELINE_NOTE)
+    if note is None and veewash_defaults:
+        note = veewash_defaults["baseline_note"]
+    note = note or DEFAULT_BASELINE_NOTE
+    presence_run_raw = _get_setting(cursor, org, KEY_BASELINE_PRESENCE_RUN_ID)
+    if presence_run_raw is None and veewash_defaults:
+        presence_run_raw = str(veewash_defaults["baseline_presence_run_id"])
+    source_batch_id = _get_setting(cursor, org, KEY_BASELINE_SOURCE_BATCH_ID)
+    if source_batch_id is None and veewash_defaults:
+        source_batch_id = veewash_defaults["baseline_source_batch_id"]
+    presence_run_id: int | None = None
+    if presence_run_raw:
+        try:
+            presence_run_id = int(presence_run_raw)
+        except (TypeError, ValueError):
+            presence_run_id = None
     return {
         "active": True,
+        "baseline_org": org,
         "shift_monitor_baseline_start_at_et": start_naive_et.strftime("%Y-%m-%d %H:%M:%S"),
         "shift_monitor_baseline_start_at_et_iso": start_naive_et.isoformat(),
+        "baseline_time_et": start_naive_et.strftime("%Y-%m-%d %H:%M:%S"),
         "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
         "baseline_source": source,
         "baseline_note": note,
+        "baseline_presence_run_id": presence_run_id,
+        "baseline_source_batch_id": source_batch_id,
         "baseline_start_utc": serialize_system_datetime_for_api(baseline_start_utc_naive(start_naive_et)),
     }
 
@@ -119,6 +184,8 @@ def put_shift_monitor_baseline(
     start_at_et: str | None = None,
     baseline_source: str | None = None,
     baseline_note: str | None = None,
+    baseline_presence_run_id: int | None = None,
+    baseline_source_batch_id: str | None = None,
 ) -> dict[str, Any]:
     org = int(organization_id)
     if start_at_et is not None:
@@ -128,10 +195,15 @@ def put_shift_monitor_baseline(
         _set_setting(cursor, org, KEY_BASELINE_SOURCE, str(baseline_source))
     if baseline_note is not None:
         _set_setting(cursor, org, KEY_BASELINE_NOTE, str(baseline_note))
+    if baseline_presence_run_id is not None:
+        _set_setting(cursor, org, KEY_BASELINE_PRESENCE_RUN_ID, str(int(baseline_presence_run_id)))
+    if baseline_source_batch_id is not None:
+        _set_setting(cursor, org, KEY_BASELINE_SOURCE_BATCH_ID, str(baseline_source_batch_id))
     return get_shift_monitor_baseline(cursor, org)
 
 
 def _fmt_scrape_time(run: Mapping[str, Any] | None) -> str | None:
+    """Format rinse_scrape_runs timestamps (UTC-naive DB → ET wall string)."""
     if not run:
         return None
     raw = run.get("finished_at") or run.get("started_at") or run.get("created_at")
@@ -140,6 +212,140 @@ def _fmt_scrape_time(run: Mapping[str, Any] | None) -> str | None:
         if et is not None:
             return et.strftime("%Y-%m-%d %H:%M:%S")
     return str(raw) if raw else None
+
+
+def _baseline_time_et_label(naive_et: datetime) -> str:
+    return f"{naive_et.strftime('%Y-%m-%d %H:%M:%S')} {RINSE_SCAN_SOURCE_TIMEZONE}"
+
+
+def _format_presence_scrape_timestamps(
+    run: Mapping[str, Any] | None,
+    *,
+    baseline_time_naive_et: datetime | None = None,
+    anchor_run_id: int | None = None,
+) -> dict[str, str | None]:
+    """
+    Expose presence scrape run timestamps with explicit UTC and ET labels.
+
+    Normal presence runs store UTC-naive finished_at (_utc_now). The approved clean
+    VeeWash anchor run aligns its operational ET wall time with baseline_time_et even
+    when the DB naive value matches that ET clock (not UTC).
+    """
+    empty = {
+        "latest_clean_at_vendor_presence_scrape_et": None,
+        "latest_clean_at_vendor_presence_scrape_utc": None,
+        "latest_clean_at_vendor_presence_scrape_db_naive": None,
+        "latest_clean_at_vendor_presence_scrape": None,
+    }
+    if not run:
+        return empty
+    raw = run.get("finished_at") or run.get("started_at") or run.get("created_at")
+    if not isinstance(raw, datetime):
+        return empty
+
+    db_naive = raw.strftime("%Y-%m-%d %H:%M:%S")
+    run_id = run.get("id")
+    is_anchor = (
+        anchor_run_id is not None
+        and run_id is not None
+        and int(run_id) == int(anchor_run_id)
+        and baseline_time_naive_et is not None
+    )
+    if is_anchor:
+        et_label = _baseline_time_et_label(baseline_time_naive_et)
+        utc_naive = baseline_start_utc_naive(baseline_time_naive_et)
+        utc_label = f"{utc_naive.strftime('%Y-%m-%d %H:%M:%S')} UTC"
+        return {
+            "latest_clean_at_vendor_presence_scrape_et": et_label,
+            "latest_clean_at_vendor_presence_scrape_utc": utc_label,
+            "latest_clean_at_vendor_presence_scrape_db_naive": db_naive,
+            "latest_clean_at_vendor_presence_scrape": et_label,
+        }
+
+    utc_label = f"{db_naive} UTC"
+    et_aware = system_datetime_to_et(raw)
+    et_label = (
+        _baseline_time_et_label(et_aware.replace(tzinfo=None))
+        if et_aware is not None
+        else None
+    )
+    return {
+        "latest_clean_at_vendor_presence_scrape_et": et_label,
+        "latest_clean_at_vendor_presence_scrape_utc": utc_label,
+        "latest_clean_at_vendor_presence_scrape_db_naive": db_naive,
+        "latest_clean_at_vendor_presence_scrape": et_label,
+    }
+
+
+def latest_clean_at_vendor_presence_scrape(
+    cursor,
+    organization_id: int,
+    *,
+    baseline_start_naive_et: datetime | None = None,
+    preferred_source_batch_id: str | None = None,
+    preferred_run_id: int | None = None,
+) -> dict[str, Any] | None:
+    """Latest successful non-contaminated at_vendor presence scrape for live baseline."""
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+        return None
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+
+    org = int(organization_id)
+    if preferred_run_id is not None:
+        cursor.execute(
+            """
+            SELECT *
+            FROM rinse_cleaner_ticket_presence_runs
+            WHERE organization_id = %s AND id = %s AND portal_status = %s AND dry_run = 0
+            LIMIT 1
+            """,
+            (org, int(preferred_run_id), PORTAL_STATUS_AT_VENDOR),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict) and not is_contaminated_presence_batch(row.get("source_batch_id")):
+            return row
+
+    if preferred_source_batch_id:
+        cursor.execute(
+            """
+            SELECT *
+            FROM rinse_cleaner_ticket_presence_runs
+            WHERE organization_id = %s AND portal_status = %s AND dry_run = 0
+              AND source_batch_id = %s
+            ORDER BY COALESCE(finished_at, created_at) DESC, id DESC
+            LIMIT 1
+            """,
+            (org, PORTAL_STATUS_AT_VENDOR, preferred_source_batch_id),
+        )
+        row = cursor.fetchone()
+        if isinstance(row, dict) and not is_contaminated_presence_batch(row.get("source_batch_id")):
+            return row
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s AND portal_status = %s AND dry_run = 0
+          AND (
+            status IN ('success', 'partial')
+            OR (status IS NULL AND (errors_json IS NULL OR errors_json = '' OR errors_json = '[]'))
+          )
+        ORDER BY COALESCE(finished_at, created_at) DESC, id DESC
+        LIMIT 50
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR),
+    )
+    rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    for row in rows:
+        if is_contaminated_presence_batch(row.get("source_batch_id")):
+            continue
+        finished = row.get("finished_at") or row.get("created_at")
+        if baseline_start_naive_et is not None and isinstance(finished, datetime):
+            et = system_datetime_to_et(finished)
+            if et is not None and et.replace(tzinfo=None) < baseline_start_naive_et:
+                continue
+        return row
+    return None
 
 
 def latest_at_vendor_scrape_after_baseline(
@@ -196,26 +402,72 @@ def latest_rfv_scrape_after_baseline(
 
 
 def build_baseline_context(cursor, organization_id: int, baseline: Mapping[str, Any]) -> dict[str, Any]:
+    from backend.rinse_vendor_config import resolve_rinse_vendor
+
+    org = int(organization_id)
     start_naive_et = parse_baseline_start_naive_et(baseline.get("shift_monitor_baseline_start_at_et"))
     baseline_utc = baseline_start_utc_naive(start_naive_et)
-    av_run = latest_at_vendor_scrape_after_baseline(cursor, organization_id, baseline_utc)
+    vendor = resolve_rinse_vendor(
+        org,
+        organization_slug=None,
+    )
+    preferred_batch = baseline.get("baseline_source_batch_id")
+    preferred_run_id = baseline.get("baseline_presence_run_id")
+    clean_presence_run = latest_clean_at_vendor_presence_scrape(
+        cursor,
+        org,
+        baseline_start_naive_et=start_naive_et,
+        preferred_source_batch_id=str(preferred_batch) if preferred_batch else None,
+        preferred_run_id=int(preferred_run_id) if preferred_run_id else None,
+    )
     rfv_run = latest_rfv_scrape_after_baseline(cursor, organization_id, baseline_utc)
+    av_run = latest_at_vendor_scrape_after_baseline(cursor, organization_id, baseline_utc)
+    uses_clean = uses_clean_veewash_baseline(baseline)
+    at_vendor_ready = clean_presence_run is not None if uses_clean else av_run is not None
+    presence_ts = _format_presence_scrape_timestamps(
+        clean_presence_run,
+        baseline_time_naive_et=start_naive_et,
+        anchor_run_id=int(preferred_run_id) if preferred_run_id else None,
+    )
+    latest_clean_at_vendor = presence_ts.get("latest_clean_at_vendor_presence_scrape_et")
+    baseline_time_label = _baseline_time_et_label(start_naive_et)
     return {
         **dict(baseline),
+        "baseline_org": org,
+        "baseline_vendor": vendor,
+        "baseline_time_et": start_naive_et.strftime("%Y-%m-%d %H:%M:%S"),
+        "baseline_time_et_label": baseline_time_label,
         "baseline_start_naive_et": start_naive_et,
         "baseline_start_utc": baseline_utc,
-        "latest_at_vendor_scrape_after_baseline": _fmt_scrape_time(av_run),
-        "latest_at_vendor_scrape_run_id": av_run.get("id") if av_run else None,
-        "latest_at_vendor_scrape_batch_id": av_run.get("imported_batch_id") if av_run else None,
+        **presence_ts,
+        "latest_at_vendor_presence_scrape_run_id": clean_presence_run.get("id") if clean_presence_run else None,
+        "latest_at_vendor_presence_source_batch_id": (
+            clean_presence_run.get("source_batch_id") if clean_presence_run else None
+        ),
+        "latest_at_vendor_scrape_after_baseline": (
+            latest_clean_at_vendor if uses_clean else _fmt_scrape_time(av_run)
+        ),
+        "latest_at_vendor_scrape_run_id": (
+            clean_presence_run.get("id") if uses_clean and clean_presence_run else (av_run.get("id") if av_run else None)
+        ),
+        "latest_at_vendor_scrape_batch_id": (
+            clean_presence_run.get("source_batch_id")
+            if uses_clean and clean_presence_run
+            else (av_run.get("imported_batch_id") if av_run else None)
+        ),
         "latest_rfv_scrape_after_baseline": _fmt_scrape_time(rfv_run),
         "latest_rfv_scrape_run_id": rfv_run.get("id") if rfv_run else None,
-        "at_vendor_scrape_ready": av_run is not None,
+        "at_vendor_scrape_ready": at_vendor_ready,
         "rfv_scrape_ready": rfv_run is not None,
-        "needs_refresh": av_run is None,
+        "needs_refresh": not at_vendor_ready,
         "needs_refresh_reason": (
-            "Needs Refresh — no post-baseline At Vendor scrape found"
-            if av_run is None
-            else None
+            "Needs Refresh — no clean post-baseline VeeWash at_vendor presence scrape found"
+            if uses_clean and not at_vendor_ready
+            else (
+                "Needs Refresh — no post-baseline At Vendor scrape found"
+                if not at_vendor_ready
+                else None
+            )
         ),
     }
 
@@ -460,7 +712,25 @@ def build_baseline_debug_block(
     return {
         "baseline": {
             "shift_monitor_baseline_start_at_et": baseline_ctx.get("shift_monitor_baseline_start_at_et"),
+            "baseline_time_et": baseline_ctx.get("baseline_time_et"),
+            "baseline_time_et_label": baseline_ctx.get("baseline_time_et_label"),
             "baseline_source": baseline_ctx.get("baseline_source"),
+            "baseline_org": baseline_ctx.get("baseline_org"),
+            "baseline_vendor": baseline_ctx.get("baseline_vendor"),
+            "baseline_presence_run_id": baseline_ctx.get("baseline_presence_run_id"),
+            "baseline_source_batch_id": baseline_ctx.get("baseline_source_batch_id"),
+            "latest_clean_at_vendor_presence_scrape": baseline_ctx.get(
+                "latest_clean_at_vendor_presence_scrape"
+            ),
+            "latest_clean_at_vendor_presence_scrape_et": baseline_ctx.get(
+                "latest_clean_at_vendor_presence_scrape_et"
+            ),
+            "latest_clean_at_vendor_presence_scrape_utc": baseline_ctx.get(
+                "latest_clean_at_vendor_presence_scrape_utc"
+            ),
+            "latest_clean_at_vendor_presence_scrape_db_naive": baseline_ctx.get(
+                "latest_clean_at_vendor_presence_scrape_db_naive"
+            ),
             "baseline_note": baseline_ctx.get("baseline_note"),
             "timezone": baseline_ctx.get("timezone"),
             "latest_at_vendor_scrape_after_baseline": baseline_ctx.get(

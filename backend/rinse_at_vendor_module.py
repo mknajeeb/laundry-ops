@@ -213,6 +213,8 @@ def _load_registry_service_types(
 
 INCLUSION_CARRY_IN = "carry_in_open_at_midnight"
 INCLUSION_NEW_SENT = "new_sent_to_vendor_today"
+INCLUSION_CLEAN_SCRAPE_SEED = "clean_veewash_scrape_seed"
+INCLUSION_POST_BASELINE_SENT = "post_baseline_sent_to_vendor"
 
 
 def _load_carry_in_open_at_midnight_bag_ids(
@@ -564,6 +566,231 @@ def _load_active_at_vendor_presence_by_bag(
             "portal_yet_to_process": portal_at_vendor_yet_to_process(raw),
         }
     return out
+
+
+def _load_clean_scrape_seed_presence_by_bag(
+    cursor,
+    organization_id: int,
+    *,
+    source_batch_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Active at_vendor presence rows from the approved clean VeeWash scrape batch."""
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+    from backend.rinse_current_facility_snapshot import portal_at_vendor_yet_to_process
+    from backend.rinse_shift_monitor_baseline import is_contaminated_presence_batch
+
+    org = int(organization_id)
+    batch_id = str(source_batch_id or "").strip()
+    out: dict[str, dict[str, Any]] = {}
+    if not batch_id or is_contaminated_presence_batch(batch_id):
+        return out
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return out
+    cursor.execute(
+        """
+        SELECT bag_id, portal_status, customer_name, estimated_delivery_date,
+               service_type, raw_row_json, active, last_seen_at, source_batch_id
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND active = 1 AND portal_status = %s
+          AND source_batch_id = %s
+        ORDER BY UPPER(TRIM(bag_id))
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR, batch_id),
+    )
+    for raw in cursor.fetchall() or []:
+        if not isinstance(raw, dict):
+            continue
+        bid = str(raw.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        out[bid] = {
+            "bag_id": bid,
+            "customer_name": raw.get("customer_name"),
+            "service_type": raw.get("service_type"),
+            "estimated_delivery_date": raw.get("estimated_delivery_date"),
+            "raw_row_json": raw.get("raw_row_json"),
+            "delivery_source": "presence",
+            "portal_status": PORTAL_STATUS_AT_VENDOR,
+            "active_presence": True,
+            "portal_yet_to_process": portal_at_vendor_yet_to_process(raw),
+            "source_batch_id": raw.get("source_batch_id"),
+        }
+    return out
+
+
+def _load_post_baseline_sent_to_vendor_bag_ids(
+    cursor,
+    organization_id: int,
+    *,
+    baseline_start_naive_et: datetime,
+    through_end: datetime,
+) -> set[str]:
+    """Bags with sent-to-vendor scan on/after baseline through selected-day end."""
+    if not table_exists(cursor, "rinse_bag_scan_events"):
+        return set()
+    org = int(organization_id)
+    purpose_expr = _normalize_purpose_sql_expr()
+    cursor.execute(
+        f"""
+        SELECT DISTINCT UPPER(TRIM(bag_id)) AS bag_id
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+          AND scanned_at_parsed IS NOT NULL
+          AND scanned_at_parsed >= %s
+          AND scanned_at_parsed <= %s
+          AND LOCATE('sent-to-vendor', {purpose_expr}) > 0
+        """,
+        (org, baseline_start_naive_et, through_end),
+    )
+    return {
+        str(row.get("bag_id") or "").strip().upper()
+        for row in (cursor.fetchall() or [])
+        if isinstance(row, dict) and row.get("bag_id")
+    }
+
+
+def _count_contaminated_active_presence_rows(cursor, organization_id: int) -> int:
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+    from backend.rinse_shift_monitor_baseline import is_contaminated_presence_batch
+
+    org = int(organization_id)
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return 0
+    cursor.execute(
+        """
+        SELECT source_batch_id
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND portal_status = %s AND active = 1
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR),
+    )
+    count = 0
+    for row in cursor.fetchall() or []:
+        if isinstance(row, dict) and is_contaminated_presence_batch(row.get("source_batch_id")):
+            count += 1
+    return count
+
+
+def _load_baseline_gated_at_vendor_population(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    baseline_ctx: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Clean VeeWash baseline population:
+      seed from latest clean at_vendor presence scrape
+      + post-baseline sent-to-vendor through selected ET day end.
+    No pre-baseline carry-in or contaminated presence rows.
+    """
+    org = int(organization_id)
+    start_of_day_et = naive_et_day_start(selected_date_et)
+    end_of_day_et = naive_et_day_end_inclusive(selected_date_et)
+    baseline_start = baseline_ctx.get("baseline_start_naive_et")
+    if not isinstance(baseline_start, datetime):
+        return [], {
+            "available": False,
+            "reason": "Clean VeeWash baseline start time unavailable",
+            "start_of_day_et": start_of_day_et.isoformat(),
+            "end_of_day_et": end_of_day_et.isoformat(),
+        }
+
+    source_batch_id = str(
+        baseline_ctx.get("latest_at_vendor_presence_source_batch_id")
+        or baseline_ctx.get("baseline_source_batch_id")
+        or ""
+    ).strip()
+    seed_by_bag = _load_clean_scrape_seed_presence_by_bag(
+        cursor, org, source_batch_id=source_batch_id
+    )
+    post_baseline_sent_ids = _load_post_baseline_sent_to_vendor_bag_ids(
+        cursor,
+        org,
+        baseline_start_naive_et=baseline_start,
+        through_end=end_of_day_et,
+    )
+    seed_ids = set(seed_by_bag.keys())
+    population_ids = seed_ids | post_baseline_sent_ids
+
+    cross_org_candidates = set(population_ids)
+    kept_ids, cross_org_excluded = _filter_cross_org_contaminated_bags(
+        cursor, org, cross_org_candidates
+    )
+    population_ids = kept_ids
+    seed_ids &= population_ids
+    post_baseline_sent_ids &= population_ids
+
+    registry_service = _load_registry_service_types(cursor, org, sorted(population_ids))
+    meta_by_bag = _load_delivery_meta(cursor, org, sorted(population_ids))
+
+    population: list[dict[str, Any]] = []
+    for bid in sorted(population_ids):
+        is_seed = bid in seed_ids
+        is_post_sent = bid in post_baseline_sent_ids and bid not in seed_ids
+        if is_seed and is_post_sent:
+            inclusion = f"{INCLUSION_CLEAN_SCRAPE_SEED}+{INCLUSION_POST_BASELINE_SENT}"
+            inclusion_reason = (
+                "Clean VeeWash scrape seed plus post-baseline sent-to-vendor during selected ET day"
+            )
+        elif is_seed:
+            inclusion = INCLUSION_CLEAN_SCRAPE_SEED
+            inclusion_reason = "Clean VeeWash at_vendor presence scrape seed population"
+        else:
+            inclusion = INCLUSION_POST_BASELINE_SENT
+            inclusion_reason = "Post-baseline sent-to-vendor during selected ET day"
+
+        meta = dict(meta_by_bag.get(bid) or {"bag_id": bid})
+        if bid in seed_by_bag:
+            meta = {**meta, **seed_by_bag[bid]}
+        elif not meta.get("service_type") and registry_service.get(bid):
+            meta["service_type"] = registry_service.get(bid)
+        meta.setdefault("active_presence", bid in seed_by_bag)
+
+        population.append(
+            {
+                **meta,
+                "bag_id": bid,
+                "population_inclusion": inclusion,
+                "inclusion_reason": inclusion_reason,
+                "currently_on_vendor_home": bid in seed_by_bag,
+            }
+        )
+
+    current_live_vendor_home_total = len(seed_by_bag)
+    contaminated_excluded = _count_contaminated_active_presence_rows(cursor, org)
+
+    return population, {
+        "available": True,
+        "reason": None,
+        "start_of_day_et": start_of_day_et.isoformat(),
+        "end_of_day_et": end_of_day_et.isoformat(),
+        "baseline_time_et": baseline_start.isoformat(),
+        "baseline_source_batch_id": source_batch_id,
+        "baseline_presence_run_id": baseline_ctx.get("baseline_presence_run_id"),
+        "current_live_vendor_home_total": current_live_vendor_home_total,
+        "clean_scrape_seed_count": len(seed_ids),
+        "post_baseline_sent_count": len(post_baseline_sent_ids - seed_ids),
+        "post_baseline_sent_total_count": len(post_baseline_sent_ids),
+        "carry_in_open_at_midnight_count": 0,
+        "new_sent_to_vendor_today_count": len(post_baseline_sent_ids - seed_ids),
+        "portal_live_supplement_count": 0,
+        "new_during_selected_day_count": len(post_baseline_sent_ids - seed_ids),
+        "overlap_carry_in_and_new_sent_count": 0,
+        "selected_day_at_vendor_total": len(population_ids),
+        "pre_baseline_carry_in_excluded_count": None,
+        "contaminated_presence_rows_excluded_count": contaminated_excluded,
+        "cross_org_excluded_bags": cross_org_excluded,
+        "cross_org_excluded_from_live_presence": [
+            entry
+            for entry in cross_org_excluded
+            if str(entry.get("bag_id") or "").strip().upper() in seed_by_bag
+        ],
+        "scope": "clean_veewash_baseline",
+        "population_source": "clean_veewash_baseline",
+        "uses_clean_veewash_baseline": True,
+    }
 
 
 def _load_selected_day_at_vendor_population(
@@ -1486,17 +1713,26 @@ def build_at_vendor_module(
     organization_id: int,
     *,
     selected_date_et: date,
+    baseline_ctx: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from backend.rinse_shift_monitor_baseline import uses_clean_veewash_baseline
+
     org = int(organization_id)
     as_of_end = naive_et_day_end_inclusive(selected_date_et)
     start_of_day_et = naive_et_day_start(selected_date_et)
     t0 = time.perf_counter()
     step_ms: dict[str, float] = {}
+    uses_clean_baseline = uses_clean_veewash_baseline(baseline_ctx)
 
     t_pop = time.perf_counter()
-    population, population_meta = _load_selected_day_at_vendor_population(
-        cursor, org, selected_date_et=selected_date_et
-    )
+    if uses_clean_baseline and baseline_ctx:
+        population, population_meta = _load_baseline_gated_at_vendor_population(
+            cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
+        )
+    else:
+        population, population_meta = _load_selected_day_at_vendor_population(
+            cursor, org, selected_date_et=selected_date_et
+        )
     step_ms["population_ms"] = round((time.perf_counter() - t_pop) * 1000, 1)
     if not population_meta.get("available"):
         reason = str(
@@ -1512,28 +1748,38 @@ def build_at_vendor_module(
     bag_ids = [str(p.get("bag_id") or "").strip().upper() for p in population if p.get("bag_id")]
     carry_in_pre_midnight_events = population_meta.pop("carry_in_pre_midnight_events", None) or {}
     population_meta.pop("registry_service_cache", None)
-    cached_bag_ids = [bid for bid in bag_ids if bid in carry_in_pre_midnight_events]
-    uncached_bag_ids = [bid for bid in bag_ids if bid not in carry_in_pre_midnight_events]
     t_events = time.perf_counter()
-    post_midnight_by_bag = _load_at_vendor_scan_events_for_bags(
-        cursor,
-        org,
-        cached_bag_ids,
-        scanned_on_or_after=start_of_day_et,
-    )
-    full_events_by_bag = _load_at_vendor_scan_events_for_bags(cursor, org, uncached_bag_ids)
-    events_by_bag: dict[str, list[dict[str, Any]]] = {}
-    for bid in cached_bag_ids:
-        events_by_bag[bid] = list(carry_in_pre_midnight_events.get(bid) or []) + list(
-            post_midnight_by_bag.get(bid) or []
+    if uses_clean_baseline and baseline_ctx:
+        baseline_start = baseline_ctx.get("baseline_start_naive_et")
+        events_by_bag = _load_at_vendor_scan_events_for_bags(
+            cursor,
+            org,
+            bag_ids,
+            scanned_on_or_after=baseline_start if isinstance(baseline_start, datetime) else None,
         )
-    for bid in uncached_bag_ids:
-        events_by_bag[bid] = list(full_events_by_bag.get(bid) or [])
+        carry_in_events_reused = 0
+    else:
+        cached_bag_ids = [bid for bid in bag_ids if bid in carry_in_pre_midnight_events]
+        uncached_bag_ids = [bid for bid in bag_ids if bid not in carry_in_pre_midnight_events]
+        post_midnight_by_bag = _load_at_vendor_scan_events_for_bags(
+            cursor,
+            org,
+            cached_bag_ids,
+            scanned_on_or_after=start_of_day_et,
+        )
+        full_events_by_bag = _load_at_vendor_scan_events_for_bags(cursor, org, uncached_bag_ids)
+        events_by_bag: dict[str, list[dict[str, Any]]] = {}
+        for bid in cached_bag_ids:
+            events_by_bag[bid] = list(carry_in_pre_midnight_events.get(bid) or []) + list(
+                post_midnight_by_bag.get(bid) or []
+            )
+        for bid in uncached_bag_ids:
+            events_by_bag[bid] = list(full_events_by_bag.get(bid) or [])
+        carry_in_events_reused = sum(
+            len(carry_in_pre_midnight_events.get(bid) or []) for bid in cached_bag_ids
+        )
     step_ms["final_events_ms"] = round((time.perf_counter() - t_events) * 1000, 1)
     scan_events_loaded = sum(len(events_by_bag.get(bid) or []) for bid in bag_ids)
-    carry_in_events_reused = sum(
-        len(carry_in_pre_midnight_events.get(bid) or []) for bid in cached_bag_ids
-    )
     registry_cache = population_meta.get("registry_service_cache") or {}
     registry_service = (
         registry_cache
@@ -1645,7 +1891,32 @@ def build_at_vendor_module(
     new_sent_count = int(population_meta.get("new_during_selected_day_count") or population_meta.get("new_sent_to_vendor_today_count") or 0)
     portal_supplement = int(population_meta.get("portal_live_supplement_count") or 0)
     overlap_carry_and_new = int(population_meta.get("overlap_carry_in_and_new_sent_count") or 0)
-    expected_total = carry_in_count + new_sent_count - overlap_carry_and_new
+    if uses_clean_baseline:
+        seed_count = int(population_meta.get("clean_scrape_seed_count") or 0)
+        post_sent_count = int(population_meta.get("post_baseline_sent_count") or 0)
+        expected_total = seed_count + post_sent_count
+        scope = "clean_veewash_baseline"
+        population_source = "clean_veewash_baseline"
+        timing_variance_reason = (
+            "Current Vendor Home is the clean VeeWash at_vendor presence scrape seed. "
+            "Selected-day At Vendor total adds post-baseline sent-to-vendor bags only."
+        )
+        reconciliation_note = (
+            "Selected-day total = clean VeeWash scrape seed + post-baseline sent-to-vendor. "
+            "Pre-baseline carry-in and contaminated presence rows are excluded from live counts."
+        )
+    else:
+        expected_total = carry_in_count + new_sent_count - overlap_carry_and_new
+        scope = "selected_day_cumulative"
+        population_source = "selected_day_cumulative"
+        timing_variance_reason = (
+            "Current Vendor Home is a live moment-in-time snapshot. Selected-day At Vendor "
+            "total uses carry-in at midnight plus new sent-to-vendor during the ET day."
+        )
+        reconciliation_note = (
+            "Current Vendor Home does not control selected-day total. "
+            "Selected-day total = carry-in open at midnight + new sent-to-vendor today."
+        )
 
     cards = [
         {
@@ -1696,8 +1967,9 @@ def build_at_vendor_module(
         "changed_to_rush": changed_to_rush,
         "total_equals_pending_plus_completed": selected_day_total == pending + completed,
         "uses_scans": True,
-        "scope": "selected_day_cumulative",
-        "population_source": "selected_day_cumulative",
+        "scope": scope,
+        "population_source": population_source,
+        "uses_clean_veewash_baseline": uses_clean_baseline,
         "current_live_vendor_home_total": current_live_vendor_home_total,
         "vendor_home_at_veewash_total": current_live_vendor_home_total,
         "selected_day_at_vendor_total": selected_day_total,
@@ -1724,14 +1996,8 @@ def build_at_vendor_module(
             "pending_within_timing_tolerance": abs(pending_diff_vs_live) <= timing_tolerance,
             "completed_within_timing_tolerance": abs(completed_diff_vs_live) <= timing_tolerance,
             "timing_tolerance_bags": timing_tolerance,
-            "timing_variance_reason": (
-                "Current Vendor Home is a live moment-in-time snapshot. Selected-day At Vendor "
-                "total uses carry-in at midnight plus new sent-to-vendor during the ET day."
-            ),
-            "note": (
-                "Current Vendor Home does not control selected-day total. "
-                "Selected-day total = carry-in open at midnight + new sent-to-vendor today."
-            ),
+            "timing_variance_reason": timing_variance_reason,
+            "note": reconciliation_note,
         },
         "population_meta": population_meta,
         "presence_meta": population_meta,

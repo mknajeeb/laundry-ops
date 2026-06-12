@@ -230,3 +230,116 @@ class TestBaselinePayload:
         assert row.get("source_seen_in") is not None
         assert "live_baseline" in payload
         assert payload["live_baseline"]["banner_title"]
+
+
+class TestCleanVeeWashBaselineAnchor:
+    def test_org3_defaults_to_clean_veewash_baseline(self):
+        from unittest.mock import MagicMock, patch
+
+        from backend.rinse_shift_monitor_baseline import (
+            BASELINE_SOURCE_CLEAN_VEEWASH,
+            VEEWASH_CLEAN_BASELINE_PRESENCE_RUN_ID,
+            VEEWASH_CLEAN_BASELINE_SOURCE_BATCH_ID,
+            VEEWASH_CLEAN_BASELINE_START_ET,
+            get_shift_monitor_baseline,
+        )
+
+        cursor = MagicMock()
+        with patch("backend.rinse_shift_monitor_baseline._get_setting", return_value=None):
+            baseline = get_shift_monitor_baseline(cursor, 3)
+        assert baseline["baseline_source"] == BASELINE_SOURCE_CLEAN_VEEWASH
+        assert baseline["shift_monitor_baseline_start_at_et"] == VEEWASH_CLEAN_BASELINE_START_ET
+        assert baseline["baseline_presence_run_id"] == VEEWASH_CLEAN_BASELINE_PRESENCE_RUN_ID
+        assert baseline["baseline_source_batch_id"] == VEEWASH_CLEAN_BASELINE_SOURCE_BATCH_ID
+
+    def test_contaminated_manual_verify_batch_rejected(self):
+        from backend.rinse_shift_monitor_baseline import is_contaminated_presence_batch
+
+        assert is_contaminated_presence_batch(
+            "manual_verify-72159513726141a5b11969a2949880af"
+        ) is True
+        assert is_contaminated_presence_batch(
+            "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84"
+        ) is False
+
+    def test_latest_clean_presence_scrape_skips_contaminated(self):
+        from unittest.mock import MagicMock, patch
+
+        from backend.rinse_shift_monitor_baseline import latest_clean_at_vendor_presence_scrape
+
+        cursor = MagicMock()
+        contaminated = {
+            "id": 99,
+            "source_batch_id": "manual_verify-72159513726141a5b11969a2949880af",
+            "finished_at": datetime(2026, 6, 11, 21, 0, 0),
+        }
+        clean = {
+            "id": 6,
+            "source_batch_id": "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84",
+            "finished_at": datetime(2026, 6, 11, 20, 38, 25),
+        }
+        with patch(
+            "backend.rinse_shift_monitor_baseline.table_exists",
+            return_value=True,
+        ), patch.object(cursor, "fetchone", return_value=None), patch.object(
+            cursor, "fetchall", return_value=[contaminated, clean]
+        ):
+            row = latest_clean_at_vendor_presence_scrape(cursor, 3)
+        assert row is not None
+        assert row["id"] == 6
+        assert "manual_verify" not in str(row.get("source_batch_id") or "")
+
+    def test_build_baseline_context_exposes_clean_anchor_fields(self):
+        from unittest.mock import MagicMock, patch
+
+        from backend.rinse_shift_monitor_baseline import (
+            BASELINE_SOURCE_CLEAN_VEEWASH,
+            build_baseline_context,
+            veewash_clean_baseline_defaults,
+        )
+
+        cursor = MagicMock()
+        baseline = {
+            **veewash_clean_baseline_defaults(),
+            "active": True,
+            "baseline_org": 3,
+            "baseline_time_et": "2026-06-11 20:38:25",
+            "timezone": "America/New_York",
+        }
+        clean_run = {
+            "id": 6,
+            "source_batch_id": "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84",
+            "finished_at": datetime(2026, 6, 11, 20, 38, 25),
+        }
+        with patch(
+            "backend.rinse_shift_monitor_baseline.latest_clean_at_vendor_presence_scrape",
+            return_value=clean_run,
+        ), patch(
+            "backend.rinse_shift_monitor_baseline.latest_rfv_scrape_after_baseline",
+            return_value=None,
+        ), patch(
+            "backend.rinse_shift_monitor_baseline.latest_at_vendor_scrape_after_baseline",
+            return_value=None,
+        ), patch(
+            "backend.rinse_vendor_config.resolve_rinse_vendor",
+            return_value="veewash",
+        ):
+            ctx = build_baseline_context(cursor, 3, baseline)
+        assert ctx["baseline_source"] == BASELINE_SOURCE_CLEAN_VEEWASH
+        assert ctx["baseline_time_et"] == "2026-06-11 20:38:25"
+        assert ctx["baseline_org"] == 3
+        assert ctx["baseline_vendor"] == "veewash"
+        assert ctx["baseline_presence_run_id"] == 6
+        assert ctx["baseline_source_batch_id"] == (
+            "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84"
+        )
+        assert ctx["baseline_time_et_label"] == "2026-06-11 20:38:25 America/New_York"
+        assert ctx["latest_clean_at_vendor_presence_scrape_et"] == (
+            "2026-06-11 20:38:25 America/New_York"
+        )
+        assert ctx["latest_clean_at_vendor_presence_scrape_utc"] == "2026-06-12 00:38:25 UTC"
+        assert ctx["latest_clean_at_vendor_presence_scrape"] == ctx[
+            "latest_clean_at_vendor_presence_scrape_et"
+        ]
+        assert ctx["latest_at_vendor_presence_scrape_run_id"] == 6
+        assert ctx["at_vendor_scrape_ready"] is True

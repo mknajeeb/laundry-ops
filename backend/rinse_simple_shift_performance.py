@@ -3039,7 +3039,9 @@ def build_simple_shift_performance_payload(
     from backend.rinse_at_vendor_module import build_at_vendor_module
     from backend.rinse_shift_monitor_modules import apply_module_tags, build_shift_monitor_modules
 
-    at_vendor_module = build_at_vendor_module(cursor, org, selected_date_et=period_end)
+    at_vendor_module = build_at_vendor_module(
+        cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
+    )
     apply_module_tags(records, events_by_bag=events_by_bag)
     shift_monitor_modules = build_shift_monitor_modules(
         records,
