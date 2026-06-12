@@ -282,19 +282,29 @@ def normalize_rfv_presence_row(
     }
 
 
-def _load_active_rfv_presence_rows(cursor, organization_id: int) -> list[dict[str, Any]]:
+def _load_active_rfv_presence_rows(
+    cursor,
+    organization_id: int,
+    *,
+    source_batch_id: str | None = None,
+) -> list[dict[str, Any]]:
     from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY
 
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return []
+    org = int(organization_id)
+    batch_id = str(source_batch_id or "").strip()
+    if not batch_id:
         return []
     cursor.execute(
         """
         SELECT bag_id, customer_name, estimated_delivery_date, service_type, rush_flag, raw_row_json
         FROM rinse_cleaner_ticket_presence
         WHERE organization_id = %s AND active = 1 AND portal_status = %s
+          AND source_batch_id = %s
         ORDER BY last_seen_at DESC
         """,
-        (int(organization_id), PORTAL_STATUS_READY),
+        (org, PORTAL_STATUS_READY, batch_id),
     )
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict) and r.get("bag_id")]
 
@@ -410,6 +420,11 @@ def build_ready_for_vendor_queue(
     rfv_run = None
     if baseline_utc is not None:
         rfv_run = latest_rfv_scrape_after_baseline(cursor, org, baseline_utc)
+    rfv_batch_id = str(
+        baseline_ctx.get("latest_rfv_presence_source_batch_id")
+        or (rfv_run.get("source_batch_id") if rfv_run else "")
+        or ""
+    ).strip()
 
     scrape_time_et = _scrape_time_et_from_run(rfv_run)
     scrape_time_et_label = scrape_time_et.strftime("%Y-%m-%d %H:%M:%S") if scrape_time_et else None
@@ -425,6 +440,7 @@ def build_ready_for_vendor_queue(
         "rfv_rush_cutoff_time_et": cutoff_label,
         "rfv_rush_cutoff_source": cutoff_source,
         "latest_rfv_scrape_run_id": rfv_run.get("id") if rfv_run else None,
+        "latest_rfv_presence_source_batch_id": rfv_batch_id or None,
         "active_rows": 0,
         "uses_scans": False,
     }
@@ -480,14 +496,14 @@ def build_ready_for_vendor_queue(
         return _unavailable(f"Ready for Vendor Sync skipped: {skipped_reason or 'feature flag disabled'}")
     if latest_status == "failed" or sync.get("latest_failed"):
         return _unavailable(f"Ready for Vendor Sync failed: {error_message or 'unknown error'}")
-    active_probe = _load_active_rfv_presence_rows(cursor, org)
+    active_probe = _load_active_rfv_presence_rows(cursor, org, source_batch_id=rfv_batch_id)
     zero_active_rows = len(active_probe) == 0
     if stale and not sync.get("zero_rows_success") and not zero_active_rows:
         stale_ref = last_refreshed_at or "unknown"
         return _unavailable(
             f"Ready for Vendor sync stale — last refresh {stale_ref}. Refresh Both Syncs before using live counts."
         )
-    if not baseline_ctx.get("rfv_scrape_ready") or scrape_time_et is None:
+    if not baseline_ctx.get("rfv_scrape_ready") or not rfv_batch_id:
         return _unavailable("No post-baseline RFV scrape — live snapshot unavailable")
 
     raw_rows = active_probe

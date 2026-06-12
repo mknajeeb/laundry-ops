@@ -698,19 +698,29 @@ def _load_baseline_gated_at_vendor_population(
         }
 
     source_batch_id = str(
-        baseline_ctx.get("latest_at_vendor_presence_source_batch_id")
-        or baseline_ctx.get("baseline_source_batch_id")
-        or ""
+        baseline_ctx.get("latest_at_vendor_presence_source_batch_id") or ""
     ).strip()
+    if not source_batch_id:
+        return [], {
+            "available": False,
+            "reason": "Latest clean VeeWash at_vendor presence scrape batch unavailable",
+            "start_of_day_et": start_of_day_et.isoformat(),
+            "end_of_day_et": end_of_day_et.isoformat(),
+        }
     seed_by_bag = _load_clean_scrape_seed_presence_by_bag(
         cursor, org, source_batch_id=source_batch_id
     )
+    scrape_finished = baseline_ctx.get("latest_at_vendor_presence_scrape_finished_naive_et")
+    sent_threshold = baseline_start
+    if isinstance(scrape_finished, datetime) and scrape_finished > sent_threshold:
+        sent_threshold = scrape_finished
     post_baseline_sent_ids = _load_post_baseline_sent_to_vendor_bag_ids(
         cursor,
         org,
-        baseline_start_naive_et=baseline_start,
+        baseline_start_naive_et=sent_threshold,
         through_end=end_of_day_et,
     )
+    post_baseline_sent_ids -= set(seed_by_bag.keys())
     seed_ids = set(seed_by_bag.keys())
     population_ids = seed_ids | post_baseline_sent_ids
 
@@ -768,7 +778,7 @@ def _load_baseline_gated_at_vendor_population(
         "end_of_day_et": end_of_day_et.isoformat(),
         "baseline_time_et": baseline_start.isoformat(),
         "baseline_source_batch_id": source_batch_id,
-        "baseline_presence_run_id": baseline_ctx.get("baseline_presence_run_id"),
+        "baseline_presence_run_id": baseline_ctx.get("latest_at_vendor_presence_scrape_run_id"),
         "current_live_vendor_home_total": current_live_vendor_home_total,
         "clean_scrape_seed_count": len(seed_ids),
         "post_baseline_sent_count": len(post_baseline_sent_ids - seed_ids),
@@ -1751,11 +1761,17 @@ def build_at_vendor_module(
     t_events = time.perf_counter()
     if uses_clean_baseline and baseline_ctx:
         baseline_start = baseline_ctx.get("baseline_start_naive_et")
+        scrape_finished = baseline_ctx.get("latest_at_vendor_presence_scrape_finished_naive_et")
+        event_threshold = baseline_start if isinstance(baseline_start, datetime) else None
+        if isinstance(scrape_finished, datetime) and (
+            event_threshold is None or scrape_finished > event_threshold
+        ):
+            event_threshold = scrape_finished
         events_by_bag = _load_at_vendor_scan_events_for_bags(
             cursor,
             org,
             bag_ids,
-            scanned_on_or_after=baseline_start if isinstance(baseline_start, datetime) else None,
+            scanned_on_or_after=event_threshold,
         )
         carry_in_events_reused = 0
     else:
