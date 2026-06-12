@@ -313,33 +313,36 @@ def _employee_shift_window(
     user_id: int,
     period_start: date,
     period_end: date,
+    sessions_by_user: dict[int, list[dict[str, Any]]] | None = None,
+    last_sync: datetime | None = None,
+    last_sync_loaded: bool = False,
+    window_cache: dict[int, tuple[datetime | None, datetime | None, str | None]] | None = None,
 ) -> tuple[datetime | None, datetime | None, str | None]:
     """Earliest clock-in and latest effective clock-out overlapping ET day."""
-    from backend.rinse_processing_productivity import _last_rinse_sync_naive
+    uid = int(user_id)
+    if window_cache is not None and uid in window_cache:
+        return window_cache[uid]
 
-    sessions = _load_shift_sessions(cursor, organization_id, user_id, period_start, period_end)
-    if not sessions:
-        return None, None, "Clock-in missing"
-    start_dt, end_incl = period_datetime_bounds_et(period_start, period_end)
-    last_sync = _last_rinse_sync_naive(cursor, organization_id)
-    clock_ins: list[datetime] = []
-    clock_outs: list[datetime] = []
-    for sh in sessions:
-        cin = sh.get("clock_in_at")
-        if not isinstance(cin, datetime):
-            continue
-        cout, _, _ = _shift_effective_clock_out(sh, last_sync=last_sync)
-        if cout is None:
-            continue
-        overlap_start = max(cin, start_dt)
-        overlap_end = min(cout, end_incl)
-        if overlap_end <= overlap_start:
-            continue
-        clock_ins.append(cin)
-        clock_outs.append(cout)
-    if not clock_ins:
-        return None, None, "Clock-in missing"
-    return min(clock_ins), max(clock_outs), None
+    from backend.rinse_processing_productivity import (
+        _employee_shift_window_from_sessions,
+        _last_rinse_sync_naive,
+        _load_shift_sessions,
+    )
+
+    if sessions_by_user is not None:
+        sessions = sessions_by_user.get(uid) or []
+    else:
+        sessions = _load_shift_sessions(cursor, organization_id, uid, period_start, period_end)
+    sync = last_sync if last_sync_loaded else _last_rinse_sync_naive(cursor, organization_id)
+    result = _employee_shift_window_from_sessions(
+        sessions,
+        period_start=period_start,
+        period_end=period_end,
+        last_sync=sync,
+    )
+    if window_cache is not None:
+        window_cache[uid] = result
+    return result
 
 
 def _activity_allowed(
@@ -865,6 +868,29 @@ def _build_employee_activity_summary(
     excluded_external = sorted(
         e for e in all_employees if not _is_production_employee(e, user_maps)
     )
+
+    from backend.rinse_processing_productivity import (
+        _last_rinse_sync_naive,
+        _load_shift_sessions_bulk,
+    )
+
+    user_ids = sorted(
+        {
+            int(mapping["user_id"])
+            for (employee, _role) in by_emp_role
+            if (mapping := user_maps.get(employee.casefold())) and mapping.get("user_id")
+        }
+    )
+    last_sync = _last_rinse_sync_naive(cursor, organization_id)
+    sessions_by_user = (
+        _load_shift_sessions_bulk(
+            cursor, organization_id, user_ids, period_start, period_end
+        )
+        if user_ids
+        else {}
+    )
+    window_cache: dict[int, tuple[datetime | None, datetime | None, str | None]] = {}
+
     summaries: list[dict[str, Any]] = []
     for (employee, role), rows in sorted(by_emp_role.items(), key=lambda x: (x[0][0].lower(), x[0][1])):
         mapping = user_maps.get(employee.casefold())
@@ -876,7 +902,15 @@ def _build_employee_activity_summary(
             diagnostic = "User mapping missing"
         else:
             clock_in, clock_out, diagnostic = _employee_shift_window(
-                cursor, organization_id, user_id=user_id, period_start=period_start, period_end=period_end
+                cursor,
+                organization_id,
+                user_id=user_id,
+                period_start=period_start,
+                period_end=period_end,
+                sessions_by_user=sessions_by_user,
+                last_sync=last_sync,
+                last_sync_loaded=True,
+                window_cache=window_cache,
             )
 
         if clock_in is None:

@@ -231,6 +231,82 @@ def _load_shift_sessions(
     return list(cursor.fetchall() or [])
 
 
+def _load_shift_sessions_bulk(
+    cursor,
+    organization_id: int,
+    user_ids: list[int],
+    period_start: date,
+    period_end: date,
+) -> dict[int, list[dict[str, Any]]]:
+    """Load overlapping shift sessions for many users in one or few SQL round trips."""
+    from backend.ta_helpers import table_exists
+
+    ids = sorted({int(uid) for uid in user_ids if uid})
+    if not ids or not table_exists(cursor, "shift_sessions"):
+        return {}
+    org = int(organization_id)
+    start_dt, _end_incl = period_datetime_bounds_et(period_start, period_end)
+    end_exclusive = naive_et_day_end_exclusive(period_end)
+    out: dict[int, list[dict[str, Any]]] = {uid: [] for uid in ids}
+    chunk = 200
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT user_id, id, clock_in_at, clock_out_at, status, net_work_seconds
+            FROM shift_sessions
+            WHERE organization_id = %s
+              AND user_id IN ({placeholders})
+              AND clock_in_at < %s
+              AND (clock_out_at IS NULL OR clock_out_at >= %s)
+            ORDER BY user_id, clock_in_at ASC
+            """,
+            (org, *part, end_exclusive, start_dt),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            uid_raw = row.get("user_id")
+            if uid_raw is None:
+                continue
+            uid = int(uid_raw)
+            if uid in out:
+                out[uid].append(row)
+    return out
+
+
+def _employee_shift_window_from_sessions(
+    sessions: list[dict[str, Any]],
+    *,
+    period_start: date,
+    period_end: date,
+    last_sync: datetime | None,
+) -> tuple[datetime | None, datetime | None, str | None]:
+    """Earliest clock-in and latest effective clock-out overlapping ET day."""
+    if not sessions:
+        return None, None, "Clock-in missing"
+    start_dt, end_incl = period_datetime_bounds_et(period_start, period_end)
+    clock_ins: list[datetime] = []
+    clock_outs: list[datetime] = []
+    for sh in sessions:
+        cin = sh.get("clock_in_at")
+        if not isinstance(cin, datetime):
+            continue
+        cout, _, _ = _shift_effective_clock_out(sh, last_sync=last_sync)
+        if cout is None:
+            continue
+        overlap_start = max(cin, start_dt)
+        overlap_end = min(cout, end_incl)
+        if overlap_end <= overlap_start:
+            continue
+        clock_ins.append(cin)
+        clock_outs.append(cout)
+    if not clock_ins:
+        return None, None, "Clock-in missing"
+    return min(clock_ins), max(clock_outs), None
+
+
 def build_clocked_processing_summary(
     cursor,
     organization_id: int,

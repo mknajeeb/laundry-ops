@@ -1403,3 +1403,188 @@ class TestDrilldownContract:
         assert "hd_not_started" in rec_hd["drilldown_tags"]
         assert "wf_weighed" not in rec_hd["drilldown_tags"]
         assert "hd_not_started" not in rec_wf["drilldown_tags"]
+
+
+class TestEmployeeActivityBatching:
+    def test_shift_window_from_sessions_matches_per_user_loader(self):
+        from datetime import date
+
+        from backend.rinse_processing_productivity import (
+            _employee_shift_window_from_sessions,
+            _load_shift_sessions,
+        )
+        from backend.rinse_simple_shift_performance import _employee_shift_window
+
+        period_start = date(2026, 6, 4)
+        period_end = date(2026, 6, 4)
+        sessions = [
+            {
+                "id": 1,
+                "clock_in_at": datetime(2026, 6, 4, 8, 0),
+                "clock_out_at": datetime(2026, 6, 4, 17, 0),
+                "status": "completed",
+                "net_work_seconds": 8 * 3600,
+            }
+        ]
+        last_sync = datetime(2026, 6, 4, 16, 0)
+        bulk_result = _employee_shift_window_from_sessions(
+            sessions,
+            period_start=period_start,
+            period_end=period_end,
+            last_sync=last_sync,
+        )
+        cursor = MagicMock()
+        with patch(
+            "backend.rinse_processing_productivity._load_shift_sessions",
+            return_value=sessions,
+        ), patch(
+            "backend.rinse_processing_productivity._last_rinse_sync_naive",
+            return_value=last_sync,
+        ):
+            per_user = _employee_shift_window(
+                cursor,
+                1,
+                user_id=10,
+                period_start=period_start,
+                period_end=period_end,
+            )
+        assert bulk_result == per_user
+
+    def test_build_employee_activity_summary_batches_shift_lookups(self):
+        from datetime import date
+
+        from backend.rinse_bag_activity_rules import BagActivityCredit, ROLE_FOLDING, ROLE_WEIGHING
+        from backend.rinse_simple_shift_performance import _build_employee_activity_summary
+
+        credits = [
+            BagActivityCredit(
+                bag_id="B1",
+                employee="Alice",
+                role=ROLE_WEIGHING,
+                activity_at=datetime(2026, 6, 4, 9, 0),
+                activity_kind="weight-entry",
+                lbs=10.0,
+                needs_review=False,
+                flags=[],
+            ),
+            BagActivityCredit(
+                bag_id="B2",
+                employee="Alice",
+                role=ROLE_FOLDING,
+                activity_at=datetime(2026, 6, 4, 10, 0),
+                activity_kind="folding",
+                lbs=10.0,
+                needs_review=False,
+                flags=[],
+            ),
+            BagActivityCredit(
+                bag_id="B3",
+                employee="Bob",
+                role=ROLE_WEIGHING,
+                activity_at=datetime(2026, 6, 4, 11, 0),
+                activity_kind="weight-entry",
+                lbs=8.0,
+                needs_review=False,
+                flags=[],
+            ),
+        ]
+        user_maps = {
+            "alice": {"user_id": 10, "rinse_user_name": "Alice", "is_production": True},
+            "bob": {"user_id": 20, "rinse_user_name": "Bob", "is_production": True},
+        }
+        session_row = {
+            "user_id": 10,
+            "id": 1,
+            "clock_in_at": datetime(2026, 6, 4, 8, 0),
+            "clock_out_at": datetime(2026, 6, 4, 17, 0),
+            "status": "completed",
+            "net_work_seconds": 8 * 3600,
+        }
+        session_row_bob = {**session_row, "user_id": 20, "id": 2}
+        cursor = MagicMock()
+        with patch(
+            "backend.rinse_processing_productivity._last_rinse_sync_naive",
+            return_value=datetime(2026, 6, 4, 16, 0),
+        ) as mock_sync, patch(
+            "backend.rinse_processing_productivity._load_shift_sessions_bulk",
+            return_value={10: [session_row], 20: [session_row_bob]},
+        ) as mock_bulk, patch(
+            "backend.rinse_processing_productivity._load_shift_sessions",
+        ) as mock_single:
+            summaries, diagnostics = _build_employee_activity_summary(
+                cursor,
+                1,
+                credits=credits,
+                period_start=date(2026, 6, 4),
+                period_end=date(2026, 6, 4),
+                user_maps=user_maps,
+            )
+        mock_sync.assert_called_once_with(cursor, 1)
+        mock_bulk.assert_called_once()
+        assert mock_bulk.call_args[0][2] == [10, 20]
+        mock_single.assert_not_called()
+        assert len(summaries) == 3
+        assert diagnostics["included_employees"] == ["Alice", "Bob"]
+
+    @patch("backend.rinse_processing_productivity._load_shift_sessions_bulk")
+    @patch("backend.rinse_processing_productivity._last_rinse_sync_naive")
+    @patch("backend.rinse_simple_shift_performance.get_processing_settings")
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps")
+    @patch("backend.rinse_simple_shift_performance._load_bag_metadata")
+    @patch("backend.rinse_simple_shift_performance._load_scan_events_for_bags")
+    @patch("backend.rinse_simple_shift_performance._load_bag_ids_with_et_activity")
+    @patch("backend.rinse_simple_shift_performance.get_pending_bag_status")
+    def test_payload_includes_employee_activity_after_batching(
+        self,
+        mock_pending,
+        mock_scope_b,
+        mock_events,
+        mock_meta,
+        mock_maps,
+        mock_settings,
+        mock_sync,
+        mock_bulk,
+    ):
+        from datetime import date
+
+        from backend.rinse_simple_shift_performance import build_simple_shift_performance_payload
+
+        mock_settings.return_value = {"weight_difference_threshold_lbs": 5.0}
+        mock_maps.return_value = {"alice": {"user_id": 10, "rinse_user_name": "Alice"}}
+        mock_scope_b.return_value = ["B1"]
+        mock_pending.return_value = {
+            "rows": [],
+            "incoming": {"groups": {"combined": {}}},
+            "wf_lifecycle": {"groups": {"combined": {"total": 0, "by_lifecycle_status": {}, "by_lifecycle_group": {}}}},
+            "hd_lifecycle": {"groups": {"combined": {"total": 0}}},
+            "checkout_rush": {},
+        }
+        mock_meta.return_value = {"B1": {"bag_id": "B1", "service_type": "WF", "rush_type": "NON-RUSH"}}
+        mock_events.return_value = {
+            "B1": _sv(
+                _ev("weight-entry", datetime(2026, 6, 4, 9, 0), user="Alice", ev_id=2, scan_index=2),
+            )
+        }
+        mock_sync.return_value = datetime(2026, 6, 4, 16, 0)
+        mock_bulk.return_value = {
+            10: [
+                {
+                    "user_id": 10,
+                    "id": 1,
+                    "clock_in_at": datetime(2026, 6, 4, 8, 0),
+                    "clock_out_at": datetime(2026, 6, 4, 17, 0),
+                    "status": "completed",
+                    "net_work_seconds": 8 * 3600,
+                }
+            ]
+        }
+        with patch_unified_loaders_from_pending(mock_pending.return_value, today=date(2026, 6, 4)):
+            payload = build_simple_shift_performance_payload(
+                MagicMock(),
+                1,
+                period_start=date(2026, 6, 4),
+                period_end=date(2026, 6, 4),
+            )
+        assert "employee_activity_summary" in payload
+        assert payload["employee_cards"] is not None
+        assert isinstance(payload["employee_activity_summary"], list)
