@@ -39,6 +39,7 @@ from backend.rinse_at_vendor_module import (
     MOD_AT_VENDOR_COMPLETED,
     MOD_AT_VENDOR_PENDING,
     MOD_AT_VENDOR_TOTAL,
+    DAILY_METRICS_UI_WARNING,
 )
 
 MOD_FACILITY_TOTAL = MOD_AT_VENDOR_TOTAL
@@ -440,6 +441,10 @@ def build_shift_monitor_modules(
     av = dict(at_vendor_module or {})
     av_rows = list(av.get("rows") or [])
     av_selected = av.get("selected_date_et") or period_end.isoformat()
+    daily_metrics_reliable = av.get("daily_metrics_reliable", True)
+    facility_note = None
+    if daily_metrics_reliable is False:
+        facility_note = av.get("daily_metrics_ui_warning") or DAILY_METRICS_UI_WARNING
     facility_cards = list(av.get("cards") or []) or [
         _card("av_total", "Total Bags", MOD_AT_VENDOR_TOTAL, av_rows),
         _card("av_pending", "Pending", MOD_AT_VENDOR_PENDING, av_rows),
@@ -566,6 +571,8 @@ def build_shift_monitor_modules(
             "title": "At Vendor",
             "subtitle": f"Selected ET day — {av_selected}",
             "filters_enabled": True,
+            "note": facility_note,
+            "daily_metrics_reliable": daily_metrics_reliable,
             "cards": facility_cards,
             "rows_source": "at_vendor_module",
         },

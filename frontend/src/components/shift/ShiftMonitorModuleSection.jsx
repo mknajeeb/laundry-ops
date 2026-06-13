@@ -46,7 +46,7 @@ export default function ShiftMonitorModuleSection({
         </Typography>
       ) : null}
       {module.note ? (
-        <Alert severity="info" sx={{ mb: 1, py: 0.25 }}>
+        <Alert severity={module.daily_metrics_reliable === false ? "warning" : "info"} sx={{ mb: 1, py: 0.25 }}>
           {module.note}
         </Alert>
       ) : null}

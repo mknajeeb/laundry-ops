@@ -164,7 +164,34 @@ def ensure_rinse_cleaner_ticket_presence_runs_table(cursor) -> None:
 def ensure_presence_tables(cursor) -> None:
     ensure_rinse_cleaner_ticket_presence_table(cursor)
     ensure_rinse_cleaner_ticket_presence_runs_table(cursor)
+    ensure_presence_run_rows_table(cursor)
     ensure_presence_transition_columns(cursor)
+
+
+def ensure_presence_run_rows_table(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rinse_cleaner_ticket_presence_run_rows (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            presence_run_id BIGINT NOT NULL,
+            organization_id INT NOT NULL,
+            source_batch_id VARCHAR(64) NOT NULL,
+            portal_status VARCHAR(32) NOT NULL,
+            bag_id VARCHAR(64) NOT NULL,
+            customer_name VARCHAR(255) NULL,
+            estimated_delivery_date DATE NULL,
+            rush_flag VARCHAR(32) NULL,
+            service_type VARCHAR(64) NULL,
+            raw_row_json JSON NULL,
+            rinse_vendor VARCHAR(32) NULL,
+            created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+            UNIQUE KEY uq_presence_run_row (presence_run_id, bag_id),
+            KEY idx_presence_run_rows_run (presence_run_id),
+            KEY idx_presence_run_rows_org_run (organization_id, presence_run_id),
+            KEY idx_presence_run_rows_org_batch (organization_id, source_batch_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
 
 
 def build_tickets_url_for_portal_status(
@@ -885,7 +912,7 @@ def record_presence_scrape_run(
     errors: Sequence[str] | None = None,
     scrape_meta: Mapping[str, Any] | None = None,
     dry_run: bool = False,
-) -> None:
+) -> int | None:
     """Persist one presence scrape attempt (success or failure) for sync status."""
     ensure_presence_tables(cursor)
     org = int(organization_id)
@@ -930,6 +957,198 @@ def record_presence_scrape_run(
             json.dumps(dict(scrape_meta)) if scrape_meta else None,
         ),
     )
+    return int(cursor.lastrowid or 0) or None
+
+
+def persist_presence_run_snapshot_rows(
+    cursor,
+    organization_id: int,
+    *,
+    presence_run_id: int,
+    portal_status: str,
+    source_batch_id: str,
+    rows: Sequence[Mapping[str, Any]],
+    rinse_vendor: str | None = None,
+) -> int:
+    """
+    Immutable snapshot of all bag rows seen in one scrape run.
+    Later live-table updates must not alter these rows.
+    """
+    ensure_presence_run_rows_table(cursor)
+    org = int(organization_id)
+    run_id = int(presence_run_id)
+    batch_id = str(source_batch_id or "").strip()
+    ps = str(portal_status or "").strip()
+    vendor = str(rinse_vendor or "").strip().lower() or None
+    written = 0
+    for raw in rows:
+        bag_id = normalize_bag_id(raw.get("bag_id"))
+        if not bag_id:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO rinse_cleaner_ticket_presence_run_rows (
+                presence_run_id, organization_id, source_batch_id, portal_status,
+                bag_id, customer_name, estimated_delivery_date, rush_flag,
+                service_type, raw_row_json, rinse_vendor
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON DUPLICATE KEY UPDATE
+                source_batch_id=VALUES(source_batch_id),
+                portal_status=VALUES(portal_status),
+                customer_name=VALUES(customer_name),
+                estimated_delivery_date=VALUES(estimated_delivery_date),
+                rush_flag=VALUES(rush_flag),
+                service_type=VALUES(service_type),
+                raw_row_json=VALUES(raw_row_json),
+                rinse_vendor=VALUES(rinse_vendor)
+            """,
+            (
+                run_id,
+                org,
+                batch_id,
+                ps,
+                bag_id,
+                raw.get("customer_name"),
+                raw.get("estimated_delivery_date"),
+                raw.get("rush_flag"),
+                raw.get("service_type"),
+                json.dumps(raw.get("raw_row_json") or {}),
+                vendor,
+            ),
+        )
+        written += 1
+    return written
+
+
+def load_presence_run_snapshot_by_bag(
+    cursor,
+    organization_id: int,
+    *,
+    presence_run_id: int,
+) -> dict[str, dict[str, Any]]:
+    """Load immutable snapshot rows for a scrape run."""
+    from backend.rinse_current_facility_snapshot import portal_at_vendor_yet_to_process
+
+    ensure_presence_run_rows_table(cursor)
+    org = int(organization_id)
+    run_id = int(presence_run_id)
+    cursor.execute(
+        """
+        SELECT bag_id, portal_status, customer_name, estimated_delivery_date,
+               rush_flag, service_type, raw_row_json, source_batch_id, rinse_vendor
+        FROM rinse_cleaner_ticket_presence_run_rows
+        WHERE organization_id = %s AND presence_run_id = %s
+        ORDER BY UPPER(TRIM(bag_id))
+        """,
+        (org, run_id),
+    )
+    out: dict[str, dict[str, Any]] = {}
+    for raw in cursor.fetchall() or []:
+        if not isinstance(raw, dict):
+            continue
+        bid = str(raw.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        rj = raw.get("raw_row_json")
+        if isinstance(rj, str):
+            try:
+                rj = json.loads(rj)
+            except (json.JSONDecodeError, TypeError):
+                rj = {}
+        if not isinstance(rj, dict):
+            rj = {}
+        out[bid] = {
+            "bag_id": bid,
+            "customer_name": raw.get("customer_name"),
+            "service_type": raw.get("service_type"),
+            "estimated_delivery_date": raw.get("estimated_delivery_date"),
+            "raw_row_json": rj,
+            "delivery_source": "presence_run_snapshot",
+            "portal_status": raw.get("portal_status"),
+            "presence_run_id": run_id,
+            "source_batch_id": raw.get("source_batch_id"),
+            "rinse_vendor": raw.get("rinse_vendor"),
+            "active_presence": False,
+            "portal_yet_to_process": portal_at_vendor_yet_to_process({"raw_row_json": rj}),
+        }
+    return out
+
+
+def count_presence_run_snapshot_rows(cursor, organization_id: int, *, presence_run_id: int) -> int:
+    ensure_presence_run_rows_table(cursor)
+    cursor.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM rinse_cleaner_ticket_presence_run_rows
+        WHERE organization_id = %s AND presence_run_id = %s
+        """,
+        (int(organization_id), int(presence_run_id)),
+    )
+    row = cursor.fetchone()
+    return int((row or {}).get("c") or 0)
+
+
+def backfill_presence_run_snapshot_from_live_batch(
+    cursor,
+    organization_id: int,
+    *,
+    presence_run_id: int,
+    source_batch_id: str,
+    portal_status: str,
+    rinse_vendor: str | None = None,
+) -> int:
+    """
+    Best-effort backfill for runs scraped before immutable snapshots existed.
+    Uses live presence rows still tagged with the run batch id.
+    """
+    if count_presence_run_snapshot_rows(cursor, organization_id, presence_run_id=presence_run_id) > 0:
+        return 0
+    org = int(organization_id)
+    batch_id = str(source_batch_id or "").strip()
+    ps = str(portal_status or "").strip()
+    if not batch_id or not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return 0
+    cursor.execute(
+        """
+        SELECT bag_id, customer_name, estimated_delivery_date, rush_flag,
+               service_type, raw_row_json
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s AND portal_status = %s AND source_batch_id = %s
+        ORDER BY UPPER(TRIM(bag_id))
+        """,
+        (org, ps, batch_id),
+    )
+    rows: list[dict[str, Any]] = []
+    for raw in cursor.fetchall() or []:
+        if not isinstance(raw, dict):
+            continue
+        rj = raw.get("raw_row_json")
+        if isinstance(rj, str):
+            try:
+                rj = json.loads(rj)
+            except (json.JSONDecodeError, TypeError):
+                rj = {}
+        rows.append(
+            {
+                "bag_id": raw.get("bag_id"),
+                "customer_name": raw.get("customer_name"),
+                "estimated_delivery_date": raw.get("estimated_delivery_date"),
+                "rush_flag": raw.get("rush_flag"),
+                "service_type": raw.get("service_type"),
+                "raw_row_json": rj if isinstance(rj, dict) else {},
+            }
+        )
+    if not rows:
+        return 0
+    return persist_presence_run_snapshot_rows(
+        cursor,
+        org,
+        presence_run_id=presence_run_id,
+        portal_status=ps,
+        source_batch_id=batch_id,
+        rows=rows,
+        rinse_vendor=rinse_vendor,
+    )
 
 
 def apply_presence_scrape(
@@ -956,7 +1175,10 @@ def apply_presence_scrape(
     org = int(organization_id)
     batch_id = (source_batch_id or "").strip() or uuid.uuid4().hex
     now = _utc_now()
+    meta = dict(scrape_meta or {})
+    rinse_vendor = str(meta.get("rinse_vendor") or meta.get("resolved_vendor") or "").strip().lower() or None
     seen: set[str] = set()
+    snapshot_rows: list[dict[str, Any]] = []
     stats = {
         "organization_id": org,
         "portal_status": ps,
@@ -978,6 +1200,16 @@ def apply_presence_scrape(
             continue
         seen.add(bag_id)
         stats["rows_found"] += 1
+        snapshot_rows.append(
+            {
+                "bag_id": bag_id,
+                "customer_name": raw.get("customer_name"),
+                "estimated_delivery_date": raw.get("estimated_delivery_date"),
+                "rush_flag": raw.get("rush_flag"),
+                "service_type": raw.get("service_type"),
+                "raw_row_json": raw.get("raw_row_json") or {},
+            }
+        )
 
         existing = _fetch_presence_row(cursor, org, bag_id)
         payload = {
@@ -1127,7 +1359,7 @@ def apply_presence_scrape(
             stats["active_rows"] = int(active_row[0] or 0)
         else:
             stats["active_rows"] = 0
-        record_presence_scrape_run(
+        run_id = record_presence_scrape_run(
             cursor,
             org,
             portal_status=ps,
@@ -1143,9 +1375,19 @@ def apply_presence_scrape(
             rows_unchanged=stats["rows_unchanged"],
             rows_missing=stats["rows_missing"],
             errors=stats["errors"] or None,
-            scrape_meta=scrape_meta,
+            scrape_meta=meta,
             dry_run=False,
         )
+        if run_id and snapshot_rows:
+            stats["snapshot_rows_persisted"] = persist_presence_run_snapshot_rows(
+                cursor,
+                org,
+                presence_run_id=run_id,
+                portal_status=ps,
+                source_batch_id=batch_id,
+                rows=snapshot_rows,
+                rinse_vendor=rinse_vendor,
+            )
 
     return stats
 

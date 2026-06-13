@@ -31,7 +31,7 @@ from backend.rinse_scan_purpose import (
     is_weight_entry_purpose,
     normalize_scan_purpose,
 )
-from backend.rinse_scan_time import system_datetime_to_et
+from backend.rinse_scan_time import system_datetime_to_et, naive_system_utc
 from backend.ta_helpers import table_exists, table_has_column
 
 # Scan purposes needed for At Vendor scope/completion (no full lifecycle history).
@@ -215,6 +215,51 @@ INCLUSION_CARRY_IN = "carry_in_open_at_midnight"
 INCLUSION_NEW_SENT = "new_sent_to_vendor_today"
 INCLUSION_CLEAN_SCRAPE_SEED = "clean_veewash_scrape_seed"
 INCLUSION_POST_BASELINE_SENT = "post_baseline_sent_to_vendor"
+INCLUSION_DAILY_BASELINE_SEED = "daily_baseline_scrape_seed"
+INCLUSION_SAME_DAY_SENT = "same_day_sent_to_vendor"
+INCLUSION_SAME_DAY_SCRAPE = "same_day_scrape_arrival"
+
+DAILY_METRICS_STATUS_OK = "OK"
+DAILY_METRICS_STATUS_INCOMPLETE_BASELINE = "INCOMPLETE_BASELINE_SNAPSHOT"
+DAILY_METRICS_UI_WARNING = (
+    "Historical baseline incomplete — daily totals may be understated or duplicated."
+)
+
+
+def _build_daily_metrics_reliability(
+    *,
+    baseline_seed_incomplete: bool,
+    baseline_seed_original_row_count: int,
+    baseline_seed_query_row_count: int,
+) -> dict[str, Any]:
+    if baseline_seed_incomplete:
+        return {
+            "daily_metrics_reliable": False,
+            "daily_metrics_status": DAILY_METRICS_STATUS_INCOMPLETE_BASELINE,
+            "daily_metrics_warning": (
+                f"Daily baseline snapshot is incomplete: "
+                f"{baseline_seed_query_row_count} of {baseline_seed_original_row_count} rows available."
+            ),
+            "daily_metrics_ui_warning": DAILY_METRICS_UI_WARNING,
+        }
+    return {
+        "daily_metrics_reliable": True,
+        "daily_metrics_status": DAILY_METRICS_STATUS_OK,
+        "daily_metrics_warning": None,
+        "daily_metrics_ui_warning": None,
+    }
+
+
+def _evaluation_as_of_end(selected_date_et: date) -> datetime:
+    """Past ET days through 23:59:59; today ET through current clock (capped at day end)."""
+    day_end = naive_et_day_end_inclusive(selected_date_et)
+    now_et = system_datetime_to_et(naive_system_utc(datetime.utcnow()))
+    if now_et is None:
+        return day_end
+    now_naive = now_et.replace(tzinfo=None)
+    if now_naive.date() != selected_date_et:
+        return day_end
+    return min(now_naive, day_end)
 
 
 def _load_carry_in_open_at_midnight_bag_ids(
@@ -568,13 +613,14 @@ def _load_active_at_vendor_presence_by_bag(
     return out
 
 
-def _load_clean_scrape_seed_presence_by_bag(
+def _load_scrape_batch_presence_by_bag(
     cursor,
     organization_id: int,
     *,
     source_batch_id: str,
+    active_only: bool = True,
 ) -> dict[str, dict[str, Any]]:
-    """Active at_vendor presence rows from the approved clean VeeWash scrape batch."""
+    """at_vendor presence rows from a specific scrape batch."""
     from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
     from backend.rinse_current_facility_snapshot import portal_at_vendor_yet_to_process
     from backend.rinse_shift_monitor_baseline import is_contaminated_presence_batch
@@ -586,12 +632,13 @@ def _load_clean_scrape_seed_presence_by_bag(
         return out
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return out
+    active_clause = " AND active = 1" if active_only else ""
     cursor.execute(
-        """
+        f"""
         SELECT bag_id, portal_status, customer_name, estimated_delivery_date,
                service_type, raw_row_json, active, last_seen_at, source_batch_id
         FROM rinse_cleaner_ticket_presence
-        WHERE organization_id = %s AND active = 1 AND portal_status = %s
+        WHERE organization_id = %s AND portal_status = %s{active_clause}
           AND source_batch_id = %s
         ORDER BY UPPER(TRIM(bag_id))
         """,
@@ -611,11 +658,60 @@ def _load_clean_scrape_seed_presence_by_bag(
             "raw_row_json": raw.get("raw_row_json"),
             "delivery_source": "presence",
             "portal_status": PORTAL_STATUS_AT_VENDOR,
-            "active_presence": True,
+            "active_presence": bool(raw.get("active")),
             "portal_yet_to_process": portal_at_vendor_yet_to_process(raw),
             "source_batch_id": raw.get("source_batch_id"),
         }
     return out
+
+
+def _load_clean_scrape_seed_presence_by_bag(
+    cursor,
+    organization_id: int,
+    *,
+    source_batch_id: str,
+) -> dict[str, dict[str, Any]]:
+    """Active at_vendor presence rows from the approved clean VeeWash scrape batch."""
+    return _load_scrape_batch_presence_by_bag(
+        cursor, organization_id, source_batch_id=source_batch_id, active_only=True
+    )
+
+
+def _load_same_day_scrape_arrival_bag_ids(
+    cursor,
+    organization_id: int,
+    *,
+    day_start_et: datetime,
+    eval_end: datetime,
+    exclude_run_id: int | None,
+    exclude_batch_id: str | None,
+    seed_ids: set[str],
+) -> tuple[set[str], dict[str, dict[str, Any]]]:
+    from backend.rinse_shift_monitor_baseline import list_clean_at_vendor_scrapes_finished_in_window
+
+    org = int(organization_id)
+    arrival_ids: set[str] = set()
+    meta_by_bag: dict[str, dict[str, Any]] = {}
+    exclude_batch = str(exclude_batch_id or "").strip()
+    for run in list_clean_at_vendor_scrapes_finished_in_window(
+        cursor,
+        org,
+        start_exclusive=day_start_et,
+        end_inclusive=eval_end,
+        exclude_run_id=exclude_run_id,
+    ):
+        batch_id = str(run.get("source_batch_id") or "").strip()
+        if not batch_id or batch_id == exclude_batch:
+            continue
+        batch_rows = _load_scrape_batch_presence_by_bag(
+            cursor, org, source_batch_id=batch_id, active_only=False
+        )
+        for bid, row in batch_rows.items():
+            if bid in seed_ids or bid in arrival_ids:
+                continue
+            arrival_ids.add(bid)
+            meta_by_bag[bid] = row
+    return arrival_ids, meta_by_bag
 
 
 def _load_post_baseline_sent_to_vendor_bag_ids(
@@ -680,80 +776,143 @@ def _load_baseline_gated_at_vendor_population(
     baseline_ctx: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    Clean VeeWash baseline population:
-      seed from latest clean at_vendor presence scrape
-      + post-baseline sent-to-vendor through selected ET day end.
-    No pre-baseline carry-in or contaminated presence rows.
+    Daily ET At Vendor population:
+      baseline scrape seed (midnight baseline rule)
+      + same-day sent-to-vendor arrivals
+      + same-day scrape arrivals not already in seed.
     """
+    from backend.rinse_cleaner_ticket_presence import (
+        PORTAL_STATUS_AT_VENDOR,
+        backfill_presence_run_snapshot_from_live_batch,
+        count_presence_run_snapshot_rows,
+        load_presence_run_snapshot_by_bag,
+    )
+    from backend.rinse_shift_monitor_baseline import (
+        _format_presence_scrape_timestamps,
+        _presence_run_finished_naive_et,
+        select_daily_at_vendor_baseline_scrape,
+    )
+
     org = int(organization_id)
     start_of_day_et = naive_et_day_start(selected_date_et)
     end_of_day_et = naive_et_day_end_inclusive(selected_date_et)
-    baseline_start = baseline_ctx.get("baseline_start_naive_et")
-    if not isinstance(baseline_start, datetime):
+    eval_end = _evaluation_as_of_end(selected_date_et)
+
+    baseline_run, baseline_selection_type = select_daily_at_vendor_baseline_scrape(
+        cursor, org, selected_date_et
+    )
+    if not baseline_run:
         return [], {
             "available": False,
-            "reason": "Clean VeeWash baseline start time unavailable",
+            "reason": "No clean VeeWash at_vendor presence scrape available for selected ET day",
             "start_of_day_et": start_of_day_et.isoformat(),
             "end_of_day_et": end_of_day_et.isoformat(),
+            "day_start_et": start_of_day_et.isoformat(),
+            "day_end_et": end_of_day_et.isoformat(),
         }
 
-    source_batch_id = str(
-        baseline_ctx.get("latest_at_vendor_presence_source_batch_id") or ""
-    ).strip()
-    if not source_batch_id:
-        return [], {
-            "available": False,
-            "reason": "Latest clean VeeWash at_vendor presence scrape batch unavailable",
-            "start_of_day_et": start_of_day_et.isoformat(),
-            "end_of_day_et": end_of_day_et.isoformat(),
-        }
-    seed_by_bag = _load_clean_scrape_seed_presence_by_bag(
-        cursor, org, source_batch_id=source_batch_id
+    source_batch_id = str(baseline_run.get("source_batch_id") or "").strip()
+    baseline_run_id = int(baseline_run.get("id") or 0) or None
+    baseline_finished = _presence_run_finished_naive_et(baseline_run)
+    baseline_ts = _format_presence_scrape_timestamps(
+        baseline_run, field_prefix="baseline_scrape"
     )
-    scrape_finished = baseline_ctx.get("latest_at_vendor_presence_scrape_finished_naive_et")
-    sent_threshold = baseline_start
-    if isinstance(scrape_finished, datetime) and scrape_finished > sent_threshold:
-        sent_threshold = scrape_finished
-    post_baseline_sent_ids = _load_post_baseline_sent_to_vendor_bag_ids(
+    baseline_seed_original_row_count = int(baseline_run.get("rows_found") or 0)
+
+    seed_by_bag = load_presence_run_snapshot_by_bag(
+        cursor, org, presence_run_id=int(baseline_run_id or 0)
+    )
+    baseline_seed_query_row_count = count_presence_run_snapshot_rows(
+        cursor, org, presence_run_id=int(baseline_run_id or 0)
+    )
+    if baseline_seed_query_row_count == 0 and baseline_run_id:
+        backfill_presence_run_snapshot_from_live_batch(
+            cursor,
+            org,
+            presence_run_id=baseline_run_id,
+            source_batch_id=source_batch_id,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            rinse_vendor=str(baseline_run.get("rinse_vendor") or "").strip().lower() or None,
+        )
+        seed_by_bag = load_presence_run_snapshot_by_bag(
+            cursor, org, presence_run_id=baseline_run_id
+        )
+        baseline_seed_query_row_count = count_presence_run_snapshot_rows(
+            cursor, org, presence_run_id=baseline_run_id
+        )
+    if baseline_seed_query_row_count == 0:
+        seed_by_bag = _load_scrape_batch_presence_by_bag(
+            cursor, org, source_batch_id=source_batch_id, active_only=False
+        )
+        baseline_seed_query_row_count = len(seed_by_bag)
+        baseline_seed_source = "live_batch_fallback"
+    else:
+        baseline_seed_source = "presence_run_snapshot"
+        live_active = _load_active_at_vendor_presence_by_bag(cursor, org)
+        for bid, seed in seed_by_bag.items():
+            seed["active_presence"] = bid in live_active
+            if bid in live_active and live_active[bid].get("portal_yet_to_process") is not None:
+                seed["portal_yet_to_process"] = live_active[bid].get("portal_yet_to_process")
+
+    baseline_seed_incomplete = (
+        baseline_seed_original_row_count > 0
+        and baseline_seed_query_row_count < baseline_seed_original_row_count
+    )
+    seed_ids = set(seed_by_bag.keys())
+
+    _, same_day_sent_ids = _load_sent_to_vendor_bag_id_sets_for_et_day(
+        cursor, org, selected_date_et=selected_date_et
+    )
+    same_day_sent_ids -= seed_ids
+
+    scrape_arrival_ids, scrape_arrival_meta = _load_same_day_scrape_arrival_bag_ids(
         cursor,
         org,
-        baseline_start_naive_et=sent_threshold,
-        through_end=end_of_day_et,
+        day_start_et=start_of_day_et,
+        eval_end=eval_end,
+        exclude_run_id=baseline_run_id,
+        exclude_batch_id=source_batch_id,
+        seed_ids=seed_ids,
     )
-    post_baseline_sent_ids -= set(seed_by_bag.keys())
-    seed_ids = set(seed_by_bag.keys())
-    population_ids = seed_ids | post_baseline_sent_ids
+    scrape_arrival_ids -= seed_ids | same_day_sent_ids
 
+    population_ids = seed_ids | same_day_sent_ids | scrape_arrival_ids
     cross_org_candidates = set(population_ids)
     kept_ids, cross_org_excluded = _filter_cross_org_contaminated_bags(
         cursor, org, cross_org_candidates
     )
     population_ids = kept_ids
     seed_ids &= population_ids
-    post_baseline_sent_ids &= population_ids
+    same_day_sent_ids &= population_ids
+    scrape_arrival_ids &= population_ids
 
     registry_service = _load_registry_service_types(cursor, org, sorted(population_ids))
     meta_by_bag = _load_delivery_meta(cursor, org, sorted(population_ids))
 
     population: list[dict[str, Any]] = []
     for bid in sorted(population_ids):
-        is_seed = bid in seed_ids
-        is_post_sent = bid in post_baseline_sent_ids and bid not in seed_ids
-        if is_seed and is_post_sent:
-            inclusion = f"{INCLUSION_CLEAN_SCRAPE_SEED}+{INCLUSION_POST_BASELINE_SENT}"
-            inclusion_reason = (
-                "Clean VeeWash scrape seed plus post-baseline sent-to-vendor during selected ET day"
-            )
-        elif is_seed:
-            inclusion = INCLUSION_CLEAN_SCRAPE_SEED
-            inclusion_reason = "Clean VeeWash at_vendor presence scrape seed population"
+        tags: list[str] = []
+        if bid in seed_ids:
+            tags.append(INCLUSION_DAILY_BASELINE_SEED)
+        if bid in same_day_sent_ids:
+            tags.append(INCLUSION_SAME_DAY_SENT)
+        if bid in scrape_arrival_ids:
+            tags.append(INCLUSION_SAME_DAY_SCRAPE)
+        inclusion = "+".join(tags) if tags else INCLUSION_DAILY_BASELINE_SEED
+        if len(tags) > 1:
+            inclusion_reason = "Daily baseline seed plus same-day At Vendor arrival"
+        elif bid in seed_ids:
+            inclusion_reason = "Start-of-day carry-in from daily baseline at_vendor scrape seed"
+        elif bid in same_day_sent_ids:
+            inclusion_reason = "Same-day sent-to-vendor arrival during selected ET day"
         else:
-            inclusion = INCLUSION_POST_BASELINE_SENT
-            inclusion_reason = "Post-baseline sent-to-vendor during selected ET day"
+            inclusion_reason = "Same-day at_vendor scrape arrival during selected ET day"
 
         meta = dict(meta_by_bag.get(bid) or {"bag_id": bid})
         if bid in seed_by_bag:
             meta = {**meta, **seed_by_bag[bid]}
+        elif bid in scrape_arrival_meta:
+            meta = {**meta, **scrape_arrival_meta[bid]}
         elif not meta.get("service_type") and registry_service.get(bid):
             meta["service_type"] = registry_service.get(bid)
         meta.setdefault("active_presence", bid in seed_by_bag)
@@ -764,31 +923,57 @@ def _load_baseline_gated_at_vendor_population(
                 "bag_id": bid,
                 "population_inclusion": inclusion,
                 "inclusion_reason": inclusion_reason,
-                "currently_on_vendor_home": bid in seed_by_bag,
+                "currently_on_vendor_home": bid in seed_by_bag and bool(
+                    seed_by_bag[bid].get("active_presence")
+                ),
             }
         )
 
-    current_live_vendor_home_total = len(seed_by_bag)
+    current_live_vendor_home_total = sum(
+        1 for bid in seed_ids if seed_by_bag.get(bid, {}).get("active_presence")
+    )
     contaminated_excluded = _count_contaminated_active_presence_rows(cursor, org)
+    start_of_day_carry_in_count = len(seed_ids)
+    same_day_arrivals_count = len(same_day_sent_ids | scrape_arrival_ids)
+    daily_metrics = _build_daily_metrics_reliability(
+        baseline_seed_incomplete=baseline_seed_incomplete,
+        baseline_seed_original_row_count=baseline_seed_original_row_count,
+        baseline_seed_query_row_count=baseline_seed_query_row_count,
+    )
 
     return population, {
         "available": True,
         "reason": None,
+        "selected_date_et": selected_date_et.isoformat(),
+        "day_start_et": start_of_day_et.isoformat(),
+        "day_end_et": end_of_day_et.isoformat(),
         "start_of_day_et": start_of_day_et.isoformat(),
         "end_of_day_et": end_of_day_et.isoformat(),
-        "baseline_time_et": baseline_start.isoformat(),
+        "evaluated_as_of_et": eval_end.isoformat(),
+        "baseline_scrape_run_id": baseline_run_id,
         "baseline_source_batch_id": source_batch_id,
-        "baseline_presence_run_id": baseline_ctx.get("latest_at_vendor_presence_scrape_run_id"),
-        "current_live_vendor_home_total": current_live_vendor_home_total,
-        "clean_scrape_seed_count": len(seed_ids),
-        "post_baseline_sent_count": len(post_baseline_sent_ids - seed_ids),
-        "post_baseline_sent_total_count": len(post_baseline_sent_ids),
-        "carry_in_open_at_midnight_count": 0,
-        "new_sent_to_vendor_today_count": len(post_baseline_sent_ids - seed_ids),
-        "portal_live_supplement_count": 0,
-        "new_during_selected_day_count": len(post_baseline_sent_ids - seed_ids),
-        "overlap_carry_in_and_new_sent_count": 0,
+        "baseline_scrape_finished_at_et": baseline_ts.get("baseline_scrape_et"),
+        "baseline_scrape_finished_at_utc": baseline_ts.get("baseline_scrape_utc"),
+        "baseline_scrape_finished_at_db_naive": baseline_ts.get("baseline_scrape_db_naive"),
+        "baseline_selection_type": baseline_selection_type,
+        "baseline_seed_original_row_count": baseline_seed_original_row_count,
+        "baseline_seed_query_row_count": baseline_seed_query_row_count,
+        "baseline_seed_source": baseline_seed_source,
+        "baseline_seed_incomplete": baseline_seed_incomplete,
+        **daily_metrics,
+        "start_of_day_carry_in_count": start_of_day_carry_in_count,
+        "same_day_arrivals_count": same_day_arrivals_count,
+        "same_day_arrivals_from_sent_to_vendor_count": len(same_day_sent_ids),
+        "same_day_arrivals_from_scrape_count": len(scrape_arrival_ids),
         "selected_day_at_vendor_total": len(population_ids),
+        "clean_scrape_seed_count": start_of_day_carry_in_count,
+        "post_baseline_sent_count": len(same_day_sent_ids),
+        "post_baseline_sent_total_count": len(same_day_sent_ids),
+        "carry_in_open_at_midnight_count": start_of_day_carry_in_count,
+        "new_sent_to_vendor_today_count": len(same_day_sent_ids),
+        "portal_live_supplement_count": len(scrape_arrival_ids),
+        "new_during_selected_day_count": same_day_arrivals_count,
+        "overlap_carry_in_and_new_sent_count": len(seed_ids & same_day_sent_ids),
         "pre_baseline_carry_in_excluded_count": None,
         "contaminated_presence_rows_excluded_count": contaminated_excluded,
         "cross_org_excluded_bags": cross_org_excluded,
@@ -797,8 +982,9 @@ def _load_baseline_gated_at_vendor_population(
             for entry in cross_org_excluded
             if str(entry.get("bag_id") or "").strip().upper() in seed_by_bag
         ],
-        "scope": "clean_veewash_baseline",
-        "population_source": "clean_veewash_baseline",
+        "current_live_vendor_home_total": current_live_vendor_home_total,
+        "scope": "clean_veewash_daily_et",
+        "population_source": "clean_veewash_daily_et",
         "uses_clean_veewash_baseline": True,
     }
 
@@ -1602,6 +1788,7 @@ def _build_row(
     selected_date_et: date,
     as_of_end: datetime,
     prior_edd_info: tuple[date | None, str | None] | None = None,
+    completion_window_start: datetime | None = None,
 ) -> dict[str, Any]:
     svc = _normalize_service(meta.get("service_type"))
     anchor_ts = _resolve_selected_day_anchor_ts(events, selected_date_et)
@@ -1611,6 +1798,15 @@ def _build_row(
         as_of_end=as_of_end,
         anchor_ts_override=anchor_ts,
     )
+    if (
+        status == AV_STATUS_COMPLETED
+        and completion_ts is not None
+        and completion_window_start is not None
+        and (completion_ts < completion_window_start or completion_ts > as_of_end)
+    ):
+        status = AV_STATUS_PENDING
+        completion_signal = None
+        completion_ts = None
 
     latest_edd, delivery_texts, delivery_source = resolve_delivery_fields(meta)
     pending = status == AV_STATUS_PENDING
@@ -1728,8 +1924,9 @@ def build_at_vendor_module(
     from backend.rinse_shift_monitor_baseline import uses_clean_veewash_baseline
 
     org = int(organization_id)
-    as_of_end = naive_et_day_end_inclusive(selected_date_et)
+    as_of_end = _evaluation_as_of_end(selected_date_et)
     start_of_day_et = naive_et_day_start(selected_date_et)
+    day_end_et = naive_et_day_end_inclusive(selected_date_et)
     t0 = time.perf_counter()
     step_ms: dict[str, float] = {}
     uses_clean_baseline = uses_clean_veewash_baseline(baseline_ctx)
@@ -1760,18 +1957,13 @@ def build_at_vendor_module(
     population_meta.pop("registry_service_cache", None)
     t_events = time.perf_counter()
     if uses_clean_baseline and baseline_ctx:
-        baseline_start = baseline_ctx.get("baseline_start_naive_et")
-        scrape_finished = baseline_ctx.get("latest_at_vendor_presence_scrape_finished_naive_et")
-        event_threshold = baseline_start if isinstance(baseline_start, datetime) else None
-        if isinstance(scrape_finished, datetime) and (
-            event_threshold is None or scrape_finished > event_threshold
-        ):
-            event_threshold = scrape_finished
+        # Population stays scrape-gated; status uses full relevant scan history for those bags only.
+        scan_through_exclusive = naive_et_day_end_exclusive(selected_date_et)
         events_by_bag = _load_at_vendor_scan_events_for_bags(
             cursor,
             org,
             bag_ids,
-            scanned_on_or_after=event_threshold,
+            scanned_before=scan_through_exclusive,
         )
         carry_in_events_reused = 0
     else:
@@ -1819,6 +2011,7 @@ def build_at_vendor_module(
             events=events_by_bag.get(bid) or [],
             selected_date_et=selected_date_et,
             as_of_end=as_of_end,
+            completion_window_start=start_of_day_et,
         )
         rows.append(row)
         if (
@@ -1908,18 +2101,18 @@ def build_at_vendor_module(
     portal_supplement = int(population_meta.get("portal_live_supplement_count") or 0)
     overlap_carry_and_new = int(population_meta.get("overlap_carry_in_and_new_sent_count") or 0)
     if uses_clean_baseline:
-        seed_count = int(population_meta.get("clean_scrape_seed_count") or 0)
-        post_sent_count = int(population_meta.get("post_baseline_sent_count") or 0)
-        expected_total = seed_count + post_sent_count
-        scope = "clean_veewash_baseline"
-        population_source = "clean_veewash_baseline"
+        seed_count = int(population_meta.get("start_of_day_carry_in_count") or population_meta.get("clean_scrape_seed_count") or 0)
+        arrivals_count = int(population_meta.get("same_day_arrivals_count") or 0)
+        expected_total = seed_count + arrivals_count
+        scope = "clean_veewash_daily_et"
+        population_source = "clean_veewash_daily_et"
         timing_variance_reason = (
-            "Current Vendor Home is the clean VeeWash at_vendor presence scrape seed. "
-            "Selected-day At Vendor total adds post-baseline sent-to-vendor bags only."
+            "Daily ET At Vendor uses midnight baseline scrape seed plus same-day arrivals. "
+            "Status is scan-driven within the selected ET day window."
         )
         reconciliation_note = (
-            "Selected-day total = clean VeeWash scrape seed + post-baseline sent-to-vendor. "
-            "Pre-baseline carry-in and contaminated presence rows are excluded from live counts."
+            "Selected-day total = start-of-day baseline scrape seed + same-day arrivals "
+            "(sent-to-vendor and/or intraday scrape)."
         )
     else:
         expected_total = carry_in_count + new_sent_count - overlap_carry_and_new
@@ -1970,11 +2163,83 @@ def build_at_vendor_module(
         },
     ]
 
+    def _row_svc(row: Mapping[str, Any]) -> str:
+        return _normalize_service(row.get("service_type") or row.get("service_bucket"))
+
+    rush_total = sum(1 for r in rows if r.get("rush_bucket") == AV_RUSH)
+    non_rush_total = sum(1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH)
+    rush_pending = sum(
+        1 for r in rows if r.get("rush_bucket") == AV_RUSH and r.get("at_vendor_status") == AV_STATUS_PENDING
+    )
+    rush_completed = sum(
+        1 for r in rows if r.get("rush_bucket") == AV_RUSH and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+    )
+    non_rush_pending = sum(
+        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and r.get("at_vendor_status") == AV_STATUS_PENDING
+    )
+    non_rush_completed = sum(
+        1 for r in rows if r.get("rush_bucket") == AV_NON_RUSH and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+    )
+    wf_total = sum(1 for r in rows if _row_svc(r) == "WF")
+    wf_pending = sum(
+        1 for r in rows if _row_svc(r) == "WF" and r.get("at_vendor_status") == AV_STATUS_PENDING
+    )
+    wf_completed = sum(
+        1 for r in rows if _row_svc(r) == "WF" and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+    )
+    hd_total = sum(1 for r in rows if _row_svc(r) == "HD")
+    hd_pending = sum(
+        1 for r in rows if _row_svc(r) == "HD" and r.get("at_vendor_status") == AV_STATUS_PENDING
+    )
+    hd_completed = sum(
+        1 for r in rows if _row_svc(r) == "HD" and r.get("at_vendor_status") == AV_STATUS_COMPLETED
+    )
+    completed_today_count = len(completed_rows)
+
     return {
         "live": True,
         "selected_date_et": selected_date_et.isoformat(),
+        "day_start_et": start_of_day_et.isoformat(),
+        "day_end_et": day_end_et.isoformat(),
+        "evaluated_as_of_et": as_of_end.isoformat(),
         "start_of_day_et": start_of_day_et.isoformat(),
-        "end_of_day_et": as_of_end.isoformat(),
+        "end_of_day_et": day_end_et.isoformat(),
+        "baseline_scrape_run_id": population_meta.get("baseline_scrape_run_id"),
+        "baseline_source_batch_id": population_meta.get("baseline_source_batch_id"),
+        "baseline_scrape_finished_at_et": population_meta.get("baseline_scrape_finished_at_et"),
+        "baseline_selection_type": population_meta.get("baseline_selection_type"),
+        "baseline_seed_original_row_count": population_meta.get("baseline_seed_original_row_count"),
+        "baseline_seed_query_row_count": population_meta.get("baseline_seed_query_row_count"),
+        "baseline_seed_incomplete": population_meta.get("baseline_seed_incomplete"),
+        "daily_metrics_reliable": population_meta.get("daily_metrics_reliable", True),
+        "daily_metrics_status": population_meta.get("daily_metrics_status"),
+        "daily_metrics_warning": population_meta.get("daily_metrics_warning"),
+        "daily_metrics_ui_warning": population_meta.get("daily_metrics_ui_warning"),
+        "provisional_total": selected_day_total
+        if population_meta.get("daily_metrics_reliable") is False
+        else None,
+        "provisional_pending": pending if population_meta.get("daily_metrics_reliable") is False else None,
+        "provisional_completed": completed if population_meta.get("daily_metrics_reliable") is False else None,
+        "start_of_day_carry_in_count": population_meta.get("start_of_day_carry_in_count"),
+        "same_day_arrivals_count": population_meta.get("same_day_arrivals_count"),
+        "same_day_arrivals_from_sent_to_vendor_count": population_meta.get(
+            "same_day_arrivals_from_sent_to_vendor_count"
+        ),
+        "same_day_arrivals_from_scrape_count": population_meta.get("same_day_arrivals_from_scrape_count"),
+        "completed_today_count": completed_today_count,
+        "pending_count": pending,
+        "rush_total": rush_total,
+        "rush_pending": rush_pending,
+        "rush_completed": rush_completed,
+        "non_rush_total": non_rush_total,
+        "non_rush_pending": non_rush_pending,
+        "non_rush_completed": non_rush_completed,
+        "wf_total": wf_total,
+        "wf_pending": wf_pending,
+        "wf_completed": wf_completed,
+        "hd_total": hd_total,
+        "hd_pending": hd_pending,
+        "hd_completed": hd_completed,
         "rows": rows,
         "cards": cards,
         "total": selected_day_total,

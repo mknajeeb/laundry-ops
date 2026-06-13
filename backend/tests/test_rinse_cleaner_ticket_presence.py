@@ -437,6 +437,121 @@ class TestLifecycleIntegration:
         assert out["current_lifecycle_status"] == SENT_TO_RINSE
 
 
+class TestPresenceRunSnapshotPersistence:
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
+    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows")
+    @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=42)
+    def test_at_vendor_scrape_persists_immutable_snapshot(
+        self,
+        mock_record_run,
+        mock_persist_snapshot,
+        _table_exists,
+        _ensure_run_rows,
+        _transition_cols,
+    ):
+        cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
+        rows = [
+            {"bag_id": "BAG900", "customer_name": "Carol", "service_type": "WF"},
+            {"bag_id": "BAG901", "customer_name": "Dan", "service_type": "HD"},
+        ]
+        stats = apply_presence_scrape(
+            cursor,
+            10,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            rows=rows,
+            source_batch_id="batch-av",
+            dry_run=False,
+            scrape_meta={"rinse_vendor": "veewash"},
+        )
+        assert stats["rows_found"] == 2
+        mock_record_run.assert_called_once()
+        mock_persist_snapshot.assert_called_once_with(
+            cursor,
+            10,
+            presence_run_id=42,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            source_batch_id="batch-av",
+            rows=[
+                {
+                    "bag_id": "BAG900",
+                    "customer_name": "Carol",
+                    "estimated_delivery_date": None,
+                    "rush_flag": None,
+                    "service_type": "WF",
+                    "raw_row_json": {},
+                },
+                {
+                    "bag_id": "BAG901",
+                    "customer_name": "Dan",
+                    "estimated_delivery_date": None,
+                    "rush_flag": None,
+                    "service_type": "HD",
+                    "raw_row_json": {},
+                },
+            ],
+            rinse_vendor="veewash",
+        )
+        assert stats["snapshot_rows_persisted"] == mock_persist_snapshot.return_value
+
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
+    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows", return_value=3)
+    @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=7)
+    def test_ready_for_vendor_scrape_persists_immutable_snapshot(
+        self,
+        mock_record_run,
+        mock_persist_snapshot,
+        _table_exists,
+        _ensure_run_rows,
+        _transition_cols,
+    ):
+        cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
+        stats = apply_presence_scrape(
+            cursor,
+            10,
+            portal_status=PORTAL_STATUS_READY,
+            rows=[{"bag_id": "RFV1"}, {"bag_id": "RFV2"}, {"bag_id": "RFV3"}],
+            source_batch_id="batch-rfv",
+            dry_run=False,
+        )
+        assert stats["rows_found"] == 3
+        mock_record_run.assert_called_once()
+        mock_persist_snapshot.assert_called_once()
+        assert mock_persist_snapshot.call_args.kwargs["portal_status"] == PORTAL_STATUS_READY
+        assert mock_persist_snapshot.call_args.kwargs["presence_run_id"] == 7
+        assert len(mock_persist_snapshot.call_args.kwargs["rows"]) == 3
+        assert stats["snapshot_rows_persisted"] == 3
+
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
+    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows")
+    @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=1)
+    def test_dry_run_does_not_persist_snapshot(
+        self,
+        mock_record_run,
+        mock_persist_snapshot,
+        _table_exists,
+        _ensure_run_rows,
+        _transition_cols,
+    ):
+        cursor = TestPresenceApplyDryRun()._mock_cursor_with_table()
+        stats = apply_presence_scrape(
+            cursor,
+            10,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            rows=[{"bag_id": "BAGDRY"}],
+            dry_run=True,
+        )
+        assert stats["rows_found"] == 1
+        mock_record_run.assert_not_called()
+        mock_persist_snapshot.assert_not_called()
+        assert "snapshot_rows_persisted" not in stats
+
+
 class TestParsePresenceEmptyCsv:
     def test_header_only_csv_returns_empty_rows(self, tmp_path):
         from backend.rinse_cleaner_ticket_presence import parse_presence_rows_from_portal_csv

@@ -40,7 +40,8 @@ DEFAULT_BASELINE_NOTE = (
 
 BASELINE_SOURCE_CLEAN_VEEWASH = "latest_clean_veewash_scrape"
 VEEWASH_LIVE_BASELINE_ORG_ID = 3
-VEEWASH_CLEAN_BASELINE_START_ET = "2026-06-11 20:38:25"
+# ET wall time for run 6 finished_at (DB stores 2026-06-11 20:38:25 UTC).
+VEEWASH_CLEAN_BASELINE_START_ET = "2026-06-11 16:38:25"
 VEEWASH_CLEAN_BASELINE_PRESENCE_RUN_ID = 6
 VEEWASH_CLEAN_BASELINE_SOURCE_BATCH_ID = (
     "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84"
@@ -186,6 +187,94 @@ def _presence_run_finished_naive_et(run: Mapping[str, Any] | None) -> datetime |
     if et is not None:
         return et.replace(tzinfo=None)
     return raw.replace(microsecond=0) if isinstance(raw, datetime) else None
+
+
+BASELINE_SELECTION_BEFORE_MIDNIGHT = "before_midnight"
+BASELINE_SELECTION_AFTER_MIDNIGHT_FALLBACK = "after_midnight_fallback"
+
+
+def list_clean_at_vendor_presence_scrapes(
+    cursor,
+    organization_id: int,
+) -> list[dict[str, Any]]:
+    """All successful non-contaminated at_vendor presence scrapes, oldest first."""
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+        return []
+
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT *
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s AND portal_status = %s AND dry_run = 0
+        ORDER BY COALESCE(finished_at, created_at) ASC, id ASC
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR),
+    )
+    out: list[dict[str, Any]] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        if not _is_successful_presence_run(row):
+            continue
+        if is_contaminated_presence_run(row, organization_id=org):
+            continue
+        if _presence_run_finished_naive_et(row) is None:
+            continue
+        out.append(dict(row))
+    return out
+
+
+def select_daily_at_vendor_baseline_scrape(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """
+    Daily ET baseline scrape for At Vendor population seed.
+
+    Prefer latest clean scrape finished on/before selected_date_et 00:00 ET.
+    Fallback to first clean scrape finished after day start when none exists.
+    """
+    day_start = naive_et_day_start(selected_date_et)
+    before: list[dict[str, Any]] = []
+    after: list[dict[str, Any]] = []
+    for row in list_clean_at_vendor_presence_scrapes(cursor, organization_id):
+        finished = _presence_run_finished_naive_et(row)
+        if finished is None:
+            continue
+        if finished <= day_start:
+            before.append(row)
+        else:
+            after.append(row)
+    if before:
+        return before[-1], BASELINE_SELECTION_BEFORE_MIDNIGHT
+    if after:
+        return after[0], BASELINE_SELECTION_AFTER_MIDNIGHT_FALLBACK
+    return None, None
+
+
+def list_clean_at_vendor_scrapes_finished_in_window(
+    cursor,
+    organization_id: int,
+    *,
+    start_exclusive: datetime,
+    end_inclusive: datetime,
+    exclude_run_id: int | None = None,
+) -> list[dict[str, Any]]:
+    """Clean at_vendor scrapes with finished_at in (start_exclusive, end_inclusive]."""
+    out: list[dict[str, Any]] = []
+    for row in list_clean_at_vendor_presence_scrapes(cursor, organization_id):
+        if exclude_run_id is not None and int(row.get("id") or 0) == int(exclude_run_id):
+            continue
+        finished = _presence_run_finished_naive_et(row)
+        if finished is None:
+            continue
+        if start_exclusive < finished <= end_inclusive:
+            out.append(row)
+    return out
 
 
 def veewash_clean_baseline_defaults() -> dict[str, Any]:

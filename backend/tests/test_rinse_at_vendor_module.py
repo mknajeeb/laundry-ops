@@ -658,7 +658,7 @@ class TestCleanVeeWashAtVendorBaseline:
                 baseline_ctx=CLEAN_BASELINE_CTX,
             )
         assert out["live"] is True
-        assert out["scope"] == "clean_veewash_baseline"
+        assert out["scope"] == "clean_veewash_daily_et"
         assert out["uses_clean_veewash_baseline"] is True
         assert out["total"] == 10
         assert out["current_live_vendor_home_total"] == 10
@@ -766,7 +766,12 @@ class TestCleanVeeWashAtVendorBaseline:
                 baseline_ctx=CLEAN_BASELINE_CTX,
             )
         assert out["total"] == 2
-        assert mock_events.call_args.kwargs["scanned_on_or_after"] == T_BASELINE
+        from backend.rinse_folding_et import naive_et_day_end_exclusive
+
+        assert mock_events.call_args.kwargs["scanned_before"] == naive_et_day_end_exclusive(
+            SELECTED_POST_BASELINE
+        )
+        assert "scanned_on_or_after" not in mock_events.call_args.kwargs
         assert any(r["bag_id"] == "NEWSENT1" for r in out["rows"])
 
     def test_excludes_washpro_only_bag_from_clean_baseline(self):
@@ -820,10 +825,11 @@ class TestCleanVeeWashAtVendorBaseline:
         excluded = (out.get("population_meta") or {}).get("cross_org_excluded_bags") or []
         assert any(e.get("bag_id") == "3M8QVPGA2R" for e in excluded)
 
-    def test_baseline_gated_loader_uses_clean_batch_only(self):
+    def test_baseline_gated_loader_uses_daily_baseline_seed_plus_same_day_arrivals(self):
         from unittest.mock import MagicMock, patch
 
         from backend.rinse_at_vendor_module import _load_baseline_gated_at_vendor_population
+        from backend.rinse_shift_monitor_baseline import BASELINE_SELECTION_BEFORE_MIDNIGHT
 
         cursor = MagicMock()
         seed_rows = {
@@ -831,15 +837,37 @@ class TestCleanVeeWashAtVendorBaseline:
                 "bag_id": f"B{i}",
                 "service_type": "WF",
                 "portal_yet_to_process": True,
+                "active_presence": True,
             }
             for i in range(3)
         }
+        baseline_run = {
+            "id": 6,
+            "source_batch_id": "veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84",
+            "finished_at": datetime(2026, 6, 11, 16, 38, 25),
+            "rows_found": 10,
+        }
         with patch(
-            "backend.rinse_at_vendor_module._load_clean_scrape_seed_presence_by_bag",
+            "backend.rinse_shift_monitor_baseline.select_daily_at_vendor_baseline_scrape",
+            return_value=(baseline_run, BASELINE_SELECTION_BEFORE_MIDNIGHT),
+        ), patch(
+            "backend.rinse_cleaner_ticket_presence.load_presence_run_snapshot_by_bag",
             return_value=seed_rows,
         ) as mock_seed, patch(
-            "backend.rinse_at_vendor_module._load_post_baseline_sent_to_vendor_bag_ids",
-            return_value={"NEWSENT"},
+            "backend.rinse_cleaner_ticket_presence.count_presence_run_snapshot_rows",
+            return_value=3,
+        ), patch(
+            "backend.rinse_cleaner_ticket_presence.backfill_presence_run_snapshot_from_live_batch",
+            return_value=0,
+        ), patch(
+            "backend.rinse_at_vendor_module._load_active_at_vendor_presence_by_bag",
+            return_value=seed_rows,
+        ), patch(
+            "backend.rinse_at_vendor_module._load_sent_to_vendor_bag_id_sets_for_et_day",
+            return_value=(set(), {"NEWSENT"}),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_same_day_scrape_arrival_bag_ids",
+            return_value=(set(), {}),
         ), patch(
             "backend.rinse_at_vendor_module._filter_cross_org_contaminated_bags",
             side_effect=lambda _c, _o, ids: (set(ids), []),
@@ -862,10 +890,18 @@ class TestCleanVeeWashAtVendorBaseline:
         mock_seed.assert_called_once_with(
             cursor,
             3,
-            source_batch_id="veewash_cleanup_rescrape-ac99501873604898a55d66a5a4710d84",
+            presence_run_id=6,
         )
         assert len(population) == 4
-        assert meta["clean_scrape_seed_count"] == 3
-        assert meta["post_baseline_sent_count"] == 1
-        assert meta["carry_in_open_at_midnight_count"] == 0
+        assert meta["start_of_day_carry_in_count"] == 3
+        assert meta["baseline_seed_original_row_count"] == 10
+        assert meta["baseline_seed_query_row_count"] == 3
+        assert meta["baseline_seed_source"] == "presence_run_snapshot"
+        assert meta["same_day_arrivals_from_sent_to_vendor_count"] == 1
+        assert meta["selected_day_at_vendor_total"] == 4
+        assert meta["baseline_selection_type"] == BASELINE_SELECTION_BEFORE_MIDNIGHT
         assert meta["contaminated_presence_rows_excluded_count"] == 5
+        assert meta["baseline_seed_incomplete"] is True
+        assert meta["daily_metrics_reliable"] is False
+        assert meta["daily_metrics_status"] == "INCOMPLETE_BASELINE_SNAPSHOT"
+        assert "3 of 10 rows available" in (meta.get("daily_metrics_warning") or "")

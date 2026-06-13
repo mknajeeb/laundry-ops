@@ -452,7 +452,6 @@ export default function ShiftMonitorPage({ user }) {
   const syncTimerRef = useRef(null);
   const [drilldown, setDrilldown] = useState(null);
   const [moduleFilters, setModuleFilters] = useState({
-    portal_snapshot: { rush: "all", service: "all" },
     facility_status: { rush: "all", service: "all" },
     production_stage: { rush: "all", service: "all" },
     exceptions: { rush: "all", service: "all" },
@@ -600,7 +599,7 @@ export default function ShiftMonitorPage({ user }) {
   const dts = data?.due_today_snapshot || {};
   const facilityTracker = data?.facility_tracker_today || {};
 
-  const moduleKeys = ["portal_snapshot", "facility_status", "production_stage", "exceptions", "monitor"];
+  const moduleKeys = ["facility_status", "production_stage", "exceptions", "monitor"];
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>

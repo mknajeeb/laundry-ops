@@ -336,7 +336,7 @@ class TestCleanVeeWashBaselineAnchor:
         ):
             ctx = build_baseline_context(cursor, 3, baseline)
         assert ctx["baseline_source"] == BASELINE_SOURCE_CLEAN_VEEWASH
-        assert ctx["baseline_time_et"] == "2026-06-11 20:38:25"
+        assert ctx["baseline_time_et"] == "2026-06-11 16:38:25"
         assert ctx["baseline_org"] == 3
         assert ctx["baseline_vendor"] == "veewash"
         assert ctx["baseline_presence_run_id"] == 8
