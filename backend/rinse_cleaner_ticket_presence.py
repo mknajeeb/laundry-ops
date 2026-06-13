@@ -1378,6 +1378,8 @@ def apply_presence_scrape(
             scrape_meta=meta,
             dry_run=False,
         )
+        if run_id:
+            stats["run_id"] = int(run_id)
         if run_id and snapshot_rows:
             stats["snapshot_rows_persisted"] = persist_presence_run_snapshot_rows(
                 cursor,

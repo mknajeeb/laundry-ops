@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from backend.rinse_scrape_runs import (
@@ -310,23 +310,149 @@ def _combine_scheduled_status(at_vendor_status: str, rfv_status: str | None) -> 
     return at_vendor_status
 
 
+CYCLE_ALREADY_RUNNING = "ALREADY_RUNNING"
+
+
+def build_presence_sync_detail(presence_result) -> dict[str, Any]:
+    """Serialize a portal presence scrape result for API / cycle metadata."""
+    stats = presence_result.stats or {}
+    return {
+        "status": presence_result.status,
+        "skipped_reason": presence_result.skipped_reason,
+        "error_message": presence_result.error_message,
+        "run_id": stats.get("run_id"),
+        "rows_found": stats.get("rows_found"),
+        "rows_inserted": stats.get("rows_inserted"),
+        "rows_updated": stats.get("rows_updated"),
+        "rows_missing": stats.get("rows_missing"),
+        "active_rows": stats.get("active_rows"),
+        "snapshot_rows_persisted": stats.get("snapshot_rows_persisted"),
+        "stats": stats,
+        "scrape_debug": presence_result.scrape_debug,
+        "started_at": presence_result.started_at.isoformat() if presence_result.started_at else None,
+        "finished_at": presence_result.finished_at.isoformat() if presence_result.finished_at else None,
+        "duration_seconds": presence_result.duration_seconds,
+    }
+
+
 def build_ready_for_vendor_sync_detail(rfv_result) -> dict[str, Any]:
     """Serialize Ready for Vendor presence scrape result for API payloads."""
+    return build_presence_sync_detail(rfv_result)
+
+
+@dataclass
+class _CombinedCycleContext:
+    """When set, CSV import reuses an existing combined cycle run + lock."""
+
+    run_id: int
+    paths: ScrapePaths
+    log: "_TeeLog"
+    started_at: datetime
+
+
+def _resolve_combined_cycle_status(
+    *,
+    rfv_status: str | None,
+    av_presence_status: str | None,
+    import_status: str | None,
+) -> str:
+    """Map step outcomes to combined cycle status labels."""
+    if rfv_status in (None, "failed", "disabled") or (
+        rfv_status not in ("success", "dry_run") and rfv_status is not None
+    ):
+        return "RFV_FAILED"
+    if av_presence_status not in ("success", "dry_run"):
+        return "AT_VENDOR_FAILED"
+    if import_status in ("failed", "skipped"):
+        return "AT_VENDOR_IMPORT_FAILED"
+    if import_status == "needs_attention":
+        return "needs_attention"
+    if import_status in ("success", "dry_run"):
+        return "success"
+    return str(import_status or "failed")
+
+
+def _build_sync_cycle_metadata(
+    *,
+    sync_cycle_id: int | None,
+    cycle_started_at: datetime | None,
+    rfv_detail: Mapping[str, Any] | None,
+    av_presence_detail: Mapping[str, Any] | None,
+    import_started_at: datetime | None,
+    import_finished_at: datetime | None,
+    delay_seconds: int | None,
+    cycle_status: str,
+    at_vendor_ran: bool | None = None,
+    at_vendor_skipped_reason: str | None = None,
+    failure_message: str | None = None,
+) -> dict[str, Any]:
+    rfv = dict(rfv_detail or {})
+    avp = dict(av_presence_detail or {})
     return {
-        "status": rfv_result.status,
-        "skipped_reason": rfv_result.skipped_reason,
-        "error_message": rfv_result.error_message,
-        "rows_found": (rfv_result.stats or {}).get("rows_found"),
-        "rows_inserted": (rfv_result.stats or {}).get("rows_inserted"),
-        "rows_updated": (rfv_result.stats or {}).get("rows_updated"),
-        "rows_missing": (rfv_result.stats or {}).get("rows_missing"),
-        "active_rows": (rfv_result.stats or {}).get("active_rows"),
-        "stats": rfv_result.stats,
-        "scrape_debug": rfv_result.scrape_debug,
-        "started_at": rfv_result.started_at.isoformat() if rfv_result.started_at else None,
-        "finished_at": rfv_result.finished_at.isoformat() if rfv_result.finished_at else None,
-        "duration_seconds": rfv_result.duration_seconds,
+        "sync_cycle_id": sync_cycle_id,
+        "cycle_started_at": cycle_started_at.isoformat() if isinstance(cycle_started_at, datetime) else None,
+        "cycle_status": cycle_status,
+        "rfv_status": rfv.get("status"),
+        "rfv_started_at": rfv.get("started_at"),
+        "rfv_completed_at": rfv.get("finished_at"),
+        "rfv_run_id": rfv.get("run_id"),
+        "at_vendor_presence_started_at": avp.get("started_at"),
+        "at_vendor_presence_completed_at": avp.get("finished_at"),
+        "at_vendor_run_id": avp.get("run_id"),
+        "at_vendor_started_at": (
+            import_started_at.isoformat() if isinstance(import_started_at, datetime) else avp.get("started_at")
+        ),
+        "at_vendor_completed_at": (
+            import_finished_at.isoformat() if isinstance(import_finished_at, datetime) else None
+        ),
+        "at_vendor_status": None,
+        "delay_seconds": delay_seconds,
+        "at_vendor_ran": at_vendor_ran,
+        "at_vendor_skipped_reason": at_vendor_skipped_reason,
+        "failure_message": failure_message,
+        "rfv_error": rfv.get("error_message"),
+        "at_vendor_presence_error": avp.get("error_message"),
     }
+
+
+def _finish_combined_cycle_run(
+    conn,
+    cursor,
+    *,
+    organization_id: int,
+    result: ScheduledScrapeResult,
+    started_at: datetime,
+    paths: ScrapePaths,
+    sync_cycle: Mapping[str, Any],
+    ready_for_vendor_sync: Mapping[str, Any] | None = None,
+    at_vendor_presence_sync: Mapping[str, Any] | None = None,
+) -> None:
+    detail = dict(result.detail or {})
+    detail["sync_cycle"] = dict(sync_cycle)
+    if ready_for_vendor_sync:
+        detail["ready_for_vendor_sync"] = dict(ready_for_vendor_sync)
+    if at_vendor_presence_sync:
+        detail["at_vendor_presence_sync"] = dict(at_vendor_presence_sync)
+    result.detail = detail
+    result.finished_at = datetime.utcnow()
+    if result.run_id:
+        finish_scrape_run(
+            cursor,
+            int(result.run_id),
+            int(organization_id),
+            status=result.status,
+            started_at=started_at,
+            portal_csv_path=str(paths.portal_csv) if paths.portal_csv.is_file() else None,
+            scan_events_csv_path=str(paths.scan_tickets_csv) if paths.scan_tickets_csv.is_file() else None,
+            scan_events_events_path=str(paths.scan_events_csv) if paths.scan_events_csv.is_file() else None,
+            portal_rows_count=result.portal_rows_count,
+            scan_events_count=result.scan_events_count,
+            imported_batch_id=result.batch_id,
+            error_message=result.error_message,
+            log_path=str(paths.log_path),
+            result_json=detail,
+        )
+        conn.commit()
 
 
 def _apply_rfv_to_scheduled_result(
@@ -357,86 +483,284 @@ def run_rinse_combined_sync_for_org(
     dry_run: bool = False,
 ) -> ScheduledScrapeResult:
     """
-    Ready for Vendor first, then At Vendor only.
-    Shared by manual Refresh Both Syncs and scheduled cron.
+    Combined presence sync: RFV presence → At Vendor presence → scan CSV import.
+    Shared by manual Refresh Both Syncs and scheduled ACA cron.
     """
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+    from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
     org_id = int(organization_id)
     cursor = conn.cursor(dictionary=True)
     slug, org_name = _org_slug_name(cursor, org_id)
     vendor = resolve_rinse_vendor(org_id, organization_slug=slug, organization_name=org_name)
 
-    from backend.rinse_presence_scrape import run_presence_scrape_for_org
-
-    print(
-        f"Ready for Vendor sync org={org_id} vendor={vendor} run_type={run_type}",
-        flush=True,
-    )
-    rfv_result = run_presence_scrape_for_org(
-        conn,
-        org_id,
-        portal_status="ready_for_vendor",
-        dry_run=dry_run,
-        mark_missing=not dry_run,
-        run_type=run_type,
-        organization_slug=slug,
-        organization_name=org_name,
+    result = ScheduledScrapeResult(
+        organization_id=org_id,
+        tenant_slug=slug,
         rinse_vendor=vendor,
     )
-    rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
-    if not dry_run:
-        conn.commit()
-    print(
-        f"Ready for Vendor sync done org={org_id} status={rfv_result.status} "
-        f"rows_found={(rfv_result.stats or {}).get('rows_found')}",
-        flush=True,
-    )
+    cycle_started_at = datetime.utcnow()
+    result.started_at = cycle_started_at
 
-    av_result = run_scheduled_scrape_for_org(
-        conn,
-        org_id,
-        run_type=run_type,
-        dry_run=dry_run,
-        rfv_detail=rfv_detail,
-        rfv_status=rfv_result.status,
-        rfv_error=rfv_result.error_message,
-    )
-    merged = _apply_rfv_to_scheduled_result(
-        av_result,
-        rfv_result=rfv_result,
-        rfv_detail=rfv_detail,
-    )
-    delay_seconds: int | None = None
-    rfv_finished = rfv_result.finished_at
-    av_started = av_result.started_at
-    if isinstance(rfv_finished, datetime) and isinstance(av_started, datetime):
-        delay_seconds = max(0, int((av_started - rfv_finished).total_seconds()))
-    merged.detail["sync_cycle"] = {
-        "cycle_status": merged.status,
-        "rfv_status": rfv_result.status,
-        "at_vendor_status": av_result.at_vendor_status or av_result.status,
-        "rfv_completed_at": rfv_detail.get("finished_at"),
-        "at_vendor_started_at": av_started.isoformat() if isinstance(av_started, datetime) else None,
-        "at_vendor_completed_at": av_result.finished_at.isoformat()
-        if isinstance(av_result.finished_at, datetime)
-        else None,
-        "delay_seconds": delay_seconds,
-        "at_vendor_ran": av_result.status not in ("skipped",),
-        "at_vendor_skipped_reason": av_result.error_message if av_result.status == "skipped" else None,
-        "rfv_error": rfv_result.error_message,
-    }
-    if not dry_run and merged.run_id:
-        import json
+    if dry_run:
+        result.status = "skipped"
+        result.at_vendor_status = "skipped"
+        result.detail = {"dry_run": True, "sync_cycle": {"cycle_status": "dry_run"}}
+        return result
 
-        cursor.execute(
-            """
-            UPDATE rinse_scrape_runs
-            SET result_json = %s
-            WHERE id = %s AND organization_id = %s
-            """,
-            (json.dumps(merged.detail, default=str), int(merged.run_id), org_id),
+    acquired, lock_reason = acquire_scrape_lock(cursor, org_id)
+    conn.commit()
+    if not acquired:
+        skip_reason = CYCLE_ALREADY_RUNNING if "still active" in (lock_reason or "") else lock_reason
+        insert_skipped_scrape_run(
+            cursor,
+            org_id,
+            tenant_slug=slug,
+            rinse_vendor=vendor,
+            run_type=run_type,
+            reason=skip_reason or CYCLE_ALREADY_RUNNING,
         )
         conn.commit()
-    return merged
+        result.status = "skipped"
+        result.error_message = skip_reason or CYCLE_ALREADY_RUNNING
+        result.detail = {
+            "sync_cycle": {
+                "cycle_status": "skipped",
+                "failure_message": result.error_message,
+            }
+        }
+        return result
+
+    paths = build_run_paths(org_id, run_type, tenant_slug=slug, rinse_vendor=vendor)
+    result.paths = paths
+    run_id = insert_scrape_run(
+        cursor,
+        org_id,
+        tenant_slug=slug,
+        rinse_vendor=vendor,
+        run_type=run_type,
+        log_path=str(paths.log_path),
+    )
+    conn.commit()
+    result.run_id = run_id
+    log = _TeeLog(paths.log_path)
+    started_at = cycle_started_at
+
+    rfv_detail: dict[str, Any] = {}
+    av_presence_detail: dict[str, Any] = {}
+    import_result: ScheduledScrapeResult | None = None
+    delay_seconds: int | None = None
+
+    try:
+        print(
+            f"Ready for Vendor sync org={org_id} vendor={vendor} run_type={run_type}",
+            flush=True,
+        )
+        log.write(
+            f"Combined sync cycle run_id={run_id} org={org_id} vendor={vendor} run_type={run_type}\n"
+        )
+        rfv_result = run_presence_scrape_for_org(
+            conn,
+            org_id,
+            portal_status="ready_for_vendor",
+            dry_run=False,
+            mark_missing=True,
+            run_type=run_type,
+            organization_slug=slug,
+            organization_name=org_name,
+            rinse_vendor=vendor,
+            log_write=log.write,
+        )
+        rfv_detail = build_ready_for_vendor_sync_detail(rfv_result)
+        result.ready_for_vendor_status = rfv_result.status
+        conn.commit()
+        print(
+            f"Ready for Vendor sync done org={org_id} status={rfv_result.status} "
+            f"rows_found={(rfv_result.stats or {}).get('rows_found')}",
+            flush=True,
+        )
+
+        if rfv_result.status not in ("success", "dry_run"):
+            cycle_status = "RFV_FAILED"
+            result.status = "failed"
+            result.at_vendor_status = "skipped"
+            result.error_message = rfv_result.error_message or "Ready for Vendor presence scrape failed"
+            sync_cycle = _build_sync_cycle_metadata(
+                sync_cycle_id=run_id,
+                cycle_started_at=cycle_started_at,
+                rfv_detail=rfv_detail,
+                av_presence_detail=None,
+                import_started_at=None,
+                import_finished_at=None,
+                delay_seconds=None,
+                cycle_status=cycle_status,
+                at_vendor_ran=False,
+                at_vendor_skipped_reason="RFV presence scrape failed",
+                failure_message=result.error_message,
+            )
+            _finish_combined_cycle_run(
+                conn,
+                cursor,
+                organization_id=org_id,
+                result=result,
+                started_at=started_at,
+                paths=paths,
+                sync_cycle=sync_cycle,
+                ready_for_vendor_sync=rfv_detail,
+            )
+            return result
+
+        print(
+            f"At Vendor presence sync org={org_id} vendor={vendor} run_type={run_type}",
+            flush=True,
+        )
+        av_presence_result = run_presence_scrape_for_org(
+            conn,
+            org_id,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            dry_run=False,
+            mark_missing=True,
+            run_type=run_type,
+            organization_slug=slug,
+            organization_name=org_name,
+            rinse_vendor=vendor,
+            log_write=log.write,
+        )
+        av_presence_detail = build_presence_sync_detail(av_presence_result)
+        conn.commit()
+        if isinstance(rfv_result.finished_at, datetime) and isinstance(av_presence_result.started_at, datetime):
+            delay_seconds = max(0, int((av_presence_result.started_at - rfv_result.finished_at).total_seconds()))
+        print(
+            f"At Vendor presence sync done org={org_id} status={av_presence_result.status} "
+            f"rows_found={(av_presence_result.stats or {}).get('rows_found')} delay_seconds={delay_seconds}",
+            flush=True,
+        )
+
+        if av_presence_result.status not in ("success", "dry_run"):
+            cycle_status = "AT_VENDOR_FAILED"
+            result.status = "failed"
+            result.at_vendor_status = "failed"
+            result.error_message = (
+                av_presence_result.error_message or "At Vendor presence scrape failed"
+            )
+            sync_cycle = _build_sync_cycle_metadata(
+                sync_cycle_id=run_id,
+                cycle_started_at=cycle_started_at,
+                rfv_detail=rfv_detail,
+                av_presence_detail=av_presence_detail,
+                import_started_at=None,
+                import_finished_at=None,
+                delay_seconds=delay_seconds,
+                cycle_status=cycle_status,
+                at_vendor_ran=False,
+                at_vendor_skipped_reason="At Vendor presence scrape failed",
+                failure_message=result.error_message,
+            )
+            _finish_combined_cycle_run(
+                conn,
+                cursor,
+                organization_id=org_id,
+                result=result,
+                started_at=started_at,
+                paths=paths,
+                sync_cycle=sync_cycle,
+                ready_for_vendor_sync=rfv_detail,
+                at_vendor_presence_sync=av_presence_detail,
+            )
+            return result
+
+        combined_ctx = _CombinedCycleContext(
+            run_id=int(run_id),
+            paths=paths,
+            log=log,
+            started_at=started_at,
+        )
+        import_result = run_scheduled_scrape_for_org(
+            conn,
+            org_id,
+            run_type=run_type,
+            dry_run=False,
+            rfv_detail=rfv_detail,
+            rfv_status=rfv_result.status,
+            rfv_error=rfv_result.error_message,
+            combined_cycle=combined_ctx,
+            av_presence_detail=av_presence_detail,
+        )
+        result.status = import_result.status
+        result.at_vendor_status = import_result.at_vendor_status or import_result.status
+        result.batch_id = import_result.batch_id
+        result.portal_rows_count = import_result.portal_rows_count
+        result.scan_events_count = import_result.scan_events_count
+        result.error_message = import_result.error_message
+        result.detail = dict(import_result.detail or {})
+
+        cycle_status = _resolve_combined_cycle_status(
+            rfv_status=rfv_result.status,
+            av_presence_status=av_presence_result.status,
+            import_status=import_result.status,
+        )
+        sync_cycle = _build_sync_cycle_metadata(
+            sync_cycle_id=run_id,
+            cycle_started_at=cycle_started_at,
+            rfv_detail=rfv_detail,
+            av_presence_detail=av_presence_detail,
+            import_started_at=import_result.started_at,
+            import_finished_at=import_result.finished_at,
+            delay_seconds=delay_seconds,
+            cycle_status=cycle_status,
+            at_vendor_ran=True,
+            at_vendor_skipped_reason=None,
+            failure_message=result.error_message if cycle_status not in ("success", "needs_attention") else None,
+        )
+        sync_cycle["at_vendor_status"] = result.at_vendor_status
+        result.detail["sync_cycle"] = sync_cycle
+        result.detail["ready_for_vendor_sync"] = rfv_detail
+        result.detail["at_vendor_presence_sync"] = av_presence_detail
+        _finish_combined_cycle_run(
+            conn,
+            cursor,
+            organization_id=org_id,
+            result=result,
+            started_at=started_at,
+            paths=paths,
+            sync_cycle=sync_cycle,
+            ready_for_vendor_sync=rfv_detail,
+            at_vendor_presence_sync=av_presence_detail,
+        )
+        return result
+    except Exception as exc:
+        conn.rollback()
+        result.status = "failed"
+        result.at_vendor_status = "failed"
+        result.error_message = str(exc)
+        log.write(f"Combined sync ERROR: {exc}\n")
+        sync_cycle = _build_sync_cycle_metadata(
+            sync_cycle_id=run_id,
+            cycle_started_at=cycle_started_at,
+            rfv_detail=rfv_detail or None,
+            av_presence_detail=av_presence_detail or None,
+            import_started_at=import_result.started_at if import_result else None,
+            import_finished_at=import_result.finished_at if import_result else None,
+            delay_seconds=delay_seconds,
+            cycle_status="failed",
+            failure_message=str(exc),
+        )
+        _finish_combined_cycle_run(
+            conn,
+            cursor,
+            organization_id=org_id,
+            result=result,
+            started_at=started_at,
+            paths=paths,
+            sync_cycle=sync_cycle,
+            ready_for_vendor_sync=rfv_detail or None,
+            at_vendor_presence_sync=av_presence_detail or None,
+        )
+        return result
+    finally:
+        log.close()
+        release_scrape_lock(cursor, org_id)
+        conn.commit()
 
 
 def run_scheduled_scrape_for_org(
@@ -448,10 +772,12 @@ def run_scheduled_scrape_for_org(
     rfv_detail: dict[str, Any] | None = None,
     rfv_status: str | None = None,
     rfv_error: str | None = None,
+    combined_cycle: _CombinedCycleContext | None = None,
+    av_presence_detail: dict[str, Any] | None = None,
 ) -> ScheduledScrapeResult:
     """
-    At Vendor scrape + import only. Ready for Vendor is run by run_rinse_combined_sync_for_org first.
-    Optional rfv_* args attach RFV metadata to rinse_scrape_runs.result_json when finishing.
+    At Vendor bag-detail CSV scrape + scan import.
+    When invoked from run_rinse_combined_sync_for_org, combined_cycle reuses the cycle run/lock.
     """
     org_id = int(organization_id)
     result = ScheduledScrapeResult(organization_id=org_id)
@@ -469,9 +795,20 @@ def run_scheduled_scrape_for_org(
         result.error_message = f"Missing tenant scripts: {tenant_dir}"
         return result
 
-    paths = build_run_paths(
-        org_id, run_type, tenant_slug=slug, rinse_vendor=vendor
-    )
+    using_combined = combined_cycle is not None
+    if using_combined:
+        paths = combined_cycle.paths
+        log = combined_cycle.log
+        run_id = int(combined_cycle.run_id)
+        started_at = combined_cycle.started_at
+    else:
+        paths = build_run_paths(
+            org_id, run_type, tenant_slug=slug, rinse_vendor=vendor
+        )
+        log = None
+        run_id = 0
+        started_at = datetime.utcnow()
+
     result.paths = paths
 
     if dry_run:
@@ -480,8 +817,11 @@ def run_scheduled_scrape_for_org(
         result.detail = {"dry_run": True, "paths": str(paths.run_dir)}
         return result
 
-    acquired, lock_reason = acquire_scrape_lock(cursor, org_id)
-    conn.commit()
+    if using_combined:
+        acquired, lock_reason = True, ""
+    else:
+        acquired, lock_reason = acquire_scrape_lock(cursor, org_id)
+        conn.commit()
     if not acquired:
         insert_skipped_scrape_run(
             cursor,
@@ -497,25 +837,30 @@ def run_scheduled_scrape_for_org(
         result.error_message = lock_reason
         return result
 
-    run_id = insert_scrape_run(
-        cursor,
-        org_id,
-        tenant_slug=slug,
-        rinse_vendor=vendor,
-        run_type=run_type,
-        log_path=str(paths.log_path),
-    )
-    conn.commit()
-    result.run_id = run_id
-    started_at = datetime.utcnow()
-    result.started_at = started_at
-    log = _TeeLog(paths.log_path)
+    if using_combined:
+        result.run_id = run_id
+        result.started_at = started_at
+    else:
+        run_id = insert_scrape_run(
+            cursor,
+            org_id,
+            tenant_slug=slug,
+            rinse_vendor=vendor,
+            run_type=run_type,
+            log_path=str(paths.log_path),
+        )
+        conn.commit()
+        result.run_id = run_id
+        started_at = datetime.utcnow()
+        result.started_at = started_at
+        log = _TeeLog(paths.log_path)
 
     result.at_vendor_status = "failed"
     env: dict[str, str] = {}
+    own_log = not using_combined
     try:
         try:
-            log.write(f"Scheduled Rinse scrape org={org_id} vendor={vendor} run_id={run_id}\n")
+            log.write(f"At Vendor CSV import org={org_id} vendor={vendor} run_id={run_id}\n")
             log.write(f"America/New_York batch_date={_today_label_et()}\n")
 
             env = _subprocess_env_for_vendor(
@@ -633,16 +978,22 @@ def run_scheduled_scrape_for_org(
             result.ready_for_vendor_status = rfv_status
             if rfv_status == "failed":
                 result.ready_for_vendor_error = rfv_error
-            result.status = _combine_scheduled_status(
-                result.at_vendor_status or result.status,
-                rfv_status,
-            )
-            if result.status == "partial_success" and not result.error_message:
-                result.error_message = rfv_error or "Ready for Vendor sync failed"
+            if not using_combined:
+                result.status = _combine_scheduled_status(
+                    result.at_vendor_status or result.status,
+                    rfv_status,
+                )
+                if result.status == "partial_success" and not result.error_message:
+                    result.error_message = rfv_error or "Ready for Vendor sync failed"
+        if av_presence_detail:
+            result.detail["at_vendor_presence_sync"] = av_presence_detail
 
     finally:
-        log.close()
+        if own_log and log is not None:
+            log.close()
         result.finished_at = datetime.utcnow()
+        if using_combined:
+            return result
         try:
             finish_scrape_run(
                 cursor,

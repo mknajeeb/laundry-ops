@@ -260,6 +260,10 @@ DAILY_METRICS_STATUS_INCOMPLETE_BASELINE = "INCOMPLETE_BASELINE_SNAPSHOT"
 DAILY_METRICS_UI_WARNING = (
     "Historical baseline incomplete — daily totals may be understated or duplicated."
 )
+DAILY_METRICS_STATUS_STALE_PRESENCE = "STALE_PRESENCE"
+DAILY_METRICS_STALE_PRESENCE_UI_WARNING = (
+    "At Vendor presence snapshot is stale — daily workload uses baseline carry-in only until the next successful sync."
+)
 
 
 def _build_daily_metrics_reliability(
@@ -922,6 +926,18 @@ def _load_baseline_gated_at_vendor_population(
     same_day_sent_ids &= population_ids
     scrape_arrival_ids &= population_ids
 
+    from backend.rinse_presence_sync_status import evaluate_at_vendor_presence_freshness
+
+    presence_fresh, presence_stale_reason, latest_presence_run = evaluate_at_vendor_presence_freshness(
+        cursor, org
+    )
+    scan_only_arrivals_blocked_count = 0
+    if not presence_fresh:
+        scan_only_arrivals_blocked_count = len(same_day_sent_ids | scrape_arrival_ids)
+        same_day_sent_ids = set()
+        scrape_arrival_ids = set()
+        population_ids = set(seed_ids)
+
     registry_service = _load_registry_service_types(cursor, org, sorted(population_ids))
     meta_by_bag = _load_delivery_meta(cursor, org, sorted(population_ids))
 
@@ -976,6 +992,13 @@ def _load_baseline_gated_at_vendor_population(
         baseline_seed_original_row_count=baseline_seed_original_row_count,
         baseline_seed_query_row_count=baseline_seed_query_row_count,
     )
+    if not presence_fresh:
+        daily_metrics = {
+            "daily_metrics_reliable": False,
+            "daily_metrics_status": DAILY_METRICS_STATUS_STALE_PRESENCE,
+            "daily_metrics_warning": presence_stale_reason,
+            "daily_metrics_ui_warning": DAILY_METRICS_STALE_PRESENCE_UI_WARNING,
+        }
 
     return population, {
         "available": True,
@@ -997,6 +1020,10 @@ def _load_baseline_gated_at_vendor_population(
         "baseline_seed_source": baseline_seed_source,
         "baseline_seed_incomplete": baseline_seed_incomplete,
         **daily_metrics,
+        "at_vendor_presence_stale": not presence_fresh,
+        "at_vendor_stale_reason": presence_stale_reason,
+        "latest_at_vendor_presence_run_id": (latest_presence_run or {}).get("id"),
+        "scan_only_arrivals_blocked_count": scan_only_arrivals_blocked_count,
         "baseline_snapshot_bag_ids": sorted(seed_ids),
         "same_day_arrival_bag_ids": sorted(same_day_sent_ids | scrape_arrival_ids),
         "start_of_day_carry_in_count": start_of_day_carry_in_count,
@@ -2463,7 +2490,13 @@ def build_at_vendor_module(
     ]
 
     return {
-        "live": True,
+        "live": not population_meta.get("at_vendor_presence_stale")
+        and population_meta.get("daily_metrics_reliable", True),
+        "at_vendor_live": not population_meta.get("at_vendor_presence_stale")
+        and population_meta.get("daily_metrics_reliable", True),
+        "at_vendor_under_review": bool(population_meta.get("at_vendor_presence_stale"))
+        or population_meta.get("daily_metrics_reliable") is False,
+        "at_vendor_stale_reason": population_meta.get("at_vendor_stale_reason"),
         "selected_date_et": selected_date_et.isoformat(),
         "day_start_et": start_of_day_et.isoformat(),
         "day_end_et": day_end_et.isoformat(),

@@ -431,14 +431,66 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
     }
 
 
+def _latest_success_presence_run(cursor, organization_id: int, portal_status: str) -> dict[str, Any] | None:
+    ensure_presence_tables(cursor)
+    cursor.execute(
+        """
+        SELECT id, portal_status, status, run_type, started_at, finished_at, rows_found, source_batch_id
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s AND portal_status = %s AND dry_run = 0
+          AND status IN ('success', 'partial')
+        ORDER BY COALESCE(finished_at, created_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (int(organization_id), portal_status),
+    )
+    row = cursor.fetchone()
+    return row if isinstance(row, dict) else None
+
+
+def evaluate_at_vendor_presence_freshness(
+    cursor,
+    organization_id: int,
+    *,
+    evaluation_time: datetime | None = None,
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    """
+    Returns (is_fresh, stale_reason, latest_run).
+    Fresh means a successful at_vendor presence scrape within RINSE_SYNC_STALE_MINUTES.
+    """
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+
+    run = _latest_success_presence_run(cursor, int(organization_id), PORTAL_STATUS_AT_VENDOR)
+    if not run:
+        return False, "No successful At Vendor presence scrape available", None
+    finished = run.get("finished_at") or run.get("started_at")
+    ref = naive_system_utc(finished if isinstance(finished, datetime) else None)
+    now = naive_system_utc(evaluation_time) or datetime.now(timezone.utc).replace(tzinfo=None)
+    if ref is None:
+        return False, "At Vendor presence scrape timestamp unavailable", run
+    age_min = max(0, int((now - ref).total_seconds()) // 60)
+    if age_min > RINSE_SYNC_STALE_MINUTES:
+        return (
+            False,
+            f"At Vendor presence scrape stale — last success {age_min} min ago (>{RINSE_SYNC_STALE_MINUTES} min)",
+            run,
+        )
+    return True, None, run
+
+
 def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any]:
     """Combined RFV → At Vendor sync cycle from latest scrape run metadata."""
     org = int(organization_id)
     cycle: dict[str, Any] = {
         "label": "Last Rinse Sync Cycle",
+        "sync_cycle_id": None,
+        "cycle_started_at": None,
         "cycle_status": None,
+        "rfv_started_at": None,
         "rfv_completed_at": None,
         "rfv_completed_at_et": None,
+        "rfv_run_id": None,
+        "at_vendor_run_id": None,
         "at_vendor_started_at": None,
         "at_vendor_started_at_et": None,
         "at_vendor_completed_at": None,
@@ -448,6 +500,7 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
         "at_vendor_skipped_reason": None,
         "rfv_status": None,
         "at_vendor_status": None,
+        "failure_message": None,
     }
     if not table_exists(cursor, "rinse_scrape_runs"):
         return cycle
@@ -474,17 +527,43 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
         detail = {}
     sync_cycle = detail.get("sync_cycle") if isinstance(detail.get("sync_cycle"), dict) else {}
     rfv_sync = detail.get("ready_for_vendor_sync") if isinstance(detail.get("ready_for_vendor_sync"), dict) else {}
+    for key in (
+        "sync_cycle_id",
+        "cycle_started_at",
+        "cycle_status",
+        "rfv_started_at",
+        "rfv_completed_at",
+        "rfv_run_id",
+        "at_vendor_run_id",
+        "at_vendor_started_at",
+        "at_vendor_completed_at",
+        "delay_seconds",
+        "at_vendor_ran",
+        "at_vendor_skipped_reason",
+        "rfv_status",
+        "at_vendor_status",
+        "failure_message",
+    ):
+        if sync_cycle.get(key) is not None:
+            cycle[key] = sync_cycle.get(key)
     cycle["cycle_status"] = sync_cycle.get("cycle_status") or row.get("status")
     cycle["rfv_status"] = sync_cycle.get("rfv_status") or rfv_sync.get("status")
     cycle["at_vendor_status"] = sync_cycle.get("at_vendor_status") or row.get("status")
     cycle["rfv_completed_at"] = sync_cycle.get("rfv_completed_at") or rfv_sync.get("finished_at")
-    cycle["at_vendor_started_at"] = sync_cycle.get("at_vendor_started_at") or _fmt_system(row.get("started_at"))
-    cycle["at_vendor_completed_at"] = sync_cycle.get("at_vendor_completed_at") or _fmt_system(row.get("finished_at"))
-    cycle["delay_seconds"] = sync_cycle.get("delay_seconds")
-    cycle["at_vendor_ran"] = sync_cycle.get("at_vendor_ran")
-    cycle["at_vendor_skipped_reason"] = sync_cycle.get("at_vendor_skipped_reason")
+    if cycle.get("at_vendor_started_at") is None:
+        cycle["at_vendor_started_at"] = sync_cycle.get("at_vendor_started_at") or _fmt_system(row.get("started_at"))
+    if cycle.get("at_vendor_completed_at") is None:
+        cycle["at_vendor_completed_at"] = sync_cycle.get("at_vendor_completed_at") or _fmt_system(row.get("finished_at"))
     if isinstance(row.get("started_at"), datetime):
         cycle["at_vendor_started_at_et"] = _short_time_et(row.get("started_at"))
     if isinstance(row.get("finished_at"), datetime):
         cycle["at_vendor_completed_at_et"] = _short_time_et(row.get("finished_at"))
+    if cycle.get("rfv_completed_at"):
+        try:
+            from datetime import datetime as _dt
+
+            rfv_dt = _dt.fromisoformat(str(cycle["rfv_completed_at"]).replace("Z", "+00:00")[:26])
+            cycle["rfv_completed_at_et"] = _short_time_et(rfv_dt.replace(tzinfo=None))
+        except (TypeError, ValueError):
+            pass
     return cycle

@@ -1117,6 +1117,9 @@ class TestCleanVeeWashAtVendorBaseline:
         ), patch(
             "backend.rinse_at_vendor_module._count_contaminated_active_presence_rows",
             return_value=5,
+        ), patch(
+            "backend.rinse_presence_sync_status.evaluate_at_vendor_presence_freshness",
+            return_value=(True, None, {"id": 99, "finished_at": datetime.utcnow()}),
         ):
             population, meta = _load_baseline_gated_at_vendor_population(
                 cursor,
