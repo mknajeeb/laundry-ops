@@ -16,7 +16,8 @@ export default function ShiftCountCard({ label, value, sub, onClick, active, war
         borderColor: active ? ACCENT : warn ? "error.main" : "divider",
         cursor: onClick ? "pointer" : "default",
         bgcolor: active ? "rgba(0,151,178,0.06)" : "background.paper",
-        minHeight: compact ? 72 : 80,
+        minHeight: compact ? 80 : 88,
+        minWidth: 0,
         opacity: onClick ? 1 : 0.95,
       }}
     >

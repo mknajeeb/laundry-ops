@@ -32,7 +32,9 @@ import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable
 import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
+import ShiftBagRecordRow from "../components/shift/ShiftBagRecordRow";
 import {
+  filterAtVendorDrilldown,
   filterModuleRecords,
   filterRfvRecords,
   formatShiftDateLabel,
@@ -460,8 +462,6 @@ export default function ShiftMonitorPage({ user }) {
   });
   const [rfvRushFilter, setRfvRushFilter] = useState("all");
   const [avRushFilter, setAvRushFilter] = useState("all");
-  const [avServiceFilter, setAvServiceFilter] = useState("all");
-  const [expandedBag, setExpandedBag] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const initialToday = todayRange();
   const [rangePreset, setRangePreset] = useState(() => {
@@ -496,7 +496,6 @@ export default function ShiftMonitorPage({ user }) {
   }, [load]);
 
   const records = data?.records || [];
-  const atVendorRecords = data?.at_vendor_module?.rows || [];
   const modules = data?.shift_monitor_modules || {};
   const opsLabel = modules.operations_window?.label;
   const atVendorModule = data?.at_vendor_module || {};
@@ -505,39 +504,39 @@ export default function ShiftMonitorPage({ user }) {
   const filtered = useMemo(() => {
     if (!drilldown) return [];
     if (drilldown.type === "rfv") {
-      return filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, rfvRushFilter);
+      return filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, "all");
     }
     if (drilldown.moduleKey === "at_vendor_flow") {
-      if (drilldown.moduleTag === "completed_before_day_start_still_present") {
-        return atVendorModule.completed_before_day_start_still_present_rows || [];
-      }
-      return filterModuleRecords(atVendorRecords, {
-        moduleTag: drilldown.moduleTag,
-        rushFilter: avRushFilter,
-        serviceFilter: avServiceFilter,
-      });
+      return filterAtVendorDrilldown(atVendorModule, drilldown);
     }
     const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
-    const sourceRecords = records;
-    return filterModuleRecords(sourceRecords, {
+    return filterModuleRecords(records, {
       moduleTag: drilldown.moduleTag,
       rushFilter: f.rush,
       serviceFilter: f.service,
     });
-  }, [records, atVendorRecords, atVendorModule, drilldown, moduleFilters, rfv.rows, rfvRushFilter, avRushFilter, avServiceFilter]);
+  }, [records, atVendorModule, drilldown, moduleFilters, rfv.rows]);
+
+  const expectedDrilldownCount = useMemo(() => {
+    if (!drilldown?.expectedCount && drilldown?.expectedCount !== 0) return null;
+    return drilldown.expectedCount;
+  }, [drilldown]);
 
   const openDrilldown = (ctx) => {
     setDrilldown(ctx);
     setDrawerOpen(true);
   };
 
-  const openRfvDrilldown = (tagOrCtx) => {
-    const tag = typeof tagOrCtx === "string" ? tagOrCtx : (tagOrCtx?.drilldown_tag || tagOrCtx?.drilldownTag);
-    const cardLabel = typeof tagOrCtx === "string" ? tag : (tagOrCtx?.label || tagOrCtx?.cardLabel || tag);
+  const openRfvDrilldown = (ctx) => {
+    const tag = typeof ctx === "string" ? ctx : (ctx?.drilldownTag || ctx?.drilldown_tag);
+    const cardLabel = typeof ctx === "string" ? tag : (ctx?.cardLabel || ctx?.label || tag);
+    const cardKey = typeof ctx === "string" ? tag : (ctx?.cardKey || tag);
     setDrilldown({
       type: "rfv",
       drilldownTag: tag,
       cardLabel,
+      cardKey,
+      expectedCount: typeof ctx === "object" ? ctx.expectedCount : undefined,
       moduleTitle: "Ready for Vendor",
     });
     setDrawerOpen(true);
@@ -683,22 +682,18 @@ export default function ShiftMonitorPage({ user }) {
             rushFilter={rfvRushFilter}
             onRushChange={setRfvRushFilter}
             onDrilldown={openRfvDrilldown}
-            activeTag={drilldown?.type === "rfv" ? drilldown.drilldownTag : null}
+            activeKey={drilldown?.type === "rfv" ? drilldown.cardKey : null}
           />
 
           <AtVendorFlowSection
             module={atVendorModule}
             rushFilter={avRushFilter}
-            serviceFilter={avServiceFilter}
             onRushChange={setAvRushFilter}
-            onServiceChange={setAvServiceFilter}
-            onDrilldown={(tag) => openDrilldown({
-              moduleKey: "at_vendor_flow",
-              moduleTag: tag,
-              cardLabel: tag,
-              moduleTitle: "At Vendor",
-            })}
-            activeTag={drilldown?.moduleTag}
+            onDrilldown={(ctx) => {
+              setDrilldown(ctx);
+              setDrawerOpen(true);
+            }}
+            activeKey={drilldown?.moduleKey === "at_vendor_flow" ? drilldown.cardKey : null}
           />
 
           <LiveBaselineBanner baseline={data?.live_baseline} />
@@ -727,44 +722,55 @@ export default function ShiftMonitorPage({ user }) {
         anchor="bottom"
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        PaperProps={{ sx: { height: "70vh", borderTopLeftRadius: 16, borderTopRightRadius: 16, p: 2 } }}
+        PaperProps={{
+          sx: {
+            height: { xs: "100%", sm: "75vh" },
+            maxHeight: { xs: "100%", sm: "75vh" },
+            borderTopLeftRadius: { xs: 0, sm: 16 },
+            borderTopRightRadius: { xs: 0, sm: 16 },
+            p: { xs: 1.5, sm: 2 },
+            display: "flex",
+            flexDirection: "column",
+          },
+        }}
       >
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-          <Box>
-            <Typography variant="h6" fontWeight={800}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1, flexShrink: 0 }}>
+          <Box sx={{ minWidth: 0, pr: 1 }}>
+            <Typography variant="h6" fontWeight={800} sx={{ wordBreak: "break-word" }}>
               {drilldown?.moduleTitle || "Records"} — {drilldown?.cardLabel || ""}
             </Typography>
             <Typography variant="caption" color="text.secondary" display="block">
-              {drilldown?.type === "rfv"
-                ? `Rush: ${rfvRushFilter} · Count: ${filtered.length}`
-                : `Rush: ${moduleFilters[drilldown?.moduleKey]?.rush || "all"} · Service: ${moduleFilters[drilldown?.moduleKey]?.service || "all"} · Count: ${filtered.length}`}
+              {filtered.length} record{filtered.length === 1 ? "" : "s"}
+              {expectedDrilldownCount != null && expectedDrilldownCount !== filtered.length
+                ? ` · expected ${expectedDrilldownCount}`
+                : ""}
             </Typography>
           </Box>
-          <IconButton onClick={() => setDrawerOpen(false)} aria-label="Close">
+          <IconButton onClick={() => setDrawerOpen(false)} aria-label="Close" sx={{ flexShrink: 0 }}>
             <CloseIcon />
           </IconButton>
         </Stack>
-        <Box sx={{ overflow: "auto", flex: 1 }}>
+        <Box sx={{ overflow: "auto", flex: 1, minHeight: 0 }}>
           {drilldown?.type === "rfv"
-            ? filtered.map((row) => <RfvRecordRow key={row.bag_id} row={row} />)
-            : drilldown?.moduleKey === "at_vendor_flow" || drilldown?.moduleKey === "facility_status"
+            ? filtered.map((row) => <ShiftBagRecordRow key={row.bag_id} row={row} variant="rfv" />)
+            : drilldown?.moduleKey === "at_vendor_flow"
               ? filtered.map((row) => (
-                <AtVendorRecordRow
+                <ShiftBagRecordRow
                   key={row.bag_id}
                   row={row}
-                  changedRushDrilldown={drilldown?.moduleTag === "mod_at_vendor_changed_rush"}
+                  variant="at_vendor"
                 />
               ))
               : filtered.map((row) => (
                 <RecordRow
                   key={row.bag_id}
                   row={row}
-                  expanded={expandedBag === row.bag_id}
-                  onToggle={() => setExpandedBag((b) => (b === row.bag_id ? null : row.bag_id))}
+                  expanded={false}
+                  onToggle={() => {}}
                 />
               ))}
           {filtered.length === 0 ? (
-            <Typography variant="body2" color="text.secondary">No records for this filter.</Typography>
+            <Typography variant="body2" color="text.secondary">No records for this bucket.</Typography>
           ) : null}
         </Box>
       </Drawer>

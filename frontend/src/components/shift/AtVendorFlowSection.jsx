@@ -1,48 +1,37 @@
 import { Alert, Box, Typography } from "@mui/material";
-import DrilldownCardGrid from "./DrilldownCardGrid";
+import MetricCardGrid from "./MetricCardGrid";
 import RushFilterChips from "./RushFilterChips";
-import ServiceFilterChips from "./ServiceFilterChips";
+import ShiftCountCard from "./ShiftCountCard";
+import { buildAtVendorHierarchy } from "../../utils/shiftMonitorHelpers";
 
-/** Hierarchical At Vendor daily workload flow (mobile-first). */
+/** Management-first At Vendor daily workload hierarchy. */
 export default function AtVendorFlowSection({
   module,
   rushFilter,
-  serviceFilter,
   onRushChange,
-  onServiceChange,
   onDrilldown,
-  activeTag,
+  activeKey,
 }) {
   const av = module || {};
-  const cards = av.cards || [];
   const monitoringCount = av.completed_before_day_start_still_present_count ?? 0;
+  const monitoringRows = av.completed_before_day_start_still_present_rows || [];
   const dailyReliable = av.daily_metrics_reliable !== false;
+  const segment = rushFilter || "all";
 
-  const level1 = cards.filter((c) => c.level === 1);
-  const level2 = cards.filter((c) => c.level === 2);
-  const level3 = cards.filter((c) => c.level === 3);
-  const monitoring = cards.filter((c) => c.level === "monitoring");
+  const sections = buildAtVendorHierarchy(av, segment);
 
-  const showLevel2 = rushFilter && rushFilter !== "all";
-  const showLevel3 = showLevel2 || (serviceFilter && serviceFilter !== "all");
-
-  const visibleCards = [
-    ...level1,
-    ...(showLevel2
-      ? level2.filter((c) => {
-          if (rushFilter === "rush") return c.module_tag?.includes("rush") && !c.module_tag?.includes("non");
-          if (rushFilter === "non_rush") return c.module_tag?.includes("non_rush");
-          return true;
-        })
-      : []),
-    ...(showLevel3
-      ? level3.filter((c) => {
-          if (serviceFilter === "wf") return c.module_tag?.includes("wf");
-          if (serviceFilter === "hd") return c.module_tag?.includes("hd");
-          return true;
-        })
-      : []),
-  ];
+  const handleCardClick = (card) => {
+    if (!onDrilldown) return;
+    onDrilldown({
+      moduleKey: "at_vendor_flow",
+      moduleTag: card.moduleTag,
+      bucket: card.bucket,
+      cardLabel: card.label,
+      cardKey: card.key,
+      expectedCount: card.count,
+      moduleTitle: "At Vendor",
+    });
+  };
 
   return (
     <Box sx={{ mb: 2.5 }}>
@@ -54,40 +43,63 @@ export default function AtVendorFlowSection({
           {av.daily_metrics_ui_warning}
         </Alert>
       ) : null}
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Daily Workload = Pending + Completed Today
         {av.daily_workload_total != null ? ` · ${av.daily_workload_total}` : ""}
       </Typography>
-      <Box sx={{ mb: 1 }}>
-        <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25 }}>
-          Rush
-        </Typography>
-        <RushFilterChips value={rushFilter} onChange={onRushChange} />
+
+      <Box sx={{ mb: 1.5 }}>
+        <RushFilterChips value={segment} onChange={onRushChange} />
       </Box>
-      {showLevel2 ? (
-        <Box sx={{ mb: 1 }}>
-          <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25 }}>
-            Service
+
+      <MetricCardGrid
+        sections={sections}
+        onCardClick={handleCardClick}
+        activeKey={activeKey}
+      />
+
+      {monitoringCount > 0 ? (
+        <Box sx={{ mt: 2, pt: 1.5, borderTop: "1px dashed", borderColor: "divider" }}>
+          <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" sx={{ mb: 1 }}>
+            Monitoring only — excluded from Daily Workload
           </Typography>
-          <ServiceFilterChips value={serviceFilter} onChange={onServiceChange} />
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Completed Earlier — Still at VeeWash
+          </Typography>
+          <Box sx={{ maxWidth: 320 }}>
+            <ShiftCountCard
+              label="Completed Earlier — Still at VeeWash"
+              value={monitoringCount}
+              sub={`${monitoringRows.length} record${monitoringRows.length === 1 ? "" : "s"}`}
+              onClick={() => onDrilldown?.({
+                moduleKey: "at_vendor_flow",
+                moduleTag: "completed_before_day_start_still_present",
+                cardLabel: "Completed Earlier — Still at VeeWash",
+                cardKey: "av_monitoring",
+                expectedCount: monitoringCount,
+                moduleTitle: "At Vendor (Monitoring)",
+              })}
+              active={activeKey === "av_monitoring"}
+            />
+          </Box>
         </Box>
       ) : null}
-      <DrilldownCardGrid
-        cards={visibleCards}
-        onDrilldown={onDrilldown}
-        activeTag={activeTag}
-        rushFilter={rushFilter}
-      />
-      {monitoring.length > 0 || monitoringCount > 0 ? (
-        <Box sx={{ mt: 1.5, pt: 1, borderTop: "1px dashed", borderColor: "divider" }}>
-          <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" sx={{ mb: 0.5 }}>
-            Monitoring only — not included in Daily Workload
-          </Typography>
-          <DrilldownCardGrid
-            cards={monitoring}
-            onDrilldown={onDrilldown}
-            activeTag={activeTag}
-            compact
+
+      {av.changed_to_rush > 0 ? (
+        <Box sx={{ mt: 1.5 }}>
+          <ShiftCountCard
+            label="Changed to Rush"
+            value={av.changed_to_rush}
+            onClick={() => onDrilldown?.({
+              moduleKey: "at_vendor_flow",
+              moduleTag: "mod_at_vendor_changed_rush",
+              cardLabel: "Changed to Rush",
+              cardKey: "av_changed_rush",
+              expectedCount: av.changed_to_rush,
+              moduleTitle: "At Vendor",
+            })}
+            active={activeKey === "av_changed_rush"}
+            warn
           />
         </Box>
       ) : null}

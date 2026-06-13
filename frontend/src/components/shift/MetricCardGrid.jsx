@@ -1,0 +1,63 @@
+import { Box, Typography } from "@mui/material";
+import ShiftCountCard from "./ShiftCountCard";
+
+/** Grouped metric cards — mobile-first, large tap targets. */
+export default function MetricCardGrid({
+  sections,
+  onCardClick,
+  activeKey,
+  compact = false,
+}) {
+  if (!sections?.length) return null;
+
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+      {sections.map((section) => {
+        const cards = (section.cards || []).filter((card) => card != null && card.hidden !== true);
+        if (!cards.length) return null;
+        return (
+          <Box key={section.key || section.title || cards[0]?.key}>
+            {section.title ? (
+              <Typography
+                variant="caption"
+                fontWeight={700}
+                color="text.secondary"
+                display="block"
+                sx={{ mb: 0.75, textTransform: "uppercase", letterSpacing: 0.4 }}
+              >
+                {section.title}
+              </Typography>
+            ) : null}
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: {
+                  xs: "repeat(2, minmax(0, 1fr))",
+                  sm: "repeat(3, minmax(0, 1fr))",
+                },
+                gap: 1,
+              }}
+            >
+              {cards.map((card) => {
+                const clickable = card.clickable !== false && Boolean(onCardClick) && card.count != null;
+                const cardKey = card.key || card.drilldownTag || card.label;
+                return (
+                  <ShiftCountCard
+                    key={cardKey}
+                    label={card.label}
+                    value={card.count ?? "—"}
+                    sub={card.sub}
+                    onClick={clickable ? () => onCardClick(card) : undefined}
+                    active={activeKey === cardKey}
+                    warn={card.warn}
+                    compact={compact}
+                  />
+                );
+              })}
+            </Box>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}

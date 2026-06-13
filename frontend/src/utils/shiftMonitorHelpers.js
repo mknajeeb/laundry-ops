@@ -78,6 +78,321 @@ export function filterRfvRecords(rows, tag, rushFilter = "all") {
   return out.filter((r) => matchesRushFilter(r, rushFilter) && matchesServiceFilter(r, "all"));
 }
 
+function avRowRush(row) {
+  const rb = row?.rush_bucket;
+  if (rb === "RUSH") return "RUSH";
+  if (rb === "NON_RUSH") return "NON_RUSH";
+  return "UNKNOWN";
+}
+
+function avRowService(row) {
+  const sb = String(row?.service_bucket || row?.service_type || "").toUpperCase();
+  if (sb === "WF") return "WF";
+  if (sb === "HD") return "HD";
+  return "UNKNOWN";
+}
+
+/** Filter At Vendor daily-workload rows by rush/service/status bucket (no counting logic change). */
+export function filterAtVendorBucket(rows, { rush = "all", service = "all", status = "all" } = {}) {
+  return (rows || []).filter((row) => {
+    if (status === "pending" && row.at_vendor_status !== "Pending") return false;
+    if (status === "completed" && row.at_vendor_status !== "Completed") return false;
+    const rowRush = avRowRush(row);
+    const rowSvc = avRowService(row);
+    if (rush === "rush" && rowRush !== "RUSH") return false;
+    if (rush === "non_rush" && rowRush !== "NON_RUSH") return false;
+    if (service === "wf" && rowSvc !== "WF") return false;
+    if (service === "hd" && rowSvc !== "HD") return false;
+    if (service === "unknown") {
+      if (rush === "all") {
+        return rowRush === "UNKNOWN" || rowSvc === "UNKNOWN";
+      }
+      if (rush === "rush" && rowRush !== "RUSH") return false;
+      if (rush === "non_rush" && rowRush !== "NON_RUSH") return false;
+      return rowRush === "UNKNOWN" || rowSvc === "UNKNOWN";
+    }
+    return true;
+  });
+}
+
+export function countAtVendorBucket(rows, bucket) {
+  return filterAtVendorBucket(rows, bucket).length;
+}
+
+function avStatusCards(prefix, module, rows, rush) {
+  const totalKey = rush === "rush" ? "rush_total" : "non_rush_total";
+  const pendingKey = rush === "rush" ? "rush_pending" : "non_rush_pending";
+  const completedKey = rush === "rush" ? "rush_completed" : "non_rush_completed";
+  const bucketRush = rush;
+  return [
+    {
+      key: `${prefix}_total`,
+      label: `${prefix} Total`,
+      count: module?.[totalKey],
+      bucket: { rush: bucketRush, service: "all", status: "all" },
+      clickable: true,
+    },
+    {
+      key: `${prefix}_pending`,
+      label: `${prefix} Pending`,
+      count: module?.[pendingKey],
+      bucket: { rush: bucketRush, service: "all", status: "pending" },
+      clickable: true,
+    },
+    {
+      key: `${prefix}_completed`,
+      label: `${prefix} Completed`,
+      count: module?.[completedKey],
+      bucket: { rush: bucketRush, service: "all", status: "completed" },
+      clickable: true,
+    },
+  ];
+}
+
+function avServiceStatusCards(prefix, rows, rush, service) {
+  const bucket = { rush, service, status: "all" };
+  const pendingBucket = { rush, service, status: "pending" };
+  const completedBucket = { rush, service, status: "completed" };
+  const total = countAtVendorBucket(rows, bucket);
+  const pending = countAtVendorBucket(rows, pendingBucket);
+  const completed = countAtVendorBucket(rows, completedBucket);
+  if (total === 0 && pending === 0 && completed === 0) return [];
+  return [
+    {
+      key: `${prefix}_${service}_total`,
+      label: `${prefix} ${service.toUpperCase()} Total`,
+      count: total,
+      bucket,
+      clickable: total != null,
+    },
+    {
+      key: `${prefix}_${service}_pending`,
+      label: `${prefix} ${service.toUpperCase()} Pending`,
+      count: pending,
+      bucket: pendingBucket,
+      clickable: pending != null,
+    },
+    {
+      key: `${prefix}_${service}_completed`,
+      label: `${prefix} ${service.toUpperCase()} Completed`,
+      count: completed,
+      bucket: completedBucket,
+      clickable: completed != null,
+    },
+  ];
+}
+
+function avUnknownCards(prefix, rows, rush) {
+  const bucket = { rush, service: "unknown", status: "all" };
+  const pendingBucket = { rush, service: "unknown", status: "pending" };
+  const completedBucket = { rush, service: "unknown", status: "completed" };
+  const total = countAtVendorBucket(rows, bucket);
+  if (total === 0) return [];
+  return [
+    {
+      key: `${prefix.replace(/\s+/g, "_").toLowerCase()}_unknown_total`,
+      label: `${prefix} Unknown Total`,
+      count: total,
+      bucket,
+      clickable: true,
+    },
+    {
+      key: `${prefix.replace(/\s+/g, "_").toLowerCase()}_unknown_pending`,
+      label: `${prefix} Unknown Pending`,
+      count: countAtVendorBucket(rows, pendingBucket),
+      bucket: pendingBucket,
+      clickable: true,
+    },
+    {
+      key: `${prefix.replace(/\s+/g, "_").toLowerCase()}_unknown_completed`,
+      label: `${prefix} Unknown Completed`,
+      count: countAtVendorBucket(rows, completedBucket),
+      bucket: completedBucket,
+      clickable: true,
+    },
+  ];
+}
+
+/** Management hierarchy cards for At Vendor daily workload. */
+export function buildAtVendorHierarchy(module, rushSegment = "all") {
+  const rows = module?.rows || [];
+  const sections = [];
+
+  sections.push({
+    key: "layer1",
+    title: "Daily Workload",
+    cards: [
+      {
+        key: "av_total",
+        label: "Total",
+        count: module?.daily_workload_total ?? module?.total,
+        bucket: { rush: "all", service: "all", status: "all" },
+        moduleTag: "mod_at_vendor_total",
+        clickable: true,
+      },
+      {
+        key: "av_pending",
+        label: "Pending",
+        count: module?.pending ?? module?.pending_count,
+        bucket: { rush: "all", service: "all", status: "pending" },
+        moduleTag: "mod_at_vendor_pending",
+        clickable: true,
+      },
+      {
+        key: "av_completed_today",
+        label: "Completed Today",
+        count: module?.completed ?? module?.completed_today_count,
+        bucket: { rush: "all", service: "all", status: "completed" },
+        moduleTag: "mod_at_vendor_completed",
+        clickable: true,
+      },
+    ],
+  });
+
+  if (rushSegment === "all") {
+    const unknownCards = avUnknownCards("Unknown", rows, "all");
+    sections.push({
+      key: "layer2",
+      title: "By urgency",
+      cards: [
+        ...avStatusCards("Rush", module, rows, "rush"),
+        ...avStatusCards("Non-Rush", module, rows, "non_rush"),
+        ...unknownCards.map((card) => ({
+          ...card,
+          bucket: { rush: "all", service: "unknown", status: card.bucket.status },
+        })),
+      ],
+    });
+  } else if (rushSegment === "rush") {
+    sections.push({
+      key: "layer2_rush",
+      title: "Rush",
+      cards: avStatusCards("Rush", module, rows, "rush"),
+    });
+    sections.push({
+      key: "layer3_rush",
+      title: "Rush by service",
+      cards: [
+        ...avServiceStatusCards("Rush", rows, "rush", "wf"),
+        ...avServiceStatusCards("Rush", rows, "rush", "hd"),
+        ...avUnknownCards("Rush", rows, "rush"),
+      ],
+    });
+  } else if (rushSegment === "non_rush") {
+    sections.push({
+      key: "layer2_non_rush",
+      title: "Non-Rush",
+      cards: avStatusCards("Non-Rush", module, rows, "non_rush"),
+    });
+    sections.push({
+      key: "layer3_non_rush",
+      title: "Non-Rush by service",
+      cards: [
+        ...avServiceStatusCards("Non-Rush", rows, "non_rush", "wf"),
+        ...avServiceStatusCards("Non-Rush", rows, "non_rush", "hd"),
+        ...avUnknownCards("Non-Rush", rows, "non_rush"),
+      ],
+    });
+  }
+
+  return sections;
+}
+
+function rfvTotalCard(label, count, drilldownTag, key) {
+  return {
+    key: key || drilldownTag,
+    label,
+    count,
+    drilldownTag,
+    clickable: count != null,
+  };
+}
+
+/** Management hierarchy cards for Ready for Vendor (totals only). */
+export function buildRfvHierarchy(rfv, rushSegment = "all") {
+  if (!rfv?.live) {
+    return [{
+      key: "unavailable",
+      cards: [{
+        key: "rfv_total",
+        label: "RFV Total",
+        count: rfv?.total ?? "—",
+        drilldownTag: "ready_for_vendor",
+        clickable: false,
+      }],
+    }];
+  }
+
+  const sections = [];
+
+  if (rushSegment === "all") {
+    sections.push({
+      key: "layer1",
+      title: "Queue",
+      cards: [rfvTotalCard("RFV Total", rfv.total, "ready_for_vendor", "rfv_total")],
+    });
+    sections.push({
+      key: "layer2",
+      title: "By urgency",
+      cards: [
+        rfvTotalCard("Rush Total", rfv.rush_total, "rfv_rush", "rfv_rush_total"),
+        rfvTotalCard("Non-Rush Total", rfv.nonrush_total, "rfv_non_rush", "rfv_non_rush_total"),
+        ...(rfv.unknown_needs_review
+          ? [rfvTotalCard("Unknown Review Total", rfv.unknown_needs_review, "rfv_unknown_needs_review", "rfv_unknown")]
+          : []),
+      ],
+    });
+  } else if (rushSegment === "rush") {
+    sections.push({
+      key: "layer2_rush",
+      title: "Rush",
+      cards: [rfvTotalCard("Rush Total", rfv.rush_total, "rfv_rush", "rfv_rush_total")],
+    });
+    const layer3 = [
+      rfvTotalCard("Rush WF Total", rfv.rush_wf, "rfv_rush_wf", "rfv_rush_wf"),
+      rfvTotalCard("Rush HD Total", rfv.rush_hd, "rfv_rush_hd", "rfv_rush_hd"),
+    ].filter((c) => c.count > 0);
+    if (layer3.length) {
+      sections.push({ key: "layer3_rush", title: "Rush by service", cards: layer3 });
+    }
+  } else if (rushSegment === "non_rush") {
+    sections.push({
+      key: "layer2_non_rush",
+      title: "Non-Rush",
+      cards: [rfvTotalCard("Non-Rush Total", rfv.nonrush_total, "rfv_non_rush", "rfv_non_rush_total")],
+    });
+    const layer3 = [
+      rfvTotalCard("Non-Rush WF Total", rfv.nonrush_wf, "rfv_nonrush_wf", "rfv_nonrush_wf"),
+      rfvTotalCard("Non-Rush HD Total", rfv.nonrush_hd, "rfv_nonrush_hd", "rfv_nonrush_hd"),
+    ].filter((c) => c.count > 0);
+    if (layer3.length) {
+      sections.push({ key: "layer3_non_rush", title: "Non-Rush by service", cards: layer3 });
+    }
+  }
+
+  return sections;
+}
+
+export function filterAtVendorDrilldown(module, drilldown) {
+  if (drilldown?.moduleTag === "completed_before_day_start_still_present") {
+    return module?.completed_before_day_start_still_present_rows || [];
+  }
+  if (drilldown?.moduleTag === "mod_at_vendor_changed_rush") {
+    return filterModuleRecords(module?.rows || [], { moduleTag: "mod_at_vendor_changed_rush" });
+  }
+  if (drilldown?.bucket) {
+    return filterAtVendorBucket(module?.rows || [], drilldown.bucket);
+  }
+  if (drilldown?.moduleTag) {
+    return filterModuleRecords(module?.rows || [], {
+      moduleTag: drilldown.moduleTag,
+      rushFilter: drilldown.rushFilter || "all",
+      serviceFilter: drilldown.serviceFilter || "all",
+    });
+  }
+  return module?.rows || [];
+}
+
 export function sectionSplitCounts(section, rushFilter = "all") {
   if (!section || section.live === false) {
     return { total: null, wf: null, hd: null, unknown: null, unavailable: true };
