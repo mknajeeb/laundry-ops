@@ -27,6 +27,7 @@ from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
     is_complete_cleaning_purpose,
+    is_create_issue_purpose,
     is_sent_to_vendor_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
@@ -1540,6 +1541,21 @@ def _wf_completion_signal(
     return None, None
 
 
+def _first_create_issue_ts_after_anchor(
+    anchored: Sequence[Mapping[str, Any]],
+) -> datetime | None:
+    first: datetime | None = None
+    for ev in anchored:
+        if not is_create_issue_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts):
+            continue
+        if first is None or ts < first:
+            first = ts
+    return first
+
+
 def _hd_completion_signal(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -1561,7 +1577,13 @@ def _hd_completion_signal(
     if len(add_photos) >= 2:
         first_ts = add_photos[0][1]
         _, second_ts = add_photos[1]
-        if second_ts > first_ts:
+        create_issue_ts = _first_create_issue_ts_after_anchor(anchored)
+        second_add_photos_valid = (
+            first_ts > anchor_ts
+            and second_ts > first_ts
+            and (create_issue_ts is None or second_ts < create_issue_ts)
+        )
+        if second_add_photos_valid:
             if best is None or second_ts < best[0]:
                 best = (second_ts, "second add-photos")
     if best is None:

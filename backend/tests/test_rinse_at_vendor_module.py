@@ -238,6 +238,118 @@ class TestRepeatedEventCompletion:
         assert signal is None
 
 
+class TestHDCreateIssueAddPhotosGuard:
+    """Second add-photos HD completion blocked when create-issue precedes it."""
+
+    def test_two_add_photos_no_create_issue_completes(self):
+        events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "second add-photos"
+        assert comp_ts == T2
+
+    def test_two_add_photos_then_create_issue_completes(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("add-photos", T1),
+            _ev("add-photos", T2),
+            _ev("create-issue", T3),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "second add-photos"
+        assert comp_ts == T2
+
+    def test_create_issue_between_add_photos_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("add-photos", T1),
+            _ev("create-issue", T2),
+            _ev("add-photos", T3),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_create_issue_same_timestamp_as_second_add_photos_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("add-photos", T1),
+            _ev("create-issue", T2),
+            _ev("add-photos", T2, ev_id=4, scan_index=4),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_create_issue_before_both_add_photos_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("create-issue", T1),
+            _ev("add-photos", T2),
+            _ev("add-photos", T3),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_duplicate_add_photos_before_create_issue_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("add-photos", T1, ev_id=1),
+            _ev("add-photos", T1, ev_id=2, scan_index=2),
+            _ev("create-issue", T2),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_one_add_photos_then_issue_then_duplicate_add_photos_pending(self):
+        dup_ts = datetime(2026, 6, 10, 8, 0)
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("add-photos", T1),
+            _ev("create-issue", T2),
+            _ev("add-photos", dup_ts, ev_id=4, scan_index=4),
+            _ev("add-photos", dup_ts, ev_id=5, scan_index=5),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_other_hd_completion_signals_still_allowed_after_create_issue(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("create-issue", T1),
+            _ev("complete-cleaning", T2),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "complete-cleaning"
+        assert comp_ts == T2
+
+
 class TestChangedToRush:
     def test_day_advance_pending(self):
         meta = {"service_type": "WF", "date_clean": date(2026, 6, 11)}
