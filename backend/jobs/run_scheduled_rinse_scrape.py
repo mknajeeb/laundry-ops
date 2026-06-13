@@ -19,7 +19,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
+
+
+def _reexec_with_project_venv() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    venv_python = repo / ".venv" / "bin" / "python"
+    if not venv_python.is_file():
+        return
+    if Path(sys.executable).resolve() == venv_python.resolve():
+        return
+    os.execv(str(venv_python), [str(venv_python), "-m", "backend.jobs.run_scheduled_rinse_scrape", *sys.argv[1:]])
+
+
+_reexec_with_project_venv()
 
 
 def main(argv: list[str] | None = None) -> int:

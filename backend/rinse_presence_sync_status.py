@@ -429,3 +429,62 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "started_at_raw": started_raw,
         "finished_at_raw": finished_raw,
     }
+
+
+def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any]:
+    """Combined RFV → At Vendor sync cycle from latest scrape run metadata."""
+    org = int(organization_id)
+    cycle: dict[str, Any] = {
+        "label": "Last Rinse Sync Cycle",
+        "cycle_status": None,
+        "rfv_completed_at": None,
+        "rfv_completed_at_et": None,
+        "at_vendor_started_at": None,
+        "at_vendor_started_at_et": None,
+        "at_vendor_completed_at": None,
+        "at_vendor_completed_at_et": None,
+        "delay_seconds": None,
+        "at_vendor_ran": None,
+        "at_vendor_skipped_reason": None,
+        "rfv_status": None,
+        "at_vendor_status": None,
+    }
+    if not table_exists(cursor, "rinse_scrape_runs"):
+        return cycle
+    cursor.execute(
+        """
+        SELECT status, started_at, finished_at, result_json
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (org,),
+    )
+    row = cursor.fetchone()
+    if not row or not isinstance(row, dict):
+        return cycle
+    detail = row.get("result_json")
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except json.JSONDecodeError:
+            detail = {}
+    if not isinstance(detail, dict):
+        detail = {}
+    sync_cycle = detail.get("sync_cycle") if isinstance(detail.get("sync_cycle"), dict) else {}
+    rfv_sync = detail.get("ready_for_vendor_sync") if isinstance(detail.get("ready_for_vendor_sync"), dict) else {}
+    cycle["cycle_status"] = sync_cycle.get("cycle_status") or row.get("status")
+    cycle["rfv_status"] = sync_cycle.get("rfv_status") or rfv_sync.get("status")
+    cycle["at_vendor_status"] = sync_cycle.get("at_vendor_status") or row.get("status")
+    cycle["rfv_completed_at"] = sync_cycle.get("rfv_completed_at") or rfv_sync.get("finished_at")
+    cycle["at_vendor_started_at"] = sync_cycle.get("at_vendor_started_at") or _fmt_system(row.get("started_at"))
+    cycle["at_vendor_completed_at"] = sync_cycle.get("at_vendor_completed_at") or _fmt_system(row.get("finished_at"))
+    cycle["delay_seconds"] = sync_cycle.get("delay_seconds")
+    cycle["at_vendor_ran"] = sync_cycle.get("at_vendor_ran")
+    cycle["at_vendor_skipped_reason"] = sync_cycle.get("at_vendor_skipped_reason")
+    if isinstance(row.get("started_at"), datetime):
+        cycle["at_vendor_started_at_et"] = _short_time_et(row.get("started_at"))
+    if isinstance(row.get("finished_at"), datetime):
+        cycle["at_vendor_completed_at_et"] = _short_time_et(row.get("finished_at"))
+    return cycle

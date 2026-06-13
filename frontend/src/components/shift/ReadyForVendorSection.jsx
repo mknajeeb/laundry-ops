@@ -2,6 +2,24 @@ import { Alert, Box, Typography } from "@mui/material";
 import DrilldownCardGrid from "./DrilldownCardGrid";
 import RushFilterChips from "./RushFilterChips";
 
+function cardsForRushFilter(cards, rushFilter) {
+  if (!cards?.length) return [];
+  if (rushFilter === "all") {
+    return cards.filter((c) => c.level === 1);
+  }
+  if (rushFilter === "rush") {
+    const rushTotal = cards.find((c) => c.drilldown_tag === "rfv_rush" || c.label === "Rush");
+    const children = cards.filter((c) => c.parent === "rush" || String(c.drilldown_tag || "").startsWith("rfv_rush"));
+    return rushTotal ? [rushTotal, ...children] : children;
+  }
+  if (rushFilter === "non_rush") {
+    const nonTotal = cards.find((c) => c.drilldown_tag === "rfv_non_rush" || c.label === "Non-Rush");
+    const children = cards.filter((c) => c.parent === "non_rush" || String(c.drilldown_tag || "").includes("nonrush"));
+    return nonTotal ? [nonTotal, ...children] : children;
+  }
+  return cards.filter((c) => c.level === 1);
+}
+
 export default function ReadyForVendorSection({
   rfv,
   rfvSync,
@@ -17,12 +35,12 @@ export default function ReadyForVendorSection({
   const cards = rfv?.cards?.length
     ? rfv.cards
     : [
-        { label: "Ready for Vendor Total", count: rfv?.total ?? 0, drilldown_tag: "ready_for_vendor", clickable: true, needs_review: false },
-        { label: "Rush", count: (rfv?.rush_wf ?? 0) + (rfv?.rush_hd ?? 0), drilldown_tag: "rfv_rush", clickable: true, needs_review: false },
-        { label: "Non-Rush", count: (rfv?.nonrush_wf ?? 0) + (rfv?.nonrush_hd ?? 0), drilldown_tag: "rfv_non_rush", clickable: true, needs_review: false },
-        { label: "WF", count: (rfv?.rush_wf ?? 0) + (rfv?.nonrush_wf ?? 0), drilldown_tag: "rfv_wf", clickable: true, needs_review: false },
-        { label: "HD", count: (rfv?.rush_hd ?? 0) + (rfv?.nonrush_hd ?? 0), drilldown_tag: "rfv_hd", clickable: true, needs_review: false },
+        { label: "Ready for Vendor Total", count: rfv?.total ?? 0, drilldown_tag: "ready_for_vendor", clickable: true, level: 1 },
+        { label: "Rush", count: rfv?.rush_total ?? 0, drilldown_tag: "rfv_rush", clickable: true, level: 1 },
+        { label: "Non-Rush", count: rfv?.nonrush_total ?? 0, drilldown_tag: "rfv_non_rush", clickable: true, level: 1 },
       ];
+
+  const visible = cardsForRushFilter(cards, rushFilter || "all");
 
   return (
     <Box sx={{ mb: 2.5 }}>
@@ -42,7 +60,7 @@ export default function ReadyForVendorSection({
           <RushFilterChips value={rushFilter} onChange={onRushChange} />
         </Box>
       ) : null}
-      <DrilldownCardGrid cards={cards} onDrilldown={onDrilldown} activeTag={activeTag} rushFilter={rushFilter} />
+      <DrilldownCardGrid cards={visible} onDrilldown={onDrilldown} activeTag={activeTag} rushFilter={rushFilter} />
     </Box>
   );
 }

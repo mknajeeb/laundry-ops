@@ -20,6 +20,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import LiveBaselineBanner from "../components/shift/LiveBaselineBanner";
 import SyncStatusSection from "../components/shift/SyncStatusSection";
 import ReadyForVendorSection from "../components/shift/ReadyForVendorSection";
+import AtVendorFlowSection from "../components/shift/AtVendorFlowSection";
 import ShiftMonitorModuleSection from "../components/shift/ShiftMonitorModuleSection";
 import VendorHomeComparisonSection from "../components/shift/VendorHomeComparisonSection";
 import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilitySnapshotSection";
@@ -458,6 +459,8 @@ export default function ShiftMonitorPage({ user }) {
     monitor: { rush: "all", service: "all" },
   });
   const [rfvRushFilter, setRfvRushFilter] = useState("all");
+  const [avRushFilter, setAvRushFilter] = useState("all");
+  const [avServiceFilter, setAvServiceFilter] = useState("all");
   const [expandedBag, setExpandedBag] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const initialToday = todayRange();
@@ -496,6 +499,7 @@ export default function ShiftMonitorPage({ user }) {
   const atVendorRecords = data?.at_vendor_module?.rows || [];
   const modules = data?.shift_monitor_modules || {};
   const opsLabel = modules.operations_window?.label;
+  const atVendorModule = data?.at_vendor_module || {};
   const rfv = data?.ready_for_vendor || {};
 
   const filtered = useMemo(() => {
@@ -503,14 +507,24 @@ export default function ShiftMonitorPage({ user }) {
     if (drilldown.type === "rfv") {
       return filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, rfvRushFilter);
     }
+    if (drilldown.moduleKey === "at_vendor_flow") {
+      if (drilldown.moduleTag === "completed_before_day_start_still_present") {
+        return atVendorModule.completed_before_day_start_still_present_rows || [];
+      }
+      return filterModuleRecords(atVendorRecords, {
+        moduleTag: drilldown.moduleTag,
+        rushFilter: avRushFilter,
+        serviceFilter: avServiceFilter,
+      });
+    }
     const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
-    const sourceRecords = drilldown.moduleKey === "facility_status" ? atVendorRecords : records;
+    const sourceRecords = records;
     return filterModuleRecords(sourceRecords, {
       moduleTag: drilldown.moduleTag,
       rushFilter: f.rush,
       serviceFilter: f.service,
     });
-  }, [records, atVendorRecords, drilldown, moduleFilters, rfv.rows, rfvRushFilter]);
+  }, [records, atVendorRecords, atVendorModule, drilldown, moduleFilters, rfv.rows, rfvRushFilter, avRushFilter, avServiceFilter]);
 
   const openDrilldown = (ctx) => {
     setDrilldown(ctx);
@@ -599,7 +613,8 @@ export default function ShiftMonitorPage({ user }) {
   const dts = data?.due_today_snapshot || {};
   const facilityTracker = data?.facility_tracker_today || {};
 
-  const moduleKeys = ["facility_status", "production_stage", "exceptions", "monitor"];
+  const moduleKeys = ["production_stage", "exceptions", "monitor"];
+  const syncCycle = data?.rinse_sync?.sync_cycle || {};
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -651,6 +666,7 @@ export default function ShiftMonitorPage({ user }) {
             avSync={avSync}
             rfvSync={rfvSync}
             rfv={rfv}
+            syncCycle={syncCycle}
             syncRunning={syncRunning}
             loading={loading}
             onRefresh={runRinseSync}
@@ -665,6 +681,21 @@ export default function ShiftMonitorPage({ user }) {
             activeTag={drilldown?.type === "rfv" ? drilldown.drilldownTag : null}
           />
 
+          <AtVendorFlowSection
+            module={atVendorModule}
+            rushFilter={avRushFilter}
+            serviceFilter={avServiceFilter}
+            onRushChange={setAvRushFilter}
+            onServiceChange={setAvServiceFilter}
+            onDrilldown={(tag) => openDrilldown({
+              moduleKey: "at_vendor_flow",
+              moduleTag: tag,
+              cardLabel: tag,
+              moduleTitle: "At Vendor",
+            })}
+            activeTag={drilldown?.moduleTag}
+          />
+
           <LiveBaselineBanner baseline={data?.live_baseline} />
 
           {moduleKeys.map((key) => (
@@ -672,7 +703,7 @@ export default function ShiftMonitorPage({ user }) {
               key={key}
               moduleKey={key}
               module={modules[key]}
-              records={key === "facility_status" ? atVendorRecords : records}
+              records={records}
               rushFilter={moduleFilters[key]?.rush || "all"}
               serviceFilter={moduleFilters[key]?.service || "all"}
               onRushChange={(v) => setModuleFilter(key, { rush: v })}
@@ -711,7 +742,7 @@ export default function ShiftMonitorPage({ user }) {
         <Box sx={{ overflow: "auto", flex: 1 }}>
           {drilldown?.type === "rfv"
             ? filtered.map((row) => <RfvRecordRow key={row.bag_id} row={row} />)
-            : drilldown?.moduleKey === "facility_status"
+            : drilldown?.moduleKey === "at_vendor_flow" || drilldown?.moduleKey === "facility_status"
               ? filtered.map((row) => (
                 <AtVendorRecordRow
                   key={row.bag_id}

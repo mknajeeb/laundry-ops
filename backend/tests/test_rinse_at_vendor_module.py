@@ -336,6 +336,37 @@ class TestHDCreateIssueAddPhotosGuard:
         assert signal is None
         assert comp_ts is None
 
+    def test_create_workitem_bulk_between_add_photos_pending(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 4, 35)),
+            _ev("add-photos", datetime(2026, 6, 12, 19, 56)),
+            _ev("create-workitem-bulk", datetime(2026, 6, 12, 19, 58)),
+            _ev("workitems-added", datetime(2026, 6, 12, 19, 58)),
+            _ev("add-photos", datetime(2026, 6, 12, 20, 0)),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(date(2026, 6, 13))
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_amber_9fuw30xsfq_exact_sequence_regression(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 4, 35)),
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 4, 39)),
+            _ev("add-photos", datetime(2026, 6, 12, 19, 56)),
+            _ev("create-workitem-bulk", datetime(2026, 6, 12, 19, 58)),
+            _ev("workitems-added", datetime(2026, 6, 12, 19, 58)),
+            _ev("add-photos", datetime(2026, 6, 12, 20, 0)),
+        ]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+            events, service_type="HD", as_of_end=naive_et_day_end_inclusive(date(2026, 6, 12))
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
     def test_other_hd_completion_signals_still_allowed_after_create_issue(self):
         events = [
             _ev("sent-to-vendor", T0),

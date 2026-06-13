@@ -36,6 +36,16 @@ def is_create_issue_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "create-issue"
 
 
+def is_hd_add_photos_interruption_purpose(raw: str | None) -> bool:
+    """Issue/rework scan that invalidates a later second add-photos HD completion."""
+    return normalize_scan_purpose(raw) in (
+        "create-issue",
+        "create-workitem",
+        "create-workitem-bulk",
+        "create-bulk-workitem",
+    )
+
+
 def is_create_bulk_workitem_purpose(raw: str | None) -> bool:
     return normalize_scan_purpose(raw) == "create-bulk-workitem"
 

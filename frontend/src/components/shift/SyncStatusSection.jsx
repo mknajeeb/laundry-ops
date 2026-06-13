@@ -1,4 +1,5 @@
-import { Box, Button, Stack, Typography } from "@mui/material";
+import { Alert, Box, Collapse, Typography } from "@mui/material";
+import { useState } from "react";
 import ShiftCountCard from "./ShiftCountCard";
 import { syncStatusSubtext } from "../../utils/shiftMonitorHelpers";
 
@@ -6,10 +7,12 @@ export default function SyncStatusSection({
   avSync,
   rfvSync,
   rfv,
+  syncCycle,
   syncRunning,
   loading,
   onRefresh,
 }) {
+  const [open, setOpen] = useState(false);
   const rfvSyncSub = syncStatusSubtext(
     { sync_status: rfvSync, last_refreshed_at: rfv?.last_refreshed_at },
     "Ready for Vendor Sync",
@@ -19,39 +22,83 @@ export default function SyncStatusSection({
   const rfvWarn =
     (rfvSync?.failed || rfvSync?.latest_failed || (rfvSync?.stale && !rfv?.zero_rows_success))
     && !rfv?.zero_rows_success;
+  const cycle = syncCycle || {};
+  const cycleWarn = cycle.cycle_status === "failed" || cycle.cycle_status === "partial_success";
 
   return (
     <Box sx={{ mb: 2 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1} sx={{ mb: 0.75 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
-          Sync Status
-        </Typography>
-        <Button variant="outlined" size="small" onClick={onRefresh} disabled={syncRunning || loading}>
-          {syncRunning ? "Refreshing…" : "Refresh Both Syncs"}
-        </Button>
-      </Stack>
       <Box
         sx={{
-          display: "grid",
-          gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
           gap: 1,
+          mb: 0.75,
         }}
       >
-        <ShiftCountCard
-          label="At Vendor Sync"
-          value={avSync.last_refreshed_at_et || avSync.message || "—"}
-          sub={avSyncSub}
-          warn={avWarn}
-          compact
-        />
-        <ShiftCountCard
-          label="Ready for Vendor Sync"
-          value={rfvSync.last_refreshed_at_et || rfvSync.message || rfvSync.last_success_at_et || "—"}
-          sub={rfv?.zero_rows_success ? "0 rows — success" : rfvSyncSub}
-          warn={rfvWarn}
-          compact
-        />
+        <Typography
+          variant="subtitle1"
+          fontWeight={800}
+          onClick={() => setOpen((v) => !v)}
+          sx={{ cursor: "pointer", userSelect: "none" }}
+        >
+          {cycle.label || "Last Rinse Sync Cycle"} {open ? "▾" : "▸"}
+        </Typography>
+        <Box component="button" type="button" onClick={onRefresh} disabled={syncRunning || loading} sx={{
+          border: "1px solid",
+          borderColor: "divider",
+          borderRadius: 1,
+          px: 1.5,
+          py: 0.75,
+          fontSize: 13,
+          fontWeight: 600,
+          bgcolor: "background.paper",
+          cursor: syncRunning || loading ? "not-allowed" : "pointer",
+        }}
+        >
+          {syncRunning ? "Refreshing…" : "Refresh Both Syncs"}
+        </Box>
       </Box>
+      <Collapse in={open}>
+        {cycleWarn ? (
+          <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+            Cycle status: {cycle.cycle_status || "unknown"}
+            {cycle.at_vendor_skipped_reason ? ` · At Vendor skipped: ${cycle.at_vendor_skipped_reason}` : ""}
+          </Alert>
+        ) : null}
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+            gap: 1,
+            mb: 1,
+          }}
+        >
+          <ShiftCountCard
+            label="RFV completed"
+            value={cycle.rfv_completed_at_et || "—"}
+            sub={rfvSyncSub}
+            warn={rfvWarn}
+            compact
+          />
+          <ShiftCountCard
+            label="At Vendor completed"
+            value={cycle.at_vendor_completed_at_et || avSync.last_refreshed_at_et || "—"}
+            sub={
+              cycle.delay_seconds != null
+                ? `${avSyncSub} · delay ${cycle.delay_seconds}s`
+                : avSyncSub
+            }
+            warn={avWarn}
+            compact
+          />
+        </Box>
+        <Typography variant="caption" color="text.secondary">
+          Status: {cycle.cycle_status || "—"}
+          {cycle.at_vendor_ran === false ? " · At Vendor did not run" : ""}
+        </Typography>
+      </Collapse>
     </Box>
   );
 }

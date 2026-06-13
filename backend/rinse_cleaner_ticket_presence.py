@@ -1388,6 +1388,17 @@ def apply_presence_scrape(
                 rows=snapshot_rows,
                 rinse_vendor=rinse_vendor,
             )
+        if run_status == "success" and run_id:
+            from backend.rinse_presence_snapshot_retention import prune_presence_run_snapshots
+            from backend.rinse_scheduled_scrape import _today_et
+
+            stats["snapshot_retention"] = prune_presence_run_snapshots(
+                cursor,
+                org,
+                portal_status=ps,
+                rinse_vendor=rinse_vendor,
+                selected_date_et=_today_et(),
+            )
 
     return stats
 

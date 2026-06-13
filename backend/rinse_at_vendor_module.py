@@ -27,7 +27,7 @@ from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
     is_complete_cleaning_purpose,
-    is_create_issue_purpose,
+    is_hd_add_photos_interruption_purpose,
     is_sent_to_vendor_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
@@ -1541,12 +1541,12 @@ def _wf_completion_signal(
     return None, None
 
 
-def _first_create_issue_ts_after_anchor(
+def _first_hd_add_photos_interruption_ts_after_anchor(
     anchored: Sequence[Mapping[str, Any]],
 ) -> datetime | None:
     first: datetime | None = None
     for ev in anchored:
-        if not is_create_issue_purpose(ev.get("purpose")):
+        if not is_hd_add_photos_interruption_purpose(ev.get("purpose")):
             continue
         ts = event_ts(ev)
         if not ts_valid(ts):
@@ -1554,6 +1554,48 @@ def _first_create_issue_ts_after_anchor(
         if first is None or ts < first:
             first = ts
     return first
+
+
+def _load_completed_before_day_start_still_present(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Live At Vendor snapshot bags completed before selected day start (monitoring only)."""
+    live_by_bag = _load_active_at_vendor_presence_by_bag(cursor, organization_id)
+    if not live_by_bag:
+        return [], set()
+    prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
+    bag_ids = sorted(live_by_bag.keys())
+    events_by_bag = _load_at_vendor_scan_events_for_bags(cursor, organization_id, bag_ids)
+    registry = _load_registry_service_types(cursor, organization_id, bag_ids)
+    rows: list[dict[str, Any]] = []
+    ids: set[str] = set()
+    for bid in bag_ids:
+        pres = live_by_bag[bid]
+        svc = _normalize_service(pres.get("service_type") or registry.get(bid))
+        st, sig, comp_ts, sent_ts = _evaluate_bag_as_of(
+            events_by_bag.get(bid) or [],
+            service_type=svc,
+            as_of_end=prior_day_end,
+        )
+        if st != AV_STATUS_COMPLETED or comp_ts is None:
+            continue
+        ids.add(bid)
+        rows.append(
+            {
+                "bag_id": bid,
+                "service_type": svc,
+                "customer_name": pres.get("customer_name"),
+                "completion_signal": sig,
+                "completion_timestamp": comp_ts.isoformat(),
+                "completion_time_et": _format_et_display(comp_ts),
+                "sent_to_vendor_time_et": _format_et_display(sent_ts),
+                "monitoring_bucket": "completed_before_day_start_still_present",
+            }
+        )
+    return rows, ids
 
 
 def _hd_completion_signal(
@@ -1577,11 +1619,11 @@ def _hd_completion_signal(
     if len(add_photos) >= 2:
         first_ts = add_photos[0][1]
         _, second_ts = add_photos[1]
-        create_issue_ts = _first_create_issue_ts_after_anchor(anchored)
+        interruption_ts = _first_hd_add_photos_interruption_ts_after_anchor(anchored)
         second_add_photos_valid = (
             first_ts > anchor_ts
             and second_ts > first_ts
-            and (create_issue_ts is None or second_ts < create_issue_ts)
+            and (interruption_ts is None or second_ts < interruption_ts)
         )
         if second_add_photos_valid:
             if best is None or second_ts < best[0]:
@@ -2156,6 +2198,15 @@ def build_at_vendor_module(
             pending_for_prior_edd.append(bid)
     step_ms["rows_ms"] = round((time.perf_counter() - t_rows) * 1000, 1)
 
+    still_present_rows: list[dict[str, Any]] = []
+    still_present_ids: set[str] = set()
+    if hasattr(cursor, "execute"):
+        still_present_rows, still_present_ids = _load_completed_before_day_start_still_present(
+            cursor, org, selected_date_et=selected_date_et
+        )
+    if still_present_ids:
+        rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in still_present_ids]
+
     t_edd = time.perf_counter()
     prior_edd_map = _load_prior_edd_from_batches_bulk(cursor, org, pending_for_prior_edd)
     step_ms["prior_edd_ms"] = round((time.perf_counter() - t_edd) * 1000, 1)
@@ -2291,42 +2342,6 @@ def build_at_vendor_module(
             "Selected-day total = carry-in open at midnight + new sent-to-vendor today."
         )
 
-    cards = [
-        {
-            "id": "av_total",
-            "label": "Total Bags",
-            "module_tag": MOD_AT_VENDOR_TOTAL,
-            "count": selected_day_total,
-            "records_count": selected_day_total,
-            "clickable": True,
-        },
-        {
-            "id": "av_pending",
-            "label": "Pending",
-            "module_tag": MOD_AT_VENDOR_PENDING,
-            "count": pending,
-            "records_count": pending,
-            "clickable": True,
-        },
-        {
-            "id": "av_completed",
-            "label": "Completed",
-            "module_tag": MOD_AT_VENDOR_COMPLETED,
-            "count": completed,
-            "records_count": completed,
-            "clickable": True,
-        },
-        {
-            "id": "av_changed_rush",
-            "label": "Changed to Rush",
-            "module_tag": MOD_AT_VENDOR_CHANGED_RUSH,
-            "count": changed_to_rush,
-            "records_count": changed_to_rush,
-            "clickable": True,
-            "highlight": True,
-        },
-    ]
-
     def _row_svc(row: Mapping[str, Any]) -> str:
         return _normalize_service(row.get("service_type") or row.get("service_bucket"))
 
@@ -2359,6 +2374,93 @@ def build_at_vendor_module(
         1 for r in rows if _row_svc(r) == "HD" and r.get("at_vendor_status") == AV_STATUS_COMPLETED
     )
     completed_today_count = len(completed_rows)
+
+    cards = [
+        {
+            "id": "av_daily_workload",
+            "label": "Daily Workload",
+            "module_tag": MOD_AT_VENDOR_TOTAL,
+            "count": selected_day_total,
+            "records_count": selected_day_total,
+            "clickable": False,
+            "level": 1,
+        },
+        {
+            "id": "av_pending",
+            "label": "Pending",
+            "module_tag": MOD_AT_VENDOR_PENDING,
+            "count": pending,
+            "records_count": pending,
+            "clickable": True,
+            "level": 1,
+        },
+        {
+            "id": "av_completed_today",
+            "label": "Completed Today",
+            "module_tag": MOD_AT_VENDOR_COMPLETED,
+            "count": completed,
+            "records_count": completed,
+            "clickable": True,
+            "level": 1,
+        },
+        {
+            "id": "av_rush",
+            "label": "Rush",
+            "module_tag": "at_vendor_rush",
+            "count": rush_total,
+            "records_count": rush_total,
+            "clickable": True,
+            "level": 2,
+            "parent": "pending",
+        },
+        {
+            "id": "av_non_rush",
+            "label": "Non-Rush",
+            "module_tag": "at_vendor_non_rush",
+            "count": non_rush_total,
+            "records_count": non_rush_total,
+            "clickable": True,
+            "level": 2,
+            "parent": "pending",
+        },
+        {
+            "id": "av_wf",
+            "label": "WF",
+            "module_tag": "at_vendor_wf",
+            "count": wf_total,
+            "records_count": wf_total,
+            "clickable": True,
+            "level": 3,
+        },
+        {
+            "id": "av_hd",
+            "label": "HD",
+            "module_tag": "at_vendor_hd",
+            "count": hd_total,
+            "records_count": hd_total,
+            "clickable": True,
+            "level": 3,
+        },
+        {
+            "id": "av_completed_earlier_still_present",
+            "label": "Completed Earlier — Still at VeeWash",
+            "module_tag": "completed_before_day_start_still_present",
+            "count": len(still_present_rows),
+            "records_count": len(still_present_rows),
+            "clickable": True,
+            "level": "monitoring",
+            "informational": True,
+        },
+        {
+            "id": "av_changed_rush",
+            "label": "Changed to Rush",
+            "module_tag": MOD_AT_VENDOR_CHANGED_RUSH,
+            "count": changed_to_rush,
+            "records_count": changed_to_rush,
+            "clickable": True,
+            "highlight": True,
+        },
+    ]
 
     return {
         "live": True,
@@ -2410,6 +2512,8 @@ def build_at_vendor_module(
         "hd_total": hd_total,
         "hd_pending": hd_pending,
         "hd_completed": hd_completed,
+        "completed_before_day_start_still_present_count": len(still_present_rows),
+        "completed_before_day_start_still_present_rows": still_present_rows,
         "rows": rows,
         "cards": cards,
         "total": selected_day_total,

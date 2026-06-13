@@ -771,10 +771,13 @@ def _attach_section_sync_statuses(
     }
     active_work["last_refreshed_at"] = av_sync.get("last_refreshed_at")
     active_work["sync_status"] = av_sync
+    from backend.rinse_presence_sync_status import build_rinse_sync_cycle_status
+
     return {
         "at_vendor": av_sync,
         "ready_for_vendor": rfv_sync,
         "ready_for_vendor_enabled": bool(rfv_sync.get("enabled", True)),
+        "sync_cycle": build_rinse_sync_cycle_status(cursor, organization_id),
     }
 
 
@@ -1498,11 +1501,48 @@ def _build_rfv_drilldown_cards(section: Mapping[str, Any], records: list[dict[st
     if not section.get("live"):
         return []
     return [
-        _make_drilldown_card("Ready for Vendor Total", section.get("total"), "ready_for_vendor", records),
-        _make_drilldown_card("Rush", section.get("rush_total"), "rfv_rush", records),
-        _make_drilldown_card("Non-Rush", section.get("nonrush_total"), "rfv_non_rush", records),
-        _make_drilldown_card("WF", section.get("wf_total"), "rfv_wf", records),
-        _make_drilldown_card("HD", section.get("hd_total"), "rfv_hd", records),
+        {
+            **_make_drilldown_card("Ready for Vendor Total", section.get("total"), "ready_for_vendor", records),
+            "level": 1,
+        },
+        {
+            **_make_drilldown_card("Rush", section.get("rush_total"), "rfv_rush", records),
+            "level": 1,
+        },
+        {
+            **_make_drilldown_card("Non-Rush", section.get("nonrush_total"), "rfv_non_rush", records),
+            "level": 1,
+        },
+        {
+            **_make_drilldown_card("Rush WF", section.get("rush_wf"), "rfv_rush_wf", records),
+            "level": 2,
+            "parent": "rush",
+        },
+        {
+            **_make_drilldown_card("Rush HD", section.get("rush_hd"), "rfv_rush_hd", records),
+            "level": 2,
+            "parent": "rush",
+        },
+        {
+            **_make_drilldown_card("Non-Rush WF", section.get("nonrush_wf"), "rfv_nonrush_wf", records),
+            "level": 2,
+            "parent": "non_rush",
+        },
+        {
+            **_make_drilldown_card("Non-Rush HD", section.get("nonrush_hd"), "rfv_nonrush_hd", records),
+            "level": 2,
+            "parent": "non_rush",
+        },
+        {
+            **_make_drilldown_card(
+                "Unknown Review",
+                section.get("unknown_needs_review"),
+                "rfv_unknown_needs_review",
+                records,
+            ),
+            "level": 2,
+            "parent": "all",
+        },
     ]
 
 

@@ -192,6 +192,8 @@ class ScheduledScrapeResult:
     error_message: str | None = None
     ready_for_vendor_error: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class _TeeLog:
@@ -398,11 +400,43 @@ def run_rinse_combined_sync_for_org(
         rfv_status=rfv_result.status,
         rfv_error=rfv_result.error_message,
     )
-    return _apply_rfv_to_scheduled_result(
+    merged = _apply_rfv_to_scheduled_result(
         av_result,
         rfv_result=rfv_result,
         rfv_detail=rfv_detail,
     )
+    delay_seconds: int | None = None
+    rfv_finished = rfv_result.finished_at
+    av_started = av_result.started_at
+    if isinstance(rfv_finished, datetime) and isinstance(av_started, datetime):
+        delay_seconds = max(0, int((av_started - rfv_finished).total_seconds()))
+    merged.detail["sync_cycle"] = {
+        "cycle_status": merged.status,
+        "rfv_status": rfv_result.status,
+        "at_vendor_status": av_result.at_vendor_status or av_result.status,
+        "rfv_completed_at": rfv_detail.get("finished_at"),
+        "at_vendor_started_at": av_started.isoformat() if isinstance(av_started, datetime) else None,
+        "at_vendor_completed_at": av_result.finished_at.isoformat()
+        if isinstance(av_result.finished_at, datetime)
+        else None,
+        "delay_seconds": delay_seconds,
+        "at_vendor_ran": av_result.status not in ("skipped",),
+        "at_vendor_skipped_reason": av_result.error_message if av_result.status == "skipped" else None,
+        "rfv_error": rfv_result.error_message,
+    }
+    if not dry_run and merged.run_id:
+        import json
+
+        cursor.execute(
+            """
+            UPDATE rinse_scrape_runs
+            SET result_json = %s
+            WHERE id = %s AND organization_id = %s
+            """,
+            (json.dumps(merged.detail, default=str), int(merged.run_id), org_id),
+        )
+        conn.commit()
+    return merged
 
 
 def run_scheduled_scrape_for_org(
@@ -474,6 +508,7 @@ def run_scheduled_scrape_for_org(
     conn.commit()
     result.run_id = run_id
     started_at = datetime.utcnow()
+    result.started_at = started_at
     log = _TeeLog(paths.log_path)
 
     result.at_vendor_status = "failed"
@@ -607,6 +642,7 @@ def run_scheduled_scrape_for_org(
 
     finally:
         log.close()
+        result.finished_at = datetime.utcnow()
         try:
             finish_scrape_run(
                 cursor,
