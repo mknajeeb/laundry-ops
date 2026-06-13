@@ -6,6 +6,7 @@ Used by manual admin API, Shift Monitor refresh, and scheduled Rinse sync step 2
 
 from __future__ import annotations
 
+import os
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -24,12 +25,21 @@ from backend.rinse_cleaner_ticket_presence import (
     read_portal_scrape_meta,
     record_presence_scrape_run,
 )
+from backend.rinse_portal_scrape_meta import validate_presence_empty_result
 from backend.rinse_vendor_config import rinse_scrape_env_for_organization
 from backend.tenant_feature_flags import is_feature_enabled
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def presence_phase_timeout_sec() -> int:
+    """Per-phase cap for combined-sync presence scrapes (browser launch through CSV write)."""
+    try:
+        return max(60, min(7200, int(os.getenv("RINSE_PRESENCE_PHASE_TIMEOUT_SEC", "900"))))
+    except (TypeError, ValueError):
+        return 900
 
 
 @dataclass
@@ -163,10 +173,19 @@ def run_presence_scrape_for_org(
             csv_path = Path(tmp) / f"presence-{result.portal_status}.csv"
             meta_path = Path(str(csv_path) + ".meta.json")
             extra_env["OUTPUT_PORTAL_SCRAPE_META"] = str(meta_path)
-            code, stdout, stderr = run_bag_export_csv(csv_path, extra_env=extra_env)
+            phase_timeout = presence_phase_timeout_sec()
+            code, stdout, stderr = run_bag_export_csv(
+                csv_path,
+                extra_env=extra_env,
+                timeout_sec=phase_timeout,
+            )
             if code != 0:
                 result.status = "failed"
-                result.error_message = "Scrape subprocess failed"
+                result.error_message = (
+                    "Scrape subprocess failed"
+                    if code != -1
+                    else f"Scrape timed out after {phase_timeout}s"
+                )
                 scrape_meta = read_portal_scrape_meta(str(meta_path))
                 result.scrape_debug = build_presence_scrape_debug(
                     portal_status=result.portal_status,
@@ -192,8 +211,41 @@ def run_presence_scrape_for_org(
             )
             result.scrape_debug = scrape_debug
 
+            empty_validated = False
+            empty_checks: dict[str, bool] = {}
+            if len(rows) == 0:
+                empty_validated, empty_checks = validate_presence_empty_result(
+                    scrape_meta,
+                    exit_code=code,
+                    parsed_row_count=len(rows),
+                )
+                scrape_debug["empty_result_validated"] = empty_validated
+                scrape_debug["empty_result_checks"] = empty_checks
+                if mark_missing and not empty_validated:
+                    result.status = "failed"
+                    result.error_message = (
+                        "Zero-row presence scrape not validated — preserving existing active population"
+                    )
+                    result.finished_at = _utcnow()
+                    _persist_failed_run(
+                        error_message=result.error_message,
+                        scrape_meta={
+                            **(scrape_meta or {}),
+                            "empty_result_validated": False,
+                            "empty_result_checks": empty_checks,
+                        },
+                    )
+                    result.stats = {
+                        "rows_found": 0,
+                        "empty_result_validated": False,
+                        "empty_result_checks": empty_checks,
+                    }
+                    _log(f"Presence scrape rejected unvalidated empty export checks={empty_checks}\n")
+                    return result
+
             ensure_presence_tables(cursor)
             result.finished_at = _utcnow()
+            effective_mark_missing = mark_missing and (len(rows) > 0 or empty_validated)
             stats = apply_presence_scrape(
                 cursor,
                 org,
@@ -202,13 +254,20 @@ def run_presence_scrape_for_org(
                 source_batch_id=batch_id,
                 source_url=source_url,
                 dry_run=dry_run,
-                mark_missing=mark_missing,
+                mark_missing=effective_mark_missing,
                 run_type=run_type,
                 started_at=result.started_at,
                 finished_at=result.finished_at,
                 status="success" if not dry_run else "dry_run",
-                scrape_meta=scrape_meta,
+                scrape_meta={
+                    **(scrape_meta or {}),
+                    "empty_result_validated": empty_validated if len(rows) == 0 else None,
+                    "empty_result_checks": empty_checks if len(rows) == 0 else None,
+                },
             )
+            if len(rows) == 0:
+                stats["empty_result_validated"] = empty_validated
+                stats["empty_result_checks"] = empty_checks
             if not dry_run:
                 conn.commit()
             else:

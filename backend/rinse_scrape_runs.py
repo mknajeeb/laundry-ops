@@ -19,6 +19,41 @@ def _stale_minutes() -> int:
         return 120
 
 
+def _infer_failed_step_from_presence_runs(cursor, organization_id: int, started_at: datetime) -> str:
+    """Best-effort phase label when a combined sync cycle times out."""
+    try:
+        cursor.execute(
+            """
+            SELECT portal_status, status, started_at, finished_at
+            FROM rinse_cleaner_ticket_presence_runs
+            WHERE organization_id = %s AND dry_run = 0 AND started_at >= %s
+            ORDER BY started_at ASC
+            """,
+            (int(organization_id), started_at),
+        )
+        rows = cursor.fetchall() or []
+    except Exception:
+        return "unknown"
+    rfv_done = False
+    av_started = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ps = str(row.get("portal_status") or "")
+        st = str(row.get("status") or "")
+        if ps == "ready_for_vendor" and st in ("success", "partial", "dry_run"):
+            rfv_done = True
+        if ps == "at_vendor":
+            av_started = True
+            if st == "running" or (row.get("finished_at") is None and st not in ("success", "failed")):
+                return "at_vendor_presence_scrape"
+    if rfv_done and not av_started:
+        return "at_vendor_presence_start"
+    if not rfv_done:
+        return "rfv_presence_scrape"
+    return "at_vendor_csv_import"
+
+
 def ensure_rinse_scrape_runs_table(cursor) -> None:
     cursor.execute(
         """
@@ -63,16 +98,63 @@ def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
 
     cursor.execute(
         """
-        UPDATE rinse_scrape_runs
-        SET status = 'failed',
-            finished_at = %s,
-            error_message = COALESCE(error_message, 'stale running lock cleared')
+        SELECT id, started_at, result_json
+        FROM rinse_scrape_runs
         WHERE organization_id = %s
           AND status = 'running'
           AND started_at < %s
+        ORDER BY started_at ASC
         """,
-        (_utcnow(), org, stale_cutoff),
+        (org, stale_cutoff),
     )
+    stale_rows = cursor.fetchall() or []
+    for stale in stale_rows:
+        if not isinstance(stale, dict):
+            continue
+        run_id = int(stale.get("id") or 0)
+        started = stale.get("started_at")
+        failed_step = (
+            _infer_failed_step_from_presence_runs(cursor, org, started)
+            if isinstance(started, datetime)
+            else "unknown"
+        )
+        failure_message = f"Combined sync cycle timed out after {_stale_minutes()} minutes"
+        detail: dict[str, Any] = {}
+        raw_detail = stale.get("result_json")
+        if isinstance(raw_detail, str):
+            try:
+                detail = json.loads(raw_detail)
+            except json.JSONDecodeError:
+                detail = {}
+        elif isinstance(raw_detail, dict):
+            detail = dict(raw_detail)
+        sync_cycle = dict(detail.get("sync_cycle") or {})
+        sync_cycle.update(
+            {
+                "sync_cycle_id": run_id,
+                "cycle_status": "FAILED_TIMEOUT",
+                "failure_message": failure_message,
+                "failed_step": failed_step,
+            }
+        )
+        detail["sync_cycle"] = sync_cycle
+        cursor.execute(
+            """
+            UPDATE rinse_scrape_runs
+            SET status = 'failed',
+                finished_at = %s,
+                error_message = %s,
+                result_json = %s
+            WHERE id = %s AND organization_id = %s
+            """,
+            (
+                _utcnow(),
+                failure_message,
+                json.dumps(detail, default=str),
+                run_id,
+                org,
+            ),
+        )
 
     cursor.execute(
         """

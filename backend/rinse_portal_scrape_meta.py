@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from backend.ta_helpers import table_exists, table_has_column
 
@@ -28,6 +28,9 @@ NATURAL_STOP_REASONS = frozenset(
         "no_next_page_ui",
     }
 )
+
+# Zero-row presence replacement requires scrape.mjs validation flags (see validate_presence_empty_result).
+VALIDATED_EMPTY_STOP_REASONS = frozenset({"no_table_rows", "no_extractable_rows"})
 
 
 def meta_path_for_portal_csv(portal_csv_path: str | Path) -> Path:
@@ -71,7 +74,51 @@ def normalize_portal_scrape_meta(raw: dict[str, Any] | None) -> dict[str, Any] |
         "page_start": raw.get("page_start"),
         "row_count": raw.get("row_count"),
         "scraped_at": raw.get("scraped_at"),
+        "page_loaded": bool(raw.get("page_loaded")),
+        "session_authenticated": bool(raw.get("session_authenticated")),
+        "expected_status_in_url": bool(raw.get("expected_status_in_url")),
+        "empty_table_detected": bool(raw.get("empty_table_detected")),
     }
+
+
+def validate_presence_empty_result(
+    scrape_meta: dict[str, Any] | Mapping[str, Any] | None,
+    *,
+    exit_code: int,
+    parsed_row_count: int,
+) -> tuple[bool, dict[str, bool]]:
+    """
+    True only when a zero-row portal export is a trustworthy empty queue.
+
+    When False, callers must not deactivate existing presence rows (mark_missing).
+    """
+    checks: dict[str, bool] = {
+        "portal_page_loaded": False,
+        "authenticated_session": False,
+        "expected_page_found": False,
+        "pagination_completed": False,
+        "explicit_empty_state": False,
+        "no_timeout": exit_code != -1,
+        "no_login_redirect": False,
+        "no_parser_error": exit_code == 0,
+    }
+    if parsed_row_count > 0:
+        return False, checks
+
+    meta = normalize_portal_scrape_meta(dict(scrape_meta) if scrape_meta else None) or {}
+    checks["portal_page_loaded"] = bool(meta.get("page_loaded"))
+    checks["authenticated_session"] = bool(meta.get("session_authenticated"))
+    checks["expected_page_found"] = bool(meta.get("expected_status_in_url"))
+    checks["explicit_empty_state"] = bool(meta.get("empty_table_detected"))
+    checks["no_login_redirect"] = bool(meta.get("session_authenticated"))
+    reason = str(meta.get("stopped_reason") or "").strip()
+    checks["pagination_completed"] = (
+        not bool(meta.get("reached_max_pages"))
+        and reason in NATURAL_STOP_REASONS
+        and reason in VALIDATED_EMPTY_STOP_REASONS
+    )
+    validated = all(checks.values())
+    return validated, checks
 
 
 def portal_scrape_meta_allows_absence_completion(meta: dict[str, Any] | None) -> bool:

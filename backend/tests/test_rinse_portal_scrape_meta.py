@@ -15,6 +15,7 @@ from backend.rinse_portal_scrape_meta import (
     meta_path_for_portal_csv,
     portal_scrape_meta_allows_absence_completion,
     persist_portal_scrape_meta_on_batch,
+    validate_presence_empty_result,
 )
 
 
@@ -84,6 +85,40 @@ class TestPortalScrapeMetaAllowsAbsence(unittest.TestCase):
             meta = fetch_portal_scrape_meta_for_batch(cursor, 493, 3)
         self.assertIsNone(meta)
         self.assertTrue(portal_scrape_meta_allows_absence_completion(meta))
+
+
+class TestValidatePresenceEmptyResult(unittest.TestCase):
+    def test_validated_empty_requires_scrape_flags(self):
+        validated, checks = validate_presence_empty_result(
+            {
+                "stopped_reason": "no_table_rows",
+                "reached_max_pages": False,
+                "page_loaded": True,
+                "session_authenticated": True,
+                "expected_status_in_url": True,
+                "empty_table_detected": True,
+            },
+            exit_code=0,
+            parsed_row_count=0,
+        )
+        self.assertTrue(validated)
+        self.assertTrue(all(checks.values()))
+
+    def test_legacy_meta_without_flags_not_validated(self):
+        validated, _checks = validate_presence_empty_result(
+            {"stopped_reason": "no_table_rows", "reached_max_pages": False},
+            exit_code=0,
+            parsed_row_count=0,
+        )
+        self.assertFalse(validated)
+
+    def test_nonzero_rows_not_validated(self):
+        validated, _checks = validate_presence_empty_result(
+            {"stopped_reason": "no_next_page_ui"},
+            exit_code=0,
+            parsed_row_count=3,
+        )
+        self.assertFalse(validated)
 
 
 class TestPortalAbsenceSkippedOnMaxPages(unittest.TestCase):

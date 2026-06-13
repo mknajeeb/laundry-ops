@@ -434,6 +434,7 @@ def run_bag_export_csv(
     extra_env: dict[str, str] | None = None,
     progress_callback: Callable[[str, str], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    timeout_sec: int | None = None,
 ) -> tuple[int, str, str]:
     """
     Run scrape.mjs with OUTPUT_CSV set to output_path (absolute).
@@ -505,7 +506,7 @@ def run_bag_export_csv(
         "Starting scrape.mjs — browser launch and first navigation can take 30–120s on a busy host.",
     )
     cmd = [node, str(script)]
-    timeout = scrape_timeout_sec()
+    timeout = int(timeout_sec) if timeout_sec is not None else scrape_timeout_sec()
 
     if progress_callback is None:
         try:

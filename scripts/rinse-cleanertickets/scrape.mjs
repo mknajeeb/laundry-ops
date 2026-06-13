@@ -1652,6 +1652,32 @@ async function scrapePage(page, pageLabel, layout) {
   return { rows: out, tableRowCount: initialRowCount };
 }
 
+function statusFromTicketsUrl(url) {
+  try {
+    return new URL(String(url || "")).searchParams.get("status") || "";
+  } catch {
+    return "";
+  }
+}
+
+function buildPortalValidationMeta({
+  baseUrl,
+  pageUrl,
+  sessionAuthenticated,
+  pageLoaded,
+  emptyTableDetected,
+}) {
+  const expectedStatus = statusFromTicketsUrl(baseUrl);
+  const landedStatus = statusFromTicketsUrl(pageUrl);
+  return {
+    page_loaded: Boolean(pageLoaded),
+    session_authenticated: Boolean(sessionAuthenticated),
+    expected_status_in_url:
+      !expectedStatus || (landedStatus && landedStatus === expectedStatus),
+    empty_table_detected: Boolean(emptyTableDetected),
+  };
+}
+
 async function main() {
   console.error("[rinse-scrape] entering main() — Node", process.version);
   console.error("[rinse-scrape] process.env.RINSE_TICKETS_URL:", process.env.RINSE_TICKETS_URL ?? "<unset>");
@@ -1710,6 +1736,10 @@ async function main() {
     const seenBagSigs = new Set();
     let stoppedReason = null;
     let pagesScraped = 0;
+    let sessionAuthenticated = Boolean(storageState);
+    let pageLoaded = false;
+    let lastPageUrl = baseUrl;
+    let emptyTableDetected = false;
 
     function normFingerprint(s) {
       return String(s || "")
@@ -1728,6 +1758,8 @@ async function main() {
         timeout: Math.max(navTimeoutMs(), 90000),
       });
       await page.waitForTimeout(pageSettleMs);
+      pageLoaded = true;
+      lastPageUrl = page.url();
       await page
         .waitForSelector("table tbody tr", { timeout: 20000 })
         .catch(() => {});
@@ -1748,10 +1780,13 @@ async function main() {
         await browser.close();
         process.exit(3);
       }
+      sessionAuthenticated = true;
+      lastPageUrl = page.url();
 
       const { rows, tableRowCount } = await scrapePage(page, url, layout);
 
       if (tableRowCount === 0) {
+        emptyTableDetected = true;
         const title = await page.title().catch(() => "");
         console.error(
           `\nStopping: no table rows on page ${p} (title: ${JSON.stringify(title)}). Either there are no tickets for this filter, or row selectors need updating — try RINSE_EXTRA_ROW_SELECTORS from DevTools (see scrape.mjs bodyRowsSelector).`,
@@ -1865,6 +1900,13 @@ async function main() {
           page_start: pageStart,
           row_count: 0,
           scraped_at: new Date().toISOString(),
+          ...buildPortalValidationMeta({
+            baseUrl,
+            pageUrl: lastPageUrl,
+            sessionAuthenticated,
+            pageLoaded,
+            emptyTableDetected: true,
+          }),
         };
         const metaPath =
           (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||
@@ -1921,6 +1963,13 @@ async function main() {
       page_start: pageStart,
       row_count: allRows.length,
       scraped_at: new Date().toISOString(),
+      ...buildPortalValidationMeta({
+        baseUrl,
+        pageUrl: lastPageUrl,
+        sessionAuthenticated,
+        pageLoaded,
+        emptyTableDetected: allRows.length === 0,
+      }),
     };
     const metaPath =
       (process.env.OUTPUT_PORTAL_SCRAPE_META && String(process.env.OUTPUT_PORTAL_SCRAPE_META).trim()) ||

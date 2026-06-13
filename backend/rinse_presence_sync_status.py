@@ -257,10 +257,26 @@ def get_ready_for_vendor_sync_status(
         sync["latest_failed"] = True
         sync["message"] = f"Ready for Vendor Sync failed: {error_message or 'unknown error'}"
     elif latest_status == "success" and int((latest_item or {}).get("rows_found") or 0) == 0:
-        sync["zero_rows_success"] = True
-        sync["message"] = "Ready for Vendor Sync returned 0 rows successfully"
-        sync["stale"] = False
-        sync["stale_reason"] = None
+        scrape_meta = (latest or {}).get("scrape_meta_json")
+        if isinstance(scrape_meta, str):
+            try:
+                scrape_meta = json.loads(scrape_meta)
+            except json.JSONDecodeError:
+                scrape_meta = {}
+        if not isinstance(scrape_meta, dict):
+            scrape_meta = {}
+        empty_validated = scrape_meta.get("empty_result_validated")
+        if empty_validated is True:
+            sync["zero_rows_success"] = True
+            sync["empty_result_validated"] = True
+            sync["message"] = "Ready for Vendor Sync returned 0 rows successfully"
+            sync["stale"] = False
+            sync["stale_reason"] = None
+        else:
+            sync["empty_result_validated"] = False
+            sync["stale"] = True
+            sync["stale_reason"] = "Ready for Vendor zero-row scrape not validated"
+            sync["message"] = "Ready for Vendor Sync: zero rows not validated — prior population preserved"
 
     rows_found = None
     if latest_item and latest_item.get("rows_found") is not None:

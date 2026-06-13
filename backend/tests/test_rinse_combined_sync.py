@@ -54,7 +54,7 @@ class TestReadyForVendorFlag:
 
 class TestZeroRowsPresenceScrape:
     @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
-    def test_zero_rows_marks_old_rows_inactive(self, _ensure):
+    def test_validated_zero_rows_marks_old_rows_inactive(self, _ensure):
         cursor = MagicMock()
         cursor.fetchone.return_value = {"active_rows": 0}
         cursor.fetchall.return_value = [{"bag_id": "OLD1"}]
@@ -71,12 +71,71 @@ class TestZeroRowsPresenceScrape:
             started_at=datetime.utcnow(),
             finished_at=datetime.utcnow(),
             status="success",
+            scrape_meta={
+                "stopped_reason": "no_table_rows",
+                "empty_result_validated": True,
+            },
         )
         assert stats["rows_found"] == 0
         assert stats["rows_missing"] == 1
         assert stats["active_rows"] == 0
         update_calls = [c for c in cursor.execute.call_args_list if "SET active=0" in str(c[0][0])]
         assert update_calls
+
+    @patch("backend.rinse_presence_scrape.run_bag_export_csv")
+    @patch("backend.rinse_presence_scrape.export_enabled", return_value=True)
+    @patch("backend.rinse_presence_scrape.ready_for_vendor_scrape_enabled", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    def test_unvalidated_zero_rows_preserves_active_population(
+        self, _ensure, _rfv, _export, mock_scrape
+    ):
+        from pathlib import Path
+        import tempfile
+
+        from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
+        mock_scrape.return_value = (0, "", "")
+        conn = MagicMock()
+        cursor = MagicMock()
+        conn.cursor.return_value = cursor
+        cursor.fetchall.return_value = [{"bag_id": "OLD1"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "presence-ready_for_vendor.csv"
+            csv_path.write_text("Bag ID\n", encoding="utf-8")
+            meta_path = Path(str(csv_path) + ".meta.json")
+            meta_path.write_text(
+                '{"stopped_reason":"no_table_rows","reached_max_pages":false,"pages_scraped":1}',
+                encoding="utf-8",
+            )
+
+            def _side_effect(output_path, extra_env=None, **kwargs):
+                out = Path(output_path)
+                out.write_text("Bag ID\n", encoding="utf-8")
+                meta = Path(str(out) + ".meta.json")
+                meta.write_text(meta_path.read_text(encoding="utf-8"), encoding="utf-8")
+                return (0, "", "")
+
+            mock_scrape.side_effect = _side_effect
+            with patch(
+                "backend.rinse_presence_scrape.rinse_scrape_env_for_organization",
+                return_value=("veewash", {"RINSE_TICKETS_URL": "http://example?status=ready_for_vendor"}),
+            ):
+                result = run_presence_scrape_for_org(
+                    conn,
+                    3,
+                    portal_status=PORTAL_STATUS_READY,
+                    mark_missing=True,
+                    dry_run=False,
+                )
+
+        assert result.status == "failed"
+        assert "not validated" in (result.error_message or "").lower()
+        assert result.stats.get("empty_result_validated") is False
+        deactivate_calls = [
+            c for c in cursor.execute.call_args_list if "SET active=0" in str(c[0][0])
+        ]
+        assert not deactivate_calls
 
 
 class TestScheduledScrapeRunsBoth:

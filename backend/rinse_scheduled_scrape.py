@@ -85,6 +85,14 @@ def scrape_timeout_sec() -> int:
         return 1800
 
 
+def combined_phase_timeout_sec() -> int:
+    """Per-phase timeout for combined sync (RFV presence, AV presence, AV CSV import)."""
+    try:
+        return max(60, min(7200, int(os.getenv("RINSE_COMBINED_PHASE_TIMEOUT_SEC", "900"))))
+    except (TypeError, ValueError):
+        return 900
+
+
 def _now_et() -> datetime:
     return datetime.now(ET)
 
@@ -210,17 +218,26 @@ class _TeeLog:
         self._file.close()
 
 
-def _run_bash_script(script: Path, extra_env: dict[str, str], log: _TeeLog) -> int:
+def _run_bash_script(script: Path, extra_env: dict[str, str], log: _TeeLog, *, timeout_sec: int | None = None) -> int:
     env = {**os.environ, **extra_env}
     log.write(f"\n--- bash {script} ---\n")
-    proc = subprocess.run(
-        ["bash", str(script)],
-        cwd=str(REPO_ROOT),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=scrape_timeout_sec(),
-    )
+    timeout = int(timeout_sec) if timeout_sec is not None else combined_phase_timeout_sec()
+    try:
+        proc = subprocess.run(
+            ["bash", str(script)],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        log.write(f"exit code: timeout after {timeout}s\n")
+        if exc.stdout:
+            log.write(exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode("utf-8", errors="replace"))
+        if exc.stderr:
+            log.write(exc.stderr if isinstance(exc.stderr, str) else exc.stderr.decode("utf-8", errors="replace"))
+        return -1
     if proc.stdout:
         log.write(proc.stdout)
         if not proc.stdout.endswith("\n"):
@@ -327,6 +344,7 @@ def build_presence_sync_detail(presence_result) -> dict[str, Any]:
         "rows_missing": stats.get("rows_missing"),
         "active_rows": stats.get("active_rows"),
         "snapshot_rows_persisted": stats.get("snapshot_rows_persisted"),
+        "empty_result_validated": stats.get("empty_result_validated"),
         "stats": stats,
         "scrape_debug": presence_result.scrape_debug,
         "started_at": presence_result.started_at.isoformat() if presence_result.started_at else None,
