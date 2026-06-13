@@ -472,7 +472,7 @@ class TestManualSyncEndpointUsesCombinedWorkflow:
 
 
 class TestStalePresenceGuardBlocksScanInflation:
-    def test_stale_presence_blocks_same_day_scan_arrivals(self):
+    def test_stale_presence_keeps_active_population_blocks_scan_only(self):
         from unittest.mock import MagicMock, patch
 
         from backend.rinse_at_vendor_module import _load_baseline_gated_at_vendor_population

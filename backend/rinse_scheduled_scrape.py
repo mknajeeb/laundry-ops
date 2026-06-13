@@ -385,10 +385,12 @@ def _build_sync_cycle_metadata(
     at_vendor_ran: bool | None = None,
     at_vendor_skipped_reason: str | None = None,
     failure_message: str | None = None,
+    scan_events_inserted: int | None = None,
+    scan_events_already_present: int | None = None,
 ) -> dict[str, Any]:
     rfv = dict(rfv_detail or {})
     avp = dict(av_presence_detail or {})
-    return {
+    out = {
         "sync_cycle_id": sync_cycle_id,
         "cycle_started_at": cycle_started_at.isoformat() if isinstance(cycle_started_at, datetime) else None,
         "cycle_status": cycle_status,
@@ -413,6 +415,11 @@ def _build_sync_cycle_metadata(
         "rfv_error": rfv.get("error_message"),
         "at_vendor_presence_error": avp.get("error_message"),
     }
+    if scan_events_inserted is not None:
+        out["scan_events_inserted"] = int(scan_events_inserted)
+    if scan_events_already_present is not None:
+        out["scan_events_already_present"] = int(scan_events_already_present)
+    return out
 
 
 def _finish_combined_cycle_run(
@@ -699,6 +706,12 @@ def run_rinse_combined_sync_for_org(
             av_presence_status=av_presence_result.status,
             import_status=import_result.status,
         )
+        confirm_payload = (import_result.detail or {}).get("confirm") or {}
+        merge_payload = (confirm_payload.get("rinse_finalize") or {}).get("persistent_merge") or {}
+        scan_inserted = merge_payload.get("events_inserted")
+        scan_already = merge_payload.get("events_already_present")
+        if scan_already is None:
+            scan_already = merge_payload.get("events_metadata_updated")
         sync_cycle = _build_sync_cycle_metadata(
             sync_cycle_id=run_id,
             cycle_started_at=cycle_started_at,
@@ -711,6 +724,8 @@ def run_rinse_combined_sync_for_org(
             at_vendor_ran=True,
             at_vendor_skipped_reason=None,
             failure_message=result.error_message if cycle_status not in ("success", "needs_attention") else None,
+            scan_events_inserted=scan_inserted,
+            scan_events_already_present=scan_already,
         )
         sync_cycle["at_vendor_status"] = result.at_vendor_status
         result.detail["sync_cycle"] = sync_cycle

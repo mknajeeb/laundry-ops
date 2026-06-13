@@ -293,18 +293,15 @@ def _load_active_rfv_presence_rows(
     if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
         return []
     org = int(organization_id)
-    batch_id = str(source_batch_id or "").strip()
-    if not batch_id:
-        return []
     cursor.execute(
         """
-        SELECT bag_id, customer_name, estimated_delivery_date, service_type, rush_flag, raw_row_json
+        SELECT bag_id, customer_name, estimated_delivery_date, service_type, rush_flag,
+               raw_row_json, source_batch_id
         FROM rinse_cleaner_ticket_presence
         WHERE organization_id = %s AND active = 1 AND portal_status = %s
-          AND source_batch_id = %s
-        ORDER BY last_seen_at DESC
+        ORDER BY UPPER(TRIM(bag_id))
         """,
-        (org, PORTAL_STATUS_READY, batch_id),
+        (org, PORTAL_STATUS_READY),
     )
     return [dict(r) for r in (cursor.fetchall() or []) if isinstance(r, dict) and r.get("bag_id")]
 

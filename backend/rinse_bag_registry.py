@@ -353,8 +353,13 @@ def upsert_scan_event_row(
             """
             UPDATE rinse_bag_scan_events
             SET
-                source_upload_batch_id = %s,
-                source_filename = %s,
+                source_upload_batch_id = COALESCE(%s, source_upload_batch_id),
+                source_filename = COALESCE(NULLIF(%s, ''), source_filename),
+                user_name = COALESCE(NULLIF(%s, ''), user_name),
+                purpose = COALESCE(NULLIF(%s, ''), purpose),
+                last_location = COALESCE(NULLIF(%s, ''), last_location),
+                last_scan = COALESCE(NULLIF(%s, ''), last_scan),
+                raw_json = COALESCE(%s, raw_json),
                 last_seen_at = NOW(),
                 updated_at = NOW()
             WHERE id = %s
@@ -362,6 +367,11 @@ def upsert_scan_event_row(
             (
                 int(source_upload_batch_id),
                 source_filename,
+                user_name,
+                purpose,
+                last_location,
+                last_scan,
+                raw_json,
                 int(row_id),
             ),
         )
@@ -503,6 +513,7 @@ def merge_scan_events_from_upload(
     return {
         "bags_merged": len(bag_ids),
         "events_inserted": inserted,
+        "events_already_present": metadata_updated,
         "events_metadata_updated": metadata_updated,
         "events_updated": metadata_updated,
         "events_skipped_no_time": skipped_no_time,

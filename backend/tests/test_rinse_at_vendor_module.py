@@ -1098,7 +1098,15 @@ class TestCleanVeeWashAtVendorBaseline:
             return_value=0,
         ), patch(
             "backend.rinse_at_vendor_module._load_active_at_vendor_presence_by_bag",
-            return_value=seed_rows,
+            return_value={
+                **seed_rows,
+                "NEWSENT": {
+                    "bag_id": "NEWSENT",
+                    "service_type": "HD",
+                    "portal_yet_to_process": True,
+                    "active_presence": True,
+                },
+            },
         ), patch(
             "backend.rinse_at_vendor_module._load_sent_to_vendor_bag_id_sets_for_et_day",
             return_value=(set(), {"NEWSENT"}),

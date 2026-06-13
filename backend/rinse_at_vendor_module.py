@@ -899,13 +899,28 @@ def _load_baseline_gated_at_vendor_population(
         and baseline_seed_query_row_count < baseline_seed_original_row_count
     )
     seed_ids = set(seed_by_bag.keys())
+    live_by_bag = _load_active_at_vendor_presence_by_bag(cursor, org)
+    if not live_by_bag:
+        return [], {
+            "available": False,
+            "reason": "No active at_vendor presence rows from latest successful scrape",
+            "start_of_day_et": start_of_day_et.isoformat(),
+            "end_of_day_et": end_of_day_et.isoformat(),
+            "day_start_et": start_of_day_et.isoformat(),
+            "day_end_et": end_of_day_et.isoformat(),
+            "baseline_scrape_run_id": baseline_run_id,
+            "baseline_selection_type": baseline_selection_type,
+        }
 
-    _, same_day_sent_ids = _load_sent_to_vendor_bag_id_sets_for_et_day(
+    for bid, pres in live_by_bag.items():
+        if pres.get("portal_yet_to_process") is None and bid in seed_by_bag:
+            pres["portal_yet_to_process"] = seed_by_bag[bid].get("portal_yet_to_process")
+
+    _, scan_only_sent_ids = _load_sent_to_vendor_bag_id_sets_for_et_day(
         cursor, org, selected_date_et=selected_date_et
     )
-    same_day_sent_ids -= seed_ids
-
-    scrape_arrival_ids, scrape_arrival_meta = _load_same_day_scrape_arrival_bag_ids(
+    scan_only_sent_ids -= seed_ids
+    scan_only_scrape_ids, _scan_only_scrape_meta = _load_same_day_scrape_arrival_bag_ids(
         cursor,
         org,
         day_start_et=start_of_day_et,
@@ -914,29 +929,27 @@ def _load_baseline_gated_at_vendor_population(
         exclude_batch_id=source_batch_id,
         seed_ids=seed_ids,
     )
-    scrape_arrival_ids -= seed_ids | same_day_sent_ids
+    scan_only_scrape_ids -= seed_ids | scan_only_sent_ids
 
-    population_ids = seed_ids | same_day_sent_ids | scrape_arrival_ids
+    population_ids = set(live_by_bag.keys())
     cross_org_candidates = set(population_ids)
     kept_ids, cross_org_excluded = _filter_cross_org_contaminated_bags(
         cursor, org, cross_org_candidates
     )
     population_ids = kept_ids
     seed_ids &= population_ids
-    same_day_sent_ids &= population_ids
-    scrape_arrival_ids &= population_ids
+    scan_only_arrivals_blocked_count = len(
+        (scan_only_sent_ids | scan_only_scrape_ids) - population_ids
+    )
+    same_day_sent_ids = population_ids - seed_ids
+    scrape_arrival_ids: set[str] = set()
+    scrape_arrival_meta: dict[str, Any] = {}
 
     from backend.rinse_presence_sync_status import evaluate_at_vendor_presence_freshness
 
     presence_fresh, presence_stale_reason, latest_presence_run = evaluate_at_vendor_presence_freshness(
         cursor, org
     )
-    scan_only_arrivals_blocked_count = 0
-    if not presence_fresh:
-        scan_only_arrivals_blocked_count = len(same_day_sent_ids | scrape_arrival_ids)
-        same_day_sent_ids = set()
-        scrape_arrival_ids = set()
-        population_ids = set(seed_ids)
 
     registry_service = _load_registry_service_types(cursor, org, sorted(population_ids))
     meta_by_bag = _load_delivery_meta(cursor, org, sorted(population_ids))
@@ -956,7 +969,7 @@ def _load_baseline_gated_at_vendor_population(
         elif bid in seed_ids:
             inclusion_reason = "Start-of-day carry-in from daily baseline at_vendor scrape seed"
         elif bid in same_day_sent_ids:
-            inclusion_reason = "Same-day sent-to-vendor arrival during selected ET day"
+            inclusion_reason = "Same-day At Vendor arrival in latest active presence scrape"
         else:
             inclusion_reason = "Same-day at_vendor scrape arrival during selected ET day"
 
@@ -1020,6 +1033,10 @@ def _load_baseline_gated_at_vendor_population(
         "baseline_seed_source": baseline_seed_source,
         "baseline_seed_incomplete": baseline_seed_incomplete,
         **daily_metrics,
+        "population_source": "latest_active_at_vendor_presence",
+        "latest_at_vendor_presence_run_id": (
+            latest_presence_run.get("id") if isinstance(latest_presence_run, dict) else None
+        ),
         "at_vendor_presence_stale": not presence_fresh,
         "at_vendor_stale_reason": presence_stale_reason,
         "latest_at_vendor_presence_run_id": (latest_presence_run or {}).get("id"),
