@@ -552,6 +552,36 @@ class TestPresenceRunSnapshotPersistence:
         assert "snapshot_rows_persisted" not in stats
 
 
+class TestPresenceCrossOrgGuard:
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    @patch(
+        "backend.rinse_at_vendor_module.filter_veewash_presence_cross_org_bags",
+        return_value=({"VEEONLY1"}, [{"bag_id": "DVE92G8WAL", "reason": "cross_org_washpro_canonical_registry"}]),
+    )
+    def test_apply_presence_scrape_skips_washpro_canonical_bag(self, _filter, _ensure):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"active_rows": 1}
+        cursor.fetchall.return_value = []
+        stats = apply_presence_scrape(
+            cursor,
+            3,
+            portal_status=PORTAL_STATUS_AT_VENDOR,
+            rows=[
+                {"bag_id": "DVE92G8WAL", "customer_name": "X"},
+                {"bag_id": "VEEONLY1", "customer_name": "Y"},
+            ],
+            dry_run=False,
+            mark_missing=False,
+            run_type="manual",
+            started_at=datetime.utcnow(),
+            finished_at=datetime.utcnow(),
+            status="success",
+        )
+        assert stats["rows_found"] == 1
+        assert any(e.get("bag_id") == "DVE92G8WAL" for e in stats["errors"])
+        assert stats["cross_org_presence_excluded"][0]["bag_id"] == "DVE92G8WAL"
+
+
 class TestParsePresenceEmptyCsv:
     def test_header_only_csv_returns_empty_rows(self, tmp_path):
         from backend.rinse_cleaner_ticket_presence import parse_presence_rows_from_portal_csv

@@ -1191,12 +1191,35 @@ def apply_presence_scrape(
         "rows_unchanged": 0,
         "rows_missing": 0,
         "errors": [],
+        "cross_org_presence_excluded": [],
     }
+
+    candidate_bag_ids = {
+        bid
+        for raw in rows
+        if (bid := normalize_bag_id(raw.get("bag_id")))
+    }
+    from backend.rinse_at_vendor_module import filter_veewash_presence_cross_org_bags
+
+    allowed_bag_ids, cross_org_excluded = filter_veewash_presence_cross_org_bags(
+        cursor, org, candidate_bag_ids
+    )
+    if cross_org_excluded:
+        stats["cross_org_presence_excluded"] = cross_org_excluded
 
     for raw in rows:
         bag_id = normalize_bag_id(raw.get("bag_id"))
         if not bag_id:
             stats["errors"].append({"error": "missing bag_id", "row": dict(raw)})
+            continue
+        if bag_id not in allowed_bag_ids:
+            stats["errors"].append(
+                {
+                    "error": "cross_org_washpro_owned",
+                    "bag_id": bag_id,
+                    "row": dict(raw),
+                }
+            )
             continue
         seen.add(bag_id)
         stats["rows_found"] += 1

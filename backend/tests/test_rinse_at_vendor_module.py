@@ -574,6 +574,38 @@ class TestCrossOrgContamination:
         assert kept == {"VEEONLY1", "UNKNOWN1"}
         assert [e["bag_id"] for e in excluded] == ["3M8QVPGA2R"]
 
+    def test_filter_veewash_presence_excludes_dual_registry_washpro_canonical(self):
+        from datetime import datetime
+        from unittest.mock import patch
+
+        with patch(
+            "backend.rinse_at_vendor_module._load_bag_organization_ownership",
+            return_value={"DVE92G8WAL": {1, 3}, "VEEONLY1": {3}},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_registry_created_at_by_org",
+            return_value={
+                "DVE92G8WAL": {
+                    1: datetime(2026, 5, 25, 14, 27, 4),
+                    3: datetime(2026, 6, 13, 8, 41, 56),
+                },
+                "VEEONLY1": {3: datetime(2026, 6, 1, 12, 0, 0)},
+            },
+        ), patch(
+            "backend.rinse_at_vendor_module._configured_veewash_org_ids",
+            return_value={3},
+        ), patch(
+            "backend.rinse_at_vendor_module._configured_washpro_org_ids",
+            return_value={1},
+        ):
+            from backend.rinse_at_vendor_module import filter_veewash_presence_cross_org_bags
+
+            kept, excluded = filter_veewash_presence_cross_org_bags(
+                object(), 3, {"DVE92G8WAL", "VEEONLY1"}
+            )
+        assert kept == {"VEEONLY1"}
+        assert excluded[0]["bag_id"] == "DVE92G8WAL"
+        assert excluded[0]["reason"] == "cross_org_washpro_canonical_registry"
+
     def test_veewash_module_excludes_washpro_only_presence_bag(self):
         from unittest.mock import patch
 

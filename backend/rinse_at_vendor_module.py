@@ -6,6 +6,7 @@ Independent of CFS/staging/registry population. Uses selected ET day only.
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
@@ -424,6 +425,127 @@ def _load_bag_organization_ownership(
             if bid in out and oid is not None:
                 out[bid].add(int(oid))
     return out
+
+
+def _configured_washpro_org_ids() -> set[int]:
+    from backend.rinse_vendor_config import _parse_id_set
+
+    return _parse_id_set(os.getenv("RINSE_WASHPRO_ORG_IDS") or "1") or {1}
+
+
+def _configured_veewash_org_ids() -> set[int]:
+    from backend.rinse_vendor_config import _parse_id_set
+
+    return _parse_id_set(os.getenv("RINSE_VEEWASH_ORG_IDS") or "3") or {3}
+
+
+def _load_registry_created_at_by_org(
+    cursor,
+    bag_ids: list[str],
+) -> dict[str, dict[int, datetime]]:
+    """Earliest rinse_bag_registry.created_at per (bag_id, organization_id)."""
+    out: dict[str, dict[int, datetime]] = {bid: {} for bid in bag_ids if bid}
+    if not bag_ids or not table_exists(cursor, "rinse_bag_registry"):
+        return out
+    if not table_has_column(cursor, "rinse_bag_registry", "created_at"):
+        return out
+    chunk = 1000
+    for i in range(0, len(bag_ids), chunk):
+        part = bag_ids[i : i + chunk]
+        ph = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT UPPER(TRIM(bag_id)) AS bag_id, organization_id, MIN(created_at) AS created_at
+            FROM rinse_bag_registry
+            WHERE UPPER(TRIM(bag_id)) IN ({ph})
+            GROUP BY UPPER(TRIM(bag_id)), organization_id
+            """,
+            tuple(part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            oid = row.get("organization_id")
+            created = row.get("created_at")
+            if bid in out and oid is not None and isinstance(created, datetime):
+                out[bid][int(oid)] = created
+    return out
+
+
+def _is_washpro_canonical_for_veewash_presence(
+    *,
+    veewash_org: int,
+    owner_orgs: set[int],
+    registry_created: Mapping[int, datetime],
+    washpro_orgs: set[int],
+) -> tuple[bool, str | None]:
+    """
+    True when a bag must not be activated in VeeWash presence.
+
+    Covers Washpro-only ownership and dual-registry rows where Washpro registry
+    predates the VeeWash registry (portal scrape / import contamination).
+    """
+    wp_owners = owner_orgs & washpro_orgs
+    if not wp_owners:
+        return False, None
+    if veewash_org not in owner_orgs:
+        return True, "cross_org_washpro_owned"
+    vee_created = registry_created.get(veewash_org)
+    wp_created = [
+        registry_created[o]
+        for o in wp_owners
+        if isinstance(registry_created.get(o), datetime)
+    ]
+    if not wp_created:
+        return False, None
+    earliest_wp = min(wp_created)
+    if vee_created is None:
+        return True, "cross_org_washpro_owned"
+    if earliest_wp < vee_created:
+        return True, "cross_org_washpro_canonical_registry"
+    return False, None
+
+
+def filter_veewash_presence_cross_org_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: set[str],
+) -> tuple[set[str], list[dict[str, Any]]]:
+    """
+    Presence-scrape guard: block VeeWash activation for Washpro-canonical bags.
+    """
+    org = int(organization_id)
+    veewash_orgs = _configured_veewash_org_ids()
+    if org not in veewash_orgs or not bag_ids:
+        return set(bag_ids), []
+    washpro_orgs = _configured_washpro_org_ids()
+    sorted_ids = sorted(bag_ids)
+    ownership = _load_bag_organization_ownership(cursor, sorted_ids)
+    registry_created = _load_registry_created_at_by_org(cursor, sorted_ids)
+    kept: set[str] = set()
+    excluded: list[dict[str, Any]] = []
+    for bid in sorted_ids:
+        owner_orgs = ownership.get(bid) or set()
+        reg = registry_created.get(bid) or {}
+        reject, reason = _is_washpro_canonical_for_veewash_presence(
+            veewash_org=org,
+            owner_orgs=owner_orgs,
+            registry_created=reg,
+            washpro_orgs=washpro_orgs,
+        )
+        if reject:
+            excluded.append(
+                {
+                    "bag_id": bid,
+                    "owner_organization_ids": sorted(owner_orgs),
+                    "washpro_registry_orgs": sorted(owner_orgs & washpro_orgs),
+                    "reason": reason or "cross_org_washpro_owned",
+                }
+            )
+            continue
+        kept.add(bid)
+    return kept, excluded
 
 
 def _filter_cross_org_contaminated_bags(
