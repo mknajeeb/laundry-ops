@@ -81,6 +81,36 @@ def _format_et_display(ts: datetime | None) -> str | None:
     return et.strftime("%Y-%m-%d %H:%M:%S ET") if et else ts.isoformat()
 
 
+def _completion_date_et(completion_ts: datetime | None) -> date | None:
+    if not ts_valid(completion_ts):
+        return None
+    et = system_datetime_to_et(completion_ts)
+    if et is not None:
+        return et.date()
+    return completion_ts.date()
+
+
+def _classify_baseline_seed_bag(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    service_type: str,
+    selected_date_et: date,
+) -> tuple[str, str | None, datetime | None, datetime | None]:
+    """Classify a baseline snapshot bag at selected ET day start."""
+    start_of_day_et = naive_et_day_start(selected_date_et)
+    prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
+    anchor_ts = _latest_sent_to_vendor_ts(events, before=start_of_day_et)
+    status, signal, comp_ts, sent_ts = _evaluate_bag_as_of(
+        events,
+        service_type=service_type,
+        as_of_end=prior_day_end,
+        anchor_ts_override=anchor_ts,
+    )
+    if status == AV_STATUS_COMPLETED:
+        return DAILY_CLASS_COMPLETED_BEFORE_DAY_START, signal, comp_ts, sent_ts
+    return DAILY_CLASS_OPEN_AT_DAY_START, None, None, sent_ts
+
+
 MOD_AT_VENDOR_TOTAL = "mod_at_vendor_total"
 MOD_AT_VENDOR_PENDING = "mod_at_vendor_pending"
 MOD_AT_VENDOR_COMPLETED = "mod_at_vendor_completed"
@@ -92,6 +122,11 @@ AV_UNKNOWN = "UNKNOWN_REVIEW"
 
 AV_STATUS_PENDING = "Pending"
 AV_STATUS_COMPLETED = "Completed"
+
+DAILY_CLASS_OPEN_AT_DAY_START = "OPEN_AT_DAY_START"
+DAILY_CLASS_COMPLETED_BEFORE_DAY_START = "COMPLETED_BEFORE_DAY_START"
+DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY = "COMPLETED_DURING_SELECTED_DAY"
+DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW = "PENDING_AS_OF_SELECTED_DAY_END_OR_NOW"
 
 CHANGED_RUSH_REASON_DAY_ADVANCE = (
     "Changed to Rush because selected ET date advanced and bag remained pending"
@@ -961,6 +996,8 @@ def _load_baseline_gated_at_vendor_population(
         "baseline_seed_source": baseline_seed_source,
         "baseline_seed_incomplete": baseline_seed_incomplete,
         **daily_metrics,
+        "baseline_snapshot_bag_ids": sorted(seed_ids),
+        "same_day_arrival_bag_ids": sorted(same_day_sent_ids | scrape_arrival_ids),
         "start_of_day_carry_in_count": start_of_day_carry_in_count,
         "same_day_arrivals_count": same_day_arrivals_count,
         "same_day_arrivals_from_sent_to_vendor_count": len(same_day_sent_ids),
@@ -1789,6 +1826,7 @@ def _build_row(
     as_of_end: datetime,
     prior_edd_info: tuple[date | None, str | None] | None = None,
     completion_window_start: datetime | None = None,
+    daily_et_attribution: bool = False,
 ) -> dict[str, Any]:
     svc = _normalize_service(meta.get("service_type"))
     anchor_ts = _resolve_selected_day_anchor_ts(events, selected_date_et)
@@ -1798,7 +1836,22 @@ def _build_row(
         as_of_end=as_of_end,
         anchor_ts_override=anchor_ts,
     )
-    if (
+    daily_classification = None
+    if daily_et_attribution:
+        comp_date = _completion_date_et(completion_ts) if status == AV_STATUS_COMPLETED else None
+        if (
+            status == AV_STATUS_COMPLETED
+            and comp_date == selected_date_et
+            and completion_ts is not None
+            and completion_ts <= as_of_end
+        ):
+            daily_classification = DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+        else:
+            daily_classification = DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW
+            status = AV_STATUS_PENDING
+            completion_signal = None
+            completion_ts = None
+    elif (
         status == AV_STATUS_COMPLETED
         and completion_ts is not None
         and completion_window_start is not None
@@ -1862,7 +1915,11 @@ def _build_row(
         "completion_signal": completion_signal,
         "completion_time": completion_ts.isoformat() if completion_ts else None,
         "completion_time_et": _format_et_display(completion_ts),
+        "completion_date_et": _completion_date_et(completion_ts).isoformat()
+        if completion_ts is not None and _completion_date_et(completion_ts)
+        else None,
         "at_vendor_status": status,
+        "daily_classification": daily_classification,
         "facility_status": status.lower(),
         "reason": rush_reason,
         "rush_reason": rush_reason,
@@ -1955,16 +2012,68 @@ def build_at_vendor_module(
     bag_ids = [str(p.get("bag_id") or "").strip().upper() for p in population if p.get("bag_id")]
     carry_in_pre_midnight_events = population_meta.pop("carry_in_pre_midnight_events", None) or {}
     population_meta.pop("registry_service_cache", None)
+    baseline_snapshot_ids: set[str] = set()
+    same_day_arrival_ids: set[str] = set()
+    completed_before_day_start_ids: set[str] = set()
+    open_at_day_start_ids: set[str] = set()
+    completed_before_day_start_audit: list[dict[str, Any]] = []
     t_events = time.perf_counter()
     if uses_clean_baseline and baseline_ctx:
-        # Population stays scrape-gated; status uses full relevant scan history for those bags only.
+        baseline_snapshot_ids = {
+            str(bid or "").strip().upper()
+            for bid in (population_meta.get("baseline_snapshot_bag_ids") or [])
+            if str(bid or "").strip()
+        }
+        same_day_arrival_ids = {
+            str(bid or "").strip().upper()
+            for bid in (population_meta.get("same_day_arrival_bag_ids") or [])
+            if str(bid or "").strip()
+        }
         scan_through_exclusive = naive_et_day_end_exclusive(selected_date_et)
+        event_bag_ids = sorted(baseline_snapshot_ids | same_day_arrival_ids)
         events_by_bag = _load_at_vendor_scan_events_for_bags(
             cursor,
             org,
-            bag_ids,
+            event_bag_ids,
             scanned_before=scan_through_exclusive,
         )
+        registry_cache = population_meta.get("registry_service_cache") or {}
+        registry_service_pre = (
+            registry_cache
+            if isinstance(registry_cache, dict) and registry_cache
+            else _load_registry_service_types(cursor, org, event_bag_ids)
+        )
+        population_by_bag = {
+            str(p.get("bag_id") or "").strip().upper(): p for p in population if p.get("bag_id")
+        }
+        for bid in sorted(baseline_snapshot_ids):
+            pres = population_by_bag.get(bid) or {"bag_id": bid}
+            svc = _normalize_service(pres.get("service_type") or registry_service_pre.get(bid))
+            daily_class, signal, comp_ts, sent_ts = _classify_baseline_seed_bag(
+                events_by_bag.get(bid) or [],
+                service_type=svc,
+                selected_date_et=selected_date_et,
+            )
+            if daily_class == DAILY_CLASS_COMPLETED_BEFORE_DAY_START:
+                completed_before_day_start_ids.add(bid)
+                completed_before_day_start_audit.append(
+                    {
+                        "bag_id": bid,
+                        "daily_classification": daily_class,
+                        "completion_signal": signal,
+                        "completion_time": comp_ts.isoformat() if comp_ts else None,
+                        "completion_time_et": _format_et_display(comp_ts),
+                        "completion_date_et": _completion_date_et(comp_ts).isoformat()
+                        if comp_ts
+                        else None,
+                        "sent_to_vendor_time_et": _format_et_display(sent_ts),
+                    }
+                )
+            else:
+                open_at_day_start_ids.add(bid)
+        workload_ids = open_at_day_start_ids | same_day_arrival_ids
+        population = [population_by_bag[bid] for bid in sorted(workload_ids) if bid in population_by_bag]
+        bag_ids = sorted(workload_ids)
         carry_in_events_reused = 0
     else:
         cached_bag_ids = [bid for bid in bag_ids if bid in carry_in_pre_midnight_events]
@@ -2012,6 +2121,7 @@ def build_at_vendor_module(
             selected_date_et=selected_date_et,
             as_of_end=as_of_end,
             completion_window_start=start_of_day_et,
+            daily_et_attribution=bool(uses_clean_baseline and baseline_ctx),
         )
         rows.append(row)
         if (
@@ -2095,24 +2205,53 @@ def build_at_vendor_module(
         "bags_gone_from_vendor_home_but_counted": gone_but_counted,
         "selected_day_at_vendor_total": selected_day_total,
     }
+    if uses_clean_baseline and baseline_ctx:
+        baseline_snapshot_count = len(baseline_snapshot_ids)
+        completed_before_day_start_count = len(completed_before_day_start_ids)
+        start_of_day_open_carry_in_count = len(open_at_day_start_ids)
+        same_day_arrivals_count = len(same_day_arrival_ids)
+        daily_workload_total = selected_day_total
+        completed_during_selected_day_count = completed
+        pending_as_of_selected_day_count = pending
+        population_meta.update(
+            {
+                "baseline_snapshot_count": baseline_snapshot_count,
+                "completed_before_day_start_count": completed_before_day_start_count,
+                "start_of_day_open_carry_in_count": start_of_day_open_carry_in_count,
+                "start_of_day_carry_in_count": start_of_day_open_carry_in_count,
+                "carry_in_open_at_midnight_count": start_of_day_open_carry_in_count,
+                "same_day_arrivals_count": same_day_arrivals_count,
+                "daily_workload_total": daily_workload_total,
+                "completed_during_selected_day_count": completed_during_selected_day_count,
+                "pending_as_of_selected_day_count": pending_as_of_selected_day_count,
+                "completed_before_day_start_bags": completed_before_day_start_audit,
+            }
+        )
 
     carry_in_count = int(population_meta.get("carry_in_open_at_midnight_count") or 0)
     new_sent_count = int(population_meta.get("new_during_selected_day_count") or population_meta.get("new_sent_to_vendor_today_count") or 0)
     portal_supplement = int(population_meta.get("portal_live_supplement_count") or 0)
     overlap_carry_and_new = int(population_meta.get("overlap_carry_in_and_new_sent_count") or 0)
     if uses_clean_baseline:
-        seed_count = int(population_meta.get("start_of_day_carry_in_count") or population_meta.get("clean_scrape_seed_count") or 0)
+        seed_count = int(
+            population_meta.get("start_of_day_open_carry_in_count")
+            or population_meta.get("start_of_day_carry_in_count")
+            or population_meta.get("clean_scrape_seed_count")
+            or 0
+        )
         arrivals_count = int(population_meta.get("same_day_arrivals_count") or 0)
-        expected_total = seed_count + arrivals_count
+        expected_total = int(
+            population_meta.get("daily_workload_total") or (seed_count + arrivals_count)
+        )
         scope = "clean_veewash_daily_et"
         population_source = "clean_veewash_daily_et"
         timing_variance_reason = (
-            "Daily ET At Vendor uses midnight baseline scrape seed plus same-day arrivals. "
-            "Status is scan-driven within the selected ET day window."
+            "Daily ET At Vendor uses open midnight baseline carry-in plus same-day arrivals. "
+            "Bags completed before day start are audit-only. Status uses completion ET date attribution."
         )
         reconciliation_note = (
-            "Selected-day total = start-of-day baseline scrape seed + same-day arrivals "
-            "(sent-to-vendor and/or intraday scrape)."
+            "Daily workload = open carry-in at midnight + same-day arrivals. "
+            "Completed counts only bags whose valid completion ET date equals the selected day."
         )
     else:
         expected_total = carry_in_count + new_sent_count - overlap_carry_and_new
@@ -2226,6 +2365,12 @@ def build_at_vendor_module(
             "same_day_arrivals_from_sent_to_vendor_count"
         ),
         "same_day_arrivals_from_scrape_count": population_meta.get("same_day_arrivals_from_scrape_count"),
+        "baseline_snapshot_count": population_meta.get("baseline_snapshot_count"),
+        "completed_before_day_start_count": population_meta.get("completed_before_day_start_count"),
+        "start_of_day_open_carry_in_count": population_meta.get("start_of_day_open_carry_in_count"),
+        "daily_workload_total": population_meta.get("daily_workload_total"),
+        "completed_during_selected_day_count": population_meta.get("completed_during_selected_day_count"),
+        "pending_as_of_selected_day_count": population_meta.get("pending_as_of_selected_day_count"),
         "completed_today_count": completed_today_count,
         "pending_count": pending,
         "rush_total": rush_total,

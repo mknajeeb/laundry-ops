@@ -637,6 +637,8 @@ class TestCleanVeeWashAtVendorBaseline:
             "selected_day_at_vendor_total": 10,
             "contaminated_presence_rows_excluded_count": 2,
             "cross_org_excluded_bags": [],
+            "baseline_snapshot_bag_ids": seed_bags,
+            "same_day_arrival_bag_ids": [],
         }
         with patch(
             "backend.rinse_at_vendor_module._load_baseline_gated_at_vendor_population",
@@ -662,7 +664,8 @@ class TestCleanVeeWashAtVendorBaseline:
         assert out["uses_clean_veewash_baseline"] is True
         assert out["total"] == 10
         assert out["current_live_vendor_home_total"] == 10
-        assert out["carry_in_open_at_midnight_count"] == 0
+        assert out["start_of_day_open_carry_in_count"] == 10
+        assert out["daily_workload_total"] == 10
         meta = out.get("population_meta") or {}
         assert meta.get("clean_scrape_seed_count") == 10
         assert meta.get("contaminated_presence_rows_excluded_count") == 2
@@ -687,6 +690,8 @@ class TestCleanVeeWashAtVendorBaseline:
             "current_live_vendor_home_total": 1,
             "selected_day_at_vendor_total": 1,
             "cross_org_excluded_bags": [],
+            "baseline_snapshot_bag_ids": ["SEED1"],
+            "same_day_arrival_bag_ids": [],
         }
         with patch(
             "backend.rinse_at_vendor_module._load_baseline_gated_at_vendor_population",
@@ -712,7 +717,8 @@ class TestCleanVeeWashAtVendorBaseline:
         mock_pop.assert_called_once()
         mock_legacy.assert_not_called()
         assert out["total"] == 1
-        assert out["carry_in_open_at_midnight_count"] == 0
+        assert out["start_of_day_open_carry_in_count"] == 1
+        assert out["daily_workload_total"] == 1
 
     def test_includes_post_baseline_sent_to_vendor(self):
         from unittest.mock import patch
@@ -741,6 +747,8 @@ class TestCleanVeeWashAtVendorBaseline:
             "current_live_vendor_home_total": 1,
             "selected_day_at_vendor_total": 2,
             "cross_org_excluded_bags": [],
+            "baseline_snapshot_bag_ids": ["SEED1"],
+            "same_day_arrival_bag_ids": ["NEWSENT1"],
         }
         events = {
             "SEED1": [],
@@ -791,6 +799,8 @@ class TestCleanVeeWashAtVendorBaseline:
             "clean_scrape_seed_count": 1,
             "current_live_vendor_home_total": 1,
             "selected_day_at_vendor_total": 1,
+            "baseline_snapshot_bag_ids": ["VEEONLY1"],
+            "same_day_arrival_bag_ids": [],
             "cross_org_excluded_bags": [
                 {
                     "bag_id": "3M8QVPGA2R",
@@ -905,3 +915,125 @@ class TestCleanVeeWashAtVendorBaseline:
         assert meta["daily_metrics_reliable"] is False
         assert meta["daily_metrics_status"] == "INCOMPLETE_BASELINE_SNAPSHOT"
         assert "3 of 10 rows available" in (meta.get("daily_metrics_warning") or "")
+
+
+class TestCrossDayCompletionAttribution:
+    def test_baseline_seed_completed_before_day_start_classified(self):
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_COMPLETED_BEFORE_DAY_START,
+            _classify_baseline_seed_bag,
+        )
+
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
+        ]
+        daily_class, signal, comp_ts, _ = _classify_baseline_seed_bag(
+            events,
+            service_type="WF",
+            selected_date_et=date(2026, 6, 13),
+        )
+        assert daily_class == DAILY_CLASS_COMPLETED_BEFORE_DAY_START
+        assert signal == "weight-entry"
+        assert comp_ts == datetime(2026, 6, 12, 21, 0)
+
+    def test_completion_counts_on_completion_et_date_only(self):
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY,
+            DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW,
+            _build_row,
+        )
+
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
+        ]
+        june12_row = _build_row(
+            bag_id="CROSS1",
+            meta={"service_type": "WF"},
+            events=events,
+            selected_date_et=date(2026, 6, 12),
+            as_of_end=naive_et_day_end_inclusive(date(2026, 6, 12)),
+            daily_et_attribution=True,
+        )
+        assert june12_row["daily_classification"] == DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY
+        assert june12_row["at_vendor_status"] == AV_STATUS_COMPLETED
+
+        june13_row = _build_row(
+            bag_id="CROSS1",
+            meta={"service_type": "WF"},
+            events=events,
+            selected_date_et=date(2026, 6, 13),
+            as_of_end=naive_et_day_end_inclusive(date(2026, 6, 13)),
+            daily_et_attribution=True,
+        )
+        assert june13_row["daily_classification"] == DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW
+        assert june13_row["at_vendor_status"] == AV_STATUS_PENDING
+
+    def test_clean_baseline_excludes_completed_before_day_start_from_workload(self):
+        from unittest.mock import patch
+
+        population = [
+            {
+                "bag_id": "SEEDOPEN",
+                "service_type": "WF",
+                "population_inclusion": "daily_baseline_scrape_seed",
+            },
+            {
+                "bag_id": "SEEDDONE",
+                "service_type": "WF",
+                "population_inclusion": "daily_baseline_scrape_seed",
+            },
+            {
+                "bag_id": "NEW1",
+                "service_type": "HD",
+                "population_inclusion": "same_day_sent_to_vendor",
+            },
+        ]
+        population_meta = {
+            "available": True,
+            "baseline_snapshot_bag_ids": ["SEEDOPEN", "SEEDDONE"],
+            "same_day_arrival_bag_ids": ["NEW1"],
+            "current_live_vendor_home_total": 2,
+            "daily_metrics_reliable": True,
+        }
+        open_events = [_ev("sent-to-vendor", datetime(2026, 6, 13, 1, 0))]
+        done_events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
+        ]
+        new_events = [_ev("sent-to-vendor", datetime(2026, 6, 13, 10, 0))]
+        with patch(
+            "backend.rinse_at_vendor_module._load_baseline_gated_at_vendor_population",
+            return_value=(population, population_meta),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_at_vendor_scan_events_for_bags",
+            return_value={
+                "SEEDOPEN": open_events,
+                "SEEDDONE": done_events,
+                "NEW1": new_events,
+            },
+        ), patch(
+            "backend.rinse_at_vendor_module._load_registry_service_types",
+            return_value={"SEEDOPEN": "WF", "SEEDDONE": "WF", "NEW1": "HD"},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_prior_edd_from_batches_bulk",
+            return_value={},
+        ):
+            out = build_at_vendor_module(
+                object(),
+                3,
+                selected_date_et=date(2026, 6, 13),
+                baseline_ctx=CLEAN_BASELINE_CTX,
+            )
+        assert out["baseline_snapshot_count"] == 2
+        assert out["completed_before_day_start_count"] == 1
+        assert out["start_of_day_open_carry_in_count"] == 1
+        assert out["daily_workload_total"] == 2
+        assert out["total"] == 2
+        assert out["pending"] + out["completed"] == 2
+        assert "SEEDDONE" not in [r["bag_id"] for r in out["rows"]]
+        assert out["completed_before_day_start_count"] + out["start_of_day_open_carry_in_count"] == 2
