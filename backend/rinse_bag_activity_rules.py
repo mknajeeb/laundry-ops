@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_completion import rack_contains_clean
@@ -26,6 +27,7 @@ from backend.rinse_bag_stage_bounds import (
     ts_valid,
     visible_timeline,
 )
+from backend.rinse_scan_time import system_datetime_to_et
 from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_create_issue_purpose,
@@ -100,6 +102,43 @@ def _last_cleaning_before(
     if not candidates:
         return None
     return max(candidates, key=sort_key_ev)
+
+
+def _occurrence_et_key(ts: datetime) -> datetime:
+    """Normalize scan wall time to naive ET for dedupe/comparison."""
+    et = system_datetime_to_et(ts)
+    if et is not None:
+        return et.replace(tzinfo=None)
+    return ts
+
+
+def unique_occurrence_times(
+    events: Sequence[Mapping[str, Any]],
+    purpose_matches: Callable[[str | None], bool],
+) -> list[tuple[Mapping[str, Any], datetime]]:
+    """
+    Chronological unique occurrences for one normalized purpose family.
+
+    Duplicate rows at the same ET instant count once. Returned timestamps are
+    strictly increasing by ET wall time.
+    """
+    keyed: list[tuple[Mapping[str, Any], datetime, datetime]] = []
+    for ev in events:
+        if not purpose_matches(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts):
+            continue
+        keyed.append((ev, ts, _occurrence_et_key(ts)))
+    keyed.sort(key=lambda item: (item[2], sort_key_ev(item[0])))
+    out: list[tuple[Mapping[str, Any], datetime]] = []
+    seen_et: set[datetime] = set()
+    for ev, ts, et_key in keyed:
+        if et_key in seen_et:
+            continue
+        seen_et.add(et_key)
+        out.append((ev, ts))
+    return out
 
 
 def _first_add_photos_after(

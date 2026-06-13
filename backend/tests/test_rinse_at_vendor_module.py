@@ -154,6 +154,90 @@ class TestHDCompletion:
         assert status == AV_STATUS_COMPLETED
 
 
+class TestRepeatedEventCompletion:
+    """Second-occurrence completion requires strictly increasing unique timestamps."""
+
+    def test_hd_one_add_photos_pending(self):
+        events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1)]
+        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_hd_duplicate_add_photos_same_timestamp_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("add-photos", T1, ev_id=1),
+            _ev("add-photos", T1, ev_id=2, scan_index=2),
+        ]
+        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_hd_two_add_photos_increasing_timestamps_completes(self):
+        events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "second add-photos"
+        assert comp_ts == T2
+
+    def test_hd_pre_anchor_add_photos_plus_one_after_pending(self):
+        events = [_ev("add-photos", T0), _ev("sent-to-vendor", T1), _ev("add-photos", T2)]
+        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_hd_two_post_anchor_add_photos_increasing_completes(self):
+        events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "second add-photos"
+        assert comp_ts == T2
+
+    def test_hd_duplicate_add_photos_regression_7l3cpdv81q(self):
+        anchor = datetime(2026, 6, 11, 4, 23)
+        dup_ts = datetime(2026, 6, 12, 17, 1)
+        events = [
+            _ev("sent-to-vendor", anchor, ev_id=81388),
+            _ev("add-photos", dup_ts, ev_id=88304, scan_index=2),
+            _ev("add-photos", dup_ts, ev_id=88322, scan_index=4),
+            _ev("workitems-added", datetime(2026, 6, 12, 17, 4), ev_id=88324, scan_index=2),
+        ]
+        as_of = naive_et_day_end_inclusive(date(2026, 6, 12))
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=as_of)
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_wf_one_weight_entry_pending(self):
+        events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1)]
+        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_wf_duplicate_weight_entry_same_timestamp_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1, ev_id=1),
+            _ev("weight-entry", T1, ev_id=2, scan_index=2),
+        ]
+        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_wf_two_weight_entries_increasing_completes(self):
+        events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1), _ev("weight-entry", T2)]
+        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "weight-entry"
+        assert comp_ts == T2
+
+    def test_wf_pre_anchor_weight_plus_one_after_pending(self):
+        events = [_ev("weight-entry", T0), _ev("sent-to-vendor", T1), _ev("weight-entry", T2)]
+        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+
 class TestChangedToRush:
     def test_day_advance_pending(self):
         meta = {"service_type": "WF", "date_clean": date(2026, 6, 11)}

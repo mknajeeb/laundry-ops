@@ -22,7 +22,7 @@ from backend.rinse_bag_stage_bounds import (
     lifecycle_anchor,
     ts_valid,
 )
-from backend.rinse_bag_activity_rules import _all_weight_entries_after_anchor
+from backend.rinse_bag_activity_rules import unique_occurrence_times
 from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
@@ -1531,10 +1531,12 @@ def _wf_completion_signal(
 ) -> tuple[str | None, datetime | None]:
     anchored = events_on_or_after(timeline, anchor_ts)
     anchored = _events_as_of(anchored, as_of_end)
-    weights = _all_weight_entries_after_anchor(anchored)
+    weights = unique_occurrence_times(anchored, is_weight_entry_purpose)
     if len(weights) >= 2:
-        ev, ts = weights[1]
-        return str(ev.get("purpose") or "weight-entry"), ts
+        first_ts = weights[0][1]
+        second_ev, second_ts = weights[1]
+        if second_ts > first_ts:
+            return str(second_ev.get("purpose") or "weight-entry"), second_ts
     return None, None
 
 
@@ -1546,7 +1548,6 @@ def _hd_completion_signal(
 ) -> tuple[str | None, datetime | None]:
     anchored = events_on_or_after(timeline, anchor_ts)
     anchored = _events_as_of(anchored, as_of_end)
-    add_photos_count = 0
     best: tuple[datetime, str] | None = None
     for ev in anchored:
         purpose = ev.get("purpose")
@@ -1556,11 +1557,13 @@ def _hd_completion_signal(
         if _is_hd_completion_purpose(purpose):
             if best is None or ts < best[0]:
                 best = (ts, str(purpose or "hd-completion"))
-        if is_add_photos_purpose(purpose):
-            add_photos_count += 1
-            if add_photos_count >= 2:
-                if best is None or ts < best[0]:
-                    best = (ts, "second add-photos")
+    add_photos = unique_occurrence_times(anchored, is_add_photos_purpose)
+    if len(add_photos) >= 2:
+        first_ts = add_photos[0][1]
+        _, second_ts = add_photos[1]
+        if second_ts > first_ts:
+            if best is None or second_ts < best[0]:
+                best = (second_ts, "second add-photos")
     if best is None:
         return None, None
     return best[1], best[0]
