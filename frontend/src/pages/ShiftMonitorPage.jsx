@@ -571,7 +571,12 @@ export default function ShiftMonitorPage({ user }) {
           return `Ready for Vendor failed: ${rfv.error_message || "unknown error"}`;
         }
         if (rfv.status === "success" && Number(rfv.rows_found) === 0) {
-          return "Ready for Vendor returned 0 rows successfully (old rows marked inactive)";
+          const emptyValidated =
+            rfv.empty_result_validated === true || rfv.stats?.empty_result_validated === true;
+          if (emptyValidated) {
+            return "Ready for Vendor queue validated empty.";
+          }
+          return "Ready for Vendor returned 0 rows but was not validated; previous RFV population was preserved.";
         }
         if (rfv.status === "success") {
           return `Ready for Vendor success: ${rfv.rows_found ?? 0} rows, ${rfv.active_rows ?? 0} active`;
