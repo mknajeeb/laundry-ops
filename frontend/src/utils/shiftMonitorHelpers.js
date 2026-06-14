@@ -303,7 +303,9 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
 export function buildAtVendorPortalSnapshot(module) {
   const av = module || {};
   const snapshotTotal = av.current_portal_snapshot_total ?? av.current_live_vendor_home_total;
-  const yetToProcess = av.portal_snapshot_yet_to_process;
+  const ytpReliable = av.portal_snapshot_yet_to_process_reliable === true;
+  const ytpSource = av.portal_snapshot_yet_to_process_source;
+  const inferredSources = new Set(["inferred_fallback", "partial_inferred_fallback"]);
   const cards = [
     {
       key: "av_portal_snapshot_total",
@@ -312,11 +314,19 @@ export function buildAtVendorPortalSnapshot(module) {
       clickable: false,
     },
   ];
-  if (yetToProcess != null) {
+  if (ytpReliable && av.portal_snapshot_yet_to_process != null) {
     cards.push({
       key: "av_portal_yet_to_process",
       label: "Yet to process",
-      count: yetToProcess,
+      count: av.portal_snapshot_yet_to_process,
+      clickable: false,
+    });
+  } else if (snapshotTotal > 0 && (inferredSources.has(ytpSource) || ytpReliable === false)) {
+    cards.push({
+      key: "av_portal_ytp_unavailable",
+      label: "Yet to process",
+      count: null,
+      sub: "Pending count unavailable from portal snapshot",
       clickable: false,
     });
   }

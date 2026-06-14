@@ -936,6 +936,60 @@ def portal_at_vendor_yet_to_process(row: Mapping[str, Any]) -> bool:
     return not any(m in steps for m in done_markers)
 
 
+def portal_at_vendor_has_cleaning_steps(row: Mapping[str, Any]) -> bool:
+    """True when portal scrape captured steps_in_cleaning_process for this row."""
+    from backend.rinse_cleaner_ticket_presence import _presence_raw_row_json
+
+    raw = _presence_raw_row_json(row)
+    steps = str(raw.get("steps_in_cleaning_process") or row.get("steps_in_cleaning_process") or "").strip()
+    return bool(steps)
+
+
+PORTAL_YTP_SOURCE_CLEANING_STEPS = "portal_cleaning_steps"
+PORTAL_YTP_SOURCE_INFERRED_FALLBACK = "inferred_fallback"
+PORTAL_YTP_SOURCE_PARTIAL_INFERRED = "partial_inferred_fallback"
+PORTAL_YTP_SOURCE_NO_ACTIVE_PRESENCE = "no_active_presence"
+
+
+def summarize_portal_snapshot_yet_to_process(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """
+    Summarize yet-to-process for active at_vendor portal snapshot rows.
+
+    Count is only returned when every row has portal cleaning-step metadata.
+    Missing steps default portal_at_vendor_yet_to_process() to True (conservative fallback)
+    and must not be shown as a trusted Vendor Home pending count.
+    """
+    total = len(rows)
+    if total == 0:
+        return {
+            "portal_snapshot_yet_to_process": None,
+            "portal_snapshot_yet_to_process_reliable": False,
+            "portal_snapshot_yet_to_process_source": PORTAL_YTP_SOURCE_NO_ACTIVE_PRESENCE,
+            "portal_snapshot_yet_to_process_rows_with_steps": 0,
+            "portal_snapshot_yet_to_process_rows_total": 0,
+        }
+
+    with_steps = sum(1 for row in rows if portal_at_vendor_has_cleaning_steps(row))
+    reliable = with_steps == total
+    if reliable:
+        source = PORTAL_YTP_SOURCE_CLEANING_STEPS
+    elif with_steps == 0:
+        source = PORTAL_YTP_SOURCE_INFERRED_FALLBACK
+    else:
+        source = PORTAL_YTP_SOURCE_PARTIAL_INFERRED
+
+    yet_to_process = sum(1 for row in rows if portal_at_vendor_yet_to_process(row))
+    return {
+        "portal_snapshot_yet_to_process": yet_to_process if reliable else None,
+        "portal_snapshot_yet_to_process_reliable": reliable,
+        "portal_snapshot_yet_to_process_source": source,
+        "portal_snapshot_yet_to_process_rows_with_steps": with_steps,
+        "portal_snapshot_yet_to_process_rows_total": total,
+    }
+
+
 def load_portal_vendor_home_counts(
     cursor,
     organization_id: int,

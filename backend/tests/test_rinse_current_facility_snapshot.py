@@ -620,6 +620,28 @@ class TestVendorHomeParitySplit:
         assert portal_at_vendor_yet_to_process(complete_row) is False
         assert portal_at_vendor_yet_to_process(missing_steps) is True
 
+    def test_summarize_portal_yet_to_process_unreliable_when_steps_missing(self):
+        from backend.rinse_current_facility_snapshot import (
+            PORTAL_YTP_SOURCE_CLEANING_STEPS,
+            PORTAL_YTP_SOURCE_INFERRED_FALLBACK,
+            summarize_portal_snapshot_yet_to_process,
+        )
+
+        missing = [{"raw_row_json": {}} for _ in range(20)]
+        out = summarize_portal_snapshot_yet_to_process(missing)
+        assert out["portal_snapshot_yet_to_process"] is None
+        assert out["portal_snapshot_yet_to_process_reliable"] is False
+        assert out["portal_snapshot_yet_to_process_source"] == PORTAL_YTP_SOURCE_INFERRED_FALLBACK
+
+        mixed = (
+            [{"raw_row_json": {"steps_in_cleaning_process": "In progress"}}] * 17
+            + [{"raw_row_json": {"steps_in_cleaning_process": "Complete — ready"}}] * 3
+        )
+        out_ok = summarize_portal_snapshot_yet_to_process(mixed)
+        assert out_ok["portal_snapshot_yet_to_process"] == 17
+        assert out_ok["portal_snapshot_yet_to_process_reliable"] is True
+        assert out_ok["portal_snapshot_yet_to_process_source"] == PORTAL_YTP_SOURCE_CLEANING_STEPS
+
     def test_manual_vendor_home_cards_not_clickable(self):
         from backend.rinse_current_facility_snapshot import build_vendor_home_view_section
 

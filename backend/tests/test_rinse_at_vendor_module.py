@@ -1208,8 +1208,14 @@ class TestCleanVeeWashAtVendorBaseline:
             f"SEED{i}": {
                 "bag_id": f"SEED{i}",
                 "service_type": "WF",
-                "portal_yet_to_process": i < 17,
                 "active_presence": True,
+                "raw_row_json": {
+                    "steps_in_cleaning_process": (
+                        "In progress at vendor"
+                        if i < 17
+                        else "Complete — ready for pickup"
+                    ),
+                },
             }
             for i in range(20)
         }
@@ -1267,6 +1273,8 @@ class TestCleanVeeWashAtVendorBaseline:
         assert meta["current_live_vendor_home_total"] == 20
         assert meta["current_portal_snapshot_total"] == 20
         assert meta["portal_snapshot_yet_to_process"] == 17
+        assert meta["portal_snapshot_yet_to_process_reliable"] is True
+        assert meta["portal_snapshot_yet_to_process_source"] == "portal_cleaning_steps"
         assert len(population) == 72
         gone = [p for p in population if not p.get("currently_on_vendor_home")]
         assert len(gone) == 52

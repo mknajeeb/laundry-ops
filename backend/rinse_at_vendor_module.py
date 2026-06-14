@@ -1136,9 +1136,11 @@ def _load_baseline_gated_at_vendor_population(
 
     live_presence_ids = kept_ids & set(live_by_bag.keys())
     current_live_vendor_home_total = len(live_presence_ids)
-    portal_snapshot_yet_to_process = sum(
-        1 for bid in live_presence_ids if live_by_bag[bid].get("portal_yet_to_process")
-    )
+    from backend.rinse_current_facility_snapshot import summarize_portal_snapshot_yet_to_process
+
+    live_presence_rows = [live_by_bag[bid] for bid in sorted(live_presence_ids) if bid in live_by_bag]
+    portal_ytp_meta = summarize_portal_snapshot_yet_to_process(live_presence_rows)
+    portal_snapshot_yet_to_process = portal_ytp_meta.get("portal_snapshot_yet_to_process")
 
     registry_service = _load_registry_service_types(cursor, org, sorted(population_ids))
     meta_by_bag = _load_delivery_meta(cursor, org, sorted(population_ids))
@@ -1227,6 +1229,12 @@ def _load_baseline_gated_at_vendor_population(
         "scan_only_arrivals_blocked_count": scan_only_arrivals_blocked_count,
         "current_portal_snapshot_total": current_live_vendor_home_total,
         "portal_snapshot_yet_to_process": portal_snapshot_yet_to_process,
+        "portal_snapshot_yet_to_process_reliable": portal_ytp_meta.get(
+            "portal_snapshot_yet_to_process_reliable"
+        ),
+        "portal_snapshot_yet_to_process_source": portal_ytp_meta.get(
+            "portal_snapshot_yet_to_process_source"
+        ),
         "baseline_snapshot_bag_ids": sorted(seed_ids),
         "same_day_arrival_bag_ids": sorted(same_day_sent_ids | scrape_arrival_ids),
         "start_of_day_carry_in_count": start_of_day_carry_in_count,
@@ -2770,6 +2778,12 @@ def build_at_vendor_module(
             population_meta.get("current_portal_snapshot_total") or current_live_vendor_home_total
         ),
         "portal_snapshot_yet_to_process": population_meta.get("portal_snapshot_yet_to_process"),
+        "portal_snapshot_yet_to_process_reliable": population_meta.get(
+            "portal_snapshot_yet_to_process_reliable"
+        ),
+        "portal_snapshot_yet_to_process_source": population_meta.get(
+            "portal_snapshot_yet_to_process_source"
+        ),
         "bags_gone_from_portal_but_in_workload_count": len(gone_but_counted),
         "scan_only_arrivals_blocked_count": population_meta.get("scan_only_arrivals_blocked_count"),
         "selected_day_at_vendor_total": selected_day_total,
