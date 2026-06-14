@@ -44,6 +44,7 @@ jobs:
           test -f startup.sh
           test -f requirements.txt
           test -f scripts/rinse-cleanertickets/scrape.mjs
+          test -f scripts/rinse-cleanertickets/scrape-vendor-home.mjs
           test -f scripts/rinse-cleanertickets/package.json
           ls -la scripts/rinse-cleanertickets/
 

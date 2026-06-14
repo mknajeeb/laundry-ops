@@ -1824,16 +1824,41 @@ def _load_completed_before_day_start_still_present(
         if st != AV_STATUS_COMPLETED or comp_ts is None:
             continue
         ids.add(bid)
+        display_meta = {
+            **pres,
+            "service_type": svc,
+            "delivery_source": pres.get("delivery_source") or "presence",
+        }
+        latest_edd, delivery_texts, delivery_source = resolve_delivery_fields(display_meta)
+        rush_bucket, rush_reason = classify_at_vendor_rush(
+            latest_edd=latest_edd,
+            delivery_texts=delivery_texts,
+            selected_date_et=selected_date_et,
+            pending=False,
+        )
         rows.append(
             {
                 "bag_id": bid,
                 "service_type": svc,
+                "service_bucket": svc,
                 "customer_name": pres.get("customer_name"),
                 "completion_signal": sig,
                 "completion_timestamp": comp_ts.isoformat(),
                 "completion_time_et": _format_et_display(comp_ts),
                 "sent_to_vendor_time_et": _format_et_display(sent_ts),
                 "monitoring_bucket": "completed_before_day_start_still_present",
+                "estimated_delivery_date": latest_edd.isoformat() if latest_edd else None,
+                "date_clean": latest_edd.isoformat() if latest_edd else None,
+                "delivery_source": delivery_source,
+                "rush_bucket": rush_bucket,
+                "rush_label": (
+                    "Rush"
+                    if rush_bucket == AV_RUSH
+                    else ("Non-Rush" if rush_bucket == AV_NON_RUSH else "Unknown Review")
+                ),
+                "rush_reason": rush_reason,
+                "facility_status": "completed",
+                "at_vendor_status": AV_STATUS_COMPLETED,
             }
         )
     return rows, ids

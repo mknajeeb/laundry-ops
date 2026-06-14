@@ -190,7 +190,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                   <Typography variant="body2" color="error.main">{error}</Typography>
                 ) : scans.length ? (
                   <Box sx={{ overflowX: "auto", maxWidth: "100%" }}>
-                    <FoldingScanEventsTable events={scans} />
+                    <FoldingScanEventsTable events={scans} collapseUploadDuplicates />
                   </Box>
                 ) : (
                   <Typography variant="body2" color="text.secondary">No scan events for this bag.</Typography>

@@ -341,7 +341,7 @@ function RecordRow({ row, expanded, onToggle }) {
                     Folding not computed yet (bag still in progress or no FOLDING→CLEAN interval).
                   </Typography>
                 ) : null}
-                <FoldingScanEventsTable events={scanEvents} />
+                <FoldingScanEventsTable events={scanEvents} collapseUploadDuplicates />
               </>
             )}
           </Box>

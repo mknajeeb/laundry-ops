@@ -2697,6 +2697,7 @@ _AV_DRILLDOWN_ROW_KEYS = frozenset({
     "estimated_delivery_date",
     "date_clean",
     "delivery_source",
+    "rush_reason",
     "status_reason",
     "changed_to_rush",
     "changed_to_rush_reason",

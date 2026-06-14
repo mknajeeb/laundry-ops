@@ -29,6 +29,10 @@ def scraper_script() -> Path:
     return scraper_dir() / "scrape.mjs"
 
 
+def vendor_home_scraper_script() -> Path:
+    return scraper_dir() / "scrape-vendor-home.mjs"
+
+
 _AZURE_NODE_DEFAULT = "/home/site/node-v20.18.0-linux-x64/bin/node"
 
 
@@ -637,3 +641,65 @@ def run_bag_export_csv(
     except Exception:
         pass
     return final_code, full_out, full_err
+
+
+def run_vendor_home_summary_scrape(
+    extra_env: dict[str, str] | None = None,
+    *,
+    timeout_sec: int | None = None,
+) -> dict | None:
+    """
+    Scrape Rinse Vendor Home dashboard counts via scrape-vendor-home.mjs.
+    Returns parsed summary dict or None when scrape is disabled/unavailable.
+    """
+    import json
+    import tempfile
+
+    script = vendor_home_scraper_script()
+    if not script.is_file():
+        return None
+
+    sdir = scraper_dir()
+    ok, _prep_err = _ensure_rinse_scraper_node_modules()
+    if not ok:
+        return None
+
+    env = os.environ.copy()
+    if extra_env:
+        env.update({k: str(v) for k, v in extra_env.items() if v is not None})
+    env.setdefault("NODE_NO_WARNINGS", "1")
+    if not (env.get("PLAYWRIGHT_BROWSERS_PATH") or "").strip():
+        env["PLAYWRIGHT_BROWSERS_PATH"] = effective_playwright_browsers_path(env)
+
+    node = node_binary()
+    bok, _berr = _ensure_playwright_chromium(sdir, node, env)
+    if not bok:
+        return None
+
+    with tempfile.TemporaryDirectory(prefix="rinse-vendor-home-") as tmp:
+        out_path = Path(tmp) / "vendor_home_summary.json"
+        env["OUTPUT_VENDOR_HOME_JSON"] = str(out_path)
+        timeout = int(timeout_sec) if timeout_sec is not None else min(scrape_timeout_sec(), 180)
+        try:
+            proc = subprocess.run(
+                [node, str(script)],
+                cwd=str(sdir),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        if proc.returncode != 0:
+            return None
+        if not out_path.is_file():
+            try:
+                return json.loads(proc.stdout or "")
+            except (json.JSONDecodeError, TypeError):
+                return None
+        try:
+            data = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            return None
+        return data if isinstance(data, dict) else None

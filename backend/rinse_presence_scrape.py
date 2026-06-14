@@ -16,6 +16,7 @@ from typing import Any, Callable, TextIO
 
 from backend.rinse_bag_export_runner import export_enabled, run_bag_export_csv
 from backend.rinse_cleaner_ticket_presence import (
+    PORTAL_STATUS_AT_VENDOR,
     PORTAL_STATUS_READY,
     apply_presence_scrape,
     build_presence_scrape_debug,
@@ -25,6 +26,7 @@ from backend.rinse_cleaner_ticket_presence import (
     read_portal_scrape_meta,
     record_presence_scrape_run,
 )
+from backend.rinse_current_facility_snapshot import extract_vendor_home_summary_from_scrape_meta
 from backend.rinse_portal_scrape_meta import validate_presence_empty_result
 from backend.rinse_vendor_config import rinse_scrape_env_for_organization
 from backend.tenant_feature_flags import is_feature_enabled
@@ -202,6 +204,20 @@ def run_presence_scrape_for_org(
 
             rows = parse_presence_rows_from_portal_csv(str(csv_path))
             scrape_meta = read_portal_scrape_meta(str(meta_path))
+            if (
+                result.portal_status == PORTAL_STATUS_AT_VENDOR
+                and not extract_vendor_home_summary_from_scrape_meta(scrape_meta)
+            ):
+                from backend.rinse_bag_export_runner import run_vendor_home_summary_scrape
+
+                vendor_home = run_vendor_home_summary_scrape(extra_env)
+                if vendor_home:
+                    scrape_meta = {**(scrape_meta or {}), "vendor_home_summary": vendor_home}
+                    _log(
+                        "Vendor Home summary supplement: "
+                        f"at={vendor_home.get('orders_at_veewash')} "
+                        f"ytp={vendor_home.get('orders_at_veewash_yet_to_process')}\n"
+                    )
             scrape_debug = build_presence_scrape_debug(
                 portal_status=result.portal_status,
                 source_url=source_url,
