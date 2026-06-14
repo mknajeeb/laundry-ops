@@ -642,6 +642,71 @@ class TestVendorHomeParitySplit:
         assert out_ok["portal_snapshot_yet_to_process_reliable"] is True
         assert out_ok["portal_snapshot_yet_to_process_source"] == PORTAL_YTP_SOURCE_CLEANING_STEPS
 
+    def test_extract_vendor_home_summary_from_scrape_meta(self):
+        from backend.rinse_current_facility_snapshot import (
+            PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT,
+            extract_vendor_home_summary_from_scrape_meta,
+        )
+
+        summary = extract_vendor_home_summary_from_scrape_meta(
+            {
+                "vendor_home_summary": {
+                    "orders_at_veewash": 20,
+                    "orders_at_veewash_yet_to_process": 16,
+                    "due_today": 0,
+                    "due_today_yet_to_process": 0,
+                    "scraped_at": "2026-06-14T01:00:00Z",
+                }
+            }
+        )
+        assert summary["orders_at_veewash"] == 20
+        assert summary["orders_at_veewash_yet_to_process"] == 16
+        assert summary["source"] == PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+
+    def test_build_portal_snapshot_prefers_direct_vendor_home(self):
+        from backend.rinse_current_facility_snapshot import (
+            PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST,
+            PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT,
+            build_portal_snapshot_vendor_home_fields,
+        )
+
+        class FakeCursor:
+            def execute(self, *args, **kwargs):
+                return None
+
+            def fetchone(self):
+                return {
+                    "id": 99,
+                    "finished_at": "2026-06-14T01:00:00",
+                    "scrape_meta_json": {
+                        "vendor_home_summary": {
+                            "orders_at_veewash": 20,
+                            "orders_at_veewash_yet_to_process": 16,
+                            "due_today": 0,
+                            "due_today_yet_to_process": 0,
+                        }
+                    },
+                }
+
+        with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
+            with patch(
+                "backend.rinse_current_facility_snapshot.count_presence_rows",
+                return_value={"at_vendor_active": 20, "rfv_active": 0, "portal_list_available": True},
+            ):
+                out = build_portal_snapshot_vendor_home_fields(
+                    FakeCursor(),
+                    3,
+                    today=date(2026, 6, 13),
+                    module={"current_portal_snapshot_total": 20},
+                )
+        assert out["orders_at_veewash"] == 20
+        assert out["orders_at_veewash_source"] == PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+        assert out["orders_at_veewash_yet_to_process"] == 16
+        assert out["orders_at_veewash_yet_to_process_reliable"] is True
+        assert out["portal_snapshot_yet_to_process"] == 16
+        assert out["portal_snapshot_yet_to_process_reliable"] is True
+        assert out["due_today"] == 0
+
     def test_manual_vendor_home_cards_not_clickable(self):
         from backend.rinse_current_facility_snapshot import build_vendor_home_view_section
 

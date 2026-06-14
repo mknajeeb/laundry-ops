@@ -12,7 +12,9 @@ import {
   Drawer,
   IconButton,
   Paper,
+  FormControlLabel,
   Stack,
+  Switch,
   Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -33,11 +35,14 @@ import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs 
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import ShiftBagRecordRow from "../components/shift/ShiftBagRecordRow";
+import VeeWashLogo from "../components/VeeWashLogo";
 import {
   filterAtVendorDrilldown,
   filterModuleRecords,
   filterRfvRecords,
   formatShiftDateLabel,
+  sortDrilldownRowsByDue,
+  summarizeDrilldownEdd,
   formatDueDateRow,
   formatLastActivityRow,
   formatRushAuditRow,
@@ -488,12 +493,10 @@ function AdvancedDebugSection({ dateStart, dateEnd, initialData, user }) {
 function PipelineModulesSection({
   dateStart,
   dateEnd,
-  moduleKeys,
   moduleFilters,
   setModuleFilter,
   openDrilldown,
   drilldown,
-  opsLabel,
 }) {
   const [expanded, setExpanded] = useState(false);
   const [fullData, setFullData] = useState(null);
@@ -513,7 +516,7 @@ function PipelineModulesSection({
       });
       setFullData(res.data || null);
     } catch (e) {
-      setError(e?.response?.data?.error || "Failed to load pipeline modules");
+      setError(e?.response?.data?.error || "Failed to load pipeline monitor");
     } finally {
       setLoading(false);
     }
@@ -521,35 +524,50 @@ function PipelineModulesSection({
 
   const modules = fullData?.shift_monitor_modules || {};
   const records = fullData?.records || [];
+  const production = modules.production_stage;
 
   return (
     <Accordion
       expanded={expanded}
       onChange={handleChange}
-      sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }}
+      sx={{
+        mt: 2,
+        boxShadow: "none",
+        border: "1px dashed",
+        borderColor: "warning.main",
+        bgcolor: "rgba(255, 247, 237, 0.35)",
+      }}
       TransitionProps={{ unmountOnExit: true }}
     >
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-        <Typography fontWeight={700}>Production pipeline modules</Typography>
+        <Box>
+          <Typography fontWeight={700} color="warning.dark">
+            Production Pipeline Monitor — Under Review
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Experimental · counts may not match Today&apos;s Workload
+          </Typography>
+        </Box>
       </AccordionSummary>
       <AccordionDetails>
-        {loading ? <Typography variant="body2" color="text.secondary">Loading modules…</Typography> : null}
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Production Pipeline Monitor is under review. Counts may not match Today&apos;s Workload and should not be used as trusted production KPIs until re-audited.
+        </Alert>
+        {loading ? <Typography variant="body2" color="text.secondary">Loading…</Typography> : null}
         {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
-        {!loading && expanded ? moduleKeys.map((key) => (
+        {!loading && expanded && production ? (
           <ShiftMonitorModuleSection
-            key={key}
-            moduleKey={key}
-            module={modules[key]}
+            moduleKey="production_stage"
+            module={production}
             records={records}
-            rushFilter={moduleFilters[key]?.rush || "all"}
-            serviceFilter={moduleFilters[key]?.service || "all"}
-            onRushChange={(v) => setModuleFilter(key, { rush: v })}
-            onServiceChange={(v) => setModuleFilter(key, { service: v })}
+            rushFilter={moduleFilters.production_stage?.rush || "all"}
+            serviceFilter={moduleFilters.production_stage?.service || "all"}
+            onRushChange={(v) => setModuleFilter("production_stage", { rush: v })}
+            onServiceChange={(v) => setModuleFilter("production_stage", { service: v })}
             onDrilldown={openDrilldown}
             activeTag={drilldown}
-            operationsLabel={key === "monitor" ? opsLabel : undefined}
           />
-        )) : null}
+        ) : null}
       </AccordionDetails>
     </Accordion>
   );
@@ -573,6 +591,7 @@ export default function ShiftMonitorPage({ user }) {
   const [rfvRushFilter, setRfvRushFilter] = useState("all");
   const [avRushFilter, setAvRushFilter] = useState("all");
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [dueSortEnabled, setDueSortEnabled] = useState(true);
   const initialToday = todayRange();
   const [rangePreset, setRangePreset] = useState(() => {
     const ds = searchParams.get("date_start");
@@ -606,26 +625,42 @@ export default function ShiftMonitorPage({ user }) {
     load();
   }, [load]);
 
-  const opsLabel = data?.shift_monitor_modules?.operations_window?.label;
   const atVendorModule = data?.at_vendor_module || {};
   const rfv = data?.ready_for_vendor || {};
   const records = data?.records || [];
 
   const filtered = useMemo(() => {
     if (!drilldown) return [];
+    let rows = [];
     if (drilldown.type === "rfv") {
-      return filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, "all");
+      rows = filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, "all");
+    } else if (drilldown.moduleKey === "at_vendor_flow") {
+      rows = filterAtVendorDrilldown(atVendorModule, drilldown);
+    } else {
+      const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
+      rows = filterModuleRecords(records, {
+        moduleTag: drilldown.moduleTag,
+        rushFilter: f.rush,
+        serviceFilter: f.service,
+      });
     }
-    if (drilldown.moduleKey === "at_vendor_flow") {
-      return filterAtVendorDrilldown(atVendorModule, drilldown);
+    const referenceDateEt = dateEnd || dateStart;
+    if (
+      dueSortEnabled
+      && referenceDateEt
+      && (drilldown.type === "rfv" || drilldown.moduleKey === "at_vendor_flow")
+    ) {
+      return sortDrilldownRowsByDue(rows, referenceDateEt);
     }
-    const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
-    return filterModuleRecords(records, {
-      moduleTag: drilldown.moduleTag,
-      rushFilter: f.rush,
-      serviceFilter: f.service,
-    });
-  }, [records, atVendorModule, drilldown, moduleFilters, rfv.rows]);
+    return rows;
+  }, [records, atVendorModule, drilldown, moduleFilters, rfv.rows, dateEnd, dateStart, dueSortEnabled]);
+
+  const drilldownEddSummary = useMemo(() => {
+    if (!drilldown || (drilldown.type !== "rfv" && drilldown.moduleKey !== "at_vendor_flow")) {
+      return null;
+    }
+    return summarizeDrilldownEdd(filtered, dateEnd || dateStart);
+  }, [filtered, drilldown, dateEnd, dateStart]);
 
   const expectedDrilldownCount = useMemo(() => {
     if (!drilldown?.expectedCount && drilldown?.expectedCount !== 0) return null;
@@ -725,7 +760,6 @@ export default function ShiftMonitorPage({ user }) {
   const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
   const perfMeta = data?.performance_meta;
 
-  const moduleKeys = ["production_stage", "exceptions", "monitor"];
   const syncCycle = data?.rinse_sync?.sync_cycle || {};
 
   return (
@@ -737,17 +771,20 @@ export default function ShiftMonitorPage({ user }) {
         spacing={1}
         sx={{ mb: 2, position: "sticky", top: 0, zIndex: 10, bgcolor: "background.default", py: 1 }}
       >
-        <Box>
-          <Typography variant="h5" fontWeight={900}>
-            Shift Monitor
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {formatShiftDateLabel(dateStart, dateEnd)}
-          </Typography>
-          <Typography variant="caption" color="text.secondary">
-            Times shown in New York time
-          </Typography>
-        </Box>
+        <Stack direction="row" spacing={1.5} alignItems="center">
+          <VeeWashLogo height={44} />
+          <Box>
+            <Typography variant="h5" fontWeight={900}>
+              Shift Monitor
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              {formatShiftDateLabel(dateStart, dateEnd)}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Times shown in New York time
+            </Typography>
+          </Box>
+        </Stack>
         <MonitorNav />
       </Stack>
 
@@ -821,12 +858,10 @@ export default function ShiftMonitorPage({ user }) {
           <PipelineModulesSection
             dateStart={dateStart}
             dateEnd={dateEnd}
-            moduleKeys={moduleKeys}
             moduleFilters={moduleFilters}
             setModuleFilter={setModuleFilter}
             openDrilldown={openDrilldown}
             drilldown={drilldown}
-            opsLabel={opsLabel}
           />
 
           <AdvancedDebugSection dateStart={dateStart} dateEnd={dateEnd} initialData={data} user={user} />
@@ -849,8 +884,8 @@ export default function ShiftMonitorPage({ user }) {
           },
         }}
       >
-        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1, flexShrink: 0 }}>
-          <Box sx={{ minWidth: 0, pr: 1 }}>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1, flexShrink: 0 }} flexWrap="wrap" gap={1}>
+          <Box sx={{ minWidth: 0, pr: 1, flex: 1 }}>
             <Typography variant="h6" fontWeight={800} sx={{ wordBreak: "break-word" }}>
               {drilldown?.moduleTitle || "Records"} — {drilldown?.cardLabel || ""}
             </Typography>
@@ -859,21 +894,45 @@ export default function ShiftMonitorPage({ user }) {
               {expectedDrilldownCount != null && expectedDrilldownCount !== filtered.length
                 ? ` · expected ${expectedDrilldownCount}`
                 : ""}
+              {drilldownEddSummary?.missing > 0
+                ? ` · ${drilldownEddSummary.missing} missing EDD`
+                : ""}
             </Typography>
           </Box>
+          {(drilldown?.type === "rfv" || drilldown?.moduleKey === "at_vendor_flow") ? (
+            <FormControlLabel
+              control={(
+                <Switch
+                  size="small"
+                  checked={dueSortEnabled}
+                  onChange={(e) => setDueSortEnabled(e.target.checked)}
+                />
+              )}
+              label={<Typography variant="caption">Sort by due date</Typography>}
+              sx={{ mr: 0 }}
+            />
+          ) : null}
           <IconButton onClick={() => setDrawerOpen(false)} aria-label="Close" sx={{ flexShrink: 0 }}>
             <CloseIcon />
           </IconButton>
         </Stack>
         <Box sx={{ overflow: "auto", flex: 1, minHeight: 0 }}>
           {drilldown?.type === "rfv"
-            ? filtered.map((row) => <ShiftBagRecordRow key={row.bag_id} row={row} variant="rfv" />)
+            ? filtered.map((row) => (
+              <ShiftBagRecordRow
+                key={row.bag_id}
+                row={row}
+                variant="rfv"
+                referenceDateEt={dateEnd || dateStart}
+              />
+            ))
             : drilldown?.moduleKey === "at_vendor_flow"
               ? filtered.map((row) => (
                 <ShiftBagRecordRow
                   key={row.bag_id}
                   row={row}
                   variant="at_vendor"
+                  referenceDateEt={dateEnd || dateStart}
                 />
               ))
               : filtered.map((row) => (

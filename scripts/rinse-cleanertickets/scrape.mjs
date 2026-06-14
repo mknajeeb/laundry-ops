@@ -1678,6 +1678,74 @@ function buildPortalValidationMeta({
   };
 }
 
+function firstIntMatch(text, patterns) {
+  for (const re of patterns) {
+    const m = String(text || "").match(re);
+    if (m && m[1] != null) {
+      const n = parseInt(m[1], 10);
+      if (!Number.isNaN(n)) return n;
+    }
+  }
+  return null;
+}
+
+/** Scrape Rinse Vendor Home dashboard summary counts (not cleaner-ticket row inference). */
+async function scrapeVendorHomeSummary(page) {
+  const enabled = String(process.env.RINSE_SCRAPE_VENDOR_HOME || "1").trim() !== "0";
+  if (!enabled) return null;
+  const url = (process.env.RINSE_VENDOR_HOME_URL || "https://www.rinse.com/vendors/").trim();
+  try {
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: Math.max(navTimeoutMs(), 90000),
+    });
+    const waitMs = Math.max(
+      400,
+      Math.min(8000, parseInt(process.env.RINSE_VENDOR_HOME_WAIT_MS || "1500", 10) || 1500),
+    );
+    await page.waitForTimeout(waitMs);
+    const text = await page.locator("body").innerText();
+    // Vendor name varies by org (VeeWash, Washpro, etc.) — match any word after "orders at".
+    const vendorAtPatterns = [
+      /(\d+)\s+orders?\s+at\s+[A-Za-z][\w\s-]*(?!\s+yet)/i,
+      /(\d+)\s*\n+\s*orders?\s+at\s+[A-Za-z][\w\s-]*(?!\s+yet)/i,
+      /(\d+)\s+orders?\s+at\s+veewash(?!\s+yet)/i,
+      /(\d+)\s+orders?\s+at\s+VeeWash(?!\s+yet)/i,
+    ];
+    const vendorYtpPatterns = [
+      /(\d+)\s+orders?\s+at\s+[A-Za-z][\w\s-]*\s+yet\s+to\s+be\s+processed/i,
+      /(\d+)\s*\n+\s*orders?\s+at\s+[A-Za-z][\w\s-]*\s+yet\s+to\s+be\s+processed/i,
+      /(\d+)\s+orders?\s+at\s+veewash\s+yet\s+to\s+be\s+processed/i,
+      /(\d+)\s+orders?\s+at\s+VeeWash\s+yet\s+to\s+be\s+processed/i,
+    ];
+    const summary = {
+      source: "vendor_home_page",
+      scraped_at: new Date().toISOString(),
+      orders_at_veewash: firstIntMatch(text, vendorAtPatterns),
+      orders_at_veewash_yet_to_process: firstIntMatch(text, vendorYtpPatterns),
+      due_today: firstIntMatch(text, [
+        /(\d+)\s+orders?\s+due\s+today(?!\s+yet)/i,
+        /(\d+)\s+due\s+today(?!\s+yet)/i,
+      ]),
+      due_today_yet_to_process: firstIntMatch(text, [
+        /(\d+)\s+orders?\s+due\s+today\s+yet\s+to\s+be\s+processed/i,
+        /(\d+)\s+due\s+today\s+yet\s+to\s+be\s+processed/i,
+      ]),
+    };
+    progressLine(
+      `Vendor Home summary: at=${summary.orders_at_veewash ?? "—"} ytp=${summary.orders_at_veewash_yet_to_process ?? "—"} due=${summary.due_today ?? "—"}`,
+    );
+    return summary;
+  } catch (err) {
+    progressLine(`Vendor Home summary scrape failed: ${err.message || err}`);
+    return {
+      source: "vendor_home_page",
+      scraped_at: new Date().toISOString(),
+      error: String(err.message || err),
+    };
+  }
+}
+
 async function main() {
   console.error("[rinse-scrape] entering main() — Node", process.version);
   console.error("[rinse-scrape] process.env.RINSE_TICKETS_URL:", process.env.RINSE_TICKETS_URL ?? "<unset>");
@@ -1727,6 +1795,11 @@ async function main() {
   try {
     if (!storageState) {
       await tryLogin(page, baseUrl);
+    }
+
+    let vendorHomeSummary = null;
+    if (statusFromTicketsUrl(baseUrl) === "at_vendor") {
+      vendorHomeSummary = await scrapeVendorHomeSummary(page);
     }
 
     const allRows = [];
@@ -1900,6 +1973,7 @@ async function main() {
           page_start: pageStart,
           row_count: 0,
           scraped_at: new Date().toISOString(),
+          ...(vendorHomeSummary ? { vendor_home_summary: vendorHomeSummary } : {}),
           ...buildPortalValidationMeta({
             baseUrl,
             pageUrl: lastPageUrl,
@@ -1963,6 +2037,7 @@ async function main() {
       page_start: pageStart,
       row_count: allRows.length,
       scraped_at: new Date().toISOString(),
+      ...(vendorHomeSummary ? { vendor_home_summary: vendorHomeSummary } : {}),
       ...buildPortalValidationMeta({
         baseUrl,
         pageUrl: lastPageUrl,

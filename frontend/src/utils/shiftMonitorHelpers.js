@@ -276,40 +276,80 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
   return sections;
 }
 
-/** Current portal snapshot cards (live At Vendor presence — not daily workload). */
+/** Current portal snapshot cards (live Vendor Home counts — not daily workload). */
 export function buildAtVendorPortalSnapshot(module) {
   const av = module || {};
-  const snapshotTotal = av.current_portal_snapshot_total ?? av.current_live_vendor_home_total;
-  const ytpReliable = av.portal_snapshot_yet_to_process_reliable === true;
-  const ytpSource = av.portal_snapshot_yet_to_process_source;
-  const inferredSources = new Set(["inferred_fallback", "partial_inferred_fallback"]);
+  const snapshotTotal =
+    av.orders_at_veewash ??
+    av.current_portal_snapshot_total ??
+    av.current_live_vendor_home_total;
+  const snapshotReliable = av.orders_at_veewash_reliable !== false;
+  const snapshotSource = av.orders_at_veewash_source;
+
+  const ytpReliable =
+    av.orders_at_veewash_yet_to_process_reliable === true
+    || av.portal_snapshot_yet_to_process_reliable === true;
+  const ytp =
+    av.orders_at_veewash_yet_to_process ??
+    av.portal_snapshot_yet_to_process;
+  const ytpSource =
+    av.orders_at_veewash_yet_to_process_source ??
+    av.portal_snapshot_yet_to_process_source;
+
   const cards = [
     {
       key: "av_portal_snapshot_total",
       label: "Currently at VeeWash",
       count: snapshotTotal,
+      sub: snapshotSource === "vendor_home_page_direct" ? "Vendor Home" : undefined,
       clickable: false,
       variant: "snapshot",
     },
   ];
-  if (ytpReliable && av.portal_snapshot_yet_to_process != null) {
+
+  if (ytpReliable && ytp != null) {
     cards.push({
       key: "av_portal_yet_to_process",
       label: "Yet to process",
-      count: av.portal_snapshot_yet_to_process,
+      count: ytp,
+      sub: ytpSource === "vendor_home_page_direct" ? "Vendor Home" : undefined,
       clickable: false,
       variant: "snapshot",
     });
-  } else if (snapshotTotal > 0 && (inferredSources.has(ytpSource) || ytpReliable === false)) {
+  } else if (snapshotTotal > 0 && !ytpReliable) {
     cards.push({
       key: "av_portal_ytp_unavailable",
       label: "Yet to process",
       count: null,
-      sub: "Pending count unavailable from portal snapshot",
+      sub: "Pending count unavailable — run Vendor Home sync for direct counts",
       clickable: false,
       variant: "info",
     });
   }
+
+  const dueTodayReliable = av.due_today_reliable === true;
+  const dueYtpReliable = av.due_today_yet_to_process_reliable === true;
+  if (dueTodayReliable && av.due_today != null) {
+    cards.push({
+      key: "av_portal_due_today",
+      label: "Due Today",
+      count: av.due_today,
+      sub: "Vendor Home",
+      clickable: false,
+      variant: "snapshot",
+    });
+  }
+  if (dueYtpReliable && av.due_today_yet_to_process != null) {
+    cards.push({
+      key: "av_portal_due_today_ytp",
+      label: "Due Today Yet to Process",
+      count: av.due_today_yet_to_process,
+      sub: "Vendor Home",
+      clickable: false,
+      variant: "snapshot",
+    });
+  }
+
   if (av.scan_only_arrivals_blocked_count > 0) {
     cards.push({
       key: "av_scan_only_blocked",
@@ -324,6 +364,7 @@ export function buildAtVendorPortalSnapshot(module) {
       key: "av_gone_but_counted",
       label: "Left portal — still in workload",
       count: av.bags_gone_from_portal_but_in_workload_count,
+      sub: "Dashboard-derived · not from Vendor Home",
       clickable: false,
       variant: "info",
     });
@@ -331,6 +372,22 @@ export function buildAtVendorPortalSnapshot(module) {
   return [{
     key: "portal_snapshot",
     layout: "snapshot",
+    meta: {
+      scrapeAt: av.portal_snapshot_scrape_at || null,
+      reconciliation: av.portal_snapshot_presence_reconciliation || null,
+      sources: {
+        atVeewash: av.orders_at_veewash_source,
+        yetToProcess: av.orders_at_veewash_yet_to_process_source,
+        dueToday: av.due_today_source,
+        dueTodayYtp: av.due_today_yet_to_process_source,
+      },
+      reliable: {
+        atVeewash: av.orders_at_veewash_reliable !== false,
+        yetToProcess: av.orders_at_veewash_yet_to_process_reliable === true,
+        dueToday: av.due_today_reliable === true,
+        dueTodayYtp: av.due_today_yet_to_process_reliable === true,
+      },
+    },
     cards: cards.map((c) => ({
       variant: c.variant || "snapshot",
       compact: true,
@@ -521,8 +578,133 @@ export function formatEtDate(iso) {
   });
 }
 
+/** Primary EDD field for drilldown rows (presence EDD preferred over date_clean). */
+export function getRowEddIso(row) {
+  return (
+    row?.estimated_delivery_date
+    || row?.estimated_delivery_date_et
+    || row?.due_date
+    || row?.date_clean
+    || null
+  );
+}
+
+function parseCalendarDateOnly(iso) {
+  if (!iso) return null;
+  const raw = String(iso).slice(0, 10);
+  const [y, mo, da] = raw.split("-").map(Number);
+  if (!y || !mo || !da) return null;
+  return new Date(y, mo - 1, da);
+}
+
+/** Due status vs selected ET calendar date. */
+export function computeDueStatus(referenceDateIso, eddIso) {
+  const ref = parseCalendarDateOnly(referenceDateIso);
+  const edd = parseCalendarDateOnly(eddIso);
+  if (!ref || !edd) {
+    return {
+      bucket: "unknown",
+      sortOrder: 99,
+      label: "EDD unavailable",
+      colorKey: "neutral",
+      daysOffset: null,
+      eddIso: eddIso || null,
+    };
+  }
+  const daysOffset = Math.round((edd.getTime() - ref.getTime()) / 86400000);
+  if (daysOffset < 0) {
+    const lateDays = Math.abs(daysOffset);
+    return {
+      bucket: "late",
+      sortOrder: 0,
+      label: lateDays === 1 ? "1 Day Late" : `${lateDays} Days Late`,
+      colorKey: "late",
+      daysOffset,
+      eddIso,
+    };
+  }
+  if (daysOffset === 0) {
+    return {
+      bucket: "due_today",
+      sortOrder: 1,
+      label: "Due Today",
+      colorKey: "due_today",
+      daysOffset,
+      eddIso,
+    };
+  }
+  if (daysOffset === 1) {
+    return {
+      bucket: "due_tomorrow",
+      sortOrder: 2,
+      label: "Due Tomorrow",
+      colorKey: "due_tomorrow",
+      daysOffset,
+      eddIso,
+    };
+  }
+  return {
+    bucket: "future",
+    sortOrder: 3,
+    label: `Due in ${daysOffset} Days`,
+    colorKey: "future",
+    daysOffset,
+    eddIso,
+  };
+}
+
+export const DUE_STATUS_COLORS = {
+  late: "error.main",
+  due_today: "warning.dark",
+  due_tomorrow: "info.main",
+  future: "text.secondary",
+  neutral: "text.disabled",
+};
+
+export function formatEddDisplay(iso) {
+  if (!iso) return "—";
+  const raw = String(iso).slice(0, 10);
+  const [y, mo, da] = raw.split("-").map(Number);
+  if (!y || !mo || !da) return formatEtDate(iso);
+  return new Date(y, mo - 1, da).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+export function sortDrilldownRowsByDue(rows, referenceDateIso) {
+  const list = [...(rows || [])];
+  list.sort((a, b) => {
+    const sa = computeDueStatus(referenceDateIso, getRowEddIso(a));
+    const sb = computeDueStatus(referenceDateIso, getRowEddIso(b));
+    if (sa.sortOrder !== sb.sortOrder) return sa.sortOrder - sb.sortOrder;
+    const ea = parseCalendarDateOnly(sa.eddIso);
+    const eb = parseCalendarDateOnly(sb.eddIso);
+    if (ea && eb && ea.getTime() !== eb.getTime()) return ea - eb;
+    return String(a.bag_id || "").localeCompare(String(b.bag_id || ""));
+  });
+  return list;
+}
+
+export function summarizeDrilldownEdd(rows, referenceDateIso) {
+  let missing = 0;
+  const sources = {};
+  for (const row of rows || []) {
+    const edd = getRowEddIso(row);
+    if (!edd) {
+      missing += 1;
+      continue;
+    }
+    const src = row?.delivery_source
+      || (row?.estimated_delivery_date ? "estimated_delivery_date" : "date_clean");
+    sources[src] = (sources[src] || 0) + 1;
+  }
+  return { missing, sources, total: (rows || []).length };
+}
+
 export function formatDueDateRow(row) {
-  const due = row?.due_date || row?.date_clean;
+  const due = getRowEddIso(row);
   if (!due) return "Due: —";
   return `Due: ${formatEtDate(due)}`;
 }

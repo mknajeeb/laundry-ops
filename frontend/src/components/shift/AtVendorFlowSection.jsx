@@ -121,7 +121,19 @@ export default function AtVendorFlowSection({
         </Typography>
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.25 }}>
           Currently visible on Vendor Home.
+          {av.portal_snapshot_scrape_at ? (
+            <> · Vendor Home sync {String(av.portal_snapshot_scrape_at).replace("T", " ").slice(0, 19)}</>
+          ) : null}
         </Typography>
+
+        {av.portal_snapshot_presence_reconciliation?.active_at_vendor_presence_count != null
+          && av.orders_at_veewash != null
+          && av.portal_snapshot_presence_reconciliation.difference != null
+          && av.portal_snapshot_presence_reconciliation.difference !== 0 ? (
+          <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 1 }}>
+            Presence list ({av.portal_snapshot_presence_reconciliation.active_at_vendor_presence_count}) vs Vendor Home ({av.orders_at_veewash}): diff {av.portal_snapshot_presence_reconciliation.difference}
+          </Typography>
+        ) : null}
 
         <MetricCardGrid sections={portalSections} activeKey={activeKey} compact />
       </Paper>

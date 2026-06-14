@@ -949,6 +949,214 @@ PORTAL_YTP_SOURCE_CLEANING_STEPS = "portal_cleaning_steps"
 PORTAL_YTP_SOURCE_INFERRED_FALLBACK = "inferred_fallback"
 PORTAL_YTP_SOURCE_PARTIAL_INFERRED = "partial_inferred_fallback"
 PORTAL_YTP_SOURCE_NO_ACTIVE_PRESENCE = "no_active_presence"
+PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT = "vendor_home_page_direct"
+PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST = "portal_presence_list"
+PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE = "unavailable"
+
+
+def _parse_json_obj(raw: Any) -> dict[str, Any] | None:
+    import json
+
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return dict(parsed) if isinstance(parsed, dict) else None
+    return None
+
+
+def extract_vendor_home_summary_from_scrape_meta(
+    scrape_meta: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize direct Vendor Home summary counts from presence scrape metadata."""
+    meta = dict(scrape_meta or {})
+    summary = _parse_json_obj(meta.get("vendor_home_summary")) or _parse_json_obj(
+        meta.get("vendor_home_counts")
+    )
+    if not summary:
+        return None
+
+    def _int_field(*keys: str) -> int | None:
+        for key in keys:
+            if key not in summary or summary.get(key) is None:
+                continue
+            try:
+                return int(summary[key])
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    orders_at_veewash = _int_field("orders_at_veewash", "at_veewash_total")
+    orders_ytp = _int_field(
+        "orders_at_veewash_yet_to_process",
+        "at_veewash_yet_to_process",
+    )
+    due_today = _int_field("due_today", "due_today_total")
+    due_ytp = _int_field("due_today_yet_to_process")
+    if all(v is None for v in (orders_at_veewash, orders_ytp, due_today, due_ytp)):
+        return None
+
+    scraped_at = summary.get("scraped_at") or meta.get("scraped_at")
+    return {
+        "source": PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT,
+        "scraped_at": scraped_at,
+        "orders_at_veewash": orders_at_veewash,
+        "orders_at_veewash_yet_to_process": orders_ytp,
+        "due_today": due_today,
+        "due_today_yet_to_process": due_ytp,
+        "reliable": orders_at_veewash is not None or orders_ytp is not None,
+    }
+
+
+def load_latest_vendor_home_direct_counts(
+    cursor,
+    organization_id: int,
+) -> dict[str, Any]:
+    """
+    Latest direct Vendor Home summary scraped during presence sync.
+    Stored on rinse_cleaner_ticket_presence_runs.scrape_meta_json.vendor_home_summary.
+    """
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+
+    org = int(organization_id)
+    out: dict[str, Any] = {
+        "available": False,
+        "source": PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE,
+        "orders_at_veewash": None,
+        "orders_at_veewash_yet_to_process": None,
+        "due_today": None,
+        "due_today_yet_to_process": None,
+        "scraped_at": None,
+        "presence_run_id": None,
+        "presence_run_finished_at": None,
+    }
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+        return out
+
+    cursor.execute(
+        """
+        SELECT id, finished_at, scrape_meta_json
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s
+          AND portal_status = %s
+          AND status = 'success'
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR),
+    )
+    row = cursor.fetchone()
+    if not isinstance(row, dict):
+        return out
+
+    summary = extract_vendor_home_summary_from_scrape_meta(
+        _parse_json_obj(row.get("scrape_meta_json"))
+    )
+    if not summary:
+        return out
+
+    out.update(summary)
+    out["available"] = True
+    out["presence_run_id"] = row.get("id")
+    finished = row.get("finished_at")
+    out["presence_run_finished_at"] = (
+        finished.isoformat() if hasattr(finished, "isoformat") else finished
+    )
+    return out
+
+
+def build_portal_snapshot_vendor_home_fields(
+    cursor,
+    organization_id: int,
+    *,
+    today: date,
+    module: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Current Portal Snapshot display fields for /performance.
+    Prefers direct Vendor Home page counts; never uses missing cleaning-step inference for ytp.
+    """
+    av = dict(module or {})
+    org = int(organization_id)
+    direct = load_latest_vendor_home_direct_counts(cursor, org)
+    presence_meta = count_presence_rows(cursor, org)
+    presence_total = int(presence_meta.get("at_vendor_active") or 0)
+
+    orders_at_veewash: int | None = None
+    orders_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+    orders_reliable = False
+
+    if direct.get("available") and direct.get("orders_at_veewash") is not None:
+        orders_at_veewash = int(direct["orders_at_veewash"])
+        orders_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+        orders_reliable = True
+    elif presence_total > 0:
+        orders_at_veewash = presence_total
+        orders_source = PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST
+        orders_reliable = True
+    elif av.get("current_portal_snapshot_total") is not None:
+        orders_at_veewash = int(av.get("current_portal_snapshot_total") or 0)
+        orders_source = PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST
+        orders_reliable = True
+
+    ytp: int | None = None
+    ytp_reliable = False
+    ytp_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+    if direct.get("available") and direct.get("orders_at_veewash_yet_to_process") is not None:
+        ytp = int(direct["orders_at_veewash_yet_to_process"])
+        ytp_reliable = True
+        ytp_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+
+    due_today: int | None = None
+    due_today_reliable = False
+    due_today_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+    if direct.get("available") and direct.get("due_today") is not None:
+        due_today = int(direct["due_today"])
+        due_today_reliable = True
+        due_today_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+
+    due_ytp: int | None = None
+    due_ytp_reliable = False
+    due_ytp_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+    if direct.get("available") and direct.get("due_today_yet_to_process") is not None:
+        due_ytp = int(direct["due_today_yet_to_process"])
+        due_ytp_reliable = True
+        due_ytp_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+
+    presence_reconciliation = {
+        "active_at_vendor_presence_count": presence_total,
+        "direct_vendor_home_total": direct.get("orders_at_veewash"),
+        "difference": (
+            presence_total - int(direct["orders_at_veewash"])
+            if direct.get("orders_at_veewash") is not None
+            else None
+        ),
+    }
+
+    return {
+        "orders_at_veewash": orders_at_veewash,
+        "orders_at_veewash_reliable": orders_reliable,
+        "orders_at_veewash_source": orders_source,
+        "orders_at_veewash_yet_to_process": ytp if ytp_reliable else None,
+        "orders_at_veewash_yet_to_process_reliable": ytp_reliable,
+        "orders_at_veewash_yet_to_process_source": ytp_source,
+        "due_today": due_today,
+        "due_today_reliable": due_today_reliable,
+        "due_today_source": due_today_source,
+        "due_today_yet_to_process": due_ytp if due_ytp_reliable else None,
+        "due_today_yet_to_process_reliable": due_ytp_reliable,
+        "due_today_yet_to_process_source": due_ytp_source,
+        "portal_snapshot_scrape_at": direct.get("scraped_at") or direct.get("presence_run_finished_at"),
+        "portal_snapshot_presence_run_id": direct.get("presence_run_id"),
+        "portal_snapshot_presence_reconciliation": presence_reconciliation,
+        "current_portal_snapshot_total": orders_at_veewash,
+        "portal_snapshot_yet_to_process": ytp if ytp_reliable else None,
+        "portal_snapshot_yet_to_process_reliable": ytp_reliable,
+        "portal_snapshot_yet_to_process_source": ytp_source,
+    }
 
 
 def summarize_portal_snapshot_yet_to_process(
@@ -1019,8 +1227,10 @@ def load_portal_vendor_home_counts(
         (org, PORTAL_STATUS_AT_VENDOR),
     )
     at_rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
-    ytp = sum(1 for r in at_rows if portal_at_vendor_yet_to_process(r))
-    processed = len(at_rows) - ytp
+    with_steps = sum(1 for r in at_rows if portal_at_vendor_has_cleaning_steps(r))
+    ytp_reliable = bool(at_rows) and with_steps == len(at_rows)
+    ytp = sum(1 for r in at_rows if portal_at_vendor_yet_to_process(r)) if ytp_reliable else None
+    processed = (len(at_rows) - int(ytp)) if ytp is not None else None
 
     cursor.execute(
         """
@@ -1048,6 +1258,7 @@ def load_portal_vendor_home_counts(
         "source": "portal_presence",
         "at_veewash_total": len(at_rows),
         "at_veewash_yet_to_process": ytp,
+        "at_veewash_yet_to_process_reliable": ytp_reliable,
         "at_veewash_processed": processed,
         "due_today_total": len(due_rows),
         "due_today_yet_to_process": due_ytp,

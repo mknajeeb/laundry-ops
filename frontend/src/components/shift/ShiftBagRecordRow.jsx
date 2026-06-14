@@ -12,7 +12,13 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getFoldingPerformanceDetail } from "../../api";
 import FoldingScanEventsTable from "../folding/FoldingScanEventsTable";
-import { formatEtDateTime } from "../../utils/shiftMonitorHelpers";
+import {
+  computeDueStatus,
+  DUE_STATUS_COLORS,
+  formatEddDisplay,
+  formatEtDateTime,
+  getRowEddIso,
+} from "../../utils/shiftMonitorHelpers";
 
 function DetailField({ label, value }) {
   if (value == null || value === "" || value === "—") return null;
@@ -24,7 +30,22 @@ function DetailField({ label, value }) {
   );
 }
 
-export default function ShiftBagRecordRow({ row, variant = "pipeline" }) {
+function DueStatusBlock({ row, referenceDateEt }) {
+  const eddIso = getRowEddIso(row);
+  const due = computeDueStatus(referenceDateEt, eddIso);
+  return (
+    <Box sx={{ mt: 0.75 }}>
+      <Typography variant="body2" color="text.secondary">
+        EDD: {formatEddDisplay(eddIso)}
+      </Typography>
+      <Typography variant="body2" fontWeight={700} sx={{ color: DUE_STATUS_COLORS[due.colorKey] || DUE_STATUS_COLORS.neutral }}>
+        {due.label}
+      </Typography>
+    </Box>
+  );
+}
+
+export default function ShiftBagRecordRow({ row, variant = "pipeline", referenceDateEt }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState(0);
   const [detail, setDetail] = useState(null);
@@ -99,6 +120,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline" }) {
           <Typography variant="body2" color="primary.main" fontWeight={600}>
             {row.customer_name || row.customer || "—"}
           </Typography>
+          {referenceDateEt ? <DueStatusBlock row={row} referenceDateEt={referenceDateEt} /> : null}
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mt: 0.5 }}>
             <Typography variant="caption" fontWeight={700}>{rushLabel}</Typography>
             <Typography variant="caption" color="text.secondary">·</Typography>

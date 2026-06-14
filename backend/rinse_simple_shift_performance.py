@@ -2696,6 +2696,7 @@ _AV_DRILLDOWN_ROW_KEYS = frozenset({
     "currently_on_vendor_home",
     "estimated_delivery_date",
     "date_clean",
+    "delivery_source",
     "status_reason",
     "changed_to_rush",
     "changed_to_rush_reason",
@@ -2822,6 +2823,13 @@ def _build_shift_monitor_summary_payload(
     t_av = time.perf_counter()
     at_vendor_module = build_at_vendor_module(
         cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
+    )
+    from backend.rinse_current_facility_snapshot import build_portal_snapshot_vendor_home_fields
+
+    at_vendor_module.update(
+        build_portal_snapshot_vendor_home_fields(
+            cursor, org, today=period_end, module=at_vendor_module
+        )
     )
     at_vendor_module = _slim_at_vendor_module_payload(at_vendor_module)
     av_ms = (time.perf_counter() - t_av) * 1000
@@ -3308,6 +3316,13 @@ def build_simple_shift_performance_payload(
     _t_av = time.perf_counter()
     at_vendor_module = build_at_vendor_module(
         cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
+    )
+    from backend.rinse_current_facility_snapshot import build_portal_snapshot_vendor_home_fields
+
+    at_vendor_module.update(
+        build_portal_snapshot_vendor_home_fields(
+            cursor, org, today=period_end, module=at_vendor_module
+        )
     )
     _step_ms["at_vendor_build_ms"] = round((time.perf_counter() - _t_av) * 1000, 1)
     apply_module_tags(records, events_by_bag=events_by_bag)
