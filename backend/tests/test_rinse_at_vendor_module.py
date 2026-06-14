@@ -28,6 +28,8 @@ from backend.rinse_at_vendor_module import (
     build_at_vendor_module,
     classify_at_vendor_rush,
     explain_historical_scope_vs_presence,
+    resolve_delivery_fields,
+    _enrich_presence_delivery_meta,
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive
 from backend.rinse_shift_monitor_modules import build_shift_monitor_modules
@@ -1186,6 +1188,89 @@ class TestCleanVeeWashAtVendorBaseline:
         assert meta["daily_metrics_status"] == "INCOMPLETE_BASELINE_SNAPSHOT"
         assert "3 of 10 rows available" in (meta.get("daily_metrics_warning") or "")
 
+    def test_daily_workload_includes_seed_bags_no_longer_on_portal(self):
+        from unittest.mock import MagicMock, patch
+
+        from backend.rinse_at_vendor_module import _load_baseline_gated_at_vendor_population
+        from backend.rinse_shift_monitor_baseline import BASELINE_SELECTION_BEFORE_MIDNIGHT
+
+        cursor = MagicMock()
+        seed_rows = {
+            f"SEED{i}": {
+                "bag_id": f"SEED{i}",
+                "service_type": "WF",
+                "portal_yet_to_process": True,
+                "active_presence": False,
+            }
+            for i in range(72)
+        }
+        live_rows = {
+            f"SEED{i}": {
+                "bag_id": f"SEED{i}",
+                "service_type": "WF",
+                "portal_yet_to_process": i < 17,
+                "active_presence": True,
+            }
+            for i in range(20)
+        }
+        baseline_run = {
+            "id": 28,
+            "source_batch_id": "run28-batch",
+            "finished_at": datetime(2026, 6, 13, 0, 5, 0),
+            "rows_found": 72,
+        }
+        with patch(
+            "backend.rinse_shift_monitor_baseline.select_daily_at_vendor_baseline_scrape",
+            return_value=(baseline_run, BASELINE_SELECTION_BEFORE_MIDNIGHT),
+        ), patch(
+            "backend.rinse_cleaner_ticket_presence.load_presence_run_snapshot_by_bag",
+            return_value=seed_rows,
+        ), patch(
+            "backend.rinse_cleaner_ticket_presence.count_presence_run_snapshot_rows",
+            return_value=72,
+        ), patch(
+            "backend.rinse_cleaner_ticket_presence.backfill_presence_run_snapshot_from_live_batch",
+            return_value=0,
+        ), patch(
+            "backend.rinse_at_vendor_module._load_active_at_vendor_presence_by_bag",
+            return_value=live_rows,
+        ), patch(
+            "backend.rinse_at_vendor_module._load_sent_to_vendor_bag_id_sets_for_et_day",
+            return_value=(set(), set()),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_same_day_scrape_arrival_bag_ids",
+            return_value=(set(), {}),
+        ), patch(
+            "backend.rinse_at_vendor_module._filter_cross_org_contaminated_bags",
+            side_effect=lambda _c, _o, ids: (set(ids), []),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_registry_service_types",
+            return_value={},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_delivery_meta",
+            return_value={},
+        ), patch(
+            "backend.rinse_at_vendor_module._count_contaminated_active_presence_rows",
+            return_value=0,
+        ), patch(
+            "backend.rinse_presence_sync_status.evaluate_at_vendor_presence_freshness",
+            return_value=(True, None, {"id": 30, "finished_at": datetime.utcnow()}),
+        ):
+            population, meta = _load_baseline_gated_at_vendor_population(
+                cursor,
+                3,
+                selected_date_et=date(2026, 6, 13),
+                baseline_ctx=CLEAN_BASELINE_CTX,
+            )
+
+        assert meta["selected_day_at_vendor_total"] == 72
+        assert meta["current_live_vendor_home_total"] == 20
+        assert meta["current_portal_snapshot_total"] == 20
+        assert meta["portal_snapshot_yet_to_process"] == 17
+        assert len(population) == 72
+        gone = [p for p in population if not p.get("currently_on_vendor_home")]
+        assert len(gone) == 52
+
 
 class TestCrossDayCompletionAttribution:
     def test_baseline_seed_completed_before_day_start_classified(self):
@@ -1307,3 +1392,44 @@ class TestCrossDayCompletionAttribution:
         assert out["pending"] + out["completed"] == 2
         assert "SEEDDONE" not in [r["bag_id"] for r in out["rows"]]
         assert out["completed_before_day_start_count"] + out["start_of_day_open_carry_in_count"] == 2
+
+
+class TestPresenceSnapshotDeliveryMeta:
+    def test_resolve_delivery_fields_presence_run_snapshot_uses_estimated_delivery_date(self):
+        edd, texts, source = resolve_delivery_fields(
+            {
+                "delivery_source": "presence_run_snapshot",
+                "estimated_delivery_date": date(2026, 6, 15),
+                "raw_row_json": {"estimated_delivery_text": "Mon 06/15/2026"},
+                "customer_name": "Amber Webster",
+            }
+        )
+        assert source == "presence_run_snapshot"
+        assert edd == date(2026, 6, 15)
+        assert "Mon 06/15/2026" in texts
+
+    def test_enrich_presence_delivery_meta_backfills_missing_edd(self):
+        meta = _enrich_presence_delivery_meta(
+            {"delivery_source": "presence_run_snapshot", "estimated_delivery_date": None},
+            {"estimated_delivery_date": date(2026, 6, 14), "rush_flag": "NON-RUSH"},
+        )
+        assert meta["estimated_delivery_date"] == date(2026, 6, 14)
+        assert meta["rush_flag"] == "NON-RUSH"
+
+    def test_build_row_non_rush_when_snapshot_edd_after_selected_day(self):
+        row = _build_row(
+            bag_id="9FUW30XSFQ",
+            meta={
+                "delivery_source": "presence_run_snapshot",
+                "estimated_delivery_date": date(2026, 6, 15),
+                "service_type": "HD",
+                "raw_row_json": {"rush_type": "NON-RUSH"},
+            },
+            events=[_ev("sent-to-vendor", datetime(2026, 6, 13, 10, 0))],
+            selected_date_et=date(2026, 6, 13),
+            as_of_end=naive_et_day_end_inclusive(date(2026, 6, 13)),
+            daily_et_attribution=True,
+        )
+        assert row["rush_bucket"] == AV_NON_RUSH
+        assert row["estimated_delivery_date"] == "2026-06-15"
+        assert "Non-Rush because EDD" in (row.get("rush_reason") or "")

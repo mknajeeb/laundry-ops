@@ -188,24 +188,25 @@ function avUnknownCards(prefix, rows, rush) {
   const completedBucket = { rush, service: "unknown", status: "completed" };
   const total = countAtVendorBucket(rows, bucket);
   if (total === 0) return [];
+  const prefixLabel = prefix ? `${prefix} ` : "";
   return [
     {
-      key: `${prefix.replace(/\s+/g, "_").toLowerCase()}_unknown_total`,
-      label: `${prefix} Unknown Total`,
+      key: `${(prefix || "unclassified").replace(/\s+/g, "_").toLowerCase()}_unknown_total`,
+      label: `${prefixLabel}Unknown Total`,
       count: total,
       bucket,
       clickable: true,
     },
     {
-      key: `${prefix.replace(/\s+/g, "_").toLowerCase()}_unknown_pending`,
-      label: `${prefix} Unknown Pending`,
+      key: `${(prefix || "unclassified").replace(/\s+/g, "_").toLowerCase()}_unknown_pending`,
+      label: `${prefixLabel}Unknown Pending`,
       count: countAtVendorBucket(rows, pendingBucket),
       bucket: pendingBucket,
       clickable: true,
     },
     {
-      key: `${prefix.replace(/\s+/g, "_").toLowerCase()}_unknown_completed`,
-      label: `${prefix} Unknown Completed`,
+      key: `${(prefix || "unclassified").replace(/\s+/g, "_").toLowerCase()}_unknown_completed`,
+      label: `${prefixLabel}Unknown Completed`,
       count: countAtVendorBucket(rows, completedBucket),
       bucket: completedBucket,
       clickable: true,
@@ -220,7 +221,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
 
   sections.push({
     key: "layer1",
-    title: "Daily Workload",
+    title: "Today's Workload",
     cards: [
       {
         key: "av_total",
@@ -250,7 +251,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
   });
 
   if (rushSegment === "all") {
-    const unknownCards = avUnknownCards("Unknown", rows, "all");
+    const unknownCards = avUnknownCards("", rows, "all");
     sections.push({
       key: "layer2",
       title: "By urgency",
@@ -296,6 +297,46 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
   }
 
   return sections;
+}
+
+/** Current portal snapshot cards (live At Vendor presence — not daily workload). */
+export function buildAtVendorPortalSnapshot(module) {
+  const av = module || {};
+  const snapshotTotal = av.current_portal_snapshot_total ?? av.current_live_vendor_home_total;
+  const yetToProcess = av.portal_snapshot_yet_to_process;
+  const cards = [
+    {
+      key: "av_portal_snapshot_total",
+      label: "Currently at VeeWash",
+      count: snapshotTotal,
+      clickable: false,
+    },
+  ];
+  if (yetToProcess != null) {
+    cards.push({
+      key: "av_portal_yet_to_process",
+      label: "Yet to process",
+      count: yetToProcess,
+      clickable: false,
+    });
+  }
+  if (av.scan_only_arrivals_blocked_count > 0) {
+    cards.push({
+      key: "av_scan_only_blocked",
+      label: "Scan-only blocked",
+      count: av.scan_only_arrivals_blocked_count,
+      clickable: false,
+    });
+  }
+  if (av.bags_gone_from_portal_but_in_workload_count > 0) {
+    cards.push({
+      key: "av_gone_but_counted",
+      label: "Left portal — still in workload",
+      count: av.bags_gone_from_portal_but_in_workload_count,
+      clickable: false,
+    });
+  }
+  return [{ key: "portal_snapshot", title: "Current Portal Snapshot", cards }];
 }
 
 function rfvTotalCard(label, count, drilldownTag, key) {

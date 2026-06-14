@@ -1062,6 +1062,7 @@ def load_presence_run_snapshot_by_bag(
             "customer_name": raw.get("customer_name"),
             "service_type": raw.get("service_type"),
             "estimated_delivery_date": raw.get("estimated_delivery_date"),
+            "rush_flag": raw.get("rush_flag"),
             "raw_row_json": rj,
             "delivery_source": "presence_run_snapshot",
             "portal_status": raw.get("portal_status"),

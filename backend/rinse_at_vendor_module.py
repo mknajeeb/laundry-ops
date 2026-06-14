@@ -196,6 +196,28 @@ def _presence_raw_json(row: Mapping[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _enrich_presence_delivery_meta(
+    meta: Mapping[str, Any],
+    live: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Backfill EDD and portal fields from live presence when snapshot/carry meta is incomplete."""
+    out = dict(meta)
+    if not live:
+        return out
+    if not _parse_date(out.get("estimated_delivery_date")):
+        live_edd = live.get("estimated_delivery_date")
+        if live_edd is not None:
+            out["estimated_delivery_date"] = live_edd
+    if not _presence_raw_json(out):
+        live_raw = live.get("raw_row_json")
+        if live_raw is not None:
+            out["raw_row_json"] = live_raw
+    for key in ("customer_name", "service_type", "rush_flag"):
+        if not out.get(key) and live.get(key):
+            out[key] = live.get(key)
+    return out
+
+
 def classify_at_vendor_rush(
     *,
     latest_edd: date | None,
@@ -735,6 +757,39 @@ def _load_presence_carry_in_candidates(
     return out
 
 
+def _load_at_vendor_bag_ids_seen_during_et_day(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+) -> set[str]:
+    """Bag IDs with at_vendor presence activity during the selected ET day (active or since deactivated)."""
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+
+    org = int(organization_id)
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return set()
+    day_start = naive_et_day_start(selected_date_et)
+    day_end = naive_et_day_end_inclusive(selected_date_et)
+    cursor.execute(
+        """
+        SELECT DISTINCT UPPER(TRIM(bag_id)) AS bag_id
+        FROM rinse_cleaner_ticket_presence
+        WHERE organization_id = %s
+          AND portal_status = %s
+          AND bag_id IS NOT NULL AND TRIM(bag_id) != ''
+          AND last_seen_at >= %s
+          AND last_seen_at <= %s
+        """,
+        (org, PORTAL_STATUS_AT_VENDOR, day_start, day_end),
+    )
+    return {
+        str(row.get("bag_id") or "").strip().upper()
+        for row in (cursor.fetchall() or [])
+        if isinstance(row, dict) and row.get("bag_id")
+    }
+
+
 def _load_active_at_vendor_presence_by_bag(
     cursor,
     organization_id: int,
@@ -1022,27 +1077,17 @@ def _load_baseline_gated_at_vendor_population(
     )
     seed_ids = set(seed_by_bag.keys())
     live_by_bag = _load_active_at_vendor_presence_by_bag(cursor, org)
-    if not live_by_bag:
-        return [], {
-            "available": False,
-            "reason": "No active at_vendor presence rows from latest successful scrape",
-            "start_of_day_et": start_of_day_et.isoformat(),
-            "end_of_day_et": end_of_day_et.isoformat(),
-            "day_start_et": start_of_day_et.isoformat(),
-            "day_end_et": end_of_day_et.isoformat(),
-            "baseline_scrape_run_id": baseline_run_id,
-            "baseline_selection_type": baseline_selection_type,
-        }
 
     for bid, pres in live_by_bag.items():
         if pres.get("portal_yet_to_process") is None and bid in seed_by_bag:
             pres["portal_yet_to_process"] = seed_by_bag[bid].get("portal_yet_to_process")
 
-    _, scan_only_sent_ids = _load_sent_to_vendor_bag_id_sets_for_et_day(
+    _, same_day_sent_raw = _load_sent_to_vendor_bag_id_sets_for_et_day(
         cursor, org, selected_date_et=selected_date_et
     )
-    scan_only_sent_ids -= seed_ids
-    scan_only_scrape_ids, _scan_only_scrape_meta = _load_same_day_scrape_arrival_bag_ids(
+    same_day_sent_ids = same_day_sent_raw - seed_ids
+
+    scrape_arrival_ids, scrape_arrival_meta = _load_same_day_scrape_arrival_bag_ids(
         cursor,
         org,
         day_start_et=start_of_day_et,
@@ -1051,26 +1096,48 @@ def _load_baseline_gated_at_vendor_population(
         exclude_batch_id=source_batch_id,
         seed_ids=seed_ids,
     )
-    scan_only_scrape_ids -= seed_ids | scan_only_sent_ids
+    scrape_arrival_candidates = scrape_arrival_ids - seed_ids
+    scrape_arrival_ids = scrape_arrival_candidates - same_day_sent_ids
 
-    population_ids = set(live_by_bag.keys())
-    cross_org_candidates = set(population_ids)
+    day_at_vendor_ids = _load_at_vendor_bag_ids_seen_during_et_day(
+        cursor, org, selected_date_et=selected_date_et
+    )
+    at_vendor_evidence_ids = day_at_vendor_ids | set(live_by_bag.keys())
+    evidenced_same_day_sent_ids = same_day_sent_ids & at_vendor_evidence_ids
+    scan_only_sent_ids = same_day_sent_ids - at_vendor_evidence_ids
+
+    population_ids = seed_ids | evidenced_same_day_sent_ids | scrape_arrival_ids | day_at_vendor_ids
+    cross_org_candidates = set(population_ids) | set(live_by_bag.keys())
     kept_ids, cross_org_excluded = _filter_cross_org_contaminated_bags(
         cursor, org, cross_org_candidates
     )
-    population_ids = kept_ids
+    population_ids = kept_ids & population_ids
     seed_ids &= population_ids
+    evidenced_same_day_sent_ids &= population_ids
+    scrape_arrival_ids &= population_ids
+    same_day_sent_ids = evidenced_same_day_sent_ids
     scan_only_arrivals_blocked_count = len(
-        (scan_only_sent_ids | scan_only_scrape_ids) - population_ids
+        scan_only_sent_ids | (scrape_arrival_candidates - population_ids)
     )
-    same_day_sent_ids = population_ids - seed_ids
-    scrape_arrival_ids: set[str] = set()
-    scrape_arrival_meta: dict[str, Any] = {}
 
     from backend.rinse_presence_sync_status import evaluate_at_vendor_presence_freshness
 
     presence_fresh, presence_stale_reason, latest_presence_run = evaluate_at_vendor_presence_freshness(
         cursor, org
+    )
+    if not presence_fresh:
+        scan_only_arrivals_blocked_count = len(same_day_sent_raw - seed_ids) + len(
+            scrape_arrival_candidates
+        )
+        same_day_sent_ids = set()
+        evidenced_same_day_sent_ids = set()
+        scrape_arrival_ids = set()
+        population_ids = seed_ids & kept_ids
+
+    live_presence_ids = kept_ids & set(live_by_bag.keys())
+    current_live_vendor_home_total = len(live_presence_ids)
+    portal_snapshot_yet_to_process = sum(
+        1 for bid in live_presence_ids if live_by_bag[bid].get("portal_yet_to_process")
     )
 
     registry_service = _load_registry_service_types(cursor, org, sorted(population_ids))
@@ -1091,7 +1158,7 @@ def _load_baseline_gated_at_vendor_population(
         elif bid in seed_ids:
             inclusion_reason = "Start-of-day carry-in from daily baseline at_vendor scrape seed"
         elif bid in same_day_sent_ids:
-            inclusion_reason = "Same-day At Vendor arrival in latest active presence scrape"
+            inclusion_reason = "Same-day sent-to-vendor arrival during selected ET day"
         else:
             inclusion_reason = "Same-day at_vendor scrape arrival during selected ET day"
 
@@ -1102,7 +1169,9 @@ def _load_baseline_gated_at_vendor_population(
             meta = {**meta, **scrape_arrival_meta[bid]}
         elif not meta.get("service_type") and registry_service.get(bid):
             meta["service_type"] = registry_service.get(bid)
-        meta.setdefault("active_presence", bid in seed_by_bag)
+        if bid in live_by_bag:
+            meta = _enrich_presence_delivery_meta(meta, live_by_bag[bid])
+        meta.setdefault("active_presence", bid in live_by_bag)
 
         population.append(
             {
@@ -1110,15 +1179,9 @@ def _load_baseline_gated_at_vendor_population(
                 "bag_id": bid,
                 "population_inclusion": inclusion,
                 "inclusion_reason": inclusion_reason,
-                "currently_on_vendor_home": bid in seed_by_bag and bool(
-                    seed_by_bag[bid].get("active_presence")
-                ),
+                "currently_on_vendor_home": bid in live_by_bag,
             }
         )
-
-    current_live_vendor_home_total = sum(
-        1 for bid in seed_ids if seed_by_bag.get(bid, {}).get("active_presence")
-    )
     contaminated_excluded = _count_contaminated_active_presence_rows(cursor, org)
     start_of_day_carry_in_count = len(seed_ids)
     same_day_arrivals_count = len(same_day_sent_ids | scrape_arrival_ids)
@@ -1155,14 +1218,15 @@ def _load_baseline_gated_at_vendor_population(
         "baseline_seed_source": baseline_seed_source,
         "baseline_seed_incomplete": baseline_seed_incomplete,
         **daily_metrics,
-        "population_source": "latest_active_at_vendor_presence",
+        "population_source": "clean_veewash_daily_et",
         "latest_at_vendor_presence_run_id": (
             latest_presence_run.get("id") if isinstance(latest_presence_run, dict) else None
         ),
         "at_vendor_presence_stale": not presence_fresh,
         "at_vendor_stale_reason": presence_stale_reason,
-        "latest_at_vendor_presence_run_id": (latest_presence_run or {}).get("id"),
         "scan_only_arrivals_blocked_count": scan_only_arrivals_blocked_count,
+        "current_portal_snapshot_total": current_live_vendor_home_total,
+        "portal_snapshot_yet_to_process": portal_snapshot_yet_to_process,
         "baseline_snapshot_bag_ids": sorted(seed_ids),
         "same_day_arrival_bag_ids": sorted(same_day_sent_ids | scrape_arrival_ids),
         "start_of_day_carry_in_count": start_of_day_carry_in_count,
@@ -1332,6 +1396,8 @@ def _load_selected_day_at_vendor_population(
             meta["active_presence"] = bool(pres.get("active"))
         else:
             meta.setdefault("active_presence", False)
+        if bid in live_presence_by_bag:
+            meta = _enrich_presence_delivery_meta(meta, live_presence_by_bag[bid])
 
         if not meta.get("service_type") and registry_service.get(bid):
             meta["service_type"] = registry_service.get(bid)
@@ -1639,8 +1705,9 @@ def resolve_delivery_fields(meta: Mapping[str, Any]) -> tuple[date | None, list[
     source = str(meta.get("delivery_source") or "unknown")
     texts: list[str] = []
     edd: date | None = None
+    presence_like = meta.get("delivery_source") in ("presence", "presence_run_snapshot")
 
-    if meta.get("delivery_source") == "presence":
+    if presence_like:
         edd = _parse_date(meta.get("estimated_delivery_date"))
         rj = _presence_raw_json(meta)
         for key in ("estimated_delivery_text", "Date_Clean", "Date"):
@@ -2699,6 +2766,12 @@ def build_at_vendor_module(
         "uses_clean_veewash_baseline": uses_clean_baseline,
         "current_live_vendor_home_total": current_live_vendor_home_total,
         "vendor_home_at_veewash_total": current_live_vendor_home_total,
+        "current_portal_snapshot_total": int(
+            population_meta.get("current_portal_snapshot_total") or current_live_vendor_home_total
+        ),
+        "portal_snapshot_yet_to_process": population_meta.get("portal_snapshot_yet_to_process"),
+        "bags_gone_from_portal_but_in_workload_count": len(gone_but_counted),
+        "scan_only_arrivals_blocked_count": population_meta.get("scan_only_arrivals_blocked_count"),
         "selected_day_at_vendor_total": selected_day_total,
         "carry_in_open_at_midnight_count": population_meta.get("carry_in_open_at_midnight_count"),
         "new_sent_to_vendor_today_count": population_meta.get("new_sent_to_vendor_today_count"),

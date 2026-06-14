@@ -2,9 +2,9 @@ import { Alert, Box, Typography } from "@mui/material";
 import MetricCardGrid from "./MetricCardGrid";
 import RushFilterChips from "./RushFilterChips";
 import ShiftCountCard from "./ShiftCountCard";
-import { buildAtVendorHierarchy } from "../../utils/shiftMonitorHelpers";
+import { buildAtVendorHierarchy, buildAtVendorPortalSnapshot } from "../../utils/shiftMonitorHelpers";
 
-/** Management-first At Vendor daily workload hierarchy. */
+/** At Vendor: Today's Workload (ET-day) vs Current Portal Snapshot (live presence). */
 export default function AtVendorFlowSection({
   module,
   rushFilter,
@@ -18,7 +18,8 @@ export default function AtVendorFlowSection({
   const dailyReliable = av.daily_metrics_reliable !== false;
   const segment = rushFilter || "all";
 
-  const sections = buildAtVendorHierarchy(av, segment);
+  const workloadSections = buildAtVendorHierarchy(av, segment);
+  const portalSections = buildAtVendorPortalSnapshot(av);
 
   const handleCardClick = (card) => {
     if (!onDrilldown) return;
@@ -43,8 +44,12 @@ export default function AtVendorFlowSection({
           {av.daily_metrics_ui_warning}
         </Alert>
       ) : null}
+
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1, mb: 0.5 }}>
+        A. Today&apos;s Workload
+      </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Daily Workload = Pending + Completed Today
+        ET-day operational workload = Pending + Completed Today
         {av.daily_workload_total != null ? ` · ${av.daily_workload_total}` : ""}
       </Typography>
 
@@ -53,15 +58,24 @@ export default function AtVendorFlowSection({
       </Box>
 
       <MetricCardGrid
-        sections={sections}
+        sections={workloadSections}
         onCardClick={handleCardClick}
         activeKey={activeKey}
       />
 
+      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 2.5, mb: 0.5 }}>
+        B. Current Portal Snapshot
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Active At Vendor presence from latest scrape — not daily workload
+      </Typography>
+
+      <MetricCardGrid sections={portalSections} activeKey={activeKey} />
+
       {monitoringCount > 0 ? (
         <Box sx={{ mt: 2, pt: 1.5, borderTop: "1px dashed", borderColor: "divider" }}>
           <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" sx={{ mb: 1 }}>
-            Monitoring only — excluded from Daily Workload
+            Monitoring only — excluded from Today&apos;s Workload
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             Completed Earlier — Still at VeeWash
