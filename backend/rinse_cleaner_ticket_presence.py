@@ -13,6 +13,7 @@ from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_bag_lifecycle_status import derive_bag_lifecycle_status
 from backend.rinse_portal_csv import parse_rush_flag_from_portal_cells, portal_csv_to_orders_df
 from backend.rinse_processing_settings import get_processing_settings
+from backend.rinse_scan_time import json_safe_rinse
 from backend.ta_helpers import table_exists, table_has_column
 
 PORTAL_STATUS_READY = "ready_for_vendor"
@@ -954,7 +955,7 @@ def record_presence_scrape_run(
             run_finished,
             duration_seconds,
             pages_visited,
-            json.dumps(dict(scrape_meta)) if scrape_meta else None,
+            json.dumps(json_safe_rinse(dict(scrape_meta)), ensure_ascii=False) if scrape_meta else None,
         ),
     )
     return int(cursor.lastrowid or 0) or None
