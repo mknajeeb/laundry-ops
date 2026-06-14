@@ -48,6 +48,25 @@ export function todayRangeEastern() {
   return { start: t, end: t };
 }
 
+export function yesterdayRangeEastern() {
+  const today = easternIsoDate();
+  const [y, m, d] = today.split("-").map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  anchor.setUTCDate(anchor.getUTCDate() - 1);
+  const iso = easternIsoDate(anchor);
+  return { start: iso, end: iso };
+}
+
+/** Inclusive ET calendar range ending today (e.g. 7 → today and prior 6 days). */
+export function lastNDaysRangeEastern(dayCount) {
+  const end = easternIsoDate();
+  const n = Math.max(1, Number(dayCount) || 1);
+  const [y, m, d] = end.split("-").map(Number);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  anchor.setUTCDate(anchor.getUTCDate() - (n - 1));
+  return { start: easternIsoDate(anchor), end };
+}
+
 export function monthRangeEastern(d = new Date()) {
   const p = partsInEastern(d);
   const y = Number(p.year);

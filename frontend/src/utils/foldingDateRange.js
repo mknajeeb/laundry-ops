@@ -2,8 +2,10 @@ import { isoDateInput } from "./foldingFormat";
 import {
   defaultWeekRangeEastern,
   easternIsoDate,
+  lastNDaysRangeEastern,
   monthRangeEastern,
   todayRangeEastern,
+  yesterdayRangeEastern,
 } from "./foldingEasternDate";
 
 /** Monday-based week containing `d` (Eastern calendar). */
@@ -13,6 +15,18 @@ export function defaultWeekRange(d = new Date()) {
 
 export function todayRange() {
   return todayRangeEastern();
+}
+
+export function yesterdayRange() {
+  return yesterdayRangeEastern();
+}
+
+export function last7DaysRange() {
+  return lastNDaysRangeEastern(7);
+}
+
+export function last30DaysRange() {
+  return lastNDaysRangeEastern(30);
 }
 
 export function monthRange(d = new Date()) {

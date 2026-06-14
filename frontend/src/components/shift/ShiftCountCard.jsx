@@ -3,20 +3,20 @@ import { KPI_VARIANT_STYLES, VEEWASH_DASHBOARD } from "../../theme/veewashDashbo
 
 const SIZE_STYLES = {
   kpi: {
-    p: 2.25,
-    minHeight: 118,
-    valueVariant: "h3",
-    labelVariant: "body2",
+    p: 1.75,
+    minHeight: 94,
+    valueVariant: "h4",
+    labelVariant: "caption",
   },
   default: {
-    p: 1.5,
-    minHeight: 88,
+    p: 1.2,
+    minHeight: 70,
     valueVariant: "h5",
     labelVariant: "caption",
   },
   snapshot: {
-    p: 1.1,
-    minHeight: 72,
+    p: 0.9,
+    minHeight: 58,
     valueVariant: "h6",
     labelVariant: "caption",
   },
@@ -75,7 +75,7 @@ export default function ShiftCountCard({
         fontWeight={800}
         lineHeight={1.05}
         color={accent}
-        sx={{ fontSize: resolvedSize === "kpi" ? { xs: "2rem", sm: "2.25rem" } : undefined }}
+        sx={{ fontSize: resolvedSize === "kpi" ? { xs: "1.55rem", sm: "1.75rem" } : undefined }}
       >
         {display}
       </Typography>
@@ -83,7 +83,7 @@ export default function ShiftCountCard({
         variant={sz.labelVariant}
         fontWeight={700}
         display="block"
-        sx={{ mt: 0.75, color: variant === "pending" ? VEEWASH_DASHBOARD.pendingDark : "text.primary" }}
+        sx={{ mt: 0.5, color: variant === "pending" ? VEEWASH_DASHBOARD.pendingDark : "text.secondary", fontWeight: 600 }}
       >
         {label}
       </Typography>

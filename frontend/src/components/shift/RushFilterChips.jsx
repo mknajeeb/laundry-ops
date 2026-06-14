@@ -10,15 +10,16 @@ export default function RushFilterChips({ value, onChange, sx, disabled = false 
         return (
           <Chip
             key={id}
-            size="medium"
+            size="small"
             label={label}
             disabled={disabled}
             onClick={() => !disabled && onChange(id)}
             sx={{
-              fontWeight: 700,
-              borderRadius: 2,
+              fontWeight: 600,
+              borderRadius: 1.5,
               px: 0.5,
-              minHeight: 36,
+              minHeight: 30,
+              fontSize: "0.8125rem",
               bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
               color: selected ? "#fff" : "text.primary",
               border: "2px solid",

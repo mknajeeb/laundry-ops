@@ -6,12 +6,38 @@ export function currentEtIsoDate() {
 }
 
 /**
- * Live operational sections (portal snapshot, RFV, sync) apply only when the
- * selected range is a single ET calendar day equal to today.
+ * Operations Mode: single ET day selected and that day is today.
+ * Custom ranges (even if they include today) are Reporting Mode.
  */
-export function isLiveOperationalView(dateStart, dateEnd) {
+export function isOperationsMode(dateStart, dateEnd) {
   const today = currentEtIsoDate();
   return Boolean(dateStart && dateEnd && dateStart === dateEnd && dateStart === today);
+}
+
+/** @deprecated Use isOperationsMode — kept for existing imports */
+export function isLiveOperationalView(dateStart, dateEnd) {
+  return isOperationsMode(dateStart, dateEnd);
+}
+
+export function isReportingMode(dateStart, dateEnd) {
+  return !isOperationsMode(dateStart, dateEnd);
+}
+
+/** Optional report insight percentages (presentation-only; uses module rows). */
+export function buildWorkloadReportStats(module) {
+  const rows = module?.rows || [];
+  const total = Number(module?.daily_workload_total ?? module?.total ?? 0);
+  if (!total) return null;
+  const completed = Number(module?.completed ?? module?.completed_today_count ?? 0);
+  const rushCount = rows.filter((r) => String(r.rush_bucket || "").toUpperCase() === "RUSH").length;
+  const hdCount = rows.filter(
+    (r) => String(r.service_bucket || r.service_type || "").toUpperCase() === "HD",
+  ).length;
+  return {
+    completedPct: Math.round((completed / total) * 100),
+    rushPct: Math.round((rushCount / total) * 100),
+    hdPct: Math.round((hdCount / total) * 100),
+  };
 }
 
 export const RUSH_FILTERS = [

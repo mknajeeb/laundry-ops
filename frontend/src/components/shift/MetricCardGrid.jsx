@@ -56,7 +56,7 @@ export default function MetricCardGrid({
               sx={{
                 display: "grid",
                 gridTemplateColumns: gridCols,
-                gap: layout === "kpi" ? 1.5 : 1.1,
+                gap: layout === "kpi" ? 1.1 : 0.85,
                 maxWidth: "100%",
                 overflow: "hidden",
               }}

@@ -29,19 +29,21 @@ import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilityS
 import DueTodaySnapshotSection from "../components/shift/DueTodaySnapshotSection";
 import FacilityWorkloadSection from "../components/shift/FacilityWorkloadSection";
 import { EmployeeActivityPlaceholder } from "../components/shift/DashboardPreviewSections";
-import FoldingDateRangeFilter from "../components/folding/FoldingDateRangeFilter";
+import ShiftMonitorDateBar from "../components/shift/ShiftMonitorDateBar";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import ShiftBagRecordRow from "../components/shift/ShiftBagRecordRow";
 import VeeWashLogo from "../components/VeeWashLogo";
+import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import {
   filterAtVendorDrilldown,
   filterModuleRecords,
   filterRfvRecords,
   formatShiftDateLabel,
-  isLiveOperationalView,
+  isOperationsMode as checkOperationsMode,
+  isReportingMode as checkReportingMode,
   sortDrilldownRowsByDue,
   summarizeDrilldownEdd,
   formatDueDateRow,
@@ -785,47 +787,73 @@ export default function ShiftMonitorPage({ user }) {
   const perfMeta = data?.performance_meta;
 
   const syncCycle = data?.rinse_sync?.sync_cycle || {};
-  const isLiveView = isLiveOperationalView(dateStart, dateEnd);
+  const operationsMode = checkOperationsMode(dateStart, dateEnd);
+  const reportingMode = checkReportingMode(dateStart, dateEnd);
 
   return (
-    <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
+    <Box sx={{ p: { xs: 1.25, md: 2.5 }, maxWidth: 960, mx: "auto", pb: 6, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100vh" }}>
       <Stack
         direction={{ xs: "column", sm: "row" }}
         justifyContent="space-between"
         alignItems={{ xs: "flex-start", sm: "center" }}
         spacing={1}
-        sx={{ mb: 2, position: "sticky", top: 0, zIndex: 10, bgcolor: "background.default", py: 1 }}
+        sx={{ mb: 1.5, position: "sticky", top: 0, zIndex: 10, bgcolor: VEEWASH_DASHBOARD.pageBackground, py: 0.75 }}
       >
-        <Stack direction="row" spacing={1.5} alignItems="center">
-          <VeeWashLogo height={44} />
+        <Stack direction="row" spacing={1.25} alignItems="center">
+          <VeeWashLogo height={40} />
           <Box>
-            <Typography variant="h5" fontWeight={900}>
-              Shift Monitor
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+              <Typography variant="h5" fontWeight={900} sx={{ fontSize: "1.35rem" }}>
+                Shift Monitor
+              </Typography>
+              <Chip
+                label={operationsMode ? "Operations" : "Reporting"}
+                size="small"
+                sx={{
+                  height: 22,
+                  fontWeight: 700,
+                  fontSize: "0.6875rem",
+                  bgcolor: operationsMode ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
+                  color: operationsMode ? "#fff" : VEEWASH_DASHBOARD.primaryBlueDark,
+                  border: "1px solid",
+                  borderColor: operationsMode ? VEEWASH_DASHBOARD.primaryBlue : VEEWASH_DASHBOARD.primaryBlueBorder,
+                }}
+              />
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ fontSize: "0.8125rem" }}>
               {formatShiftDateLabel(dateStart, dateEnd)}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Times shown in New York time
+              New York time (ET)
             </Typography>
           </Box>
         </Stack>
         <MonitorNav />
       </Stack>
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} sx={{ mb: 2 }} flexWrap="wrap">
-        <FoldingDateRangeFilter
-          preset={rangePreset}
-          onPresetChange={setRangePreset}
-          dateStart={dateStart}
-          dateEnd={dateEnd}
-          onDateStartChange={setDateStart}
-          onDateEndChange={setDateEnd}
-          showDateField={false}
-        />
-        <Button variant="contained" size="small" onClick={load} disabled={loading} sx={{ alignSelf: { xs: "stretch", sm: "center" } }}>
-          Apply
-        </Button>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }} sx={{ mb: 1.5 }} flexWrap="wrap">
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <ShiftMonitorDateBar
+            preset={rangePreset}
+            onPresetChange={setRangePreset}
+            dateStart={dateStart}
+            dateEnd={dateEnd}
+            onDateStartChange={(v) => {
+              setRangePreset("custom");
+              setDateStart(v);
+            }}
+            onDateEndChange={(v) => {
+              setRangePreset("custom");
+              setDateEnd(v);
+            }}
+            loading={loading}
+          />
+        </Box>
+        {rangePreset === "custom" ? (
+          <Button variant="contained" size="small" onClick={load} disabled={loading} sx={{ textTransform: "none", fontWeight: 700, px: 2 }}>
+            Apply
+          </Button>
+        ) : null}
       </Stack>
 
       {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
@@ -836,18 +864,33 @@ export default function ShiftMonitorPage({ user }) {
 
       {data ? (
         <>
-          {!isLiveView ? (
-            <Alert severity="info" sx={{ mb: 2, py: 0.75 }}>
-              Historical ET day — showing workload summary only. Live portal snapshot, monitoring, Ready for Vendor, and sync status are hidden.
+          {reportingMode ? (
+            <Alert
+              severity="info"
+              variant="outlined"
+              sx={{
+                mb: 1.5,
+                py: 0.5,
+                bgcolor: "#fff",
+                borderColor: VEEWASH_DASHBOARD.snapshotBorder,
+                "& .MuiAlert-message": { width: "100%" },
+              }}
+            >
+              <Typography variant="body2" fontWeight={600}>
+                Reporting Mode
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Workload summary and breakdowns only — live portal, monitoring, RFV, sync, and pipeline are hidden.
+              </Typography>
               {atVendorModule?.uses_clean_veewash_baseline ? (
-                <Typography component="span" variant="caption" display="block" sx={{ mt: 0.75, opacity: 0.92 }}>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5, fontStyle: "italic" }}>
                   {WORKLOAD_BASELINE_AUDIT_NOTE}
                 </Typography>
               ) : null}
             </Alert>
           ) : null}
 
-          {isLiveView ? (
+          {operationsMode ? (
             <SyncStatusSection
               avSync={avSync}
               rfvSync={rfvSync}
@@ -859,9 +902,11 @@ export default function ShiftMonitorPage({ user }) {
             />
           ) : null}
 
-          <Typography variant="h5" fontWeight={900} sx={{ mb: 1.5, color: "text.primary" }}>
-            At Vendor
-          </Typography>
+          {operationsMode ? (
+            <Typography variant="overline" fontWeight={800} color={VEEWASH_DASHBOARD.primaryBlueDark} sx={{ mb: 1, display: "block", letterSpacing: 1.2 }}>
+              Live Operations
+            </Typography>
+          ) : null}
 
           <AtVendorFlowSection
             module={atVendorModule}
@@ -872,10 +917,10 @@ export default function ShiftMonitorPage({ user }) {
               setDrawerOpen(true);
             }}
             activeKey={drilldown?.moduleKey === "at_vendor_flow" ? drilldown.cardKey : null}
-            isLiveView={isLiveView}
+            isOperationsMode={operationsMode}
           />
 
-          {isLiveView ? (
+          {operationsMode ? (
             <ReadyForVendorSection
               rfv={rfv}
               rfvSync={rfvSync}
@@ -886,7 +931,7 @@ export default function ShiftMonitorPage({ user }) {
             />
           ) : null}
 
-          {isLiveView ? <LiveBaselineBanner baseline={data?.live_baseline} /> : null}
+          {operationsMode ? <LiveBaselineBanner baseline={data?.live_baseline} /> : null}
 
           {perfMeta ? (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
@@ -896,7 +941,7 @@ export default function ShiftMonitorPage({ user }) {
             </Typography>
           ) : null}
 
-          {isLiveView ? (
+          {operationsMode ? (
             <PipelineModulesSection
               dateStart={dateStart}
               dateEnd={dateEnd}
