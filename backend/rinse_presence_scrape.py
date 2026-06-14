@@ -204,20 +204,30 @@ def run_presence_scrape_for_org(
 
             rows = parse_presence_rows_from_portal_csv(str(csv_path))
             scrape_meta = read_portal_scrape_meta(str(meta_path))
-            if (
-                result.portal_status == PORTAL_STATUS_AT_VENDOR
-                and not extract_vendor_home_summary_from_scrape_meta(scrape_meta)
-            ):
+            if result.portal_status == PORTAL_STATUS_AT_VENDOR:
                 from backend.rinse_bag_export_runner import run_vendor_home_summary_scrape
 
-                vendor_home = run_vendor_home_summary_scrape(extra_env)
-                if vendor_home:
-                    scrape_meta = {**(scrape_meta or {}), "vendor_home_summary": vendor_home}
-                    _log(
-                        "Vendor Home summary supplement: "
-                        f"at={vendor_home.get('orders_at_veewash')} "
-                        f"ytp={vendor_home.get('orders_at_veewash_yet_to_process')}\n"
-                    )
+                if not extract_vendor_home_summary_from_scrape_meta(scrape_meta):
+                    vendor_home, supplement_err = run_vendor_home_summary_scrape(extra_env)
+                    if extract_vendor_home_summary_from_scrape_meta(
+                        {"vendor_home_summary": vendor_home}
+                    ):
+                        scrape_meta = {
+                            **(scrape_meta or {}),
+                            "vendor_home_summary": vendor_home,
+                            "vendor_home_supplement": "scrape-vendor-home.mjs",
+                        }
+                        _log(
+                            "Vendor Home summary supplement: "
+                            f"at={vendor_home.get('orders_at_veewash')} "
+                            f"ytp={vendor_home.get('orders_at_veewash_yet_to_process')}\n"
+                        )
+                    elif supplement_err:
+                        scrape_meta = {
+                            **(scrape_meta or {}),
+                            "vendor_home_supplement_error": supplement_err[:2000],
+                        }
+                        _log(f"Vendor Home summary supplement failed: {supplement_err}\n")
             scrape_debug = build_presence_scrape_debug(
                 portal_status=result.portal_status,
                 source_url=source_url,

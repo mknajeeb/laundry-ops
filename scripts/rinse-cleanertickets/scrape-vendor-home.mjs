@@ -55,9 +55,22 @@ function firstIntMatch(text, patterns) {
   return null;
 }
 
+function resolveStorageStatePath() {
+  const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
+  if (!storageRel) return "";
+  const abs = path.isAbsolute(storageRel) ? storageRel : path.resolve(__dirname, storageRel);
+  return fs.existsSync(abs) ? abs : "";
+}
+
 async function scrapeVendorHomeSummary(page) {
   const enabled = String(process.env.RINSE_SCRAPE_VENDOR_HOME || "1").trim() !== "0";
-  if (!enabled) return null;
+  if (!enabled) {
+    return {
+      source: "vendor_home_page",
+      scraped_at: new Date().toISOString(),
+      error: "RINSE_SCRAPE_VENDOR_HOME=0",
+    };
+  }
   const url = (process.env.RINSE_VENDOR_HOME_URL || "https://www.rinse.com/vendors/").trim();
   await page.goto(url, {
     waitUntil: "domcontentloaded",
@@ -97,32 +110,17 @@ async function scrapeVendorHomeSummary(page) {
   };
 }
 
-async function main() {
-  const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
-  const storageState =
-    storageRel && fs.existsSync(path.resolve(__dirname, storageRel))
-      ? path.resolve(__dirname, storageRel)
-      : "";
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const context = await browser.newContext(storageState ? { storageState } : {});
-  const page = await context.newPage();
-  let summary = null;
-  try {
-    summary = await scrapeVendorHomeSummary(page);
-  } catch (err) {
-    summary = {
-      source: "vendor_home_page",
-      scraped_at: new Date().toISOString(),
-      error: String(err.message || err),
-    };
-  } finally {
-    await browser.close();
-  }
+function writeSummaryOutput(summary) {
+  const payload =
+    summary && typeof summary === "object"
+      ? summary
+      : {
+          source: "vendor_home_page",
+          scraped_at: new Date().toISOString(),
+          error: "Vendor Home scrape returned no summary",
+        };
   const outPath = (process.env.OUTPUT_VENDOR_HOME_JSON || "").trim();
-  const json = `${JSON.stringify(summary, null, 2)}\n`;
+  const json = `${JSON.stringify(payload, null, 2)}\n`;
   if (outPath) {
     fs.writeFileSync(path.resolve(outPath), json, "utf8");
   } else {
@@ -130,7 +128,44 @@ async function main() {
   }
 }
 
+async function main() {
+  const storageState = resolveStorageStatePath();
+  let summary;
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"],
+  });
+  try {
+    const context = await browser.newContext(storageState ? { storageState } : {});
+    const page = await context.newPage();
+    try {
+      summary = await scrapeVendorHomeSummary(page);
+    } catch (err) {
+      summary = {
+        source: "vendor_home_page",
+        scraped_at: new Date().toISOString(),
+        error: String(err.message || err),
+      };
+    } finally {
+      await context.close().catch(() => {});
+    }
+  } catch (err) {
+    summary = {
+      source: "vendor_home_page",
+      scraped_at: new Date().toISOString(),
+      error: String(err.message || err),
+    };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+  writeSummaryOutput(summary);
+}
+
 main().catch((err) => {
-  console.error(err);
+  writeSummaryOutput({
+    source: "vendor_home_page",
+    scraped_at: new Date().toISOString(),
+    error: String(err.message || err),
+  });
   process.exit(1);
 });

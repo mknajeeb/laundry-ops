@@ -1689,6 +1689,23 @@ function firstIntMatch(text, patterns) {
   return null;
 }
 
+function resolveStorageStatePath() {
+  const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
+  if (!storageRel) return "";
+  const abs = path.isAbsolute(storageRel) ? storageRel : path.resolve(__dirname, storageRel);
+  return fs.existsSync(abs) ? abs : "";
+}
+
+function vendorHomeSummaryUsable(summary) {
+  if (!summary || typeof summary !== "object") return false;
+  return (
+    summary.orders_at_veewash != null
+    || summary.orders_at_veewash_yet_to_process != null
+    || summary.due_today != null
+    || summary.due_today_yet_to_process != null
+  );
+}
+
 /** Scrape Rinse Vendor Home dashboard summary counts (not cleaner-ticket row inference). */
 async function scrapeVendorHomeSummary(page) {
   const enabled = String(process.env.RINSE_SCRAPE_VENDOR_HOME || "1").trim() !== "0";
@@ -1754,11 +1771,7 @@ async function main() {
     "https://www.rinse.com/cleanertickets/?page=1";
   console.error("[rinse-scrape] baseUrl:", baseUrl);
   const headed = process.env.HEADED === "1" || process.env.HEADED === "true";
-  const storageRel = process.env.RINSE_STORAGE_STATE?.trim();
-  const storageState =
-    storageRel && fs.existsSync(path.resolve(__dirname, storageRel))
-      ? path.resolve(__dirname, storageRel)
-      : "";
+  const storageState = resolveStorageStatePath();
 
   const pageStart = Math.max(1, parseInt(process.env.RINSE_PAGE_START || "1", 10) || 1);
   /* Cap only; we stop much earlier on empty table, duplicate fingerprint, or duplicate bag set. */
@@ -2029,6 +2042,25 @@ async function main() {
     console.error("[rinse-scrape] wrote CSV:", outCsvAbsolute, `(${allRows.length} rows)`);
     progressLine(`\nWrote ${allRows.length} row records → ${outCsvAbsolute}`);
 
+    if (
+      statusFromTicketsUrl(baseUrl) === "at_vendor"
+      && sessionAuthenticated
+      && !vendorHomeSummaryUsable(vendorHomeSummary)
+    ) {
+      progressLine(
+        "Vendor Home summary missing after ticket scrape — refreshing from authenticated session.",
+      );
+      try {
+        vendorHomeSummary = await scrapeVendorHomeSummary(page);
+      } catch (err) {
+        vendorHomeSummary = {
+          source: "vendor_home_page",
+          scraped_at: new Date().toISOString(),
+          error: String(err.message || err),
+        };
+      }
+    }
+
     const portalScrapeMeta = {
       stopped_reason: stoppedReason,
       reached_max_pages: reachedMaxPages,
@@ -2037,7 +2069,7 @@ async function main() {
       page_start: pageStart,
       row_count: allRows.length,
       scraped_at: new Date().toISOString(),
-      ...(vendorHomeSummary ? { vendor_home_summary: vendorHomeSummary } : {}),
+      ...(vendorHomeSummaryUsable(vendorHomeSummary) ? { vendor_home_summary: vendorHomeSummary } : {}),
       ...buildPortalValidationMeta({
         baseUrl,
         pageUrl: lastPageUrl,

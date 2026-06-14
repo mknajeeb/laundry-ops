@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.rinse_presence_scrape import PresenceScrapeResult, ready_for_vendor_scrape_enabled
 from backend.rinse_scheduled_scrape import _combine_scheduled_status
-from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY, apply_presence_scrape
+from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR, PORTAL_STATUS_READY, apply_presence_scrape
 
 
 class TestCombineScheduledStatus:
@@ -136,6 +136,81 @@ class TestZeroRowsPresenceScrape:
             c for c in cursor.execute.call_args_list if "SET active=0" in str(c[0][0])
         ]
         assert not deactivate_calls
+
+    @patch("backend.rinse_bag_export_runner.run_vendor_home_summary_scrape")
+    @patch("backend.rinse_presence_scrape.parse_presence_rows_from_portal_csv")
+    @patch("backend.rinse_presence_scrape.run_bag_export_csv")
+    @patch("backend.rinse_presence_scrape.export_enabled", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    def test_at_vendor_supplement_persists_vendor_home_summary(
+        self, _ensure, _export, mock_scrape, mock_parse, mock_supplement
+    ):
+        from pathlib import Path
+        import tempfile
+
+        from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
+        mock_scrape.return_value = (0, "", "")
+        mock_parse.return_value = [{"bag_id": "BAG1"}]
+        mock_supplement.return_value = (
+            {
+                "source": "vendor_home_page",
+                "scraped_at": "2026-06-14T05:00:00Z",
+                "orders_at_veewash": 20,
+                "orders_at_veewash_yet_to_process": 10,
+                "due_today": 3,
+                "due_today_yet_to_process": 2,
+            },
+            None,
+        )
+        conn = MagicMock()
+        cursor = MagicMock()
+        conn.cursor.return_value = cursor
+        cursor.fetchall.return_value = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "presence-at_vendor.csv"
+            csv_path.write_text("Bag ID\nBAG1\n", encoding="utf-8")
+            meta_path = Path(str(csv_path) + ".meta.json")
+            meta_path.write_text(
+                '{"stopped_reason":"no_next_page_ui","pages_scraped":1,"row_count":1,"session_authenticated":true}',
+                encoding="utf-8",
+            )
+
+            def _side_effect(output_path, extra_env=None, **kwargs):
+                out = Path(output_path)
+                out.write_text(csv_path.read_text(encoding="utf-8"), encoding="utf-8")
+                meta = Path(str(out) + ".meta.json")
+                meta.write_text(meta_path.read_text(encoding="utf-8"), encoding="utf-8")
+                return (0, "", "")
+
+            mock_scrape.side_effect = _side_effect
+            with patch(
+                "backend.rinse_presence_scrape.rinse_scrape_env_for_organization",
+                return_value=("veewash", {"RINSE_TICKETS_URL": "http://example?status=at_vendor"}),
+            ):
+                result = run_presence_scrape_for_org(
+                    conn,
+                    3,
+                    portal_status=PORTAL_STATUS_AT_VENDOR,
+                    mark_missing=True,
+                    dry_run=False,
+                    run_type="scheduled",
+                )
+
+        assert result.status == "success"
+        mock_supplement.assert_called_once()
+        insert_calls = [
+            c
+            for c in cursor.execute.call_args_list
+            if "INSERT INTO rinse_cleaner_ticket_presence_runs" in str(c[0][0])
+        ]
+        assert insert_calls
+        params = insert_calls[-1][0][1]
+        scrape_meta_json = params[-1]
+        assert '"vendor_home_summary"' in scrape_meta_json
+        assert '"orders_at_veewash": 20' in scrape_meta_json
+        assert '"vendor_home_supplement"' in scrape_meta_json
 
 
 class TestScheduledScrapeRunsBoth:

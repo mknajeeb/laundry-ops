@@ -647,22 +647,22 @@ def run_vendor_home_summary_scrape(
     extra_env: dict[str, str] | None = None,
     *,
     timeout_sec: int | None = None,
-) -> dict | None:
+) -> tuple[dict | None, str | None]:
     """
     Scrape Rinse Vendor Home dashboard counts via scrape-vendor-home.mjs.
-    Returns parsed summary dict or None when scrape is disabled/unavailable.
+    Returns (summary dict, error message). Summary is None only when scrape is disabled/unavailable.
     """
     import json
     import tempfile
 
     script = vendor_home_scraper_script()
     if not script.is_file():
-        return None
+        return None, f"Missing vendor home scraper: {script}"
 
     sdir = scraper_dir()
-    ok, _prep_err = _ensure_rinse_scraper_node_modules()
+    ok, prep_err = _ensure_rinse_scraper_node_modules()
     if not ok:
-        return None
+        return None, prep_err or "playwright npm prep failed"
 
     env = os.environ.copy()
     if extra_env:
@@ -672,14 +672,14 @@ def run_vendor_home_summary_scrape(
         env["PLAYWRIGHT_BROWSERS_PATH"] = effective_playwright_browsers_path(env)
 
     node = node_binary()
-    bok, _berr = _ensure_playwright_chromium(sdir, node, env)
+    bok, berr = _ensure_playwright_chromium(sdir, node, env)
     if not bok:
-        return None
+        return None, berr or "playwright chromium prep failed"
 
     with tempfile.TemporaryDirectory(prefix="rinse-vendor-home-") as tmp:
         out_path = Path(tmp) / "vendor_home_summary.json"
         env["OUTPUT_VENDOR_HOME_JSON"] = str(out_path)
-        timeout = int(timeout_sec) if timeout_sec is not None else min(scrape_timeout_sec(), 180)
+        timeout = int(timeout_sec) if timeout_sec is not None else min(scrape_timeout_sec(), 240)
         try:
             proc = subprocess.run(
                 [node, str(script)],
@@ -690,16 +690,33 @@ def run_vendor_home_summary_scrape(
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
-            return None
+            return None, f"Vendor Home scrape timed out after {timeout}s"
+
+        def _load_summary() -> dict | None:
+            data = None
+            if out_path.is_file():
+                try:
+                    data = json.loads(out_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, TypeError):
+                    data = None
+            if not isinstance(data, dict):
+                try:
+                    data = json.loads(proc.stdout or "")
+                except (json.JSONDecodeError, TypeError):
+                    data = None
+            return data if isinstance(data, dict) else None
+
+        summary = _load_summary()
+        if summary is None:
+            err_tail = (proc.stderr or proc.stdout or "").strip()[-2000:]
+            detail = err_tail or f"exit {proc.returncode}"
+            return None, f"Vendor Home scrape produced no summary ({detail})"
+
+        if proc.returncode != 0 and summary.get("error"):
+            return summary, str(summary.get("error"))
+
         if proc.returncode != 0:
-            return None
-        if not out_path.is_file():
-            try:
-                return json.loads(proc.stdout or "")
-            except (json.JSONDecodeError, TypeError):
-                return None
-        try:
-            data = json.loads(out_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            return None
-        return data if isinstance(data, dict) else None
+            err_tail = (proc.stderr or proc.stdout or "").strip()[-2000:]
+            return summary, err_tail or f"Vendor Home scrape exit {proc.returncode}"
+
+        return summary, None
