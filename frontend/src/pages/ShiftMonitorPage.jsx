@@ -41,6 +41,7 @@ import {
   filterModuleRecords,
   filterRfvRecords,
   formatShiftDateLabel,
+  isLiveOperationalView,
   sortDrilldownRowsByDue,
   summarizeDrilldownEdd,
   formatDueDateRow,
@@ -53,6 +54,23 @@ import {
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
 
 const SYNC_TIMEOUT_MS = 1800000;
+
+const WORKLOAD_BASELINE_AUDIT_NOTE =
+  "Historical workload uses clean baseline reset from Jun 12, 2026 11:20 PM ET. Legacy carry-in bags before reset are excluded.";
+
+function WorkloadBaselineAuditNote({ visible }) {
+  if (!visible) return null;
+  return (
+    <Typography
+      variant="caption"
+      color="text.secondary"
+      display="block"
+      sx={{ mb: 1.5, fontStyle: "italic", maxWidth: 640 }}
+    >
+      {WORKLOAD_BASELINE_AUDIT_NOTE}
+    </Typography>
+  );
+}
 
 function MonitorNav() {
   return (
@@ -413,6 +431,12 @@ function AdvancedDebugSection({ dateStart, dateEnd, initialData, user }) {
         {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
         {!loading && !error && expanded ? (
           <>
+        <WorkloadBaselineAuditNote
+          visible={Boolean(
+            data?.at_vendor_module?.uses_clean_veewash_baseline
+            || data?.live_baseline?.baseline_source === "latest_clean_veewash_scrape",
+          )}
+        />
         <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
           Vendor Home vs Internal Scan (reconciliation)
         </Typography>
@@ -761,6 +785,7 @@ export default function ShiftMonitorPage({ user }) {
   const perfMeta = data?.performance_meta;
 
   const syncCycle = data?.rinse_sync?.sync_cycle || {};
+  const isLiveView = isLiveOperationalView(dateStart, dateEnd);
 
   return (
     <Box sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 960, mx: "auto", pb: 6 }}>
@@ -811,15 +836,28 @@ export default function ShiftMonitorPage({ user }) {
 
       {data ? (
         <>
-          <SyncStatusSection
-            avSync={avSync}
-            rfvSync={rfvSync}
-            rfv={rfv}
-            syncCycle={syncCycle}
-            syncRunning={syncRunning}
-            loading={loading}
-            onRefresh={runRinseSync}
-          />
+          {!isLiveView ? (
+            <Alert severity="info" sx={{ mb: 2, py: 0.75 }}>
+              Historical ET day — showing workload summary only. Live portal snapshot, monitoring, Ready for Vendor, and sync status are hidden.
+              {atVendorModule?.uses_clean_veewash_baseline ? (
+                <Typography component="span" variant="caption" display="block" sx={{ mt: 0.75, opacity: 0.92 }}>
+                  {WORKLOAD_BASELINE_AUDIT_NOTE}
+                </Typography>
+              ) : null}
+            </Alert>
+          ) : null}
+
+          {isLiveView ? (
+            <SyncStatusSection
+              avSync={avSync}
+              rfvSync={rfvSync}
+              rfv={rfv}
+              syncCycle={syncCycle}
+              syncRunning={syncRunning}
+              loading={loading}
+              onRefresh={runRinseSync}
+            />
+          ) : null}
 
           <Typography variant="h5" fontWeight={900} sx={{ mb: 1.5, color: "text.primary" }}>
             At Vendor
@@ -834,18 +872,21 @@ export default function ShiftMonitorPage({ user }) {
               setDrawerOpen(true);
             }}
             activeKey={drilldown?.moduleKey === "at_vendor_flow" ? drilldown.cardKey : null}
+            isLiveView={isLiveView}
           />
 
-          <ReadyForVendorSection
-            rfv={rfv}
-            rfvSync={rfvSync}
-            rushFilter={rfvRushFilter}
-            onRushChange={setRfvRushFilter}
-            onDrilldown={openRfvDrilldown}
-            activeKey={drilldown?.type === "rfv" ? drilldown.cardKey : null}
-          />
+          {isLiveView ? (
+            <ReadyForVendorSection
+              rfv={rfv}
+              rfvSync={rfvSync}
+              rushFilter={rfvRushFilter}
+              onRushChange={setRfvRushFilter}
+              onDrilldown={openRfvDrilldown}
+              activeKey={drilldown?.type === "rfv" ? drilldown.cardKey : null}
+            />
+          ) : null}
 
-          <LiveBaselineBanner baseline={data?.live_baseline} />
+          {isLiveView ? <LiveBaselineBanner baseline={data?.live_baseline} /> : null}
 
           {perfMeta ? (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
@@ -855,14 +896,16 @@ export default function ShiftMonitorPage({ user }) {
             </Typography>
           ) : null}
 
-          <PipelineModulesSection
-            dateStart={dateStart}
-            dateEnd={dateEnd}
-            moduleFilters={moduleFilters}
-            setModuleFilter={setModuleFilter}
-            openDrilldown={openDrilldown}
-            drilldown={drilldown}
-          />
+          {isLiveView ? (
+            <PipelineModulesSection
+              dateStart={dateStart}
+              dateEnd={dateEnd}
+              moduleFilters={moduleFilters}
+              setModuleFilter={setModuleFilter}
+              openDrilldown={openDrilldown}
+              drilldown={drilldown}
+            />
+          ) : null}
 
           <AdvancedDebugSection dateStart={dateStart} dateEnd={dateEnd} initialData={data} user={user} />
         </>

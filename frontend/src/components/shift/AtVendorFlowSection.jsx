@@ -17,13 +17,14 @@ import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 const MONITORING_COLLAPSE_THRESHOLD = 3;
 
-/** At Vendor: Today's Workload (ET-day) vs Current Portal Snapshot (live presence). */
+/** At Vendor: daily workload (ET-day) and, when live, current portal snapshot. */
 export default function AtVendorFlowSection({
   module,
   rushFilter,
   onRushChange,
   onDrilldown,
   activeKey,
+  isLiveView = true,
 }) {
   const av = module || {};
   const monitoringCount = av.completed_before_day_start_still_present_count ?? 0;
@@ -33,8 +34,8 @@ export default function AtVendorFlowSection({
   const monitoringCollapsedByDefault = monitoringCount > 0 && monitoringCount <= MONITORING_COLLAPSE_THRESHOLD;
   const [monitoringOpen, setMonitoringOpen] = useState(!monitoringCollapsedByDefault);
 
-  const workloadSections = buildAtVendorHierarchy(av, segment);
-  const portalSections = buildAtVendorPortalSnapshot(av);
+  const workloadSections = buildAtVendorHierarchy(av, segment, { historical: !isLiveView });
+  const portalSections = isLiveView ? buildAtVendorPortalSnapshot(av) : [];
 
   const handleCardClick = (card) => {
     if (!onDrilldown) return;
@@ -78,10 +79,12 @@ export default function AtVendorFlowSection({
           }}
         >
           <Typography variant="h6" fontWeight={800} sx={{ lineHeight: 1.2 }}>
-            Today&apos;s Workload
+            {isLiveView ? "Today\u2019s Workload" : "Workload Summary"}
           </Typography>
           <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.92, maxWidth: 560 }}>
-            Full ET-day workload including bags that already left the portal.
+            {isLiveView
+              ? "Full ET-day workload including bags that already left the portal."
+              : "ET-day workload for the selected date — includes bags that left the portal during that day."}
           </Typography>
         </Box>
 
@@ -104,41 +107,43 @@ export default function AtVendorFlowSection({
         </Box>
       </Paper>
 
-      <Paper
-        elevation={0}
-        sx={{
-          p: { xs: 1.25, sm: 1.5 },
-          mb: 1.5,
-          borderRadius: 2.5,
-          border: "1px solid",
-          borderColor: VEEWASH_DASHBOARD.snapshotBorder,
-          bgcolor: VEEWASH_DASHBOARD.snapshotBg,
-          boxShadow: "none",
-        }}
-      >
-        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.35, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
-          Current Portal Snapshot
-        </Typography>
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.25 }}>
-          Currently visible on Vendor Home.
-          {av.portal_snapshot_scrape_at ? (
-            <> · Vendor Home sync {String(av.portal_snapshot_scrape_at).replace("T", " ").slice(0, 19)}</>
-          ) : null}
-        </Typography>
-
-        {av.portal_snapshot_presence_reconciliation?.active_at_vendor_presence_count != null
-          && av.orders_at_veewash != null
-          && av.portal_snapshot_presence_reconciliation.difference != null
-          && av.portal_snapshot_presence_reconciliation.difference !== 0 ? (
-          <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 1 }}>
-            Presence list ({av.portal_snapshot_presence_reconciliation.active_at_vendor_presence_count}) vs Vendor Home ({av.orders_at_veewash}): diff {av.portal_snapshot_presence_reconciliation.difference}
+      {isLiveView ? (
+        <Paper
+          elevation={0}
+          sx={{
+            p: { xs: 1.25, sm: 1.5 },
+            mb: 1.5,
+            borderRadius: 2.5,
+            border: "1px solid",
+            borderColor: VEEWASH_DASHBOARD.snapshotBorder,
+            bgcolor: VEEWASH_DASHBOARD.snapshotBg,
+            boxShadow: "none",
+          }}
+        >
+          <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.35, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
+            Current Portal Snapshot
           </Typography>
-        ) : null}
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.25 }}>
+            Currently visible on Vendor Home.
+            {av.portal_snapshot_scrape_at ? (
+              <> · Vendor Home sync {String(av.portal_snapshot_scrape_at).replace("T", " ").slice(0, 19)}</>
+            ) : null}
+          </Typography>
 
-        <MetricCardGrid sections={portalSections} activeKey={activeKey} compact />
-      </Paper>
+          {av.portal_snapshot_presence_reconciliation?.active_at_vendor_presence_count != null
+            && av.orders_at_veewash != null
+            && av.portal_snapshot_presence_reconciliation.difference != null
+            && av.portal_snapshot_presence_reconciliation.difference !== 0 ? (
+            <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 1 }}>
+              Presence list ({av.portal_snapshot_presence_reconciliation.active_at_vendor_presence_count}) vs Vendor Home ({av.orders_at_veewash}): diff {av.portal_snapshot_presence_reconciliation.difference}
+            </Typography>
+          ) : null}
 
-      {monitoringCount > 0 ? (
+          <MetricCardGrid sections={portalSections} activeKey={activeKey} compact />
+        </Paper>
+      ) : null}
+
+      {isLiveView && monitoringCount > 0 ? (
         <Accordion
           expanded={monitoringOpen}
           onChange={(_, expanded) => setMonitoringOpen(expanded)}

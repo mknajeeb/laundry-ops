@@ -1,3 +1,19 @@
+import { easternIsoDate } from "./foldingEasternDate";
+
+/** Current calendar date in America/New_York (YYYY-MM-DD). */
+export function currentEtIsoDate() {
+  return easternIsoDate();
+}
+
+/**
+ * Live operational sections (portal snapshot, RFV, sync) apply only when the
+ * selected range is a single ET calendar day equal to today.
+ */
+export function isLiveOperationalView(dateStart, dateEnd) {
+  const today = currentEtIsoDate();
+  return Boolean(dateStart && dateEnd && dateStart === dateEnd && dateStart === today);
+}
+
 export const RUSH_FILTERS = [
   { id: "all", label: "All" },
   { id: "rush", label: "Rush" },
@@ -206,7 +222,8 @@ function avUnknownCards(rows, rush) {
 }
 
 /** Management hierarchy cards for At Vendor daily workload. */
-export function buildAtVendorHierarchy(module, rushSegment = "all") {
+export function buildAtVendorHierarchy(module, rushSegment = "all", options = {}) {
+  const { historical = false } = options;
   const rows = module?.rows || [];
   const rush = rushSegment === "all" ? "all" : rushSegment;
   const sections = [];
@@ -217,7 +234,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
     cards: [
       {
         key: "av_total",
-        label: "Total",
+        label: historical ? "Total Workload" : "Total",
         count: module?.daily_workload_total ?? module?.total,
         bucket: { rush: "all", service: "all", status: "all" },
         moduleTag: "mod_at_vendor_total",
@@ -237,7 +254,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
       },
       {
         key: "av_completed_today",
-        label: "Completed Today",
+        label: historical ? "Completed" : "Completed Today",
         count: module?.completed ?? module?.completed_today_count,
         bucket: { rush: "all", service: "all", status: "completed" },
         moduleTag: "mod_at_vendor_completed",
@@ -260,7 +277,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
   });
   sections.push({
     key: "completed_today",
-    title: "Completed Today",
+    title: historical ? "Completed" : "Completed Today",
     cards: avFilteredServiceCards(module, rows, rush, "completed"),
   });
 
