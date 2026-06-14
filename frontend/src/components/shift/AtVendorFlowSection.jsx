@@ -1,8 +1,21 @@
-import { Alert, Box, Typography } from "@mui/material";
+import { useState } from "react";
+import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
+  Alert,
+  Box,
+  Paper,
+  Typography,
+} from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import MetricCardGrid from "./MetricCardGrid";
 import RushFilterChips from "./RushFilterChips";
 import ShiftCountCard from "./ShiftCountCard";
 import { buildAtVendorHierarchy, buildAtVendorPortalSnapshot } from "../../utils/shiftMonitorHelpers";
+import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+
+const MONITORING_COLLAPSE_THRESHOLD = 3;
 
 /** At Vendor: Today's Workload (ET-day) vs Current Portal Snapshot (live presence). */
 export default function AtVendorFlowSection({
@@ -17,6 +30,8 @@ export default function AtVendorFlowSection({
   const monitoringRows = av.completed_before_day_start_still_present_rows || [];
   const dailyReliable = av.daily_metrics_reliable !== false;
   const segment = rushFilter || "all";
+  const monitoringCollapsedByDefault = monitoringCount > 0 && monitoringCount <= MONITORING_COLLAPSE_THRESHOLD;
+  const [monitoringOpen, setMonitoringOpen] = useState(!monitoringCollapsedByDefault);
 
   const workloadSections = buildAtVendorHierarchy(av, segment);
   const portalSections = buildAtVendorPortalSnapshot(av);
@@ -35,68 +50,130 @@ export default function AtVendorFlowSection({
   };
 
   return (
-    <Box sx={{ mb: 2.5 }}>
-      <Typography variant="h6" fontWeight={800} sx={{ mb: 0.5 }}>
-        At Vendor
-      </Typography>
+    <Box sx={{ mb: 3 }}>
       {!dailyReliable && av.daily_metrics_ui_warning ? (
-        <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+        <Alert severity="warning" sx={{ mb: 2, py: 0.5 }}>
           {av.daily_metrics_ui_warning}
         </Alert>
       ) : null}
 
-      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 1, mb: 0.5 }}>
-        A. Today&apos;s Workload
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        ET-day operational workload = Pending + Completed Today
-        {av.daily_workload_total != null ? ` · ${av.daily_workload_total}` : ""}
-      </Typography>
+      <Paper
+        elevation={0}
+        sx={{
+          mb: 2,
+          borderRadius: 3,
+          overflow: "hidden",
+          border: "1px solid",
+          borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
+          bgcolor: "#ffffff",
+          boxShadow: "0 4px 18px rgba(0, 60, 80, 0.1)",
+        }}
+      >
+        <Box
+          sx={{
+            px: { xs: 1.5, sm: 2.25 },
+            py: { xs: 1.25, sm: 1.5 },
+            bgcolor: VEEWASH_DASHBOARD.workloadHeaderBg,
+            color: "#fff",
+          }}
+        >
+          <Typography variant="h6" fontWeight={800} sx={{ lineHeight: 1.2 }}>
+            Today&apos;s Workload
+          </Typography>
+          <Typography variant="body2" sx={{ mt: 0.5, opacity: 0.92, maxWidth: 560 }}>
+            Full ET-day workload including bags that already left the portal.
+          </Typography>
+        </Box>
 
-      <Box sx={{ mb: 1.5 }}>
-        <RushFilterChips value={segment} onChange={onRushChange} />
-      </Box>
+        <Box sx={{ p: { xs: 1.5, sm: 2.25 } }}>
+          <MetricCardGrid
+            sections={workloadSections.filter((s) => s.key === "kpi")}
+            onCardClick={handleCardClick}
+            activeKey={activeKey}
+          />
 
-      <MetricCardGrid
-        sections={workloadSections}
-        onCardClick={handleCardClick}
-        activeKey={activeKey}
-      />
+          <Box sx={{ my: 2 }}>
+            <RushFilterChips value={segment} onChange={onRushChange} />
+          </Box>
 
-      <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 2.5, mb: 0.5 }}>
-        B. Current Portal Snapshot
-      </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Active At Vendor presence from latest scrape — not daily workload
-      </Typography>
+          <MetricCardGrid
+            sections={workloadSections.filter((s) => s.key !== "kpi")}
+            onCardClick={handleCardClick}
+            activeKey={activeKey}
+          />
+        </Box>
+      </Paper>
 
-      <MetricCardGrid sections={portalSections} activeKey={activeKey} />
+      <Paper
+        elevation={0}
+        sx={{
+          p: { xs: 1.25, sm: 1.5 },
+          mb: 1.5,
+          borderRadius: 2.5,
+          border: "1px solid",
+          borderColor: VEEWASH_DASHBOARD.snapshotBorder,
+          bgcolor: VEEWASH_DASHBOARD.snapshotBg,
+          boxShadow: "none",
+        }}
+      >
+        <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.35, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
+          Current Portal Snapshot
+        </Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.25 }}>
+          Currently visible on Vendor Home.
+        </Typography>
+
+        <MetricCardGrid sections={portalSections} activeKey={activeKey} compact />
+      </Paper>
 
       {monitoringCount > 0 ? (
-        <Box sx={{ mt: 2, pt: 1.5, borderTop: "1px dashed", borderColor: "divider" }}>
-          <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" sx={{ mb: 1 }}>
-            Monitoring only — excluded from Today&apos;s Workload
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-            Completed Earlier — Still at VeeWash
-          </Typography>
-          <Box sx={{ maxWidth: 320 }}>
-            <ShiftCountCard
-              label="Completed Earlier — Still at VeeWash"
-              value={monitoringCount}
-              sub={`${monitoringRows.length} record${monitoringRows.length === 1 ? "" : "s"}`}
-              onClick={() => onDrilldown?.({
-                moduleKey: "at_vendor_flow",
-                moduleTag: "completed_before_day_start_still_present",
-                cardLabel: "Completed Earlier — Still at VeeWash",
-                cardKey: "av_monitoring",
-                expectedCount: monitoringCount,
-                moduleTitle: "At Vendor (Monitoring)",
-              })}
-              active={activeKey === "av_monitoring"}
-            />
-          </Box>
-        </Box>
+        <Accordion
+          expanded={monitoringOpen}
+          onChange={(_, expanded) => setMonitoringOpen(expanded)}
+          disableGutters
+          elevation={0}
+          sx={{
+            borderRadius: "12px !important",
+            border: "1px dashed",
+            borderColor: VEEWASH_DASHBOARD.monitoringBorder,
+            bgcolor: VEEWASH_DASHBOARD.monitoringBg,
+            "&:before": { display: "none" },
+          }}
+        >
+          <AccordionSummary
+            expandIcon={<ExpandMoreIcon sx={{ color: VEEWASH_DASHBOARD.monitoringText }} />}
+            sx={{ px: { xs: 1.5, sm: 2 }, minHeight: 48 }}
+          >
+            <Box>
+              <Typography variant="body2" fontWeight={700} color={VEEWASH_DASHBOARD.monitoringText}>
+                Monitoring Only · {monitoringCount}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Excluded from Today&apos;s Workload
+              </Typography>
+            </Box>
+          </AccordionSummary>
+          <AccordionDetails sx={{ px: { xs: 1.5, sm: 2 }, pt: 0, pb: 1.5 }}>
+            <Box sx={{ maxWidth: { xs: "100%", sm: 300 } }}>
+              <ShiftCountCard
+                label="Completed Earlier — Still at VeeWash"
+                value={monitoringCount}
+                sub={`${monitoringRows.length} record${monitoringRows.length === 1 ? "" : "s"}`}
+                variant="monitoring"
+                size="snapshot"
+                onClick={() => onDrilldown?.({
+                  moduleKey: "at_vendor_flow",
+                  moduleTag: "completed_before_day_start_still_present",
+                  cardLabel: "Completed Earlier — Still at VeeWash",
+                  cardKey: "av_monitoring",
+                  expectedCount: monitoringCount,
+                  moduleTitle: "At Vendor (Monitoring)",
+                })}
+                active={activeKey === "av_monitoring"}
+              />
+            </Box>
+          </AccordionDetails>
+        </Accordion>
       ) : null}
 
       {av.changed_to_rush > 0 ? (

@@ -2681,6 +2681,213 @@ def _build_exceptions_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+_AV_DRILLDOWN_ROW_KEYS = frozenset({
+    "bag_id",
+    "customer_name",
+    "service_type",
+    "service_bucket",
+    "rush_bucket",
+    "rush_label",
+    "at_vendor_status",
+    "facility_status",
+    "module_tags",
+    "drilldown_tags",
+    "daily_classification",
+    "currently_on_vendor_home",
+    "estimated_delivery_date",
+    "date_clean",
+    "status_reason",
+    "changed_to_rush",
+    "changed_to_rush_reason",
+    "portal_yet_to_process",
+    "population_inclusion",
+    "completion_signal",
+    "completion_time_et",
+    "sent_to_vendor_time_et",
+})
+
+_RFV_DRILLDOWN_ROW_KEYS = frozenset({
+    "bag_id",
+    "customer_name",
+    "service_type",
+    "service_bucket",
+    "rush_bucket",
+    "rush_label",
+    "estimated_delivery_date",
+    "estimated_delivery_date_et",
+    "estimated_delivery_raw",
+    "has_today_label",
+    "reason",
+    "source",
+    "drilldown_tags",
+})
+
+
+def _slim_row_for_drilldown(row: Mapping[str, Any], keys: frozenset[str]) -> dict[str, Any]:
+    return {k: row[k] for k in keys if k in row and row.get(k) is not None}
+
+
+def _slim_at_vendor_module_payload(module: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(module)
+    out["rows"] = [
+        _slim_row_for_drilldown(r, _AV_DRILLDOWN_ROW_KEYS)
+        for r in (module.get("rows") or [])
+        if isinstance(r, dict)
+    ]
+    monitoring = module.get("completed_before_day_start_still_present_rows") or []
+    out["completed_before_day_start_still_present_rows"] = [
+        _slim_row_for_drilldown(r, _AV_DRILLDOWN_ROW_KEYS)
+        for r in monitoring
+        if isinstance(r, dict)
+    ]
+    return out
+
+
+def _slim_ready_for_vendor_payload(section: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(section)
+    out["rows"] = [
+        _slim_row_for_drilldown(r, _RFV_DRILLDOWN_ROW_KEYS)
+        for r in (section.get("rows") or [])
+        if isinstance(r, dict)
+    ]
+    return out
+
+
+def _build_performance_meta(
+    *,
+    total_build_ms: float,
+    at_vendor_build_ms: float = 0.0,
+    rfv_build_ms: float = 0.0,
+    records_build_ms: float = 0.0,
+    debug_build_ms: float = 0.0,
+    drilldown_build_ms: float = 0.0,
+    payload: Mapping[str, Any],
+    summary_only: bool,
+) -> dict[str, Any]:
+    import json
+
+    serialized = json.dumps(payload, default=str)
+    return {
+        "summary_only": summary_only,
+        "total_build_ms": round(total_build_ms, 1),
+        "at_vendor_build_ms": round(at_vendor_build_ms, 1),
+        "rfv_build_ms": round(rfv_build_ms, 1),
+        "records_build_ms": round(records_build_ms, 1),
+        "debug_build_ms": round(debug_build_ms, 1),
+        "drilldown_build_ms": round(drilldown_build_ms, 1),
+        "payload_size_bytes": len(serialized.encode("utf-8")),
+    }
+
+
+def _build_shift_monitor_summary_payload(
+    cursor,
+    organization_id: int,
+    *,
+    period_start: date,
+    period_end: date,
+    evaluation_time: datetime | None = None,
+) -> dict[str, Any]:
+    """Fast initial /performance payload: RFV + At Vendor summaries and sync status only."""
+    import time
+
+    from backend.rinse_at_vendor_module import build_at_vendor_module
+    from backend.rinse_presence_sync_status import get_ready_for_vendor_sync_status
+    from backend.rinse_ready_for_vendor_queue import build_ready_for_vendor_queue
+    from backend.rinse_scheduled_scrape import _today_et
+    from backend.rinse_shift_monitor_baseline import (
+        build_baseline_context,
+        format_baseline_banner_et,
+        get_shift_monitor_baseline,
+    )
+
+    org = int(organization_id)
+    t0 = time.perf_counter()
+    eval_at = naive_system_utc(
+        evaluation_time if isinstance(evaluation_time, datetime) else datetime.utcnow()
+    )
+
+    t_baseline = time.perf_counter()
+    baseline_settings = get_shift_monitor_baseline(cursor, org)
+    baseline_ctx = build_baseline_context(cursor, org, baseline_settings)
+    baseline_ms = (time.perf_counter() - t_baseline) * 1000
+
+    t_rfv = time.perf_counter()
+    rfv_sync = get_ready_for_vendor_sync_status(cursor, org, evaluation_time=eval_at)
+    rfv_queue = build_ready_for_vendor_queue(
+        cursor, org, baseline_ctx=baseline_ctx, rfv_sync=rfv_sync
+    )
+    ready_for_vendor = _slim_ready_for_vendor_payload(rfv_queue["section"])
+    rfv_ms = (time.perf_counter() - t_rfv) * 1000
+
+    t_av = time.perf_counter()
+    at_vendor_module = build_at_vendor_module(
+        cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
+    )
+    at_vendor_module = _slim_at_vendor_module_payload(at_vendor_module)
+    av_ms = (time.perf_counter() - t_av) * 1000
+
+    t_sync = time.perf_counter()
+    active_work_stub: dict[str, Any] = {"live": True}
+    rinse_sync = _attach_section_sync_statuses(
+        cursor,
+        org,
+        ready_for_vendor=ready_for_vendor,
+        active_work=active_work_stub,
+        evaluation_time=eval_at,
+    )
+    sync_ms = (time.perf_counter() - t_sync) * 1000
+
+    baseline_payload = {
+        "baseline_source": baseline_ctx.get("baseline_source"),
+        "baseline_time_et": baseline_ctx.get("baseline_time_et"),
+        "banner_title": format_baseline_banner_et(baseline_ctx),
+        "banner_subtitle": (
+            "Using latest post-baseline Rinse scrape + post-baseline scans"
+            if baseline_ctx.get("at_vendor_scrape_ready")
+            else baseline_ctx.get("needs_refresh_reason")
+        ),
+        "at_vendor_scrape_ready": baseline_ctx.get("at_vendor_scrape_ready"),
+    }
+
+    payload: dict[str, Any] = {
+        "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "summary_only": True,
+        "ready_for_vendor": ready_for_vendor,
+        "at_vendor_module": at_vendor_module,
+        "rinse_sync": rinse_sync,
+        "live_baseline": baseline_payload,
+        "records": [],
+        "shift_monitor_modules": None,
+        "current_facility_snapshot": None,
+        "due_today_snapshot": None,
+        "vendor_home_parity": None,
+        "vendor_home_gap_analysis": None,
+        "facility_tracker_today": None,
+        "sections_under_review": None,
+        "employee_cards": None,
+        "debug_audit": None,
+        "drilldown_parity": None,
+        "scope_overlap": None,
+        "current_work_pipeline": active_work_stub,
+        "current_active_work": active_work_stub,
+        "current_active_work_now": active_work_stub,
+    }
+    total_ms = (time.perf_counter() - t0) * 1000
+    payload["performance_meta"] = _build_performance_meta(
+        total_build_ms=total_ms,
+        at_vendor_build_ms=av_ms,
+        rfv_build_ms=rfv_ms + baseline_ms,
+        records_build_ms=0.0,
+        debug_build_ms=0.0,
+        drilldown_build_ms=sync_ms,
+        payload=payload,
+        summary_only=True,
+    )
+    return payload
+
+
 def build_simple_shift_performance_payload(
     cursor,
     organization_id: int,
@@ -2690,7 +2897,21 @@ def build_simple_shift_performance_payload(
     evaluation_time: datetime | None = None,
     include_debug: bool = False,
     slim_records: bool = False,
+    summary_only: bool = False,
 ) -> dict[str, Any]:
+    if summary_only and not include_debug:
+        return _build_shift_monitor_summary_payload(
+            cursor,
+            organization_id,
+            period_start=period_start,
+            period_end=period_end,
+            evaluation_time=evaluation_time,
+        )
+
+    import time
+
+    _build_t0 = time.perf_counter()
+    _step_ms: dict[str, float] = {}
     org = int(organization_id)
     settings = get_processing_settings(cursor, org)
     threshold = float(settings.get("weight_difference_threshold_lbs") or 5.0)
@@ -2763,9 +2984,11 @@ def build_simple_shift_performance_payload(
     pending = get_pending_bag_status(
         cursor, org, target_date=target_date, evaluation_time=evaluation_time
     )
+    _t_rfv = time.perf_counter()
     rfv_queue = build_ready_for_vendor_queue(
         cursor, org, baseline_ctx=baseline_ctx, rfv_sync=rfv_sync
     )
+    _step_ms["rfv_build_ms"] = round((time.perf_counter() - _t_rfv) * 1000, 1)
     ready_for_vendor = rfv_queue["section"]
     rfv_bag_ids: set[str] = set(rfv_queue.get("bag_ids") or set())
     live_rfv_rows = list(rfv_queue.get("legacy_incoming_rows") or [])
@@ -2881,6 +3104,7 @@ def build_simple_shift_performance_payload(
 
     events_by_bag = _load_scan_events_for_bags(cursor, org, all_bag_ids)
     completion_events_by_bag = events_by_bag
+    _t_records = time.perf_counter()
     if use_live_baseline:
         events_by_bag = filter_events_by_bag_after_baseline(events_by_bag, baseline_start_naive_et)
     user_maps = _load_rinse_user_maps(cursor, org)
@@ -2971,6 +3195,8 @@ def build_simple_shift_performance_payload(
                 last_rush_wash = update_last_wash_if_newer(last_rush_wash, detail)
             elif rush_label == "Non-Rush":
                 last_nonrush_wash = update_last_wash_if_newer(last_nonrush_wash, detail)
+
+    _step_ms["records_build_ms"] = round((time.perf_counter() - _t_records) * 1000, 1)
 
     _apply_current_facility_snapshot_tags(
         records,
@@ -3079,10 +3305,13 @@ def build_simple_shift_performance_payload(
     from backend.rinse_at_vendor_module import build_at_vendor_module
     from backend.rinse_shift_monitor_modules import apply_module_tags, build_shift_monitor_modules
 
+    _t_av = time.perf_counter()
     at_vendor_module = build_at_vendor_module(
         cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
     )
+    _step_ms["at_vendor_build_ms"] = round((time.perf_counter() - _t_av) * 1000, 1)
     apply_module_tags(records, events_by_bag=events_by_bag)
+    _t_modules = time.perf_counter()
     shift_monitor_modules = build_shift_monitor_modules(
         records,
         events_by_bag=events_by_bag,
@@ -3098,7 +3327,9 @@ def build_simple_shift_performance_payload(
         today_et=today_et,
         at_vendor_module=at_vendor_module,
     )
+    _step_ms["drilldown_build_ms"] = round((time.perf_counter() - _t_modules) * 1000, 1)
 
+    _t_employee = time.perf_counter()
     employee_summary, employee_diagnostics = _build_employee_activity_summary(
         cursor, org, credits=all_credits, period_start=period_start, period_end=period_end, user_maps=user_maps
     )
@@ -3157,6 +3388,7 @@ def build_simple_shift_performance_payload(
         active_work,
         monitor_bag_ids=sorted(pipeline_bag_ids),
     )
+    _t_debug = time.perf_counter()
     debug_audit = (
         _build_debug_audit(
             pending=pending,
@@ -3182,6 +3414,7 @@ def build_simple_shift_performance_payload(
         if include_debug
         else None
     )
+    _step_ms["debug_build_ms"] = round((time.perf_counter() - _t_debug) * 1000, 1) if include_debug else 0.0
 
     sections_under_review = {
         "current_facility_snapshot": True,
@@ -3234,10 +3467,11 @@ def build_simple_shift_performance_payload(
         "excluded_pre_baseline_only_count": excluded_pre_baseline_count,
     }
 
-    return {
+    payload: dict[str, Any] = {
         "timezone": RINSE_SCAN_SOURCE_TIMEZONE,
         "period_start": period_start.isoformat(),
         "period_end": period_end.isoformat(),
+        "summary_only": False,
         "ready_for_vendor": ready_for_vendor,
         "at_vendor_module": at_vendor_module,
         "facility_tracker_today": facility_tracker,
@@ -3293,3 +3527,14 @@ def build_simple_shift_performance_payload(
             "baseline_note": baseline_settings.get("baseline_note"),
         },
     }
+    payload["performance_meta"] = _build_performance_meta(
+        total_build_ms=(time.perf_counter() - _build_t0) * 1000,
+        at_vendor_build_ms=_step_ms.get("at_vendor_build_ms", 0.0),
+        rfv_build_ms=_step_ms.get("rfv_build_ms", 0.0),
+        records_build_ms=_step_ms.get("records_build_ms", 0.0),
+        debug_build_ms=_step_ms.get("debug_build_ms", 0.0),
+        drilldown_build_ms=_step_ms.get("drilldown_build_ms", 0.0),
+        payload=payload,
+        summary_only=False,
+    )
+    return payload

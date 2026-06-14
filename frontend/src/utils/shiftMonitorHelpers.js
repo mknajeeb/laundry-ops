@@ -119,97 +119,88 @@ export function countAtVendorBucket(rows, bucket) {
   return filterAtVendorBucket(rows, bucket).length;
 }
 
-function avStatusCards(prefix, module, rows, rush) {
-  const totalKey = rush === "rush" ? "rush_total" : "non_rush_total";
-  const pendingKey = rush === "rush" ? "rush_pending" : "non_rush_pending";
-  const completedKey = rush === "rush" ? "rush_completed" : "non_rush_completed";
-  const bucketRush = rush;
+function avFilteredServiceCards(module, rows, rush, status) {
+  const labels = { all: "Total", pending: "Pending", completed: "Completed" };
+  const bucketStatus = status;
+  if (rush === "all") {
+    const fieldMap = {
+      all: { wf: "wf_total", hd: "hd_total" },
+      pending: { wf: "wf_pending", hd: "hd_pending" },
+      completed: { wf: "wf_completed", hd: "hd_completed" },
+    };
+    const fields = fieldMap[status];
+    return [
+      {
+        key: `wf_${status}`,
+        label: `WF ${labels[status]}`,
+        count: module?.[fields.wf] ?? countAtVendorBucket(rows, { rush: "all", service: "wf", status: bucketStatus }),
+        bucket: { rush: "all", service: "wf", status: bucketStatus },
+        clickable: true,
+        variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
+      },
+      {
+        key: `hd_${status}`,
+        label: `HD ${labels[status]}`,
+        count: module?.[fields.hd] ?? countAtVendorBucket(rows, { rush: "all", service: "hd", status: bucketStatus }),
+        bucket: { rush: "all", service: "hd", status: bucketStatus },
+        clickable: true,
+        variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
+      },
+    ];
+  }
+  const wf = countAtVendorBucket(rows, { rush, service: "wf", status: bucketStatus });
+  const hd = countAtVendorBucket(rows, { rush, service: "hd", status: bucketStatus });
   return [
     {
-      key: `${prefix}_total`,
-      label: `${prefix} Total`,
-      count: module?.[totalKey],
-      bucket: { rush: bucketRush, service: "all", status: "all" },
+      key: `${rush}_wf_${status}`,
+      label: `WF ${labels[status]}`,
+      count: wf,
+      bucket: { rush, service: "wf", status: bucketStatus },
       clickable: true,
+      variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
     },
     {
-      key: `${prefix}_pending`,
-      label: `${prefix} Pending`,
-      count: module?.[pendingKey],
-      bucket: { rush: bucketRush, service: "all", status: "pending" },
+      key: `${rush}_hd_${status}`,
+      label: `HD ${labels[status]}`,
+      count: hd,
+      bucket: { rush, service: "hd", status: bucketStatus },
       clickable: true,
-    },
-    {
-      key: `${prefix}_completed`,
-      label: `${prefix} Completed`,
-      count: module?.[completedKey],
-      bucket: { rush: bucketRush, service: "all", status: "completed" },
-      clickable: true,
+      variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
     },
   ];
 }
 
-function avServiceStatusCards(prefix, rows, rush, service) {
-  const bucket = { rush, service, status: "all" };
-  const pendingBucket = { rush, service, status: "pending" };
-  const completedBucket = { rush, service, status: "completed" };
-  const total = countAtVendorBucket(rows, bucket);
-  const pending = countAtVendorBucket(rows, pendingBucket);
-  const completed = countAtVendorBucket(rows, completedBucket);
-  if (total === 0 && pending === 0 && completed === 0) return [];
-  return [
-    {
-      key: `${prefix}_${service}_total`,
-      label: `${prefix} ${service.toUpperCase()} Total`,
-      count: total,
-      bucket,
-      clickable: total != null,
-    },
-    {
-      key: `${prefix}_${service}_pending`,
-      label: `${prefix} ${service.toUpperCase()} Pending`,
-      count: pending,
-      bucket: pendingBucket,
-      clickable: pending != null,
-    },
-    {
-      key: `${prefix}_${service}_completed`,
-      label: `${prefix} ${service.toUpperCase()} Completed`,
-      count: completed,
-      bucket: completedBucket,
-      clickable: completed != null,
-    },
-  ];
-}
-
-function avUnknownCards(prefix, rows, rush) {
+function avUnknownCards(rows, rush) {
   const bucket = { rush, service: "unknown", status: "all" };
   const pendingBucket = { rush, service: "unknown", status: "pending" };
   const completedBucket = { rush, service: "unknown", status: "completed" };
   const total = countAtVendorBucket(rows, bucket);
   if (total === 0) return [];
-  const prefixLabel = prefix ? `${prefix} ` : "";
+  const slug = rush === "all" ? "all" : rush;
   return [
     {
-      key: `${(prefix || "unclassified").replace(/\s+/g, "_").toLowerCase()}_unknown_total`,
-      label: `${prefixLabel}Unknown Total`,
+      key: `${slug}_unknown_total`,
+      label: "Review Total",
       count: total,
       bucket,
       clickable: true,
+      variant: "info",
     },
     {
-      key: `${(prefix || "unclassified").replace(/\s+/g, "_").toLowerCase()}_unknown_pending`,
-      label: `${prefixLabel}Unknown Pending`,
+      key: `${slug}_unknown_pending`,
+      label: "Review Pending",
       count: countAtVendorBucket(rows, pendingBucket),
       bucket: pendingBucket,
       clickable: true,
+      variant: "pending",
     },
     {
-      key: `${(prefix || "unclassified").replace(/\s+/g, "_").toLowerCase()}_unknown_completed`,
-      label: `${prefixLabel}Unknown Completed`,
+      key: `${slug}_unknown_completed`,
+      label: "Review Completed",
       count: countAtVendorBucket(rows, completedBucket),
       bucket: completedBucket,
       clickable: true,
+      variant: "completed",
     },
   ];
 }
@@ -217,11 +208,12 @@ function avUnknownCards(prefix, rows, rush) {
 /** Management hierarchy cards for At Vendor daily workload. */
 export function buildAtVendorHierarchy(module, rushSegment = "all") {
   const rows = module?.rows || [];
+  const rush = rushSegment === "all" ? "all" : rushSegment;
   const sections = [];
 
   sections.push({
-    key: "layer1",
-    title: "Today's Workload",
+    key: "kpi",
+    layout: "kpi",
     cards: [
       {
         key: "av_total",
@@ -230,6 +222,8 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
         bucket: { rush: "all", service: "all", status: "all" },
         moduleTag: "mod_at_vendor_total",
         clickable: true,
+        variant: "total",
+        large: true,
       },
       {
         key: "av_pending",
@@ -238,6 +232,8 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
         bucket: { rush: "all", service: "all", status: "pending" },
         moduleTag: "mod_at_vendor_pending",
         clickable: true,
+        variant: "pending",
+        large: true,
       },
       {
         key: "av_completed_today",
@@ -246,53 +242,34 @@ export function buildAtVendorHierarchy(module, rushSegment = "all") {
         bucket: { rush: "all", service: "all", status: "completed" },
         moduleTag: "mod_at_vendor_completed",
         clickable: true,
+        variant: "completed",
+        large: true,
       },
     ],
   });
 
-  if (rushSegment === "all") {
-    const unknownCards = avUnknownCards("", rows, "all");
+  sections.push({
+    key: "work_type",
+    title: "Work Type",
+    cards: avFilteredServiceCards(module, rows, rush, "all"),
+  });
+  sections.push({
+    key: "pending_work",
+    title: "Pending Work",
+    cards: avFilteredServiceCards(module, rows, rush, "pending"),
+  });
+  sections.push({
+    key: "completed_today",
+    title: "Completed Today",
+    cards: avFilteredServiceCards(module, rows, rush, "completed"),
+  });
+
+  const unknownCards = avUnknownCards(rows, rush);
+  if (unknownCards.length) {
     sections.push({
-      key: "layer2",
-      title: "By urgency",
-      cards: [
-        ...avStatusCards("Rush", module, rows, "rush"),
-        ...avStatusCards("Non-Rush", module, rows, "non_rush"),
-        ...unknownCards.map((card) => ({
-          ...card,
-          bucket: { rush: "all", service: "unknown", status: card.bucket.status },
-        })),
-      ],
-    });
-  } else if (rushSegment === "rush") {
-    sections.push({
-      key: "layer2_rush",
-      title: "Rush",
-      cards: avStatusCards("Rush", module, rows, "rush"),
-    });
-    sections.push({
-      key: "layer3_rush",
-      title: "Rush by service",
-      cards: [
-        ...avServiceStatusCards("Rush", rows, "rush", "wf"),
-        ...avServiceStatusCards("Rush", rows, "rush", "hd"),
-        ...avUnknownCards("Rush", rows, "rush"),
-      ],
-    });
-  } else if (rushSegment === "non_rush") {
-    sections.push({
-      key: "layer2_non_rush",
-      title: "Non-Rush",
-      cards: avStatusCards("Non-Rush", module, rows, "non_rush"),
-    });
-    sections.push({
-      key: "layer3_non_rush",
-      title: "Non-Rush by service",
-      cards: [
-        ...avServiceStatusCards("Non-Rush", rows, "non_rush", "wf"),
-        ...avServiceStatusCards("Non-Rush", rows, "non_rush", "hd"),
-        ...avUnknownCards("Non-Rush", rows, "non_rush"),
-      ],
+      key: "unknown_review",
+      title: "Needs Review",
+      cards: unknownCards,
     });
   }
 
@@ -312,6 +289,7 @@ export function buildAtVendorPortalSnapshot(module) {
       label: "Currently at VeeWash",
       count: snapshotTotal,
       clickable: false,
+      variant: "snapshot",
     },
   ];
   if (ytpReliable && av.portal_snapshot_yet_to_process != null) {
@@ -320,6 +298,7 @@ export function buildAtVendorPortalSnapshot(module) {
       label: "Yet to process",
       count: av.portal_snapshot_yet_to_process,
       clickable: false,
+      variant: "snapshot",
     });
   } else if (snapshotTotal > 0 && (inferredSources.has(ytpSource) || ytpReliable === false)) {
     cards.push({
@@ -328,6 +307,7 @@ export function buildAtVendorPortalSnapshot(module) {
       count: null,
       sub: "Pending count unavailable from portal snapshot",
       clickable: false,
+      variant: "info",
     });
   }
   if (av.scan_only_arrivals_blocked_count > 0) {
@@ -336,6 +316,7 @@ export function buildAtVendorPortalSnapshot(module) {
       label: "Scan-only blocked",
       count: av.scan_only_arrivals_blocked_count,
       clickable: false,
+      variant: "info",
     });
   }
   if (av.bags_gone_from_portal_but_in_workload_count > 0) {
@@ -344,9 +325,18 @@ export function buildAtVendorPortalSnapshot(module) {
       label: "Left portal — still in workload",
       count: av.bags_gone_from_portal_but_in_workload_count,
       clickable: false,
+      variant: "info",
     });
   }
-  return [{ key: "portal_snapshot", title: "Current Portal Snapshot", cards }];
+  return [{
+    key: "portal_snapshot",
+    layout: "snapshot",
+    cards: cards.map((c) => ({
+      variant: c.variant || "snapshot",
+      compact: true,
+      ...c,
+    })),
+  }];
 }
 
 function rfvTotalCard(label, count, drilldownTag, key) {

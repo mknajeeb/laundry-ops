@@ -357,19 +357,57 @@ function RecordRow({ row, expanded, onToggle }) {
   );
 }
 
-function AdvancedDebugSection({ data, user, cfs, dts, facilityTracker }) {
+function AdvancedDebugSection({ dateStart, dateEnd, initialData, user }) {
+  const [expanded, setExpanded] = useState(false);
+  const [debugData, setDebugData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const data = debugData || initialData;
   const audit = data?.debug_audit || {};
   const facility = audit.facility_tracker_today || {};
   const recon = audit.reconciliation_status || {};
   const tagCounts = audit.drilldown_tag_counts || {};
+  const cfs = data?.current_facility_snapshot || {};
+  const dts = data?.due_today_snapshot || {};
+  const facilityTracker = data?.facility_tracker_today || {};
   const debugRush = "all";
 
+  const handleChange = async (_, isExpanded) => {
+    setExpanded(isExpanded);
+    if (!isExpanded || debugData) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await getShiftAnalysisSimple({
+        date_start: dateStart,
+        date_end: dateEnd,
+        summary_only: 0,
+        include_debug: 1,
+      });
+      setDebugData(res.data || null);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to load debug data");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <Accordion defaultExpanded={false} sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }} TransitionProps={{ unmountOnExit: true }}>
+    <Accordion
+      expanded={expanded}
+      onChange={handleChange}
+      sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }}
+      TransitionProps={{ unmountOnExit: true }}
+    >
       <AccordionSummary expandIcon={<ExpandMoreIcon />}>
         <Typography fontWeight={700}>Advanced Debug</Typography>
       </AccordionSummary>
       <AccordionDetails>
+        {loading ? <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>Loading debug data…</Typography> : null}
+        {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+        {!loading && !error && expanded ? (
+          <>
         <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
           Vendor Home vs Internal Scan (reconciliation)
         </Typography>
@@ -440,6 +478,78 @@ function AdvancedDebugSection({ data, user, cfs, dts, facilityTracker }) {
         <Suspense fallback={<Typography sx={{ p: 2 }}>Loading advanced view…</Typography>}>
           <ShiftAnalysisAdvancedPanel user={user} embedded />
         </Suspense>
+          </>
+        ) : null}
+      </AccordionDetails>
+    </Accordion>
+  );
+}
+
+function PipelineModulesSection({
+  dateStart,
+  dateEnd,
+  moduleKeys,
+  moduleFilters,
+  setModuleFilter,
+  openDrilldown,
+  drilldown,
+  opsLabel,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [fullData, setFullData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleChange = async (_, isExpanded) => {
+    setExpanded(isExpanded);
+    if (!isExpanded || fullData) return;
+    setLoading(true);
+    setError("");
+    try {
+      const res = await getShiftAnalysisSimple({
+        date_start: dateStart,
+        date_end: dateEnd,
+        summary_only: 0,
+      });
+      setFullData(res.data || null);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to load pipeline modules");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const modules = fullData?.shift_monitor_modules || {};
+  const records = fullData?.records || [];
+
+  return (
+    <Accordion
+      expanded={expanded}
+      onChange={handleChange}
+      sx={{ mt: 2, boxShadow: "none", border: "1px solid", borderColor: "divider" }}
+      TransitionProps={{ unmountOnExit: true }}
+    >
+      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+        <Typography fontWeight={700}>Production pipeline modules</Typography>
+      </AccordionSummary>
+      <AccordionDetails>
+        {loading ? <Typography variant="body2" color="text.secondary">Loading modules…</Typography> : null}
+        {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
+        {!loading && expanded ? moduleKeys.map((key) => (
+          <ShiftMonitorModuleSection
+            key={key}
+            moduleKey={key}
+            module={modules[key]}
+            records={records}
+            rushFilter={moduleFilters[key]?.rush || "all"}
+            serviceFilter={moduleFilters[key]?.service || "all"}
+            onRushChange={(v) => setModuleFilter(key, { rush: v })}
+            onServiceChange={(v) => setModuleFilter(key, { service: v })}
+            onDrilldown={openDrilldown}
+            activeTag={drilldown}
+            operationsLabel={key === "monitor" ? opsLabel : undefined}
+          />
+        )) : null}
       </AccordionDetails>
     </Accordion>
   );
@@ -482,6 +592,7 @@ export default function ShiftMonitorPage({ user }) {
       const res = await getShiftAnalysisSimple({
         date_start: dateStart,
         date_end: dateEnd,
+        summary_only: 1,
       });
       setData(res.data || null);
     } catch (e) {
@@ -495,11 +606,10 @@ export default function ShiftMonitorPage({ user }) {
     load();
   }, [load]);
 
-  const records = data?.records || [];
-  const modules = data?.shift_monitor_modules || {};
-  const opsLabel = modules.operations_window?.label;
+  const opsLabel = data?.shift_monitor_modules?.operations_window?.label;
   const atVendorModule = data?.at_vendor_module || {};
   const rfv = data?.ready_for_vendor || {};
+  const records = data?.records || [];
 
   const filtered = useMemo(() => {
     if (!drilldown) return [];
@@ -613,9 +723,7 @@ export default function ShiftMonitorPage({ user }) {
   const rfvSync = data?.rinse_sync?.ready_for_vendor || rfv.sync_status || {};
   const pipeline = data?.current_work_pipeline || data?.current_active_work_now || data?.current_active_work || {};
   const avSync = data?.rinse_sync?.at_vendor || pipeline.sync_status || {};
-  const cfs = data?.current_facility_snapshot || {};
-  const dts = data?.due_today_snapshot || {};
-  const facilityTracker = data?.facility_tracker_today || {};
+  const perfMeta = data?.performance_meta;
 
   const moduleKeys = ["production_stage", "exceptions", "monitor"];
   const syncCycle = data?.rinse_sync?.sync_cycle || {};
@@ -676,14 +784,9 @@ export default function ShiftMonitorPage({ user }) {
             onRefresh={runRinseSync}
           />
 
-          <ReadyForVendorSection
-            rfv={rfv}
-            rfvSync={rfvSync}
-            rushFilter={rfvRushFilter}
-            onRushChange={setRfvRushFilter}
-            onDrilldown={openRfvDrilldown}
-            activeKey={drilldown?.type === "rfv" ? drilldown.cardKey : null}
-          />
+          <Typography variant="h5" fontWeight={900} sx={{ mb: 1.5, color: "text.primary" }}>
+            At Vendor
+          </Typography>
 
           <AtVendorFlowSection
             module={atVendorModule}
@@ -696,25 +799,37 @@ export default function ShiftMonitorPage({ user }) {
             activeKey={drilldown?.moduleKey === "at_vendor_flow" ? drilldown.cardKey : null}
           />
 
+          <ReadyForVendorSection
+            rfv={rfv}
+            rfvSync={rfvSync}
+            rushFilter={rfvRushFilter}
+            onRushChange={setRfvRushFilter}
+            onDrilldown={openRfvDrilldown}
+            activeKey={drilldown?.type === "rfv" ? drilldown.cardKey : null}
+          />
+
           <LiveBaselineBanner baseline={data?.live_baseline} />
 
-          {moduleKeys.map((key) => (
-            <ShiftMonitorModuleSection
-              key={key}
-              moduleKey={key}
-              module={modules[key]}
-              records={records}
-              rushFilter={moduleFilters[key]?.rush || "all"}
-              serviceFilter={moduleFilters[key]?.service || "all"}
-              onRushChange={(v) => setModuleFilter(key, { rush: v })}
-              onServiceChange={(v) => setModuleFilter(key, { service: v })}
-              onDrilldown={openDrilldown}
-              activeTag={drilldown}
-              operationsLabel={key === "monitor" ? opsLabel : undefined}
-            />
-          ))}
+          {perfMeta ? (
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Loaded in {Math.round(perfMeta.total_build_ms)}ms ·{" "}
+              {Math.round((perfMeta.payload_size_bytes || 0) / 1024)} KB
+              {perfMeta.summary_only ? " (summary)" : ""}
+            </Typography>
+          ) : null}
 
-          <AdvancedDebugSection data={data} user={user} cfs={cfs} dts={dts} facilityTracker={facilityTracker} />
+          <PipelineModulesSection
+            dateStart={dateStart}
+            dateEnd={dateEnd}
+            moduleKeys={moduleKeys}
+            moduleFilters={moduleFilters}
+            setModuleFilter={setModuleFilter}
+            openDrilldown={openDrilldown}
+            drilldown={drilldown}
+            opsLabel={opsLabel}
+          />
+
+          <AdvancedDebugSection dateStart={dateStart} dateEnd={dateEnd} initialData={data} user={user} />
         </>
       ) : null}
 
