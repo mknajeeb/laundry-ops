@@ -948,7 +948,7 @@ def record_presence_scrape_run(
             int(rows_updated),
             int(rows_unchanged),
             int(rows_missing),
-            json.dumps(list(errors)) if errors else None,
+            json.dumps(json_safe_rinse(list(errors)), ensure_ascii=False) if errors else None,
             run_type,
             status,
             run_started,
@@ -1013,7 +1013,7 @@ def persist_presence_run_snapshot_rows(
                 raw.get("estimated_delivery_date"),
                 raw.get("rush_flag"),
                 raw.get("service_type"),
-                json.dumps(raw.get("raw_row_json") or {}),
+                json.dumps(json_safe_rinse(raw.get("raw_row_json") or {}), ensure_ascii=False),
                 vendor,
             ),
         )
@@ -1246,7 +1246,7 @@ def apply_presence_scrape(
             "estimated_delivery_date": raw.get("estimated_delivery_date"),
             "rush_flag": raw.get("rush_flag"),
             "service_type": raw.get("service_type"),
-            "raw_row_json": json.dumps(raw.get("raw_row_json") or {}),
+            "raw_row_json": json.dumps(json_safe_rinse(raw.get("raw_row_json") or {}), ensure_ascii=False),
         }
 
         if existing is None:
