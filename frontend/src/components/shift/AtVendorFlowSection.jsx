@@ -13,6 +13,7 @@ import MetricCardGrid from "./MetricCardGrid";
 import RushFilterChips from "./RushFilterChips";
 import ShiftCountCard from "./ShiftCountCard";
 import WorkloadReportStats from "./WorkloadReportStats";
+import { RushPendingWhyPanel } from "./RushPendingWhyPanel";
 import {
   buildAtVendorHierarchy,
   buildAtVendorPortalSnapshot,
@@ -130,6 +131,10 @@ export default function AtVendorFlowSection({
             onCardClick={handleCardClick}
             activeKey={activeKey}
           />
+
+          {isOperationsMode && segment === "rush" && (av.rush_pending ?? 0) > 0 ? (
+            <RushPendingWhyPanel summary={av.rush_pending_why_summary} />
+          ) : null}
         </Box>
       </Paper>
 

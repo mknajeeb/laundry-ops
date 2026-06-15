@@ -70,6 +70,18 @@ def _wf_completion_supplement_sql_filter(column: str = "purpose") -> str:
     )
 
 
+def _pending_explanation_supplement_sql_filter(column: str = "purpose") -> str:
+    """Extra scan purposes for display-only pending explanations (not completion)."""
+    expr = _normalize_purpose_sql_expr(column)
+    return (
+        f"((LOCATE('cleaning', {expr}) > 0 AND LOCATE('complete-cleaning', {expr}) = 0) "
+        f"OR LOCATE('start-cleaning', {expr}) > 0 "
+        f"OR LOCATE('create-issue', {expr}) > 0 "
+        f"OR LOCATE('create-workitem', {expr}) > 0 "
+        f"OR LOCATE('received-from-vendor', {expr}) > 0)"
+    )
+
+
 def _purpose_matches_at_vendor(raw: str | None) -> bool:
     if is_sent_to_vendor_purpose(raw):
         return True
@@ -2150,6 +2162,55 @@ def _load_wf_completion_supplement_for_bags(
     return out
 
 
+def _load_pending_explanation_supplement_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+    *,
+    scanned_before: datetime | None = None,
+    scanned_on_or_after: datetime | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    org = int(organization_id)
+    out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids if bid}
+    if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return out
+    purpose_filter = _pending_explanation_supplement_sql_filter()
+    time_clauses: list[str] = []
+    time_args: list[Any] = []
+    if scanned_before is not None:
+        time_clauses.append("scanned_at_parsed < %s")
+        time_args.append(scanned_before)
+    if scanned_on_or_after is not None:
+        time_clauses.append("scanned_at_parsed >= %s")
+        time_args.append(scanned_on_or_after)
+    time_sql = (" AND " + " AND ".join(time_clauses)) if time_clauses else ""
+    chunk = 1000
+    for i in range(0, len(bag_ids), chunk):
+        part = [b for b in bag_ids[i : i + chunk] if b]
+        if not part:
+            continue
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, raw_json
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND UPPER(TRIM(bag_id)) IN ({placeholders})
+              AND {purpose_filter}
+              {time_sql}
+            ORDER BY bag_id, scanned_at_parsed, scan_index, id
+            """,
+            (org, *part, *time_args),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if bid:
+                out.setdefault(bid, []).append(dict(row))
+    return out
+
+
 def _merge_wf_completion_events_by_bag(
     events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
     supplement_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
@@ -2281,6 +2342,7 @@ def _build_row(
     prior_edd_info: tuple[date | None, str | None] | None = None,
     completion_window_start: datetime | None = None,
     daily_et_attribution: bool = False,
+    explanation_events: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     svc = _normalize_service(meta.get("service_type"))
     anchor_ts = _resolve_selected_day_anchor_ts(events, selected_date_et)
@@ -2415,6 +2477,17 @@ def _build_row(
         "module_tags": module_tags,
         "drilldown_tags": module_tags,
     }
+    if pending:
+        from backend.rinse_at_vendor_pending_explanation import derive_pending_explanation
+
+        row.update(
+            derive_pending_explanation(
+                service_type=svc,
+                events=explanation_events or events,
+                anchor_ts=anchor_ts,
+                as_of_end=as_of_end,
+            )
+        )
     if prior_edd_info is not None:
         prior_edd, prior_source = prior_edd_info
         _apply_prior_edd_changed_to_rush(
@@ -2551,14 +2624,29 @@ def build_at_vendor_module(
             len(carry_in_pre_midnight_events.get(bid) or []) for bid in cached_bag_ids
         )
     wf_supplement_by_bag: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids}
+    explanation_supplement_by_bag: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids}
     if hasattr(cursor, "execute"):
+        scan_before = naive_et_day_end_exclusive(selected_date_et)
         wf_supplement_by_bag = _load_wf_completion_supplement_for_bags(
             cursor,
             org,
             bag_ids,
-            scanned_before=naive_et_day_end_exclusive(selected_date_et),
+            scanned_before=scan_before,
+        )
+        explanation_supplement_by_bag = _load_pending_explanation_supplement_for_bags(
+            cursor,
+            org,
+            bag_ids,
+            scanned_before=scan_before,
         )
     completion_events_by_bag = _merge_wf_completion_events_by_bag(events_by_bag, wf_supplement_by_bag)
+    explanation_events_by_bag = {
+        bid: _merge_scan_event_rows(
+            completion_events_by_bag.get(bid) or [],
+            explanation_supplement_by_bag.get(bid) or [],
+        )
+        for bid in bag_ids
+    }
     step_ms["final_events_ms"] = round((time.perf_counter() - t_events) * 1000, 1)
     scan_events_loaded = sum(len(events_by_bag.get(bid) or []) for bid in bag_ids)
     registry_cache = population_meta.get("registry_service_cache") or {}
@@ -2586,6 +2674,7 @@ def build_at_vendor_module(
             as_of_end=as_of_end,
             completion_window_start=start_of_day_et,
             daily_et_attribution=bool(uses_clean_baseline and baseline_ctx),
+            explanation_events=explanation_events_by_bag.get(bid) or [],
         )
         rows.append(row)
         if (
@@ -2747,6 +2836,9 @@ def build_at_vendor_module(
     rush_pending = sum(
         1 for r in rows if r.get("rush_bucket") == AV_RUSH and r.get("at_vendor_status") == AV_STATUS_PENDING
     )
+    from backend.rinse_at_vendor_pending_explanation import summarize_rush_pending_why
+
+    rush_pending_why_summary = summarize_rush_pending_why(rows)
     rush_completed = sum(
         1 for r in rows if r.get("rush_bucket") == AV_RUSH and r.get("at_vendor_status") == AV_STATUS_COMPLETED
     )
@@ -2905,6 +2997,7 @@ def build_at_vendor_module(
         "pending_count": pending,
         "rush_total": rush_total,
         "rush_pending": rush_pending,
+        "rush_pending_why_summary": rush_pending_why_summary,
         "rush_completed": rush_completed,
         "non_rush_total": non_rush_total,
         "non_rush_pending": non_rush_pending,

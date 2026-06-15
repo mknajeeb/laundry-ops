@@ -12,6 +12,7 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getFoldingPerformanceDetail } from "../../api";
 import FoldingScanEventsTable from "../folding/FoldingScanEventsTable";
+import { PendingWhyBadge } from "./RushPendingWhyPanel";
 import {
   computeDueStatus,
   DUE_STATUS_COLORS,
@@ -132,6 +133,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
               </>
             ) : null}
           </Stack>
+          {variant === "at_vendor" ? <PendingWhyBadge row={row} /> : null}
         </Box>
         <IconButton
           size="small"
@@ -181,6 +183,9 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                   <DetailField label="Population source" value={row.population_source || row.inclusion_reason} />
                   <DetailField label="Presence run" value={row.presence_run_id || row.presence_source} />
                   <DetailField label="Reason" value={row.status_reason || row.reason || row.rush_reason} />
+                  {row.at_vendor_status === "Pending" && row.pending_why_label ? (
+                    <DetailField label="Why pending" value={row.pending_why_label} />
+                  ) : null}
                 </Stack>
               ) : null}
               {tab === 1 ? (

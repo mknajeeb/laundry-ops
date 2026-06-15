@@ -35,6 +35,7 @@ import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs 
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import ShiftBagRecordRow from "../components/shift/ShiftBagRecordRow";
+import { RushPendingWhyPanel } from "../components/shift/RushPendingWhyPanel";
 import VeeWashLogo from "../components/VeeWashLogo";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import {
@@ -693,6 +694,13 @@ export default function ShiftMonitorPage({ user }) {
     return drilldown.expectedCount;
   }, [drilldown]);
 
+  const showRushPendingWhyInDrawer = useMemo(() => {
+    if (drilldown?.moduleKey !== "at_vendor_flow") return false;
+    const bucket = drilldown?.bucket;
+    if (bucket?.status === "pending" && bucket?.rush === "rush") return true;
+    return false;
+  }, [drilldown]);
+
   const openDrilldown = (ctx) => {
     setDrilldown(ctx);
     setDrawerOpen(true);
@@ -1004,6 +1012,11 @@ export default function ShiftMonitorPage({ user }) {
             <CloseIcon />
           </IconButton>
         </Stack>
+        {showRushPendingWhyInDrawer ? (
+          <Box sx={{ mb: 1, flexShrink: 0 }}>
+            <RushPendingWhyPanel summary={atVendorModule?.rush_pending_why_summary} />
+          </Box>
+        ) : null}
         <Box sx={{ overflow: "auto", flex: 1, minHeight: 0 }}>
           {drilldown?.type === "rfv"
             ? filtered.map((row) => (
