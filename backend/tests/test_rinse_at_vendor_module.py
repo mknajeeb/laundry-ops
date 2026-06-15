@@ -94,26 +94,27 @@ class TestAtVendorRush:
 class TestWFCompletion:
     def test_first_weight_only_pending(self):
         events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
     def test_second_weight_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1), _ev("weight-entry", T2)]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
         assert signal == "weight-entry"
         assert comp_ts == T2
 
-    def test_clean_rack_does_not_complete(self):
+    def test_clean_rack_completes_via_operational_fallback(self):
         events = [
             _ev("sent-to-vendor", T0),
             _ev("weight-entry", T1),
             _ev("move-bag", T2, rack="VeeWash Clean"),
         ]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
-        assert status == AV_STATUS_PENDING
-        assert signal is None
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "move-bag-clean-rack"
+        assert comp_ts == T2
 
     def test_received_from_vendor_does_not_complete(self):
         events = [
@@ -121,7 +122,7 @@ class TestWFCompletion:
             _ev("weight-entry", T1),
             _ev("received-from-vendor", T2),
         ]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
@@ -129,30 +130,30 @@ class TestWFCompletion:
 class TestHDCompletion:
     def test_first_add_photos_pending(self):
         events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
     def test_second_add_photos_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
         assert signal == "second add-photos"
 
     def test_complete_cleaning_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("complete-cleaning", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
         assert signal == "complete-cleaning"
 
     def test_garments_reviewed_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("garments-reviewed", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
 
     def test_assembly_printed_ct_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("assembly-printed-ct", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
 
 
@@ -161,7 +162,7 @@ class TestRepeatedEventCompletion:
 
     def test_hd_one_add_photos_pending(self):
         events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
@@ -171,26 +172,26 @@ class TestRepeatedEventCompletion:
             _ev("add-photos", T1, ev_id=1),
             _ev("add-photos", T1, ev_id=2, scan_index=2),
         ]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
     def test_hd_two_add_photos_increasing_timestamps_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
         assert signal == "second add-photos"
         assert comp_ts == T2
 
     def test_hd_pre_anchor_add_photos_plus_one_after_pending(self):
         events = [_ev("add-photos", T0), _ev("sent-to-vendor", T1), _ev("add-photos", T2)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
     def test_hd_two_post_anchor_add_photos_increasing_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
         assert signal == "second add-photos"
         assert comp_ts == T2
@@ -205,14 +206,14 @@ class TestRepeatedEventCompletion:
             _ev("workitems-added", datetime(2026, 6, 12, 17, 4), ev_id=88324, scan_index=2),
         ]
         as_of = naive_et_day_end_inclusive(date(2026, 6, 12))
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=as_of)
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="HD", as_of_end=as_of)
         assert status == AV_STATUS_PENDING
         assert signal is None
         assert comp_ts is None
 
     def test_wf_one_weight_entry_pending(self):
         events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
@@ -222,20 +223,20 @@ class TestRepeatedEventCompletion:
             _ev("weight-entry", T1, ev_id=1),
             _ev("weight-entry", T1, ev_id=2, scan_index=2),
         ]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
     def test_wf_two_weight_entries_increasing_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1), _ev("weight-entry", T2)]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_COMPLETED
         assert signal == "weight-entry"
         assert comp_ts == T2
 
     def test_wf_pre_anchor_weight_plus_one_after_pending(self):
         events = [_ev("weight-entry", T0), _ev("sent-to-vendor", T1), _ev("weight-entry", T2)]
-        status, signal, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
         assert status == AV_STATUS_PENDING
         assert signal is None
 
@@ -245,7 +246,7 @@ class TestHDCreateIssueAddPhotosGuard:
 
     def test_two_add_photos_no_create_issue_completes(self):
         events = [_ev("sent-to-vendor", T0), _ev("add-photos", T1), _ev("add-photos", T2)]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
@@ -259,7 +260,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("add-photos", T2),
             _ev("create-issue", T3),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
@@ -273,7 +274,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("create-issue", T2),
             _ev("add-photos", T3),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_PENDING
@@ -287,7 +288,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("create-issue", T2),
             _ev("add-photos", T2, ev_id=4, scan_index=4),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_PENDING
@@ -301,7 +302,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("add-photos", T2),
             _ev("add-photos", T3),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_PENDING
@@ -315,7 +316,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("add-photos", T1, ev_id=2, scan_index=2),
             _ev("create-issue", T2),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_PENDING
@@ -331,7 +332,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("add-photos", dup_ts, ev_id=4, scan_index=4),
             _ev("add-photos", dup_ts, ev_id=5, scan_index=5),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_PENDING
@@ -346,7 +347,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("workitems-added", datetime(2026, 6, 12, 19, 58)),
             _ev("add-photos", datetime(2026, 6, 12, 20, 0)),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(date(2026, 6, 13))
         )
         assert status == AV_STATUS_PENDING
@@ -362,7 +363,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("workitems-added", datetime(2026, 6, 12, 19, 58)),
             _ev("add-photos", datetime(2026, 6, 12, 20, 0)),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(date(2026, 6, 12))
         )
         assert status == AV_STATUS_PENDING
@@ -375,7 +376,7 @@ class TestHDCreateIssueAddPhotosGuard:
             _ev("create-issue", T1),
             _ev("complete-cleaning", T2),
         ]
-        status, signal, comp_ts, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
             events, service_type="HD", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
@@ -535,7 +536,7 @@ class TestSelectedDayPopulation:
         ]
         prior_end = naive_et_day_end_inclusive(date(2026, 6, 9))
         anchor = datetime(2026, 6, 8, 4, 0)
-        status, _, _, _ = _evaluate_bag_as_of(
+        status, _, _, _, _ = _evaluate_bag_as_of(
             events, service_type="WF", as_of_end=prior_end, anchor_ts_override=anchor
         )
         assert status == AV_STATUS_COMPLETED
@@ -548,7 +549,7 @@ class TestSelectedDayPopulation:
             _ev("sent-to-vendor", T0),
         ]
         day_end = naive_et_day_end_inclusive(SELECTED)
-        status, _, _, sent_ts = _evaluate_bag_as_of(
+        status, _, _, sent_ts, _ = _evaluate_bag_as_of(
             events,
             service_type="WF",
             as_of_end=day_end,

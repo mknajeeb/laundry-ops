@@ -1,0 +1,228 @@
+"""WF weight-entry identity and completion helpers for At Vendor module."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Mapping, Sequence
+
+from backend.rinse_bag_stage_bounds import event_ts, events_on_or_after, sort_key_ev
+from backend.rinse_scan_purpose import (
+    is_complete_cleaning_purpose,
+    is_move_bag_purpose,
+    is_processed_by_vendor_purpose,
+    is_weight_entry_purpose,
+    normalize_scan_purpose,
+)
+from backend.rinse_scan_time import system_datetime_to_et
+
+_WEIGHT_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:lbs?|lb\.?)?", re.I)
+
+
+def parse_weight_lbs_from_scan_event(record: Mapping[str, Any] | None) -> float | None:
+    """Extract numeric weight (lbs) from a scan row when present."""
+    if not record:
+        return None
+    for key in ("weight_lbs", "weight_num", "weight"):
+        raw = record.get(key)
+        if raw is None:
+            continue
+        try:
+            v = float(raw)
+            if v > 0:
+                return round(v, 4)
+        except (TypeError, ValueError):
+            continue
+
+    raw_json = record.get("raw_json")
+    if isinstance(raw_json, str):
+        try:
+            raw_json = json.loads(raw_json)
+        except (json.JSONDecodeError, TypeError):
+            raw_json = None
+    if isinstance(raw_json, dict):
+        for key in (
+            "Weight",
+            "weight",
+            "# WF LBS",
+            "WF LBS",
+            "weight_lbs",
+            "weight_num",
+        ):
+            raw = raw_json.get(key)
+            if raw is None or str(raw).strip() in ("", "(None)"):
+                continue
+            try:
+                v = float(str(raw).replace(",", "").strip())
+                if v > 0:
+                    return round(v, 4)
+            except (TypeError, ValueError):
+                m = _WEIGHT_NUM_RE.search(str(raw))
+                if m:
+                    try:
+                        v = float(m.group(1))
+                        if v > 0:
+                            return round(v, 4)
+                    except (TypeError, ValueError):
+                        pass
+
+    purpose = str(record.get("purpose") or "")
+    m = _WEIGHT_NUM_RE.search(purpose)
+    if m:
+        try:
+            v = float(m.group(1))
+            if v > 0:
+                return round(v, 4)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _occurrence_et_key(ts: datetime) -> datetime:
+    et = system_datetime_to_et(ts)
+    if et is not None:
+        return et.replace(tzinfo=None)
+    return ts
+
+
+def _weight_event_identity(
+    ev: Mapping[str, Any],
+    ts: datetime,
+) -> tuple[datetime, float | None]:
+    """Identity key: ET timestamp + parsed weight when available."""
+    et = system_datetime_to_et(ts)
+    ts_key = _occurrence_et_key(et.replace(tzinfo=None) if et is not None else ts)
+    return ts_key, parse_weight_lbs_from_scan_event(ev)
+
+
+@dataclass(frozen=True)
+class WfWeightEvent:
+    event: dict[str, Any]
+    timestamp: datetime
+    weight_lbs: float | None
+
+
+@dataclass(frozen=True)
+class WfWeightCompletion:
+    signal: str
+    completion_ts: datetime
+    first_weight_lbs: float | None
+    second_weight_lbs: float | None
+    first_weight_timestamp: datetime | None
+    second_weight_timestamp: datetime | None
+
+    @property
+    def weight_delta(self) -> float | None:
+        if self.first_weight_lbs is None or self.second_weight_lbs is None:
+            return None
+        return round(abs(self.second_weight_lbs - self.first_weight_lbs), 4)
+
+
+def distinct_wf_weight_events(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+) -> list[WfWeightEvent]:
+    """
+    Chronological distinct WF weight-entry events after anchor.
+
+    Same timestamp rows collapse to one unless parsed weight values differ.
+    """
+    anchored = events_on_or_after(timeline, anchor_ts)
+    keyed: list[tuple[dict[str, Any], datetime, tuple[datetime, float | None]]] = []
+    for ev in anchored:
+        if not is_weight_entry_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts is None or ts > as_of_end:
+            continue
+        row = dict(ev)
+        lbs = parse_weight_lbs_from_scan_event(row)
+        if lbs is not None:
+            row.setdefault("weight_lbs", lbs)
+        keyed.append((row, ts, _weight_event_identity(row, ts)))
+    keyed.sort(key=lambda item: (item[2][0], sort_key_ev(item[0])))
+
+    out: list[WfWeightEvent] = []
+    seen: set[tuple[datetime, float | None]] = set()
+    for row, ts, identity in keyed:
+        if identity in seen:
+            continue
+        seen.add(identity)
+        out.append(WfWeightEvent(event=row, timestamp=ts, weight_lbs=identity[1]))
+    return out
+
+
+def wf_two_weight_completion(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+) -> WfWeightCompletion | None:
+    weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    if len(weights) < 2:
+        return None
+    first, second = weights[0], weights[1]
+    if second.timestamp < first.timestamp:
+        return None
+    if second.timestamp == first.timestamp:
+        if first.weight_lbs is None or second.weight_lbs is None or first.weight_lbs == second.weight_lbs:
+            return None
+    signal = str(second.event.get("purpose") or "weight-entry")
+    return WfWeightCompletion(
+        signal=signal,
+        completion_ts=second.timestamp,
+        first_weight_lbs=first.weight_lbs,
+        second_weight_lbs=second.weight_lbs,
+        first_weight_timestamp=first.timestamp,
+        second_weight_timestamp=second.timestamp,
+    )
+
+
+def wf_operational_completion(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+    weight_events: Sequence[WfWeightEvent] | None = None,
+) -> WfWeightCompletion | None:
+    """Fallback completion when two-weight evidence is insufficient."""
+    weights = list(weight_events or [])
+    if not weights:
+        weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    has_weight = len(weights) >= 1
+
+    best: tuple[datetime, str, str] | None = None
+    for ev in events_on_or_after(timeline, anchor_ts):
+        ts = event_ts(ev)
+        if ts is None or ts > as_of_end:
+            continue
+        purpose = ev.get("purpose")
+        rack = str(ev.get("rack") or "").lower()
+        signal: str | None = None
+        if is_processed_by_vendor_purpose(purpose):
+            signal = "processed-by-vendor"
+        elif normalize_scan_purpose(purpose) == "delivery-prep-completed":
+            signal = "delivery-prep-completed"
+        elif is_move_bag_purpose(purpose) and "clean" in rack and "dirty" not in rack:
+            signal = "move-bag-clean-rack"
+        elif has_weight and is_complete_cleaning_purpose(purpose):
+            signal = "complete-cleaning"
+        if signal and (best is None or ts < best[0]):
+            best = (ts, signal, str(purpose or signal))
+
+    if best is None:
+        return None
+    ts, signal, _ = best
+    first = weights[0] if weights else None
+    return WfWeightCompletion(
+        signal=signal,
+        completion_ts=ts,
+        first_weight_lbs=first.weight_lbs if first else None,
+        second_weight_lbs=None,
+        first_weight_timestamp=first.timestamp if first else None,
+        second_weight_timestamp=None,
+    )

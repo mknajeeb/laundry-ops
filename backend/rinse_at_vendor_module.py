@@ -49,14 +49,25 @@ _AT_VENDOR_PURPOSE_EXACT = (
 )
 
 
-def _normalize_purpose_sql_expr() -> str:
-    return "LOWER(REPLACE(COALESCE(purpose, ''), ' ', '-'))"
+def _normalize_purpose_sql_expr(column: str = "purpose") -> str:
+    base = f"LOWER(REPLACE(COALESCE({column}, ''), ' ', '-'))"
+    return f"REGEXP_REPLACE({base}, '-last-[a-z0-9-]+$', '')"
 
 
 def _at_vendor_purpose_sql_filter(column: str = "purpose") -> str:
-    expr = f"LOWER(REPLACE(COALESCE({column}, ''), ' ', '-'))"
+    expr = _normalize_purpose_sql_expr(column)
     exact = ", ".join(f"'{p}'" for p in _AT_VENDOR_PURPOSE_EXACT)
     return f"({expr} IN ({exact}) OR LOCATE('sent-to-vendor', {expr}) > 0)"
+
+
+def _wf_completion_supplement_sql_filter(column: str = "purpose") -> str:
+    expr = _normalize_purpose_sql_expr(column)
+    return (
+        f"(LOCATE('processed-by-vendor', {expr}) > 0 "
+        f"OR LOCATE('delivery-prep-completed', {expr}) > 0 "
+        f"OR LOCATE('move-bag', {expr}) > 0 "
+        f"OR LOCATE('complete-cleaning', {expr}) > 0)"
+    )
 
 
 def _purpose_matches_at_vendor(raw: str | None) -> bool:
@@ -102,7 +113,7 @@ def _classify_baseline_seed_bag(
     start_of_day_et = naive_et_day_start(selected_date_et)
     prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
     anchor_ts = _latest_sent_to_vendor_ts(events, before=start_of_day_et)
-    status, signal, comp_ts, sent_ts = _evaluate_bag_as_of(
+    status, signal, comp_ts, sent_ts, _ = _evaluate_bag_as_of(
         events,
         service_type=service_type,
         as_of_end=prior_day_end,
@@ -371,7 +382,7 @@ def _load_carry_in_open_at_midnight_bag_ids(
             before=start,
         )
         if midnight_anchor is not None:
-            status, _, _, _ = _evaluate_bag_as_of(
+            status, _, _, _, _ = _evaluate_bag_as_of(
                 events_by_bag.get(bid) or [],
                 service_type=svc,
                 as_of_end=prior_day_end,
@@ -606,7 +617,7 @@ def _bag_status_as_of(
     service_type: str,
     as_of_end: datetime,
 ) -> str:
-    status, _, _, _ = _evaluate_bag_as_of(events, service_type=service_type, as_of_end=as_of_end)
+    status, _, _, _, _ = _evaluate_bag_as_of(events, service_type=service_type, as_of_end=as_of_end)
     return status
 
 
@@ -1770,16 +1781,37 @@ def _wf_completion_signal(
     *,
     anchor_ts: datetime,
     as_of_end: datetime,
-) -> tuple[str | None, datetime | None]:
-    anchored = events_on_or_after(timeline, anchor_ts)
-    anchored = _events_as_of(anchored, as_of_end)
-    weights = unique_occurrence_times(anchored, is_weight_entry_purpose)
-    if len(weights) >= 2:
-        first_ts = weights[0][1]
-        second_ev, second_ts = weights[1]
-        if second_ts > first_ts:
-            return str(second_ev.get("purpose") or "weight-entry"), second_ts
-    return None, None
+) -> tuple[str | None, datetime | None, dict[str, Any] | None]:
+    from backend.rinse_wf_weight_events import (
+        WfWeightCompletion,
+        wf_operational_completion,
+        wf_two_weight_completion,
+    )
+
+    weight_hit = wf_two_weight_completion(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    if weight_hit is not None:
+        return weight_hit.signal, weight_hit.completion_ts, _wf_weight_fields(weight_hit)
+
+    op_hit = wf_operational_completion(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    if op_hit is not None:
+        return op_hit.signal, op_hit.completion_ts, _wf_weight_fields(op_hit)
+    return None, None, None
+
+
+def _wf_weight_fields(hit: Any) -> dict[str, Any]:
+    return {
+        "first_weight_value": hit.first_weight_lbs,
+        "second_weight_value": hit.second_weight_lbs,
+        "weight_delta": hit.weight_delta,
+        "first_weight_timestamp": hit.first_weight_timestamp.isoformat()
+        if hit.first_weight_timestamp is not None
+        else None,
+        "second_weight_timestamp": hit.second_weight_timestamp.isoformat()
+        if hit.second_weight_timestamp is not None
+        else None,
+        "first_weight_time_et": _format_et_display(hit.first_weight_timestamp),
+        "second_weight_time_et": _format_et_display(hit.second_weight_timestamp),
+    }
 
 
 def _first_hd_add_photos_interruption_ts_after_anchor(
@@ -1816,7 +1848,7 @@ def _load_completed_before_day_start_still_present(
     for bid in bag_ids:
         pres = live_by_bag[bid]
         svc = _normalize_service(pres.get("service_type") or registry.get(bid))
-        st, sig, comp_ts, sent_ts = _evaluate_bag_as_of(
+        st, sig, comp_ts, sent_ts, _ = _evaluate_bag_as_of(
             events_by_bag.get(bid) or [],
             service_type=svc,
             as_of_end=prior_day_end,
@@ -1939,7 +1971,7 @@ def _evaluate_bag_as_of(
     service_type: str,
     as_of_end: datetime,
     anchor_ts_override: datetime | None = None,
-) -> tuple[str, str | None, datetime | None, datetime | None]:
+) -> tuple[str, str | None, datetime | None, datetime | None, dict[str, Any] | None]:
     timeline = gaming_events_from_records(events)
     anchor_ts = anchor_ts_override
     anchor_ev = None
@@ -1954,17 +1986,20 @@ def _evaluate_bag_as_of(
                     anchor_ev = ev
                     break
     if anchor_ts is None or not ts_valid(anchor_ts):
-        return AV_STATUS_PENDING, None, None, None
+        return AV_STATUS_PENDING, None, None, None, None
 
     svc = service_type if service_type in ("WF", "HD") else AV_UNKNOWN
+    wf_weight_fields: dict[str, Any] | None = None
     if svc == "HD":
         signal, comp_ts = _hd_completion_signal(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
     else:
-        signal, comp_ts = _wf_completion_signal(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+        signal, comp_ts, wf_weight_fields = _wf_completion_signal(
+            timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+        )
 
     if comp_ts is not None:
-        return AV_STATUS_COMPLETED, signal, comp_ts, anchor_ts
-    return AV_STATUS_PENDING, None, None, anchor_ts
+        return AV_STATUS_COMPLETED, signal, comp_ts, anchor_ts, wf_weight_fields
+    return AV_STATUS_PENDING, None, None, anchor_ts, wf_weight_fields
 
 
 def _load_sent_to_vendor_bag_ids(cursor, organization_id: int, *, through_date: date) -> set[str]:
@@ -2022,7 +2057,7 @@ def _load_at_vendor_scan_events_for_bags(
         placeholders = ",".join(["%s"] * len(part))
         cursor.execute(
             f"""
-            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index
+            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, raw_json
             FROM rinse_bag_scan_events
             WHERE organization_id = %s
               AND UPPER(TRIM(bag_id)) IN ({placeholders})
@@ -2041,6 +2076,92 @@ def _load_at_vendor_scan_events_for_bags(
             if bid:
                 out.setdefault(bid, []).append(row)
     return out
+
+
+def _merge_scan_event_rows(
+    primary: Sequence[Mapping[str, Any]],
+    supplement: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[int, dict[str, Any]] = {}
+    for ev in primary:
+        if not isinstance(ev, dict):
+            continue
+        ev_id = ev.get("id")
+        if ev_id is not None:
+            merged[int(ev_id)] = dict(ev)
+    for ev in supplement:
+        if not isinstance(ev, dict):
+            continue
+        ev_id = ev.get("id")
+        if ev_id is None:
+            continue
+        key = int(ev_id)
+        if key not in merged:
+            merged[key] = dict(ev)
+    return sorted(merged.values(), key=lambda row: (row.get("scanned_at_parsed") or datetime.min, row.get("scan_index") or 0, row.get("id") or 0))
+
+
+def _load_wf_completion_supplement_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+    *,
+    scanned_before: datetime | None = None,
+    scanned_on_or_after: datetime | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    org = int(organization_id)
+    out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids if bid}
+    if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return out
+    purpose_filter = _wf_completion_supplement_sql_filter()
+    time_clauses: list[str] = []
+    time_args: list[Any] = []
+    if scanned_before is not None:
+        time_clauses.append("scanned_at_parsed < %s")
+        time_args.append(scanned_before)
+    if scanned_on_or_after is not None:
+        time_clauses.append("scanned_at_parsed >= %s")
+        time_args.append(scanned_on_or_after)
+    time_sql = (" AND " + " AND ".join(time_clauses)) if time_clauses else ""
+    chunk = 1000
+    for i in range(0, len(bag_ids), chunk):
+        part = [b for b in bag_ids[i : i + chunk] if b]
+        if not part:
+            continue
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, id, rack, user_name, purpose, scanned_at_parsed, scan_index, raw_json
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND UPPER(TRIM(bag_id)) IN ({placeholders})
+              AND {purpose_filter}
+              {time_sql}
+            ORDER BY bag_id, scanned_at_parsed, scan_index, id
+            """,
+            (org, *part, *time_args),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if bid:
+                out.setdefault(bid, []).append(dict(row))
+    return out
+
+
+def _merge_wf_completion_events_by_bag(
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+    supplement_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    merged: dict[str, list[dict[str, Any]]] = {}
+    bag_ids = sorted(set(events_by_bag.keys()) | set(supplement_by_bag.keys()))
+    for bid in bag_ids:
+        merged[bid] = _merge_scan_event_rows(
+            events_by_bag.get(bid) or [],
+            supplement_by_bag.get(bid) or [],
+        )
+    return merged
 
 
 def _load_prior_edd_from_batches_bulk(
@@ -2105,7 +2226,7 @@ def _bag_in_at_vendor_scope(
     selected_date_et: date,
     as_of_end: datetime,
 ) -> tuple[str, str | None, datetime | None, datetime | None] | None:
-    status, completion_signal, completion_ts, sent_ts = _evaluate_bag_as_of(
+    status, completion_signal, completion_ts, sent_ts, _ = _evaluate_bag_as_of(
         events, service_type=service_type, as_of_end=as_of_end
     )
     if sent_ts is None:
@@ -2163,7 +2284,7 @@ def _build_row(
 ) -> dict[str, Any]:
     svc = _normalize_service(meta.get("service_type"))
     anchor_ts = _resolve_selected_day_anchor_ts(events, selected_date_et)
-    status, completion_signal, completion_ts, sent_ts = _evaluate_bag_as_of(
+    status, completion_signal, completion_ts, sent_ts, wf_weight_fields = _evaluate_bag_as_of(
         events,
         service_type=svc,
         as_of_end=as_of_end,
@@ -2251,6 +2372,7 @@ def _build_row(
         "completion_date_et": _completion_date_et(completion_ts).isoformat()
         if completion_ts is not None and _completion_date_et(completion_ts)
         else None,
+        **(wf_weight_fields or {}),
         "at_vendor_status": status,
         "daily_classification": daily_classification,
         "facility_status": status.lower(),
@@ -2428,6 +2550,15 @@ def build_at_vendor_module(
         carry_in_events_reused = sum(
             len(carry_in_pre_midnight_events.get(bid) or []) for bid in cached_bag_ids
         )
+    wf_supplement_by_bag: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids}
+    if hasattr(cursor, "execute"):
+        wf_supplement_by_bag = _load_wf_completion_supplement_for_bags(
+            cursor,
+            org,
+            bag_ids,
+            scanned_before=naive_et_day_end_exclusive(selected_date_et),
+        )
+    completion_events_by_bag = _merge_wf_completion_events_by_bag(events_by_bag, wf_supplement_by_bag)
     step_ms["final_events_ms"] = round((time.perf_counter() - t_events) * 1000, 1)
     scan_events_loaded = sum(len(events_by_bag.get(bid) or []) for bid in bag_ids)
     registry_cache = population_meta.get("registry_service_cache") or {}
@@ -2450,7 +2581,7 @@ def build_at_vendor_module(
         row = _build_row(
             bag_id=bid,
             meta=meta,
-            events=events_by_bag.get(bid) or [],
+            events=completion_events_by_bag.get(bid) or [],
             selected_date_et=selected_date_et,
             as_of_end=as_of_end,
             completion_window_start=start_of_day_et,
@@ -2508,7 +2639,7 @@ def build_at_vendor_module(
             before=start_of_day_et,
         )
         if midnight_anchor is not None:
-            midnight_status, _, _, _ = _evaluate_bag_as_of(
+            midnight_status, _, _, _, _ = _evaluate_bag_as_of(
                 events_by_bag.get(bid) or [],
                 service_type=svc,
                 as_of_end=prior_day_end,
