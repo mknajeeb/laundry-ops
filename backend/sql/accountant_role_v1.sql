@@ -30,4 +30,4 @@ INNER JOIN permissions p ON p.id = rp.permission_id
 WHERE UPPER(TRIM(r.code)) = 'ACCOUNTANT'
   AND p.perm_key <> 'users.view';
 
-SELECT 'accountant_role_v1: ACCOUNTANT role seeded (users.view only).' AS note;
+-- accountant_role_v1 complete: ACCOUNTANT role seeded (users.view only).
