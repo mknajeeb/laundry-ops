@@ -803,8 +803,8 @@ def delete_payout_batch(conn, organization_id: int, batch_id: int) -> bool:
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         return False
-    if str(batch.get("status") or "") not in ("draft",):
-        raise ValueError("Only draft batches can be deleted")
+    if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
+        raise ValueError("Only draft or hours-reviewed batches can be deleted")
     from backend.payroll_accrual import reverse_ledger_entries_for_batch
 
     reverse_ledger_entries_for_batch(conn, organization_id, int(batch_id))

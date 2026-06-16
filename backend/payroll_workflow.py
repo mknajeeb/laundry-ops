@@ -81,6 +81,30 @@ def ensure_payout_batch_line_extensions(cursor) -> None:
             invalidate_schema_cache()
 
 
+def _payroll_schedule_profile_rate(
+    conn, user_id: int, organization_id: int
+) -> Optional[float]:
+    """Hourly rate from Payroll Scheduling worker profile (operational source of truth)."""
+    chk = conn.cursor()
+    if not table_exists(chk, "payroll_worker_profiles"):
+        return None
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT default_hourly_rate
+        FROM payroll_worker_profiles
+        WHERE organization_id=%s AND user_id=%s AND active=1
+        LIMIT 1
+        """,
+        (int(organization_id), int(user_id)),
+    )
+    row = c.fetchone()
+    if not row or row.get("default_hourly_rate") is None:
+        return None
+    val = float(row["default_hourly_rate"])
+    return val if val > 0 else None
+
+
 def _employee_profile_pay_rate(conn, user_id: int) -> Optional[float]:
     chk = conn.cursor()
     if not table_exists(chk, "employee_profiles") or not table_has_column(chk, "users", "employee_id"):
@@ -105,20 +129,25 @@ def _employee_profile_pay_rate(conn, user_id: int) -> Optional[float]:
 def resolve_worker_hourly_rate(
     conn, user_id: int, organization_id: int
 ) -> dict[str, Any]:
-    """Resolve hourly rate from worker profile records (never hardcoded)."""
+    """Resolve hourly rate from scheduling and worker profile records (never hardcoded)."""
     cat = worker_category_for_user(conn, user_id)
     rate: Optional[float] = None
     source = "missing"
+    sched = _payroll_schedule_profile_rate(conn, user_id, organization_id)
+    if sched and sched > 0:
+        rate = sched
+        source = "payroll_schedule"
     cj, _ = _contractor_json_from_hr(conn, user_id)
-    cj_rate = cj.get("rate_per_hour") or cj.get("hourly_rate")
-    if cj_rate is not None:
-        try:
-            val = float(cj_rate)
-            if val > 0:
-                rate = val
-                source = "contractor_profile"
-        except (TypeError, ValueError):
-            pass
+    if rate is None:
+        cj_rate = cj.get("rate_per_hour") or cj.get("hourly_rate")
+        if cj_rate is not None:
+            try:
+                val = float(cj_rate)
+                if val > 0:
+                    rate = val
+                    source = "contractor_profile"
+            except (TypeError, ValueError):
+                pass
     if rate is None:
         ur = _latest_hourly_rate(conn, user_id)
         if ur and ur > 0:
@@ -645,8 +674,8 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
     warnings: list[str] = []
     if missing_rates:
         warnings.append(
-            f"{len(missing_rates)} worker(s) have no hourly rate — set rate in Attendance Setup, "
-            "employee profile, or contractor profile before approving the batch."
+            f"{len(missing_rates)} worker(s) have no hourly rate — set rate in Scheduling, "
+            "Attendance Setup, employee profile, or contractor profile before approving the batch."
         )
     if cat == "w2" and missing_w4:
         for m in missing_w4[:3]:
@@ -740,7 +769,7 @@ def refresh_batch_line_rates(conn, organization_id: int, batch_id: int) -> dict:
     if not batch:
         raise ValueError("Batch not found")
     if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
-        raise ValueError("Only draft batches can refresh rates")
+        raise ValueError("Only draft or hours-reviewed batches can refresh rates")
     from backend.payroll_operations import update_payout_batch_line
 
     for ln in batch.get("lines") or []:

@@ -35,7 +35,6 @@ import HighlightOffIcon from "@mui/icons-material/HighlightOff";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import PrintIcon from "@mui/icons-material/Print";
-import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
   deletePayoutBatch,
   getContractors,
@@ -186,6 +185,7 @@ export default function PayoutBatchesPanel({
   });
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const loadList = useCallback(async () => {
     setError("");
@@ -199,10 +199,11 @@ export default function PayoutBatchesPanel({
   }, [filterCat]);
 
   const loadDetail = useCallback(
-    async (id, { quiet = false } = {}) => {
+    async (id, { quiet = false, sync = false } = {}) => {
       if (!id) return;
+      setDetailLoading(true);
       try {
-        const res = await getPayoutBatch(id, { sync: 1 });
+        const res = await getPayoutBatch(id, sync ? { sync: 1 } : {});
         const batch = res.data;
         setDetail(batch);
         setSelectedId(id);
@@ -213,7 +214,7 @@ export default function PayoutBatchesPanel({
             category: batch.worker_category,
           });
         }
-        if (!quiet && batch?.status === "draft") {
+        if (!quiet && sync && batch?.status === "draft") {
           const n = batch?.lines?.length || 0;
           if (n) {
             setInfo(`Synced ${n} worker line(s) from approved time records for this pay period.`);
@@ -225,6 +226,8 @@ export default function PayoutBatchesPanel({
         }
       } catch (e) {
         setError(e.response?.data?.error || "Load batch failed");
+      } finally {
+        setDetailLoading(false);
       }
     },
     [onPayPeriodChange],
@@ -326,7 +329,7 @@ export default function PayoutBatchesPanel({
     if (!selectedId) return;
     setInfo("");
     setError("");
-    await loadDetail(selectedId);
+    await loadDetail(selectedId, { sync: true });
     await loadList();
   };
 
@@ -344,7 +347,7 @@ export default function PayoutBatchesPanel({
         mark_paid: "Batch marked paid.",
         mark_line_paid: "Worker marked paid.",
         mark_line_unpaid: "Worker marked unpaid.",
-        refresh_rates: "Profile rates applied.",
+        refresh_rates: "Scheduling/profile rates applied.",
         recalculate_taxes: "W-2 tax estimates recalculated.",
       };
       setInfo(labels[action] || "Updated.");
@@ -416,6 +419,7 @@ export default function PayoutBatchesPanel({
   };
 
   const isDraft = detail?.status === "draft";
+  const isEditable = detail?.status === "draft" || detail?.status === "hours_reviewed";
   const isW2 = detail?.worker_category === "w2";
   const isGrossOnly = detail?.worker_category === "temp" || detail?.worker_category === "contractor_1099";
   const summary = detail?.summary || {};
@@ -574,7 +578,9 @@ export default function PayoutBatchesPanel({
         </Paper>
 
         <Paper sx={{ flex: 1, p: 2, minWidth: 0 }}>
-          {!detail ? (
+          {detailLoading ? (
+            <Typography color="text.secondary">Loading batch…</Typography>
+          ) : !detail ? (
             <Typography color="text.secondary">Select a batch to view or edit.</Typography>
           ) : (
             <>
@@ -642,31 +648,31 @@ export default function PayoutBatchesPanel({
                     />
                   </Stack>
                 </Box>
-                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                  <Tooltip title="View details">
-                    <IconButton size="small" onClick={() => loadDetail(detail.id)}>
-                      <VisibilityIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
-                  <Tooltip title="Edit batch">
-                    <span>
-                      <IconButton size="small" onClick={openEditBatch} disabled={!isDraft}>
-                        <EditIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
-                  <Tooltip title="Delete batch">
-                    <span>
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={() => setDeleteOpen(true)}
-                        disabled={!isDraft}
-                      >
-                        <DeleteIcon fontSize="small" />
-                      </IconButton>
-                    </span>
-                  </Tooltip>
+                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap alignItems="center">
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<EditIcon />}
+                    onClick={openEditBatch}
+                    disabled={!isEditable}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="error"
+                    startIcon={<DeleteIcon />}
+                    onClick={() => setDeleteOpen(true)}
+                    disabled={!isEditable}
+                  >
+                    Delete
+                  </Button>
+                  {!isEditable ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Set status to Draft to edit or delete
+                    </Typography>
+                  ) : null}
                 </Stack>
               </Stack>
 
@@ -754,15 +760,15 @@ export default function PayoutBatchesPanel({
               </Paper>
 
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-                <Button size="small" variant="outlined" onClick={refreshHours} disabled={!isDraft}>
+                <Button size="small" variant="outlined" onClick={refreshHours} disabled={!isEditable}>
                   Refresh from time records
                 </Button>
-                {isDraft ? (
+                {isEditable ? (
                   <Button size="small" variant="outlined" onClick={() => runWorkflowAction("refresh_rates")}>
-                    Apply profile rates
+                    Apply scheduling rates
                   </Button>
                 ) : null}
-                {isDraft && isW2 ? (
+                {isEditable && isW2 ? (
                   <Button size="small" variant="outlined" onClick={() => runWorkflowAction("recalculate_taxes")}>
                     Recalculate W-2 taxes
                   </Button>
@@ -954,14 +960,14 @@ export default function PayoutBatchesPanel({
                               Unpaid
                             </Button>
                           ) : null}
-                          <IconButton size="small" onClick={() => setLineEdit({ ...ln })} disabled={!isDraft}>
+                          <IconButton size="small" onClick={() => setLineEdit({ ...ln })} disabled={!isEditable}>
                             <EditIcon fontSize="small" />
                           </IconButton>
                           <IconButton
                             size="small"
                             color="error"
                             onClick={() => removeLine(ln.id)}
-                            disabled={!isDraft}
+                            disabled={!isEditable}
                           >
                             <DeleteIcon fontSize="small" />
                           </IconButton>
@@ -1046,7 +1052,8 @@ export default function PayoutBatchesPanel({
         <DialogTitle>Delete batch?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            Delete <strong>{detail?.batch_name}</strong>? Only draft batches can be deleted.
+            Delete <strong>{detail?.batch_name}</strong>? Only draft or hours-reviewed batches can be
+            deleted.
           </Typography>
         </DialogContent>
         <DialogActions>

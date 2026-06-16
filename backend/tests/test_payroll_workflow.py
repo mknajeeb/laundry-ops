@@ -8,6 +8,7 @@ from backend.payroll_workflow import (
     _mask_incomplete_w2_line_taxes,
     build_payroll_readiness,
     fetch_w4_compliance_summary,
+    resolve_worker_hourly_rate,
     validate_batch_for_workflow,
 )
 
@@ -89,3 +90,22 @@ def test_build_payroll_readiness_temp_skips_tax_items():
     assert w4["ok"] is True
     assert tax["ok"] is True
     assert "tax engine does not run" in tax["detail"].lower()
+
+
+def test_resolve_worker_hourly_rate_prefers_payroll_schedule():
+    conn = MagicMock()
+    with patch("backend.payroll_workflow.worker_category_for_user", return_value="w2"), patch(
+        "backend.payroll_workflow.table_exists", return_value=True
+    ), patch(
+        "backend.payroll_workflow._contractor_json_from_hr", return_value=({}, None)
+    ), patch("backend.payroll_workflow._latest_hourly_rate", return_value=15.0), patch(
+        "backend.payroll_workflow.build_contractor_prefill", return_value={}
+    ), patch(
+        "backend.payroll_workflow._latest_payment_method_label", return_value=""
+    ):
+        c = conn.cursor.return_value
+        c.fetchone.return_value = {"default_hourly_rate": 22.5}
+        out = resolve_worker_hourly_rate(conn, 42, 1)
+    assert out["hourly_rate"] == 22.5
+    assert out["rate_source"] == "payroll_schedule"
+    assert out["rate_missing"] is False
