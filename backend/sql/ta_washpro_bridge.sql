@@ -69,3 +69,9 @@ INSERT IGNORE INTO role_permissions (role_id, permission_id)
 SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
 WHERE UPPER(r.code) IN ('OPERATIONS', 'SUPERVISOR', 'PAYROLL_ADMIN', 'FINANCE')
   AND p.perm_key IN ('ta.clock', 'ta.monitor', 'users.view', 'ta.override', 'ta.reports', 'finance.payments');
+
+-- Read-only external accountant (payroll reports + W-2 documents only)
+INSERT IGNORE INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r CROSS JOIN permissions p
+WHERE UPPER(r.code) = 'ACCOUNTANT'
+  AND p.perm_key = 'users.view';

@@ -262,7 +262,8 @@ INSERT INTO roles (code, name) VALUES
 ('PAYROLL_ADMIN', 'Payroll Admin'),
 ('SUPERVISOR', 'Supervisor'),
 ('OPERATIONS', 'Operations User'),
-('FINANCE', 'Finance User');
+('FINANCE', 'Finance User'),
+('ACCOUNTANT', 'Accountant');
 
 -- Seed permissions (function-level keys)
 INSERT INTO permissions (perm_key, description) VALUES
@@ -298,6 +299,11 @@ SELECT 4, id FROM permissions WHERE perm_key IN ('ta.clock');
 -- Finance
 INSERT INTO role_permissions (role_id, permission_id)
 SELECT 5, id FROM permissions WHERE perm_key IN ('users.view','ta.monitor','ta.reports','finance.payments');
+
+-- Accountant (read-only: W-2 documents, approved batches, YTD — users.view only)
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id FROM roles r JOIN permissions p ON p.perm_key = 'users.view'
+WHERE r.code = 'ACCOUNTANT';
 
 -- Default categories
 INSERT INTO employment_categories (code, name, active) VALUES

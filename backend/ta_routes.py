@@ -2844,7 +2844,10 @@ def user_entity_tags_api(user_id):
                 (user_id,),
             )
             return jsonify({"tags": c.fetchall() or []})
-        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "users.view")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
             return jsonify({"error": "Forbidden"}), 403
         data = request.json or {}
         tags = data.get("tags")
@@ -2895,7 +2898,10 @@ def org_hr_employer_settings():
             if not user_has_perm(conn, g.ta_user["id"], "users.view"):
                 return jsonify({"error": "Forbidden"}), 403
             return jsonify(fetch_hr_org_settings(conn, oid))
-        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "users.view")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
             return jsonify({"error": "Forbidden"}), 403
         data = request.json or {}
         for src, sk in (
@@ -3240,7 +3246,10 @@ def _user_hr_form_deliver_impl(conn, user_id: int, fid: str, locale: str):
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "HR forms require unified payroll"}), 503
-        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "users.view")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
             return jsonify({"error": "Forbidden"}), 403
         u = fetch_payroll_profile_row(conn, user_id)
         if not u:
@@ -3382,7 +3391,10 @@ def user_hr_form_i9(user_id):
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "HR forms require unified payroll"}), 503
-        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "users.view")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
             return jsonify({"error": "Forbidden"}), 403
         u = fetch_payroll_profile_row(conn, user_id)
         if not u:
@@ -5083,7 +5095,10 @@ def contractors_payment_summaries(user_id):
 
         if request.method == "GET":
             return jsonify({"items": list_payment_summaries(conn, oid, user_id)})
-        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "users.view")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
             return jsonify({"error": "Forbidden"}), 403
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict):
@@ -5487,7 +5502,6 @@ def payroll_worker_payments():
 
 @ta_bp.route("/payroll/payout-batches", methods=["GET", "POST"])
 @require_auth
-@require_any_perm("ta.settings", "users.edit")
 def payroll_payout_batches():
     conn = get_db()
     try:
@@ -5495,6 +5509,12 @@ def payroll_payout_batches():
 
         oid = _tenant_id()
         if request.method == "GET":
+            if not (
+                user_has_perm(conn, g.ta_user["id"], "ta.settings")
+                or user_has_perm(conn, g.ta_user["id"], "users.edit")
+                or user_has_perm(conn, g.ta_user["id"], "users.view")
+            ):
+                return jsonify({"error": "Forbidden"}), 403
             return jsonify(
                 {
                     "items": list_payout_batches(
@@ -5504,6 +5524,11 @@ def payroll_payout_batches():
                     )
                 }
             )
+        if not (
+            user_has_perm(conn, g.ta_user["id"], "ta.settings")
+            or user_has_perm(conn, g.ta_user["id"], "users.edit")
+        ):
+            return jsonify({"error": "Forbidden"}), 403
         body = request.get_json(silent=True) or {}
         row = create_payout_batch(conn, oid, body, created_by=int(g.ta_user["id"]))
         conn.commit()

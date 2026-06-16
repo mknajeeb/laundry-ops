@@ -13,7 +13,7 @@ export const TENANT_STANDARD_OPS_ROLES = [
 ];
 
 /** All roles that may sign in to the tenant Laundry Ops app (includes narrow roles like CHECKOUT). */
-export const TENANT_PORTAL_ROLES = [...TENANT_STANDARD_OPS_ROLES, "CHECKOUT"];
+export const TENANT_PORTAL_ROLES = [...TENANT_STANDARD_OPS_ROLES, "CHECKOUT", "ACCOUNTANT"];
 
 /** Platform operators: manage tenants and entitlements (not operational laundry UI). */
 export const PLATFORM_ADMIN_ROLES = ["SUPER_ADMIN", "PLATFORM_ADMIN"];

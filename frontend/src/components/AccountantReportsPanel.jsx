@@ -24,6 +24,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getAccountantYtd, getPayoutBatch, getPayoutBatches } from "../api";
+import AccountantW2DocumentsPanel from "../components/AccountantW2DocumentsPanel";
 import {
   ESTIMATE_DISCLAIMER,
   PAYROLL_ESTIMATE_PURPOSE,
@@ -262,6 +263,7 @@ export default function AccountantReportsPanel() {
         <Tab label="YTD by worker" />
         <Tab label="1099 / Temp" />
         <Tab label="W-2 support" />
+        <Tab label="W-2 documents" />
       </Tabs>
 
       {subTab === 0 ? (
@@ -387,6 +389,8 @@ export default function AccountantReportsPanel() {
           </Table>
         </Paper>
       ) : null}
+
+      {subTab === 4 ? <AccountantW2DocumentsPanel /> : null}
 
       <Dialog open={!!viewBatch} onClose={() => setViewBatch(null)} maxWidth="md" fullWidth>
         <DialogTitle>{viewBatch?.batch_name || "Batch report"}</DialogTitle>

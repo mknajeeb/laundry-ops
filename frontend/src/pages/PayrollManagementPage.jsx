@@ -17,6 +17,8 @@ import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
+import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
+import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
 import { PAYROLL_ESTIMATE_PURPOSE } from "../payroll/payrollTaxMessages";
 
 /**
@@ -35,10 +37,11 @@ export default function PayrollManagementPage() {
     return [];
   }, [user?.roles, user?.role_code]);
   const isAdmin = rolesUpper.includes("ADMIN");
+  const isAccountantRole = rolesUpper.includes("ACCOUNTANT");
   const canTime = hasPerm("ta.monitor") || hasPerm("ta.settings") || isAdmin;
   const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin;
-  const canContractors = hasPerm("users.view") || hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
-  const canAccountant = hasPerm("ta.settings") || hasPerm("users.view") || isAdmin;
+  const canContractors = hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
+  const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
 
   const sections = useMemo(() => {
     const out = [];
@@ -56,12 +59,11 @@ export default function PayrollManagementPage() {
   const [tab, setTab] = useState(0);
 
   const [payPeriod, setPayPeriod] = useState(() => {
-    const end = new Date();
-    const start = new Date();
-    start.setDate(start.getDate() - 13);
+    const r = defaultPayPeriodRange(0);
     return {
-      start: start.toISOString().slice(0, 10),
-      end: end.toISOString().slice(0, 10),
+      mode: "pay_period",
+      start: r.start,
+      end: r.end,
       category: "all",
     };
   });
@@ -73,6 +75,16 @@ export default function PayrollManagementPage() {
   useEffect(() => {
     if (tab >= sections.length) setTab(Math.max(0, sections.length - 1));
   }, [sections.length, tab]);
+
+  useEffect(() => {
+    if (!sections.length) return;
+    const accountantOnly = sections.length === 1 && sections[0]?.key === "accountant";
+    const readOnlyAccountant = isAccountantRole && !canPayout && !canTime && !isAdmin;
+    if (accountantOnly || readOnlyAccountant) {
+      const idx = sections.findIndex((s) => s.key === "accountant");
+      if (idx >= 0) setTab(idx);
+    }
+  }, [sections, isAccountantRole, canPayout, canTime, isAdmin]);
 
   if (authLoading) {
     return (
@@ -119,7 +131,13 @@ export default function PayrollManagementPage() {
         ))}
       </Tabs>
 
-      <Box sx={{ pt: 2 }} role="tabpanel">
+      {active?.key === "time" || active?.key === "batches" ? (
+        <Box sx={{ pt: 2 }}>
+          <PayrollPeriodSearchBar value={payPeriod} onChange={setPayPeriod} />
+        </Box>
+      ) : null}
+
+      <Box sx={{ pt: active?.key === "time" || active?.key === "batches" ? 0 : 2 }} role="tabpanel">
         {active?.key === "time" ? (
           <PayrollTimeRecordsPanel
             payPeriodStart={payPeriod.start}

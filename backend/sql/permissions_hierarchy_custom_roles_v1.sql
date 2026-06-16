@@ -168,7 +168,7 @@ PREPARE _m FROM @sql; EXECUTE _m; DEALLOCATE PREPARE _m;
 
 UPDATE roles SET organization_id = 0, is_system = 1
 WHERE UPPER(code) IN (
-  'ADMIN', 'OPS', 'FRONT_DESK', 'OPERATIONS', 'SUPERVISOR', 'PAYROLL_ADMIN', 'FINANCE', 'PLATFORM_ADMIN', 'SUPER_ADMIN'
+  'ADMIN', 'OPS', 'FRONT_DESK', 'OPERATIONS', 'SUPERVISOR', 'PAYROLL_ADMIN', 'FINANCE', 'ACCOUNTANT', 'PLATFORM_ADMIN', 'SUPER_ADMIN'
 );
 
 -- Drop legacy UNIQUE on code only if it still exists (Workbench: SHOW INDEX FROM roles; if name differs, edit below).

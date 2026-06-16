@@ -444,22 +444,6 @@ export default function PayrollTimeRecordsPanel({
             alignItems: "end",
           }}
         >
-          <PayrollDateField
-            label="Start date"
-            value={fromDate}
-            onChange={(v) => {
-              setFromDate(v);
-              onPayPeriodChange?.({ start: v, end: toDate, category });
-            }}
-          />
-          <PayrollDateField
-            label="End date"
-            value={toDate}
-            onChange={(v) => {
-              setToDate(v);
-              onPayPeriodChange?.({ start: fromDate, end: v, category });
-            }}
-          />
           <FormControl size="small">
             <InputLabel>Worker category</InputLabel>
             <Select

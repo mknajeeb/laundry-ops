@@ -855,7 +855,11 @@ function AppShell() {
               path="/payroll"
               element={
                 <TenantOnlyRoute user={user}>
-                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                  <GuardedRoute
+                    user={user}
+                    roles={["ADMIN", "OPS", "FINANCE", "PAYROLL_ADMIN", "ACCOUNTANT"]}
+                    permissionAnyOf={["users.view", "ta.settings", "users.edit"]}
+                  >
                     <PayrollManagementPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>

@@ -81,7 +81,7 @@ export const TENANT_NAV_ITEMS = [
   { to: "/maintenance", labelKey: "nav.maintenance", roles: OPS, moduleKey: "maintenance" },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/documents", labelKey: "nav.documents", roles: ["ADMIN"], moduleKey: "people" },
-  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS"], moduleKey: "payroll" },
+  { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS", "ACCOUNTANT"], permissionsAnyOf: ["users.view"], moduleKey: "payroll" },
   { to: "/organization", labelKey: "nav.organization", roles: ["ADMIN"], moduleKey: "organization" },
   { to: "/notifications", labelKey: "nav.notifications", roles: PORTAL, moduleKey: "notifications" },
   { to: "/permissions", labelKey: "nav.permissions", roles: ["ADMIN"], moduleKey: "permissions" },
