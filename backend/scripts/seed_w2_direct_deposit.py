@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.app import create_app
+from backend.app import app
+from backend.db import get_db
 from backend.hr_compliance import ensure_hr_extended_profiles_table, upsert_hr_extended_profile
 
 # From accountant spreadsheet (routing numbers preserved as text with leading zeros).
@@ -66,10 +67,7 @@ def norm_name(s: str) -> str:
 
 
 def main() -> int:
-    app = create_app()
     with app.app_context():
-        from backend.ta_helpers import get_db
-
         conn = get_db()
         try:
             cur = conn.cursor(dictionary=True)
@@ -108,6 +106,8 @@ def main() -> int:
                         wj = json.loads(wj)
                     except Exception:
                         wj = {}
+                if isinstance(wj, list):
+                    wj = {}
                 if not isinstance(wj, dict):
                     wj = {}
                 wj = dict(wj)
