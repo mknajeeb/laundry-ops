@@ -11,7 +11,13 @@ import PrintIcon from "@mui/icons-material/Print";
 import { openPrintWindow } from "./contractorPrint";
 
 /** On-screen print preview with a direct Print action. */
-export default function ContractorPrintPreviewDialog({ open, onClose, title, printRef }) {
+export default function ContractorPrintPreviewDialog({
+  open,
+  onClose,
+  title,
+  printRef,
+  pageSize = "letter portrait",
+}) {
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -21,7 +27,7 @@ export default function ContractorPrintPreviewDialog({ open, onClose, title, pri
   }, [open]);
 
   const handlePrint = () => {
-    openPrintWindow(printRef?.current);
+    openPrintWindow(printRef?.current, { pageSize });
   };
 
   return (
@@ -44,7 +50,7 @@ export default function ContractorPrintPreviewDialog({ open, onClose, title, pri
               boxShadow: 1,
               mx: "auto",
               width: "100%",
-              maxWidth: "7.5in",
+              maxWidth: pageSize.toLowerCase().startsWith("a4") ? "210mm" : "7.5in",
             }}
           >
             {printRef?.current ? (

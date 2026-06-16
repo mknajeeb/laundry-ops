@@ -7,6 +7,10 @@ export const PAYROLL_ESTIMATE_PURPOSE =
 export const SEND_TO_ACCOUNTANT_W2_CONFIRM =
   "This W-2 payroll includes estimated tax calculations only. Final payroll tax withholding, filings, and payments must be verified by accountant/payroll provider.";
 
+/** Shown to accountant after payroll confirms the batch is ready. */
+export const ACCOUNTANT_BATCH_READY_MESSAGE =
+  "Payroll confirmed this W-2 batch is ready for your review. You may proceed with direct deposit forms and payroll processing.";
+
 export const ESTIMATED_WITHHOLDING_NOTICE = ESTIMATE_DISCLAIMER;
 
 /** Display money or em dash when tax values must not be shown. */

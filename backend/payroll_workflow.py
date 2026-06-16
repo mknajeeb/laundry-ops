@@ -26,6 +26,7 @@ from backend.payroll_operations import (
     worker_category_for_user,
 )
 from backend.payroll_tax_messages import (
+    ACCOUNTANT_BATCH_READY_MESSAGE,
     ESTIMATE_DISCLAIMER,
     ESTIMATED_WITHHOLDING_NOTICE,
     PAYROLL_ESTIMATE_PURPOSE,
@@ -673,6 +674,18 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
     )
     batch["send_to_accountant_confirm_message"] = (
         SEND_TO_ACCOUNTANT_W2_CONFIRM if cat == "w2" else None
+    )
+    st = str(batch.get("status") or "")
+    batch["accountant_ready_message"] = (
+        ACCOUNTANT_BATCH_READY_MESSAGE
+        if cat == "w2" and st in (
+            "sent_to_accountant",
+            "accountant_reviewed",
+            "approved_for_payment",
+            "paid",
+            "closed",
+        )
+        else None
     )
     return json_safe(batch)
 

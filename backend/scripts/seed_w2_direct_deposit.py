@@ -2,7 +2,7 @@
 """
 Seed direct-deposit bank details into hr_extended_profiles.work_json.direct_deposit.
 
-Matches employees by normalized full name against payroll_profiles.
+Matches employees by employee_id, email, then normalized full name against payroll_profiles.
 Run from repo root: python -m backend.scripts.seed_w2_direct_deposit
 """
 
@@ -22,15 +22,20 @@ from backend.db import get_db
 from backend.hr_compliance import ensure_hr_extended_profiles_table, upsert_hr_extended_profile
 
 # From accountant spreadsheet (routing numbers preserved as text with leading zeros).
+# Match payroll_profiles by employee_id or email first (names in HR may differ from spreadsheet).
 SEED_ROWS = [
     {
         "name": "Tarannum Mithila",
+        "employee_id": "WP35",
+        "email": "tarannum.mithila01@gmail.com",
         "bank_account": "483104450186",
         "bank_routing": "021000322",
         "account_type": "checking",
     },
     {
         "name": "Jaspreet Singh",
+        "employee_id": "WP28",
+        "email": "singh.28@washpro.local",
         "bank_account": "36378614132",
         "bank_routing": "031176110",
         "account_type": "checking",
@@ -43,6 +48,8 @@ SEED_ROWS = [
     },
     {
         "name": "Alex Coaxum",
+        "employee_id": "WP22",
+        "email": "coaxumalec@yahoo.com",
         "bank_account": "483088875599",
         "bank_routing": "021000322",
         "account_type": "checking",
@@ -55,6 +62,8 @@ SEED_ROWS = [
     },
     {
         "name": "Evelyn Hernandez",
+        "employee_id": "WP30",
+        "email": "evelin2211@icloud.com",
         "bank_account": "36326801166",
         "bank_routing": "031176110",
         "account_type": "checking",
@@ -74,22 +83,37 @@ def main() -> int:
             ensure_hr_extended_profiles_table(cur)
             cur.execute(
                 """
-                SELECT pp.user_id, pp.first_name, pp.last_name, u.organization_id
+                SELECT pp.user_id, pp.employee_id, pp.email, pp.first_name, pp.last_name,
+                       u.organization_id
                 FROM payroll_profiles pp
                 JOIN users u ON u.id = pp.user_id
                 """
             )
             profiles = cur.fetchall() or []
             by_name = {}
+            by_employee_id = {}
+            by_email = {}
             for p in profiles:
                 nm = norm_name(f"{p.get('first_name') or ''} {p.get('last_name') or ''}")
                 by_name[nm] = p
+                eid = str(p.get("employee_id") or "").strip().upper()
+                if eid:
+                    by_employee_id[eid] = p
+                em = norm_name(p.get("email") or "")
+                if em:
+                    by_email[em] = p
 
             updated = []
             missing = []
             for row in SEED_ROWS:
-                key = norm_name(row["name"])
-                prof = by_name.get(key)
+                prof = None
+                eid = str(row.get("employee_id") or "").strip().upper()
+                if eid:
+                    prof = by_employee_id.get(eid)
+                if not prof and row.get("email"):
+                    prof = by_email.get(norm_name(row["email"]))
+                if not prof:
+                    prof = by_name.get(norm_name(row["name"]))
                 if not prof:
                     missing.append(row["name"])
                     continue

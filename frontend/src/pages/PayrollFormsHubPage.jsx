@@ -44,6 +44,7 @@ import I9DetailsForm, {
 } from "../components/hr/I9DetailsForm";
 import { hrModule } from "../components/hr/hrModuleStyles";
 import { mergePayrollMailingIntoWork, parseHrWorkJson } from "../utils/mailingMerge";
+import { PayrollDateField } from "../components/PayrollDateTimeField";
 
 function isInternalReferenceForm(form) {
   if (!form) return false;
@@ -262,11 +263,12 @@ export function PayrollFormsHubCore({
         value: t("hub.prefillTinEmpty"),
         hint: t("hub.prefillTinEmptyHint"),
       });
+    if (dob) rows.push({ k: "dob", label: t("profile.dateOfBirth"), value: dob });
     if (tabLane !== "contractor_1099") {
       return rows.filter((r) => r.k !== "tin");
     }
     return rows;
-  }, [payroll, workEffective, t, tabLane]);
+  }, [payroll, workEffective, t, tabLane, dob]);
 
   const buildHrPayload = () => {
     const wj = { ...work };
@@ -736,6 +738,20 @@ export function PayrollFormsHubCore({
 
           <Stack spacing={2.5} sx={{ flex: 1, minWidth: 0, width: "100%" }}>
             <Paper elevation={0} sx={(theme) => ({ ...hrModule.filterBar(theme), p: 2.25 })}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5, letterSpacing: "-0.02em" }}>
+                Employee demographics
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                Date of birth prefills W-2 forms and the direct deposit authorization.
+              </Typography>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 2 }}>
+                <PayrollDateField
+                  label={t("profile.dateOfBirth")}
+                  value={dob}
+                  onChange={setDob}
+                  disabled={!canEdit}
+                />
+              </Stack>
               <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.5, letterSpacing: "-0.02em" }}>
                 {t("hub.prefillPreviewTitle")}
               </Typography>

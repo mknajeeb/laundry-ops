@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
-  Button,
-  Chip,
   FormControl,
   InputLabel,
   MenuItem,
@@ -18,17 +16,16 @@ import {
   defaultRangeSearchDates,
   PAYROLL_SEARCH_MODES,
 } from "../payroll/payPeriodDefaults";
+import { buildPayPeriodOptions } from "../payroll/payPeriodOptions";
 import {
-  addDaysYmd,
   businessTodayYmd,
   formatDateShortLabel,
   formatWeekRangeLabel,
   weekEndFromStart,
-  weekStartFromDate,
 } from "../utils/businessTime";
 
 /**
- * Shared payroll date search: weekly pay period (Mon–Sun from maintenance) or free range (default today).
+ * Shared payroll date search: weekly pay period dropdown or free range (default today).
  */
 export default function PayrollPeriodSearchBar({ value, onChange }) {
   const mode = value?.mode || "pay_period";
@@ -49,6 +46,11 @@ export default function PayrollPeriodSearchBar({ value, onChange }) {
       .finally(() => setSettingsLoaded(true));
   }, []);
 
+  const periodOptions = useMemo(
+    () => buildPayPeriodOptions(weekStartsOn),
+    [weekStartsOn],
+  );
+
   const applyModeDefaults = useCallback(
     (nextMode, ws) => {
       if (nextMode === "pay_period") {
@@ -67,6 +69,7 @@ export default function PayrollPeriodSearchBar({ value, onChange }) {
     applyModeDefaults(mode, weekStartsOn);
   }, [settingsLoaded, start, mode, weekStartsOn, applyModeDefaults]);
 
+  const periodKey = start && end ? `${start}|${end}` : "";
   const periodLabel = useMemo(() => {
     if (mode !== "pay_period" || !start || !end) return null;
     return formatWeekRangeLabel(start, end);
@@ -74,10 +77,10 @@ export default function PayrollPeriodSearchBar({ value, onChange }) {
 
   const patch = (p) => onChange?.({ mode, start, end, category, ...p });
 
-  const shiftPayPeriod = (weeks) => {
-    if (!start) return;
-    const nextStart = weekStartFromDate(addDaysYmd(start, weeks * 7), weekStartsOn);
-    patch({ start: nextStart, end: weekEndFromStart(nextStart) });
+  const onPeriodPick = (key) => {
+    const opt = periodOptions.find((o) => o.key === key);
+    if (!opt) return;
+    patch({ start: opt.start, end: opt.end });
   };
 
   return (
@@ -105,53 +108,46 @@ export default function PayrollPeriodSearchBar({ value, onChange }) {
         </FormControl>
 
         {mode === "pay_period" ? (
-          <Box sx={{ flex: 1, minWidth: 200 }}>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
-              Current pay period
-              {periodLabel ? `: ${periodLabel}` : ""}
-            </Typography>
-            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
-              <Button size="small" variant="outlined" onClick={() => shiftPayPeriod(-1)}>
-                Previous week
-              </Button>
-              <Chip
-                size="small"
-                label="Current week"
-                clickable
-                onClick={() => applyModeDefaults("pay_period", weekStartsOn)}
-              />
-              <Button size="small" variant="outlined" onClick={() => shiftPayPeriod(1)}>
-                Next week
-              </Button>
-            </Stack>
+          <Box sx={{ flex: 1, minWidth: 240 }}>
+            <FormControl size="small" fullWidth sx={{ minWidth: 280 }}>
+              <InputLabel>Pay period</InputLabel>
+              <Select
+                label="Pay period"
+                value={periodKey}
+                onChange={(e) => onPeriodPick(e.target.value)}
+              >
+                {periodOptions.map((o) => (
+                  <MenuItem key={o.key} value={o.key}>
+                    {o.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            {periodLabel ? (
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+                {start} – {end} · weekly cycle (Mon–Sun by default)
+              </Typography>
+            ) : null}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>
               <PayrollDateField
                 label="Week start"
                 value={start}
-                onChange={(v) => patch({ start: v, end: end || v })}
+                onChange={(v) => {
+                  const nextEnd = v ? weekEndFromStart(v) : end;
+                  patch({ start: v, end: nextEnd || v });
+                }}
               />
-              <PayrollDateField
-                label="Week end"
-                value={end}
-                onChange={(v) => patch({ end: v })}
-              />
+              <PayrollDateField label="Week end" value={end} onChange={(v) => patch({ end: v })} />
             </Stack>
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-              Weekly cycle aligned to maintenance settings (Monday–Sunday by default).
-            </Typography>
           </Box>
         ) : (
           <Stack spacing={1} sx={{ flex: 1 }}>
-            <Chip
-              size="small"
-              label={`Today (${formatDateShortLabel(businessTodayYmd())})`}
-              clickable
-              onClick={() => applyModeDefaults("range", weekStartsOn)}
-              sx={{ alignSelf: "flex-start" }}
-            />
+            <Typography variant="caption" color="text.secondary">
+              Today: {formatDateShortLabel(businessTodayYmd())}
+            </Typography>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <PayrollDateField label="From" value={start} onChange={(v) => patch({ start: v })} />
-            <PayrollDateField label="To" value={end} onChange={(v) => patch({ end: v })} />
+              <PayrollDateField label="From" value={start} onChange={(v) => patch({ start: v })} />
+              <PayrollDateField label="To" value={end} onChange={(v) => patch({ end: v })} />
             </Stack>
           </Stack>
         )}

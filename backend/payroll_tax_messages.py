@@ -15,4 +15,9 @@ SEND_TO_ACCOUNTANT_W2_CONFIRM = (
     "Final payroll tax withholding, filings, and payments must be verified by accountant/payroll provider."
 )
 
+ACCOUNTANT_BATCH_READY_MESSAGE = (
+    "Payroll confirmed this W-2 batch is ready for your review. "
+    "You may proceed with direct deposit forms and payroll processing."
+)
+
 ESTIMATED_WITHHOLDING_NOTICE = ESTIMATE_DISCLAIMER

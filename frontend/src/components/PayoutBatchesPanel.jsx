@@ -49,6 +49,7 @@ import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShe
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import {
+  ACCOUNTANT_BATCH_READY_MESSAGE,
   ESTIMATE_DISCLAIMER,
   PAYROLL_ESTIMATE_PURPOSE,
   SEND_TO_ACCOUNTANT_W2_CONFIRM,
@@ -323,7 +324,7 @@ export default function PayoutBatchesPanel({
       await loadList();
       const labels = {
         hours_reviewed: "Hours marked reviewed.",
-        send_to_accountant: "Batch sent to accountant.",
+        send_to_accountant: "Batch confirmed ready for accountant.",
         mark_paid: "Batch marked paid.",
         mark_line_paid: "Worker marked paid.",
         mark_line_unpaid: "Worker marked unpaid.",
@@ -580,6 +581,12 @@ export default function PayoutBatchesPanel({
                 </Alert>
               ) : null}
 
+              {detail.accountant_ready_message ? (
+                <Alert severity="success" sx={{ mb: 2 }}>
+                  {detail.accountant_ready_message}
+                </Alert>
+              ) : null}
+
               {isGrossOnly ? (
                 <Alert severity="info" sx={{ mb: 2 }}>
                   {detail.payroll_estimate_purpose_notice ||
@@ -761,7 +768,7 @@ export default function PayoutBatchesPanel({
                     color="primary"
                     onClick={() => (isW2 ? setSendConfirmOpen(true) : runWorkflowAction("send_to_accountant"))}
                   >
-                    Send to accountant
+                    Confirm batch ready for accountant
                   </Button>
                 ) : null}
                 {["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"].includes(
@@ -996,11 +1003,14 @@ export default function PayoutBatchesPanel({
       </Dialog>
 
       <Dialog open={sendConfirmOpen} onClose={() => setSendConfirmOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Send W-2 batch to accountant?</DialogTitle>
+        <DialogTitle>Confirm batch ready for accountant?</DialogTitle>
         <DialogContent>
-          <Typography variant="body2" sx={{ mt: 1 }}>
+          <Typography variant="body2" sx={{ mt: 1, mb: 1 }}>
             {detail?.send_to_accountant_confirm_message || SEND_TO_ACCOUNTANT_W2_CONFIRM}
           </Typography>
+          <Alert severity="success" sx={{ mt: 1 }}>
+            {ACCOUNTANT_BATCH_READY_MESSAGE}
+          </Alert>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setSendConfirmOpen(false)}>Cancel</Button>
@@ -1011,7 +1021,7 @@ export default function PayoutBatchesPanel({
               await runWorkflowAction("send_to_accountant");
             }}
           >
-            Confirm send
+            Confirm batch ready
           </Button>
         </DialogActions>
       </Dialog>

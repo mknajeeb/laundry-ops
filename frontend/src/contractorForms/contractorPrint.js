@@ -19,12 +19,14 @@ function waitForImages(doc) {
   );
 }
 
-export function openPrintWindow(rootEl) {
+export function openPrintWindow(rootEl, { pageSize = "letter portrait" } = {}) {
   if (!rootEl) {
     window.print();
     return;
   }
   const html = rootEl.innerHTML;
+  const margin = String(pageSize).toLowerCase().startsWith("a4") ? "12mm" : "0.5in";
+  const bodyPad = String(pageSize).toLowerCase().startsWith("a4") ? "0" : "0.25in";
   const win = window.open("", "_blank");
   if (!win) {
     printInPlace(rootEl);
@@ -38,7 +40,7 @@ export function openPrintWindow(rootEl) {
 <title>Print</title>
 <style>${printDocumentCss}</style>
 <style>
-  @page { size: letter portrait; margin: 0.5in; }
+  @page { size: ${pageSize}; margin: ${margin}; }
   html, body {
     margin: 0;
     padding: 0;
@@ -46,7 +48,7 @@ export function openPrintWindow(rootEl) {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  body { padding: 0.25in; }
+  body { padding: ${bodyPad}; }
 </style>
 </head>
 <body>

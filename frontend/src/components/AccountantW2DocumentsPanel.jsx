@@ -27,7 +27,6 @@ import DownloadIcon from "@mui/icons-material/Download";
 import PrintIcon from "@mui/icons-material/Print";
 import UploadIcon from "@mui/icons-material/Upload";
 import VisibilityIcon from "@mui/icons-material/Visibility";
-import { createRoot } from "react-dom/client";
 import {
   getTaHrEmployerSettings,
   getTaUserDocuments,
@@ -177,14 +176,8 @@ export default function AccountantW2DocumentsPanel() {
   };
 
   const printDirectDeposit = () => {
-    if (!prefill) return;
-    const host = document.createElement("div");
-    const root = createRoot(host);
-    root.render(<DirectDepositFormPrint prefill={prefill} />);
-    requestAnimationFrame(() => {
-      openPrintWindow(host);
-      setTimeout(() => root.unmount(), 2000);
-    });
+    if (!printRef.current) return;
+    openPrintWindow(printRef.current, { pageSize: "A4 portrait" });
   };
 
   const saveUpload = async () => {
@@ -417,7 +410,11 @@ export default function AccountantW2DocumentsPanel() {
         <Alert severity="info">Select a W-2 employee to manage documents.</Alert>
       )}
 
-      <Box ref={printRef} sx={{ display: "none" }} aria-hidden>
+      <Box
+        ref={printRef}
+        sx={{ position: "absolute", left: -9999, top: 0, visibility: "hidden", width: "186mm" }}
+        aria-hidden
+      >
         {prefill ? <DirectDepositFormPrint prefill={prefill} /> : null}
       </Box>
 
@@ -425,9 +422,9 @@ export default function AccountantW2DocumentsPanel() {
         open={printPreviewOpen}
         onClose={() => setPrintPreviewOpen(false)}
         title="Direct Deposit Authorization"
-      >
-        {prefill ? <DirectDepositFormPrint prefill={prefill} /> : null}
-      </ContractorPrintPreviewDialog>
+        printRef={printRef}
+        pageSize="A4 portrait"
+      />
 
       <Dialog open={!!uploadOpen} onClose={() => setUploadOpen(null)} maxWidth="sm" fullWidth>
         <DialogTitle>Upload — {uploadOpen?.label}</DialogTitle>

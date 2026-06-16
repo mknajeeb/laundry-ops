@@ -53,8 +53,8 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
           font-size: 10pt;
           line-height: 1.5;
           color: var(--vw-ink);
-          width: 7.5in;
-          max-width: 7.5in;
+          width: 186mm;
+          max-width: 186mm;
           margin: 0 auto;
           background: var(--vw-surface, #fff);
           -webkit-print-color-adjust: exact;
@@ -225,21 +225,6 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
           letter-spacing: 0.05em;
           margin: 0.1in 0 0.04in;
         }
-        .vw-sig-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 0.18in;
-          margin-top: 0.14in;
-          padding: 0.14in;
-          background: ${VEEWASH_BRAND.pageBg};
-          border-radius: ${VEEWASH_BRAND.radius};
-          border: 1px dashed ${VEEWASH_BRAND.border};
-        }
-        .vw-sig-line {
-          border-bottom: 2px solid ${VEEWASH_BRAND.primaryDark};
-          min-height: 0.3in;
-          margin-top: 0.2in;
-        }
         .vw-footer {
           margin-top: 0.14in;
           padding: 0.12in 0.16in;
@@ -251,6 +236,17 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
           line-height: 1.55;
         }
         .vw-footer strong { color: #fff; font-weight: 700; }
+        @media print {
+          @page {
+            size: A4 portrait;
+            margin: 12mm;
+          }
+          .vw-ddf-root {
+            width: 100%;
+            max-width: 100%;
+            margin: 0;
+          }
+        }
       `}</style>
 
       <header className="vw-ddf-hero">
@@ -326,17 +322,6 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
         </div>
       </Section>
 
-      <div className="vw-sig-grid">
-        <div>
-          <div className="vw-sig-line" />
-          <span className="vw-field-label">Employee signature</span>
-        </div>
-        <div>
-          <div className="vw-sig-line" />
-          <span className="vw-field-label">Date</span>
-        </div>
-      </div>
-
       <footer className="vw-footer">
         <strong>{p.company_name || "VeeWash"}</strong>
         <br />
@@ -372,7 +357,7 @@ export function buildDirectDepositPrefill(payroll, hr, org) {
     state: addr.state || "",
     zip: addr.zip || addr.zip_code || "",
     ssn_display: payroll?.itin_ssn_last4 ? `***-**-${payroll.itin_ssn_last4}` : "",
-    date_of_birth: hr?.date_of_birth || "",
+    date_of_birth: hr?.date_of_birth || work.date_of_birth || "",
     hire_date: payroll?.hire_date || "",
     email: payroll?.email || "",
     pay_type: work.pay_type || "hourly",
