@@ -1303,6 +1303,14 @@ export const getTaUserDocuments = (userId) =>
 export const postTaUserDocument = (userId, body) =>
   axios.post(`${API_BASE}/api/ta/users/${userId}/documents`, body);
 
+export const uploadTaUserDocumentFile = (userId, file) => {
+  const fd = new FormData();
+  fd.append("file", file);
+  return axios.post(`${API_BASE}/api/ta/users/${userId}/documents/upload`, fd, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
 export const putTaUserDocument = (userId, recordId, body) =>
   axios.put(`${API_BASE}/api/ta/users/${userId}/documents/${recordId}`, body);
 

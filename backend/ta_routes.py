@@ -3531,6 +3531,45 @@ def user_document_record_item(user_id, record_id):
         conn.close()
 
 
+@ta_bp.route("/users/<int:user_id>/documents/upload", methods=["POST"])
+@require_auth
+def user_document_file_upload(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Documents require unified payroll"}), 503
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        if "file" not in request.files:
+            return jsonify({"error": "file field required"}), 400
+        f = request.files["file"]
+        if not f or not f.filename:
+            return jsonify({"error": "Empty file"}), 400
+        raw = f.read()
+        from backend.hr_document_upload import save_employee_document_file
+
+        try:
+            file_uri, stored_name = save_employee_document_file(
+                int(u.get("organization_id") or _tenant_id()),
+                int(user_id),
+                raw,
+                f.filename,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            current_app.logger.exception("user_document_file_upload failed")
+            return jsonify({"error": f"Upload failed: {e}"}), 503
+        return jsonify({"file_uri": file_uri, "filename": stored_name})
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/admin/document-compliance-policy", methods=["GET", "PUT"])
 @require_auth
 def admin_document_compliance_policy():

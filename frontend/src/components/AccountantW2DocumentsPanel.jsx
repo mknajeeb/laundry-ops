@@ -35,6 +35,7 @@ import {
   getTaUsers,
   postTaUserDocument,
   putTaUserDocument,
+  uploadTaUserDocumentFile,
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
@@ -91,8 +92,9 @@ export default function AccountantW2DocumentsPanel() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [uploadOpen, setUploadOpen] = useState(null);
-  const [uploadUri, setUploadUri] = useState("");
+  const [uploadFile, setUploadFile] = useState(null);
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
+  const uploadInputRef = useRef(null);
 
   const loadWorkers = useCallback(async () => {
     try {
@@ -180,13 +182,19 @@ export default function AccountantW2DocumentsPanel() {
 
   const saveUpload = async () => {
     if (!canUpload || !selected?.id || !uploadOpen) return;
-    const uri = uploadUri.trim();
-    if (!uri) {
-      setError("Paste a file URL to upload.");
+    if (!uploadFile) {
+      setError("Choose a file to upload.");
       return;
     }
     setBusy(uploadOpen.code);
+    setError("");
     try {
+      const up = await uploadTaUserDocumentFile(selected.id, uploadFile);
+      const uri = up.data?.file_uri;
+      if (!uri) {
+        setError("Upload did not return a file location.");
+        return;
+      }
       const ex = findDocRecord(records, uploadOpen.code);
       if (ex?.id) {
         await putTaUserDocument(selected.id, ex.id, {
@@ -204,10 +212,10 @@ export default function AccountantW2DocumentsPanel() {
         });
       }
       setUploadOpen(null);
-      setUploadUri("");
+      setUploadFile(null);
       await loadEmployee(selected.id);
     } catch (e) {
-      setError(e.response?.data?.error || "Upload failed");
+      setError(e.response?.data?.error || e.message || "Upload failed");
     } finally {
       setBusy("");
     }
@@ -391,7 +399,7 @@ export default function AccountantW2DocumentsPanel() {
                           startIcon={<UploadIcon />}
                           onClick={() => {
                             setUploadOpen(doc);
-                            setUploadUri(doc.rec?.file_uri || "");
+                            setUploadFile(null);
                           }}
                         >
                           Upload
@@ -424,24 +432,47 @@ export default function AccountantW2DocumentsPanel() {
         pageSize="A4 portrait"
       />
 
-      <Dialog open={!!uploadOpen} onClose={() => setUploadOpen(null)} maxWidth="sm" fullWidth>
+      <Dialog
+        open={!!uploadOpen}
+        onClose={() => {
+          setUploadOpen(null);
+          setUploadFile(null);
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
         <DialogTitle>Upload — {uploadOpen?.label}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Paste a secure link to the signed document (Google Drive, Dropbox, S3, etc.).
+            Choose a PDF or image from your computer (max 15 MB).
           </Typography>
-          <TextField
-            fullWidth
-            size="small"
-            label="File URL"
-            value={uploadUri}
-            onChange={(e) => setUploadUri(e.target.value)}
+          <input
+            ref={uploadInputRef}
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*"
+            style={{ display: "none" }}
+            onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
           />
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Button variant="outlined" onClick={() => uploadInputRef.current?.click()}>
+              Browse…
+            </Button>
+            <Typography variant="body2" color="text.secondary">
+              {uploadFile ? uploadFile.name : "No file selected"}
+            </Typography>
+          </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setUploadOpen(null)}>Cancel</Button>
-          <Button variant="contained" onClick={saveUpload} disabled={!!busy}>
-            Save
+          <Button
+            onClick={() => {
+              setUploadOpen(null);
+              setUploadFile(null);
+            }}
+          >
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={saveUpload} disabled={!!busy || !uploadFile}>
+            Upload
           </Button>
         </DialogActions>
       </Dialog>
