@@ -29,6 +29,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import AddIcon from "@mui/icons-material/Add";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import HighlightOffIcon from "@mui/icons-material/HighlightOff";
 import DeleteIcon from "@mui/icons-material/Delete";
