@@ -58,6 +58,7 @@ def test_upload_gated_on_users_edit():
     panel = _read("frontend/src/components/AccountantW2DocumentsPanel.jsx")
     assert 'canUpload = hasPerm("users.edit")' in panel
     assert "canUpload && doc.allowUpload" in panel
+    assert "deleteTaUserDocument" in panel
 
 
 def test_direct_deposit_uses_veewash_branding():
@@ -65,6 +66,13 @@ def test_direct_deposit_uses_veewash_branding():
     assert "VEEWASH_BRAND" in form
     assert "vw-ddf-hero" in form
     assert "ContractorPrintLogo" in form
+
+
+def test_w2_doc_catalog_upload_only_except_direct_deposit():
+    catalog = _read("frontend/src/payroll/accountantW2DocCatalog.js")
+    assert "kind: \"hr_form\"" not in catalog
+    assert "kind: \"generated\"" in catalog
+    assert catalog.count("kind: \"uploaded\"") >= 6
 
 
 def test_document_post_requires_users_edit_in_routes():

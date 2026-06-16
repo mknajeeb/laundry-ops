@@ -23,14 +23,15 @@ import {
   Typography,
   alpha,
 } from "@mui/material";
+import DeleteIcon from "@mui/icons-material/Delete";
 import DownloadIcon from "@mui/icons-material/Download";
 import PrintIcon from "@mui/icons-material/Print";
 import UploadIcon from "@mui/icons-material/Upload";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
+  deleteTaUserDocument,
   getTaHrEmployerSettings,
   getTaUserDocuments,
-  getTaUserHrForm,
   getTaUserHrProfile,
   getTaUsers,
   postTaUserDocument,
@@ -49,35 +50,49 @@ import DirectDepositFormPrint, {
 } from "../payroll/DirectDepositFormPrint";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
-async function saveBlobResponse(res, fallbackName) {
-  const blob = res?.data;
-  if (!(blob instanceof Blob)) return { ok: false, error: "Invalid response" };
-  const ct = String(res.headers?.["content-type"] || blob.type || "");
-  if (ct.includes("json")) {
-    try {
-      const text = await blob.text();
-      const j = JSON.parse(text);
-      if (j?.error) return { ok: false, error: j.error };
-    } catch {
-      /* fall through */
-    }
-  }
-  const name =
-    res.headers?.["x-suggested-filename"] ||
-    res.headers?.["content-disposition"]?.match(/filename="([^"]+)"/)?.[1] ||
-    fallbackName;
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name || fallbackName;
-  a.click();
-  URL.revokeObjectURL(url);
-  return { ok: true };
-}
-
 function isW2Employee(user) {
   const lanes = user?.hr_form_lanes || [];
   return lanes.includes("employee_w2");
+}
+
+function openUploadedView(rec) {
+  const uri = rec?.file_uri;
+  if (!uri) return false;
+  window.open(uri, "_blank", "noopener,noreferrer");
+  return true;
+}
+
+function openUploadedPrint(rec) {
+  const uri = rec?.file_uri;
+  if (!uri) return false;
+  const w = window.open(uri, "_blank", "noopener,noreferrer");
+  if (w) {
+    const tryPrint = () => {
+      try {
+        w.focus();
+        w.print();
+      } catch {
+        /* cross-origin PDF may block auto-print */
+      }
+    };
+    w.addEventListener("load", () => setTimeout(tryPrint, 500));
+    setTimeout(tryPrint, 1500);
+  }
+  return true;
+}
+
+function downloadUploaded(rec, label) {
+  const uri = rec?.file_uri;
+  if (!uri) return false;
+  const a = document.createElement("a");
+  a.href = uri;
+  a.download = label || "document";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  return true;
 }
 
 export default function AccountantW2DocumentsPanel() {
@@ -146,35 +161,6 @@ export default function AccountantW2DocumentsPanel() {
     loadEmployee(selected?.id);
   }, [selected?.id, loadEmployee]);
 
-  const downloadHrForm = async (formId, openAfter = false) => {
-    if (!selected?.id) return;
-    setBusy(formId);
-    try {
-      const res = await getTaUserHrForm(selected.id, formId, "en");
-      if (openAfter && res?.data instanceof Blob) {
-        const url = URL.createObjectURL(res.data);
-        window.open(url, "_blank", "noopener,noreferrer");
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-        return;
-      }
-      const out = await saveBlobResponse(res, `${formId}-${selected.id}.pdf`);
-      if (!out.ok) setError(out.error || "Download failed");
-    } catch (e) {
-      setError(e.response?.data?.error || e.message || "Download failed");
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const openUploaded = (rec) => {
-    const uri = rec?.file_uri;
-    if (!uri) {
-      setError("No file uploaded for this document yet.");
-      return;
-    }
-    window.open(uri, "_blank", "noopener,noreferrer");
-  };
-
   const printDirectDeposit = () => {
     if (!printRef.current) return;
     openPrintWindow(printRef.current, { pageSize: "A4 portrait" });
@@ -221,6 +207,21 @@ export default function AccountantW2DocumentsPanel() {
     }
   };
 
+  const removeDocument = async (doc) => {
+    if (!canUpload || !selected?.id || !doc.rec?.id) return;
+    if (!window.confirm(`Remove uploaded file for ${doc.label}?`)) return;
+    setBusy(doc.code);
+    setError("");
+    try {
+      await deleteTaUserDocument(selected.id, doc.rec.id);
+      await loadEmployee(selected.id);
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Delete failed");
+    } finally {
+      setBusy("");
+    }
+  };
+
   const docActions = useMemo(
     () =>
       ACCOUNTANT_W2_DOCS.map((doc) => {
@@ -256,8 +257,8 @@ export default function AccountantW2DocumentsPanel() {
           Employee Documents
         </Typography>
         <Typography variant="body2" sx={{ opacity: 0.92, mb: 2, maxWidth: 640 }}>
-          Download the VeeWash direct deposit form or view statutory HR files. Accountants can view
-          and print; admins can upload signed copies.
+          Direct deposit uses the VeeWash pre-filled form. All other documents are signed copies you
+          upload. Accountants can view and print only; admins can upload, download, and remove files.
         </Typography>
         <Autocomplete
           options={workers}
@@ -296,7 +297,11 @@ export default function AccountantW2DocumentsPanel() {
               <TableRow
                 sx={{
                   bgcolor: VEEWASH_BRAND.primaryLight,
-                  "& th": { fontWeight: 700, color: VEEWASH_BRAND.primaryDark, borderBottom: `2px solid ${VEEWASH_BRAND.primary}` },
+                  "& th": {
+                    fontWeight: 700,
+                    color: VEEWASH_BRAND.primaryDark,
+                    borderBottom: `2px solid ${VEEWASH_BRAND.primary}`,
+                  },
                 }}
               >
                 <TableCell>Document</TableCell>
@@ -338,10 +343,16 @@ export default function AccountantW2DocumentsPanel() {
                     />
                   </TableCell>
                   <TableCell align="right">
-                    <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                    <Stack
+                      direction="row"
+                      spacing={0.5}
+                      justifyContent="flex-end"
+                      flexWrap="wrap"
+                      useFlexGap
+                    >
                       {doc.kind === "generated" ? (
                         <>
-                          <Tooltip title="Print">
+                          <Tooltip title="Print preview">
                             <IconButton size="small" onClick={() => setPrintPreviewOpen(true)}>
                               <PrintIcon fontSize="small" />
                             </IconButton>
@@ -354,41 +365,52 @@ export default function AccountantW2DocumentsPanel() {
                         </>
                       ) : null}
 
-                      {doc.kind === "hr_form" ? (
-                        <>
-                          <Button
-                            size="small"
-                            color="primary"
-                            sx={{ color: VEEWASH_BRAND.primaryDark }}
-                            startIcon={<VisibilityIcon />}
-                            disabled={busy === doc.formId}
-                            onClick={() => downloadHrForm(doc.formId, true)}
-                          >
-                            View
-                          </Button>
-                          <Button
-                            size="small"
-                            startIcon={<DownloadIcon />}
-                            disabled={busy === doc.formId}
-                            onClick={() => downloadHrForm(doc.formId, false)}
-                          >
-                            Download
-                          </Button>
-                        </>
-                      ) : null}
-
                       {doc.kind === "uploaded" && doc.hasFile ? (
                         <>
-                          <Button size="small" startIcon={<VisibilityIcon />} onClick={() => openUploaded(doc.rec)}>
+                          <Button
+                            size="small"
+                            startIcon={<VisibilityIcon />}
+                            disabled={busy === doc.code}
+                            onClick={() => {
+                              if (!openUploadedView(doc.rec)) {
+                                setError("No file on record.");
+                              }
+                            }}
+                          >
                             View
                           </Button>
-                          <Button size="small" startIcon={<PrintIcon />} onClick={() => openUploaded(doc.rec)}>
+                          <Button
+                            size="small"
+                            startIcon={<PrintIcon />}
+                            disabled={busy === doc.code}
+                            onClick={() => {
+                              if (!openUploadedPrint(doc.rec)) {
+                                setError("No file on record.");
+                              }
+                            }}
+                          >
                             Print
                           </Button>
-                          {!doc.viewPrintOnly ? (
-                            <Button size="small" startIcon={<DownloadIcon />} onClick={() => openUploaded(doc.rec)}>
-                              Download
-                            </Button>
+                          {canUpload ? (
+                            <>
+                              <Button
+                                size="small"
+                                startIcon={<DownloadIcon />}
+                                disabled={busy === doc.code}
+                                onClick={() => downloadUploaded(doc.rec, doc.label)}
+                              >
+                                Download
+                              </Button>
+                              <Button
+                                size="small"
+                                color="error"
+                                startIcon={<DeleteIcon />}
+                                disabled={busy === doc.code}
+                                onClick={() => removeDocument(doc)}
+                              >
+                                Delete
+                              </Button>
+                            </>
                           ) : null}
                         </>
                       ) : null}
@@ -397,12 +419,13 @@ export default function AccountantW2DocumentsPanel() {
                         <Button
                           size="small"
                           startIcon={<UploadIcon />}
+                          disabled={busy === doc.code}
                           onClick={() => {
                             setUploadOpen(doc);
                             setUploadFile(null);
                           }}
                         >
-                          Upload
+                          {doc.hasFile ? "Replace" : "Upload"}
                         </Button>
                       ) : null}
                     </Stack>
@@ -444,7 +467,7 @@ export default function AccountantW2DocumentsPanel() {
         <DialogTitle>Upload — {uploadOpen?.label}</DialogTitle>
         <DialogContent>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Choose a PDF or image from your computer (max 15 MB).
+            Choose a signed PDF or image from your computer (max 15 MB).
           </Typography>
           <input
             ref={uploadInputRef}
