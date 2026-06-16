@@ -22,6 +22,14 @@ def insert_staging_from_upload_row(
     """Insert a new orders_staging row; returns new staging id."""
     org = int(organization_id)
     tid = normalize_bag_id(ticket_id or row.get("ticket_id"))
+    if tid:
+        from backend.rinse_bag_operational_owner import assert_operational_write_allowed
+
+        allowed, _, _ = assert_operational_write_allowed(
+            cursor, org, tid, context="staging_import", assign_on_first=True
+        )
+        if not allowed:
+            raise ValueError(f"operational_owner_mismatch: bag {tid} not owned by org {org}")
 
     cols = [
         "date_clean",

@@ -555,10 +555,10 @@ class TestPresenceRunSnapshotPersistence:
 class TestPresenceCrossOrgGuard:
     @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
     @patch(
-        "backend.rinse_at_vendor_module.filter_veewash_presence_cross_org_bags",
-        return_value=({"VEEONLY1"}, [{"bag_id": "DVE92G8WAL", "reason": "cross_org_washpro_canonical_registry"}]),
+        "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
+        return_value=({"VEEONLY1"}, [{"bag_id": "DVE92G8WAL", "reason": "operational_owner_mismatch"}]),
     )
-    def test_apply_presence_scrape_skips_washpro_canonical_bag(self, _filter, _ensure):
+    def test_apply_presence_scrape_skips_non_owner_bag(self, _filter, _ensure):
         cursor = MagicMock()
         cursor.fetchone.return_value = {"active_rows": 1}
         cursor.fetchall.return_value = []

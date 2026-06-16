@@ -1076,8 +1076,10 @@ def build_portal_snapshot_vendor_home_fields(
     module: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Current Portal Snapshot display fields for /performance.
-    Prefers direct Vendor Home page counts; never uses missing cleaning-step inference for ytp.
+    Current Portal Snapshot fields for /performance.
+
+    Operational counts use org-filtered active presence (tenant-owned bags only).
+    Raw Vendor Home scrape totals are retained as portal_reported_* audit fields only.
     """
     av = dict(module or {})
     org = int(organization_id)
@@ -1085,15 +1087,25 @@ def build_portal_snapshot_vendor_home_fields(
     presence_meta = count_presence_rows(cursor, org)
     presence_total = int(presence_meta.get("at_vendor_active") or 0)
 
+    portal_reported_at_veewash = (
+        int(direct["orders_at_veewash"]) if direct.get("orders_at_veewash") is not None else None
+    )
+    portal_reported_ytp = (
+        int(direct["orders_at_veewash_yet_to_process"])
+        if direct.get("orders_at_veewash_yet_to_process") is not None
+        else None
+    )
+    portal_reported_due_today = int(direct["due_today"]) if direct.get("due_today") is not None else None
+    portal_reported_due_ytp = (
+        int(direct["due_today_yet_to_process"]) if direct.get("due_today_yet_to_process") is not None else None
+    )
+
+    # Operational: org-filtered presence list
     orders_at_veewash: int | None = None
     orders_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
     orders_reliable = False
 
-    if direct.get("available") and direct.get("orders_at_veewash") is not None:
-        orders_at_veewash = int(direct["orders_at_veewash"])
-        orders_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
-        orders_reliable = True
-    elif presence_total > 0:
+    if presence_total > 0 or presence_meta.get("portal_list_available"):
         orders_at_veewash = presence_total
         orders_source = PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST
         orders_reliable = True
@@ -1102,36 +1114,45 @@ def build_portal_snapshot_vendor_home_fields(
         orders_source = PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST
         orders_reliable = True
 
-    ytp: int | None = None
-    ytp_reliable = False
-    ytp_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
-    if direct.get("available") and direct.get("orders_at_veewash_yet_to_process") is not None:
-        ytp = int(direct["orders_at_veewash_yet_to_process"])
-        ytp_reliable = True
-        ytp_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+    presence_rows, _ = load_all_at_vendor_presence_rows(
+        cursor, org, target_date=today, exclude_bag_ids=set()
+    )
+    ytp_meta = summarize_portal_snapshot_yet_to_process(presence_rows)
+    ytp: int | None = ytp_meta.get("portal_snapshot_yet_to_process")
+    ytp_reliable = bool(ytp_meta.get("portal_snapshot_yet_to_process_reliable"))
+    ytp_source = ytp_meta.get("portal_snapshot_yet_to_process_source") or PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
 
-    due_today: int | None = None
-    due_today_reliable = False
-    due_today_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
-    if direct.get("available") and direct.get("due_today") is not None:
-        due_today = int(direct["due_today"])
-        due_today_reliable = True
-        due_today_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+    operational_due_today: int | None = None
+    operational_due_ytp: int | None = None
+    if presence_rows:
+        due_rows = [
+            r
+            for r in presence_rows
+            if parse_record_date(r.get("estimated_delivery_date")) == today
+        ]
+        operational_due_today = len(due_rows)
+        if ytp_reliable and ytp is not None and operational_due_today is not None:
+            operational_due_ytp = sum(1 for r in due_rows if portal_at_vendor_yet_to_process(r))
 
-    due_ytp: int | None = None
-    due_ytp_reliable = False
-    due_ytp_source = PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
-    if direct.get("available") and direct.get("due_today_yet_to_process") is not None:
-        due_ytp = int(direct["due_today_yet_to_process"])
-        due_ytp_reliable = True
-        due_ytp_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+    due_today = operational_due_today
+    due_today_reliable = operational_due_today is not None
+    due_today_source = (
+        PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST if due_today_reliable else PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+    )
+
+    due_ytp = operational_due_ytp
+    due_ytp_reliable = operational_due_ytp is not None
+    due_ytp_source = (
+        PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST if due_ytp_reliable else PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+    )
 
     presence_reconciliation = {
         "active_at_vendor_presence_count": presence_total,
-        "direct_vendor_home_total": direct.get("orders_at_veewash"),
+        "direct_vendor_home_total": portal_reported_at_veewash,
+        "portal_reported_orders_at_veewash": portal_reported_at_veewash,
         "difference": (
-            presence_total - int(direct["orders_at_veewash"])
-            if direct.get("orders_at_veewash") is not None
+            presence_total - portal_reported_at_veewash
+            if portal_reported_at_veewash is not None
             else None
         ),
     }
@@ -1149,6 +1170,13 @@ def build_portal_snapshot_vendor_home_fields(
         "due_today_yet_to_process": due_ytp if due_ytp_reliable else None,
         "due_today_yet_to_process_reliable": due_ytp_reliable,
         "due_today_yet_to_process_source": due_ytp_source,
+        "portal_reported_orders_at_veewash": portal_reported_at_veewash,
+        "portal_reported_orders_at_veewash_yet_to_process": portal_reported_ytp,
+        "portal_reported_due_today": portal_reported_due_today,
+        "portal_reported_due_today_yet_to_process": portal_reported_due_ytp,
+        "portal_reported_source": (
+            PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT if direct.get("available") else PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
+        ),
         "portal_snapshot_scrape_at": direct.get("scraped_at") or direct.get("presence_run_finished_at"),
         "portal_snapshot_presence_run_id": direct.get("presence_run_id"),
         "portal_snapshot_presence_reconciliation": presence_reconciliation,

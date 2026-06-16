@@ -989,6 +989,49 @@ def run_scheduled_scrape_for_org(
 
             conn.commit()
 
+            off_portal_refresh_detail: dict[str, Any] | None = None
+            if not dry_run and batch_id and final_status in ("success", "needs_attention"):
+                from backend.rinse_off_portal_scan_refresh import (
+                    off_portal_refresh_dry_run,
+                    off_portal_refresh_enabled,
+                    refresh_off_portal_pending_scans,
+                )
+                from backend.rinse_shift_monitor_baseline import (
+                    build_baseline_context,
+                    get_shift_monitor_baseline,
+                )
+
+                if off_portal_refresh_enabled():
+                    try:
+                        baseline_ctx = build_baseline_context(
+                            cursor, org_id, get_shift_monitor_baseline(cursor, org_id)
+                        )
+                        off_portal_refresh_detail = refresh_off_portal_pending_scans(
+                            cursor,
+                            org_id,
+                            upload_batch_id=int(batch_id),
+                            selected_date_et=batch_date,
+                            baseline_ctx=baseline_ctx,
+                            log_fn=lambda msg: log.write(msg + "\n"),
+                        )
+                        if not off_portal_refresh_detail.get("dry_run"):
+                            conn.commit()
+                        log.write(
+                            "Off-portal pending scan refresh: "
+                            f"bags={off_portal_refresh_detail.get('bags_processed')} "
+                            f"inserted={off_portal_refresh_detail.get('events_inserted')} "
+                            f"already_present={off_portal_refresh_detail.get('events_already_present')} "
+                            f"lookup_failed={off_portal_refresh_detail.get('lookup_failed')} "
+                            f"dry_run={off_portal_refresh_detail.get('dry_run')}\n"
+                        )
+                    except Exception as refresh_exc:
+                        conn.rollback()
+                        log.write(f"Off-portal pending scan refresh ERROR (non-fatal): {refresh_exc}\n")
+                        off_portal_refresh_detail = {
+                            "error": str(refresh_exc),
+                            "dry_run": off_portal_refresh_dry_run(),
+                        }
+
             result.status = final_status
             result.at_vendor_status = final_status
             result.detail = {
@@ -998,6 +1041,8 @@ def run_scheduled_scrape_for_org(
                 "attention_count": attention,
                 "accepted_count": accepted,
             }
+            if off_portal_refresh_detail is not None:
+                result.detail["off_portal_scan_refresh"] = off_portal_refresh_detail
 
         except Exception as e:
             conn.rollback()

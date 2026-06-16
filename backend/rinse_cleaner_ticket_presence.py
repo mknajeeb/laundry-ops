@@ -1193,6 +1193,7 @@ def apply_presence_scrape(
         "rows_unchanged": 0,
         "rows_missing": 0,
         "errors": [],
+        "operational_owner_rejected": [],
         "cross_org_presence_excluded": [],
     }
 
@@ -1201,13 +1202,14 @@ def apply_presence_scrape(
         for raw in rows
         if (bid := normalize_bag_id(raw.get("bag_id")))
     }
-    from backend.rinse_at_vendor_module import filter_veewash_presence_cross_org_bags
+    from backend.rinse_bag_operational_owner import filter_bag_ids_for_operational_write
 
-    allowed_bag_ids, cross_org_excluded = filter_veewash_presence_cross_org_bags(
-        cursor, org, candidate_bag_ids
+    allowed_bag_ids, owner_rejected = filter_bag_ids_for_operational_write(
+        cursor, org, candidate_bag_ids, context="presence_scrape", assign_on_first=True
     )
-    if cross_org_excluded:
-        stats["cross_org_presence_excluded"] = cross_org_excluded
+    if owner_rejected:
+        stats["operational_owner_rejected"] = owner_rejected
+        stats["cross_org_presence_excluded"] = owner_rejected
 
     for raw in rows:
         bag_id = normalize_bag_id(raw.get("bag_id"))
@@ -1217,7 +1219,7 @@ def apply_presence_scrape(
         if bag_id not in allowed_bag_ids:
             stats["errors"].append(
                 {
-                    "error": "cross_org_washpro_owned",
+                    "error": "operational_owner_mismatch",
                     "bag_id": bag_id,
                     "row": dict(raw),
                 }

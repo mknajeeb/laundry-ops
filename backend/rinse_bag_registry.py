@@ -336,6 +336,18 @@ def upsert_scan_event_row(
     insert. A different timestamp/rack/user/purpose yields a different dedupe_key
     and therefore a new row.
     """
+    from backend.rinse_bag_operational_owner import assert_operational_write_allowed
+
+    allowed, _, _ = assert_operational_write_allowed(
+        cursor,
+        int(organization_id),
+        bag_id,
+        context="scan_event_upsert",
+        assign_on_first=True,
+    )
+    if not allowed:
+        return "rejected_operational_owner"
+
     ensure_rinse_bag_scan_events_table(cursor)
     ensure_rinse_bag_scan_events_dedupe_schema(cursor)
     cursor.execute(
@@ -437,10 +449,17 @@ def merge_scan_events_from_upload(
     df["Bag ID"] = df["Bag ID"].map(normalize_bag_id)
     df = df.loc[df["Bag ID"].astype(str).str.len() > 0]
 
-    bag_ids = sorted(df["Bag ID"].unique().tolist())
+    from backend.rinse_bag_operational_owner import filter_bag_ids_for_operational_write
+
+    raw_bag_ids = sorted(df["Bag ID"].unique().tolist())
+    allowed_ids, owner_rejected = filter_bag_ids_for_operational_write(
+        cursor, org, raw_bag_ids, context="scan_import", assign_on_first=True
+    )
+    bag_ids = sorted(allowed_ids)
     inserted = 0
     metadata_updated = 0
     skipped_no_time = 0
+    rejected_owner = len(owner_rejected)
 
     for bag_id in bag_ids:
         bag_rows = df.loc[df["Bag ID"] == bag_id]
@@ -494,6 +513,9 @@ def merge_scan_events_from_upload(
                 source_filename=(source_filename or "")[:512] or None,
                 raw_json=json.dumps(raw),
             )
+            if action == "rejected_operational_owner":
+                rejected_owner += 1
+                continue
             if action == "metadata_updated":
                 metadata_updated += 1
             else:
@@ -517,6 +539,8 @@ def merge_scan_events_from_upload(
         "events_metadata_updated": metadata_updated,
         "events_updated": metadata_updated,
         "events_skipped_no_time": skipped_no_time,
+        "bags_rejected_operational_owner": rejected_owner,
+        "operational_owner_rejected": owner_rejected,
         "bag_ids": bag_ids,
     }
 

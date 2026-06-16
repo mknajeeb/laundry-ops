@@ -105,6 +105,14 @@ def upsert_registry_from_portal_row(
     if not bid:
         return
 
+    from backend.rinse_bag_operational_owner import assert_operational_write_allowed
+
+    allowed, reject_reason, _ = assert_operational_write_allowed(
+        cursor, org, bid, context="registry_upsert", assign_on_first=True
+    )
+    if not allowed:
+        return
+
     reg = get_registry_row(cursor, org, bid)
     batch_id = int(upload_batch_id)
 

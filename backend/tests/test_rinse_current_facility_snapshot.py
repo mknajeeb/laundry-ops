@@ -663,7 +663,7 @@ class TestVendorHomeParitySplit:
         assert summary["orders_at_veewash_yet_to_process"] == 16
         assert summary["source"] == PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
 
-    def test_build_portal_snapshot_prefers_direct_vendor_home(self):
+    def test_build_portal_snapshot_uses_presence_for_operational_counts(self):
         from backend.rinse_current_facility_snapshot import (
             PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST,
             PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT,
@@ -680,10 +680,10 @@ class TestVendorHomeParitySplit:
                     "finished_at": "2026-06-14T01:00:00",
                     "scrape_meta_json": {
                         "vendor_home_summary": {
-                            "orders_at_veewash": 20,
-                            "orders_at_veewash_yet_to_process": 16,
-                            "due_today": 0,
-                            "due_today_yet_to_process": 0,
+                            "orders_at_veewash": 73,
+                            "orders_at_veewash_yet_to_process": 54,
+                            "due_today": 43,
+                            "due_today_yet_to_process": 24,
                         }
                     },
                 }
@@ -691,21 +691,23 @@ class TestVendorHomeParitySplit:
         with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
             with patch(
                 "backend.rinse_current_facility_snapshot.count_presence_rows",
-                return_value={"at_vendor_active": 20, "rfv_active": 0, "portal_list_available": True},
+                return_value={"at_vendor_active": 64, "rfv_active": 0, "portal_list_available": True},
             ):
-                out = build_portal_snapshot_vendor_home_fields(
-                    FakeCursor(),
-                    3,
-                    today=date(2026, 6, 13),
-                    module={"current_portal_snapshot_total": 20},
-                )
-        assert out["orders_at_veewash"] == 20
-        assert out["orders_at_veewash_source"] == PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
-        assert out["orders_at_veewash_yet_to_process"] == 16
-        assert out["orders_at_veewash_yet_to_process_reliable"] is True
-        assert out["portal_snapshot_yet_to_process"] == 16
-        assert out["portal_snapshot_yet_to_process_reliable"] is True
-        assert out["due_today"] == 0
+                with patch(
+                    "backend.rinse_current_facility_snapshot.load_all_at_vendor_presence_rows",
+                    return_value=([], {"at_vendor_presence_wf": 0, "at_vendor_presence_hd": 0}),
+                ):
+                    out = build_portal_snapshot_vendor_home_fields(
+                        FakeCursor(),
+                        3,
+                        today=date(2026, 6, 16),
+                        module={"current_portal_snapshot_total": 64},
+                    )
+        assert out["orders_at_veewash"] == 64
+        assert out["orders_at_veewash_source"] == PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST
+        assert out["portal_reported_orders_at_veewash"] == 73
+        assert out["portal_reported_source"] == PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+        assert out["portal_snapshot_presence_reconciliation"]["direct_vendor_home_total"] == 73
 
     def test_manual_vendor_home_cards_not_clickable(self):
         from backend.rinse_current_facility_snapshot import build_vendor_home_view_section
