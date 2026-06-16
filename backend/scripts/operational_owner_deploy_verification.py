@@ -232,7 +232,7 @@ def main() -> None:
             portal_status="at_vendor",
             dry_run=False,
             mark_missing=False,
-            run_type="manual_operational_owner_verify",
+            run_type="manual",
         )
         conn.commit()
         report["presence_scrape"] = {
