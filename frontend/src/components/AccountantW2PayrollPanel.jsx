@@ -1,12 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Chip,
-  FormControl,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
   Table,
   TableBody,
@@ -16,8 +12,9 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import PayPeriodSelect from "./PayPeriodSelect";
 import { getPayrollPeriodSettings, getPayoutBatch, getPayoutBatches } from "../api";
-import { buildPayPeriodOptions, findPayPeriodOption } from "../payroll/payPeriodOptions";
+import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
 import {
   ACCOUNTANT_BATCH_READY_MESSAGE,
@@ -26,6 +23,14 @@ import {
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
 const DEFAULT_OT_MULTIPLIER = 1.5;
+
+const READY_STATUSES = [
+  "sent_to_accountant",
+  "accountant_reviewed",
+  "approved_for_payment",
+  "paid",
+  "closed",
+];
 
 function lineStatusLabel(st) {
   if (st === "pending" || st === "pending_approval") return "Pending approval";
@@ -37,6 +42,19 @@ function lineStatusColor(st) {
   if (st === "pending" || st === "pending_approval") return "warning";
   if (st === "approved") return "success";
   return "default";
+}
+
+function batchStatusLabel(st) {
+  const map = {
+    draft: "Draft",
+    hours_reviewed: "Awaiting confirm",
+    sent_to_accountant: "Ready for you",
+    accountant_reviewed: "Reviewed",
+    approved_for_payment: "Approved",
+    paid: "Paid",
+    closed: "Closed",
+  };
+  return map[st] || st || "—";
 }
 
 function computeLinePay(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
@@ -57,32 +75,16 @@ function computeLinePay(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
   };
 }
 
-function batchStatusLabel(st) {
-  const map = {
-    draft: "Draft",
-    hours_reviewed: "Hours reviewed — awaiting payroll confirmation",
-    sent_to_accountant: "Ready for accountant",
-    accountant_reviewed: "Accountant reviewed",
-    approved_for_payment: "Approved for payment",
-    paid: "Paid",
-    closed: "Closed",
-  };
-  return map[st] || st || "—";
-}
-
 export default function AccountantW2PayrollPanel() {
   const [weekStartsOn, setWeekStartsOn] = useState(0);
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
+  const [periodExpanded, setPeriodExpanded] = useState(false);
   const [batches, setBatches] = useState([]);
   const [batch, setBatch] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const periodOptions = useMemo(
-    () => buildPayPeriodOptions(weekStartsOn),
-    [weekStartsOn],
-  );
+  const autoPickedRef = useRef(false);
 
   useEffect(() => {
     getPayrollPeriodSettings()
@@ -117,11 +119,37 @@ export default function AccountantW2PayrollPanel() {
 
   const periodBatch = useMemo(() => {
     if (!periodStart || !periodEnd) return null;
+    const ps = normPayPeriodYmd(periodStart);
+    const pe = normPayPeriodYmd(periodEnd);
     return (
       batches.find(
-        (b) => b.pay_period_start === periodStart && b.pay_period_end === periodEnd,
+        (b) =>
+          normPayPeriodYmd(b.pay_period_start) === ps &&
+          normPayPeriodYmd(b.pay_period_end) === pe,
       ) || null
     );
+  }, [batches, periodStart, periodEnd]);
+
+  /** After batches load, jump to latest ready (or any) batch if current week has none. */
+  useEffect(() => {
+    if (!batches.length || autoPickedRef.current) return;
+    const ps = normPayPeriodYmd(periodStart);
+    const pe = normPayPeriodYmd(periodEnd);
+    const hasBatch = batches.some(
+      (b) =>
+        normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
+    );
+    if (hasBatch) {
+      autoPickedRef.current = true;
+      return;
+    }
+    const ready = batches.find((b) => READY_STATUSES.includes(b.status));
+    const pick = ready || batches[0];
+    if (pick) {
+      setPeriodStart(normPayPeriodYmd(pick.pay_period_start));
+      setPeriodEnd(normPayPeriodYmd(pick.pay_period_end));
+    }
+    autoPickedRef.current = true;
   }, [batches, periodStart, periodEnd]);
 
   const loadBatchDetail = useCallback(async (batchId) => {
@@ -146,19 +174,7 @@ export default function AccountantW2PayrollPanel() {
     loadBatchDetail(periodBatch?.id);
   }, [periodBatch?.id, loadBatchDetail]);
 
-  const onPeriodSelect = (key) => {
-    const opt = periodOptions.find((o) => o.key === key);
-    if (!opt) return;
-    setPeriodStart(opt.start);
-    setPeriodEnd(opt.end);
-  };
-
-  const selectedKey =
-    periodStart && periodEnd ? `${periodStart}|${periodEnd}` : "";
-  const selectedLabel = findPayPeriodOption(periodOptions, periodStart, periodEnd)?.label;
-
-  const readyStatuses = ["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"];
-  const showReadyMessage = batch && readyStatuses.includes(batch.status);
+  const showReadyMessage = batch && READY_STATUSES.includes(batch.status);
   const pendingLineCount =
     batch?.lines?.filter((ln) =>
       ln.line_status === "pending_approval" || ln.line_status === "pending",
@@ -190,29 +206,33 @@ export default function AccountantW2PayrollPanel() {
 
       <Paper sx={{ p: 2 }}>
         <Typography variant="h6" sx={{ mb: 0.5 }}>W-2 payroll by pay period</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Review hours, rates, and gross wages for W-2 employees. Lines still awaiting approval are
-          marked clearly. When payroll confirms the batch is ready, you will see a green notice here.
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          Payroll approves time, builds a W-2 payout batch for the same week, then confirms it is
+          ready. You will see a green notice when you can proceed.
         </Typography>
-        <FormControl size="small" sx={{ minWidth: 280 }}>
-          <InputLabel>Pay period</InputLabel>
-          <Select
-            label="Pay period"
-            value={selectedKey}
-            onChange={(e) => onPeriodSelect(e.target.value)}
-          >
-            {periodOptions.map((o) => (
-              <MenuItem key={o.key} value={o.key}>
-                {o.label}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        {selectedLabel ? (
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-            {periodStart} – {periodEnd}
+        <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>
+            Payroll workflow (admin)
           </Typography>
-        ) : null}
+          <Typography variant="body2" component="ol" sx={{ pl: 2, m: 0 }}>
+            <li>Time Records — approve hours for the pay period</li>
+            <li>Payout Batches — create/open <strong>W-2</strong> batch for that week (syncs approved time)</li>
+            <li>Mark hours reviewed → <strong>Confirm batch ready for accountant</strong></li>
+          </Typography>
+        </Alert>
+        <PayPeriodSelect
+          weekStartsOn={weekStartsOn}
+          batches={batches}
+          start={periodStart}
+          end={periodEnd}
+          expanded={periodExpanded}
+          onExpandedChange={setPeriodExpanded}
+          batchStatusLabel={batchStatusLabel}
+          onChange={({ start, end }) => {
+            setPeriodStart(start);
+            setPeriodEnd(end);
+          }}
+        />
       </Paper>
 
       {showReadyMessage ? (
@@ -221,20 +241,19 @@ export default function AccountantW2PayrollPanel() {
         </Alert>
       ) : batch?.status === "hours_reviewed" ? (
         <Alert severity="info">
-          Hours have been reviewed. Waiting for payroll to confirm this batch is ready for your
-          review.
+          Hours reviewed — waiting for payroll to confirm this batch is ready for your review.
         </Alert>
       ) : batch?.status === "draft" ? (
         <Alert severity="warning">
-          This pay period batch is still in draft. Some lines may show pending approval until payroll
-          finishes review.
+          Batch is still in draft. Payroll must review hours and confirm ready before you process
+          payroll.
         </Alert>
       ) : null}
 
       {!periodBatch ? (
         <Alert severity="info">
-          No W-2 payout batch exists for {selectedLabel || "this pay period"} yet. Payroll will create
-          one on Payout Batches when hours are approved.
+          No W-2 payout batch for this pay period yet. Ask payroll to create one under{" "}
+          <strong>Payout Batches</strong> (W-2 category) after approving time records.
         </Alert>
       ) : null}
 
@@ -326,7 +345,10 @@ export default function AccountantW2PayrollPanel() {
                   {!batch.lines?.length ? (
                     <TableRow>
                       <TableCell colSpan={8}>
-                        <Typography color="text.secondary">No lines in this batch yet.</Typography>
+                        <Typography color="text.secondary">
+                          No lines yet — payroll must approve time and open/sync the W-2 batch for
+                          this period.
+                        </Typography>
                       </TableCell>
                     </TableRow>
                   ) : null}

@@ -48,6 +48,7 @@ import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPrev
 import { ContractorPrintLetterhead } from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
+import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import {
   ACCOUNTANT_BATCH_READY_MESSAGE,
   ESTIMATE_DISCLAIMER,
@@ -232,6 +233,20 @@ export default function PayoutBatchesPanel({
     loadList();
     getContractors().catch(() => {});
   }, [loadList]);
+
+  /** Open batch matching the pay-period search bar when dates align. */
+  useEffect(() => {
+    if (!payPeriodStart || !payPeriodEnd || !batches.length) return;
+    const ps = normPayPeriodYmd(payPeriodStart);
+    const pe = normPayPeriodYmd(payPeriodEnd);
+    const match = batches.find(
+      (b) =>
+        normPayPeriodYmd(b.pay_period_start) === ps && normPayPeriodYmd(b.pay_period_end) === pe,
+    );
+    if (match && selectedId !== match.id) {
+      loadDetail(match.id, { quiet: true });
+    }
+  }, [payPeriodStart, payPeriodEnd, batches, selectedId, loadDetail]);
 
   const openCreateBatch = () => {
     setDraft((d) => ({
@@ -507,8 +522,8 @@ export default function PayoutBatchesPanel({
           <Box>
             <Typography variant="h6">Payout batches</Typography>
             <Typography variant="body2" color="text.secondary">
-              Approved hours for the batch pay period sync automatically when you create or open a
-              draft batch. One batch per worker category.
+              1) Approve time on Time Records · 2) Create/open W-2 batch for that week · 3) Mark hours
+              reviewed · 4) Confirm batch ready for accountant.
             </Typography>
           </Box>
           <Stack direction="row" spacing={1} alignItems="center">

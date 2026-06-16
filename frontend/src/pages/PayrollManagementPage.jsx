@@ -9,6 +9,7 @@ import {
 } from "@mui/material";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
+import { getPayoutBatches } from "../api";
 import AccountantReportsPanel from "../components/AccountantReportsPanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
@@ -72,6 +73,15 @@ export default function PayrollManagementPage() {
     setPayPeriod((prev) => ({ ...prev, ...patch }));
   }, []);
 
+  const [payoutBatchesForSearch, setPayoutBatchesForSearch] = useState([]);
+
+  useEffect(() => {
+    if (!canTime && !canPayout) return;
+    getPayoutBatches()
+      .then((res) => setPayoutBatchesForSearch(res.data?.items || []))
+      .catch(() => setPayoutBatchesForSearch([]));
+  }, [canTime, canPayout]);
+
   useEffect(() => {
     if (tab >= sections.length) setTab(Math.max(0, sections.length - 1));
   }, [sections.length, tab]);
@@ -133,7 +143,11 @@ export default function PayrollManagementPage() {
 
       {active?.key === "time" || active?.key === "batches" ? (
         <Box sx={{ pt: 2 }}>
-          <PayrollPeriodSearchBar value={payPeriod} onChange={setPayPeriod} />
+          <PayrollPeriodSearchBar
+            value={payPeriod}
+            onChange={setPayPeriod}
+            batches={payoutBatchesForSearch}
+          />
         </Box>
       ) : null}
 

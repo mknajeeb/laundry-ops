@@ -76,9 +76,7 @@ async function saveBlobResponse(res, fallbackName) {
 
 function isW2Employee(user) {
   const lanes = user?.hr_form_lanes || [];
-  if (lanes.includes("employee_w2")) return true;
-  if (lanes.includes("contractor_1099") && !lanes.includes("employee_w2")) return false;
-  return true;
+  return lanes.includes("employee_w2");
 }
 
 export default function AccountantW2DocumentsPanel() {
