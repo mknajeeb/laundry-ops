@@ -12,69 +12,45 @@ on:
 jobs:
   build_and_deploy_job:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     name: Build and Deploy Job
     permissions:
-       id-token: write
        contents: read
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: true
           lfs: false
-      - name: Install OIDC Client from Core Package
-        run: npm install @actions/core@1.6.0 @actions/http-client
-      - name: Get Id Token
-        uses: actions/github-script@v6
-        id: idtoken
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-           script: |
-               const coredemo = require('@actions/core')
-               return await coredemo.getIDToken()
-           result-encoding: string
-      # Vite embeds VITE_* at build time — set in GitHub → Settings → Secrets and variables → Actions → Variables
-      # Name: VITE_ONESIGNAL_APP_ID  Value: (OneSignal → Settings → Keys & IDs → OneSignal App ID)
-      # Name: VITE_API_BASE  Value: https://your-app.azurewebsites.net  (no trailing slash; must match Flask CORS / public URL)
-      - name: Build And Deploy
-        id: builddeploy
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
         env:
           VITE_ONESIGNAL_APP_ID: ${{ vars.VITE_ONESIGNAL_APP_ID }}
           VITE_API_BASE: ${{ vars.VITE_API_BASE }}
+        run: npm ci && npm run build
+      - name: Deploy to Azure Static Web Apps
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ZEALOUS_BAY_0FB502610 }}
-          action: "upload"
-          ###### Repository/Build Configurations - These values can be configured to match your app requirements. ######
-          # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
-          app_location: "./frontend" # App source code path
-          api_location: "" # Api source code path - optional
-          output_location: "dist" # Built app content directory - optional
-          github_id_token: ${{ steps.idtoken.outputs.result }}
-          ###### End of Repository/Build Configurations ######
+          action: upload
+          skip_app_build: true
+          app_location: frontend
+          app_artifact_location: dist
+          output_location: dist
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     name: Close Pull Request Job
-    permissions:
-      id-token: write
-      contents: read
     steps:
-      - name: Install OIDC Client from Core Package
-        run: npm install @actions/core@1.6.0 @actions/http-client
-      - name: Get Id Token
-        uses: actions/github-script@v6
-        id: idtoken
-        with:
-          script: |
-            const coredemo = require('@actions/core')
-            return await coredemo.getIDToken()
-          result-encoding: string
       - name: Close Pull Request
-        id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ZEALOUS_BAY_0FB502610 }}
-          action: "close"
-          app_location: "./frontend"
-          github_id_token: ${{ steps.idtoken.outputs.result }}
+          action: close
+          app_location: frontend
