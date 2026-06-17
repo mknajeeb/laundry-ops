@@ -91,6 +91,11 @@ def record_is_due_today(rec: Mapping[str, Any], today: date) -> bool:
     return dc == today
 
 
+def presence_row_delivery_date(raw: Mapping[str, Any]) -> date | None:
+    """EDD from presence loader rows (`estimated_delivery_date` or legacy `date_clean`)."""
+    return parse_record_date(raw.get("estimated_delivery_date") or raw.get("date_clean"))
+
+
 def load_due_today_bag_ids(cursor, organization_id: int, today: date) -> set[str]:
     return set(load_due_today_rows(cursor, organization_id, today).keys())
 
@@ -243,6 +248,8 @@ def load_all_at_vendor_presence_rows(
                 "service_type": svc,
                 "effective_rush": _presence_effective_rush(raw, target_date),
                 "name_clean": raw.get("customer_name"),
+                "customer_name": raw.get("customer_name"),
+                "estimated_delivery_date": raw.get("estimated_delivery_date"),
                 "date_clean": raw.get("estimated_delivery_date"),
                 "in_active_staging": False,
                 "registry_supplement": False,
@@ -1134,7 +1141,7 @@ def build_portal_snapshot_vendor_home_fields(
         due_rows = [
             r
             for r in presence_rows
-            if parse_record_date(r.get("estimated_delivery_date")) == today
+            if presence_row_delivery_date(r) == today
         ]
         operational_due_today = len(due_rows)
         if ytp_reliable and ytp is not None and operational_due_today is not None:
@@ -1178,7 +1185,7 @@ def build_portal_snapshot_vendor_home_fields(
         bid = str(raw.get("bag_id") or "").strip().upper()
         if not bid:
             continue
-        edd = parse_record_date(raw.get("estimated_delivery_date"))
+        edd = presence_row_delivery_date(raw)
         portal_snapshot_drilldown_rows.append(
             {
                 "bag_id": bid,

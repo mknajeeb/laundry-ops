@@ -754,6 +754,56 @@ class TestVendorHomeParitySplit:
         assert out["due_today"] == 5
         assert out["due_today_yet_to_process"] == 3
 
+    def test_portal_snapshot_drilldown_includes_due_today_edd(self):
+        from datetime import date
+
+        from backend.rinse_current_facility_snapshot import build_portal_snapshot_vendor_home_fields
+
+        today = date(2026, 6, 17)
+        presence_rows = [
+            {
+                "bag_id": "DUE1",
+                "service_type": "HD",
+                "customer_name": "Due Today",
+                "date_clean": today,
+            },
+            {
+                "bag_id": "LATE1",
+                "service_type": "WF",
+                "customer_name": "Tomorrow",
+                "date_clean": date(2026, 6, 18),
+            },
+        ]
+
+        class FakeCursor:
+            def execute(self, *args, **kwargs):
+                return None
+
+            def fetchone(self):
+                return None
+
+        with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
+            with patch(
+                "backend.rinse_current_facility_snapshot.count_presence_rows",
+                return_value={"at_vendor_active": 2, "rfv_active": 0, "portal_list_available": True},
+            ):
+                with patch(
+                    "backend.rinse_current_facility_snapshot.load_all_at_vendor_presence_rows",
+                    return_value=(presence_rows, {"at_vendor_presence_wf": 1, "at_vendor_presence_hd": 1}),
+                ):
+                    with patch(
+                        "backend.rinse_current_facility_snapshot.load_latest_vendor_home_direct_counts",
+                        return_value={"available": False},
+                    ):
+                        out = build_portal_snapshot_vendor_home_fields(FakeCursor(), 3, today=today)
+
+        drill = out["portal_snapshot_drilldown_rows"]
+        assert len(drill) == 2
+        assert drill[0]["estimated_delivery_date"] == "2026-06-17"
+        due_today_rows = [r for r in drill if r["estimated_delivery_date"] == "2026-06-17"]
+        assert len(due_today_rows) == 1
+        assert due_today_rows[0]["bag_id"] == "DUE1"
+
     def test_manual_vendor_home_cards_not_clickable(self):
         from backend.rinse_current_facility_snapshot import build_vendor_home_view_section
 
