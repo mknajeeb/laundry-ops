@@ -2884,6 +2884,23 @@ def build_at_vendor_module(
     )
     completed_today_count = len(completed_rows)
 
+    t_emp = time.perf_counter()
+    from backend.rinse_employee_completed_bags import build_employee_completed_bags_today
+    from backend.rinse_simple_shift_performance import _load_bag_metadata
+
+    completed_bag_ids = [
+        str(r.get("bag_id") or "").strip().upper() for r in completed_rows if r.get("bag_id")
+    ]
+    employee_completed_bags_today = build_employee_completed_bags_today(
+        cursor,
+        org,
+        completed_rows=completed_rows,
+        events_by_bag=events_by_bag,
+        selected_date_et=selected_date_et,
+        registry_meta_by_bag=_load_bag_metadata(cursor, org, completed_bag_ids),
+    )
+    step_ms["employee_completed_bags_ms"] = round((time.perf_counter() - t_emp) * 1000, 1)
+
     cards = [
         {
             "id": "av_daily_workload",
@@ -3014,6 +3031,7 @@ def build_at_vendor_module(
         "completed_during_selected_day_count": population_meta.get("completed_during_selected_day_count"),
         "pending_as_of_selected_day_count": population_meta.get("pending_as_of_selected_day_count"),
         "completed_today_count": completed_today_count,
+        "employee_completed_bags_today": employee_completed_bags_today,
         "pending_count": pending,
         "rush_total": rush_total,
         "rush_pending": rush_pending,

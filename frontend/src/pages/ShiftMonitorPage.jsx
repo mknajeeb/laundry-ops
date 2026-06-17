@@ -23,6 +23,7 @@ import LiveBaselineBanner from "../components/shift/LiveBaselineBanner";
 import SyncStatusSection from "../components/shift/SyncStatusSection";
 import ReadyForVendorSection from "../components/shift/ReadyForVendorSection";
 import AtVendorFlowSection from "../components/shift/AtVendorFlowSection";
+import EmployeeProductivityDashboard from "../components/shift/EmployeeProductivityDashboard";
 import ShiftMonitorModuleSection from "../components/shift/ShiftMonitorModuleSection";
 import VendorHomeComparisonSection from "../components/shift/VendorHomeComparisonSection";
 import CurrentFacilitySnapshotSection from "../components/shift/CurrentFacilitySnapshotSection";
@@ -35,6 +36,7 @@ import { getFoldingPerformanceDetail, getRinseScheduledScrapeStatus, getShiftAna
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import ShiftBagRecordRow from "../components/shift/ShiftBagRecordRow";
+import BagWeightSummary from "../components/shift/BagWeightSummary";
 import { RushPendingWhyPanel } from "../components/shift/RushPendingWhyPanel";
 import VeeWashLogo from "../components/VeeWashLogo";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
@@ -280,6 +282,7 @@ function RecordRow({ row, expanded, onToggle }) {
             <Chip size="small" label={row.service_bucket || row.service_type || "WF"} variant="outlined" />
             {row.needs_review ? <Chip size="small" color="warning" label="Review" /> : null}
           </Stack>
+          <BagWeightSummary row={row} />
           {formatRushAuditRow(row) ? (
             <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
               {formatRushAuditRow(row)}
@@ -826,6 +829,8 @@ export default function ShiftMonitorPage({ user }) {
 
   const syncCycle = data?.rinse_sync?.sync_cycle || {};
   const operationsMode = checkOperationsMode(dateStart, dateEnd);
+  const singleDaySelected = Boolean(dateStart && dateEnd && dateStart === dateEnd);
+  const employeeProductivity = atVendorModule?.employee_completed_bags_today;
   const reportingMode = checkReportingMode(dateStart, dateEnd);
 
   return (
@@ -957,6 +962,13 @@ export default function ShiftMonitorPage({ user }) {
             activeKey={drilldown?.moduleKey === "at_vendor_flow" ? drilldown.cardKey : null}
             isOperationsMode={operationsMode}
           />
+
+          {singleDaySelected ? (
+            <EmployeeProductivityDashboard
+              initialSection={employeeProductivity}
+              initialDateEt={dateEnd || dateStart}
+            />
+          ) : null}
 
           {operationsMode ? (
             <ReadyForVendorSection

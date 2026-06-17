@@ -2719,9 +2719,18 @@ _AV_DRILLDOWN_ROW_KEYS = frozenset({
     "portal_yet_to_process",
     "population_inclusion",
     "completion_signal",
+    "completion_time",
     "completion_time_et",
     "sent_to_vendor_time_et",
     "left_vendor_home_but_counted",
+    "pre_clean_weight",
+    "pre_clean_weight_time_et",
+    "post_clean_weight",
+    "post_clean_weight_time_et",
+    "clean_weight_delta",
+    "completed_lbs",
+    "completed_by_employee",
+    "weight_missing",
 })
 
 _RFV_DRILLDOWN_ROW_KEYS = frozenset({
@@ -2763,6 +2772,21 @@ def _slim_at_vendor_module_payload(module: Mapping[str, Any]) -> dict[str, Any]:
         for r in (module.get("portal_snapshot_drilldown_rows") or [])
         if isinstance(r, dict)
     ]
+    emp_section = module.get("employee_completed_bags_today")
+    if isinstance(emp_section, dict):
+        slim_employees = []
+        for emp in emp_section.get("employees") or []:
+            if not isinstance(emp, dict):
+                continue
+            slim_emp = {k: v for k, v in emp.items() if k != "bags"}
+            slim_employees.append(slim_emp)
+        out["employee_completed_bags_today"] = {
+            **emp_section,
+            "employees": slim_employees,
+            "reconciliation_banner": emp_section.get("reconciliation_banner"),
+            "reconciliation": emp_section.get("reconciliation"),
+            "bags_stripped_for_summary": True,
+        }
     return out
 
 

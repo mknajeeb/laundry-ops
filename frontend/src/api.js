@@ -536,6 +536,10 @@ export const getFoldingEmployeeAnalysis = (params = {}) =>
 export const getShiftAnalysisSimple = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/simple`, { params, timeout: 120000 });
 
+/** Phase 2 — employee productivity section only (full bag drilldown, single ET day). */
+export const getEmployeeProductivityDashboard = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, { params, timeout: 120000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 
