@@ -103,6 +103,10 @@ export function RushPendingWhyPanel({ summary, showSupervisorNote = true }) {
           {WF_SUPERVISOR_NOTE}
         </Typography>
       ) : null}
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+        Scans performed on the floor appear here after the next Rinse scan export sync.
+        Bags no longer on the live portal list may not receive new scans until they reappear in Rinse.
+      </Typography>
     </Stack>
   );
 }

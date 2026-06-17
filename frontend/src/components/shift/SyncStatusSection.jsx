@@ -1,6 +1,7 @@
 import { Alert, Box, Collapse, Typography } from "@mui/material";
 import { useState } from "react";
 import ShiftCountCard from "./ShiftCountCard";
+import { SyncCycleFreshnessSummary } from "./SyncCycleFreshnessSummary";
 import { syncStatusSubtext } from "../../utils/shiftMonitorHelpers";
 
 export default function SyncStatusSection({
@@ -44,6 +45,9 @@ export default function SyncStatusSection({
   const cycleWarn =
     !misleadingCronSkip &&
     (cycle.cycle_status === "failed" || cycle.cycle_status === "partial_success");
+  const avScanRows = avSync?.scan_events_count ?? avSync?.freshness?.scan_events_count;
+  const avPortalRows = avSync?.rows_found ?? avSync?.freshness?.rows_found;
+  const avBatchId = avSync?.imported_batch_id ?? avSync?.freshness?.imported_batch_id;
 
   return (
     <Box sx={{ mb: 2 }}>
@@ -96,15 +100,15 @@ export default function SyncStatusSection({
           }}
         >
           <ShiftCountCard
-            label="RFV completed"
-            value={cycle.rfv_completed_at_et || "—"}
+            label="Ready for Vendor"
+            value={rfvSync?.freshness?.portal_pulled_at_et || cycle.rfv_completed_at_et || "—"}
             sub={rfvSyncSub}
             warn={rfvWarn}
             compact
           />
           <ShiftCountCard
-            label="At Vendor completed"
-            value={cycle.at_vendor_completed_at_et || avSync.last_refreshed_at_et || "—"}
+            label="At Vendor"
+            value={avSync?.freshness?.portal_pulled_at_et || cycle.at_vendor_completed_at_et || avSync.last_refreshed_at_et || "—"}
             sub={
               cycle.delay_seconds != null
                 ? `${avSyncSub} · delay ${cycle.delay_seconds}s`
@@ -114,6 +118,23 @@ export default function SyncStatusSection({
             compact
           />
         </Box>
+        <SyncCycleFreshnessSummary cycle={cycle} avSync={avSync} rfvSync={rfvSync} />
+        <Alert severity="info" variant="outlined" sx={{ mb: 1, py: 0.75 }}>
+          <Typography variant="caption" display="block" sx={{ lineHeight: 1.45 }}>
+            Sync time is when the last Rinse export finished — not when every floor scan happened.
+            {avPortalRows != null || avScanRows != null ? (
+              <>
+                {" "}
+                Latest export: {avPortalRows ?? "—"} portal bag{avPortalRows === 1 ? "" : "s"}
+                {avScanRows != null ? ` · ${avScanRows} scan-event row${avScanRows === 1 ? "" : "s"}` : ""}
+                {avBatchId != null ? ` · batch ${avBatchId}` : ""}.
+              </>
+            ) : null}
+            {" "}
+            Pending bags can still show missing scans until those scans appear in the next Rinse export.
+            Use <strong>Refresh Both Syncs</strong> after new scans on the floor.
+          </Typography>
+        </Alert>
         <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>
           Status: {cycleStatusMain}
           {cycleStatusSuffix}

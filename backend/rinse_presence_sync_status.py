@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY, ensure_presence_tables
 from backend.rinse_scan_time import serialize_system_datetime_for_api, system_datetime_to_et, naive_system_utc
@@ -35,10 +35,75 @@ def _short_time_et(dt: datetime | None) -> str | None:
     local = system_datetime_to_et(dt)
     if local is None:
         return None
-    label = local.strftime("%b %d, %I:%M %p")
+    label = local.strftime("%b %d, %I:%M %p ET")
     if label.startswith("0"):
         label = label[1:]
     return label.replace(" 0", " ", 1)
+
+
+def _parse_scrape_meta(raw: Any) -> dict[str, Any]:
+    scrape_meta = raw
+    if isinstance(scrape_meta, str):
+        try:
+            scrape_meta = json.loads(scrape_meta)
+        except json.JSONDecodeError:
+            scrape_meta = {}
+    return scrape_meta if isinstance(scrape_meta, dict) else {}
+
+
+def _portal_pulled_at_from_scrape_meta(scrape_meta: Mapping[str, Any] | None) -> Any:
+    if not scrape_meta:
+        return None
+    meta = dict(scrape_meta)
+    pulled = meta.get("scraped_at")
+    if pulled:
+        return pulled
+    summary = meta.get("vendor_home_summary")
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            summary = {}
+    if isinstance(summary, dict) and summary.get("scraped_at"):
+        return summary.get("scraped_at")
+    return None
+
+
+def build_sync_freshness_fields(
+    *,
+    started_at: str | None = None,
+    portal_pulled_at: str | None = None,
+    data_updated_at: str | None = None,
+    duration_seconds: int | None = None,
+    duration_label: str | None = None,
+    rows_found: int | None = None,
+    scan_events_count: int | None = None,
+    imported_batch_id: int | None = None,
+    started_at_et: str | None = None,
+    portal_pulled_at_et: str | None = None,
+    data_updated_at_et: str | None = None,
+) -> dict[str, Any]:
+    """Normalized scrape freshness block for dashboard sync cards."""
+    portal_pull_unavailable = not portal_pulled_at
+    return {
+        "scrape_started_at": started_at,
+        "scrape_started_at_et": started_at_et,
+        "portal_pulled_at": portal_pulled_at,
+        "portal_pulled_at_et": portal_pulled_at_et,
+        "data_updated_at": data_updated_at,
+        "data_updated_at_et": data_updated_at_et,
+        "duration_seconds": duration_seconds,
+        "duration_label": duration_label or _duration_label(duration_seconds),
+        "rows_found": rows_found,
+        "scan_events_count": scan_events_count,
+        "imported_batch_id": imported_batch_id,
+        "portal_pull_unavailable": portal_pull_unavailable,
+        "portal_pull_note": (
+            "Portal pull time unavailable"
+            if portal_pull_unavailable
+            else None
+        ),
+    }
 
 
 def build_presence_run_list_item(run: dict[str, Any]) -> dict[str, Any]:
@@ -50,24 +115,51 @@ def build_presence_run_list_item(run: dict[str, Any]) -> dict[str, Any]:
         f = naive_system_utc(finished)
         if s is not None and f is not None:
             duration = int((f - s).total_seconds())
-    scrape_meta = run.get("scrape_meta_json")
-    if isinstance(scrape_meta, str):
-        try:
-            scrape_meta = json.loads(scrape_meta)
-        except json.JSONDecodeError:
-            scrape_meta = {}
-    if not isinstance(scrape_meta, dict):
-        scrape_meta = {}
+    scrape_meta = _parse_scrape_meta(run.get("scrape_meta_json"))
+    portal_pulled_raw = _portal_pulled_at_from_scrape_meta(scrape_meta)
+    started_fmt = _fmt_system(started if isinstance(started, datetime) else None)
+    finished_fmt = _fmt_system(finished if isinstance(finished, datetime) else None)
+    portal_pulled_fmt = None
+    portal_pulled_et = None
+    if portal_pulled_raw:
+        if isinstance(portal_pulled_raw, datetime):
+            portal_pulled_fmt = _fmt_system(portal_pulled_raw)
+            portal_pulled_et = _short_time_et(portal_pulled_raw)
+        else:
+            portal_pulled_fmt = str(portal_pulled_raw)
+            try:
+                portal_pulled_et = _short_time_et(
+                    datetime.fromisoformat(str(portal_pulled_raw).replace("Z", "+00:00")[:26]).replace(
+                        tzinfo=None
+                    )
+                )
+            except (TypeError, ValueError):
+                portal_pulled_et = None
+    freshness = build_sync_freshness_fields(
+        started_at=started_fmt,
+        portal_pulled_at=portal_pulled_fmt or finished_fmt,
+        data_updated_at=finished_fmt,
+        duration_seconds=duration,
+        duration_label=_duration_label(duration),
+        rows_found=run.get("rows_found"),
+        started_at_et=_short_time_et(started if isinstance(started, datetime) else None),
+        portal_pulled_at_et=portal_pulled_et or _short_time_et(finished if isinstance(finished, datetime) else None),
+        data_updated_at_et=_short_time_et(finished if isinstance(finished, datetime) else None),
+    )
+    if portal_pulled_fmt is None and finished_fmt:
+        freshness["portal_pull_unavailable"] = True
+        freshness["portal_pull_note"] = "Portal pull time unavailable"
     return {
         "run_id": run.get("id"),
         "portal_status": run.get("portal_status"),
         "status": run.get("status") or ("success" if not run.get("errors_json") else "failed"),
         "run_type": run.get("run_type"),
-        "started_at": _fmt_system(started if isinstance(started, datetime) else None),
-        "finished_at": _fmt_system(finished if isinstance(finished, datetime) else None),
+        "started_at": started_fmt,
+        "finished_at": finished_fmt,
         "duration_seconds": duration,
         "duration_label": _duration_label(duration),
         "rows_found": run.get("rows_found"),
+        "freshness": freshness,
         "rows_inserted": run.get("rows_inserted"),
         "rows_updated": run.get("rows_updated"),
         "rows_unchanged": run.get("rows_unchanged"),
@@ -188,6 +280,18 @@ def build_sync_status_from_run(
         "age_minutes": age_min,
         "stale_after_minutes": RINSE_SYNC_STALE_MINUTES,
         "run": item,
+        "freshness": item.get("freshness")
+        or build_sync_freshness_fields(
+            started_at=item.get("started_at"),
+            portal_pulled_at=item.get("finished_at"),
+            data_updated_at=item.get("finished_at") or last_fmt,
+            duration_seconds=item.get("duration_seconds"),
+            duration_label=item.get("duration_label"),
+            rows_found=item.get("rows_found"),
+            started_at_et=_short_time_et(run.get("started_at") if isinstance(run.get("started_at"), datetime) else None),
+            portal_pulled_at_et=last_et,
+            data_updated_at_et=last_et,
+        ),
     }
 
 
@@ -335,8 +439,19 @@ def list_presence_runs_for_et_range(
     return [build_presence_run_list_item(r) for r in (cursor.fetchall() or []) if isinstance(r, dict)]
 
 
+def _portal_pulled_at_from_batch(cursor, organization_id: int, batch_id: int | None) -> str | None:
+    if not batch_id or not table_exists(cursor, "upload_batches"):
+        return None
+    from backend.rinse_portal_scrape_meta import fetch_portal_scrape_meta_for_batch
+
+    meta = fetch_portal_scrape_meta_for_batch(cursor, int(batch_id), int(organization_id))
+    pulled = _portal_pulled_at_from_scrape_meta(meta or {})
+    return str(pulled) if pulled else None
+
+
 def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time: datetime | None = None) -> dict[str, Any]:
-    from backend.rinse_scrape_status import build_scrape_run_batch_detail
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+    from backend.rinse_scrape_status import build_scrape_run_batch_detail, _fetch_upload_batch_row
 
     org = int(organization_id)
     if not table_exists(cursor, "rinse_scrape_runs"):
@@ -358,7 +473,8 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
     if not latest or not isinstance(latest, dict):
         return build_sync_status_from_run(None, sync_name="At Vendor Sync", enabled=True)
 
-    detail = build_scrape_run_batch_detail(latest, None) or {}
+    batch_row = _fetch_upload_batch_row(cursor, org, latest.get("imported_batch_id")) if latest.get("imported_batch_id") else None
+    detail = build_scrape_run_batch_detail(latest, batch_row) or {}
     finished_raw = latest.get("finished_at")
     started_raw = latest.get("started_at")
     last_fmt = detail.get("data_last_updated_at") or detail.get("scrape_finished_at")
@@ -395,8 +511,13 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         (org,),
     )
     last_success = cursor.fetchone()
+    success_batch = (
+        _fetch_upload_batch_row(cursor, org, last_success.get("imported_batch_id"))
+        if last_success and isinstance(last_success, dict) and last_success.get("imported_batch_id")
+        else None
+    )
     success_detail = (
-        build_scrape_run_batch_detail(last_success, None)
+        build_scrape_run_batch_detail(last_success, success_batch)
         if last_success and isinstance(last_success, dict)
         else None
     )
@@ -407,6 +528,48 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         (success_detail or {}).get("scrape_finished_at")
         or (success_detail or {}).get("data_last_updated_at")
     )
+    portal_pulled_raw = _portal_pulled_at_from_batch(cursor, org, latest.get("imported_batch_id"))
+    if not portal_pulled_raw:
+        presence_run = _latest_success_presence_run(cursor, org, PORTAL_STATUS_AT_VENDOR)
+        if presence_run:
+            portal_pulled_raw = _portal_pulled_at_from_scrape_meta(
+                _parse_scrape_meta(presence_run.get("scrape_meta_json"))
+            )
+    portal_pulled_fmt = None
+    portal_pulled_et = None
+    if portal_pulled_raw:
+        if isinstance(portal_pulled_raw, datetime):
+            portal_pulled_fmt = _fmt_system(portal_pulled_raw)
+            portal_pulled_et = _short_time_et(portal_pulled_raw)
+        else:
+            portal_pulled_fmt = str(portal_pulled_raw)
+            try:
+                portal_pulled_et = _short_time_et(
+                    datetime.fromisoformat(str(portal_pulled_raw).replace("Z", "+00:00")[:26]).replace(
+                        tzinfo=None
+                    )
+                )
+            except (TypeError, ValueError):
+                portal_pulled_et = None
+    started_fmt = detail.get("scrape_started_at")
+    finished_fmt = detail.get("data_last_updated_at") or detail.get("scrape_finished_at")
+    freshness = build_sync_freshness_fields(
+        started_at=started_fmt,
+        portal_pulled_at=portal_pulled_fmt or started_fmt or finished_fmt,
+        data_updated_at=finished_fmt,
+        duration_seconds=detail.get("scrape_duration_seconds"),
+        duration_label=detail.get("scrape_duration_label"),
+        rows_found=detail.get("portal_rows_count"),
+        started_at_et=_short_time_et(started_raw if isinstance(started_raw, datetime) else None),
+        portal_pulled_at_et=portal_pulled_et
+        or _short_time_et(started_raw if isinstance(started_raw, datetime) else None),
+        data_updated_at_et=last_et,
+        scan_events_count=detail.get("scan_events_count"),
+        imported_batch_id=latest.get("imported_batch_id"),
+    )
+    if not portal_pulled_fmt:
+        freshness["portal_pull_unavailable"] = True
+        freshness["portal_pull_note"] = "Portal pull time unavailable"
     return {
         "enabled": True,
         "status": run_status,
@@ -434,6 +597,7 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "rows_found": detail.get("portal_rows_count"),
         "rows_imported": detail.get("rows_imported"),
         "scan_events_count": detail.get("scan_events_count"),
+        "imported_batch_id": latest.get("imported_batch_id"),
         "pages_visited": detail.get("pages_visited"),
         "sync_time_unavailable": not last_fmt,
         "age_minutes": age_min,
@@ -441,27 +605,11 @@ def build_at_vendor_sync_status(cursor, organization_id: int, *, evaluation_time
         "run": detail,
         "latest_run": detail,
         "last_success": success_detail,
+        "freshness": freshness,
         "error_message": latest.get("error_message"),
         "started_at_raw": started_raw,
         "finished_at_raw": finished_raw,
     }
-
-
-def _latest_success_presence_run(cursor, organization_id: int, portal_status: str) -> dict[str, Any] | None:
-    ensure_presence_tables(cursor)
-    cursor.execute(
-        """
-        SELECT id, portal_status, status, run_type, started_at, finished_at, rows_found, source_batch_id
-        FROM rinse_cleaner_ticket_presence_runs
-        WHERE organization_id = %s AND portal_status = %s AND dry_run = 0
-          AND status IN ('success', 'partial')
-        ORDER BY COALESCE(finished_at, created_at) DESC, id DESC
-        LIMIT 1
-        """,
-        (int(organization_id), portal_status),
-    )
-    row = cursor.fetchone()
-    return row if isinstance(row, dict) else None
 
 
 def evaluate_at_vendor_presence_freshness(
@@ -582,4 +730,18 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
             cycle["rfv_completed_at_et"] = _short_time_et(rfv_dt.replace(tzinfo=None))
         except (TypeError, ValueError):
             pass
+
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR, PORTAL_STATUS_READY
+
+    rfv_run = _latest_success_presence_run(cursor, org, PORTAL_STATUS_READY)
+    av_presence_run = _latest_success_presence_run(cursor, org, PORTAL_STATUS_AT_VENDOR)
+    if rfv_run:
+        rfv_item = build_presence_run_list_item(rfv_run)
+        cycle["rfv_freshness"] = rfv_item.get("freshness")
+    if av_presence_run:
+        av_item = build_presence_run_list_item(av_presence_run)
+        cycle["at_vendor_presence_freshness"] = av_item.get("freshness")
+    av_scrape = build_at_vendor_sync_status(cursor, org)
+    if av_scrape.get("freshness"):
+        cycle["at_vendor_scrape_freshness"] = av_scrape.get("freshness")
     return cycle
