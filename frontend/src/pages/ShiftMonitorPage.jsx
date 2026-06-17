@@ -31,7 +31,7 @@ import FacilityWorkloadSection from "../components/shift/FacilityWorkloadSection
 import { EmployeeActivityPlaceholder } from "../components/shift/DashboardPreviewSections";
 import ShiftMonitorDateBar from "../components/shift/ShiftMonitorDateBar";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
-import { getFoldingPerformanceDetail, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
+import { getFoldingPerformanceDetail, getRinseScheduledScrapeStatus, getShiftAnalysisSimple, runRinseBothSyncs } from "../api";
 import { todayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import ShiftBagRecordRow from "../components/shift/ShiftBagRecordRow";
@@ -56,7 +56,20 @@ import {
 
 const ShiftAnalysisAdvancedPanel = lazy(() => import("./ShiftAnalysisAdvancedPanel"));
 
-const SYNC_TIMEOUT_MS = 1800000;
+const SYNC_POLL_INTERVAL_MS = 10000;
+const SYNC_POLL_MAX_MS = 1800000;
+
+async function pollUntilSchedulerSyncComplete() {
+  const started = Date.now();
+  while (Date.now() - started < SYNC_POLL_MAX_MS) {
+    await new Promise((resolve) => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
+    const st = await getRinseScheduledScrapeStatus();
+    if (!st.data?.currently_running) {
+      return st.data;
+    }
+  }
+  throw new Error("Sync timed out waiting for scheduler job");
+}
 
 const WORKLOAD_BASELINE_AUDIT_NOTE =
   "Historical workload uses clean baseline reset from Jun 12, 2026 11:20 PM ET. Legacy carry-in bags before reset are excluded.";
@@ -733,16 +746,23 @@ export default function ShiftMonitorPage({ user }) {
   const runRinseSync = async () => {
     setSyncRunning(true);
     setSyncMessage("");
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(() => {
-      setSyncRunning(false);
-      setSyncMessage("Sync timed out after 30 minutes — check Scheduled Rinse Sync for status.");
-    }, SYNC_TIMEOUT_MS);
     try {
       const res = await runRinseBothSyncs({ dry_run: false });
+      const overall = res.data?.overall_status || "success";
+
+      if (overall === "queued" || res.status === 202) {
+        setSyncMessage(
+          res.data?.message
+            || "Scheduler job started — dashboard will refresh when the sync cycle completes.",
+        );
+        await pollUntilSchedulerSyncComplete();
+        setSyncMessage("Scheduler sync finished — dashboard refreshed.");
+        await load();
+        return;
+      }
+
       const av = res.data?.at_vendor_sync || {};
       const rfv = res.data?.ready_for_vendor_sync || {};
-      const overall = res.data?.overall_status || "success";
       const rfvDetail = (() => {
         if (rfv.skipped_reason || rfv.status === "disabled") {
           return `Ready for Vendor skipped: ${rfv.skipped_reason || "feature flag disabled"}`;
@@ -771,7 +791,10 @@ export default function ShiftMonitorPage({ user }) {
       await load();
     } catch (e) {
       const errData = e?.response?.data;
-      if (errData?.overall_status === "partial_success" || e?.response?.status === 207) {
+      if (errData?.overall_status === "ALREADY_RUNNING" || e?.response?.status === 409) {
+        setSyncMessage(errData?.message || "A sync is already running — wait for it to finish.");
+        await load();
+      } else if (errData?.overall_status === "partial_success" || e?.response?.status === 207) {
         setSyncMessage(
           `Partial success — At Vendor: ${errData?.at_vendor_sync?.status || "ok"} · ${
             errData?.ready_for_vendor_sync?.error_message
@@ -783,10 +806,15 @@ export default function ShiftMonitorPage({ user }) {
         );
         await load();
       } else {
-        setSyncMessage(errData?.error || "Refresh Both Syncs failed");
+        setSyncMessage(
+          errData?.message
+            || errData?.error
+            || errData?.ready_for_vendor_sync?.error_message
+            || e?.message
+            || "Refresh Both Syncs failed",
+        );
       }
     } finally {
-      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
       setSyncRunning(false);
     }
   };

@@ -14,7 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
-from backend.rinse_bag_export_runner import export_enabled, run_bag_export_csv
+from backend.rinse_bag_export_runner import (
+    _parse_env_truthy,
+    export_enabled,
+    run_bag_export_csv,
+    scraper_dir,
+)
 from backend.rinse_cleaner_ticket_presence import (
     PORTAL_STATUS_AT_VENDOR,
     PORTAL_STATUS_READY,
@@ -39,9 +44,16 @@ def _utcnow() -> datetime:
 def presence_phase_timeout_sec() -> int:
     """Per-phase cap for combined-sync presence scrapes (browser launch through CSV write)."""
     try:
-        return max(60, min(7200, int(os.getenv("RINSE_PRESENCE_PHASE_TIMEOUT_SEC", "900"))))
+        default = int(os.getenv("RINSE_SCRAPE_TIMEOUT_SEC", "900"))
     except (TypeError, ValueError):
-        return 900
+        default = 900
+    try:
+        raw = os.getenv("RINSE_PRESENCE_PHASE_TIMEOUT_SEC")
+        if raw is not None and str(raw).strip():
+            return max(60, min(7200, int(raw)))
+        return max(60, min(7200, default))
+    except (TypeError, ValueError):
+        return max(60, min(7200, default))
 
 
 @dataclass
@@ -69,12 +81,122 @@ def ready_for_vendor_scrape_enabled(cursor, organization_id: int) -> bool:
     return is_feature_enabled(cursor, int(organization_id), "enable_ready_for_vendor_scrape")
 
 
+def _scrape_data_root() -> Path:
+    raw = (os.getenv("RINSE_SCRAPE_DATA_ROOT") or "").strip()
+    if raw:
+        return Path(raw)
+    return Path(__file__).resolve().parent.parent / "data" / "rinse-scrape"
+
+
+def _tenant_data_dir(vendor: str) -> Path:
+    return _scrape_data_root() / "tenants" / vendor.strip().lower()
+
+
+def _load_tenant_dotenv(vendor: str) -> dict[str, str]:
+    """Tenant .env from Azure Files mount or repo scripts/rinse-tenants/<vendor>/.env."""
+    v = vendor.strip().lower()
+    repo_tenant = Path(__file__).resolve().parent.parent / "scripts" / "rinse-tenants" / v
+    for base in (_tenant_data_dir(v), repo_tenant):
+        env_path = base / ".env"
+        if not env_path.is_file():
+            continue
+        out: dict[str, str] = {}
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            if key.startswith("RINSE_"):
+                out[key] = val
+        storage = out.get("RINSE_STORAGE_STATE")
+        if storage and not Path(storage).is_absolute():
+            out["RINSE_STORAGE_STATE"] = str((base / storage).resolve())
+        return out
+    return {}
+
+
+def _merge_presence_scrape_env(vendor: str, vendor_env: dict[str, str]) -> dict[str, str]:
+    """
+    Merge tenant .env gaps and prefer mounted tenant rinse-auth.json when present.
+    Keeps manual Refresh Both Syncs aligned with ACA scheduled job auth paths.
+    """
+    extra = dict(vendor_env)
+    tenant = _load_tenant_dotenv(vendor)
+    mounted_auth = _tenant_data_dir(vendor) / "rinse-auth.json"
+    if mounted_auth.is_file() and mounted_auth.stat().st_size > 8:
+        extra["RINSE_STORAGE_STATE"] = str(mounted_auth)
+    for key, val in tenant.items():
+        if key == "RINSE_STORAGE_STATE":
+            continue
+        extra.setdefault(key, val)
+    return extra
+
+
+def _stderr_tail(stderr: str, *, limit: int = 600) -> str:
+    text = (stderr or "").strip()
+    if not text:
+        return ""
+    return text[-limit:]
+
+
+def _format_scrape_subprocess_error(code: int, stderr: str, *, phase_timeout: int) -> str:
+    tail = _stderr_tail(stderr)
+    if code == -1:
+        base = f"Scrape timed out after {phase_timeout}s"
+        return f"{base}: {tail}" if tail else base
+    base = f"Scrape subprocess failed (exit {code})"
+    return f"{base}: {tail}" if tail else base
+
+
+def _preflight_presence_scrape(vendor: str, extra_env: dict[str, str]) -> str | None:
+    """
+    Fail fast before launching Playwright when the host cannot scrape reliably.
+
+    Scheduled sync runs in the ACA job with Azure Files auth; manual Refresh Both Syncs
+    hits laundryops-api and often lacks the same mount (see docs/RINSE_SCHEDULED_SCRAPE.md).
+    """
+    if _parse_env_truthy(os.getenv("RINSE_SCRAPE_REMOTE_ONLY")):
+        from backend.rinse_aca_job_trigger import remote_only_user_message
+
+        return remote_only_user_message()
+
+    storage = (extra_env.get("RINSE_STORAGE_STATE") or "").strip()
+    if storage and not Path(storage).is_file():
+        mounted = _tenant_data_dir(vendor) / "rinse-auth.json"
+        return (
+            f"Rinse auth missing at {storage}. "
+            f"Expected mounted auth at {mounted} when RINSE_SCRAPE_DATA_ROOT is configured."
+        )
+
+    if Path("/home/site").is_dir():
+        mounted = _tenant_data_dir(vendor) / "rinse-auth.json"
+        storage_path = Path(storage) if storage else None
+        wwwroot = Path("/home/site/wwwroot")
+        using_wwwroot_auth = (
+            storage_path is not None
+            and wwwroot in storage_path.parents
+            and not mounted.is_file()
+        )
+        if using_wwwroot_auth:
+            return (
+                "Manual sync on App Service is using wwwroot rinse-auth; scheduled sync uses "
+                f"Azure Files at {mounted}. Mount the rinse-scrape share on laundryops-api "
+                "(RINSE_SCRAPE_DATA_ROOT=/data/rinse-scrape) or start the ACA scheduled job."
+            )
+    return None
+
+
 def _resolve_max_pages(extra_env: dict[str, str], override: str | None) -> str:
     if override and str(override).strip():
         return str(override).strip()
     raw = (extra_env.get("RINSE_MAX_PAGES") or "").strip()
     if raw:
         return raw
+    host_cap = (os.getenv("RINSE_MAX_PAGES") or "").strip()
+    if host_cap:
+        return host_cap
     return "500"
 
 
@@ -151,19 +273,28 @@ def run_presence_scrape_for_org(
         organization_slug=organization_slug,
         organization_name=organization_name,
         override_vendor=rinse_vendor,
+        scraper_dir=scraper_dir(),
     )
     result.rinse_vendor = vendor
     base_url = vendor_env.get("RINSE_TICKETS_URL") or ""
     source_url = build_tickets_url_for_portal_status(base_url, result.portal_status)
     result.source_url = source_url
 
-    extra_env = dict(vendor_env)
+    extra_env = _merge_presence_scrape_env(vendor, vendor_env)
     extra_env["RINSE_TICKETS_URL"] = source_url
     extra_env["RINSE_CSV_LAYOUT"] = "portal"
     extra_env["RINSE_ALLOW_EMPTY_EXPORT"] = "1"
     extra_env["RINSE_MAX_PAGES"] = _resolve_max_pages(extra_env, max_pages)
     extra_env.setdefault("RINSE_PAGE_SETTLE_MS", "2000")
     extra_env.setdefault("RINSE_TABLE_WAIT_MS", "800")
+
+    preflight_error = _preflight_presence_scrape(vendor, extra_env)
+    if preflight_error:
+        result.status = "failed"
+        result.error_message = preflight_error
+        result.finished_at = _utcnow()
+        _persist_failed_run(error_message=result.error_message)
+        return result
 
     _log(
         f"Presence scrape org={org} status={result.portal_status} vendor={vendor} "
@@ -183,10 +314,8 @@ def run_presence_scrape_for_org(
             )
             if code != 0:
                 result.status = "failed"
-                result.error_message = (
-                    "Scrape subprocess failed"
-                    if code != -1
-                    else f"Scrape timed out after {phase_timeout}s"
+                result.error_message = _format_scrape_subprocess_error(
+                    code, stderr or "", phase_timeout=phase_timeout
                 )
                 scrape_meta = read_portal_scrape_meta(str(meta_path))
                 result.scrape_debug = build_presence_scrape_debug(
@@ -196,6 +325,9 @@ def run_presence_scrape_for_org(
                     scrape_meta=scrape_meta,
                     exit_code=code,
                 )
+                stderr_tail = _stderr_tail(stderr or "")
+                if stderr_tail:
+                    result.scrape_debug["stderr_tail"] = stderr_tail
                 if stderr:
                     _log(stderr[-2000:] + "\n")
                 result.finished_at = _utcnow()

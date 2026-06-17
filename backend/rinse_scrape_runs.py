@@ -87,6 +87,27 @@ def _mysql_lock_name(organization_id: int) -> str:
     return f"rinse_scrape_org_{int(organization_id)}"
 
 
+def is_scrape_cycle_running(cursor, organization_id: int) -> tuple[bool, str | None]:
+    """Read-only: True when this org has a rinse_scrape_runs row still marked running."""
+    ensure_rinse_scrape_runs_table(cursor)
+    org = int(organization_id)
+    cursor.execute(
+        """
+        SELECT id, started_at
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s AND status = 'running'
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (org,),
+    )
+    row = cursor.fetchone()
+    if row and isinstance(row, dict):
+        run_id = row.get("id")
+        return True, f"rinse_scrape_runs.id={run_id} still running"
+    return False, None
+
+
 def acquire_scrape_lock(cursor, organization_id: int) -> tuple[bool, str]:
     """
     Returns (acquired, reason).

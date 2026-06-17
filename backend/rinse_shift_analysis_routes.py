@@ -295,60 +295,20 @@ def register_rinse_shift_analysis_routes(
             body = request.get_json(silent=True) or {}
             dry_run = bool(body.get("dry_run", False))
 
-            from backend.rinse_scheduled_scrape import (
-                CYCLE_ALREADY_RUNNING,
-                run_rinse_combined_sync_for_org,
-            )
+            from backend.rinse_manual_sync_dispatch import dispatch_manual_rinse_sync
 
-            combined = run_rinse_combined_sync_for_org(
+            dispatch = dispatch_manual_rinse_sync(
                 conn,
                 tenant_oid,
-                run_type="manual",
                 dry_run=dry_run,
             )
-            if combined.status == "skipped" and combined.error_message == CYCLE_ALREADY_RUNNING:
-                return jsonify(
-                    json_safe_rinse(
-                        {
-                            "organization_id": tenant_oid,
-                            "overall_status": "ALREADY_RUNNING",
-                            "error": CYCLE_ALREADY_RUNNING,
-                            "message": "A Rinse sync cycle is already running for this organization.",
-                        }
-                    )
-                ), 409
-
-            rfv_detail = dict(combined.detail.get("ready_for_vendor_sync") or {})
-            av_presence_detail = dict(combined.detail.get("at_vendor_presence_sync") or {})
-            sync_cycle = dict(combined.detail.get("sync_cycle") or {})
-            payload = {
-                "organization_id": tenant_oid,
-                "overall_status": combined.status,
-                "sync_cycle": sync_cycle,
-                "sync_cycle_id": sync_cycle.get("sync_cycle_id") or combined.run_id,
-                "cycle_status": sync_cycle.get("cycle_status") or combined.status,
-                "at_vendor_sync": {
-                    "status": combined.at_vendor_status or combined.status,
-                    "run_id": combined.run_id,
-                    "batch_id": combined.batch_id,
-                    "portal_rows_count": combined.portal_rows_count,
-                    "scan_events_count": combined.scan_events_count,
-                    "error_message": combined.error_message,
-                },
-                "at_vendor_presence_sync": av_presence_detail,
-                "ready_for_vendor_sync": rfv_detail,
-            }
-            if payload["ready_for_vendor_sync"].get("status") == "disabled":
+            payload = dispatch.to_payload()
+            if payload.get("ready_for_vendor_sync", {}).get("status") == "disabled":
                 payload["ready_for_vendor_sync"]["skipped_reason"] = (
                     payload["ready_for_vendor_sync"].get("skipped_reason")
                     or "enable_ready_for_vendor_scrape=false"
                 )
-            code = 200
-            if combined.status == "failed":
-                code = 502
-            elif combined.status == "partial_success":
-                code = 207
-            return jsonify(json_safe_rinse(payload)), code
+            return jsonify(json_safe_rinse(payload)), dispatch.http_status
         except Exception as exc:
             conn.rollback()
             return jsonify({"error": str(exc)}), 500

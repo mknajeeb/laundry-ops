@@ -105,6 +105,31 @@ ORDER BY started_at DESC
 LIMIT 20;
 ```
 
+## Shift Monitor “Refresh Both Syncs”
+
+The button **does not** run Playwright in `laundryops-api`. It either:
+
+1. **Starts the ACA job** (`rinse-scrape-scheduled`) with `--organization-id 3 --run-type manual`, or
+2. **Fails immediately** with a clear message when remote dispatch is not configured.
+
+Required **API App Service** settings (in addition to scheduled job settings):
+
+| Name | Example | Notes |
+|------|---------|--------|
+| `RINSE_SCRAPE_REMOTE_ONLY` | `1` | Blocks Playwright in gunicorn (fail-fast if ACA not configured) |
+| `AZURE_SUBSCRIPTION_ID` | *(subscription guid)* | Or `RINSE_ACA_SUBSCRIPTION_ID` |
+| `RINSE_ACA_JOB_RESOURCE_GROUP` | `laundryops-rg` | Resource group containing the job |
+| `RINSE_ACA_JOB_NAME` | `rinse-scrape-scheduled` | Default if omitted |
+| `RINSE_ACA_JOB_CONTAINER` | `rinse-scheduler` | Default if omitted |
+
+**Identity:** enable **system-assigned managed identity** on `laundryops-api` and grant it **Container Apps Jobs Contributor** (or `Microsoft.App/jobs/start/action`) on the job resource.
+
+**Azure API used:** `POST https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.App/jobs/{job}/start?api-version=2024-03-01` with a template override for org-scoped CLI args.
+
+**Duplicate runs:** API checks `rinse_scrape_runs.status=running` before starting the job; the job itself uses the existing per-org MySQL lock (`GET_LOCK`).
+
+**UI:** API returns **202** immediately; Shift Monitor polls `/rinse/scheduled-scrape/status` until `currently_running` is false, then reloads dashboard data.
+
 ## Deploy
 
 See **[RINSE_SCHEDULED_SCRAPE_AZURE_DEPLOY.md](./RINSE_SCHEDULED_SCRAPE_AZURE_DEPLOY.md)** for exact `az` commands.

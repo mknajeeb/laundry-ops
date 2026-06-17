@@ -554,30 +554,26 @@ class TestCombinedSyncOrchestration:
 
 
 class TestManualSyncEndpointUsesCombinedWorkflow:
-    @patch("backend.rinse_scheduled_scrape.run_rinse_combined_sync_for_org")
+    @patch("backend.rinse_manual_sync_dispatch.dispatch_manual_rinse_sync")
     @patch("backend.db.get_db")
-    def test_manual_endpoint_calls_combined_workflow(self, mock_db, mock_combined):
+    def test_manual_endpoint_dispatches_aca_or_remote_sync(self, mock_db, mock_dispatch):
         from datetime import date
 
         from flask import Flask
 
-        from backend.rinse_scheduled_scrape import ScheduledScrapeResult
+        from backend.rinse_manual_sync_dispatch import ManualSyncDispatchResult
         from backend.rinse_shift_analysis_routes import register_rinse_shift_analysis_routes
 
-        mock_combined.return_value = ScheduledScrapeResult(
+        mock_dispatch.return_value = ManualSyncDispatchResult(
             organization_id=3,
-            run_id=501,
-            status="success",
-            at_vendor_status="success",
-            ready_for_vendor_status="success",
+            mode="aca_job",
+            overall_status="queued",
+            http_status=202,
+            message="Scheduler job started.",
+            aca_execution_name="exec-1",
             detail={
-                "sync_cycle": {
-                    "sync_cycle_id": 501,
-                    "cycle_status": "success",
-                    "delay_seconds": 0,
-                },
-                "ready_for_vendor_sync": {"status": "success", "rows_found": 44},
-                "at_vendor_presence_sync": {"status": "success", "rows_found": 120},
+                "ready_for_vendor_sync": {"status": "queued"},
+                "at_vendor_sync": {"status": "queued"},
             },
         )
         conn = MagicMock()
@@ -597,12 +593,11 @@ class TestManualSyncEndpointUsesCombinedWorkflow:
         client = app.test_client()
         resp = client.post("/api/rinse/sync/both", json={})
 
-        assert resp.status_code == 200
-        mock_combined.assert_called_once()
-        assert mock_combined.call_args.kwargs.get("run_type") == "manual"
+        assert resp.status_code == 202
+        mock_dispatch.assert_called_once()
         body = resp.get_json()
-        assert body["sync_cycle_id"] == 501
-        assert body["cycle_status"] == "success"
+        assert body["overall_status"] == "queued"
+        assert body["aca_execution_name"] == "exec-1"
 
 
 class TestStalePresenceGuardBlocksScanInflation:
@@ -779,6 +774,81 @@ class TestScheduledSyncStatusFields:
         out = get_scheduled_scrape_status(cursor, 3)
         assert out["ready_for_vendor_sync"]["latest_attempt_at"] == "2026-06-08T12:00:00"
         assert out["at_vendor_sync"]["latest_attempt_at"] == "2026-06-08T12:30:00"
+
+
+class TestPresenceScrapeSubprocessErrors:
+    def test_format_scrape_subprocess_error_includes_exit_code_and_stderr(self):
+        from backend.rinse_presence_scrape import _format_scrape_subprocess_error
+
+        msg = _format_scrape_subprocess_error(
+            1,
+            "browserType.launch: Executable doesn't exist",
+            phase_timeout=900,
+        )
+        assert "exit 1" in msg
+        assert "Executable doesn't exist" in msg
+
+    def test_format_scrape_subprocess_error_timeout(self):
+        from backend.rinse_presence_scrape import _format_scrape_subprocess_error
+
+        msg = _format_scrape_subprocess_error(-1, "still running", phase_timeout=900)
+        assert "timed out after 900s" in msg
+        assert "still running" in msg
+
+    @patch("backend.rinse_presence_scrape.run_bag_export_csv")
+    @patch("backend.rinse_presence_scrape.export_enabled", return_value=True)
+    @patch("backend.rinse_presence_scrape.ready_for_vendor_scrape_enabled", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    def test_presence_scrape_surfaces_subprocess_stderr(
+        self, _ensure, _rfv, _export, mock_scrape
+    ):
+        from backend.rinse_presence_scrape import run_presence_scrape_for_org
+
+        mock_scrape.return_value = (1, "", "Error: page.goto: Target crashed")
+        conn = MagicMock()
+        conn.cursor.return_value = MagicMock()
+        with patch(
+            "backend.rinse_presence_scrape.rinse_scrape_env_for_organization",
+            return_value=("veewash", {"RINSE_TICKETS_URL": "http://example?status=ready_for_vendor"}),
+        ):
+            result = run_presence_scrape_for_org(
+                conn,
+                3,
+                portal_status="ready_for_vendor",
+                dry_run=True,
+            )
+        assert result.status == "failed"
+        assert "exit 1" in (result.error_message or "")
+        assert "Target crashed" in (result.error_message or "")
+
+    def test_preflight_blocks_remote_only_host(self):
+        import os
+        from unittest.mock import patch
+
+        from backend.rinse_presence_scrape import _preflight_presence_scrape
+
+        with patch.dict(os.environ, {"RINSE_SCRAPE_REMOTE_ONLY": "1"}, clear=False):
+            err = _preflight_presence_scrape("veewash", {"RINSE_STORAGE_STATE": "/data/auth.json"})
+        assert err is not None
+        assert "scheduler" in err.lower()
+
+    def test_merge_presence_scrape_env_prefers_mounted_auth(self, tmp_path):
+        import os
+        from unittest.mock import patch
+
+        from backend.rinse_presence_scrape import _merge_presence_scrape_env
+
+        data_root = tmp_path / "rinse-scrape"
+        tenant_dir = data_root / "tenants" / "veewash"
+        tenant_dir.mkdir(parents=True)
+        auth = tenant_dir / "rinse-auth.json"
+        auth.write_text('{"cookies":[]}', encoding="utf-8")
+        with patch.dict(os.environ, {"RINSE_SCRAPE_DATA_ROOT": str(data_root)}, clear=False):
+            merged = _merge_presence_scrape_env(
+                "veewash",
+                {"RINSE_STORAGE_STATE": "/stale/wwwroot/rinse-auth.json"},
+            )
+        assert merged["RINSE_STORAGE_STATE"] == str(auth)
 
 
 class TestRecordFailedPresenceRun:
