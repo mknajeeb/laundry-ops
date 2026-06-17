@@ -10,9 +10,12 @@ from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import event_ts, events_on_or_after, sort_key_ev
 from backend.rinse_scan_purpose import (
+    is_add_photos_purpose,
     is_complete_cleaning_purpose,
+    is_drying_purpose,
     is_move_bag_purpose,
     is_processed_by_vendor_purpose,
+    is_start_cleaning_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
 )
@@ -156,6 +159,70 @@ def distinct_wf_weight_events(
     return out
 
 
+def is_wf_processing_purpose(raw: str | None) -> bool:
+    """Qualifying WF processing activity before final weight-entry completion."""
+    return (
+        is_start_cleaning_purpose(raw)
+        or is_drying_purpose(raw)
+        or is_add_photos_purpose(raw)
+    )
+
+
+def _first_wf_processing_after_anchor(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+) -> tuple[datetime | None, str | None]:
+    first_ts: datetime | None = None
+    first_purpose: str | None = None
+    for ev in events_on_or_after(timeline, anchor_ts):
+        if not is_wf_processing_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts is None or ts > as_of_end:
+            continue
+        if first_ts is None or ts < first_ts:
+            first_ts = ts
+            first_purpose = str(ev.get("purpose") or "")
+    return first_ts, first_purpose
+
+
+def wf_processing_final_weight_completion(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+) -> WfWeightCompletion | None:
+    """
+    WF weight completion: sent-to-vendor anchor, then processing scan
+    (start-cleaning / drying / add-photos), then last distinct weight-entry after processing.
+    """
+    proc_ts, proc_purpose = _first_wf_processing_after_anchor(
+        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+    )
+    if proc_ts is None:
+        return None
+
+    weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    post_proc = [w for w in weights if w.timestamp > proc_ts]
+    if not post_proc:
+        return None
+
+    last = post_proc[-1]
+    first = weights[0] if weights else None
+    proc_key = normalize_scan_purpose(proc_purpose) or "processing"
+    signal = f"weight-entry-after-{proc_key}"
+    return WfWeightCompletion(
+        signal=signal,
+        completion_ts=last.timestamp,
+        first_weight_lbs=first.weight_lbs if first else None,
+        second_weight_lbs=last.weight_lbs,
+        first_weight_timestamp=first.timestamp if first else None,
+        second_weight_timestamp=last.timestamp,
+    )
+
+
 def wf_two_weight_completion(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -189,7 +256,7 @@ def wf_operational_completion(
     as_of_end: datetime,
     weight_events: Sequence[WfWeightEvent] | None = None,
 ) -> WfWeightCompletion | None:
-    """Fallback completion when two-weight evidence is insufficient."""
+    """Fallback completion when processing-then-weight evidence is insufficient."""
     weights = list(weight_events or [])
     if not weights:
         weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)

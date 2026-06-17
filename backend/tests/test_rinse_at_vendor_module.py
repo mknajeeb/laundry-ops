@@ -98,12 +98,39 @@ class TestWFCompletion:
         assert status == AV_STATUS_PENDING
         assert signal is None
 
-    def test_second_weight_completes(self):
+    def test_second_weight_without_processing_stays_pending(self):
         events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1), _ev("weight-entry", T2)]
-        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        status, signal, _, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_early_double_weight_then_processing_without_post_weight_pending(self):
+        """Regression: 5JO4VYLVHY — two weight-entry before add-photos, no post-processing weight."""
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1),
+            _ev("weight-entry", T2),
+            _ev("add-photos", T3),
+        ]
+        status, signal, _, _, _ = _evaluate_bag_as_of(
+            events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+
+    def test_processing_then_final_weight_completes(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1),
+            _ev("add-photos", T2),
+            _ev("weight-entry", T3),
+        ]
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
+            events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "weight-entry"
-        assert comp_ts == T2
+        assert signal == "weight-entry-after-add-photos"
+        assert comp_ts == T3
 
     def test_clean_rack_completes_via_operational_fallback(self):
         events = [
@@ -227,12 +254,26 @@ class TestRepeatedEventCompletion:
         assert status == AV_STATUS_PENDING
         assert signal is None
 
-    def test_wf_two_weight_entries_increasing_completes(self):
+    def test_wf_two_weight_entries_without_processing_pending(self):
         events = [_ev("sent-to-vendor", T0), _ev("weight-entry", T1), _ev("weight-entry", T2)]
         status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert comp_ts is None
+
+    def test_wf_processing_then_weight_completes(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1),
+            _ev("add-photos", T2),
+            _ev("weight-entry", T3),
+        ]
+        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
+            events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "weight-entry"
-        assert comp_ts == T2
+        assert signal == "weight-entry-after-add-photos"
+        assert comp_ts == T3
 
     def test_wf_pre_anchor_weight_plus_one_after_pending(self):
         events = [_ev("weight-entry", T0), _ev("sent-to-vendor", T1), _ev("weight-entry", T2)]

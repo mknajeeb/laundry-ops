@@ -1795,12 +1795,13 @@ def _wf_completion_signal(
     as_of_end: datetime,
 ) -> tuple[str | None, datetime | None, dict[str, Any] | None]:
     from backend.rinse_wf_weight_events import (
-        WfWeightCompletion,
         wf_operational_completion,
-        wf_two_weight_completion,
+        wf_processing_final_weight_completion,
     )
 
-    weight_hit = wf_two_weight_completion(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    weight_hit = wf_processing_final_weight_completion(
+        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+    )
     if weight_hit is not None:
         return weight_hit.signal, weight_hit.completion_ts, _wf_weight_fields(weight_hit)
 

@@ -7,6 +7,7 @@ from datetime import datetime
 from backend.rinse_wf_weight_events import (
     distinct_wf_weight_events,
     parse_weight_lbs_from_scan_event,
+    wf_processing_final_weight_completion,
     wf_two_weight_completion,
 )
 
@@ -23,7 +24,8 @@ def _ev(purpose: str, ts: datetime, **extra):
 
 T0 = datetime(2026, 6, 14, 4, 0)
 T1 = datetime(2026, 6, 14, 8, 0)
-T2 = datetime(2026, 6, 14, 12, 0)
+T2 = datetime(2026, 6, 14, 10, 0)
+T3 = datetime(2026, 6, 14, 12, 0)
 
 
 class TestParseWeightFromScanEvent:
@@ -99,3 +101,37 @@ class TestWfTwoWeightCompletion:
         hit = wf_two_weight_completion(timeline, anchor_ts=T0, as_of_end=T2)
         assert hit is not None
         assert hit.second_weight_lbs == 12.0
+
+
+class TestWfProcessingFinalWeightCompletion:
+    def test_two_early_weights_before_processing_incomplete(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1, weight_lbs=20.0),
+            _ev("weight-entry", T2, weight_lbs=12.0),
+            _ev("add-photos", T3),
+        ]
+        assert wf_processing_final_weight_completion(timeline, anchor_ts=T0, as_of_end=T3) is None
+
+    def test_processing_then_final_weight_completes(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1, weight_lbs=20.0),
+            _ev("add-photos", T2),
+            _ev("weight-entry", T3, weight_lbs=12.0),
+        ]
+        hit = wf_processing_final_weight_completion(timeline, anchor_ts=T0, as_of_end=T3)
+        assert hit is not None
+        assert hit.completion_ts == T3
+        assert hit.signal == "weight-entry-after-add-photos"
+        assert hit.second_weight_lbs == 12.0
+
+    def test_start_cleaning_then_weight_completes(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("start-cleaning", T1),
+            _ev("weight-entry", T2, weight_lbs=15.0),
+        ]
+        hit = wf_processing_final_weight_completion(timeline, anchor_ts=T0, as_of_end=T2)
+        assert hit is not None
+        assert hit.signal == "weight-entry-after-start-cleaning"
