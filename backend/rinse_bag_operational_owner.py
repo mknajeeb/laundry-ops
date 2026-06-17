@@ -1,8 +1,11 @@
 """
 Canonical operational ownership per Rinse bag_id.
 
-WashPro and VeeWash must not share mutable operational rows. One global owner per bag_id;
-all ingest paths gate writes through assert_operational_write_allowed().
+Portal/credential-sourced writes (presence scrape, portal CSV import, direct ?q= lookup)
+stamp organization_id from the Rinse login used for the scrape — that is operational truth.
+
+The rinse_bag_operational_owner table is audit metadata; it must not reject credential-sourced
+writes based on historical cross-org scan/registry evidence.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ SOURCE_STAGING = "staging"
 SOURCE_PRESENCE = "presence"
 SOURCE_GATE_FIRST_WRITE = "gate_first_write"
 SOURCE_AUDIT_BACKFILL = "audit_backfill"
+SOURCE_CREDENTIAL = "credential"
 
 REJECT_REASON_NOT_OWNER = "operational_owner_mismatch"
 REJECT_REASON_GATE_DISABLED = "gate_disabled"
@@ -354,6 +358,30 @@ def upsert_canonical_owner(
     return True
 
 
+def assign_owner_from_credential(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+) -> CanonicalOwner:
+    """Record org from the Rinse vendor login that sourced this portal write (audit; may replace stale owner)."""
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        raise ValueError("missing bag_id")
+    org = int(organization_id)
+    now = datetime.utcnow()
+    owner = CanonicalOwner(
+        bag_id=bid,
+        owner_organization_id=org,
+        owner_rinse_vendor=_rinse_vendor_for_org(org),
+        assigned_at=now,
+        assignment_source=SOURCE_CREDENTIAL,
+        locked=True,
+        from_table=False,
+    )
+    upsert_canonical_owner(cursor, owner, allow_replace=True)
+    return owner
+
+
 def assign_owner_on_first_write(
     cursor,
     organization_id: int,
@@ -388,10 +416,14 @@ def assert_operational_write_allowed(
     *,
     context: str = "write",
     assign_on_first: bool = True,
+    credential_sourced: bool = False,
 ) -> tuple[bool, str | None, CanonicalOwner | None]:
     """
     Return (allowed, reject_reason, canonical_owner).
     When allowed with no prior owner and assign_on_first, records canonical owner for target org.
+
+    credential_sourced=True: portal scrape/import via org's Rinse login — always allow and stamp
+    owner from writing org (never reject based on historical cross-org evidence).
     """
     if not operational_owner_gate_enabled():
         return True, None, None
@@ -400,6 +432,10 @@ def assert_operational_write_allowed(
     bid = normalize_bag_id(bag_id)
     if not bid:
         return False, "missing_bag_id", None
+
+    if credential_sourced:
+        owner = assign_owner_from_credential(cursor, org, bid)
+        return True, None, owner
 
     owner = resolve_canonical_owner(cursor, bid)
     if owner is None:
@@ -420,6 +456,7 @@ def filter_bag_ids_for_operational_write(
     *,
     context: str = "batch",
     assign_on_first: bool = True,
+    credential_sourced: bool = False,
 ) -> tuple[set[str], list[dict[str, Any]]]:
     allowed: set[str] = set()
     rejected: list[dict[str, Any]] = []
@@ -434,6 +471,7 @@ def filter_bag_ids_for_operational_write(
             bid,
             context=context,
             assign_on_first=assign_on_first,
+            credential_sourced=credential_sourced,
         )
         if ok:
             allowed.add(bid)

@@ -558,7 +558,7 @@ class TestPresenceCrossOrgGuard:
         "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
         return_value=({"VEEONLY1"}, [{"bag_id": "DVE92G8WAL", "reason": "operational_owner_mismatch"}]),
     )
-    def test_apply_presence_scrape_skips_non_owner_bag(self, _filter, _ensure):
+    def test_apply_presence_scrape_passes_credential_sourced_to_owner_filter(self, mock_filter, _ensure):
         cursor = MagicMock()
         cursor.fetchone.return_value = {"active_rows": 1}
         cursor.fetchall.return_value = []
@@ -577,9 +577,67 @@ class TestPresenceCrossOrgGuard:
             finished_at=datetime.utcnow(),
             status="success",
         )
+        mock_filter.assert_called_once()
+        assert mock_filter.call_args.kwargs.get("credential_sourced") is True
         assert stats["rows_found"] == 1
         assert any(e.get("bag_id") == "DVE92G8WAL" for e in stats["errors"])
         assert stats["cross_org_presence_excluded"][0]["bag_id"] == "DVE92G8WAL"
+
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_tables")
+    @patch("backend.rinse_cleaner_ticket_presence.record_presence_scrape_run", return_value=99)
+    @patch("backend.rinse_cleaner_ticket_presence.persist_presence_run_snapshot_rows", return_value=1)
+    @patch("backend.rinse_cleaner_ticket_presence.table_exists", return_value=True)
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_run_rows_table")
+    @patch("backend.rinse_cleaner_ticket_presence.ensure_presence_transition_columns")
+    @patch("backend.rinse_bag_operational_owner.operational_owner_gate_enabled", return_value=True)
+    @patch("backend.rinse_bag_operational_owner.resolve_canonical_owner")
+    @patch("backend.rinse_bag_operational_owner.assign_owner_from_credential")
+    def test_apply_presence_scrape_accepts_washpro_owned_bag_via_credential(
+        self,
+        mock_assign_cred,
+        mock_resolve,
+        _gate,
+        _transition,
+        _run_rows,
+        _table_exists,
+        _persist,
+        _record,
+        _ensure,
+    ):
+        from backend.rinse_bag_operational_owner import (
+            CanonicalOwner,
+            SOURCE_CREDENTIAL,
+            SOURCE_REGISTRY,
+        )
+
+        mock_resolve.return_value = CanonicalOwner(
+            bag_id="7AX67OZWFN",
+            owner_organization_id=1,
+            owner_rinse_vendor="washpro",
+            assigned_at=datetime(2026, 6, 1),
+            assignment_source=SOURCE_REGISTRY,
+        )
+        mock_assign_cred.return_value = CanonicalOwner(
+            bag_id="7AX67OZWFN",
+            owner_organization_id=3,
+            owner_rinse_vendor="veewash",
+            assigned_at=datetime(2026, 6, 16),
+            assignment_source=SOURCE_CREDENTIAL,
+        )
+        cursor = MagicMock()
+        cursor.fetchone.return_value = {"active_rows": 0}
+        cursor.fetchall.return_value = []
+        stats = apply_presence_scrape(
+            cursor,
+            3,
+            portal_status=PORTAL_STATUS_READY,
+            rows=[{"bag_id": "7AX67OZWFN", "customer_name": "Jeenie Yoon", "service_type": "WF"}],
+            dry_run=False,
+            scrape_meta={"rinse_vendor": "veewash"},
+        )
+        assert stats["rows_found"] == 1
+        assert not stats["errors"]
+        mock_assign_cred.assert_called_once()
 
 
 class TestParsePresenceEmptyCsv:

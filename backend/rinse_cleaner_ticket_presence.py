@@ -1205,7 +1205,8 @@ def apply_presence_scrape(
     from backend.rinse_bag_operational_owner import filter_bag_ids_for_operational_write
 
     allowed_bag_ids, owner_rejected = filter_bag_ids_for_operational_write(
-        cursor, org, candidate_bag_ids, context="presence_scrape", assign_on_first=True
+        cursor, org, candidate_bag_ids, context="presence_scrape", assign_on_first=True,
+        credential_sourced=True,
     )
     if owner_rejected:
         stats["operational_owner_rejected"] = owner_rejected

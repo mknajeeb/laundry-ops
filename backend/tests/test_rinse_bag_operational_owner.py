@@ -10,7 +10,9 @@ import pytest
 from backend.rinse_bag_operational_owner import (
     CanonicalOwner,
     REJECT_REASON_NOT_OWNER,
+    SOURCE_CREDENTIAL,
     assert_operational_write_allowed,
+    assign_owner_from_credential,
     filter_bag_ids_for_operational_write,
     resolve_canonical_owner,
     SOURCE_REGISTRY,
@@ -112,3 +114,35 @@ class TestOperationalWriteGate:
         assert allowed == {"VEE1"}
         assert len(rejected) == 1
         assert rejected[0]["bag_id"] == "WP1"
+
+    def test_credential_sourced_allows_despite_historical_washpro_owner(self):
+        canonical = CanonicalOwner(
+            bag_id="BAG1",
+            owner_organization_id=1,
+            owner_rinse_vendor="washpro",
+            assigned_at=datetime(2026, 6, 1),
+            assignment_source=SOURCE_REGISTRY,
+        )
+        with patch(
+            "backend.rinse_bag_operational_owner.resolve_canonical_owner",
+            return_value=canonical,
+        ), patch(
+            "backend.rinse_bag_operational_owner.operational_owner_gate_enabled",
+            return_value=True,
+        ), patch(
+            "backend.rinse_bag_operational_owner.assign_owner_from_credential",
+            return_value=CanonicalOwner(
+                bag_id="BAG1",
+                owner_organization_id=3,
+                owner_rinse_vendor="veewash",
+                assigned_at=datetime(2026, 6, 16),
+                assignment_source=SOURCE_CREDENTIAL,
+            ),
+        ) as assign_cred:
+            ok, reason, owner = assert_operational_write_allowed(
+                object(), 3, "BAG1", credential_sourced=True
+            )
+        assert ok is True
+        assert reason is None
+        assert owner.owner_organization_id == 3
+        assign_cred.assert_called_once()
