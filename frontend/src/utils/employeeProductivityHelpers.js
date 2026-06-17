@@ -3,7 +3,7 @@
 export const PRODUCTIVITY_RANK_OPTIONS = [
   { id: "bags", label: "Completed Bags" },
   { id: "lbs", label: "Completed Lbs" },
-  { id: "avg_lbs_bag", label: "Avg Lbs / Bag" },
+  { id: "avg_lbs_bag", label: "Avg Lbs Per Completed Bag" },
   { id: "bags_hr", label: "Bags / Hour" },
   { id: "lbs_hr", label: "Lbs / Hour" },
 ];

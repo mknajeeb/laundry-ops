@@ -234,7 +234,7 @@ export default function EmployeeProductivityDashboard({
                 <TableCell sx={{ fontWeight: 700, whiteSpace: "nowrap" }}>Employee</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>Completed Bags</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>Completed Lbs</TableCell>
-                <TableCell align="right" sx={{ fontWeight: 700, whiteSpace: "nowrap" }}>Avg Lbs / Bag</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 700, whiteSpace: "nowrap" }}>Avg Lbs Per Completed Bag</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>Bags / Hour</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>Lbs / Hour</TableCell>
                 <TableCell sx={{ fontWeight: 700, whiteSpace: "nowrap" }}>Clock In Time</TableCell>
