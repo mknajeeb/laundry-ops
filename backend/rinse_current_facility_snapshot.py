@@ -1122,6 +1122,12 @@ def build_portal_snapshot_vendor_home_fields(
     ytp_reliable = bool(ytp_meta.get("portal_snapshot_yet_to_process_reliable"))
     ytp_source = ytp_meta.get("portal_snapshot_yet_to_process_source") or PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
 
+    # Direct Vendor Home scrape counts when presence rows lack cleaning-step metadata.
+    if not ytp_reliable and direct.get("available") and portal_reported_ytp is not None:
+        ytp = portal_reported_ytp
+        ytp_reliable = True
+        ytp_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+
     operational_due_today: int | None = None
     operational_due_ytp: int | None = None
     if presence_rows:
@@ -1146,6 +1152,16 @@ def build_portal_snapshot_vendor_home_fields(
         PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST if due_ytp_reliable else PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
     )
 
+    if direct.get("available"):
+        if portal_reported_due_today is not None:
+            due_today = portal_reported_due_today
+            due_today_reliable = True
+            due_today_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+        if portal_reported_due_ytp is not None:
+            due_ytp = portal_reported_due_ytp
+            due_ytp_reliable = True
+            due_ytp_source = PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT
+
     presence_reconciliation = {
         "active_at_vendor_presence_count": presence_total,
         "direct_vendor_home_total": portal_reported_at_veewash,
@@ -1156,6 +1172,26 @@ def build_portal_snapshot_vendor_home_fields(
             else None
         ),
     }
+
+    portal_snapshot_drilldown_rows = []
+    for raw in presence_rows:
+        bid = str(raw.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        edd = parse_record_date(raw.get("estimated_delivery_date"))
+        portal_snapshot_drilldown_rows.append(
+            {
+                "bag_id": bid,
+                "customer_name": raw.get("customer_name"),
+                "service_type": str(raw.get("service_type") or "WF").upper(),
+                "service_bucket": str(raw.get("service_type") or "WF").upper(),
+                "estimated_delivery_date": edd.isoformat() if edd else None,
+                "date_clean": edd.isoformat() if edd else None,
+                "portal_yet_to_process": portal_at_vendor_yet_to_process(raw),
+                "currently_on_vendor_home": True,
+                "source_seen_in": ["at_vendor_presence"],
+            }
+        )
 
     return {
         "orders_at_veewash": orders_at_veewash,
@@ -1184,6 +1220,7 @@ def build_portal_snapshot_vendor_home_fields(
         "portal_snapshot_yet_to_process": ytp if ytp_reliable else None,
         "portal_snapshot_yet_to_process_reliable": ytp_reliable,
         "portal_snapshot_yet_to_process_source": ytp_source,
+        "portal_snapshot_drilldown_rows": portal_snapshot_drilldown_rows,
     }
 
 

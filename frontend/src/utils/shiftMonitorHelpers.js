@@ -161,6 +161,13 @@ export function countAtVendorBucket(rows, bucket) {
   return filterAtVendorBucket(rows, bucket).length;
 }
 
+function avServiceCardVariant(service, rush, status) {
+  const base = service === "wf" ? "wf" : "hd";
+  if (rush === "rush") return "rush";
+  if (status === "completed") return service === "hd" ? "hd" : "wf";
+  return base;
+}
+
 function avFilteredServiceCards(module, rows, rush, status) {
   const labels = { all: "Total", pending: "Pending", completed: "Completed" };
   const bucketStatus = status;
@@ -178,7 +185,7 @@ function avFilteredServiceCards(module, rows, rush, status) {
         count: module?.[fields.wf] ?? countAtVendorBucket(rows, { rush: "all", service: "wf", status: bucketStatus }),
         bucket: { rush: "all", service: "wf", status: bucketStatus },
         clickable: true,
-        variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
+        variant: avServiceCardVariant("wf", rush, status),
       },
       {
         key: `hd_${status}`,
@@ -186,7 +193,7 @@ function avFilteredServiceCards(module, rows, rush, status) {
         count: module?.[fields.hd] ?? countAtVendorBucket(rows, { rush: "all", service: "hd", status: bucketStatus }),
         bucket: { rush: "all", service: "hd", status: bucketStatus },
         clickable: true,
-        variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
+        variant: avServiceCardVariant("hd", rush, status),
       },
     ];
   }
@@ -199,7 +206,7 @@ function avFilteredServiceCards(module, rows, rush, status) {
       count: wf,
       bucket: { rush, service: "wf", status: bucketStatus },
       clickable: true,
-      variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
+      variant: avServiceCardVariant("wf", rush, status),
     },
     {
       key: `${rush}_hd_${status}`,
@@ -207,7 +214,7 @@ function avFilteredServiceCards(module, rows, rush, status) {
       count: hd,
       bucket: { rush, service: "hd", status: bucketStatus },
       clickable: true,
-      variant: status === "pending" ? "pending" : status === "completed" ? "completed" : "total",
+      variant: avServiceCardVariant("hd", rush, status),
     },
   ];
 }
@@ -265,7 +272,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all", options = {}
         bucket: { rush: "all", service: "all", status: "all" },
         moduleTag: "mod_at_vendor_total",
         clickable: true,
-        variant: "total",
+        variant: rush === "rush" ? "rush" : "total",
         large: true,
       },
       {
@@ -275,7 +282,7 @@ export function buildAtVendorHierarchy(module, rushSegment = "all", options = {}
         bucket: { rush: "all", service: "all", status: "pending" },
         moduleTag: "mod_at_vendor_pending",
         clickable: true,
-        variant: "pending",
+        variant: rush === "rush" ? "rush" : "pending",
         large: true,
       },
       {
@@ -319,33 +326,66 @@ export function buildAtVendorHierarchy(module, rushSegment = "all", options = {}
   return sections;
 }
 
+const PORTAL_DIRECT_SOURCE = "vendor_home_page_direct";
+
+/** Prefer direct Vendor Home scrape counts for the live portal snapshot panel. */
+function portalSnapshotDirectFields(av) {
+  const useDirect = av.portal_reported_source === PORTAL_DIRECT_SOURCE;
+  return {
+    useDirect,
+    atVeewash: useDirect && av.portal_reported_orders_at_veewash != null
+      ? av.portal_reported_orders_at_veewash
+      : av.orders_at_veewash ?? av.current_portal_snapshot_total ?? av.current_live_vendor_home_total,
+    yetToProcess: useDirect && av.portal_reported_orders_at_veewash_yet_to_process != null
+      ? av.portal_reported_orders_at_veewash_yet_to_process
+      : av.orders_at_veewash_yet_to_process ?? av.portal_snapshot_yet_to_process,
+    yetToProcessReliable: useDirect && av.portal_reported_orders_at_veewash_yet_to_process != null
+      ? true
+      : av.orders_at_veewash_yet_to_process_reliable === true
+        || av.portal_snapshot_yet_to_process_reliable === true,
+    dueToday: useDirect && av.portal_reported_due_today != null
+      ? av.portal_reported_due_today
+      : av.due_today,
+    dueTodayReliable: useDirect && av.portal_reported_due_today != null
+      ? true
+      : av.due_today_reliable === true,
+    dueTodayYtp: useDirect && av.portal_reported_due_today_yet_to_process != null
+      ? av.portal_reported_due_today_yet_to_process
+      : av.due_today_yet_to_process,
+    dueTodayYtpReliable: useDirect && av.portal_reported_due_today_yet_to_process != null
+      ? true
+      : av.due_today_yet_to_process_reliable === true,
+    operationalAtVeewash: av.orders_at_veewash,
+  };
+}
+
 /** Current portal snapshot cards (live Vendor Home counts — not daily workload). */
 export function buildAtVendorPortalSnapshot(module) {
   const av = module || {};
-  const snapshotTotal =
-    av.orders_at_veewash ??
-    av.current_portal_snapshot_total ??
-    av.current_live_vendor_home_total;
-  const snapshotReliable = av.orders_at_veewash_reliable !== false;
-  const snapshotSource = av.orders_at_veewash_source;
+  const direct = portalSnapshotDirectFields(av);
+  const snapshotTotal = direct.atVeewash;
+  const snapshotReliable = direct.useDirect || av.orders_at_veewash_reliable !== false;
 
-  const ytpReliable =
-    av.orders_at_veewash_yet_to_process_reliable === true
-    || av.portal_snapshot_yet_to_process_reliable === true;
-  const ytp =
-    av.orders_at_veewash_yet_to_process ??
-    av.portal_snapshot_yet_to_process;
-  const ytpSource =
-    av.orders_at_veewash_yet_to_process_source ??
-    av.portal_snapshot_yet_to_process_source;
+  const ytpReliable = direct.yetToProcessReliable;
+  const ytp = direct.yetToProcess;
+
+  const operationalNote = (
+    direct.useDirect
+    && direct.operationalAtVeewash != null
+    && snapshotTotal != null
+    && direct.operationalAtVeewash !== snapshotTotal
+  )
+    ? `Operational filter: ${direct.operationalAtVeewash}`
+    : undefined;
 
   const cards = [
     {
       key: "av_portal_snapshot_total",
       label: "Currently at VeeWash",
       count: snapshotTotal,
-      sub: snapshotSource === "vendor_home_page_direct" ? "Vendor Home" : undefined,
-      clickable: false,
+      sub: direct.useDirect ? "Vendor Home" : operationalNote,
+      clickable: snapshotTotal != null,
+      portalFilter: "portal_at_veewash",
       variant: "snapshot",
     },
   ];
@@ -355,8 +395,9 @@ export function buildAtVendorPortalSnapshot(module) {
       key: "av_portal_yet_to_process",
       label: "Yet to process",
       count: ytp,
-      sub: ytpSource === "vendor_home_page_direct" ? "Vendor Home" : undefined,
-      clickable: false,
+      sub: direct.useDirect ? "Vendor Home" : undefined,
+      clickable: true,
+      portalFilter: "portal_yet_to_process",
       variant: "snapshot",
     });
   } else if (snapshotTotal > 0 && !ytpReliable) {
@@ -370,25 +411,25 @@ export function buildAtVendorPortalSnapshot(module) {
     });
   }
 
-  const dueTodayReliable = av.due_today_reliable === true;
-  const dueYtpReliable = av.due_today_yet_to_process_reliable === true;
-  if (dueTodayReliable && av.due_today != null) {
+  if (direct.dueTodayReliable && direct.dueToday != null) {
     cards.push({
       key: "av_portal_due_today",
       label: "Due Today",
-      count: av.due_today,
-      sub: "Vendor Home",
-      clickable: false,
+      count: direct.dueToday,
+      sub: direct.useDirect ? "Vendor Home" : undefined,
+      clickable: true,
+      portalFilter: "portal_due_today",
       variant: "snapshot",
     });
   }
-  if (dueYtpReliable && av.due_today_yet_to_process != null) {
+  if (direct.dueTodayYtpReliable && direct.dueTodayYtp != null) {
     cards.push({
       key: "av_portal_due_today_ytp",
       label: "Due Today Yet to Process",
-      count: av.due_today_yet_to_process,
-      sub: "Vendor Home",
-      clickable: false,
+      count: direct.dueTodayYtp,
+      sub: direct.useDirect ? "Vendor Home" : undefined,
+      clickable: true,
+      portalFilter: "portal_due_today_ytp",
       variant: "snapshot",
     });
   }
@@ -408,7 +449,8 @@ export function buildAtVendorPortalSnapshot(module) {
       label: "Left portal — still in workload",
       count: av.bags_gone_from_portal_but_in_workload_count,
       sub: "Dashboard-derived · not from Vendor Home",
-      clickable: false,
+      clickable: true,
+      portalFilter: "portal_gone_but_counted",
       variant: "info",
     });
   }
@@ -514,7 +556,41 @@ export function buildRfvHierarchy(rfv, rushSegment = "all") {
   return sections;
 }
 
-export function filterAtVendorDrilldown(module, drilldown) {
+function isPortalDueToday(row, referenceDateEt) {
+  if (!referenceDateEt) return false;
+  const ref = String(referenceDateEt).slice(0, 10);
+  const edd = row?.estimated_delivery_date || row?.date_clean;
+  return edd ? String(edd).slice(0, 10) === ref : false;
+}
+
+/** Drilldown rows for Current Portal Snapshot cards (live presence first). */
+export function filterAtVendorPortalDrilldown(module, drilldown, { referenceDateEt } = {}) {
+  const portalRows = module?.portal_snapshot_drilldown_rows;
+  const fallbackRows = module?.rows || [];
+  const rows = (portalRows?.length ? portalRows : fallbackRows);
+
+  switch (drilldown?.portalFilter) {
+    case "portal_at_veewash":
+      return portalRows?.length
+        ? portalRows
+        : fallbackRows.filter((r) => r.currently_on_vendor_home === true);
+    case "portal_yet_to_process":
+      return rows.filter((r) => r.portal_yet_to_process === true);
+    case "portal_due_today":
+      return rows.filter((r) => isPortalDueToday(r, referenceDateEt));
+    case "portal_due_today_ytp":
+      return rows.filter((r) => r.portal_yet_to_process === true && isPortalDueToday(r, referenceDateEt));
+    case "portal_gone_but_counted":
+      return fallbackRows.filter((r) => r.left_vendor_home_but_counted === true);
+    default:
+      return [];
+  }
+}
+
+export function filterAtVendorDrilldown(module, drilldown, options = {}) {
+  if (drilldown?.portalFilter) {
+    return filterAtVendorPortalDrilldown(module, drilldown, options);
+  }
   if (drilldown?.moduleTag === "completed_before_day_start_still_present") {
     return module?.completed_before_day_start_still_present_rows || [];
   }

@@ -21,6 +21,18 @@ export const VEEWASH_DASHBOARD = {
   monitoringText: "#71717a",
   neutralTotal: "#0097b2",
   cardShadow: "0 1px 3px rgba(0, 60, 80, 0.08)",
+  /** Wash & Fold — neutral black accent */
+  wfCharcoal: "#1c1c1e",
+  wfBg: "#f7f7f8",
+  wfBorder: "rgba(28, 28, 30, 0.18)",
+  /** Home Delivery — VeeWash teal */
+  hdTeal: "#00a896",
+  hdBg: "#e6f7f5",
+  hdBorder: "rgba(0, 168, 150, 0.35)",
+  /** Rush — warm copper accent, restrained */
+  rushCopper: "#b45309",
+  rushBg: "#fffbeb",
+  rushBorder: "rgba(180, 83, 9, 0.38)",
 };
 
 export const KPI_VARIANT_STYLES = {
@@ -55,5 +67,23 @@ export const KPI_VARIANT_STYLES = {
     accent: VEEWASH_DASHBOARD.monitoringText,
     bg: VEEWASH_DASHBOARD.monitoringBg,
     border: VEEWASH_DASHBOARD.monitoringBorder,
+  },
+  wf: {
+    accent: VEEWASH_DASHBOARD.wfCharcoal,
+    bg: VEEWASH_DASHBOARD.wfBg,
+    border: VEEWASH_DASHBOARD.wfBorder,
+    borderWidth: 2,
+  },
+  hd: {
+    accent: VEEWASH_DASHBOARD.hdTeal,
+    bg: VEEWASH_DASHBOARD.hdBg,
+    border: VEEWASH_DASHBOARD.hdBorder,
+    borderWidth: 2,
+  },
+  rush: {
+    accent: VEEWASH_DASHBOARD.rushCopper,
+    bg: VEEWASH_DASHBOARD.rushBg,
+    border: VEEWASH_DASHBOARD.rushBorder,
+    borderWidth: 2,
   },
 };

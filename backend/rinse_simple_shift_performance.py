@@ -2681,6 +2681,21 @@ def _build_exceptions_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+_AV_PORTAL_DRILLDOWN_ROW_KEYS = frozenset({
+    "bag_id",
+    "customer_name",
+    "service_type",
+    "service_bucket",
+    "estimated_delivery_date",
+    "date_clean",
+    "portal_yet_to_process",
+    "currently_on_vendor_home",
+    "left_vendor_home_but_counted",
+    "rush_bucket",
+    "rush_label",
+    "source_seen_in",
+})
+
 _AV_DRILLDOWN_ROW_KEYS = frozenset({
     "bag_id",
     "customer_name",
@@ -2706,6 +2721,7 @@ _AV_DRILLDOWN_ROW_KEYS = frozenset({
     "completion_signal",
     "completion_time_et",
     "sent_to_vendor_time_et",
+    "left_vendor_home_but_counted",
 })
 
 _RFV_DRILLDOWN_ROW_KEYS = frozenset({
@@ -2740,6 +2756,11 @@ def _slim_at_vendor_module_payload(module: Mapping[str, Any]) -> dict[str, Any]:
     out["completed_before_day_start_still_present_rows"] = [
         _slim_row_for_drilldown(r, _AV_DRILLDOWN_ROW_KEYS)
         for r in monitoring
+        if isinstance(r, dict)
+    ]
+    out["portal_snapshot_drilldown_rows"] = [
+        _slim_row_for_drilldown(r, _AV_PORTAL_DRILLDOWN_ROW_KEYS)
+        for r in (module.get("portal_snapshot_drilldown_rows") or [])
         if isinstance(r, dict)
     ]
     return out

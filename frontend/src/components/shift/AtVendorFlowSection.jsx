@@ -52,10 +52,11 @@ export default function AtVendorFlowSection({
       moduleKey: "at_vendor_flow",
       moduleTag: card.moduleTag,
       bucket: card.bucket,
+      portalFilter: card.portalFilter,
       cardLabel: card.label,
       cardKey: card.key,
       expectedCount: card.count,
-      moduleTitle: "At Vendor",
+      moduleTitle: card.portalFilter ? "Current Portal Snapshot" : "At Vendor",
     });
   };
 
@@ -161,16 +162,26 @@ export default function AtVendorFlowSection({
             ) : null}
           </Typography>
 
-          {av.portal_snapshot_presence_reconciliation?.active_at_vendor_presence_count != null
-            && av.orders_at_veewash != null
-            && av.portal_snapshot_presence_reconciliation.difference != null
-            && av.portal_snapshot_presence_reconciliation.difference !== 0 ? (
-            <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 0.75 }}>
-              Presence list ({av.portal_snapshot_presence_reconciliation.active_at_vendor_presence_count}) vs Vendor Home ({av.orders_at_veewash}): diff {av.portal_snapshot_presence_reconciliation.difference}
-            </Typography>
-          ) : null}
+          {(() => {
+            const recon = av.portal_snapshot_presence_reconciliation;
+            const presenceCount = recon?.active_at_vendor_presence_count;
+            const vendorHomeCount =
+              av.portal_reported_orders_at_veewash ?? recon?.portal_reported_orders_at_veewash ?? recon?.direct_vendor_home_total;
+            const diff = recon?.difference;
+            if (presenceCount == null || vendorHomeCount == null || diff == null || diff === 0) return null;
+            return (
+              <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 0.75 }}>
+                Presence list ({presenceCount}) vs Vendor Home direct ({vendorHomeCount}): diff {diff > 0 ? `+${diff}` : diff}
+              </Typography>
+            );
+          })()}
 
-          <MetricCardGrid sections={portalSections} activeKey={activeKey} compact />
+          <MetricCardGrid
+            sections={portalSections}
+            onCardClick={handleCardClick}
+            activeKey={activeKey}
+            compact
+          />
         </Paper>
       ) : null}
 

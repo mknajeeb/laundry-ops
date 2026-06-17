@@ -662,7 +662,9 @@ export default function ShiftMonitorPage({ user }) {
     if (drilldown.type === "rfv") {
       rows = filterRfvRecords(rfv.rows || [], drilldown.drilldownTag, "all");
     } else if (drilldown.moduleKey === "at_vendor_flow") {
-      rows = filterAtVendorDrilldown(atVendorModule, drilldown);
+      rows = filterAtVendorDrilldown(atVendorModule, drilldown, {
+        referenceDateEt: dateEnd || dateStart,
+      });
     } else {
       const f = moduleFilters[drilldown.moduleKey] || { rush: "all", service: "all" };
       rows = filterModuleRecords(records, {

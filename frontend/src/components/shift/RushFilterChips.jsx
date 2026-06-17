@@ -7,6 +7,11 @@ export default function RushFilterChips({ value, onChange, sx, disabled = false 
     <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={sx}>
       {RUSH_FILTERS.map(({ id, label }) => {
         const selected = value === id;
+        const isRush = id === "rush";
+        const selectedBg = isRush ? VEEWASH_DASHBOARD.rushCopper : VEEWASH_DASHBOARD.primaryBlue;
+        const selectedBorder = isRush ? VEEWASH_DASHBOARD.rushCopper : VEEWASH_DASHBOARD.primaryBlue;
+        const hoverBg = isRush ? "#92400e" : VEEWASH_DASHBOARD.primaryBlueDark;
+        const idleHoverBg = isRush ? VEEWASH_DASHBOARD.rushBg : VEEWASH_DASHBOARD.primaryBlueLight;
         return (
           <Chip
             key={id}
@@ -20,12 +25,12 @@ export default function RushFilterChips({ value, onChange, sx, disabled = false 
               px: 0.5,
               minHeight: 30,
               fontSize: "0.8125rem",
-              bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlue : "transparent",
-              color: selected ? "#fff" : "text.primary",
+              bgcolor: selected ? selectedBg : "transparent",
+              color: selected ? "#fff" : isRush ? VEEWASH_DASHBOARD.rushCopper : "text.primary",
               border: "2px solid",
-              borderColor: selected ? VEEWASH_DASHBOARD.primaryBlue : "divider",
+              borderColor: selected ? selectedBorder : isRush ? VEEWASH_DASHBOARD.rushBorder : "divider",
               "&:hover": {
-                bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlueDark : VEEWASH_DASHBOARD.primaryBlueLight,
+                bgcolor: selected ? hoverBg : idleHoverBg,
               },
             }}
             variant={selected ? "filled" : "outlined"}

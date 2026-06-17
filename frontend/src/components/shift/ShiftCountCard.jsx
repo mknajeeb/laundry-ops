@@ -64,7 +64,16 @@ export default function ShiftCountCard({
         "&:hover": onClick
           ? {
               boxShadow: "0 4px 14px rgba(0, 60, 80, 0.14)",
-              borderColor: variant === "pending" ? VEEWASH_DASHBOARD.pendingDark : VEEWASH_DASHBOARD.primaryBlue,
+              borderColor:
+                variant === "rush"
+                  ? VEEWASH_DASHBOARD.rushCopper
+                  : variant === "wf"
+                    ? VEEWASH_DASHBOARD.wfCharcoal
+                    : variant === "hd"
+                      ? VEEWASH_DASHBOARD.hdTeal
+                      : variant === "pending"
+                        ? VEEWASH_DASHBOARD.pendingDark
+                        : VEEWASH_DASHBOARD.primaryBlue,
               transform: resolvedSize === "kpi" ? "translateY(-1px)" : undefined,
             }
           : undefined,
