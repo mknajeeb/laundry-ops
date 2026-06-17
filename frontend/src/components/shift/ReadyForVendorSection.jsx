@@ -1,6 +1,7 @@
 import { Alert, Box, Typography } from "@mui/material";
 import MetricCardGrid from "./MetricCardGrid";
 import RushFilterChips from "./RushFilterChips";
+import SyncFreshnessDetails from "./SyncFreshnessDetails";
 import { buildRfvHierarchy } from "../../utils/shiftMonitorHelpers";
 
 /** Management-first Ready for Vendor hierarchy (totals only). */
@@ -38,6 +39,14 @@ export default function ReadyForVendorSection({
         <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
           {rfv?.unavailable_reason || rfvSync?.message || "Ready for Vendor sync unavailable — refresh syncs"}
         </Alert>
+      ) : null}
+      {rfvSync?.freshness ? (
+        <Box sx={{ mb: 1.25, p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
+          <Typography variant="caption" fontWeight={700} display="block" sx={{ mb: 0.25 }}>
+            RFV sync freshness
+          </Typography>
+          <SyncFreshnessDetails freshness={rfvSync.freshness} />
+        </Box>
       ) : null}
       <Box sx={{ mb: 1.5 }}>
         <RushFilterChips value={segment} onChange={onRushChange} />

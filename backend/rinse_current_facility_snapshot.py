@@ -1045,33 +1045,45 @@ def load_latest_vendor_home_direct_counts(
 
     cursor.execute(
         """
-        SELECT id, finished_at, scrape_meta_json
+        SELECT id, started_at, finished_at, duration_seconds, rows_found, scrape_meta_json
         FROM rinse_cleaner_ticket_presence_runs
         WHERE organization_id = %s
           AND portal_status = %s
           AND status = 'success'
         ORDER BY finished_at DESC, id DESC
-        LIMIT 1
+        LIMIT 15
         """,
         (org, PORTAL_STATUS_AT_VENDOR),
     )
-    row = cursor.fetchone()
-    if not isinstance(row, dict):
-        return out
-
-    summary = extract_vendor_home_summary_from_scrape_meta(
-        _parse_json_obj(row.get("scrape_meta_json"))
-    )
-    if not summary:
+    rows = [r for r in (cursor.fetchall() or []) if isinstance(r, dict)]
+    row: dict[str, Any] | None = None
+    summary = None
+    for candidate in rows:
+        summary = extract_vendor_home_summary_from_scrape_meta(
+            _parse_json_obj(candidate.get("scrape_meta_json"))
+        )
+        if summary:
+            row = candidate
+            break
+    if not row or not summary:
         return out
 
     out.update(summary)
     out["available"] = True
     out["presence_run_id"] = row.get("id")
     finished = row.get("finished_at")
+    started = row.get("started_at")
     out["presence_run_finished_at"] = (
         finished.isoformat() if hasattr(finished, "isoformat") else finished
     )
+    out["presence_run_started_at"] = (
+        started.isoformat() if hasattr(started, "isoformat") else started
+    )
+    out["presence_run_rows_found"] = row.get("rows_found")
+    out["presence_run_duration_seconds"] = row.get("duration_seconds")
+    scrape_meta = _parse_json_obj(row.get("scrape_meta_json"))
+    portal_pulled = summary.get("scraped_at") or scrape_meta.get("scraped_at")
+    out["portal_pulled_at"] = portal_pulled
     return out
 
 
@@ -1159,6 +1171,9 @@ def build_portal_snapshot_vendor_home_fields(
         PORTAL_SNAPSHOT_SOURCE_PRESENCE_LIST if due_ytp_reliable else PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
     )
 
+    dashboard_derived_due_today = operational_due_today
+    dashboard_derived_due_today_yet_to_process = operational_due_ytp if due_ytp_reliable else None
+
     if direct.get("available"):
         if portal_reported_due_today is not None:
             due_today = portal_reported_due_today
@@ -1221,6 +1236,20 @@ def build_portal_snapshot_vendor_home_fields(
             PORTAL_SNAPSHOT_SOURCE_VENDOR_HOME_DIRECT if direct.get("available") else PORTAL_SNAPSHOT_SOURCE_UNAVAILABLE
         ),
         "portal_snapshot_scrape_at": direct.get("scraped_at") or direct.get("presence_run_finished_at"),
+        "portal_snapshot_freshness": {
+            "scrape_started_at": direct.get("presence_run_started_at"),
+            "portal_pulled_at": direct.get("portal_pulled_at") or direct.get("scraped_at"),
+            "data_updated_at": direct.get("presence_run_finished_at"),
+            "duration_seconds": direct.get("presence_run_duration_seconds"),
+            "rows_found": direct.get("presence_run_rows_found"),
+            "presence_run_id": direct.get("presence_run_id"),
+            "portal_pull_unavailable": not (direct.get("portal_pulled_at") or direct.get("scraped_at")),
+            "portal_pull_note": (
+                "Portal pull time unavailable"
+                if not (direct.get("portal_pulled_at") or direct.get("scraped_at"))
+                else None
+            ),
+        },
         "portal_snapshot_presence_run_id": direct.get("presence_run_id"),
         "portal_snapshot_presence_reconciliation": presence_reconciliation,
         "current_portal_snapshot_total": orders_at_veewash,
@@ -1228,6 +1257,151 @@ def build_portal_snapshot_vendor_home_fields(
         "portal_snapshot_yet_to_process_reliable": ytp_reliable,
         "portal_snapshot_yet_to_process_source": ytp_source,
         "portal_snapshot_drilldown_rows": portal_snapshot_drilldown_rows,
+        "dashboard_derived_due_today": dashboard_derived_due_today,
+        "dashboard_derived_due_today_yet_to_process": dashboard_derived_due_today_yet_to_process,
+    }
+
+
+def load_latest_rfv_direct_count(
+    cursor,
+    organization_id: int,
+) -> dict[str, Any]:
+    """Latest successful Ready-for-Vendor presence scrape row count (direct portal crawl)."""
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_READY
+
+    org = int(organization_id)
+    out: dict[str, Any] = {
+        "available": False,
+        "rows_found": None,
+        "scraped_at": None,
+        "presence_run_id": None,
+    }
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence_runs"):
+        return out
+
+    cursor.execute(
+        """
+        SELECT id, finished_at, started_at, rows_found, scrape_meta_json
+        FROM rinse_cleaner_ticket_presence_runs
+        WHERE organization_id = %s
+          AND portal_status = %s
+          AND status = 'success'
+        ORDER BY finished_at DESC, id DESC
+        LIMIT 1
+        """,
+        (org, PORTAL_STATUS_READY),
+    )
+    row = cursor.fetchone()
+    if not row or not isinstance(row, dict):
+        return out
+
+    scrape_meta = _parse_json_obj(row.get("scrape_meta_json")) or {}
+    scraped_at = scrape_meta.get("scraped_at")
+    if not scraped_at:
+        finished = row.get("finished_at")
+        scraped_at = (
+            finished.isoformat() if hasattr(finished, "isoformat") else finished
+        )
+    if not scraped_at:
+        return out
+
+    out["available"] = True
+    out["rows_found"] = int(row.get("rows_found") or 0)
+    out["scraped_at"] = scraped_at
+    out["presence_run_id"] = row.get("id")
+    return out
+
+
+def _normalize_portal_scrape_at_et(raw: Any) -> str | None:
+    from datetime import datetime
+
+    from backend.rinse_scan_time import serialize_system_datetime_for_api
+
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return serialize_system_datetime_for_api(raw)
+    text = str(raw).strip()
+    return text or None
+
+
+def build_portal_reconciliation_payload(
+    cursor,
+    organization_id: int,
+    *,
+    portal_fields: Mapping[str, Any],
+    rfv_dashboard_total: int | None = None,
+) -> dict[str, Any]:
+    """
+    Side-by-side portal direct scrape vs dashboard-derived counts for Portal Snapshot.
+
+    Counts are omitted per metric when the direct scrape timestamp is unavailable.
+    """
+    org = int(organization_id)
+    fields = dict(portal_fields or {})
+    vendor_home_scrape_at = _normalize_portal_scrape_at_et(fields.get("portal_snapshot_scrape_at"))
+
+    rfv_direct = load_latest_rfv_direct_count(cursor, org)
+    rfv_scrape_at = _normalize_portal_scrape_at_et(rfv_direct.get("scraped_at"))
+
+    portal_counts: dict[str, int | None] = {}
+    dashboard_counts: dict[str, int | None] = {}
+    differences: dict[str, int | None] = {}
+
+    def _add_metric(
+        key: str,
+        *,
+        portal_value: int | None,
+        dashboard_value: int | None,
+        scrape_at: str | None,
+    ) -> None:
+        if scrape_at is None or portal_value is None or dashboard_value is None:
+            return
+        portal_counts[key] = int(portal_value)
+        dashboard_counts[key] = int(dashboard_value)
+        differences[key] = int(dashboard_value) - int(portal_value)
+
+    _add_metric(
+        "at_vendor",
+        portal_value=fields.get("portal_reported_orders_at_veewash"),
+        dashboard_value=fields.get("orders_at_veewash"),
+        scrape_at=vendor_home_scrape_at,
+    )
+    _add_metric(
+        "rfv",
+        portal_value=rfv_direct.get("rows_found"),
+        dashboard_value=rfv_dashboard_total,
+        scrape_at=rfv_scrape_at,
+    )
+    _add_metric(
+        "due_today",
+        portal_value=fields.get("portal_reported_due_today"),
+        dashboard_value=fields.get("dashboard_derived_due_today"),
+        scrape_at=vendor_home_scrape_at,
+    )
+    _add_metric(
+        "due_today_yet_to_process",
+        portal_value=fields.get("portal_reported_due_today_yet_to_process"),
+        dashboard_value=fields.get("dashboard_derived_due_today_yet_to_process"),
+        scrape_at=vendor_home_scrape_at,
+    )
+
+    has_mismatch = any(v != 0 for v in differences.values())
+    primary_scrape_at = vendor_home_scrape_at or rfv_scrape_at
+
+    return {
+        "available": bool(portal_counts) and primary_scrape_at is not None,
+        "portal_scrape_at": primary_scrape_at,
+        "vendor_home_scrape_at": vendor_home_scrape_at,
+        "rfv_scrape_at": rfv_scrape_at,
+        "portal_counts": portal_counts,
+        "dashboard_counts": dashboard_counts,
+        "differences": differences,
+        "has_mismatch": has_mismatch,
+        "source_labels": {
+            "portal": "Direct Portal",
+            "dashboard": "Dashboard Derived",
+        },
     }
 
 

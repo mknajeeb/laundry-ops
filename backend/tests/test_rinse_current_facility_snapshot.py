@@ -674,19 +674,21 @@ class TestVendorHomeParitySplit:
             def execute(self, *args, **kwargs):
                 return None
 
-            def fetchone(self):
-                return {
-                    "id": 99,
-                    "finished_at": "2026-06-14T01:00:00",
-                    "scrape_meta_json": {
-                        "vendor_home_summary": {
-                            "orders_at_veewash": 73,
-                            "orders_at_veewash_yet_to_process": 54,
-                            "due_today": 43,
-                            "due_today_yet_to_process": 24,
-                        }
-                    },
-                }
+            def fetchall(self):
+                return [
+                    {
+                        "id": 99,
+                        "finished_at": "2026-06-14T01:00:00",
+                        "scrape_meta_json": {
+                            "vendor_home_summary": {
+                                "orders_at_veewash": 73,
+                                "orders_at_veewash_yet_to_process": 54,
+                                "due_today": 43,
+                                "due_today_yet_to_process": 24,
+                            }
+                        },
+                    }
+                ]
 
         with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
             with patch(
@@ -719,19 +721,21 @@ class TestVendorHomeParitySplit:
             def execute(self, *args, **kwargs):
                 return None
 
-            def fetchone(self):
-                return {
-                    "id": 99,
-                    "finished_at": "2026-06-14T01:00:00",
-                    "scrape_meta_json": {
-                        "vendor_home_summary": {
-                            "orders_at_veewash": 21,
-                            "orders_at_veewash_yet_to_process": 18,
-                            "due_today": 5,
-                            "due_today_yet_to_process": 3,
-                        }
-                    },
-                }
+            def fetchall(self):
+                return [
+                    {
+                        "id": 99,
+                        "finished_at": "2026-06-14T01:00:00",
+                        "scrape_meta_json": {
+                            "vendor_home_summary": {
+                                "orders_at_veewash": 21,
+                                "orders_at_veewash_yet_to_process": 18,
+                                "due_today": 5,
+                                "due_today_yet_to_process": 3,
+                            }
+                        },
+                    }
+                ]
 
         with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
             with patch(
@@ -803,6 +807,73 @@ class TestVendorHomeParitySplit:
         due_today_rows = [r for r in drill if r["estimated_delivery_date"] == "2026-06-17"]
         assert len(due_today_rows) == 1
         assert due_today_rows[0]["bag_id"] == "DUE1"
+
+    def test_build_portal_reconciliation_payload(self):
+        from backend.rinse_current_facility_snapshot import build_portal_reconciliation_payload
+
+        portal_fields = {
+            "portal_snapshot_scrape_at": "2026-06-17T02:18:29.540Z",
+            "portal_reported_orders_at_veewash": 23,
+            "portal_reported_due_today": 5,
+            "portal_reported_due_today_yet_to_process": 3,
+            "orders_at_veewash": 23,
+            "dashboard_derived_due_today": 5,
+            "dashboard_derived_due_today_yet_to_process": 3,
+        }
+
+        class FakeCursor:
+            def execute(self, *args, **kwargs):
+                return None
+
+            def fetchone(self):
+                return {
+                    "id": 42,
+                    "finished_at": "2026-06-17T01:00:00",
+                    "rows_found": 7,
+                    "scrape_meta_json": {"scraped_at": "2026-06-17T01:00:00Z"},
+                }
+
+        with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
+            recon = build_portal_reconciliation_payload(
+                FakeCursor(),
+                3,
+                portal_fields=portal_fields,
+                rfv_dashboard_total=7,
+            )
+
+        assert recon["available"] is True
+        assert recon["portal_scrape_at"] == "2026-06-17T02:18:29.540Z"
+        assert recon["portal_counts"]["at_vendor"] == 23
+        assert recon["dashboard_counts"]["at_vendor"] == 23
+        assert recon["differences"]["at_vendor"] == 0
+        assert recon["portal_counts"]["rfv"] == 7
+        assert recon["dashboard_counts"]["rfv"] == 7
+        assert recon["has_mismatch"] is False
+        assert recon["source_labels"]["portal"] == "Direct Portal"
+
+    def test_build_portal_reconciliation_unavailable_without_scrape_at(self):
+        from backend.rinse_current_facility_snapshot import build_portal_reconciliation_payload
+
+        class FakeCursor:
+            def execute(self, *args, **kwargs):
+                return None
+
+            def fetchone(self):
+                return None
+
+        with patch("backend.rinse_current_facility_snapshot.table_exists", return_value=True):
+            recon = build_portal_reconciliation_payload(
+                FakeCursor(),
+                3,
+                portal_fields={
+                    "portal_reported_orders_at_veewash": 10,
+                    "orders_at_veewash": 10,
+                },
+                rfv_dashboard_total=0,
+            )
+
+        assert recon["available"] is False
+        assert recon["portal_counts"] == {}
 
     def test_manual_vendor_home_cards_not_clickable(self):
         from backend.rinse_current_facility_snapshot import build_vendor_home_view_section

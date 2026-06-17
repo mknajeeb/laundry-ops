@@ -459,14 +459,23 @@ def build_employee_productivity_dashboard_payload(
 ) -> dict[str, Any]:
     """Read-only Phase 2 payload — uses frozen Phase 1 employee_completed_bags_today."""
     from backend.rinse_at_vendor_module import build_at_vendor_module
+    from backend.rinse_employee_productivity_presentation import apply_employee_productivity_scope
+    from backend.rinse_employee_productivity_settings import (
+        include_hd_in_employee_productivity,
+        productivity_scope_label,
+    )
 
     org = int(organization_id)
     av = build_at_vendor_module(
         cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
     )
     emp = av.get("employee_completed_bags_today") or {}
+    include_hd = include_hd_in_employee_productivity(cursor, org)
+    scoped_emp = apply_employee_productivity_scope(emp, include_hd=include_hd)
     return {
         "selected_date_et": selected_date_et.isoformat(),
-        "employee_completed_bags_today": emp,
+        "employee_completed_bags_today": scoped_emp,
         "completed_today_kpi": av.get("completed") or av.get("completed_today_count"),
+        "include_hd_in_employee_productivity": include_hd,
+        "productivity_scope_label": productivity_scope_label(include_hd),
     }

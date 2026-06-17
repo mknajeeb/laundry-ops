@@ -14,6 +14,8 @@ import RushFilterChips from "./RushFilterChips";
 import ShiftCountCard from "./ShiftCountCard";
 import WorkloadReportStats from "./WorkloadReportStats";
 import { RushPendingWhyPanel } from "./RushPendingWhyPanel";
+import PortalSnapshotFreshness from "./PortalSnapshotFreshness";
+import PortalReconciliationSection from "./PortalReconciliationSection";
 import {
   buildAtVendorHierarchy,
   buildAtVendorPortalSnapshot,
@@ -155,26 +157,13 @@ export default function AtVendorFlowSection({
           <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 0.25, color: VEEWASH_DASHBOARD.primaryBlueDark, fontSize: "0.9375rem" }}>
             Current Portal Snapshot
           </Typography>
-          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
             Currently visible on Vendor Home.
-            {av.portal_snapshot_scrape_at ? (
-              <> · Vendor Home sync {String(av.portal_snapshot_scrape_at).replace("T", " ").slice(0, 19)}</>
-            ) : null}
           </Typography>
-
-          {(() => {
-            const recon = av.portal_snapshot_presence_reconciliation;
-            const presenceCount = recon?.active_at_vendor_presence_count;
-            const vendorHomeCount =
-              av.portal_reported_orders_at_veewash ?? recon?.portal_reported_orders_at_veewash ?? recon?.direct_vendor_home_total;
-            const diff = recon?.difference;
-            if (presenceCount == null || vendorHomeCount == null || diff == null || diff === 0) return null;
-            return (
-              <Typography variant="caption" color="warning.main" display="block" sx={{ mb: 0.75 }}>
-                Presence list ({presenceCount}) vs Vendor Home direct ({vendorHomeCount}): diff {diff > 0 ? `+${diff}` : diff}
-              </Typography>
-            );
-          })()}
+          <PortalSnapshotFreshness
+            freshness={av.portal_snapshot_freshness}
+            legacyScrapeAt={av.portal_snapshot_scrape_at}
+          />
 
           <MetricCardGrid
             sections={portalSections}
@@ -182,6 +171,8 @@ export default function AtVendorFlowSection({
             activeKey={activeKey}
             compact
           />
+
+          <PortalReconciliationSection reconciliation={av.portal_reconciliation} />
         </Paper>
       ) : null}
 

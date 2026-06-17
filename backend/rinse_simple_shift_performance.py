@@ -2870,12 +2870,20 @@ def _build_shift_monitor_summary_payload(
     at_vendor_module = build_at_vendor_module(
         cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
     )
-    from backend.rinse_current_facility_snapshot import build_portal_snapshot_vendor_home_fields
+    from backend.rinse_current_facility_snapshot import (
+        build_portal_reconciliation_payload,
+        build_portal_snapshot_vendor_home_fields,
+    )
 
-    at_vendor_module.update(
-        build_portal_snapshot_vendor_home_fields(
-            cursor, org, today=period_end, module=at_vendor_module
-        )
+    portal_fields = build_portal_snapshot_vendor_home_fields(
+        cursor, org, today=period_end, module=at_vendor_module
+    )
+    at_vendor_module.update(portal_fields)
+    at_vendor_module["portal_reconciliation"] = build_portal_reconciliation_payload(
+        cursor,
+        org,
+        portal_fields=portal_fields,
+        rfv_dashboard_total=ready_for_vendor.get("total"),
     )
     at_vendor_module = _slim_at_vendor_module_payload(at_vendor_module)
     av_ms = (time.perf_counter() - t_av) * 1000
@@ -3363,12 +3371,20 @@ def build_simple_shift_performance_payload(
     at_vendor_module = build_at_vendor_module(
         cursor, org, selected_date_et=period_end, baseline_ctx=baseline_ctx
     )
-    from backend.rinse_current_facility_snapshot import build_portal_snapshot_vendor_home_fields
+    from backend.rinse_current_facility_snapshot import (
+        build_portal_reconciliation_payload,
+        build_portal_snapshot_vendor_home_fields,
+    )
 
-    at_vendor_module.update(
-        build_portal_snapshot_vendor_home_fields(
-            cursor, org, today=period_end, module=at_vendor_module
-        )
+    portal_fields = build_portal_snapshot_vendor_home_fields(
+        cursor, org, today=period_end, module=at_vendor_module
+    )
+    at_vendor_module.update(portal_fields)
+    at_vendor_module["portal_reconciliation"] = build_portal_reconciliation_payload(
+        cursor,
+        org,
+        portal_fields=portal_fields,
+        rfv_dashboard_total=ready_for_vendor.get("total"),
     )
     _step_ms["at_vendor_build_ms"] = round((time.perf_counter() - _t_av) * 1000, 1)
     apply_module_tags(records, events_by_bag=events_by_bag)
