@@ -683,7 +683,8 @@ def list_payout_batches(
     return [json_safe(r) for r in c.fetchall() or []]
 
 
-def get_payout_batch(conn, organization_id: int, batch_id: int) -> Optional[dict]:
+def _fetch_payout_batch_core(conn, organization_id: int, batch_id: int) -> Optional[dict]:
+    """Load batch + lines from DB without rate backfill or workflow enrichment."""
     ensure_payout_batches_tables(conn.cursor())
     c = conn.cursor(dictionary=True)
     c.execute(
@@ -703,8 +704,22 @@ def get_payout_batch(conn, organization_id: int, batch_id: int) -> Optional[dict
     batch["worker_category_label"] = CATEGORY_LABELS.get(
         batch.get("worker_category"), batch.get("worker_category")
     )
-    from backend.payroll_workflow import enrich_payout_batch
+    return batch
 
+
+def get_payout_batch(conn, organization_id: int, batch_id: int) -> Optional[dict]:
+    batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
+    if not batch:
+        return None
+    from backend.payroll_workflow import backfill_batch_line_rates, enrich_payout_batch
+
+    if backfill_batch_line_rates(conn, organization_id, batch):
+        c = conn.cursor(dictionary=True)
+        c.execute(
+            "SELECT * FROM payout_batch_lines WHERE batch_id=%s ORDER BY worker_name_snapshot",
+            (int(batch_id),),
+        )
+        batch["lines"] = [json_safe(r) for r in c.fetchall() or []]
     return enrich_payout_batch(conn, organization_id, batch)
 
 
@@ -755,7 +770,7 @@ def create_payout_batch(
 def update_payout_batch(
     conn, organization_id: int, batch_id: int, body: dict
 ) -> Optional[dict]:
-    batch = get_payout_batch(conn, organization_id, batch_id)
+    batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
     if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
@@ -961,7 +976,7 @@ def _compute_payout_line_amounts(
 def update_payout_batch_line(
     conn, organization_id: int, batch_id: int, line_id: int, body: dict
 ) -> dict:
-    batch = get_payout_batch(conn, organization_id, batch_id)
+    batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
     cuid = conn.cursor(dictionary=True)
@@ -1059,7 +1074,7 @@ def update_payout_batch_status(
 def add_payout_batch_line(
     conn, organization_id: int, batch_id: int, body: dict
 ) -> dict:
-    batch = get_payout_batch(conn, organization_id, batch_id)
+    batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
     line_cat = str(body.get("worker_category") or batch["worker_category"])
@@ -1193,7 +1208,7 @@ def build_batch_from_time_records(
     to_date: str,
     allow_empty: bool = False,
 ) -> dict:
-    batch = get_payout_batch(conn, organization_id, batch_id)
+    batch = _fetch_payout_batch_core(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
     if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):

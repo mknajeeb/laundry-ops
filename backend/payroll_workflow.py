@@ -763,6 +763,40 @@ def validate_batch_for_workflow(batch: dict, action: str) -> None:
         raise ValueError("Batch has no worker lines.")
 
 
+def backfill_batch_line_rates(conn, organization_id: int, batch: dict) -> bool:
+    """Persist scheduling/profile rates onto batch lines that still have rate=0."""
+    if str(batch.get("status") or "") not in ("draft", "hours_reviewed"):
+        return False
+    from backend.payroll_operations import update_payout_batch_line
+
+    batch_id = int(batch["id"])
+    updated = False
+    for ln in batch.get("lines") or []:
+        uid = ln.get("user_id")
+        if not uid or float(ln.get("rate") or 0) > 0:
+            continue
+        rate = resolve_rate_for_batch_line(conn, organization_id, int(uid))
+        if rate <= 0:
+            continue
+        update_payout_batch_line(
+            conn,
+            organization_id,
+            batch_id,
+            int(ln["id"]),
+            {
+                "approved_hours": ln.get("approved_hours"),
+                "rate": rate,
+                "adjustments": ln.get("adjustments") or 0,
+                "line_status": ln.get("line_status") or "approved",
+            },
+        )
+        updated = True
+    if updated:
+        conn.commit()
+        recalculate_w2_batch_taxes(conn, organization_id, batch_id)
+    return updated
+
+
 def refresh_batch_line_rates(conn, organization_id: int, batch_id: int) -> dict:
     """Re-apply hourly rates from worker profiles onto batch lines."""
     batch = get_payout_batch(conn, organization_id, batch_id)

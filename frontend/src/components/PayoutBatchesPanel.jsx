@@ -313,16 +313,27 @@ export default function PayoutBatchesPanel({
     }
   };
 
-  const confirmDeleteBatch = async () => {
+  const confirmDeleteBatch = async (batchId = selectedId) => {
+    if (!batchId) return;
     try {
-      await deletePayoutBatch(selectedId);
+      await deletePayoutBatch(batchId);
       setDeleteOpen(false);
-      setDetail(null);
-      setSelectedId(null);
+      if (selectedId === batchId) {
+        setDetail(null);
+        setSelectedId(null);
+      }
       await loadList();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Delete failed");
     }
+  };
+
+  const promptDeleteBatch = (batch) => {
+    setSelectedId(batch.id);
+    if (detail?.id !== batch.id) {
+      setDetail({ batch_name: batch.batch_name, status: batch.status });
+    }
+    setDeleteOpen(true);
   };
 
   const refreshHours = async () => {
@@ -560,13 +571,29 @@ export default function PayoutBatchesPanel({
                 key={b.id}
                 selected={selectedId === b.id}
                 onClick={() => loadDetail(b.id)}
+                sx={{ pr: 0.5 }}
               >
                 <ListItemText
                   primary={b.batch_name}
                   secondary={`${b.pay_period_start} – ${b.pay_period_end}`}
                   primaryTypographyProps={{ noWrap: true }}
                 />
-                <Chip size="small" label={b.status} sx={{ ml: 1 }} />
+                <Chip size="small" label={b.status} sx={{ ml: 0.5, flexShrink: 0 }} />
+                {b.status === "draft" || b.status === "hours_reviewed" ? (
+                  <Tooltip title="Delete batch">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        promptDeleteBatch(b);
+                      }}
+                      sx={{ ml: 0.5, flexShrink: 0 }}
+                    >
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </Tooltip>
+                ) : null}
               </ListItemButton>
             ))}
             {!batches.length ? (
@@ -584,6 +611,66 @@ export default function PayoutBatchesPanel({
             <Typography color="text.secondary">Select a batch to view or edit.</Typography>
           ) : (
             <>
+              <Stack
+                direction={{ xs: "column", md: "row" }}
+                justifyContent="space-between"
+                spacing={1}
+                sx={{ mb: 2 }}
+              >
+                <Box>
+                  <Typography variant="h6">{detail.batch_name}</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {detail.worker_category_label} · {detail.pay_period_start} –{" "}
+                    {detail.pay_period_end}
+                  </Typography>
+                  <Typography variant="body1" sx={{ mt: 0.5 }}>
+                    <strong>${Number(detail.total_payout_amount || 0).toFixed(2)}</strong> ·{" "}
+                    {detail.worker_count} worker(s) · {Number(detail.total_approved_hours || 0).toFixed(2)}{" "}
+                    hrs
+                  </Typography>
+                  <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                    <Chip
+                      size="small"
+                      label={`Batch: ${detail.status}`}
+                      color={detail.status === "paid" ? "success" : "default"}
+                    />
+                    <Chip
+                      size="small"
+                      label={`Payment: ${batchPaymentLabel(detail.payment_status)}`}
+                      color={batchPaymentColor(detail.payment_status)}
+                    />
+                  </Stack>
+                </Box>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<EditIcon />}
+                    onClick={openEditBatch}
+                    disabled={!isEditable}
+                  >
+                    Edit batch
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="error"
+                    startIcon={<DeleteIcon />}
+                    onClick={() => setDeleteOpen(true)}
+                    disabled={!isEditable}
+                  >
+                    Delete batch
+                  </Button>
+                </Stack>
+              </Stack>
+
+              {!isEditable ? (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  This batch is past review. Set <strong>Batch status</strong> back to Draft below to
+                  edit, delete, or refresh lines.
+                </Alert>
+              ) : null}
+
               {batchWarnings.length ? (
                 <Stack spacing={1} sx={{ mb: 2 }}>
                   {batchWarnings.map((w) => (
@@ -617,64 +704,6 @@ export default function PayoutBatchesPanel({
               ) : null}
 
               <PayrollReadinessChecklist items={readiness} />
-
-              <Stack
-                direction={{ xs: "column", md: "row" }}
-                justifyContent="space-between"
-                spacing={1}
-                sx={{ mb: 2 }}
-              >
-                <Box>
-                  <Typography variant="h6">{detail.batch_name}</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {detail.worker_category_label} · {detail.pay_period_start} –{" "}
-                    {detail.pay_period_end}
-                  </Typography>
-                  <Typography variant="body1" sx={{ mt: 0.5 }}>
-                    <strong>${Number(detail.total_payout_amount || 0).toFixed(2)}</strong> ·{" "}
-                    {detail.worker_count} worker(s) · {Number(detail.total_approved_hours || 0).toFixed(2)}{" "}
-                    hrs
-                  </Typography>
-                  <Stack direction="row" spacing={1} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
-                    <Chip
-                      size="small"
-                      label={`Batch: ${detail.status}`}
-                      color={detail.status === "paid" ? "success" : "default"}
-                    />
-                    <Chip
-                      size="small"
-                      label={`Payment: ${batchPaymentLabel(detail.payment_status)}`}
-                      color={batchPaymentColor(detail.payment_status)}
-                    />
-                  </Stack>
-                </Box>
-                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap alignItems="center">
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<EditIcon />}
-                    onClick={openEditBatch}
-                    disabled={!isEditable}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    color="error"
-                    startIcon={<DeleteIcon />}
-                    onClick={() => setDeleteOpen(true)}
-                    disabled={!isEditable}
-                  >
-                    Delete
-                  </Button>
-                  {!isEditable ? (
-                    <Typography variant="caption" color="text.secondary">
-                      Set status to Draft to edit or delete
-                    </Typography>
-                  ) : null}
-                </Stack>
-              </Stack>
 
               {isGrossOnly ? (
                 <Alert severity="info" variant="outlined" sx={{ mb: 2 }}>
@@ -1058,7 +1087,7 @@ export default function PayoutBatchesPanel({
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setDeleteOpen(false)}>Cancel</Button>
-          <Button color="error" variant="contained" onClick={confirmDeleteBatch}>
+          <Button color="error" variant="contained" onClick={() => confirmDeleteBatch(selectedId)}>
             Delete
           </Button>
         </DialogActions>
