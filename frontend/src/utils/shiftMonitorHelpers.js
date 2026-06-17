@@ -898,3 +898,33 @@ export function rinseSyncBanner(data) {
   if (rfv.stale && rfv.stale_reason) staleParts.push(rfv.stale_reason);
   return { lines, staleParts, anyStale: staleParts.length > 0 };
 }
+
+export function isWfBag(row) {
+  return String(row?.service_type || row?.service_bucket || "").toUpperCase() === "WF";
+}
+
+/** Normalize pre/post/delta weight from At Vendor or pipeline record shapes. */
+export function getBagWeightParts(row) {
+  const wd = row?.weight_difference || {};
+  const pre = row?.pre_clean_weight ?? wd.first_weight_lbs ?? null;
+  const post = row?.post_clean_weight ?? wd.second_weight_lbs ?? row?.completed_lbs ?? null;
+  let delta = row?.clean_weight_delta ?? wd.difference_lbs ?? null;
+  if (delta == null && pre != null && post != null) {
+    const p = Number(pre);
+    const q = Number(post);
+    if (Number.isFinite(p) && Number.isFinite(q)) {
+      delta = Math.round((q - p) * 10) / 10;
+    }
+  }
+  const isWf = isWfBag(row);
+  const hasAny = pre != null || post != null || delta != null;
+  return { pre, post, delta, isWf, hasAny };
+}
+
+export function shouldShowBagWeightSummary(row) {
+  const { isWf, hasAny } = getBagWeightParts(row);
+  if (hasAny) return true;
+  if (!isWf) return false;
+  const status = String(row?.at_vendor_status || row?.facility_status || "").toLowerCase();
+  return status === "completed";
+}
