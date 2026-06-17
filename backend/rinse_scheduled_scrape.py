@@ -506,6 +506,7 @@ def run_rinse_combined_sync_for_org(
     *,
     run_type: str = "scheduled",
     dry_run: bool = False,
+    targeted_pending_refresh: bool | None = None,
 ) -> ScheduledScrapeResult:
     """
     Combined presence sync: RFV presence → At Vendor presence → scan CSV import.
@@ -710,6 +711,7 @@ def run_rinse_combined_sync_for_org(
             rfv_error=rfv_result.error_message,
             combined_cycle=combined_ctx,
             av_presence_detail=av_presence_detail,
+            targeted_pending_refresh=targeted_pending_refresh,
         )
         result.status = import_result.status
         result.at_vendor_status = import_result.at_vendor_status or import_result.status
@@ -807,6 +809,7 @@ def run_scheduled_scrape_for_org(
     rfv_error: str | None = None,
     combined_cycle: _CombinedCycleContext | None = None,
     av_presence_detail: dict[str, Any] | None = None,
+    targeted_pending_refresh: bool | None = None,
 ) -> ScheduledScrapeResult:
     """
     At Vendor bag-detail CSV scrape + scan import.
@@ -990,22 +993,52 @@ def run_scheduled_scrape_for_org(
             conn.commit()
 
             off_portal_refresh_detail: dict[str, Any] | None = None
+            targeted_pending_refresh_detail: dict[str, Any] | None = None
+            run_targeted = (
+                targeted_pending_refresh
+                if targeted_pending_refresh is not None
+                else run_type == "manual"
+            )
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
                 from backend.rinse_off_portal_scan_refresh import (
                     off_portal_refresh_dry_run,
                     off_portal_refresh_enabled,
                     refresh_off_portal_pending_scans,
+                    refresh_pending_workload_scans_via_direct_lookup,
                 )
                 from backend.rinse_shift_monitor_baseline import (
                     build_baseline_context,
                     get_shift_monitor_baseline,
                 )
 
-                if off_portal_refresh_enabled():
+                baseline_ctx = build_baseline_context(
+                    cursor, org_id, get_shift_monitor_baseline(cursor, org_id)
+                )
+                if run_targeted:
                     try:
-                        baseline_ctx = build_baseline_context(
-                            cursor, org_id, get_shift_monitor_baseline(cursor, org_id)
+                        targeted_pending_refresh_detail = refresh_pending_workload_scans_via_direct_lookup(
+                            cursor,
+                            org_id,
+                            upload_batch_id=int(batch_id),
+                            selected_date_et=batch_date,
+                            baseline_ctx=baseline_ctx,
+                            dry_run=False,
+                            rush_only=False,
+                            log_fn=lambda msg: log.write(msg + "\n"),
                         )
+                        conn.commit()
+                        log.write(
+                            "Targeted pending scan refresh: "
+                            f"bags={targeted_pending_refresh_detail.get('bags_processed')} "
+                            f"inserted={targeted_pending_refresh_detail.get('events_inserted')} "
+                            f"lookup_failed={targeted_pending_refresh_detail.get('lookup_failed')}\n"
+                        )
+                    except Exception as refresh_exc:
+                        conn.rollback()
+                        log.write(f"Targeted pending scan refresh ERROR (non-fatal): {refresh_exc}\n")
+                        targeted_pending_refresh_detail = {"error": str(refresh_exc)}
+                elif off_portal_refresh_enabled():
+                    try:
                         off_portal_refresh_detail = refresh_off_portal_pending_scans(
                             cursor,
                             org_id,
@@ -1043,6 +1076,8 @@ def run_scheduled_scrape_for_org(
             }
             if off_portal_refresh_detail is not None:
                 result.detail["off_portal_scan_refresh"] = off_portal_refresh_detail
+            if targeted_pending_refresh_detail is not None:
+                result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
 
         except Exception as e:
             conn.rollback()

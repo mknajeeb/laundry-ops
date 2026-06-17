@@ -744,4 +744,9 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
     av_scrape = build_at_vendor_sync_status(cursor, org)
     if av_scrape.get("freshness"):
         cycle["at_vendor_scrape_freshness"] = av_scrape.get("freshness")
+    targeted = detail.get("targeted_pending_scan_refresh") or detail.get("off_portal_scan_refresh")
+    if isinstance(targeted, dict):
+        cycle["targeted_pending_scan_refresh"] = targeted
+        if isinstance(row.get("finished_at"), datetime):
+            cycle["targeted_refresh_completed_at_et"] = _short_time_et(row.get("finished_at"))
     return cycle

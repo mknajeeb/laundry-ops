@@ -104,8 +104,8 @@ export function RushPendingWhyPanel({ summary, showSupervisorNote = true }) {
         </Typography>
       ) : null}
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
-        Scans performed on the floor appear here after the next Rinse scan export sync.
-        Bags no longer on the live portal list may not receive new scans until they reappear in Rinse.
+        Pending bags missing from the last portal crawl are refreshed via direct bag lookup (?q=BAGID)
+        when you run Refresh Both Syncs. If direct lookup finds no new scans, pending status is real.
       </Typography>
     </Stack>
   );

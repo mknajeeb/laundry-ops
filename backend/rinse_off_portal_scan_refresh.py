@@ -440,6 +440,96 @@ def compare_bag_portal_vs_db(
     }
 
 
+def get_latest_successful_crawl_batch_id(cursor, organization_id: int) -> int | None:
+    if not table_exists(cursor, "rinse_scrape_runs"):
+        return None
+    cursor.execute(
+        """
+        SELECT imported_batch_id
+        FROM rinse_scrape_runs
+        WHERE organization_id = %s
+          AND status IN ('success', 'needs_attention')
+          AND imported_batch_id IS NOT NULL
+        ORDER BY finished_at DESC
+        LIMIT 1
+        """,
+        (int(organization_id),),
+    )
+    row = cursor.fetchone()
+    if not row or not isinstance(row, dict) or not row.get("imported_batch_id"):
+        return None
+    return int(row["imported_batch_id"])
+
+
+def bag_in_portal_crawl_batch(
+    cursor,
+    organization_id: int,
+    batch_id: int,
+    bag_id: str,
+) -> bool:
+    bid = str(bag_id or "").strip().upper()
+    if not bid:
+        return False
+    cursor.execute(
+        """
+        SELECT 1
+        FROM upload_batch_rows
+        WHERE upload_batch_id = %s AND UPPER(TRIM(ticket_id)) = %s
+        LIMIT 1
+        """,
+        (int(batch_id), bid),
+    )
+    if cursor.fetchone():
+        return True
+    cursor.execute(
+        """
+        SELECT 1
+        FROM upload_batch_scan_events
+        WHERE organization_id = %s AND upload_batch_id = %s AND UPPER(TRIM(bag_id)) = %s
+        LIMIT 1
+        """,
+        (int(organization_id), int(batch_id), bid),
+    )
+    return cursor.fetchone() is not None
+
+
+def resolve_pending_not_in_latest_crawl_bag_ids(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    baseline_ctx: dict[str, Any] | None = None,
+    rush_only: bool = False,
+    crawl_batch_id: int | None = None,
+) -> tuple[list[str], int | None, dict[str, bool]]:
+    """Today's Workload Pending bags absent from the latest portal crawl export."""
+    from backend.rinse_at_vendor_module import _load_active_at_vendor_presence_by_bag
+
+    org = int(organization_id)
+    batch_id = crawl_batch_id if crawl_batch_id is not None else get_latest_successful_crawl_batch_id(cursor, org)
+    av = build_at_vendor_module(
+        cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
+    )
+    live = _load_active_at_vendor_presence_by_bag(cursor, org)
+    rush_pending: list[str] = []
+    other_pending: list[str] = []
+    on_portal_map: dict[str, bool] = {}
+    for row in av.get("rows") or []:
+        if row.get("at_vendor_status") != AV_STATUS_PENDING:
+            continue
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        on_portal_map[bid] = bid in live
+        if batch_id and bag_in_portal_crawl_batch(cursor, org, batch_id, bid):
+            continue
+        if row.get("rush_bucket") == AV_RUSH:
+            rush_pending.append(bid)
+        elif not rush_only:
+            other_pending.append(bid)
+    return sorted(rush_pending) + sorted(other_pending), batch_id, on_portal_map
+
+
 def resolve_off_portal_pending_bag_ids(
     cursor,
     organization_id: int,
@@ -483,8 +573,10 @@ def refresh_off_portal_pending_scans(
     dry_run: bool | None = None,
     max_bags: int | None = None,
     rush_only: bool | None = None,
+    target_scope: str = "off_portal",
     log_fn: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    """Direct ?q=BAGID refresh. target_scope=not_in_latest_crawl includes on-portal pending bags missing from crawl."""
     from backend.rinse_bag_registry import merge_scan_events_from_upload
 
     org = int(organization_id)
@@ -497,14 +589,26 @@ def refresh_off_portal_pending_scans(
             log_fn(msg)
 
     targets = list(bag_ids or [])
+    crawl_batch_id: int | None = None
+    on_portal_map: dict[str, bool] = {}
     if not targets:
-        targets = resolve_off_portal_pending_bag_ids(
-            cursor,
-            org,
-            selected_date_et=selected_date_et,
-            baseline_ctx=baseline_ctx,
-            rush_only=rush_filter,
-        )
+        if target_scope == "not_in_latest_crawl":
+            targets, crawl_batch_id, on_portal_map = resolve_pending_not_in_latest_crawl_bag_ids(
+                cursor,
+                org,
+                selected_date_et=selected_date_et,
+                baseline_ctx=baseline_ctx,
+                rush_only=rush_filter,
+                crawl_batch_id=int(upload_batch_id) if upload_batch_id else None,
+            )
+        else:
+            targets = resolve_off_portal_pending_bag_ids(
+                cursor,
+                org,
+                selected_date_et=selected_date_et,
+                baseline_ctx=baseline_ctx,
+                rush_only=rush_filter,
+            )
     targets = targets[:limit]
 
     from backend.rinse_bag_operational_owner import filter_bag_ids_for_operational_write
@@ -517,12 +621,15 @@ def refresh_off_portal_pending_scans(
     if not targets:
         return {
             "dry_run": dry,
+            "target_scope": target_scope,
+            "crawl_batch_id": crawl_batch_id,
             "bag_ids_requested": [],
             "bags_processed": 0,
             "events_inserted": 0,
             "events_already_present": 0,
             "events_skipped_no_time": 0,
             "lookup_failed": 0,
+            "lookup_failed_bag_ids": [],
             "operational_owner_rejected": owner_rejected,
             "bags": [],
         }
@@ -537,18 +644,46 @@ def refresh_off_portal_pending_scans(
     )
     rows_by_bag = {str(r.get("bag_id") or "").upper(): r for r in av.get("rows") or []}
 
+    if not on_portal_map:
+        from backend.rinse_at_vendor_module import _load_active_at_vendor_presence_by_bag
+
+        live = _load_active_at_vendor_presence_by_bag(cursor, org)
+        on_portal_map = {bid: bid in live for bid in targets}
+    if crawl_batch_id is None:
+        crawl_batch_id = int(upload_batch_id) if upload_batch_id else get_latest_successful_crawl_batch_id(cursor, org)
+
     total_inserted = 0
     total_present = 0
     total_skipped = 0
     lookup_failed = 0
+    lookup_failed_bag_ids: list[str] = []
     bag_reports: list[dict[str, Any]] = []
+    any_imported = False
 
     for bid in targets:
+        module_row = rows_by_bag.get(bid) or {}
+        on_portal = bool(on_portal_map.get(bid))
+        in_latest_crawl = (
+            bool(crawl_batch_id and bag_in_portal_crawl_batch(cursor, org, int(crawl_batch_id), bid))
+        )
         payload = portal_by_bag.get(bid) or {"bag_id": bid, "found": False, "scans": []}
         if not payload.get("found"):
             lookup_failed += 1
-            bag_reports.append({"bag_id": bid, "lookup_ok": False, "error": payload.get("error")})
-            _log(f"off-portal refresh skip {bid}: direct lookup failed")
+            lookup_failed_bag_ids.append(bid)
+            bag_reports.append(
+                {
+                    "bag_id": bid,
+                    "lookup_ok": False,
+                    "direct_lookup_success": False,
+                    "on_current_portal_crawl": on_portal,
+                    "in_latest_portal_crawl_batch": in_latest_crawl,
+                    "status_before": module_row.get("at_vendor_status"),
+                    "pending_why_before": module_row.get("pending_why_label"),
+                    "missing_scans_imported": 0,
+                    "error": payload.get("error"),
+                }
+            )
+            _log(f"targeted refresh skip {bid}: direct lookup failed")
             continue
         classified = classify_portal_rows_against_db(cursor, org, bid, payload.get("scans") or [])
         missing_rows = classified["missing_rows"]
@@ -561,10 +696,11 @@ def refresh_off_portal_pending_scans(
             module_row=rows_by_bag.get(bid),
         )
         merge_result: dict[str, Any] = {}
+        imported_count = 0
         if missing_rows and not dry and upload_batch_id is not None:
             df = pd.DataFrame(missing_rows, columns=SCAN_EVENTS_CSV_COLUMNS)
             df["scanned_at_parsed"] = df["Time Scanned"].map(_parse_scanned_at)
-            source_name = f"targeted-off-portal-{bid.lower()}.csv"
+            source_name = f"targeted-direct-{bid.lower()}.csv"
             commit_scan_events_for_batch(
                 cursor,
                 org,
@@ -580,7 +716,9 @@ def refresh_off_portal_pending_scans(
                 df,
                 source_name,
             )
-            total_inserted += int(merge_result.get("events_inserted") or 0)
+            imported_count = int(merge_result.get("events_inserted") or 0)
+            any_imported = any_imported or imported_count > 0
+            total_inserted += imported_count
             total_present += int(merge_result.get("events_already_present") or 0)
             total_skipped += int(merge_result.get("events_skipped_no_time") or 0)
         else:
@@ -591,22 +729,57 @@ def refresh_off_portal_pending_scans(
             {
                 "bag_id": bid,
                 "lookup_ok": True,
+                "direct_lookup_success": True,
+                "on_current_portal_crawl": on_portal,
+                "in_latest_portal_crawl_batch": in_latest_crawl,
                 "missing_row_count": classified["missing_row_count"],
+                "missing_scans_imported": imported_count,
                 "would_complete": compare.get("would_complete"),
-                "status_before": compare.get("status_before"),
+                "status_before": module_row.get("at_vendor_status") or compare.get("status_before"),
+                "pending_why_before": module_row.get("pending_why_label"),
                 "expected_status_after_import": compare.get("expected_status_after_import"),
                 "merge": merge_result,
                 **compare,
             }
         )
         _log(
-            f"off-portal refresh {bid}: missing={classified['missing_row_count']} "
-            f"would_complete={compare.get('would_complete')} dry_run={dry}"
+            f"targeted refresh {bid}: missing={classified['missing_row_count']} "
+            f"imported={imported_count} would_complete={compare.get('would_complete')} dry_run={dry}"
         )
+
+    if any_imported and not dry:
+        av_after = build_at_vendor_module(
+            cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
+        )
+        rows_after = {str(r.get("bag_id") or "").upper(): r for r in av_after.get("rows") or []}
+        for bag in bag_reports:
+            bid = str(bag.get("bag_id") or "").upper()
+            row_after = rows_after.get(bid) or {}
+            status_after = row_after.get("at_vendor_status")
+            bag["status_after"] = status_after
+            bag["pending_why_after"] = row_after.get("pending_why_label")
+            if status_after == AV_STATUS_PENDING:
+                bag["reason_still_pending"] = row_after.get("pending_why_label") or "Pending after targeted refresh"
+            elif status_after == AV_STATUS_COMPLETED:
+                bag["reason_still_pending"] = None
+            else:
+                bag["reason_still_pending"] = row_after.get("pending_why_label")
+    else:
+        for bag in bag_reports:
+            if not bag.get("lookup_ok"):
+                continue
+            expected = bag.get("expected_status_after_import")
+            bag["status_after"] = expected if dry or not any_imported else bag.get("status_before")
+            if expected == AV_STATUS_PENDING:
+                bag["reason_still_pending"] = bag.get("pending_why_before") or "Pending — no new scans imported"
+            elif expected == AV_STATUS_COMPLETED:
+                bag["reason_still_pending"] = None
 
     return {
         "dry_run": dry,
+        "target_scope": target_scope,
         "upload_batch_id": upload_batch_id,
+        "crawl_batch_id": crawl_batch_id,
         "selected_date_et": selected_date_et.isoformat(),
         "bag_ids_requested": targets,
         "bags_processed": len([b for b in bag_reports if b.get("lookup_ok")]),
@@ -614,5 +787,35 @@ def refresh_off_portal_pending_scans(
         "events_already_present": total_present,
         "events_skipped_no_time": total_skipped,
         "lookup_failed": lookup_failed,
+        "lookup_failed_bag_ids": lookup_failed_bag_ids,
         "bags": bag_reports,
     }
+
+
+def refresh_pending_workload_scans_via_direct_lookup(
+    cursor,
+    organization_id: int,
+    *,
+    upload_batch_id: int | None,
+    selected_date_et: date,
+    baseline_ctx: dict[str, Any] | None = None,
+    bag_ids: list[str] | None = None,
+    dry_run: bool = False,
+    max_bags: int | None = None,
+    rush_only: bool = False,
+    log_fn: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    """Targeted ?q=BAGID refresh for pending workload bags not in the latest portal crawl."""
+    return refresh_off_portal_pending_scans(
+        cursor,
+        organization_id,
+        upload_batch_id=upload_batch_id,
+        selected_date_et=selected_date_et,
+        baseline_ctx=baseline_ctx,
+        bag_ids=bag_ids,
+        dry_run=dry_run,
+        max_bags=max_bags,
+        rush_only=rush_only,
+        target_scope="not_in_latest_crawl",
+        log_fn=log_fn,
+    )

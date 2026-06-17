@@ -4,6 +4,38 @@ import ShiftCountCard from "./ShiftCountCard";
 import { SyncCycleFreshnessSummary } from "./SyncCycleFreshnessSummary";
 import { syncStatusSubtext } from "../../utils/shiftMonitorHelpers";
 
+function TargetedRefreshSummary({ targeted }) {
+  const t = targeted || {};
+  if (!t.bag_ids_requested?.length && !t.bags?.length && !t.error) return null;
+  const failed = t.lookup_failed_bag_ids || [];
+  return (
+    <Box sx={{ mb: 1, p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.35 }}>
+        Targeted refresh (direct ?q=BAGID)
+      </Typography>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5, lineHeight: 1.45 }}>
+        Off-portal and crawl-missing pending workload bags — not limited to current Vendor Home page.
+      </Typography>
+      <Typography variant="caption" display="block">
+        Bags refreshed: {t.bags_processed ?? 0}
+        {t.events_inserted != null ? ` · scans imported: ${t.events_inserted}` : ""}
+        {t.lookup_failed != null ? ` · lookup failed: ${t.lookup_failed}` : ""}
+        {t.crawl_batch_id != null ? ` · crawl batch ${t.crawl_batch_id}` : ""}
+      </Typography>
+      {failed.length ? (
+        <Typography variant="caption" color="error.main" display="block" sx={{ mt: 0.35 }}>
+          Direct lookup failed: {failed.join(", ")}
+        </Typography>
+      ) : null}
+      {t.error ? (
+        <Typography variant="caption" color="error.main" display="block" sx={{ mt: 0.35 }}>
+          {t.error}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
 export default function SyncStatusSection({
   avSync,
   rfvSync,
@@ -24,6 +56,7 @@ export default function SyncStatusSection({
     (rfvSync?.failed || rfvSync?.latest_failed || (rfvSync?.stale && !rfv?.zero_rows_success))
     && !rfv?.zero_rows_success;
   const cycle = syncCycle || {};
+  const targeted = cycle.targeted_pending_scan_refresh || {};
   const misleadingCronSkip =
     cycle.sync_cycle_id == null &&
     (cycle.cycle_status === "skipped" ||
@@ -36,7 +69,7 @@ export default function SyncStatusSection({
     const avEt = avSync?.last_refreshed_at_et || cycle.at_vendor_completed_at_et;
     if (rfvEt || avEt) {
       cycleStatusMain = "—";
-      cycleStatusSuffix = ` · latest completed RFV ${rfvEt || "—"} · AV ${avEt || "—"}`;
+      cycleStatusSuffix = ` · latest completed RFV ${rfvEt || "—"} · portal crawl ${avEt || "—"}`;
     } else {
       cycleStatusMain = "—";
       cycleStatusSuffix = " · no completed cycle on latest cron tick";
@@ -48,6 +81,11 @@ export default function SyncStatusSection({
   const avScanRows = avSync?.scan_events_count ?? avSync?.freshness?.scan_events_count;
   const avPortalRows = avSync?.rows_found ?? avSync?.freshness?.rows_found;
   const avBatchId = avSync?.imported_batch_id ?? avSync?.freshness?.imported_batch_id;
+  const portalCrawlEt =
+    avSync?.freshness?.portal_pulled_at_et
+    || cycle.at_vendor_completed_at_et
+    || avSync?.last_refreshed_at_et
+    || "—";
 
   return (
     <Box sx={{ mb: 2 }}>
@@ -69,17 +107,22 @@ export default function SyncStatusSection({
         >
           {cycle.label || "Last Rinse Sync Cycle"} {open ? "▾" : "▸"}
         </Typography>
-        <Box component="button" type="button" onClick={onRefresh} disabled={syncRunning || loading} sx={{
-          border: "1px solid",
-          borderColor: "divider",
-          borderRadius: 1,
-          px: 1.5,
-          py: 0.75,
-          fontSize: 13,
-          fontWeight: 600,
-          bgcolor: "background.paper",
-          cursor: syncRunning || loading ? "not-allowed" : "pointer",
-        }}
+        <Box
+          component="button"
+          type="button"
+          onClick={onRefresh}
+          disabled={syncRunning || loading}
+          sx={{
+            border: "1px solid",
+            borderColor: "divider",
+            borderRadius: 1,
+            px: 1.5,
+            py: 0.75,
+            fontSize: 13,
+            fontWeight: 600,
+            bgcolor: "background.paper",
+            cursor: syncRunning || loading ? "not-allowed" : "pointer",
+          }}
         >
           {syncRunning ? "Refreshing…" : "Refresh Both Syncs"}
         </Box>
@@ -107,32 +150,31 @@ export default function SyncStatusSection({
             compact
           />
           <ShiftCountCard
-            label="At Vendor"
-            value={avSync?.freshness?.portal_pulled_at_et || cycle.at_vendor_completed_at_et || avSync.last_refreshed_at_et || "—"}
+            label="Last portal crawl"
+            value={portalCrawlEt}
             sub={
-              cycle.delay_seconds != null
-                ? `${avSyncSub} · delay ${cycle.delay_seconds}s`
-                : avSyncSub
+              [
+                avPortalRows != null ? `${avPortalRows} Vendor Home bag${avPortalRows === 1 ? "" : "s"}` : null,
+                avScanRows != null ? `${avScanRows} scan row${avScanRows === 1 ? "" : "s"}` : null,
+                avBatchId != null ? `batch ${avBatchId}` : null,
+                cycle.delay_seconds != null ? `delay ${cycle.delay_seconds}s` : null,
+              ].filter(Boolean).join(" · ") || avSyncSub
             }
             warn={avWarn}
             compact
           />
         </Box>
         <SyncCycleFreshnessSummary cycle={cycle} avSync={avSync} rfvSync={rfvSync} />
+        <TargetedRefreshSummary targeted={targeted} />
         <Alert severity="info" variant="outlined" sx={{ mb: 1, py: 0.75 }}>
           <Typography variant="caption" display="block" sx={{ lineHeight: 1.45 }}>
-            Sync time is when the last Rinse export finished — not when every floor scan happened.
-            {avPortalRows != null || avScanRows != null ? (
-              <>
-                {" "}
-                Latest export: {avPortalRows ?? "—"} portal bag{avPortalRows === 1 ? "" : "s"}
-                {avScanRows != null ? ` · ${avScanRows} scan-event row${avScanRows === 1 ? "" : "s"}` : ""}
-                {avBatchId != null ? ` · batch ${avBatchId}` : ""}.
-              </>
-            ) : null}
+            <strong>Last portal crawl</strong> imports scans only for bags on the current Vendor Home page.
             {" "}
-            Pending bags can still show missing scans until those scans appear in the next Rinse export.
-            Use <strong>Refresh Both Syncs</strong> after new scans on the floor.
+            <strong>Targeted refresh</strong> runs direct ?q=BAGID lookup for pending Today&apos;s Workload bags
+            missing from that crawl (including off-portal).
+            {" "}
+            Workload scans are current only after <strong>both</strong> steps succeed.
+            Manual Refresh Both Syncs runs portal crawl then targeted refresh.
           </Typography>
         </Alert>
         <Typography variant="caption" color="text.secondary" sx={{ wordBreak: "break-word" }}>

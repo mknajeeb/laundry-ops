@@ -129,6 +129,7 @@ def dispatch_manual_rinse_sync(
         org,
         run_type="manual",
         dry_run=False,
+        targeted_pending_refresh=True,
     )
     if combined.status == "skipped" and combined.error_message == CYCLE_ALREADY_RUNNING:
         return ManualSyncDispatchResult(

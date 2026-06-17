@@ -358,3 +358,59 @@ def register_rinse_shift_analysis_routes(
         finally:
             cursor.close()
             conn.close()
+
+    @app.route("/api/rinse/sync/targeted-pending-refresh", methods=["POST"])
+    def rinse_sync_targeted_pending_refresh():
+        """Direct ?q=BAGID refresh for pending workload bags missing from latest portal crawl."""
+        from backend.rinse_off_portal_scan_refresh import refresh_pending_workload_scans_via_direct_lookup
+        from backend.rinse_scheduled_scrape import _today_et
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            dry_run = bool(body.get("dry_run", False))
+            rush_only = bool(body.get("rush_only", False))
+            bag_ids = body.get("bag_ids")
+            if bag_ids is not None and not isinstance(bag_ids, list):
+                return jsonify({"error": "bag_ids must be an array"}), 400
+            raw_date = (body.get("date_et") or "").strip()
+            selected = parse_date_value(raw_date) if raw_date else _today_et()
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            from backend.rinse_shift_monitor_baseline import (
+                build_baseline_context,
+                get_shift_monitor_baseline,
+            )
+
+            baseline_ctx = build_baseline_context(
+                cursor, tenant_oid, get_shift_monitor_baseline(cursor, tenant_oid)
+            )
+            batch_id = body.get("upload_batch_id")
+            payload = refresh_pending_workload_scans_via_direct_lookup(
+                cursor,
+                tenant_oid,
+                upload_batch_id=int(batch_id) if batch_id else None,
+                selected_date_et=selected,
+                baseline_ctx=baseline_ctx,
+                bag_ids=bag_ids,
+                dry_run=dry_run,
+                rush_only=rush_only,
+            )
+            if not dry_run:
+                conn.commit()
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
