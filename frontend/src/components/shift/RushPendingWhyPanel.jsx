@@ -51,7 +51,7 @@ export function RushPendingWhyPanel({ summary, showSupervisorNote = true }) {
   if (!total) return null;
 
   const lines = [
-    { key: "missing_second_weight", label: "missing second weight", count: summary?.missing_second_weight },
+    { key: "missing_post_processing_weight", label: "missing post-processing weight", count: summary?.missing_post_processing_weight },
     { key: "same_ts_weight_dupes", label: "have only duplicate same-time weight uploads", count: summary?.same_ts_weight_dupes },
     { key: "missing_complete_cleaning", label: "missing complete-cleaning", count: summary?.missing_complete_cleaning },
     { key: "cleaning_started_not_completed", label: "cleaning started, not completed", count: summary?.cleaning_started_not_completed },
