@@ -17,6 +17,7 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getEmployeeProductivityDashboard } from "../../api";
+import { formatIsoEtWall } from "../../utils/rinseTimeFormat";
 import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
 import {
   PRODUCTIVITY_RANK_OPTIONS,
@@ -277,10 +278,12 @@ export default function EmployeeProductivityDashboard({
                             Missing clock-in
                           </Typography>
                         ) : (
-                          emp.clock_in_time_et || "—"
+                          formatIsoEtWall(emp.clock_in_time_et || emp.clock_in_time)
                         )}
                       </TableCell>
-                      <TableCell>{emp.last_completion_time_et || "—"}</TableCell>
+                      <TableCell>
+                        {formatIsoEtWall(emp.last_completion_time_et || emp.last_completion_time)}
+                      </TableCell>
                       <TableCell align="right">
                         {missingClockIn ? "N/A" : fmtNum(productiveHrs, 2)}
                       </TableCell>

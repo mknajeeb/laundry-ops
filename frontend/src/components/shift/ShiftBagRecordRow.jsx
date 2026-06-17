@@ -13,13 +13,17 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getFoldingPerformanceDetail } from "../../api";
 import FoldingScanEventsTable from "../folding/FoldingScanEventsTable";
 import { PendingWhyBadge } from "./RushPendingWhyPanel";
+import BagWeightSummary from "./BagWeightSummary";
 import {
   computeDueStatus,
   DUE_STATUS_COLORS,
   formatEddDisplay,
-  formatEtDateTime,
+  getBagWeightParts,
   getRowEddIso,
+  isWfBag,
 } from "../../utils/shiftMonitorHelpers";
+import { formatLbs } from "../../utils/foldingFormat";
+import { formatIsoEtWall } from "../../utils/rinseTimeFormat";
 
 function DetailField({ label, value }) {
   if (value == null || value === "" || value === "—") return null;
@@ -46,8 +50,8 @@ function DueStatusBlock({ row, referenceDateEt }) {
   );
 }
 
-export default function ShiftBagRecordRow({ row, variant = "pipeline", referenceDateEt }) {
-  const [open, setOpen] = useState(false);
+export default function ShiftBagRecordRow({ row, variant = "pipeline", referenceDateEt, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState(0);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -92,6 +96,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
   }, [open, row.bag_id, variant]);
 
   const scans = detail?.scan_events || detail?.scans || [];
+  const weightParts = getBagWeightParts(row);
 
   return (
     <Paper
@@ -133,6 +138,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
               </>
             ) : null}
           </Stack>
+          <BagWeightSummary row={row} />
           {variant === "at_vendor" ? <PendingWhyBadge row={row} /> : null}
         </Box>
         <IconButton
@@ -173,39 +179,39 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                   <DetailField label="Completion signal" value={row.completion_signal} />
                   <DetailField
                     label="Completion time"
-                    value={row.completion_time_et || formatEtDateTime(row.completion_time)}
+                    value={formatIsoEtWall(row.completion_time_et || row.completion_time)}
                   />
                   <DetailField
                     label="Sent to vendor"
-                    value={row.sent_to_vendor_time_et || formatEtDateTime(row.sent_to_vendor_time)}
+                    value={formatIsoEtWall(row.sent_to_vendor_time_et || row.sent_to_vendor_time)}
                   />
                   <DetailField label="EDD" value={row.estimated_delivery_date || row.date_clean} />
                   <DetailField label="Population source" value={row.population_source || row.inclusion_reason} />
                   <DetailField label="Presence run" value={row.presence_run_id || row.presence_source} />
                   <DetailField label="Reason" value={row.status_reason || row.reason || row.rush_reason} />
-                  {(row.service_type === "WF" || row.service_bucket === "WF") ? (
+                  {isWfBag(row) ? (
                     <>
                       <DetailField
                         label="Pre-clean weight"
                         value={
-                          row.pre_clean_weight != null
-                            ? `${row.pre_clean_weight} lbs · ${row.pre_clean_weight_time_et || "—"}`
+                          weightParts.pre != null
+                            ? `${formatLbs(weightParts.pre)} lbs · ${formatIsoEtWall(row.pre_clean_weight_time_et || row.pre_clean_weight_time)}`
                             : null
                         }
                       />
                       <DetailField
                         label="Post-clean weight"
                         value={
-                          row.post_clean_weight != null
-                            ? `${row.post_clean_weight} lbs · ${row.post_clean_weight_time_et || "—"}`
+                          weightParts.post != null
+                            ? `${formatLbs(weightParts.post)} lbs · ${formatIsoEtWall(row.post_clean_weight_time_et || row.post_clean_weight_time)}`
                             : null
                         }
                       />
                       <DetailField
                         label="Weight difference"
                         value={
-                          row.clean_weight_delta != null
-                            ? `${row.clean_weight_delta} lbs`
+                          weightParts.delta != null
+                            ? `${formatLbs(weightParts.delta)} lbs`
                             : null
                         }
                       />

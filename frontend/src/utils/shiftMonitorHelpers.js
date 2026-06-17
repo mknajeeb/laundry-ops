@@ -1,4 +1,5 @@
 import { easternIsoDate } from "./foldingEasternDate";
+import { formatIsoEtWall } from "./rinseTimeFormat";
 
 /** Current calendar date in America/New_York (YYYY-MM-DD). */
 export function currentEtIsoDate() {
@@ -672,18 +673,7 @@ export function formatLastWash(entry, emptyLabel = "No wash started yet") {
 const ET_TZ = "America/New_York";
 
 export function formatEtDateTime(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toLocaleString("en-US", {
-    timeZone: ET_TZ,
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short",
-  });
+  return formatIsoEtWall(iso);
 }
 
 export function formatEtDate(iso) {

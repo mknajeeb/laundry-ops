@@ -36,7 +36,7 @@ export function formatNaiveEtWallDateTime(value) {
 /** System/job timestamps from API (UTC stored, serialized with ET offset). */
 export const formatSystemDateTime = formatBusinessDateTime;
 
-/** Laundry Ops business display: America/New_York with EDT/EST label. */
+/** Laundry Ops business display: America/New_York with explicit ET label. */
 export function formatBusinessDateTime(value, { withYear = false } = {}) {
   if (!value) return "—";
   const s = String(value).trim();
@@ -44,7 +44,7 @@ export function formatBusinessDateTime(value, { withYear = false } = {}) {
   if (!hasExplicitTzOffset(s)) return "—";
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString("en-US", {
+  const formatted = d.toLocaleString("en-US", {
     timeZone: ET,
     month: "short",
     day: "numeric",
@@ -53,6 +53,68 @@ export function formatBusinessDateTime(value, { withYear = false } = {}) {
     minute: "2-digit",
     timeZoneName: "short",
   });
+  return normalizeEtSuffix(formatted);
+}
+
+/** Force EDT/EST labels to ET for consistent Eastern display. */
+export function normalizeEtSuffix(label) {
+  if (label == null || label === "" || label === "—") return label ?? "—";
+  return String(label).replace(/\b(EDT|EST)\b/gi, "ET").trim();
+}
+
+/** ISO-style Eastern wall: YYYY-MM-DD HH:MM:SS ET (matches backend _format_et_display). */
+export function formatIsoEtWall(value) {
+  if (value == null || value === "") return "—";
+  const s = String(value).trim();
+  if (s === "—") return s;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ET$/i.test(s)) return s;
+  if (/\bET$/i.test(s)) return normalizeEtSuffix(s);
+
+  const naive = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (naive && !hasExplicitTzOffset(s)) {
+    const sec = naive[6] ?? "00";
+    return `${naive[1]}-${naive[2]}-${naive[3]} ${naive[4]}:${naive[5]}:${sec} ET`;
+  }
+  if (hasExplicitTzOffset(s)) {
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return "—";
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: ET,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const pick = (t) => parts.find((p) => p.type === t)?.value ?? "00";
+    return `${pick("year")}-${pick("month")}-${pick("day")} ${pick("hour")}:${pick("minute")}:${pick("second")} ET`;
+  }
+  return normalizeEtSuffix(/\bET\b/i.test(s) ? s : `${s} ET`);
+}
+
+/** Long Eastern display for scan timeline rows. */
+export function formatLongEtWall(value) {
+  if (value == null || value === "") return "—";
+  const s = String(value).trim();
+  if (/\b(AM|PM)\b/i.test(s) && /\bET\b/i.test(s)) return normalizeEtSuffix(s);
+
+  const iso = formatIsoEtWall(value);
+  if (iso === "—") {
+    if (/\b(AM|PM)\b/i.test(s)) return normalizeEtSuffix(/\bET\b/i.test(s) ? s : `${s} ET`);
+    return "—";
+  }
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2}) ET$/);
+  if (!m) return iso;
+  const [, y, mo, d, h24, mi] = m;
+  const date = new Date(Number(y), Number(mo) - 1, Number(d));
+  const weekday = date.toLocaleString("en-US", { weekday: "long" });
+  const month = date.toLocaleString("en-US", { month: "long" });
+  const hour24 = Number(h24);
+  const hour12 = hour24 % 12 || 12;
+  const ampm = hour24 >= 12 ? "PM" : "AM";
+  return `${weekday}, ${month} ${Number(d)}, ${y} ${hour12}:${mi} ${ampm} ET`;
 }
 
 /** @deprecated alias — prefer formatBusinessDateTime */
@@ -64,14 +126,14 @@ export function formatRinseApiDateTime(value, opts = {}) {
 export function formatRinseScanTime(ev) {
   const raw = String(ev?.time_scanned_raw ?? "").trim();
   if (raw) {
-    if (/\b(EDT|EST|ET)\b/i.test(raw)) return raw;
+    if (/\b(EDT|EST|ET)\b/i.test(raw)) return normalizeEtSuffix(raw);
     return `${raw} ET`;
   }
   const parsed = ev?.scanned_at_parsed;
   if (parsed && hasExplicitTzOffset(parsed)) {
-    return formatBusinessDateTime(parsed);
+    return formatLongEtWall(parsed);
   }
-  if (parsed) return String(parsed);
+  if (parsed) return formatIsoEtWall(parsed);
   return "—";
 }
 

@@ -11,6 +11,7 @@ import {
   Typography,
 } from "@mui/material";
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
+import { formatIsoEtWall } from "../../utils/rinseTimeFormat";
 
 /** Phase 1 drilldown — chronological bag table + clickable bag expand (frozen attribution). */
 export default function EmployeeProductivityDrilldown({
@@ -65,7 +66,9 @@ export default function EmployeeProductivityDrilldown({
               selected={expandedBagId === bag.bag_id}
               hover
             >
-              <TableCell>{bag.completion_time_et || "—"}</TableCell>
+              <TableCell>
+                {formatIsoEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
+              </TableCell>
               <TableCell>
                 <Link
                   component="button"
