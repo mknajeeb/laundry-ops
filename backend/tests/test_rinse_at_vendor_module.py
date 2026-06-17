@@ -125,23 +125,41 @@ class TestWFCompletion:
             _ev("add-photos", T2),
             _ev("weight-entry", T3),
         ]
-        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(
+        status, signal, comp_ts, _, fields = _evaluate_bag_as_of(
             events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "weight-entry-after-add-photos"
+        assert signal == "post_processing_weight"
         assert comp_ts == T3
+        assert fields.get("post_clean_weight_time") is not None
 
-    def test_clean_rack_completes_via_operational_fallback(self):
+    def test_clean_rack_without_post_processing_weight_stays_pending(self):
         events = [
             _ev("sent-to-vendor", T0),
             _ev("weight-entry", T1),
             _ev("move-bag", T2, rack="VeeWash Clean"),
         ]
-        status, signal, comp_ts, _, _ = _evaluate_bag_as_of(events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED))
-        assert status == AV_STATUS_COMPLETED
-        assert signal == "move-bag-clean-rack"
-        assert comp_ts == T2
+        status, signal, _, _, fields = _evaluate_bag_as_of(
+            events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert fields is not None
+        assert fields.get("post_clean_weight") is None
+
+    def test_complete_cleaning_without_post_processing_weight_stays_pending(self):
+        events = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1),
+            _ev("add-photos", T2),
+            _ev("complete-cleaning", T3),
+        ]
+        status, signal, _, _, fields = _evaluate_bag_as_of(
+            events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
+        )
+        assert status == AV_STATUS_PENDING
+        assert signal is None
+        assert fields.get("post_clean_weight") is None
 
     def test_received_from_vendor_does_not_complete(self):
         events = [
@@ -272,7 +290,7 @@ class TestRepeatedEventCompletion:
             events, service_type="WF", as_of_end=naive_et_day_end_inclusive(SELECTED)
         )
         assert status == AV_STATUS_COMPLETED
-        assert signal == "weight-entry-after-add-photos"
+        assert signal == "post_processing_weight"
         assert comp_ts == T3
 
     def test_wf_pre_anchor_weight_plus_one_after_pending(self):
@@ -447,6 +465,7 @@ class TestChangedToRush:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 11, 4, 0)),
             _ev("weight-entry", datetime(2026, 6, 11, 5, 0)),
+            _ev("add-photos", datetime(2026, 6, 11, 5, 30)),
             _ev("weight-entry", datetime(2026, 6, 11, 6, 0)),
         ]
         row = _build_row(

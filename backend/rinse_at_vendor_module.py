@@ -1795,36 +1795,55 @@ def _wf_completion_signal(
     as_of_end: datetime,
 ) -> tuple[str | None, datetime | None, dict[str, Any] | None]:
     from backend.rinse_wf_weight_events import (
-        wf_operational_completion,
-        wf_processing_final_weight_completion,
+        derive_wf_clean_weight_fields,
+        wf_post_processing_weight_completion,
     )
 
-    weight_hit = wf_processing_final_weight_completion(
+    weight_fields = derive_wf_clean_weight_fields(
+        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+    )
+    display_fields = _wf_weight_fields_from_clean_weights(weight_fields)
+    weight_hit = wf_post_processing_weight_completion(
         timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
     )
     if weight_hit is not None:
-        return weight_hit.signal, weight_hit.completion_ts, _wf_weight_fields(weight_hit)
+        return weight_hit.signal, weight_hit.completion_ts, display_fields
+    return None, None, display_fields
 
-    op_hit = wf_operational_completion(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
-    if op_hit is not None:
-        return op_hit.signal, op_hit.completion_ts, _wf_weight_fields(op_hit)
-    return None, None, None
+
+def _wf_weight_fields_from_clean_weights(fields: Mapping[str, Any]) -> dict[str, Any]:
+    pre_ts = fields.get("pre_clean_weight_time")
+    post_ts = fields.get("post_clean_weight_time")
+    pre_dt = datetime.fromisoformat(pre_ts) if isinstance(pre_ts, str) and pre_ts else None
+    post_dt = datetime.fromisoformat(post_ts) if isinstance(post_ts, str) and post_ts else None
+    return {
+        "pre_clean_weight": fields.get("pre_clean_weight"),
+        "pre_clean_weight_time": pre_ts,
+        "pre_clean_weight_time_et": _format_et_display(pre_dt),
+        "post_clean_weight": fields.get("post_clean_weight"),
+        "post_clean_weight_time": post_ts,
+        "post_clean_weight_time_et": _format_et_display(post_dt),
+        "clean_weight_delta": fields.get("clean_weight_delta"),
+        "latest_processing_time": fields.get("latest_processing_time"),
+        "latest_processing_purpose": fields.get("latest_processing_purpose"),
+    }
 
 
 def _wf_weight_fields(hit: Any) -> dict[str, Any]:
-    return {
-        "first_weight_value": hit.first_weight_lbs,
-        "second_weight_value": hit.second_weight_lbs,
-        "weight_delta": hit.weight_delta,
-        "first_weight_timestamp": hit.first_weight_timestamp.isoformat()
-        if hit.first_weight_timestamp is not None
-        else None,
-        "second_weight_timestamp": hit.second_weight_timestamp.isoformat()
-        if hit.second_weight_timestamp is not None
-        else None,
-        "first_weight_time_et": _format_et_display(hit.first_weight_timestamp),
-        "second_weight_time_et": _format_et_display(hit.second_weight_timestamp),
-    }
+    """Backward-compatible weight field builder from completion hit objects."""
+    return _wf_weight_fields_from_clean_weights(
+        {
+            "pre_clean_weight": hit.first_weight_lbs,
+            "pre_clean_weight_time": hit.first_weight_timestamp.isoformat()
+            if hit.first_weight_timestamp is not None
+            else None,
+            "post_clean_weight": hit.second_weight_lbs,
+            "post_clean_weight_time": hit.second_weight_timestamp.isoformat()
+            if hit.second_weight_timestamp is not None
+            else None,
+            "clean_weight_delta": hit.weight_delta,
+        }
+    )
 
 
 def _first_hd_add_photos_interruption_ts_after_anchor(
@@ -2445,7 +2464,7 @@ def _build_row(
             "Pending — sent-to-vendor scan missing"
             if sent_ts is None
             else (
-                "Pending — second weight-entry after sent-to-vendor missing"
+                "Pending — post-processing weight-entry missing"
                 if status == AV_STATUS_PENDING and svc == "WF"
                 else (
                     "Pending — HD completion signal missing"

@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 
 from backend.rinse_wf_weight_events import (
+    WF_POST_PROCESSING_WEIGHT_SIGNAL,
+    derive_wf_clean_weight_fields,
     distinct_wf_weight_events,
     parse_weight_lbs_from_scan_event,
-    wf_processing_final_weight_completion,
+    wf_post_processing_weight_completion,
     wf_two_weight_completion,
 )
 
@@ -26,6 +28,7 @@ T0 = datetime(2026, 6, 14, 4, 0)
 T1 = datetime(2026, 6, 14, 8, 0)
 T2 = datetime(2026, 6, 14, 10, 0)
 T3 = datetime(2026, 6, 14, 12, 0)
+T4 = datetime(2026, 6, 14, 12, 5)
 
 
 class TestParseWeightFromScanEvent:
@@ -61,14 +64,68 @@ class TestDistinctWfWeightEvents:
         assert out[0].weight_lbs == 20.0
         assert out[1].weight_lbs == 12.0
 
-    def test_two_distinct_timestamps(self):
+
+class TestDeriveWfCleanWeightFields:
+    def test_pre_clean_only_when_no_post_processing_weight(self):
         timeline = [
             _ev("sent-to-vendor", T0),
-            _ev("weight-entry", T1),
-            _ev("weight-entry", T2),
+            _ev("weight-entry", T1, weight_lbs=20.0),
+            _ev("add-photos", T2),
+            _ev("complete-cleaning", T3),
         ]
-        out = distinct_wf_weight_events(timeline, anchor_ts=T0, as_of_end=T2)
-        assert len(out) == 2
+        fields = derive_wf_clean_weight_fields(timeline, anchor_ts=T0, as_of_end=T3)
+        assert fields["pre_clean_weight"] == 20.0
+        assert fields["post_clean_weight"] is None
+        assert fields["clean_weight_delta"] is None
+
+    def test_pre_and_post_clean_weight(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1, weight_lbs=20.0),
+            _ev("add-photos", T2),
+            _ev("weight-entry", T3, weight_lbs=12.0),
+        ]
+        fields = derive_wf_clean_weight_fields(timeline, anchor_ts=T0, as_of_end=T3)
+        assert fields["pre_clean_weight"] == 20.0
+        assert fields["post_clean_weight"] == 12.0
+        assert fields["clean_weight_delta"] == 8.0
+
+
+class TestWfPostProcessingWeightCompletion:
+    def test_two_early_weights_then_processing_without_post_weight_incomplete(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1, weight_lbs=20.0),
+            _ev("weight-entry", T2, weight_lbs=19.0),
+            _ev("add-photos", T3),
+            _ev("complete-cleaning", T4),
+        ]
+        assert wf_post_processing_weight_completion(timeline, anchor_ts=T0, as_of_end=T4) is None
+
+    def test_processing_then_final_weight_completes(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1, weight_lbs=20.0),
+            _ev("add-photos", T2),
+            _ev("weight-entry", T3, weight_lbs=12.0),
+        ]
+        hit = wf_post_processing_weight_completion(timeline, anchor_ts=T0, as_of_end=T3)
+        assert hit is not None
+        assert hit.signal == WF_POST_PROCESSING_WEIGHT_SIGNAL
+        assert hit.completion_ts == T3
+        assert hit.second_weight_lbs == 12.0
+
+    def test_complete_cleaning_then_weight_completes(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("start-cleaning", T1),
+            _ev("drying", T2),
+            _ev("complete-cleaning", T3),
+            _ev("weight-entry", T4, weight_lbs=15.0),
+        ]
+        hit = wf_post_processing_weight_completion(timeline, anchor_ts=T0, as_of_end=T4)
+        assert hit is not None
+        assert hit.completion_ts == T4
 
 
 class TestWfTwoWeightCompletion:
@@ -83,55 +140,3 @@ class TestWfTwoWeightCompletion:
         assert hit.first_weight_lbs == 20.0
         assert hit.second_weight_lbs == 12.0
         assert hit.weight_delta == 8.0
-
-    def test_same_timestamp_same_weight_stays_incomplete(self):
-        timeline = [
-            _ev("sent-to-vendor", T0),
-            _ev("weight-entry", T1, weight_lbs=20.0, scan_index=1),
-            _ev("weight-entry", T1, weight_lbs=20.0, scan_index=2),
-        ]
-        assert wf_two_weight_completion(timeline, anchor_ts=T0, as_of_end=T2) is None
-
-    def test_same_timestamp_different_weights_complete(self):
-        timeline = [
-            _ev("sent-to-vendor", T0),
-            _ev("weight-entry", T1, weight_lbs=20.0, scan_index=1),
-            _ev("weight-entry", T1, weight_lbs=12.0, scan_index=2),
-        ]
-        hit = wf_two_weight_completion(timeline, anchor_ts=T0, as_of_end=T2)
-        assert hit is not None
-        assert hit.second_weight_lbs == 12.0
-
-
-class TestWfProcessingFinalWeightCompletion:
-    def test_two_early_weights_before_processing_incomplete(self):
-        timeline = [
-            _ev("sent-to-vendor", T0),
-            _ev("weight-entry", T1, weight_lbs=20.0),
-            _ev("weight-entry", T2, weight_lbs=12.0),
-            _ev("add-photos", T3),
-        ]
-        assert wf_processing_final_weight_completion(timeline, anchor_ts=T0, as_of_end=T3) is None
-
-    def test_processing_then_final_weight_completes(self):
-        timeline = [
-            _ev("sent-to-vendor", T0),
-            _ev("weight-entry", T1, weight_lbs=20.0),
-            _ev("add-photos", T2),
-            _ev("weight-entry", T3, weight_lbs=12.0),
-        ]
-        hit = wf_processing_final_weight_completion(timeline, anchor_ts=T0, as_of_end=T3)
-        assert hit is not None
-        assert hit.completion_ts == T3
-        assert hit.signal == "weight-entry-after-add-photos"
-        assert hit.second_weight_lbs == 12.0
-
-    def test_start_cleaning_then_weight_completes(self):
-        timeline = [
-            _ev("sent-to-vendor", T0),
-            _ev("start-cleaning", T1),
-            _ev("weight-entry", T2, weight_lbs=15.0),
-        ]
-        hit = wf_processing_final_weight_completion(timeline, anchor_ts=T0, as_of_end=T2)
-        assert hit is not None
-        assert hit.signal == "weight-entry-after-start-cleaning"

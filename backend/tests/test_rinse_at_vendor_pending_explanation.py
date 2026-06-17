@@ -113,16 +113,16 @@ class TestSummarizeRushPendingWhy:
             {
                 "rush_bucket": "RUSH",
                 "at_vendor_status": "Pending",
-                "pending_why_summary_keys": ["missing_second_weight", "missing_complete_cleaning"],
+                "pending_why_summary_keys": ["missing_post_processing_weight", "missing_complete_cleaning"],
             },
             {
                 "rush_bucket": "NON_RUSH",
                 "at_vendor_status": "Pending",
-                "pending_why_summary_keys": ["missing_second_weight"],
+                "pending_why_summary_keys": ["missing_post_processing_weight"],
             },
         ]
         summary = summarize_rush_pending_why(rows)
         assert summary["total_rush_pending"] == 2
         assert summary["same_ts_weight_dupes"] == 1
         assert summary["missing_complete_cleaning"] == 2
-        assert summary["missing_second_weight"] == 1
+        assert summary["missing_post_processing_weight"] == 1

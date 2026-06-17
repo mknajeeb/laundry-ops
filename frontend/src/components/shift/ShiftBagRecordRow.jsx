@@ -183,6 +183,34 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                   <DetailField label="Population source" value={row.population_source || row.inclusion_reason} />
                   <DetailField label="Presence run" value={row.presence_run_id || row.presence_source} />
                   <DetailField label="Reason" value={row.status_reason || row.reason || row.rush_reason} />
+                  {(row.service_type === "WF" || row.service_bucket === "WF") ? (
+                    <>
+                      <DetailField
+                        label="Pre-clean weight"
+                        value={
+                          row.pre_clean_weight != null
+                            ? `${row.pre_clean_weight} lbs · ${row.pre_clean_weight_time_et || "—"}`
+                            : null
+                        }
+                      />
+                      <DetailField
+                        label="Post-clean weight"
+                        value={
+                          row.post_clean_weight != null
+                            ? `${row.post_clean_weight} lbs · ${row.post_clean_weight_time_et || "—"}`
+                            : null
+                        }
+                      />
+                      <DetailField
+                        label="Weight difference"
+                        value={
+                          row.clean_weight_delta != null
+                            ? `${row.clean_weight_delta} lbs`
+                            : null
+                        }
+                      />
+                    </>
+                  ) : null}
                   {row.at_vendor_status === "Pending" && row.pending_why_label ? (
                     <DetailField label="Why pending" value={row.pending_why_label} />
                   ) : null}

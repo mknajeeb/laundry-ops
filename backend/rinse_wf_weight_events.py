@@ -23,6 +23,8 @@ from backend.rinse_scan_time import system_datetime_to_et
 
 _WEIGHT_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:lbs?|lb\.?)?", re.I)
 
+WF_POST_PROCESSING_WEIGHT_SIGNAL = "post_processing_weight"
+
 
 def parse_weight_lbs_from_scan_event(record: Mapping[str, Any] | None) -> float | None:
     """Extract numeric weight (lbs) from a scan row when present."""
@@ -160,66 +162,117 @@ def distinct_wf_weight_events(
 
 
 def is_wf_processing_purpose(raw: str | None) -> bool:
-    """Qualifying WF processing activity before final weight-entry completion."""
+    """WF processing events that gate post-processing weight completion."""
     return (
         is_start_cleaning_purpose(raw)
         or is_drying_purpose(raw)
         or is_add_photos_purpose(raw)
+        or is_complete_cleaning_purpose(raw)
     )
 
 
-def _first_wf_processing_after_anchor(
+def _latest_wf_processing_after_anchor(
     timeline: Sequence[Mapping[str, Any]],
     *,
     anchor_ts: datetime,
     as_of_end: datetime,
 ) -> tuple[datetime | None, str | None]:
-    first_ts: datetime | None = None
-    first_purpose: str | None = None
+    latest_ts: datetime | None = None
+    latest_purpose: str | None = None
     for ev in events_on_or_after(timeline, anchor_ts):
         if not is_wf_processing_purpose(ev.get("purpose")):
             continue
         ts = event_ts(ev)
         if ts is None or ts > as_of_end:
             continue
-        if first_ts is None or ts < first_ts:
-            first_ts = ts
-            first_purpose = str(ev.get("purpose") or "")
-    return first_ts, first_purpose
+        if latest_ts is None or ts > latest_ts:
+            latest_ts = ts
+            latest_purpose = str(ev.get("purpose") or "")
+    return latest_ts, latest_purpose
 
 
-def wf_processing_final_weight_completion(
+def derive_wf_clean_weight_fields(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+) -> dict[str, Any]:
+    """
+    Pre/post clean weight display fields for WF At Vendor rows.
+
+    pre_clean_weight = first distinct weight-entry after anchor.
+    post_clean_weight = last distinct weight-entry after latest processing event.
+    """
+    weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
+    pre = weights[0] if weights else None
+    latest_proc_ts, latest_proc_purpose = _latest_wf_processing_after_anchor(
+        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+    )
+    post: WfWeightEvent | None = None
+    if latest_proc_ts is not None:
+        post_weights = [w for w in weights if w.timestamp > latest_proc_ts]
+        if post_weights:
+            post = post_weights[-1]
+
+    pre_lbs = pre.weight_lbs if pre else None
+    post_lbs = post.weight_lbs if post else None
+    clean_delta = (
+        round(abs(post_lbs - pre_lbs), 4)
+        if pre_lbs is not None and post_lbs is not None
+        else None
+    )
+    return {
+        "pre_clean_weight": pre_lbs,
+        "pre_clean_weight_time": pre.timestamp.isoformat() if pre else None,
+        "post_clean_weight": post_lbs,
+        "post_clean_weight_time": post.timestamp.isoformat() if post else None,
+        "clean_weight_delta": clean_delta,
+        "latest_processing_time": latest_proc_ts.isoformat() if latest_proc_ts else None,
+        "latest_processing_purpose": latest_proc_purpose,
+    }
+
+
+def wf_post_processing_weight_completion(
     timeline: Sequence[Mapping[str, Any]],
     *,
     anchor_ts: datetime,
     as_of_end: datetime,
 ) -> WfWeightCompletion | None:
     """
-    WF weight completion: sent-to-vendor anchor, then processing scan
-    (start-cleaning / drying / add-photos), then last distinct weight-entry after processing.
+    WF completes only when a distinct weight-entry exists after the latest processing scan.
     """
-    proc_ts, proc_purpose = _first_wf_processing_after_anchor(
+    latest_proc_ts, _ = _latest_wf_processing_after_anchor(
         timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
     )
-    if proc_ts is None:
+    if latest_proc_ts is None:
         return None
 
     weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
-    post_proc = [w for w in weights if w.timestamp > proc_ts]
-    if not post_proc:
+    post_weights = [w for w in weights if w.timestamp > latest_proc_ts]
+    if not post_weights:
         return None
 
-    last = post_proc[-1]
-    first = weights[0] if weights else None
-    proc_key = normalize_scan_purpose(proc_purpose) or "processing"
-    signal = f"weight-entry-after-{proc_key}"
+    post = post_weights[-1]
+    pre = weights[0] if weights else None
     return WfWeightCompletion(
-        signal=signal,
-        completion_ts=last.timestamp,
-        first_weight_lbs=first.weight_lbs if first else None,
-        second_weight_lbs=last.weight_lbs,
-        first_weight_timestamp=first.timestamp if first else None,
-        second_weight_timestamp=last.timestamp,
+        signal=WF_POST_PROCESSING_WEIGHT_SIGNAL,
+        completion_ts=post.timestamp,
+        first_weight_lbs=pre.weight_lbs if pre else None,
+        second_weight_lbs=post.weight_lbs,
+        first_weight_timestamp=pre.timestamp if pre else None,
+        second_weight_timestamp=post.timestamp,
+    )
+
+
+# Legacy helpers retained for audit scripts and historical comparisons.
+def wf_processing_final_weight_completion(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    as_of_end: datetime,
+) -> WfWeightCompletion | None:
+    return wf_post_processing_weight_completion(
+        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
     )
 
 
@@ -256,7 +309,7 @@ def wf_operational_completion(
     as_of_end: datetime,
     weight_events: Sequence[WfWeightEvent] | None = None,
 ) -> WfWeightCompletion | None:
-    """Fallback completion when processing-then-weight evidence is insufficient."""
+    """Legacy operational fallback (no longer used for WF At Vendor completion)."""
     weights = list(weight_events or [])
     if not weights:
         weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)

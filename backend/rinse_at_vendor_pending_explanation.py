@@ -24,7 +24,7 @@ from backend.rinse_wf_weight_events import distinct_wf_weight_events
 PENDING_WHY_LABELS: dict[str, str] = {
     "missing_sent_to_vendor": "Awaiting sent-to-vendor scan",
     "missing_weight_entry": "Missing weight-entry after sent-to-vendor",
-    "missing_second_weight": "Missing second weight",
+    "missing_post_processing_weight": "Missing post-processing weight",
     "weight_once_no_completion": "Weight recorded once; completion scan missing",
     "same_ts_weight_dupes": "Same-time weight uploads only — need second physical weigh",
     "cleaning_started_not_completed": "Cleaning started, not completed",
@@ -144,6 +144,9 @@ def derive_pending_explanation(
             "pending_why_summary_keys": sorted(set(summary_keys or [key])),
         }
 
+    from backend.rinse_wf_weight_events import derive_wf_clean_weight_fields, distinct_wf_weight_events
+
+    clean_weights = derive_wf_clean_weight_fields(anchored, anchor_ts=anchor_ts, as_of_end=as_of_end)
     weights = distinct_wf_weight_events(anchored, anchor_ts=anchor_ts, as_of_end=as_of_end)
     distinct_weight_count = len(weights)
     same_ts_dupes = _wf_same_ts_weight_dupes(anchored)
@@ -152,9 +155,10 @@ def derive_pending_explanation(
     )
     has_cleaning_started = any(_is_cleaning_started_purpose(ev.get("purpose")) for ev in anchored)
     has_vendor_signal = _wf_has_vendor_delivery_signal(anchored)
+    has_post_clean_weight = clean_weights.get("post_clean_weight_time") is not None
 
-    if distinct_weight_count < 2:
-        summary_keys.append("missing_second_weight")
+    if not has_post_clean_weight:
+        summary_keys.append("missing_post_processing_weight")
     if same_ts_dupes:
         summary_keys.append("same_ts_weight_dupes")
     if distinct_weight_count >= 1 and not has_complete_cleaning:
@@ -171,12 +175,14 @@ def derive_pending_explanation(
     elif has_vendor_signal:
         key = "awaiting_vendor_delivery"
         summary_keys.append(key)
-    elif distinct_weight_count == 1 and not has_cleaning_started:
+    elif distinct_weight_count == 1 and not has_cleaning_started and not has_post_clean_weight:
         key = "weight_once_no_completion"
-    elif distinct_weight_count == 1 and not has_complete_cleaning:
+    elif distinct_weight_count == 1 and not has_complete_cleaning and not has_post_clean_weight:
         key = "awaiting_complete_cleaning"
+    elif not has_post_clean_weight:
+        key = "missing_post_processing_weight"
     else:
-        key = "missing_second_weight"
+        key = "missing_post_processing_weight"
 
     return {
         "pending_why_key": key,
@@ -189,7 +195,7 @@ def summarize_rush_pending_why(rows: Sequence[Mapping[str, Any]]) -> dict[str, A
     """Aggregate display-only counts for Rush Pending supervisor panel."""
     counts = Counter(
         {
-            "missing_second_weight": 0,
+            "missing_post_processing_weight": 0,
             "same_ts_weight_dupes": 0,
             "missing_complete_cleaning": 0,
             "cleaning_started_not_completed": 0,
@@ -207,7 +213,7 @@ def summarize_rush_pending_why(rows: Sequence[Mapping[str, Any]]) -> dict[str, A
                 counts[key] += 1
     return {
         "total_rush_pending": rush_pending,
-        "missing_second_weight": counts["missing_second_weight"],
+        "missing_post_processing_weight": counts["missing_post_processing_weight"],
         "same_ts_weight_dupes": counts["same_ts_weight_dupes"],
         "missing_complete_cleaning": counts["missing_complete_cleaning"],
         "cleaning_started_not_completed": counts["cleaning_started_not_completed"],
