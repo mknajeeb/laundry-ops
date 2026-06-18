@@ -37,7 +37,8 @@ def test_display_settings_defaults():
     cursor = _FakeCursor()
     with patch("backend.weekly_schedule_display_settings.table_exists", return_value=True):
         settings = get_weekly_schedule_display_settings(cursor, 3)
-    assert settings["show_estimated_cost_default"] is True
+    assert settings["show_estimated_cost_default"] is False
+    assert settings["show_employee_rates_default"] is False
     assert settings["share_cost_with_external"] is False
 
 
@@ -55,7 +56,8 @@ def test_effective_view_admin_sees_cost_by_default():
     with patch("backend.weekly_schedule_display_settings.table_exists", return_value=True):
         view = effective_weekly_schedule_view(cursor, 3, ["ADMIN"])
     assert view["is_privileged"] is True
-    assert view["show_estimated_cost"] is True
+    assert view["show_estimated_cost"] is False
+    assert view["show_employee_rates"] is False
 
 
 def test_save_display_settings_round_trip():

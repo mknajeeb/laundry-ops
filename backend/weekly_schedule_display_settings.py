@@ -10,11 +10,13 @@ from backend.ta_helpers import table_exists
 KEY_WEEKLY_SCHEDULE_DISPLAY = "weekly_schedule_display_settings"
 
 DEFAULTS: dict[str, bool] = {
-    "show_estimated_cost_default": True,
+    "show_estimated_cost_default": False,
     "show_role_labels_default": True,
+    "show_employee_rates_default": False,
     "share_cost_with_external": False,
     "share_role_labels_with_external": True,
     "share_break_minutes_with_external": True,
+    "share_rates_with_external": False,
 }
 
 PRIVILEGED_ROLES = frozenset({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN"})
@@ -113,6 +115,7 @@ def effective_weekly_schedule_view(
             "is_privileged": True,
             "show_estimated_cost": settings["show_estimated_cost_default"],
             "show_role_labels": settings["show_role_labels_default"],
+            "show_employee_rates": settings["show_employee_rates_default"],
             "show_break_minutes": True,
             "can_edit_schedule": True,
             "can_manage_exclusions": True,
@@ -123,6 +126,7 @@ def effective_weekly_schedule_view(
         "is_privileged": False,
         "show_estimated_cost": settings["share_cost_with_external"],
         "show_role_labels": settings["share_role_labels_with_external"],
+        "show_employee_rates": settings["share_rates_with_external"],
         "show_break_minutes": settings["share_break_minutes_with_external"],
         "can_edit_schedule": False,
         "can_manage_exclusions": False,
@@ -133,6 +137,7 @@ def effective_weekly_schedule_view(
                 "share_cost_with_external",
                 "share_role_labels_with_external",
                 "share_break_minutes_with_external",
+                "share_rates_with_external",
             )
         },
     }

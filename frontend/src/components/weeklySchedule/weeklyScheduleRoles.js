@@ -8,21 +8,24 @@ export const WEEKLY_SCHEDULE_ROLES = [
 
 export const ROLE_STYLES = {
   sort: {
-    accent: VEEWASH_DASHBOARD.rushCopper,
-    bg: VEEWASH_DASHBOARD.rushBg,
-    border: VEEWASH_DASHBOARD.rushBorder,
-    label: "Sort",
-  },
-  wash: {
     accent: VEEWASH_DASHBOARD.primaryBlue,
     bg: VEEWASH_DASHBOARD.primaryBlueLight,
     border: VEEWASH_DASHBOARD.primaryBlueBorder,
+    gradient: "linear-gradient(135deg, #e6f5f8 0%, #d4eef5 100%)",
+    label: "Sort",
+  },
+  wash: {
+    accent: VEEWASH_DASHBOARD.rushCopper,
+    bg: VEEWASH_DASHBOARD.rushBg,
+    border: VEEWASH_DASHBOARD.rushBorder,
+    gradient: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
     label: "Wash",
   },
   fold: {
     accent: VEEWASH_DASHBOARD.teal,
     bg: VEEWASH_DASHBOARD.tealLight,
     border: VEEWASH_DASHBOARD.tealBorder,
+    gradient: "linear-gradient(135deg, #e6f7f5 0%, #d4f0ec 100%)",
     label: "Fold",
   },
   // Legacy aliases for older stored rows
@@ -30,12 +33,14 @@ export const ROLE_STYLES = {
     accent: VEEWASH_DASHBOARD.teal,
     bg: VEEWASH_DASHBOARD.tealLight,
     border: VEEWASH_DASHBOARD.tealBorder,
+    gradient: "linear-gradient(135deg, #e6f7f5 0%, #d4f0ec 100%)",
     label: "Fold",
   },
   operator: {
-    accent: VEEWASH_DASHBOARD.primaryBlue,
-    bg: VEEWASH_DASHBOARD.primaryBlueLight,
-    border: VEEWASH_DASHBOARD.primaryBlueBorder,
+    accent: VEEWASH_DASHBOARD.rushCopper,
+    bg: VEEWASH_DASHBOARD.rushBg,
+    border: VEEWASH_DASHBOARD.rushBorder,
+    gradient: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
     label: "Wash",
   },
 };

@@ -27,10 +27,12 @@ import {
   moveWeeklyScheduleEntry,
   setWeeklyScheduleExclusion,
   updateWeeklyScheduleEntry,
+  updateWeeklyScheduleDisplaySettings,
 } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
+import { ROLE_STYLES } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -64,20 +66,20 @@ function formatCurrency(value) {
 function daySummary(day) {
   const people = Number(day?.employee_count || 0);
   const hours = Number(day?.total_hours || 0);
-  const sort = Number(day?.sort_count || 0);
-  const wash = Number(day?.wash_count || 0);
-  const fold = Number(day?.fold_count || 0);
-  return `${people} people · ${hours.toFixed(1)} hrs · ${sort} sort / ${wash} wash / ${fold} fold`;
+  return { people, hours, sort: Number(day?.sort_count || 0), wash: Number(day?.wash_count || 0), fold: Number(day?.fold_count || 0) };
 }
 
-function employeeSummary(employee, { showCost }) {
+function employeeSummary(employee, { showCost, showRates }) {
   const days = Number(employee?.scheduled_days || 0);
   const hours = Number(employee?.total_hours || 0);
-  const cost = formatCurrency(employee?.estimated_cost || 0);
-  if (showCost) {
-    return `${days} days · ${hours.toFixed(1)} hrs · ${cost} est.`;
+  const parts = [`${days} days`, `${hours.toFixed(1)} hrs`];
+  if (showRates && employee?.default_hourly_rate) {
+    parts.push(`${formatCurrency(employee.default_hourly_rate)}/hr`);
   }
-  return `${days} days · ${hours.toFixed(1)} hrs`;
+  if (showCost) {
+    parts.push(`${formatCurrency(employee?.estimated_cost || 0)} est.`);
+  }
+  return parts.join(" · ");
 }
 
 export default function WeeklySchedulePage() {
@@ -92,7 +94,8 @@ export default function WeeklySchedulePage() {
   const [draggingId, setDraggingId] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const [showExcluded, setShowExcluded] = useState(false);
-  const [showCost, setShowCost] = useState(true);
+  const [showCost, setShowCost] = useState(false);
+  const [costSaving, setCostSaving] = useState(false);
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
 
   const display = data?.display || {};
@@ -100,13 +103,29 @@ export default function WeeklySchedulePage() {
   const canManageExclusions = display.can_manage_exclusions !== false;
   const showRoleLabels = display.show_role_labels !== false;
   const showBreakMinutes = display.show_break_minutes !== false;
+  const showEmployeeRates = display.show_employee_rates !== false;
   const costAllowed = display.show_estimated_cost !== false;
+  const canConfigureSharing = display.can_configure_sharing !== false;
 
   useEffect(() => {
     if (data?.display) {
       setShowCost(data.display.show_estimated_cost !== false);
     }
   }, [data?.display?.show_estimated_cost]);
+
+  const handleCostToggle = async () => {
+    const next = !showCost;
+    setShowCost(next);
+    if (!canConfigureSharing) return;
+    setCostSaving(true);
+    try {
+      await updateWeeklyScheduleDisplaySettings({ show_estimated_cost_default: next });
+    } catch {
+      setShowCost(!next);
+    } finally {
+      setCostSaving(false);
+    }
+  };
 
   const load = useCallback(async (week) => {
     setLoading(true);
@@ -325,7 +344,8 @@ export default function WeeklySchedulePage() {
               <Chip
                 icon={<AttachMoneyOutlinedIcon />}
                 label={showCost ? "Hide cost" : "Show cost"}
-                onClick={() => setShowCost((v) => !v)}
+                onClick={handleCostToggle}
+                disabled={costSaving}
                 variant={showCost ? "filled" : "outlined"}
                 color={showCost ? "primary" : "default"}
                 sx={{ fontWeight: 700 }}
@@ -340,6 +360,19 @@ export default function WeeklySchedulePage() {
         </Box>
 
         <Box sx={{ p: 2 }}>
+          {excludedCount > 0 && !showExcluded && canManageExclusions ? (
+            <Alert
+              severity="info"
+              sx={{ mb: 2, borderRadius: 2 }}
+              action={
+                <Button color="inherit" size="small" onClick={() => setShowExcluded(true)} sx={{ fontWeight: 700 }}>
+                  Show excluded ({excludedCount})
+                </Button>
+              }
+            >
+              {excludedCount} employee{excludedCount === 1 ? "" : "s"} excluded from this week&apos;s schedule. Toggle &quot;Show excluded&quot; to review and include them.
+            </Alert>
+          ) : null}
           {error ? (
             <Alert severity="error" sx={{ mb: 2 }}>
               {error}
@@ -378,7 +411,9 @@ export default function WeeklySchedulePage() {
                     Employee
                   </Typography>
                 </Box>
-                {DAY_LABELS.map((label, dow) => (
+                {DAY_LABELS.map((label, dow) => {
+                  const summary = daySummary(dayTotals[dow]);
+                  return (
                   <Box
                     key={label}
                     sx={{
@@ -391,11 +426,35 @@ export default function WeeklySchedulePage() {
                     <Typography variant="subtitle2" fontWeight={800}>
                       {label}
                     </Typography>
-                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.35, lineHeight: 1.35 }}>
-                      {daySummary(dayTotals[dow])}
+                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.35 }}>
+                      {summary.people} people · {summary.hours.toFixed(1)} hrs
                     </Typography>
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                      {summary.sort > 0 ? (
+                        <Chip
+                          size="small"
+                          label={`${summary.sort} Sort`}
+                          sx={{ height: 20, fontSize: "0.62rem", fontWeight: 700, bgcolor: ROLE_STYLES.sort.bg, color: ROLE_STYLES.sort.accent, border: `1px solid ${ROLE_STYLES.sort.border}` }}
+                        />
+                      ) : null}
+                      {summary.wash > 0 ? (
+                        <Chip
+                          size="small"
+                          label={`${summary.wash} Wash`}
+                          sx={{ height: 20, fontSize: "0.62rem", fontWeight: 700, bgcolor: ROLE_STYLES.wash.bg, color: ROLE_STYLES.wash.accent, border: `1px solid ${ROLE_STYLES.wash.border}` }}
+                        />
+                      ) : null}
+                      {summary.fold > 0 ? (
+                        <Chip
+                          size="small"
+                          label={`${summary.fold} Fold`}
+                          sx={{ height: 20, fontSize: "0.62rem", fontWeight: 700, bgcolor: ROLE_STYLES.fold.bg, color: ROLE_STYLES.fold.accent, border: `1px solid ${ROLE_STYLES.fold.border}` }}
+                        />
+                      ) : null}
+                    </Stack>
                   </Box>
-                ))}
+                  );
+                })}
 
                 {(visibleEmployees || []).map((employee) => {
                   const excluded = Boolean(employee.excluded);
@@ -434,7 +493,10 @@ export default function WeeklySchedulePage() {
                               />
                             ) : null}
                             <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                              {employeeSummary(employee, { showCost: showCost && costAllowed })}
+                              {employeeSummary(employee, {
+                                showCost: showCost && costAllowed,
+                                showRates: showEmployeeRates,
+                              })}
                             </Typography>
                           </Box>
                           {canManageExclusions ? (

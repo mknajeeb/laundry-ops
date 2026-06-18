@@ -42,8 +42,9 @@ export default function WeeklyScheduleShiftCard({
         border: `1px solid ${muted ? "divider" : primary.border}`,
         borderLeft: `4px solid ${muted ? "divider" : primary.accent}`,
         bgcolor: muted ? "action.hover" : primary.bg,
+        background: muted ? undefined : primary.gradient || primary.bg,
         opacity: dragging ? 0.45 : muted ? 0.72 : 1,
-        boxShadow: muted ? "none" : "0 2px 8px rgba(15, 23, 42, 0.06)",
+        boxShadow: muted ? "none" : "0 3px 12px rgba(15, 23, 42, 0.08)",
         transition: "box-shadow 0.15s ease, transform 0.12s ease",
         "&:hover": muted
           ? {}
@@ -56,7 +57,7 @@ export default function WeeklyScheduleShiftCard({
       <Stack direction="row" alignItems="flex-start" spacing={0.5}>
         <DragIndicatorIcon sx={{ fontSize: 16, color: "text.disabled", mt: 0.25 }} />
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="caption" fontWeight={700} display="block" sx={{ color: primary.accent, lineHeight: 1.3 }}>
+          <Typography variant="caption" fontWeight={700} display="block" sx={{ color: primary.accent, lineHeight: 1.3, fontSize: "0.78rem" }}>
             {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
           </Typography>
           <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.35 }}>

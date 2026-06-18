@@ -3,6 +3,7 @@ import { Link as RouterLink } from "react-router-dom";
 import FoldingBenchmarksPanel from "../components/folding/FoldingBenchmarksPanel";
 import FoldingExceptionRulesPanel from "../components/folding/FoldingExceptionRulesPanel";
 import ProcessingSettingsPanel from "../components/folding/ProcessingSettingsPanel";
+import WeeklyScheduleDisplaySettingsPanel from "../components/weeklySchedule/WeeklyScheduleDisplaySettingsPanel";
 
 function SettingsNav() {
   const links = [
@@ -54,6 +55,12 @@ export default function PerformanceSettingsPage() {
           description="Rules for folding scan conflicts, clean-rack timing, and operational exceptions."
         >
           <FoldingExceptionRulesPanel />
+        </SettingsSection>
+        <SettingsSection
+          title="Weekly Schedule Display (for external sharing)"
+          description="Control what managers and external partners see on the planned weekly schedule — labor cost, rates, and role labels."
+        >
+          <WeeklyScheduleDisplaySettingsPanel />
         </SettingsSection>
         <SettingsSection
           title="Benchmarks & quality targets"

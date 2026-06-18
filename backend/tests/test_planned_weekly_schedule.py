@@ -177,6 +177,57 @@ def test_shift_hours_nine_to_four_is_seven():
     assert entry["hours"] == 7.0
 
 
+def test_shift_hours_two_pm_to_ten_pm_is_eight():
+    entry = serialize_entry(
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": date(2026, 6, 14),
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(14, 0),
+            "end_time": time(22, 0),
+            "break_minutes": 0,
+        }
+    )
+    assert entry["hours"] == 8.0
+
+
+def test_shift_hours_four_pm_to_ten_pm_is_six():
+    entry = serialize_entry(
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": date(2026, 6, 14),
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "fold",
+            "start_time": time(16, 0),
+            "end_time": time(22, 0),
+            "break_minutes": 0,
+        }
+    )
+    assert entry["hours"] == 6.0
+
+
+def test_shift_hours_subtracts_break_minutes():
+    entry = serialize_entry(
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": date(2026, 6, 14),
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(14, 0),
+            "end_time": time(22, 0),
+            "break_minutes": 30,
+        }
+    )
+    assert entry["hours"] == 7.5
+
+
 def test_compute_schedule_totals_employee_and_day_rollups():
     entries = [
         serialize_entry(
