@@ -994,18 +994,21 @@ def run_scheduled_scrape_for_org(
 
             off_portal_refresh_detail: dict[str, Any] | None = None
             targeted_pending_refresh_detail: dict[str, Any] | None = None
+            from backend.rinse_off_portal_scan_refresh import (
+                build_targeted_refresh_sync_summary,
+                off_portal_refresh_dry_run,
+                off_portal_refresh_enabled,
+                off_portal_refresh_rush_only,
+                refresh_pending_workload_scans_via_direct_lookup,
+            )
+
+            refresh_enabled = off_portal_refresh_enabled()
             run_targeted = (
                 targeted_pending_refresh
                 if targeted_pending_refresh is not None
-                else run_type == "manual"
+                else (run_type == "manual" or refresh_enabled)
             )
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
-                from backend.rinse_off_portal_scan_refresh import (
-                    off_portal_refresh_dry_run,
-                    off_portal_refresh_enabled,
-                    refresh_off_portal_pending_scans,
-                    refresh_pending_workload_scans_via_direct_lookup,
-                )
                 from backend.rinse_shift_monitor_baseline import (
                     build_baseline_context,
                     get_shift_monitor_baseline,
@@ -1016,54 +1019,48 @@ def run_scheduled_scrape_for_org(
                 )
                 if run_targeted:
                     try:
-                        targeted_pending_refresh_detail = refresh_pending_workload_scans_via_direct_lookup(
+                        refresh_dry = (
+                            off_portal_refresh_dry_run() if run_type == "scheduled" else False
+                        )
+                        raw_refresh = refresh_pending_workload_scans_via_direct_lookup(
                             cursor,
                             org_id,
                             upload_batch_id=int(batch_id),
                             selected_date_et=batch_date,
                             baseline_ctx=baseline_ctx,
-                            dry_run=False,
-                            rush_only=False,
+                            dry_run=refresh_dry,
+                            rush_only=off_portal_refresh_rush_only(),
                             log_fn=lambda msg: log.write(msg + "\n"),
                         )
-                        conn.commit()
+                        if not refresh_dry:
+                            conn.commit()
+                        targeted_pending_refresh_detail = build_targeted_refresh_sync_summary(
+                            raw_refresh
+                        )
                         log.write(
                             "Targeted pending scan refresh: "
-                            f"bags={targeted_pending_refresh_detail.get('bags_processed')} "
-                            f"inserted={targeted_pending_refresh_detail.get('events_inserted')} "
-                            f"lookup_failed={targeted_pending_refresh_detail.get('lookup_failed')}\n"
+                            f"considered={targeted_pending_refresh_detail.get('targeted_bags_considered')} "
+                            f"refreshed={targeted_pending_refresh_detail.get('targeted_bags_refreshed')} "
+                            f"inserted={targeted_pending_refresh_detail.get('missing_scans_imported')} "
+                            f"completed={targeted_pending_refresh_detail.get('bags_completed_after_refresh')} "
+                            f"lookup_failed={targeted_pending_refresh_detail.get('lookup_failures')} "
+                            f"dry_run={refresh_dry}\n"
                         )
                     except Exception as refresh_exc:
                         conn.rollback()
                         log.write(f"Targeted pending scan refresh ERROR (non-fatal): {refresh_exc}\n")
-                        targeted_pending_refresh_detail = {"error": str(refresh_exc)}
-                elif off_portal_refresh_enabled():
-                    try:
-                        off_portal_refresh_detail = refresh_off_portal_pending_scans(
-                            cursor,
-                            org_id,
-                            upload_batch_id=int(batch_id),
-                            selected_date_et=batch_date,
-                            baseline_ctx=baseline_ctx,
-                            log_fn=lambda msg: log.write(msg + "\n"),
+                        targeted_pending_refresh_detail = build_targeted_refresh_sync_summary(
+                            {"error": str(refresh_exc)}
                         )
-                        if not off_portal_refresh_detail.get("dry_run"):
-                            conn.commit()
-                        log.write(
-                            "Off-portal pending scan refresh: "
-                            f"bags={off_portal_refresh_detail.get('bags_processed')} "
-                            f"inserted={off_portal_refresh_detail.get('events_inserted')} "
-                            f"already_present={off_portal_refresh_detail.get('events_already_present')} "
-                            f"lookup_failed={off_portal_refresh_detail.get('lookup_failed')} "
-                            f"dry_run={off_portal_refresh_detail.get('dry_run')}\n"
-                        )
-                    except Exception as refresh_exc:
-                        conn.rollback()
-                        log.write(f"Off-portal pending scan refresh ERROR (non-fatal): {refresh_exc}\n")
-                        off_portal_refresh_detail = {
-                            "error": str(refresh_exc),
-                            "dry_run": off_portal_refresh_dry_run(),
-                        }
+                else:
+                    targeted_pending_refresh_detail = build_targeted_refresh_sync_summary(
+                        None,
+                        skipped_reason="RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0",
+                    )
+                    log.write(
+                        "Targeted pending scan refresh skipped "
+                        "(RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0)\n"
+                    )
 
             result.status = final_status
             result.at_vendor_status = final_status

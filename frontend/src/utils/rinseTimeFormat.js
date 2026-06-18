@@ -2,12 +2,12 @@
 
 const ET = "America/New_York";
 
-/** True when string has explicit offset (safe for Date.parse). Rejects GMT / bare Z. */
+/** True when string has explicit offset or UTC Z (safe for Date.parse → ET). Rejects GMT. */
 export function hasExplicitTzOffset(value) {
   const s = String(value ?? "").trim();
   if (!s) return false;
   if (/\bGMT\b/i.test(s)) return false;
-  if (/Z$/i.test(s) && !/[+-]\d{2}:\d{2}$/.test(s)) return false;
+  if (/Z$/i.test(s)) return true;
   return /[+-]\d{2}:\d{2}$/.test(s) || /[+-]\d{4}$/.test(s);
 }
 
@@ -72,10 +72,15 @@ export function formatFriendlyEtWall(value) {
   if (FRIENDLY_ET_RE.test(s)) return normalizeEtSuffix(s);
 
   const stripped = s.replace(/\s+ET$/i, "").trim();
+
+  // UTC / ISO with Z or explicit offset — convert to America/New_York first.
+  if (/Z$/i.test(stripped) || /\+00:00$/i.test(stripped) || hasExplicitTzOffset(stripped)) {
+    const converted = formatBusinessDateTime(stripped);
+    if (converted !== "—") return converted;
+  }
+
   const naive = formatNaiveEtWallDateTime(stripped);
   if (naive) return naive;
-
-  if (hasExplicitTzOffset(s)) return formatBusinessDateTime(s);
 
   const isoNaive = stripped.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})/);
   if (isoNaive) {

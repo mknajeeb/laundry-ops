@@ -64,12 +64,12 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
         bags_per_hour = None
         lbs_per_hour = None
 
-    from backend.rinse_at_vendor_module import _format_et_display
+    from backend.rinse_scan_time import format_rinse_wall_et_display
 
     def _ts_et(raw: datetime | None) -> str | None:
         if raw is None:
             return None
-        return _format_et_display(raw)
+        return format_rinse_wall_et_display(raw)
 
     out = dict(emp)
     out.update(

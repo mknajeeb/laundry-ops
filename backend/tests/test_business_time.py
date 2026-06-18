@@ -60,6 +60,12 @@ class TestScanEventDisplay(unittest.TestCase):
         self.assertIn("2:15 PM", label)
         self.assertTrue(label.endswith("EDT") or label.endswith("ET"))
 
+    def test_rinse_wall_et_display_does_not_shift_naive_scan_time(self):
+        from backend.rinse_at_vendor_module import _format_et_display
+
+        wall = datetime(2026, 6, 17, 9, 31, 0)
+        self.assertEqual(_format_et_display(wall), "2026-06-17 09:31:00 ET")
+
 
 class TestSystemTimestampDisplay(unittest.TestCase):
     def test_scrape_batch_utc_naive_converts_to_et(self):

@@ -41,7 +41,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def off_portal_refresh_enabled() -> bool:
-    return _env_flag("RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED", default=False)
+    return _env_flag("RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED", default=True)
 
 
 def off_portal_refresh_dry_run() -> bool:
@@ -64,6 +64,56 @@ def off_portal_refresh_timeout_sec() -> int:
 
 def off_portal_refresh_rush_only() -> bool:
     return _env_flag("RINSE_OFF_PORTAL_SCAN_REFRESH_RUSH_ONLY", default=False)
+
+
+def build_targeted_refresh_sync_summary(
+    detail: dict[str, Any] | None,
+    *,
+    skipped_reason: str | None = None,
+) -> dict[str, Any]:
+    """Normalize targeted refresh result for scrape metadata / sync status UI."""
+    empty = {
+        "targeted_refresh_ran": False,
+        "targeted_bags_considered": 0,
+        "targeted_bags_refreshed": 0,
+        "missing_scans_imported": 0,
+        "bags_completed_after_refresh": 0,
+        "lookup_failures": 0,
+    }
+    if skipped_reason:
+        return {**empty, "skipped_reason": skipped_reason}
+    if not detail:
+        return {**empty, "skipped_reason": "not_run"}
+    if detail.get("error"):
+        return {
+            **empty,
+            **{k: detail.get(k) for k in ("dry_run", "target_scope", "crawl_batch_id") if k in detail},
+            "error": detail.get("error"),
+            "targeted_refresh_ran": False,
+        }
+
+    bags = detail.get("bags") or []
+    completed_after = sum(
+        1
+        for b in bags
+        if b.get("status_before") == AV_STATUS_PENDING and b.get("status_after") == AV_STATUS_COMPLETED
+    )
+    dry = bool(detail.get("dry_run"))
+    out = dict(detail)
+    out.update(
+        {
+            "targeted_refresh_ran": not dry and not detail.get("error"),
+            "targeted_bags_considered": len(detail.get("bag_ids_requested") or []),
+            "targeted_bags_refreshed": int(detail.get("bags_processed") or 0),
+            "missing_scans_imported": int(detail.get("events_inserted") or 0),
+            "bags_completed_after_refresh": completed_after,
+            "lookup_failures": int(detail.get("lookup_failed") or 0),
+        }
+    )
+    if dry:
+        out["targeted_refresh_ran"] = False
+        out["skipped_reason"] = "dry_run"
+    return out
 
 
 def _norm_purpose(purpose: str | None) -> str:

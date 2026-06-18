@@ -100,10 +100,12 @@ def _purpose_matches_at_vendor(raw: str | None) -> bool:
 
 
 def _format_et_display(ts: datetime | None) -> str | None:
+    """Format Rinse scan-derived naive ET wall times (not UTC system timestamps)."""
     if not ts_valid(ts):
         return None
-    et = system_datetime_to_et(ts)
-    return et.strftime("%Y-%m-%d %H:%M:%S ET") if et else ts.isoformat()
+    from backend.rinse_scan_time import format_rinse_wall_et_display
+
+    return format_rinse_wall_et_display(ts)
 
 
 def _completion_date_et(completion_ts: datetime | None) -> date | None:

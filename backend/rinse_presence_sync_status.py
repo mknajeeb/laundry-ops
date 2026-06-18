@@ -747,6 +747,17 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
     targeted = detail.get("targeted_pending_scan_refresh") or detail.get("off_portal_scan_refresh")
     if isinstance(targeted, dict):
         cycle["targeted_pending_scan_refresh"] = targeted
+        for key in (
+            "targeted_refresh_ran",
+            "targeted_bags_considered",
+            "targeted_bags_refreshed",
+            "missing_scans_imported",
+            "bags_completed_after_refresh",
+            "lookup_failures",
+            "skipped_reason",
+        ):
+            if key in targeted:
+                cycle[key] = targeted[key]
         if isinstance(row.get("finished_at"), datetime):
             cycle["targeted_refresh_completed_at_et"] = _short_time_et(row.get("finished_at"))
     return cycle

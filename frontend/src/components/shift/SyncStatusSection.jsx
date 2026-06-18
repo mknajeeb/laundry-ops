@@ -6,22 +6,41 @@ import { syncStatusSubtext } from "../../utils/shiftMonitorHelpers";
 
 function TargetedRefreshSummary({ targeted }) {
   const t = targeted || {};
-  if (!t.bag_ids_requested?.length && !t.bags?.length && !t.error) return null;
+  const hasActivity =
+    t.targeted_refresh_ran
+    || t.skipped_reason
+    || t.bag_ids_requested?.length
+    || t.bags?.length
+    || t.error;
+  if (!hasActivity) return null;
   const failed = t.lookup_failed_bag_ids || [];
+  const considered = t.targeted_bags_considered ?? t.bag_ids_requested?.length ?? 0;
+  const imported = t.missing_scans_imported ?? t.events_inserted;
+  const completed = t.bags_completed_after_refresh;
+  const refreshed = t.targeted_bags_refreshed ?? t.bags_processed;
+  const lookupFailed = t.lookup_failures ?? t.lookup_failed;
   return (
     <Box sx={{ mb: 1, p: 1.25, border: "1px solid", borderColor: "divider", borderRadius: 2 }}>
       <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.35 }}>
         Targeted refresh (direct ?q=BAGID)
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5, lineHeight: 1.45 }}>
-        Off-portal and crawl-missing pending workload bags — not limited to current Vendor Home page.
+        Pending workload bags missing from the latest portal crawl — including off-portal bags.
       </Typography>
-      <Typography variant="caption" display="block">
-        Bags refreshed: {t.bags_processed ?? 0}
-        {t.events_inserted != null ? ` · scans imported: ${t.events_inserted}` : ""}
-        {t.lookup_failed != null ? ` · lookup failed: ${t.lookup_failed}` : ""}
-        {t.crawl_batch_id != null ? ` · crawl batch ${t.crawl_batch_id}` : ""}
-      </Typography>
+      {t.skipped_reason ? (
+        <Typography variant="caption" color="text.secondary" display="block">
+          Skipped: {t.skipped_reason}
+        </Typography>
+      ) : (
+        <Typography variant="caption" display="block">
+          Pending bags checked: {considered}
+          {refreshed != null ? ` · bags refreshed: ${refreshed}` : ""}
+          {imported != null ? ` · scans imported: ${imported}` : ""}
+          {completed != null ? ` · completed after refresh: ${completed}` : ""}
+          {lookupFailed != null ? ` · lookup failed: ${lookupFailed}` : ""}
+          {t.crawl_batch_id != null ? ` · crawl batch ${t.crawl_batch_id}` : ""}
+        </Typography>
+      )}
       {failed.length ? (
         <Typography variant="caption" color="error.main" display="block" sx={{ mt: 0.35 }}>
           Direct lookup failed: {failed.join(", ")}

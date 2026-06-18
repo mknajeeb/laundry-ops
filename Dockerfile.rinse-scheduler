@@ -9,6 +9,10 @@
 #     -e RINSE_SCRAPE_DATA_ROOT=/data/rinse-scrape \
 #     -e RINSE_SCHEDULED_SCRAPE_ENABLED=1 \
 #     -e RINSE_SCHEDULED_ORG_IDS=3 \
+#     -e RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=1 \
+#     -e RINSE_OFF_PORTAL_SCAN_REFRESH_DRY_RUN=0 \
+#     -e RINSE_OFF_PORTAL_SCAN_REFRESH_MAX_BAGS=40 \
+#     -e RINSE_OFF_PORTAL_SCAN_REFRESH_RUSH_ONLY=0 \
 #     laundryops-rinse-scheduler
 
 FROM node:22-bookworm

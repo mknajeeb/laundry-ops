@@ -81,6 +81,19 @@ def parse_rinse_scanned_at_pandas(text: str) -> pd.Timestamp | pd.NaT:
     return pd.Timestamp(dt)
 
 
+def format_rinse_wall_et_display(dt: datetime | None) -> str | None:
+    """
+    User-facing Eastern label for Rinse scan / shift wall times.
+
+    Naive values are America/New_York local wall time — not UTC.
+    """
+    if dt is None or not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_ET).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S ET")
+
+
 def serialize_rinse_scan_datetime_for_api(dt: datetime | None) -> str | None:
     """
     Rinse portal / scan-event wall times (scanned_at_parsed, folding from scans).
