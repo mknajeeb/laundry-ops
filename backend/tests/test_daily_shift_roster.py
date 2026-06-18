@@ -6,6 +6,7 @@ from datetime import date, time
 
 from backend.daily_shift_labor_summary import build_labor_summary
 from backend.daily_shift_roster import (
+    build_roster_payload,
     calc_cost,
     calc_hours,
     create_roster_entry,
@@ -13,7 +14,13 @@ from backend.daily_shift_roster import (
     list_roster_entries,
     normalize_role,
     parse_time_value,
+    roster_entry_match_key,
+    serialize_roster_entry_data,
     update_roster_entry,
+)
+from backend.daily_shift_roster_payroll import (
+    import_payroll_records_into_roster,
+    map_payroll_record_to_roster_data,
 )
 
 
@@ -21,10 +28,14 @@ class _FakeCursor:
     def __init__(self):
         self._id = 0
         self.rows: list[dict] = []
+        self.connection = object()
 
     def execute(self, sql, params=None):
         sql_norm = " ".join(sql.split()).lower()
         params = params or ()
+        if "show columns" in sql_norm:
+            self._last = [{"Null": "YES"}]
+            return
         if "create table" in sql_norm:
             return
         if "insert into daily_shift_roster_entries" in sql_norm:
@@ -153,6 +164,191 @@ class TestRosterCrud:
         ok, err = delete_roster_entry(cursor, org, entry["id"])
         assert ok is True
         assert list_roster_entries(cursor, org, roster_date=roster_date) == []
+
+
+class TestOpenShiftEntries:
+    def test_open_shift_has_no_hours_or_cost(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        serialized = serialize_roster_entry_data(
+            {
+                "employee_name": "Alice Worker",
+                "role": "folder",
+                "start_time": "09:00",
+                "end_time": None,
+                "shift_open": True,
+                "break_minutes": 0,
+                "rate": 19.5,
+            }
+        )
+        assert serialized["shift_open"] is True
+        assert serialized["hours"] is None
+        assert serialized["cost"] is None
+
+    def test_create_open_shift_entry(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        entry, err = create_roster_entry(
+            cursor,
+            3,
+            roster_date=date(2026, 6, 18),
+            data={
+                "employee_name": "Bob Worker",
+                "role": "folder",
+                "start_time": "10:15",
+                "shift_open": True,
+                "end_time": None,
+                "break_minutes": 0,
+                "rate": 19.5,
+            },
+        )
+        assert err is None
+        assert entry["shift_open"] is True
+        assert entry["end_time"] is None
+        assert entry["hours"] is None
+        assert entry["cost"] is None
+
+
+class TestPayrollPrefillMapping:
+    def test_map_completed_payroll_record(self):
+        mapped = map_payroll_record_to_roster_data(
+            {
+                "id": 42,
+                "worker_name": "Jane Doe",
+                "status": "completed",
+                "clock_in_at": "2026-06-18 08:30:00",
+                "clock_out_at": "2026-06-18 16:00:00",
+                "break_seconds": 1800,
+                "hourly_rate": 20.0,
+                "worker_category": "w2",
+                "notes": "Floor",
+            }
+        )
+        assert mapped["employee_name"] == "Jane Doe"
+        assert mapped["start_time"] == "08:30"
+        assert mapped["end_time"] == "16:00"
+        assert mapped["break_minutes"] == 30
+        assert mapped["shift_open"] is False
+        assert mapped["rate"] == 20.0
+
+    def test_map_open_payroll_record(self):
+        mapped = map_payroll_record_to_roster_data(
+            {
+                "id": 43,
+                "worker_name": "Sam Open",
+                "status": "open",
+                "clock_in_at": "2026-06-18 09:00:00",
+                "clock_out_at": None,
+                "break_seconds": 0,
+                "hourly_rate": 0,
+                "worker_category": "w2",
+            }
+        )
+        assert mapped["shift_open"] is True
+        assert mapped["end_time"] is None
+        assert mapped["rate"] == 19.5
+
+    def test_map_contractor_default_rate(self):
+        mapped = map_payroll_record_to_roster_data(
+            {
+                "id": 44,
+                "worker_name": "Contractor One",
+                "status": "completed",
+                "clock_in_at": "2026-06-18 07:00:00",
+                "clock_out_at": "2026-06-18 15:00:00",
+                "break_seconds": 0,
+                "hourly_rate": None,
+                "worker_category": "contractor_1099",
+            }
+        )
+        assert mapped["rate"] == 17.0
+
+
+class TestPayrollImport:
+    def test_import_skips_duplicate_employee_clock_in(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        org = 3
+        roster_date = date(2026, 6, 18)
+
+        payroll_rows = [
+            {
+                "id": 1,
+                "worker_name": "Alice Worker",
+                "status": "completed",
+                "clock_in_at": "2026-06-18 08:00:00",
+                "clock_out_at": "2026-06-18 16:00:00",
+                "break_seconds": 0,
+                "hourly_rate": 19.5,
+                "worker_category": "w2",
+            },
+            {
+                "id": 2,
+                "worker_name": "Bob Worker",
+                "status": "completed",
+                "clock_in_at": "2026-06-18 09:00:00",
+                "clock_out_at": "2026-06-18 17:00:00",
+                "break_seconds": 0,
+                "hourly_rate": 19.5,
+                "worker_category": "w2",
+            },
+        ]
+
+        monkeypatch.setattr(
+            "backend.daily_shift_roster_payroll.list_payroll_time_records_for_date",
+            lambda *_a, **_k: payroll_rows,
+        )
+
+        create_roster_entry(
+            cursor,
+            org,
+            roster_date=roster_date,
+            data={
+                "employee_name": "Alice Worker",
+                "role": "folder",
+                "start_time": "08:00",
+                "end_time": "16:00",
+                "break_minutes": 0,
+                "rate": 19.5,
+            },
+        )
+
+        added, saved, err = import_payroll_records_into_roster(
+            cursor, org, roster_date=roster_date
+        )
+        assert err is None
+        assert added == 1
+        assert len(saved) == 2
+        names = {e["employee_name"] for e in saved}
+        assert names == {"Alice Worker", "Bob Worker"}
+
+    def test_roster_entry_match_key_normalizes_name(self):
+        assert roster_entry_match_key(" Alice ", "08:00") == ("alice", "08:00")
+
+
+class TestRosterPayloadMessages:
+    def test_payroll_found_message_when_no_roster(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        monkeypatch.setattr(
+            "backend.daily_shift_roster_payroll.build_payroll_prefill_entries",
+            lambda *_a, **_k: [{"employee_name": "Jane", "start_time": "08:00"}],
+        )
+        payload = build_roster_payload(cursor, 3, roster_date=date(2026, 6, 18))
+        assert payload["has_roster"] is False
+        assert payload["payroll_record_count"] == 1
+        assert payload["message"] == "Payroll records found. Review and save today's roster."
+        assert len(payload["payroll_prefill"]) == 1
+
+    def test_empty_message_when_no_roster_or_payroll(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        monkeypatch.setattr(
+            "backend.daily_shift_roster_payroll.build_payroll_prefill_entries",
+            lambda *_a, **_k: [],
+        )
+        payload = build_roster_payload(cursor, 3, roster_date=date(2026, 6, 18))
+        assert payload["message"] == "No labor roster recorded for this date."
+        assert payload["payroll_prefill"] == []
 
 
 class TestLaborSummary:

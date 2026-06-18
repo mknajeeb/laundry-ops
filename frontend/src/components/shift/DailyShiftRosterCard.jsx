@@ -1,7 +1,11 @@
 import {
   Box,
   Chip,
+  FormControl,
   IconButton,
+  InputLabel,
+  MenuItem,
+  Select,
   Stack,
   Typography,
 } from "@mui/material";
@@ -9,12 +13,6 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { fmtLaborValue } from "../../utils/employeeProductivityHelpers";
-
-function formatRole(role) {
-  if (role === "operator") return "Operator";
-  if (role === "folder") return "Folder";
-  return role || "—";
-}
 
 function formatTime12(raw) {
   if (!raw) return "—";
@@ -27,15 +25,34 @@ function formatTime12(raw) {
   return `${hour12}:${String(m).padStart(2, "0")} ${suffix}`;
 }
 
-export default function DailyShiftRosterCard({ entry, onEdit, onDelete }) {
+function formatHoursDisplay(entry) {
+  if (entry?.shift_open || !entry?.end_time) return "Open";
+  return fmtLaborValue(entry.hours, { digits: 2 });
+}
+
+function formatCostDisplay(entry) {
+  if (entry?.shift_open || entry?.cost == null) return "—";
+  return fmtLaborValue(entry.cost, { currency: true });
+}
+
+export default function DailyShiftRosterCard({
+  entry,
+  draft = false,
+  onEdit,
+  onDelete,
+  onRoleChange,
+  roleSaving = false,
+}) {
+  const endLabel = entry?.shift_open || !entry?.end_time ? "Open" : formatTime12(entry.end_time);
+
   return (
     <Box
       sx={{
         p: 2,
         borderRadius: 2.5,
-        bgcolor: "#fff",
+        bgcolor: draft ? VEEWASH_DASHBOARD.snapshotBg : "#fff",
         border: "1px solid",
-        borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
+        borderColor: draft ? VEEWASH_DASHBOARD.snapshotBorder : VEEWASH_DASHBOARD.primaryBlueBorder,
         boxShadow: VEEWASH_DASHBOARD.cardShadow,
         transition: "border-color 0.15s ease, box-shadow 0.15s ease",
         "&:hover": {
@@ -46,27 +63,32 @@ export default function DailyShiftRosterCard({ entry, onEdit, onDelete }) {
     >
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
-          <Typography variant="h6" fontWeight={800} sx={{ fontSize: "1.05rem", lineHeight: 1.25 }}>
-            {entry.employee_name}
-          </Typography>
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 0.75 }}>
-            <Chip
-              size="small"
-              label={formatRole(entry.role)}
-              sx={{
-                height: 24,
-                fontWeight: 700,
-                bgcolor: entry.role === "operator" ? VEEWASH_DASHBOARD.hdBg : VEEWASH_DASHBOARD.wfBg,
-                color: entry.role === "operator" ? VEEWASH_DASHBOARD.hdTeal : VEEWASH_DASHBOARD.wfCharcoal,
-                border: "1px solid",
-                borderColor: entry.role === "operator" ? VEEWASH_DASHBOARD.hdBorder : VEEWASH_DASHBOARD.wfBorder,
-              }}
-            />
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="h6" fontWeight={800} sx={{ fontSize: "1.05rem", lineHeight: 1.25 }}>
+              {entry.employee_name}
+            </Typography>
+            {draft ? (
+              <Chip size="small" label="From Payroll" color="info" variant="outlined" sx={{ height: 22 }} />
+            ) : null}
+          </Stack>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }} alignItems={{ sm: "center" }}>
+            <FormControl size="small" sx={{ minWidth: 130 }} disabled={roleSaving}>
+              <InputLabel id={`roster-role-${entry.id || entry.employee_name}`}>Role</InputLabel>
+              <Select
+                labelId={`roster-role-${entry.id || entry.employee_name}`}
+                label="Role"
+                value={entry.role || "folder"}
+                onChange={(e) => onRoleChange?.(entry, e.target.value)}
+              >
+                <MenuItem value="folder">Folder</MenuItem>
+                <MenuItem value="operator">Operator</MenuItem>
+              </Select>
+            </FormControl>
             <Chip
               size="small"
               variant="outlined"
-              label={`${formatTime12(entry.start_time)} – ${formatTime12(entry.end_time)}`}
-              sx={{ height: 24, fontWeight: 600 }}
+              label={`${formatTime12(entry.start_time)} → ${endLabel}`}
+              sx={{ height: 28, fontWeight: 600, maxWidth: "100%" }}
             />
           </Stack>
           <Box
@@ -82,7 +104,7 @@ export default function DailyShiftRosterCard({ entry, onEdit, onDelete }) {
                 Hours
               </Typography>
               <Typography variant="body1" fontWeight={800}>
-                {fmtLaborValue(entry.hours, { digits: 2 })}
+                {formatHoursDisplay(entry)}
               </Typography>
             </Box>
             <Box>
@@ -98,7 +120,7 @@ export default function DailyShiftRosterCard({ entry, onEdit, onDelete }) {
                 Cost
               </Typography>
               <Typography variant="body1" fontWeight={800} sx={{ color: VEEWASH_DASHBOARD.primaryBlueDark }}>
-                {fmtLaborValue(entry.cost, { currency: true })}
+                {formatCostDisplay(entry)}
               </Typography>
             </Box>
           </Box>
@@ -117,9 +139,11 @@ export default function DailyShiftRosterCard({ entry, onEdit, onDelete }) {
           <IconButton size="small" aria-label="Edit roster entry" onClick={() => onEdit?.(entry)}>
             <EditOutlinedIcon fontSize="small" />
           </IconButton>
-          <IconButton size="small" aria-label="Delete roster entry" onClick={() => onDelete?.(entry)}>
-            <DeleteOutlineIcon fontSize="small" />
-          </IconButton>
+          {!draft ? (
+            <IconButton size="small" aria-label="Delete roster entry" onClick={() => onDelete?.(entry)}>
+              <DeleteOutlineIcon fontSize="small" />
+            </IconButton>
+          ) : null}
         </Stack>
       </Stack>
     </Box>

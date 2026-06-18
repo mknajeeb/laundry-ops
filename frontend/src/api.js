@@ -553,6 +553,9 @@ export const updateDailyShiftRosterEntry = (entryId, body) =>
 export const deleteDailyShiftRosterEntry = (entryId) =>
   axios.delete(`${API_BASE}/rinse/shift-analysis/daily-roster/${encodeURIComponent(entryId)}`, { timeout: 30000 });
 
+export const importDailyShiftRosterFromPayroll = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/import-from-payroll`, body, { timeout: 30000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 

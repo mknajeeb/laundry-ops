@@ -12,10 +12,12 @@ import {
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import {
   createDailyShiftRosterEntry,
   deleteDailyShiftRosterEntry,
   getDailyShiftRoster,
+  importDailyShiftRosterFromPayroll,
   updateDailyShiftRosterEntry,
 } from "../api";
 import { yesterdayRange, todayRange } from "../utils/foldingDateRange";
@@ -30,6 +32,10 @@ const DATE_PRESETS = [
   { id: "custom", label: "Custom ET Date" },
 ];
 
+function draftKey(entry) {
+  return `${entry?.employee_name || ""}|${entry?.start_time || ""}`;
+}
+
 function resolvePreset(isoDate) {
   const today = todayRange().start;
   const yesterday = yesterdayRange().start;
@@ -43,11 +49,15 @@ export default function DailyShiftRosterPage() {
   const [customDate, setCustomDate] = useState(todayRange().start);
   const [activeDateEt, setActiveDateEt] = useState(todayRange().start);
   const [data, setData] = useState(null);
+  const [draftEntries, setDraftEntries] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
+  const [editingDraft, setEditingDraft] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [roleSavingKey, setRoleSavingKey] = useState("");
 
   const load = useCallback(async (dateEt) => {
     if (!dateEt) return;
@@ -57,9 +67,15 @@ export default function DailyShiftRosterPage() {
       const res = await getDailyShiftRoster({ date_et: dateEt });
       setData(res.data);
       setActiveDateEt(dateEt);
+      if (!res.data?.has_roster && res.data?.payroll_prefill?.length) {
+        setDraftEntries(res.data.payroll_prefill);
+      } else {
+        setDraftEntries([]);
+      }
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to load daily shift roster");
       setData(null);
+      setDraftEntries([]);
     } finally {
       setLoading(false);
     }
@@ -85,11 +101,13 @@ export default function DailyShiftRosterPage() {
 
   const openCreate = () => {
     setEditingEntry(null);
+    setEditingDraft(false);
     setDialogOpen(true);
   };
 
-  const openEdit = (entry) => {
+  const openEdit = (entry, { draft = false } = {}) => {
     setEditingEntry(entry);
+    setEditingDraft(draft);
     setDialogOpen(true);
   };
 
@@ -101,9 +119,14 @@ export default function DailyShiftRosterPage() {
         await updateDailyShiftRosterEntry(editingEntry.id, form);
       } else {
         await createDailyShiftRosterEntry({ ...form, date_et: activeDateEt });
+        if (editingDraft) {
+          const key = draftKey(editingEntry);
+          setDraftEntries((prev) => prev.filter((e) => draftKey(e) !== key));
+        }
       }
       setDialogOpen(false);
       setEditingEntry(null);
+      setEditingDraft(false);
       await load(activeDateEt);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to save roster entry");
@@ -125,9 +148,47 @@ export default function DailyShiftRosterPage() {
     }
   };
 
+  const handleRoleChange = async (entry, role) => {
+    if (!entry || role === entry.role) return;
+    const key = draftKey(entry);
+    if (!entry.id) {
+      setDraftEntries((prev) =>
+        prev.map((e) => (draftKey(e) === key ? { ...e, role } : e)),
+      );
+      return;
+    }
+    setRoleSavingKey(String(entry.id));
+    setError("");
+    try {
+      await updateDailyShiftRosterEntry(entry.id, { role });
+      await load(activeDateEt);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to update role");
+    } finally {
+      setRoleSavingKey("");
+    }
+  };
+
+  const handleImportFromPayroll = async () => {
+    setImporting(true);
+    setError("");
+    try {
+      const res = await importDailyShiftRosterFromPayroll({ date_et: activeDateEt });
+      setData(res.data);
+      setDraftEntries([]);
+      setActiveDateEt(activeDateEt);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to import from payroll");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const entries = data?.entries || [];
   const summary = data?.summary || {};
   const hasRoster = Boolean(data?.has_roster);
+  const displayEntries = hasRoster ? entries : draftEntries;
+  const infoMessage = data?.message || null;
 
   return (
     <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1, sm: 2 }, py: { xs: 1.5, sm: 2.5 } }}>
@@ -203,17 +264,34 @@ export default function DailyShiftRosterPage() {
               ) : null}
               {loading ? <CircularProgress size={18} /> : null}
             </Box>
-            <Button
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={openCreate}
-              sx={{ alignSelf: { xs: "stretch", sm: "auto" }, fontWeight: 700 }}
-            >
-              Add Employee
-            </Button>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignSelf: { xs: "stretch", sm: "auto" } }}>
+              <Button
+                variant="outlined"
+                startIcon={<DownloadOutlinedIcon />}
+                onClick={handleImportFromPayroll}
+                disabled={loading || importing}
+                sx={{ fontWeight: 700 }}
+              >
+                {importing ? "Importing…" : "Import from Payroll"}
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={openCreate}
+                sx={{ fontWeight: 700 }}
+              >
+                Add Employee
+              </Button>
+            </Stack>
           </Stack>
 
           {error ? <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert> : null}
+
+          {infoMessage ? (
+            <Alert severity={hasRoster ? "info" : "warning"} sx={{ mb: 2 }}>
+              {infoMessage}
+            </Alert>
+          ) : null}
 
           {hasRoster ? (
             <Box
@@ -254,19 +332,18 @@ export default function DailyShiftRosterPage() {
                 </Typography>
               </Box>
             </Box>
-          ) : (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              No labor roster recorded for this date.
-            </Alert>
-          )}
+          ) : null}
 
           <Stack spacing={1.5}>
-            {entries.map((entry) => (
+            {displayEntries.map((entry) => (
               <DailyShiftRosterCard
-                key={entry.id}
+                key={entry.id || draftKey(entry)}
                 entry={entry}
-                onEdit={openEdit}
+                draft={!hasRoster}
+                onEdit={(e) => openEdit(e, { draft: !hasRoster })}
                 onDelete={handleDelete}
+                onRoleChange={handleRoleChange}
+                roleSaving={roleSavingKey === String(entry.id)}
               />
             ))}
           </Stack>
@@ -279,6 +356,7 @@ export default function DailyShiftRosterPage() {
           if (!saving) {
             setDialogOpen(false);
             setEditingEntry(null);
+            setEditingDraft(false);
           }
         }}
         onSave={handleSave}

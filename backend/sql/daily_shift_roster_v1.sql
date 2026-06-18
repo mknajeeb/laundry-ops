@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS daily_shift_roster_entries (
   employee_name VARCHAR(255) NOT NULL,
   role VARCHAR(16) NOT NULL DEFAULT 'folder' COMMENT 'folder | operator',
   start_time TIME NOT NULL,
-  end_time TIME NOT NULL,
+  end_time TIME NULL,
   break_minutes INT NOT NULL DEFAULT 0,
   rate DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   notes TEXT NULL,

@@ -455,6 +455,47 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/daily-roster/import-from-payroll", methods=["POST"])
+    def rinse_shift_analysis_daily_roster_import_payroll():
+        from backend.daily_shift_roster import build_roster_payload
+        from backend.daily_shift_roster_payroll import import_payroll_records_into_roster
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_date = (body.get("date_et") or body.get("roster_date") or "").strip()
+            if not raw_date:
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            roster_date = parse_date_value(raw_date)
+            if not isinstance(roster_date, date):
+                return jsonify({"error": "date_et must be YYYY-MM-DD"}), 400
+            added, _, err = import_payroll_records_into_roster(
+                cursor,
+                tenant_oid,
+                roster_date=roster_date,
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload["imported_count"] = added
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/rinse/sync/both", methods=["POST"])
     def rinse_sync_both():
         """Run Ready for Vendor presence sync first, then At Vendor scheduled scrape."""

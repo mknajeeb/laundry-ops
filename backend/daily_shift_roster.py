@@ -14,6 +14,7 @@ _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 
 def ensure_daily_shift_roster_table(cursor) -> None:
     if table_exists(cursor, "daily_shift_roster_entries"):
+        _ensure_end_time_nullable(cursor)
         return
     cursor.execute(
         """
@@ -24,7 +25,7 @@ def ensure_daily_shift_roster_table(cursor) -> None:
           employee_name VARCHAR(255) NOT NULL,
           role VARCHAR(16) NOT NULL DEFAULT 'folder',
           start_time TIME NOT NULL,
-          end_time TIME NOT NULL,
+          end_time TIME NULL,
           break_minutes INT NOT NULL DEFAULT 0,
           rate DECIMAL(10,2) NOT NULL DEFAULT 0.00,
           notes TEXT NULL,
@@ -35,6 +36,37 @@ def ensure_daily_shift_roster_table(cursor) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+
+
+def _ensure_end_time_nullable(cursor) -> None:
+    try:
+        cursor.execute("SHOW COLUMNS FROM daily_shift_roster_entries LIKE 'end_time'")
+        row = cursor.fetchone()
+        if not row:
+            return
+        null_flag = row.get("Null") if isinstance(row, dict) else (row[2] if len(row) > 2 else "NO")
+        if str(null_flag or "").upper() == "NO":
+            cursor.execute("ALTER TABLE daily_shift_roster_entries MODIFY end_time TIME NULL")
+    except Exception:
+        return
+
+
+def roster_entry_match_key(employee_name: Any, start_time: Any) -> tuple[str, str]:
+    name = normalize_employee_name(employee_name).casefold()
+    parsed = parse_time_value(start_time)
+    start_key = parsed.strftime("%H:%M") if parsed else str(start_time or "").strip()
+    return name, start_key
+
+
+def _is_shift_open(data: Mapping[str, Any]) -> bool:
+    if bool(data.get("shift_open")):
+        return True
+    end_raw = data.get("end_time")
+    if end_raw is None:
+        return True
+    if isinstance(end_raw, str) and not str(end_raw).strip():
+        return True
+    return False
 
 
 def parse_time_value(raw: Any) -> time | None:
@@ -102,27 +134,40 @@ def _time_to_str(value: Any) -> str | None:
 
 
 def _serialize_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    start = parse_time_value(row.get("start_time"))
-    end = parse_time_value(row.get("end_time"))
-    break_min = max(0, int(row.get("break_minutes") or 0))
-    rate = round(float(row.get("rate") or 0), 2)
-    hours = calc_hours(start, end, break_min) if start and end else 0.0
-    cost = calc_cost(hours, rate)
-    role = normalize_role(row.get("role")) or "folder"
-    return {
-        "id": int(row.get("id") or 0),
-        "organization_id": int(row.get("organization_id") or 0),
-        "roster_date": str(row.get("roster_date") or ""),
-        "employee_name": normalize_employee_name(row.get("employee_name")),
+    return serialize_roster_entry_data(row)
+
+
+def serialize_roster_entry_data(data: Mapping[str, Any]) -> dict[str, Any]:
+    start = parse_time_value(data.get("start_time"))
+    shift_open = _is_shift_open(data)
+    end = None if shift_open else parse_time_value(data.get("end_time"))
+    break_min = max(0, int(data.get("break_minutes") or 0))
+    rate = round(float(data.get("rate") or 0), 2)
+    hours: float | None = None
+    cost: float | None = None
+    if start and end and not shift_open:
+        hours = calc_hours(start, end, break_min)
+        cost = calc_cost(hours, rate)
+    role = normalize_role(data.get("role")) or "folder"
+    out: dict[str, Any] = {
+        "employee_name": normalize_employee_name(data.get("employee_name")),
         "role": role,
         "start_time": _time_to_str(start),
-        "end_time": _time_to_str(end),
+        "end_time": _time_to_str(end) if end else None,
         "break_minutes": break_min,
         "rate": rate,
-        "notes": str(row.get("notes") or "").strip() or None,
+        "notes": str(data.get("notes") or "").strip() or None,
+        "shift_open": shift_open,
         "hours": hours,
         "cost": cost,
     }
+    if data.get("id"):
+        out["id"] = int(data.get("id") or 0)
+    if data.get("organization_id"):
+        out["organization_id"] = int(data.get("organization_id") or 0)
+    if data.get("roster_date"):
+        out["roster_date"] = str(data.get("roster_date") or "")
+    return out
 
 
 def _validate_entry_payload(data: Mapping[str, Any], *, partial: bool = False) -> tuple[dict[str, Any] | None, str | None]:
@@ -142,12 +187,23 @@ def _validate_entry_payload(data: Mapping[str, Any], *, partial: bool = False) -
         if start is None:
             return None, "start_time is required (HH:MM)"
         out["start_time"] = start
-    if not partial or "end_time" in data:
-        end = parse_time_value(data.get("end_time"))
-        if end is None:
-            return None, "end_time is required (HH:MM)"
-        out["end_time"] = end
-    if "start_time" in out and "end_time" in out:
+    if not partial or "end_time" in data or "shift_open" in data:
+        open_shift = _is_shift_open(data)
+        if open_shift:
+            out["shift_open"] = True
+            out["end_time"] = None
+        else:
+            end = parse_time_value(data.get("end_time"))
+            if end is None:
+                return None, "end_time is required (HH:MM) unless shift is open"
+            out["end_time"] = end
+            out["shift_open"] = False
+    if (
+        "start_time" in out
+        and "end_time" in out
+        and out.get("end_time") is not None
+        and not out.get("shift_open")
+    ):
         if calc_hours(out["start_time"], out["end_time"], int(data.get("break_minutes") or 0)) <= 0:
             return None, "hours must be greater than zero"
     if "break_minutes" in data or not partial:
@@ -258,7 +314,8 @@ def update_roster_entry(
         "employee_name": existing["employee_name"],
         "role": existing["role"],
         "start_time": existing["start_time"],
-        "end_time": existing["end_time"],
+        "end_time": existing.get("end_time"),
+        "shift_open": existing.get("shift_open"),
         "break_minutes": existing["break_minutes"],
         "rate": existing["rate"],
         "notes": existing.get("notes"),
@@ -311,17 +368,44 @@ def build_roster_payload(
     *,
     roster_date: date,
 ) -> dict[str, Any]:
+    from backend.daily_shift_roster_payroll import build_payroll_prefill_entries
+
     entries = list_roster_entries(cursor, organization_id, roster_date=roster_date)
-    total_hours = round(sum(float(e.get("hours") or 0) for e in entries), 4)
-    total_cost = round(sum(float(e.get("cost") or 0) for e in entries), 2)
+    total_hours = round(
+        sum(float(e.get("hours") or 0) for e in entries if e.get("hours") is not None),
+        4,
+    )
+    total_cost = round(
+        sum(float(e.get("cost") or 0) for e in entries if e.get("cost") is not None),
+        2,
+    )
+    conn = cursor.connection if hasattr(cursor, "connection") else None
+    payroll_prefill: list[dict[str, Any]] = []
+    payroll_record_count = 0
+    if conn is not None:
+        payroll_prefill = build_payroll_prefill_entries(
+            conn, organization_id, roster_date=roster_date
+        )
+        payroll_record_count = len(payroll_prefill)
+
+    has_roster = bool(entries)
+    if has_roster:
+        message = None
+    elif payroll_record_count:
+        message = "Payroll records found. Review and save today's roster."
+    else:
+        message = "No labor roster recorded for this date."
+
     return {
         "roster_date": roster_date.isoformat(),
-        "has_roster": bool(entries),
+        "has_roster": has_roster,
         "entries": entries,
+        "payroll_prefill": payroll_prefill if not has_roster else [],
+        "payroll_record_count": payroll_record_count,
         "summary": {
             "employee_count": len(entries),
             "total_hours": total_hours,
             "total_cost": total_cost,
         },
-        "message": None if entries else "No labor roster recorded for this date.",
+        "message": message,
     }

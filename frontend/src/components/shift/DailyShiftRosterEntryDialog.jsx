@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   MenuItem,
   Stack,
   TextField,
@@ -24,6 +26,7 @@ const EMPTY_FORM = {
   break_minutes: 30,
   rate: "",
   notes: "",
+  shift_open: false,
 };
 
 export default function DailyShiftRosterEntryDialog({
@@ -68,10 +71,11 @@ export default function DailyShiftRosterEntryDialog({
         employee_name: initialEntry.employee_name || "",
         role: initialEntry.role || "folder",
         start_time: initialEntry.start_time || "08:00",
-        end_time: initialEntry.end_time || "16:00",
+        end_time: initialEntry.end_time || "",
         break_minutes: initialEntry.break_minutes ?? 0,
         rate: initialEntry.rate ?? "",
         notes: initialEntry.notes || "",
+        shift_open: Boolean(initialEntry.shift_open || !initialEntry.end_time),
       });
     } else {
       setForm(EMPTY_FORM);
@@ -104,10 +108,13 @@ export default function DailyShiftRosterEntryDialog({
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    const shiftOpen = Boolean(form.shift_open);
     onSave?.({
       ...form,
       break_minutes: Number(form.break_minutes) || 0,
       rate: Number(form.rate) || 0,
+      shift_open: shiftOpen,
+      end_time: shiftOpen ? null : form.end_time,
     });
   };
 
@@ -150,13 +157,30 @@ export default function DailyShiftRosterEntryDialog({
               <TextField
                 label="End Time"
                 type="time"
-                value={form.end_time}
+                value={form.end_time || ""}
                 onChange={(e) => setField("end_time", e.target.value)}
                 InputLabelProps={{ shrink: true }}
                 fullWidth
                 size="small"
+                disabled={form.shift_open}
               />
             </Stack>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={Boolean(form.shift_open)}
+                  onChange={(e) => {
+                    const open = e.target.checked;
+                    setForm((prev) => ({
+                      ...prev,
+                      shift_open: open,
+                      end_time: open ? "" : prev.end_time || "16:00",
+                    }));
+                  }}
+                />
+              }
+              label="Shift still open (no clock-out yet)"
+            />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <TextField
                 label="Break Minutes"
