@@ -540,6 +540,19 @@ export const getShiftAnalysisSimple = (params = {}) =>
 export const getEmployeeProductivityDashboard = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/employee-productivity`, { params, timeout: 120000 });
 
+/** Daily shift roster — end-of-day labor recording. */
+export const getDailyShiftRoster = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/daily-roster`, { params, timeout: 30000 });
+
+export const createDailyShiftRosterEntry = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster`, body, { timeout: 30000 });
+
+export const updateDailyShiftRosterEntry = (entryId, body) =>
+  axios.put(`${API_BASE}/rinse/shift-analysis/daily-roster/${encodeURIComponent(entryId)}`, body, { timeout: 30000 });
+
+export const deleteDailyShiftRosterEntry = (entryId) =>
+  axios.delete(`${API_BASE}/rinse/shift-analysis/daily-roster/${encodeURIComponent(entryId)}`, { timeout: 30000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 

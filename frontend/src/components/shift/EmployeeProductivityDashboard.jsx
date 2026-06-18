@@ -37,6 +37,7 @@ import {
 import EmployeeProductivityDrilldown, {
   EmployeeProductivityDrilldownCollapse,
 } from "./EmployeeProductivityDrilldown";
+import EmployeeProductivityLaborSection from "./EmployeeProductivityLaborSection";
 import MetricCardGrid from "./MetricCardGrid";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
@@ -174,6 +175,7 @@ export default function EmployeeProductivityDashboard({
   const [customDate, setCustomDate] = useState(initialDateEt || todayRange().start);
   const [activeDateEt, setActiveDateEt] = useState(initialDateEt || todayRange().start);
   const [section, setSection] = useState(initialSection || null);
+  const [laborSummary, setLaborSummary] = useState(null);
   const [scopeLabel, setScopeLabel] = useState(initialSection?.productivity_scope_label || "WF Only");
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState("");
@@ -185,6 +187,7 @@ export default function EmployeeProductivityDashboard({
     try {
       const res = await getEmployeeProductivityDashboard({ date_et: dateEt });
       setSection(res.data?.employee_completed_bags_today || null);
+      setLaborSummary(res.data?.labor_summary || null);
       setScopeLabel(
         res.data?.productivity_scope_label
           || res.data?.employee_completed_bags_today?.productivity_scope_label
@@ -352,6 +355,8 @@ export default function EmployeeProductivityDashboard({
             ]}
           />
         </Box>
+
+        <EmployeeProductivityLaborSection laborSummary={laborSummary} />
 
         <Box sx={{ mb: 1.25 }}>
           <Typography

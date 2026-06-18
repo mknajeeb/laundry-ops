@@ -320,6 +320,141 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/daily-roster", methods=["GET"])
+    def rinse_shift_analysis_daily_roster_get():
+        from backend.daily_shift_roster import build_roster_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            raw_date = (request.args.get("date_et") or request.args.get("date") or "").strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                roster_date = _today_et()
+            else:
+                roster_date = parse_date_value(raw_date)
+            if not isinstance(roster_date, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/daily-roster", methods=["POST"])
+    def rinse_shift_analysis_daily_roster_create():
+        from backend.daily_shift_roster import build_roster_payload, create_roster_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_date = (body.get("date_et") or body.get("roster_date") or "").strip()
+            if not raw_date:
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            roster_date = parse_date_value(raw_date)
+            if not isinstance(roster_date, date):
+                return jsonify({"error": "date_et must be YYYY-MM-DD"}), 400
+            entry, err = create_roster_entry(
+                cursor,
+                tenant_oid,
+                roster_date=roster_date,
+                data=body,
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload["entry"] = entry
+            return jsonify(json_safe_rinse(payload)), 201
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/daily-roster/<int:entry_id>", methods=["PUT"])
+    def rinse_shift_analysis_daily_roster_update(entry_id: int):
+        from backend.daily_shift_roster import build_roster_payload, get_roster_entry, update_roster_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_roster_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "roster entry not found"}), 404
+            body = request.get_json(silent=True) or {}
+            entry, err = update_roster_entry(cursor, tenant_oid, entry_id, body)
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            roster_date = parse_date_value(existing.get("roster_date"))
+            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload["entry"] = entry
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/daily-roster/<int:entry_id>", methods=["DELETE"])
+    def rinse_shift_analysis_daily_roster_delete(entry_id: int):
+        from backend.daily_shift_roster import build_roster_payload, delete_roster_entry, get_roster_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_roster_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "roster entry not found"}), 404
+            ok, err = delete_roster_entry(cursor, tenant_oid, entry_id)
+            if not ok:
+                return jsonify({"error": err or "delete failed"}), 400
+            conn.commit()
+            roster_date = parse_date_value(existing.get("roster_date"))
+            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/rinse/sync/both", methods=["POST"])
     def rinse_sync_both():
         """Run Ready for Vendor presence sync first, then At Vendor scheduled scrape."""

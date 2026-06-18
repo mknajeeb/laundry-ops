@@ -145,3 +145,62 @@ export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
     },
   ];
 }
+
+export function fmtLaborValue(value, { currency = false, digits = 2 } = {}) {
+  if (value == null || Number.isNaN(Number(value))) return "No Data";
+  const num = Number(value);
+  if (currency) return `$${num.toFixed(digits)}`;
+  return num.toFixed(digits);
+}
+
+export function buildLaborKpiCards(laborSummary) {
+  const kpis = laborSummary?.kpis || {};
+  const available = Boolean(laborSummary?.available);
+  const fmt = (val, opts = {}) => (available ? fmtLaborValue(val, opts) : "N/A");
+  return [
+    {
+      key: "total_labor_hours",
+      label: "Total Labor Hours",
+      value: fmt(kpis.total_labor_hours),
+      variant: "total",
+    },
+    {
+      key: "folder_hours",
+      label: "Folder Hours",
+      value: fmt(kpis.folder_hours),
+      variant: "wf",
+    },
+    {
+      key: "operator_hours",
+      label: "Operator Hours",
+      value: fmt(kpis.operator_hours),
+      variant: "hd",
+    },
+    {
+      key: "total_labor_cost",
+      label: "Total Labor Cost",
+      value: fmt(kpis.total_labor_cost, { currency: true }),
+      variant: "completed",
+    },
+  ];
+}
+
+export function buildLaborCostKpiCards(laborSummary) {
+  const kpis = laborSummary?.kpis || {};
+  const available = Boolean(laborSummary?.available);
+  const fmt = (val) => (available ? fmtLaborValue(val, { currency: true, digits: 2 }) : "N/A");
+  return [
+    {
+      key: "cost_per_bag",
+      label: "Cost Per Bag",
+      value: fmt(kpis.cost_per_bag),
+      variant: "snapshot",
+    },
+    {
+      key: "cost_per_pound",
+      label: "Cost Per Pound",
+      value: fmt(kpis.cost_per_pound),
+      variant: "snapshot",
+    },
+  ];
+}

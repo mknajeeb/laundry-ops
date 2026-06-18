@@ -472,10 +472,19 @@ def build_employee_productivity_dashboard_payload(
     emp = av.get("employee_completed_bags_today") or {}
     include_hd = include_hd_in_employee_productivity(cursor, org)
     scoped_emp = apply_employee_productivity_scope(emp, include_hd=include_hd)
+    from backend.daily_shift_labor_summary import build_labor_summary
+    from backend.daily_shift_roster import list_roster_entries
+
+    roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
+    labor_summary = build_labor_summary(
+        roster_entries,
+        productivity_section=scoped_emp,
+    )
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "employee_completed_bags_today": scoped_emp,
         "completed_today_kpi": av.get("completed") or av.get("completed_today_count"),
         "include_hd_in_employee_productivity": include_hd,
         "productivity_scope_label": productivity_scope_label(include_hd),
+        "labor_summary": labor_summary,
     }

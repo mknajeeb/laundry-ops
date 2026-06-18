@@ -54,6 +54,12 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
+    to: "/performance/daily-roster",
+    labelKey: "nav.dailyShiftRoster",
+    roles: ["ADMIN", "OPS"],
+    moduleKey: "scoreboard",
+  },
+  {
     to: "/performance/settings",
     labelKey: "nav.performanceSettings",
     roles: ["ADMIN", "OPS"],
