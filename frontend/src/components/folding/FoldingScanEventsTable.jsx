@@ -94,6 +94,7 @@ export { formatRinseScanTime as formatScanTime, sortRinseScanEvents as sortScanE
 export default function FoldingScanEventsTable({
   events,
   collapseUploadDuplicates = false,
+  formatTime = formatRinseScanTime,
 }) {
   const sorted = sortRinseScanEvents(events);
   if (!sorted.length) {
@@ -158,7 +159,7 @@ export default function FoldingScanEventsTable({
             </TableCell>
             <TableCell>{row.rack}</TableCell>
             <TableCell>{row.user}</TableCell>
-            <TableCell>{formatRinseScanTime(row.time)}</TableCell>
+            <TableCell>{formatTime(row.time)}</TableCell>
           </TableRow>
         ))}
       </TableBody>

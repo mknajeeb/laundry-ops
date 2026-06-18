@@ -23,7 +23,7 @@ import {
   isWfBag,
 } from "../../utils/shiftMonitorHelpers";
 import { formatLbs } from "../../utils/foldingFormat";
-import { formatIsoEtWall } from "../../utils/rinseTimeFormat";
+import { formatFriendlyEtWall, formatFriendlyScanTime, formatIsoEtWall } from "../../utils/rinseTimeFormat";
 
 function DetailField({ label, value }) {
   if (value == null || value === "" || value === "—") return null;
@@ -50,7 +50,15 @@ function DueStatusBlock({ row, referenceDateEt }) {
   );
 }
 
-export default function ShiftBagRecordRow({ row, variant = "pipeline", referenceDateEt, defaultOpen = false }) {
+export default function ShiftBagRecordRow({
+  row,
+  variant = "pipeline",
+  referenceDateEt,
+  defaultOpen = false,
+  friendlyTimeDisplay = false,
+}) {
+  const formatTime = friendlyTimeDisplay ? formatFriendlyEtWall : formatIsoEtWall;
+  const formatScanTime = friendlyTimeDisplay ? formatFriendlyScanTime : undefined;
   const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState(0);
   const [detail, setDetail] = useState(null);
@@ -179,11 +187,11 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                   <DetailField label="Completion signal" value={row.completion_signal} />
                   <DetailField
                     label="Completion time"
-                    value={formatIsoEtWall(row.completion_time_et || row.completion_time)}
+                    value={formatTime(row.completion_time_et || row.completion_time)}
                   />
                   <DetailField
                     label="Sent to vendor"
-                    value={formatIsoEtWall(row.sent_to_vendor_time_et || row.sent_to_vendor_time)}
+                    value={formatTime(row.sent_to_vendor_time_et || row.sent_to_vendor_time)}
                   />
                   <DetailField label="EDD" value={row.estimated_delivery_date || row.date_clean} />
                   <DetailField label="Population source" value={row.population_source || row.inclusion_reason} />
@@ -195,7 +203,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                         label="Pre-clean weight"
                         value={
                           weightParts.pre != null
-                            ? `${formatLbs(weightParts.pre)} lbs · ${formatIsoEtWall(row.pre_clean_weight_time_et || row.pre_clean_weight_time)}`
+                            ? `${formatLbs(weightParts.pre)} lbs · ${formatTime(row.pre_clean_weight_time_et || row.pre_clean_weight_time)}`
                             : null
                         }
                       />
@@ -203,7 +211,7 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                         label="Post-clean weight"
                         value={
                           weightParts.post != null
-                            ? `${formatLbs(weightParts.post)} lbs · ${formatIsoEtWall(row.post_clean_weight_time_et || row.post_clean_weight_time)}`
+                            ? `${formatLbs(weightParts.post)} lbs · ${formatTime(row.post_clean_weight_time_et || row.post_clean_weight_time)}`
                             : null
                         }
                       />
@@ -229,7 +237,11 @@ export default function ShiftBagRecordRow({ row, variant = "pipeline", reference
                   <Typography variant="body2" color="error.main">{error}</Typography>
                 ) : scans.length ? (
                   <Box sx={{ overflowX: "auto", maxWidth: "100%" }}>
-                    <FoldingScanEventsTable events={scans} collapseUploadDuplicates />
+                    <FoldingScanEventsTable
+                      events={scans}
+                      collapseUploadDuplicates
+                      formatTime={formatScanTime}
+                    />
                   </Box>
                 ) : (
                   <Typography variant="body2" color="text.secondary">No scan events for this bag.</Typography>

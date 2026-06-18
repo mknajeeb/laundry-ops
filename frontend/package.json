@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "check:productivity-times": "node scripts/checkEmployeeProductivityTimeFormat.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

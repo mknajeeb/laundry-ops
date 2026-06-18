@@ -62,6 +62,41 @@ export function normalizeEtSuffix(label) {
   return String(label).replace(/\b(EDT|EST)\b/gi, "ET").trim();
 }
 
+const FRIENDLY_ET_RE = /^[A-Za-z]{3}\s+\d{1,2},\s+\d{1,2}:\d{2}\s+(AM|PM)\s+ET$/i;
+
+/** Friendly Eastern display for UI: Jun 17, 5:21 AM ET */
+export function formatFriendlyEtWall(value) {
+  if (value == null || value === "") return "—";
+  const s = String(value).trim();
+  if (!s || s === "—") return "—";
+  if (FRIENDLY_ET_RE.test(s)) return normalizeEtSuffix(s);
+
+  const stripped = s.replace(/\s+ET$/i, "").trim();
+  const naive = formatNaiveEtWallDateTime(stripped);
+  if (naive) return naive;
+
+  if (hasExplicitTzOffset(s)) return formatBusinessDateTime(s);
+
+  const isoNaive = stripped.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})/);
+  if (isoNaive) {
+    return formatNaiveEtWallDateTime(
+      `${isoNaive[1]}-${isoNaive[2]}-${isoNaive[3]} ${isoNaive[4]}:${isoNaive[5]}`,
+    );
+  }
+
+  return "—";
+}
+
+/** Scan timeline display — friendly ET; prefers portal raw text when present. */
+export function formatFriendlyScanTime(ev) {
+  const raw = String(ev?.time_scanned_raw ?? "").trim();
+  if (raw) {
+    const friendly = formatFriendlyEtWall(raw);
+    if (friendly !== "—") return friendly;
+  }
+  return formatFriendlyEtWall(ev?.scanned_at_parsed || ev?.time_scanned_et);
+}
+
 /** ISO-style Eastern wall: YYYY-MM-DD HH:MM:SS ET (matches backend _format_et_display). */
 export function formatIsoEtWall(value) {
   if (value == null || value === "") return "—";

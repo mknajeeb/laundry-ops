@@ -16,7 +16,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
-import { formatIsoEtWall } from "../../utils/rinseTimeFormat";
+import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
 function completionTs(bag) {
   return String(bag.completion_time || bag.completion_timestamp || "");
@@ -42,7 +42,7 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt }) {
               {bag.bag_id}
             </Link>
             <Typography variant="body2" color="text.secondary">
-              {formatIsoEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
+              {formatFriendlyEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
             </Typography>
           </Box>
           <Typography variant="body2" fontWeight={700} sx={{ whiteSpace: "nowrap" }}>
@@ -63,6 +63,7 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt }) {
             variant="at_vendor"
             referenceDateEt={referenceDateEt}
             defaultOpen
+            friendlyTimeDisplay
           />
         </Box>
       </Collapse>
@@ -149,7 +150,7 @@ export default function EmployeeProductivityDrilldown({
                 sx={{ "& td": { py: 1.1 } }}
               >
                 <TableCell sx={{ whiteSpace: "nowrap" }}>
-                  {formatIsoEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
+                  {formatFriendlyEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
                 </TableCell>
                 <TableCell>
                   <Link
@@ -184,6 +185,7 @@ export default function EmployeeProductivityDrilldown({
             variant="at_vendor"
             referenceDateEt={referenceDateEt}
             defaultOpen
+            friendlyTimeDisplay
           />
         </Box>
       ) : null}

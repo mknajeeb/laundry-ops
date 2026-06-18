@@ -22,7 +22,7 @@ import {
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { getEmployeeProductivityDashboard } from "../../api";
-import { formatIsoEtWall } from "../../utils/rinseTimeFormat";
+import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
 import {
   PRODUCTIVITY_RANK_OPTIONS,
@@ -50,8 +50,8 @@ function EmployeeSummaryPanel({ emp }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
   const items = [
-    { label: "Clock In", value: missingClockIn ? "Missing clock-in" : formatIsoEtWall(emp.clock_in_time_et || emp.clock_in_time) },
-    { label: "Last Completion", value: formatIsoEtWall(emp.last_completion_time_et || emp.last_completion_time) },
+    { label: "Clock In", value: missingClockIn ? "Missing clock-in" : formatFriendlyEtWall(emp.clock_in_time_et || emp.clock_in_time) },
+    { label: "Last Completion", value: formatFriendlyEtWall(emp.last_completion_time_et || emp.last_completion_time) },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
     { label: "Bags", value: emp.completed_bags ?? 0 },
     { label: "Pounds", value: emp.total_completed_lbs ?? 0 },
