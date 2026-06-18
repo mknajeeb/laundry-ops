@@ -1,0 +1,278 @@
+"""Tests for planned weekly schedule totals, move, and org isolation."""
+
+from __future__ import annotations
+
+from datetime import date, time
+from unittest.mock import MagicMock, patch
+
+from backend.planned_weekly_schedule import (
+    compute_schedule_totals,
+    create_entry,
+    delete_entry,
+    duplicate_entry,
+    get_entry,
+    list_week_entries,
+    move_entry,
+    normalize_week_start,
+    serialize_entry,
+    update_entry,
+)
+
+
+class _FakeCursor:
+    def __init__(self):
+        self._id = 0
+        self.rows: list[dict] = []
+        self.connection = object()
+        self._rowcount = 0
+
+    def execute(self, sql, params=None):
+        sql_norm = " ".join(sql.split()).lower()
+        params = params or ()
+        if "show tables" in sql_norm or "information_schema" in sql_norm:
+            self._last = [{"cnt": 1}]
+            return
+        if "create table" in sql_norm:
+            return
+        if "insert into planned_weekly_schedule_entries" in sql_norm:
+            self._id += 1
+            row = {
+                "id": self._id,
+                "organization_id": params[0],
+                "week_start": params[1],
+                "user_id": params[2],
+                "day_of_week": params[3],
+                "role": params[4],
+                "start_time": params[5],
+                "end_time": params[6],
+                "break_minutes": params[7],
+            }
+            self.rows.append(row)
+            return
+        if "update planned_weekly_schedule_entries" in sql_norm:
+            entry_id = params[7]
+            for row in self.rows:
+                if row["id"] == entry_id:
+                    row.update(
+                        {
+                            "user_id": params[0],
+                            "day_of_week": params[1],
+                            "role": params[2],
+                            "start_time": params[3],
+                            "end_time": params[4],
+                            "break_minutes": params[5],
+                        }
+                    )
+            return
+        if "delete from planned_weekly_schedule_entries" in sql_norm:
+            org_id, entry_id = params
+            before = len(self.rows)
+            self.rows = [r for r in self.rows if not (r["organization_id"] == org_id and r["id"] == entry_id)]
+            self._rowcount = before - len(self.rows)
+            return
+        if "from planned_weekly_schedule_entries" in sql_norm:
+            if "and id =" in sql_norm:
+                org_id, entry_id = params
+                self._last = [r for r in self.rows if r["organization_id"] == org_id and r["id"] == entry_id]
+            else:
+                org_id, week_start = params
+                self._last = [
+                    r
+                    for r in self.rows
+                    if r["organization_id"] == org_id and r["week_start"] == week_start
+                ]
+            return
+
+    def fetchone(self):
+        rows = getattr(self, "_last", [])
+        return rows[0] if rows else None
+
+    def fetchall(self):
+        return list(getattr(self, "_last", []))
+
+    @property
+    def lastrowid(self):
+        return self._id
+
+    @property
+    def rowcount(self):
+        return self._rowcount
+
+
+def _mock_workers():
+    return [
+        {"user_id": 10, "id": 1, "display_name": "Alice", "default_hourly_rate": 19.5, "active": True},
+        {"user_id": 20, "id": 2, "display_name": "Bob", "default_hourly_rate": 20.0, "active": True},
+    ]
+
+
+def test_normalize_week_start_snaps_to_sunday():
+    assert normalize_week_start("2026-06-18") == date(2026, 6, 14)
+    assert normalize_week_start(date(2026, 6, 14)) == date(2026, 6, 14)
+
+
+def test_compute_schedule_totals_employee_and_day_rollups():
+    entries = [
+        serialize_entry(
+            {
+                "id": 1,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "folder",
+                "start_time": time(9, 0),
+                "end_time": time(16, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 2,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 1,
+                "role": "operator",
+                "start_time": time(6, 0),
+                "end_time": time(15, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 3,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 20,
+                "day_of_week": 0,
+                "role": "operator",
+                "start_time": time(8, 0),
+                "end_time": time(12, 0),
+                "break_minutes": 0,
+            }
+        ),
+    ]
+    workers = {10: {"default_hourly_rate": 19.5}, 20: {"default_hourly_rate": 20.0}}
+    totals = compute_schedule_totals(entries, workers)
+
+    assert totals["employee_totals"][10]["total_hours"] == 16.0
+    assert totals["employee_totals"][10]["scheduled_days"] == 2
+    assert totals["employee_totals"][10]["estimated_cost"] == 312.0
+
+    sun = totals["day_totals"][0]
+    assert sun["employee_count"] == 2
+    assert sun["total_hours"] == 11.0
+    assert sun["operator_count"] == 1
+    assert sun["folder_count"] == 1
+
+
+def test_move_entry_updates_user_and_day():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        created, err = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "folder",
+                "start_time": "09:00",
+                "end_time": "16:00",
+            },
+        )
+    assert err is None
+    with patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()):
+        moved, err = move_entry(conn, cursor, 1, created["id"], user_id=20, day_of_week=3)
+    assert err is None
+    assert moved["user_id"] == 20
+    assert moved["day_of_week"] == 3
+
+
+def test_duplicate_entry_creates_copy():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        created, err = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 2,
+                "role": "operator",
+                "start_time": "06:00",
+                "end_time": "15:00",
+            },
+        )
+    assert err is None
+    with patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()):
+        copied, err = duplicate_entry(conn, cursor, 1, created["id"], day_of_week=4)
+    assert err is None
+    assert copied["id"] != created["id"]
+    assert copied["day_of_week"] == 4
+    assert copied["role"] == "operator"
+
+
+def test_org_isolation_on_get_and_delete():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        created, _ = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "folder",
+                "start_time": "09:00",
+                "end_time": "16:00",
+            },
+        )
+    assert get_entry(cursor, 2, created["id"]) is None
+    assert delete_entry(cursor, 2, created["id"]) is False
+    assert get_entry(cursor, 1, created["id"]) is not None
+    assert delete_entry(cursor, 1, created["id"]) is True
+    assert get_entry(cursor, 1, created["id"]) is None
+    assert list_week_entries(cursor, 1, week_start=week) == []
+
+
+def test_update_entry_rejects_unknown_worker():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        created, _ = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "folder",
+                "start_time": "09:00",
+                "end_time": "16:00",
+            },
+        )
+    with patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()):
+        updated, err = update_entry(conn, cursor, 1, created["id"], {"user_id": 999})
+    assert updated is None
+    assert err == "worker not found in payroll profiles"

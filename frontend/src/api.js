@@ -556,6 +556,24 @@ export const deleteDailyShiftRosterEntry = (entryId) =>
 export const importDailyShiftRosterFromPayroll = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/import-from-payroll`, body, { timeout: 30000 });
 
+export const getWeeklySchedule = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule`, { params, timeout: 30000 });
+
+export const createWeeklyScheduleEntry = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule`, body, { timeout: 30000 });
+
+export const updateWeeklyScheduleEntry = (entryId, body) =>
+  axios.put(`${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}`, body, { timeout: 30000 });
+
+export const deleteWeeklyScheduleEntry = (entryId) =>
+  axios.delete(`${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}`, { timeout: 30000 });
+
+export const moveWeeklyScheduleEntry = (entryId, body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}/move`, body, { timeout: 30000 });
+
+export const duplicateWeeklyScheduleEntry = (entryId, body = {}) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}/duplicate`, body, { timeout: 30000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 

@@ -35,6 +35,7 @@ import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
 import ShiftMonitorPage from "./pages/ShiftMonitorPage";
 import DailyShiftRosterPage from "./pages/DailyShiftRosterPage";
+import WeeklySchedulePage from "./pages/WeeklySchedulePage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
 import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
 import PerformanceBackfillPage from "./pages/PerformanceBackfillPage";
@@ -797,6 +798,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
                     <DailyShiftRosterPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/weekly-schedule"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <WeeklySchedulePage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

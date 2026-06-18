@@ -507,6 +507,223 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/weekly-schedule", methods=["GET"])
+    def rinse_shift_analysis_weekly_schedule_get():
+        from backend.planned_weekly_schedule import build_week_payload, normalize_week_start
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            raw_week = (request.args.get("week_start") or "").strip()
+            if not raw_week:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                week_start = normalize_week_start(_today_et())
+            else:
+                week_start = normalize_week_start(raw_week)
+            if not isinstance(week_start, date):
+                return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_create():
+        from backend.planned_weekly_schedule import build_week_payload, create_entry, normalize_week_start
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_week = (body.get("week_start") or "").strip()
+            if not raw_week:
+                return jsonify({"error": "week_start required (YYYY-MM-DD)"}), 400
+            week_start = normalize_week_start(raw_week)
+            if not isinstance(week_start, date):
+                return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+            entry, err = create_entry(
+                conn,
+                cursor,
+                tenant_oid,
+                week_start=week_start,
+                data=body,
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload["entry"] = entry
+            return jsonify(json_safe_rinse(payload)), 201
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/<int:entry_id>", methods=["PUT"])
+    def rinse_shift_analysis_weekly_schedule_update(entry_id: int):
+        from backend.planned_weekly_schedule import build_week_payload, get_entry, update_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "schedule entry not found"}), 404
+            body = request.get_json(silent=True) or {}
+            entry, err = update_entry(conn, cursor, tenant_oid, entry_id, body)
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            week_start = date.fromisoformat(str(existing["week_start"]))
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload["entry"] = entry
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/<int:entry_id>", methods=["DELETE"])
+    def rinse_shift_analysis_weekly_schedule_delete(entry_id: int):
+        from backend.planned_weekly_schedule import build_week_payload, delete_entry, get_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "schedule entry not found"}), 404
+            if not delete_entry(cursor, tenant_oid, entry_id):
+                return jsonify({"error": "schedule entry not found"}), 404
+            conn.commit()
+            week_start = date.fromisoformat(str(existing["week_start"]))
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/<int:entry_id>/move", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_move(entry_id: int):
+        from backend.planned_weekly_schedule import build_week_payload, get_entry, move_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "schedule entry not found"}), 404
+            body = request.get_json(silent=True) or {}
+            entry, err = move_entry(
+                conn,
+                cursor,
+                tenant_oid,
+                entry_id,
+                user_id=body.get("user_id"),
+                day_of_week=body.get("day_of_week"),
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            week_start = date.fromisoformat(str(existing["week_start"]))
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload["entry"] = entry
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/<int:entry_id>/duplicate", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_duplicate(entry_id: int):
+        from backend.planned_weekly_schedule import build_week_payload, duplicate_entry, get_entry
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            existing = get_entry(cursor, tenant_oid, entry_id)
+            if not existing:
+                return jsonify({"error": "schedule entry not found"}), 404
+            body = request.get_json(silent=True) or {}
+            entry, err = duplicate_entry(
+                conn,
+                cursor,
+                tenant_oid,
+                entry_id,
+                user_id=body.get("user_id"),
+                day_of_week=body.get("day_of_week"),
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            week_start = date.fromisoformat(str(existing["week_start"]))
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload["entry"] = entry
+            return jsonify(json_safe_rinse(payload)), 201
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/rinse/sync/both", methods=["POST"])
     def rinse_sync_both():
         """Run Ready for Vendor presence sync first, then At Vendor scheduled scrape."""
