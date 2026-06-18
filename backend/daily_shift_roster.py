@@ -367,6 +367,7 @@ def build_roster_payload(
     organization_id: int,
     *,
     roster_date: date,
+    conn,
 ) -> dict[str, Any]:
     from backend.daily_shift_roster_payroll import build_payroll_prefill_entries
 
@@ -379,7 +380,6 @@ def build_roster_payload(
         sum(float(e.get("cost") or 0) for e in entries if e.get("cost") is not None),
         2,
     )
-    conn = cursor.connection if hasattr(cursor, "connection") else None
     payroll_prefill: list[dict[str, Any]] = []
     payroll_record_count = 0
     if conn is not None:

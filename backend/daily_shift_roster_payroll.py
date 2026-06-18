@@ -116,6 +116,7 @@ def import_payroll_records_into_roster(
     organization_id: int,
     *,
     roster_date: date,
+    conn,
     existing_entries: list[dict[str, Any]] | None = None,
 ) -> tuple[int, list[dict[str, Any]], str | None]:
     from backend.daily_shift_roster import create_roster_entry, list_roster_entries
@@ -128,7 +129,6 @@ def import_payroll_records_into_roster(
         roster_entry_match_key(e.get("employee_name"), e.get("start_time")) for e in saved
     }
 
-    conn = cursor.connection if hasattr(cursor, "connection") else None
     if conn is None:
         return 0, saved, "database connection required"
 

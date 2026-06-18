@@ -313,7 +313,7 @@ class TestPayrollImport:
         )
 
         added, saved, err = import_payroll_records_into_roster(
-            cursor, org, roster_date=roster_date
+            cursor, org, roster_date=roster_date, conn=object()
         )
         assert err is None
         assert added == 1
@@ -333,7 +333,9 @@ class TestRosterPayloadMessages:
             "backend.daily_shift_roster_payroll.build_payroll_prefill_entries",
             lambda *_a, **_k: [{"employee_name": "Jane", "start_time": "08:00"}],
         )
-        payload = build_roster_payload(cursor, 3, roster_date=date(2026, 6, 18))
+        payload = build_roster_payload(
+            cursor, 3, roster_date=date(2026, 6, 18), conn=object()
+        )
         assert payload["has_roster"] is False
         assert payload["payroll_record_count"] == 1
         assert payload["message"] == "Payroll records found. Review and save today's roster."
@@ -346,7 +348,9 @@ class TestRosterPayloadMessages:
             "backend.daily_shift_roster_payroll.build_payroll_prefill_entries",
             lambda *_a, **_k: [],
         )
-        payload = build_roster_payload(cursor, 3, roster_date=date(2026, 6, 18))
+        payload = build_roster_payload(
+            cursor, 3, roster_date=date(2026, 6, 18), conn=object()
+        )
         assert payload["message"] == "No labor roster recorded for this date."
         assert payload["payroll_prefill"] == []
 

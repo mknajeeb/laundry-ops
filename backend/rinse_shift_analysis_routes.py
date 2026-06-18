@@ -340,7 +340,9 @@ def register_rinse_shift_analysis_routes(
                 roster_date = parse_date_value(raw_date)
             if not isinstance(roster_date, date):
                 return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
-            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload = build_roster_payload(
+                cursor, tenant_oid, roster_date=roster_date, conn=conn
+            )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -379,7 +381,9 @@ def register_rinse_shift_analysis_routes(
             if err:
                 return jsonify({"error": err}), 400
             conn.commit()
-            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload = build_roster_payload(
+                cursor, tenant_oid, roster_date=roster_date, conn=conn
+            )
             payload["entry"] = entry
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
@@ -413,7 +417,9 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": err}), 400
             conn.commit()
             roster_date = parse_date_value(existing.get("roster_date"))
-            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload = build_roster_payload(
+                cursor, tenant_oid, roster_date=roster_date, conn=conn
+            )
             payload["entry"] = entry
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -446,7 +452,9 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": err or "delete failed"}), 400
             conn.commit()
             roster_date = parse_date_value(existing.get("roster_date"))
-            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload = build_roster_payload(
+                cursor, tenant_oid, roster_date=roster_date, conn=conn
+            )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
@@ -482,11 +490,14 @@ def register_rinse_shift_analysis_routes(
                 cursor,
                 tenant_oid,
                 roster_date=roster_date,
+                conn=conn,
             )
             if err:
                 return jsonify({"error": err}), 400
             conn.commit()
-            payload = build_roster_payload(cursor, tenant_oid, roster_date=roster_date)
+            payload = build_roster_payload(
+                cursor, tenant_oid, roster_date=roster_date, conn=conn
+            )
             payload["imported_count"] = added
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
