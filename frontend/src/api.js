@@ -577,6 +577,9 @@ export const moveWeeklyScheduleEntry = (entryId, body) =>
 export const duplicateWeeklyScheduleEntry = (entryId, body = {}) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/${encodeURIComponent(entryId)}/duplicate`, body, { timeout: 30000 });
 
+export const setWeeklyScheduleExclusion = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/exclusions`, body, { timeout: 30000 });
+
 export const getShiftAnalysisSummary = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/summary`, { params, timeout: 60000 });
 

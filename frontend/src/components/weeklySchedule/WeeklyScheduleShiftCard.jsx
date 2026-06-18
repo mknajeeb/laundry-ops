@@ -28,6 +28,7 @@ export default function WeeklyScheduleShiftCard({
   onDragStart,
   onDragEnd,
   dragging,
+  muted = false,
 }) {
   const role = ROLE_STYLES[entry.role] || ROLE_STYLES.folder;
   const hours = Number(entry.hours || 0);
@@ -35,8 +36,9 @@ export default function WeeklyScheduleShiftCard({
   return (
     <Paper
       elevation={0}
-      draggable
+      draggable={!muted}
       onDragStart={(e) => {
+        if (muted) return;
         e.dataTransfer.setData("text/plain", String(entry.id));
         e.dataTransfer.effectAllowed = "move";
         onDragStart?.(entry);
@@ -47,16 +49,18 @@ export default function WeeklyScheduleShiftCard({
         p: 1,
         mb: 0.75,
         borderRadius: 2,
-        cursor: "grab",
-        border: `1px solid ${role.border}`,
-        bgcolor: role.bg,
-        opacity: dragging ? 0.45 : 1,
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
+        cursor: muted ? "default" : "grab",
+        border: `1px solid ${muted ? "divider" : role.border}`,
+        bgcolor: muted ? "action.hover" : role.bg,
+        opacity: dragging ? 0.45 : muted ? 0.72 : 1,
+        boxShadow: muted ? "none" : VEEWASH_DASHBOARD.cardShadow,
         transition: "box-shadow 0.15s ease, border-color 0.15s ease",
-        "&:hover": {
-          borderColor: role.accent,
-          boxShadow: "0 4px 14px rgba(0, 151, 178, 0.12)",
-        },
+        "&:hover": muted
+          ? {}
+          : {
+              borderColor: role.accent,
+              boxShadow: "0 4px 14px rgba(0, 151, 178, 0.12)",
+            },
       }}
     >
       <Stack direction="row" alignItems="flex-start" spacing={0.5}>

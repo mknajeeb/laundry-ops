@@ -1,4 +1,4 @@
-"""Tests for planned weekly schedule totals, move, and org isolation."""
+"""Tests for planned weekly schedule totals, move, org isolation, and exclusions."""
 
 from __future__ import annotations
 
@@ -6,15 +6,18 @@ from datetime import date, time
 from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule import (
+    build_week_payload,
     compute_schedule_totals,
     create_entry,
     delete_entry,
     duplicate_entry,
     get_entry,
+    list_excluded_user_ids,
     list_week_entries,
     move_entry,
     normalize_week_start,
     serialize_entry,
+    set_employee_exclusion,
     update_entry,
 )
 
@@ -23,6 +26,7 @@ class _FakeCursor:
     def __init__(self):
         self._id = 0
         self.rows: list[dict] = []
+        self.exclusions: list[dict] = []
         self.connection = object()
         self._rowcount = 0
 
@@ -33,6 +37,40 @@ class _FakeCursor:
             self._last = [{"cnt": 1}]
             return
         if "create table" in sql_norm:
+            return
+        if "insert ignore into planned_weekly_schedule_exclusions" in sql_norm:
+            org_id, week_start, user_id = params
+            if not any(
+                r["organization_id"] == org_id
+                and r["week_start"] == week_start
+                and r["user_id"] == user_id
+                for r in self.exclusions
+            ):
+                self.exclusions.append(
+                    {"organization_id": org_id, "week_start": week_start, "user_id": user_id}
+                )
+            return
+        if "delete from planned_weekly_schedule_exclusions" in sql_norm:
+            org_id, week_start, user_id = params
+            before = len(self.exclusions)
+            self.exclusions = [
+                r
+                for r in self.exclusions
+                if not (
+                    r["organization_id"] == org_id
+                    and r["week_start"] == week_start
+                    and r["user_id"] == user_id
+                )
+            ]
+            self._rowcount = before - len(self.exclusions)
+            return
+        if "from planned_weekly_schedule_exclusions" in sql_norm:
+            org_id, week_start = params
+            self._last = [
+                r
+                for r in self.exclusions
+                if r["organization_id"] == org_id and r["week_start"] == week_start
+            ]
             return
         if "insert into planned_weekly_schedule_entries" in sql_norm:
             self._id += 1
@@ -165,6 +203,106 @@ def test_compute_schedule_totals_employee_and_day_rollups():
     assert sun["total_hours"] == 11.0
     assert sun["operator_count"] == 1
     assert sun["folder_count"] == 1
+
+
+def test_compute_schedule_totals_skips_excluded_employees():
+    entries = [
+        serialize_entry(
+            {
+                "id": 1,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 10,
+                "day_of_week": 0,
+                "role": "folder",
+                "start_time": time(9, 0),
+                "end_time": time(16, 0),
+                "break_minutes": 0,
+            }
+        ),
+        serialize_entry(
+            {
+                "id": 2,
+                "organization_id": 1,
+                "week_start": date(2026, 6, 14),
+                "user_id": 20,
+                "day_of_week": 0,
+                "role": "operator",
+                "start_time": time(8, 0),
+                "end_time": time(12, 0),
+                "break_minutes": 0,
+            }
+        ),
+    ]
+    workers = {10: {"default_hourly_rate": 19.5}, 20: {"default_hourly_rate": 20.0}}
+    totals = compute_schedule_totals(entries, workers, excluded_user_ids=[10])
+
+    assert 10 not in totals["employee_totals"]
+    assert totals["employee_totals"][20]["total_hours"] == 4.0
+    sun = totals["day_totals"][0]
+    assert sun["employee_count"] == 1
+    assert sun["total_hours"] == 4.0
+    assert sun["operator_count"] == 1
+    assert sun["folder_count"] == 0
+
+
+def test_set_employee_exclusion_toggle():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        excluded, err = set_employee_exclusion(
+            conn, cursor, 1, week_start=week, user_id=10, excluded=True
+        )
+    assert err is None
+    assert excluded is True
+    assert list_excluded_user_ids(cursor, 1, week_start=week) == [10]
+
+    with patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()):
+        included, err = set_employee_exclusion(
+            conn, cursor, 1, week_start=week, user_id=10, excluded=False
+        )
+    assert err is None
+    assert included is False
+    assert list_excluded_user_ids(cursor, 1, week_start=week) == []
+
+
+def test_build_week_payload_marks_excluded_employees():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    cursor.exclusions.append({"organization_id": 1, "week_start": week, "user_id": 10})
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ), patch(
+        "backend.planned_weekly_schedule.list_week_entries",
+        return_value=[
+            serialize_entry(
+                {
+                    "id": 1,
+                    "organization_id": 1,
+                    "week_start": week,
+                    "user_id": 10,
+                    "day_of_week": 0,
+                    "role": "folder",
+                    "start_time": time(9, 0),
+                    "end_time": time(16, 0),
+                    "break_minutes": 0,
+                }
+            )
+        ],
+    ):
+        payload = build_week_payload(conn, cursor, 1, week_start=week)
+
+    alice = next(e for e in payload["employees"] if e["user_id"] == 10)
+    bob = next(e for e in payload["employees"] if e["user_id"] == 20)
+    assert alice["excluded"] is True
+    assert alice["total_hours"] == 0.0
+    assert bob["excluded"] is False
+    assert payload["excluded_user_ids"] == [10]
+    assert payload["totals"]["day_totals"][0]["employee_count"] == 0
 
 
 def test_move_entry_updates_user_and_day():

@@ -770,6 +770,57 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/weekly-schedule/exclusions", methods=["POST"])
+    def rinse_shift_analysis_weekly_schedule_exclusion():
+        from backend.planned_weekly_schedule import (
+            build_week_payload,
+            normalize_week_start,
+            set_employee_exclusion,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_week = (body.get("week_start") or "").strip()
+            if not raw_week:
+                return jsonify({"error": "week_start required (YYYY-MM-DD)"}), 400
+            week_start = normalize_week_start(raw_week)
+            if not isinstance(week_start, date):
+                return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+            excluded_raw = body.get("excluded")
+            if excluded_raw is None:
+                return jsonify({"error": "excluded is required (boolean)"}), 400
+            excluded, err = set_employee_exclusion(
+                conn,
+                cursor,
+                tenant_oid,
+                week_start=week_start,
+                user_id=body.get("user_id"),
+                excluded=bool(excluded_raw),
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload["excluded"] = excluded
+            payload["user_id"] = int(body.get("user_id") or 0)
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/api/rinse/sync/both", methods=["POST"])
     def rinse_sync_both():
         """Run Ready for Vendor presence sync first, then At Vendor scheduled scrape."""

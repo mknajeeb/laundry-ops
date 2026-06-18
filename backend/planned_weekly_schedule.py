@@ -42,6 +42,24 @@ def normalize_day_of_week(raw: Any) -> int | None:
     return None
 
 
+def ensure_planned_weekly_schedule_exclusions_table(cursor) -> None:
+    if table_exists(cursor, "planned_weekly_schedule_exclusions"):
+        return
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS planned_weekly_schedule_exclusions (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          organization_id INT NOT NULL,
+          week_start DATE NOT NULL,
+          user_id INT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_pwse_org_week_user (organization_id, week_start, user_id),
+          INDEX idx_pwse_org_week (organization_id, week_start)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+
+
 def ensure_planned_weekly_schedule_table(cursor) -> None:
     if table_exists(cursor, "planned_weekly_schedule_entries"):
         return
@@ -113,7 +131,10 @@ def _worker_rate(worker: Mapping[str, Any] | None) -> float:
 def compute_schedule_totals(
     entries: Sequence[Mapping[str, Any]],
     workers_by_user_id: Mapping[int, Mapping[str, Any]],
+    *,
+    excluded_user_ids: Sequence[int] | None = None,
 ) -> dict[str, Any]:
+    excluded = {int(uid) for uid in (excluded_user_ids or [])}
     employee_totals: dict[int, dict[str, Any]] = {}
     day_totals: dict[int, dict[str, Any]] = {
         dow: {
@@ -130,6 +151,8 @@ def compute_schedule_totals(
 
     for entry in entries or []:
         uid = int(entry.get("user_id") or 0)
+        if uid in excluded:
+            continue
         dow = int(entry.get("day_of_week") or 0)
         hours = float(entry.get("hours") or _shift_hours_for_entry(entry))
         role = normalize_role(entry.get("role")) or "folder"
@@ -164,6 +187,8 @@ def compute_schedule_totals(
     day_people: dict[int, set[int]] = defaultdict(set)
     for entry in entries or []:
         uid = int(entry.get("user_id") or 0)
+        if uid in excluded:
+            continue
         dow = int(entry.get("day_of_week") or 0)
         day_people[dow].add(uid)
     for dow, people in day_people.items():
@@ -210,6 +235,75 @@ def list_week_entries(
     )
     rows = cursor.fetchall() or []
     return [serialize_entry(r) for r in rows if isinstance(r, dict)]
+
+
+def list_excluded_user_ids(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+) -> list[int]:
+    ensure_planned_weekly_schedule_exclusions_table(cursor)
+    cursor.execute(
+        """
+        SELECT user_id
+        FROM planned_weekly_schedule_exclusions
+        WHERE organization_id = %s AND week_start = %s
+        ORDER BY user_id ASC
+        """,
+        (int(organization_id), week_start),
+    )
+    rows = cursor.fetchall() or []
+    out: list[int] = []
+    for row in rows:
+        if isinstance(row, dict):
+            out.append(int(row.get("user_id") or 0))
+        else:
+            try:
+                out.append(int(row))
+            except (TypeError, ValueError):
+                continue
+    return [uid for uid in out if uid > 0]
+
+
+def set_employee_exclusion(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    user_id: int,
+    excluded: bool,
+) -> tuple[bool, str | None]:
+    ensure_planned_weekly_schedule_exclusions_table(cursor)
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False, "user_id is required"
+    if uid <= 0:
+        return False, "user_id is required"
+    worker_err = _assert_worker_in_org(conn, organization_id, uid)
+    if worker_err:
+        return False, worker_err
+    oid = int(organization_id)
+    if excluded:
+        cursor.execute(
+            """
+            INSERT IGNORE INTO planned_weekly_schedule_exclusions
+                (organization_id, week_start, user_id)
+            VALUES (%s, %s, %s)
+            """,
+            (oid, week_start, uid),
+        )
+    else:
+        cursor.execute(
+            """
+            DELETE FROM planned_weekly_schedule_exclusions
+            WHERE organization_id = %s AND week_start = %s AND user_id = %s
+            """,
+            (oid, week_start, uid),
+        )
+    return excluded, None
 
 
 def get_entry(
@@ -458,11 +552,18 @@ def build_week_payload(
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
     entries = list_week_entries(cursor, organization_id, week_start=week_start)
-    totals = compute_schedule_totals(entries, workers_by_uid)
+    excluded_user_ids = list_excluded_user_ids(cursor, organization_id, week_start=week_start)
+    excluded_set = set(excluded_user_ids)
+    totals = compute_schedule_totals(
+        entries,
+        workers_by_uid,
+        excluded_user_ids=excluded_user_ids,
+    )
 
     employee_rows = []
     for worker in workers:
         uid = int(worker.get("user_id") or 0)
+        is_excluded = uid in excluded_set
         stats = totals["employee_totals"].get(uid) or {
             "user_id": uid,
             "total_hours": 0.0,
@@ -478,6 +579,7 @@ def build_week_payload(
                 "total_hours": stats["total_hours"],
                 "scheduled_days": stats["scheduled_days"],
                 "estimated_cost": stats["estimated_cost"],
+                "excluded": is_excluded,
             }
         )
     employee_rows.sort(key=lambda row: (row.get("display_name") or "").casefold())
@@ -488,4 +590,5 @@ def build_week_payload(
         "employees": employee_rows,
         "entries": entries,
         "totals": totals,
+        "excluded_user_ids": excluded_user_ids,
     }
