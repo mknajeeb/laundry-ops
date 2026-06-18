@@ -16,6 +16,9 @@ from backend.planned_weekly_schedule import (
     list_week_entries,
     move_entry,
     normalize_week_start,
+    normalize_weekly_role,
+    parse_weekly_roles,
+    roles_to_storage,
     serialize_entry,
     set_employee_exclusion,
     update_entry,
@@ -149,6 +152,31 @@ def test_normalize_week_start_snaps_to_sunday():
     assert normalize_week_start(date(2026, 6, 14)) == date(2026, 6, 14)
 
 
+def test_normalize_weekly_role_legacy_and_new():
+    assert normalize_weekly_role("folder") == "fold"
+    assert normalize_weekly_role("operator") == "wash"
+    assert normalize_weekly_role("sort") == "sort"
+    assert parse_weekly_roles("wash,fold") == ["wash", "fold"]
+    assert roles_to_storage(["fold", "sort", "wash"]) == "sort,wash,fold"
+
+
+def test_shift_hours_nine_to_four_is_seven():
+    entry = serialize_entry(
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": date(2026, 6, 14),
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        }
+    )
+    assert entry["hours"] == 7.0
+
+
 def test_compute_schedule_totals_employee_and_day_rollups():
     entries = [
         serialize_entry(
@@ -158,7 +186,7 @@ def test_compute_schedule_totals_employee_and_day_rollups():
                 "week_start": date(2026, 6, 14),
                 "user_id": 10,
                 "day_of_week": 0,
-                "role": "folder",
+                "role": "fold",
                 "start_time": time(9, 0),
                 "end_time": time(16, 0),
                 "break_minutes": 0,
@@ -171,7 +199,7 @@ def test_compute_schedule_totals_employee_and_day_rollups():
                 "week_start": date(2026, 6, 14),
                 "user_id": 10,
                 "day_of_week": 1,
-                "role": "operator",
+                "role": "wash",
                 "start_time": time(6, 0),
                 "end_time": time(15, 0),
                 "break_minutes": 0,
@@ -184,7 +212,7 @@ def test_compute_schedule_totals_employee_and_day_rollups():
                 "week_start": date(2026, 6, 14),
                 "user_id": 20,
                 "day_of_week": 0,
-                "role": "operator",
+                "role": "sort,wash",
                 "start_time": time(8, 0),
                 "end_time": time(12, 0),
                 "break_minutes": 0,
@@ -201,8 +229,9 @@ def test_compute_schedule_totals_employee_and_day_rollups():
     sun = totals["day_totals"][0]
     assert sun["employee_count"] == 2
     assert sun["total_hours"] == 11.0
-    assert sun["operator_count"] == 1
-    assert sun["folder_count"] == 1
+    assert sun["wash_count"] == 1
+    assert sun["fold_count"] == 1
+    assert sun["sort_count"] == 1
 
 
 def test_compute_schedule_totals_skips_excluded_employees():
@@ -214,7 +243,7 @@ def test_compute_schedule_totals_skips_excluded_employees():
                 "week_start": date(2026, 6, 14),
                 "user_id": 10,
                 "day_of_week": 0,
-                "role": "folder",
+                "role": "fold",
                 "start_time": time(9, 0),
                 "end_time": time(16, 0),
                 "break_minutes": 0,
@@ -227,7 +256,7 @@ def test_compute_schedule_totals_skips_excluded_employees():
                 "week_start": date(2026, 6, 14),
                 "user_id": 20,
                 "day_of_week": 0,
-                "role": "operator",
+                "role": "wash",
                 "start_time": time(8, 0),
                 "end_time": time(12, 0),
                 "break_minutes": 0,
@@ -243,6 +272,7 @@ def test_compute_schedule_totals_skips_excluded_employees():
     assert sun["employee_count"] == 1
     assert sun["total_hours"] == 4.0
     assert sun["operator_count"] == 1
+    assert sun["wash_count"] == 1
     assert sun["folder_count"] == 0
 
 
@@ -286,7 +316,7 @@ def test_build_week_payload_marks_excluded_employees():
                     "week_start": week,
                     "user_id": 10,
                     "day_of_week": 0,
-                    "role": "folder",
+                    "role": "fold",
                     "start_time": time(9, 0),
                     "end_time": time(16, 0),
                     "break_minutes": 0,
@@ -320,7 +350,7 @@ def test_move_entry_updates_user_and_day():
             data={
                 "user_id": 10,
                 "day_of_week": 0,
-                "role": "folder",
+                "role": "fold",
                 "start_time": "09:00",
                 "end_time": "16:00",
             },
@@ -348,7 +378,7 @@ def test_duplicate_entry_creates_copy():
             data={
                 "user_id": 10,
                 "day_of_week": 2,
-                "role": "operator",
+                "role": "wash",
                 "start_time": "06:00",
                 "end_time": "15:00",
             },
@@ -359,7 +389,7 @@ def test_duplicate_entry_creates_copy():
     assert err is None
     assert copied["id"] != created["id"]
     assert copied["day_of_week"] == 4
-    assert copied["role"] == "operator"
+    assert copied["role"] == "wash"
 
 
 def test_org_isolation_on_get_and_delete():
@@ -377,7 +407,7 @@ def test_org_isolation_on_get_and_delete():
             data={
                 "user_id": 10,
                 "day_of_week": 0,
-                "role": "folder",
+                "role": "fold",
                 "start_time": "09:00",
                 "end_time": "16:00",
             },
@@ -405,7 +435,7 @@ def test_update_entry_rejects_unknown_worker():
             data={
                 "user_id": 10,
                 "day_of_week": 0,
-                "role": "folder",
+                "role": "fold",
                 "start_time": "09:00",
                 "end_time": "16:00",
             },

@@ -649,7 +649,7 @@ def register_rinse_shift_analysis_routes(
                 week_start = normalize_week_start(raw_week)
             if not isinstance(week_start, date):
                 return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500
@@ -689,7 +689,7 @@ def register_rinse_shift_analysis_routes(
             if err:
                 return jsonify({"error": err}), 400
             conn.commit()
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
@@ -723,7 +723,7 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": err}), 400
             conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -755,7 +755,7 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": "schedule entry not found"}), 404
             conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
@@ -795,7 +795,7 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": err}), 400
             conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -836,7 +836,7 @@ def register_rinse_shift_analysis_routes(
                 return jsonify({"error": err}), 400
             conn.commit()
             week_start = date.fromisoformat(str(existing["week_start"]))
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
             return jsonify(json_safe_rinse(payload)), 201
         except Exception as exc:
@@ -886,10 +886,60 @@ def register_rinse_shift_analysis_routes(
             if err:
                 return jsonify({"error": err}), 400
             conn.commit()
-            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start)
+            payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["excluded"] = excluded
             payload["user_id"] = int(body.get("user_id") or 0)
             return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/display-settings", methods=["GET"])
+    def rinse_shift_analysis_weekly_schedule_display_settings_get():
+        from backend.weekly_schedule_display_settings import get_weekly_schedule_display_settings
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            return jsonify(
+                json_safe_rinse(get_weekly_schedule_display_settings(cursor, tenant_oid))
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/weekly-schedule/display-settings", methods=["PUT"])
+    def rinse_shift_analysis_weekly_schedule_display_settings_put():
+        from backend.weekly_schedule_display_settings import save_weekly_schedule_display_settings
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            saved = save_weekly_schedule_display_settings(cursor, tenant_oid, body)
+            conn.commit()
+            return jsonify(json_safe_rinse(saved))
         except Exception as exc:
             conn.rollback()
             return jsonify({"error": str(exc)}), 500

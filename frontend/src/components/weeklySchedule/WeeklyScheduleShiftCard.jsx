@@ -1,24 +1,9 @@
-import { Box, Chip, IconButton, Paper, Stack, Typography } from "@mui/material";
+import { Box, Chip, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
-
-const ROLE_STYLES = {
-  folder: {
-    accent: VEEWASH_DASHBOARD.primaryBlue,
-    bg: VEEWASH_DASHBOARD.primaryBlueLight,
-    border: VEEWASH_DASHBOARD.primaryBlueBorder,
-    label: "Folder",
-  },
-  operator: {
-    accent: VEEWASH_DASHBOARD.teal,
-    bg: VEEWASH_DASHBOARD.tealLight,
-    border: VEEWASH_DASHBOARD.tealBorder,
-    label: "Operator",
-  },
-};
+import { parseEntryRoles, primaryRoleStyle, ROLE_STYLES } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleShiftCard({
   entry,
@@ -29,9 +14,13 @@ export default function WeeklyScheduleShiftCard({
   onDragEnd,
   dragging,
   muted = false,
+  showRoleLabels = true,
+  showBreakMinutes = true,
 }) {
-  const role = ROLE_STYLES[entry.role] || ROLE_STYLES.folder;
+  const roles = parseEntryRoles(entry);
+  const primary = primaryRoleStyle(entry);
   const hours = Number(entry.hours || 0);
+  const breakMin = Number(entry.break_minutes || 0);
 
   return (
     <Paper
@@ -48,66 +37,80 @@ export default function WeeklyScheduleShiftCard({
       sx={{
         p: 1,
         mb: 0.75,
-        borderRadius: 2,
+        borderRadius: 2.5,
         cursor: muted ? "default" : "grab",
-        border: `1px solid ${muted ? "divider" : role.border}`,
-        bgcolor: muted ? "action.hover" : role.bg,
+        border: `1px solid ${muted ? "divider" : primary.border}`,
+        borderLeft: `4px solid ${muted ? "divider" : primary.accent}`,
+        bgcolor: muted ? "action.hover" : primary.bg,
         opacity: dragging ? 0.45 : muted ? 0.72 : 1,
-        boxShadow: muted ? "none" : VEEWASH_DASHBOARD.cardShadow,
-        transition: "box-shadow 0.15s ease, border-color 0.15s ease",
+        boxShadow: muted ? "none" : "0 2px 8px rgba(15, 23, 42, 0.06)",
+        transition: "box-shadow 0.15s ease, transform 0.12s ease",
         "&:hover": muted
           ? {}
           : {
-              borderColor: role.accent,
-              boxShadow: "0 4px 14px rgba(0, 151, 178, 0.12)",
+              boxShadow: "0 6px 18px rgba(15, 23, 42, 0.1)",
+              transform: "translateY(-1px)",
             },
       }}
     >
       <Stack direction="row" alignItems="flex-start" spacing={0.5}>
         <DragIndicatorIcon sx={{ fontSize: 16, color: "text.disabled", mt: 0.25 }} />
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="caption" fontWeight={700} display="block" sx={{ color: role.accent }}>
+          <Typography variant="caption" fontWeight={700} display="block" sx={{ color: primary.accent, lineHeight: 1.3 }}>
             {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
           </Typography>
-          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.25 }}>
-            <Chip
-              size="small"
-              label={role.label}
-              sx={{
-                height: 18,
-                fontSize: "0.65rem",
-                fontWeight: 700,
-                bgcolor: "#fff",
-                color: role.accent,
-                border: `1px solid ${role.border}`,
-              }}
-            />
-            <Typography variant="caption" color="text.secondary">
+          <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mt: 0.35 }}>
+            {showRoleLabels
+              ? roles.map((roleKey) => {
+                  const style = ROLE_STYLES[roleKey] || ROLE_STYLES.fold;
+                  return (
+                    <Chip
+                      key={roleKey}
+                      size="small"
+                      label={style.label}
+                      sx={{
+                        height: 18,
+                        fontSize: "0.62rem",
+                        fontWeight: 700,
+                        bgcolor: "#fff",
+                        color: style.accent,
+                        border: `1px solid ${style.border}`,
+                      }}
+                    />
+                  );
+                })
+              : null}
+            <Typography variant="caption" color="text.secondary" fontWeight={600}>
               {hours.toFixed(1)}h
+              {showBreakMinutes && breakMin > 0 ? ` (−${breakMin}m break)` : ""}
             </Typography>
           </Stack>
         </Box>
         <Stack direction="row" spacing={0}>
-          <IconButton
-            size="small"
-            aria-label="Duplicate shift"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDuplicate?.(entry);
-            }}
-          >
-            <ContentCopyOutlinedIcon sx={{ fontSize: 15 }} />
-          </IconButton>
-          <IconButton
-            size="small"
-            aria-label="Delete shift"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete?.(entry);
-            }}
-          >
-            <DeleteOutlineIcon sx={{ fontSize: 15 }} />
-          </IconButton>
+          <Tooltip title="Duplicate shift">
+            <IconButton
+              size="small"
+              aria-label="Duplicate shift"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDuplicate?.(entry);
+              }}
+            >
+              <ContentCopyOutlinedIcon sx={{ fontSize: 15 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Delete shift">
+            <IconButton
+              size="small"
+              aria-label="Delete shift"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete?.(entry);
+              }}
+            >
+              <DeleteOutlineIcon sx={{ fontSize: 15 }} />
+            </IconButton>
+          </Tooltip>
         </Stack>
       </Stack>
     </Paper>

@@ -6,11 +6,67 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 from typing import Any, Mapping, Sequence
 
-from backend.daily_shift_roster import calc_cost, calc_hours, normalize_role, parse_time_value
+from backend.daily_shift_roster import calc_cost, calc_hours, parse_time_value
 from backend.ta_helpers import table_exists
 
-VALID_ROLES = frozenset({"folder", "operator"})
+VALID_ROLES = frozenset({"sort", "wash", "fold"})
+LEGACY_ROLE_MAP = {"folder": "fold", "operator": "wash", "folders": "fold", "operators": "wash"}
+ROLE_SORT_ORDER = ("sort", "wash", "fold")
 DAY_LABELS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+
+def normalize_weekly_role(raw: Any) -> str | None:
+    role = str(raw or "").strip().lower()
+    if role in VALID_ROLES:
+        return role
+    return LEGACY_ROLE_MAP.get(role)
+
+
+def parse_weekly_roles(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        out: list[str] = []
+        for item in raw:
+            role = normalize_weekly_role(item)
+            if role and role not in out:
+                out.append(role)
+        return _sort_roles(out)
+    text = str(raw).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            import json
+
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parse_weekly_roles(parsed)
+        except (TypeError, ValueError):
+            pass
+    out = []
+    for part in text.replace("|", ",").split(","):
+        role = normalize_weekly_role(part.strip())
+        if role and role not in out:
+            out.append(role)
+    return _sort_roles(out)
+
+
+def _sort_roles(roles: list[str]) -> list[str]:
+    order = {r: i for i, r in enumerate(ROLE_SORT_ORDER)}
+    return sorted(roles, key=lambda r: order.get(r, 99))
+
+
+def roles_to_storage(roles: Sequence[str]) -> str:
+    cleaned = parse_weekly_roles(list(roles))
+    if not cleaned:
+        return "fold"
+    return ",".join(cleaned)
+
+
+def primary_weekly_role(raw: Any) -> str:
+    roles = parse_weekly_roles(raw)
+    return roles[0] if roles else "fold"
 
 
 def normalize_week_start(raw: date | str | None) -> date | None:
@@ -60,8 +116,25 @@ def ensure_planned_weekly_schedule_exclusions_table(cursor) -> None:
     )
 
 
+def _ensure_role_column_width(cursor) -> None:
+    try:
+        cursor.execute("SHOW COLUMNS FROM planned_weekly_schedule_entries LIKE 'role'")
+        row = cursor.fetchone()
+        if not row:
+            return
+        col_type = row.get("Type") if isinstance(row, dict) else (row[1] if len(row) > 1 else "")
+        if col_type and "varchar(64)" not in str(col_type).lower():
+            cursor.execute(
+                "ALTER TABLE planned_weekly_schedule_entries "
+                "MODIFY role VARCHAR(64) NOT NULL DEFAULT 'fold'"
+            )
+    except Exception:
+        return
+
+
 def ensure_planned_weekly_schedule_table(cursor) -> None:
     if table_exists(cursor, "planned_weekly_schedule_entries"):
+        _ensure_role_column_width(cursor)
         return
     cursor.execute(
         """
@@ -71,7 +144,7 @@ def ensure_planned_weekly_schedule_table(cursor) -> None:
           week_start DATE NOT NULL,
           user_id INT NOT NULL,
           day_of_week TINYINT NOT NULL,
-          role VARCHAR(16) NOT NULL DEFAULT 'folder',
+          role VARCHAR(64) NOT NULL DEFAULT 'fold',
           start_time TIME NOT NULL,
           end_time TIME NOT NULL,
           break_minutes INT NOT NULL DEFAULT 0,
@@ -101,7 +174,8 @@ def _shift_hours_for_entry(entry: Mapping[str, Any]) -> float:
 
 
 def serialize_entry(row: Mapping[str, Any]) -> dict[str, Any]:
-    role = normalize_role(row.get("role")) or "folder"
+    roles = parse_weekly_roles(row.get("role"))
+    role = roles_to_storage(roles)
     hours = _shift_hours_for_entry(row)
     out: dict[str, Any] = {
         "id": int(row.get("id") or 0),
@@ -111,6 +185,7 @@ def serialize_entry(row: Mapping[str, Any]) -> dict[str, Any]:
         "day_of_week": int(row.get("day_of_week") or 0),
         "day_label": DAY_LABELS[int(row.get("day_of_week") or 0) % 7],
         "role": role,
+        "roles": roles,
         "start_time": _time_to_str(row.get("start_time")),
         "end_time": _time_to_str(row.get("end_time")),
         "break_minutes": max(0, int(row.get("break_minutes") or 0)),
@@ -142,6 +217,9 @@ def compute_schedule_totals(
             "day_label": DAY_LABELS[dow],
             "employee_count": 0,
             "total_hours": 0.0,
+            "sort_count": 0,
+            "wash_count": 0,
+            "fold_count": 0,
             "operator_count": 0,
             "folder_count": 0,
         }
@@ -155,7 +233,7 @@ def compute_schedule_totals(
             continue
         dow = int(entry.get("day_of_week") or 0)
         hours = float(entry.get("hours") or _shift_hours_for_entry(entry))
-        role = normalize_role(entry.get("role")) or "folder"
+        roles = parse_weekly_roles(entry.get("role"))
         worker = workers_by_user_id.get(uid)
         rate = _worker_rate(worker)
 
@@ -175,10 +253,18 @@ def compute_schedule_totals(
 
         day = day_totals.get(dow) or day_totals[dow]
         day["total_hours"] = round(float(day["total_hours"]) + hours, 2)
-        if role == "operator":
-            day["operator_count"] = int(day["operator_count"]) + 1
-        else:
-            day["folder_count"] = int(day["folder_count"]) + 1
+        counted_roles = roles or ["fold"]
+        for role in counted_roles:
+            if role == "sort":
+                day["sort_count"] = int(day["sort_count"]) + 1
+            elif role == "wash":
+                day["wash_count"] = int(day["wash_count"]) + 1
+            elif role == "fold":
+                day["fold_count"] = int(day["fold_count"]) + 1
+            if role == "wash":
+                day["operator_count"] = int(day["operator_count"]) + 1
+            if role == "fold":
+                day["folder_count"] = int(day["folder_count"]) + 1
 
     for uid, days in employee_days.items():
         if uid in employee_totals:
@@ -347,11 +433,12 @@ def _validate_entry_payload(
         if dow is None:
             return None, "day_of_week must be 0-6 (Sun-Sat)"
         out["day_of_week"] = dow
-    if not partial or "role" in data:
-        role = normalize_role(data.get("role"))
-        if role is None:
-            return None, "role must be folder or operator"
-        out["role"] = role
+    if not partial or "role" in data or "roles" in data:
+        roles_raw = data.get("roles") if "roles" in data else data.get("role")
+        roles = parse_weekly_roles(roles_raw)
+        if not roles:
+            return None, "role must be sort, wash, and/or fold"
+        out["role"] = roles_to_storage(roles)
     if not partial or "start_time" in data:
         start = parse_time_value(data.get("start_time"))
         if start is None:
@@ -548,7 +635,9 @@ def build_week_payload(
     organization_id: int,
     *,
     week_start: date,
+    user_roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    from backend.weekly_schedule_display_settings import effective_weekly_schedule_view
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
     entries = list_week_entries(cursor, organization_id, week_start=week_start)
@@ -584,6 +673,8 @@ def build_week_payload(
         )
     employee_rows.sort(key=lambda row: (row.get("display_name") or "").casefold())
 
+    view = effective_weekly_schedule_view(cursor, organization_id, user_roles)
+
     return {
         "week_start": str(week_start),
         "day_labels": list(DAY_LABELS),
@@ -591,4 +682,5 @@ def build_week_payload(
         "entries": entries,
         "totals": totals,
         "excluded_user_ids": excluded_user_ids,
+        "display": view,
     }

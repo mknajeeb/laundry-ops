@@ -12,6 +12,7 @@ from backend.planned_weekly_schedule_import import (
     normalize_import_rows,
     parse_shift_label,
     sheet_role_to_planned_role,
+    sheet_role_to_planned_roles,
 )
 
 
@@ -23,9 +24,12 @@ def test_parse_shift_label_common_formats():
     assert parse_shift_label("Sat 7am-3pm") == (6, "07:00", "15:00")
 
 
-def test_sheet_role_defaults_to_folder():
-    assert sheet_role_to_planned_role("Wash & Fold") == "folder"
-    assert sheet_role_to_planned_role("Fold") == "folder"
+def test_sheet_role_maps_sort_wash_fold():
+    assert sheet_role_to_planned_roles("Wash & Fold") == ["wash", "fold"]
+    assert sheet_role_to_planned_roles("Fold") == ["fold"]
+    assert sheet_role_to_planned_roles("Sort & Fold") == ["sort", "fold"]
+    assert sheet_role_to_planned_roles("Wash, Sort & Fold") == ["sort", "wash", "fold"]
+    assert sheet_role_to_planned_role("Wash, Sort & Fold") == "sort,wash,fold"
 
 
 def test_match_worker_name_fuzzy_variants():
@@ -49,7 +53,10 @@ def test_match_worker_name_fuzzy_variants():
 def test_veewash_seed_expands_to_42_shifts():
     flat = normalize_import_rows(VEEWASH_WEEK_2026_06_14)
     assert len(flat) == 42
-    assert all(item.get("role") == "folder" for item in flat)
+    combo = [item for item in flat if item.get("name") == "Francis Arita"][0]
+    assert combo.get("role") == "sort,wash,fold"
+    fold_only = [item for item in flat if item.get("name") == "Alec Coaxum"][0]
+    assert fold_only.get("role") == "fold"
 
 
 def test_import_dry_run_reports_mappings():

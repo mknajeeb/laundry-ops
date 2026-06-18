@@ -7,8 +7,7 @@ from datetime import date
 from difflib import SequenceMatcher
 from typing import Any, Mapping, Sequence
 
-from backend.daily_shift_roster import normalize_role
-from backend.planned_weekly_schedule import normalize_week_start
+from backend.planned_weekly_schedule import normalize_week_start, normalize_weekly_role, parse_weekly_roles, roles_to_storage
 
 DAY_INDEX = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
 _SHIFT_RE = re.compile(
@@ -47,10 +46,26 @@ def parse_shift_label(label: str) -> tuple[int, str, str] | None:
     return dow, start, end
 
 
+def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
+    """Map spreadsheet role labels to planned schedule roles (sort / wash / fold)."""
+    text = str(sheet_role or "").strip().lower()
+    if not text:
+        return ["fold"]
+    roles: list[str] = []
+    if "sort" in text:
+        roles.append("sort")
+    if "wash" in text:
+        roles.append("wash")
+    if "fold" in text:
+        roles.append("fold")
+    if roles:
+        return roles
+    mapped = normalize_weekly_role(text)
+    return [mapped] if mapped else ["fold"]
+
+
 def sheet_role_to_planned_role(sheet_role: str | None) -> str:
-    """Map spreadsheet role labels to planned schedule role (folder default)."""
-    _ = sheet_role
-    return "folder"
+    return roles_to_storage(sheet_role_to_planned_roles(sheet_role))
 
 
 def _score_name(query: str, candidate: str) -> float:
@@ -111,7 +126,10 @@ def normalize_import_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, A
         if not name:
             continue
         sheet_role = str(row.get("sheet_role") or row.get("role") or "").strip()
-        role = normalize_role(row.get("planned_role") or sheet_role_to_planned_role(sheet_role)) or "folder"
+        roles = parse_weekly_roles(
+            row.get("planned_role") or row.get("roles") or sheet_role_to_planned_roles(sheet_role)
+        )
+        role = roles_to_storage(roles)
         shifts = row.get("shifts") or []
         for shift in shifts:
             if isinstance(shift, str):
@@ -145,6 +163,7 @@ def normalize_import_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, A
                     "name": name,
                     "sheet_role": sheet_role,
                     "role": role,
+                    "roles": roles,
                     "day_of_week": dow,
                     "start_time": start,
                     "end_time": end,
@@ -172,7 +191,7 @@ def _bulk_insert_entries(
     for payload in payloads:
         start = parse_time_value(payload.get("start_time"))
         end = parse_time_value(payload.get("end_time"))
-        role = normalize_role(payload.get("role")) or "folder"
+        role = roles_to_storage(parse_weekly_roles(payload.get("role") or payload.get("roles")))
         params.append(
             (
                 oid,

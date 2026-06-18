@@ -10,13 +10,15 @@ import {
   Paper,
   Stack,
   Switch,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
+import AttachMoneyOutlinedIcon from "@mui/icons-material/AttachMoneyOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
-import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import {
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
@@ -62,16 +64,20 @@ function formatCurrency(value) {
 function daySummary(day) {
   const people = Number(day?.employee_count || 0);
   const hours = Number(day?.total_hours || 0);
-  const ops = Number(day?.operator_count || 0);
-  const folders = Number(day?.folder_count || 0);
-  return `${people} people | ${hours.toFixed(0)} hrs | ${ops} operators / ${folders} folders`;
+  const sort = Number(day?.sort_count || 0);
+  const wash = Number(day?.wash_count || 0);
+  const fold = Number(day?.fold_count || 0);
+  return `${people} people · ${hours.toFixed(1)} hrs · ${sort} sort / ${wash} wash / ${fold} fold`;
 }
 
-function employeeSummary(employee) {
+function employeeSummary(employee, { showCost }) {
   const days = Number(employee?.scheduled_days || 0);
   const hours = Number(employee?.total_hours || 0);
   const cost = formatCurrency(employee?.estimated_cost || 0);
-  return `${days} days | ${hours.toFixed(0)} hrs | ${cost} est. cost`;
+  if (showCost) {
+    return `${days} days · ${hours.toFixed(1)} hrs · ${cost} est.`;
+  }
+  return `${days} days · ${hours.toFixed(1)} hrs`;
 }
 
 export default function WeeklySchedulePage() {
@@ -86,7 +92,21 @@ export default function WeeklySchedulePage() {
   const [draggingId, setDraggingId] = useState(null);
   const [dropTarget, setDropTarget] = useState(null);
   const [showExcluded, setShowExcluded] = useState(false);
+  const [showCost, setShowCost] = useState(true);
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
+
+  const display = data?.display || {};
+  const canEdit = display.can_edit_schedule !== false;
+  const canManageExclusions = display.can_manage_exclusions !== false;
+  const showRoleLabels = display.show_role_labels !== false;
+  const showBreakMinutes = display.show_break_minutes !== false;
+  const costAllowed = display.show_estimated_cost !== false;
+
+  useEffect(() => {
+    if (data?.display) {
+      setShowCost(data.display.show_estimated_cost !== false);
+    }
+  }, [data?.display?.show_estimated_cost]);
 
   const load = useCallback(async (week) => {
     setLoading(true);
@@ -227,38 +247,48 @@ export default function WeeklySchedulePage() {
       <Paper
         elevation={0}
         sx={{
-          borderRadius: 2.5,
+          borderRadius: 3,
           overflow: "hidden",
-          border: `1px solid ${VEEWASH_DASHBOARD.primaryBlueBorder}`,
-          boxShadow: VEEWASH_DASHBOARD.cardShadow,
+          border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+          boxShadow: "0 8px 30px rgba(15, 23, 42, 0.06)",
         }}
       >
         <Box
           sx={{
-            px: 2,
-            py: 1.5,
-            bgcolor: VEEWASH_DASHBOARD.workloadHeaderBg,
+            px: { xs: 2, md: 2.5 },
+            py: 2,
+            background: `linear-gradient(135deg, ${VEEWASH_DASHBOARD.primaryBlue} 0%, ${VEEWASH_DASHBOARD.tealDark} 100%)`,
             color: "#fff",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            gap: 1,
+            gap: 1.5,
             flexWrap: "wrap",
           }}
         >
           <Box>
-            <Typography variant="h6" fontWeight={700}>
+            <Typography variant="h5" fontWeight={800} sx={{ letterSpacing: "-0.02em" }}>
               Weekly Schedule
             </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.9 }}>
-              Planned labor grid — drag shifts between days and employees
+            <Typography variant="body2" sx={{ opacity: 0.92, mt: 0.25 }}>
+              Plan labor by day — drag shifts, assign Sort · Wash · Fold roles
             </Typography>
           </Box>
-          <Stack direction="row" spacing={0.5} alignItems="center">
+          <Stack
+            direction="row"
+            spacing={0.5}
+            alignItems="center"
+            sx={{
+              bgcolor: "rgba(255,255,255,0.14)",
+              borderRadius: 999,
+              px: 0.5,
+              py: 0.25,
+            }}
+          >
             <IconButton size="small" onClick={() => changeWeek(-1)} sx={{ color: "#fff" }}>
               <ChevronLeftIcon />
             </IconButton>
-            <Typography variant="subtitle2" sx={{ minWidth: 220, textAlign: "center" }}>
+            <Typography variant="subtitle2" sx={{ minWidth: 220, textAlign: "center", fontWeight: 700 }}>
               {formatWeekRange(weekStart)}
             </Typography>
             <IconButton size="small" onClick={() => changeWeek(1)} sx={{ color: "#fff" }}>
@@ -267,26 +297,49 @@ export default function WeeklySchedulePage() {
           </Stack>
         </Box>
 
-        <Box sx={{ px: 2, pt: 1.5, pb: 0 }}>
-          {excludedCount > 0 ? (
-            <FormControlLabel
-              control={
-                <Switch
-                  size="small"
-                  checked={showExcluded}
-                  onChange={(e) => setShowExcluded(e.target.checked)}
-                />
-              }
-              label={
-                <Typography variant="body2">
-                  Show excluded ({excludedCount})
-                </Typography>
-              }
-            />
+        <Box
+          sx={{
+            px: 2,
+            py: 1.25,
+            bgcolor: "#fff",
+            borderBottom: "1px solid #e8eef2",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 1,
+            flexWrap: "wrap",
+          }}
+        >
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            {excludedCount > 0 && canManageExclusions ? (
+              <Chip
+                icon={<PersonOffOutlinedIcon />}
+                label={showExcluded ? `Showing excluded (${excludedCount})` : `Show excluded (${excludedCount})`}
+                onClick={() => setShowExcluded((v) => !v)}
+                color={showExcluded ? "warning" : "default"}
+                variant={showExcluded ? "filled" : "outlined"}
+                sx={{ fontWeight: 700 }}
+              />
+            ) : null}
+            {costAllowed ? (
+              <Chip
+                icon={<AttachMoneyOutlinedIcon />}
+                label={showCost ? "Hide cost" : "Show cost"}
+                onClick={() => setShowCost((v) => !v)}
+                variant={showCost ? "filled" : "outlined"}
+                color={showCost ? "primary" : "default"}
+                sx={{ fontWeight: 700 }}
+              />
+            ) : null}
+          </Stack>
+          {!display.is_privileged && display.org_settings ? (
+            <Typography variant="caption" color="text.secondary">
+              Shared view — some details hidden per org settings
+            </Typography>
           ) : null}
         </Box>
 
-        <Box sx={{ p: 2, pt: excludedCount > 0 ? 1 : 2 }}>
+        <Box sx={{ p: 2 }}>
           {error ? (
             <Alert severity="error" sx={{ mb: 2 }}>
               {error}
@@ -302,16 +355,26 @@ export default function WeeklySchedulePage() {
               <Box
                 sx={{
                   display: "grid",
-                  gridTemplateColumns: `220px repeat(7, minmax(140px, 1fr))`,
-                  minWidth: 1200,
+                  gridTemplateColumns: `minmax(200px, 240px) repeat(7, minmax(132px, 1fr))`,
+                  minWidth: 1100,
                   gap: 0,
-                  border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-                  borderRadius: 2,
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 2.5,
                   overflow: "hidden",
+                  bgcolor: "#fff",
                 }}
               >
-                <Box sx={{ p: 1.25, bgcolor: VEEWASH_DASHBOARD.snapshotBg, borderBottom: "1px solid #e2e8f0" }}>
-                  <Typography variant="caption" fontWeight={700} color="text.secondary">
+                <Box
+                  sx={{
+                    p: 1.5,
+                    bgcolor: "#f8fafc",
+                    borderBottom: "1px solid #e2e8f0",
+                    position: "sticky",
+                    left: 0,
+                    zIndex: 2,
+                  }}
+                >
+                  <Typography variant="overline" fontWeight={800} color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
                     Employee
                   </Typography>
                 </Box>
@@ -319,16 +382,16 @@ export default function WeeklySchedulePage() {
                   <Box
                     key={label}
                     sx={{
-                      p: 1.25,
-                      bgcolor: VEEWASH_DASHBOARD.snapshotBg,
+                      p: 1.5,
+                      bgcolor: "#f8fafc",
                       borderBottom: "1px solid #e2e8f0",
                       borderLeft: "1px solid #e2e8f0",
                     }}
                   >
-                    <Typography variant="caption" fontWeight={700}>
+                    <Typography variant="subtitle2" fontWeight={800}>
                       {label}
                     </Typography>
-                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.25 }}>
+                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.35, lineHeight: 1.35 }}>
                       {daySummary(dayTotals[dow])}
                     </Typography>
                   </Box>
@@ -337,121 +400,145 @@ export default function WeeklySchedulePage() {
                 {(visibleEmployees || []).map((employee) => {
                   const excluded = Boolean(employee.excluded);
                   return (
-                  <Box key={employee.user_id} sx={{ display: "contents" }}>
-                    <Box
-                      sx={{
-                        p: 1.25,
-                        borderBottom: "1px solid #e2e8f0",
-                        bgcolor: excluded ? "action.hover" : "#fff",
-                        position: "sticky",
-                        left: 0,
-                        zIndex: 1,
-                        opacity: excluded ? 0.72 : 1,
-                      }}
-                    >
-                      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={0.5}>
-                        <Box sx={{ minWidth: 0, flex: 1 }}>
-                          <Typography
-                            variant="body2"
-                            fontWeight={700}
-                            noWrap
-                            sx={{ textDecoration: excluded ? "line-through" : "none" }}
-                          >
-                            {employee.display_name}
-                          </Typography>
-                          {excluded ? (
-                            <Chip size="small" label="Excluded" sx={{ mt: 0.5, height: 20, fontSize: "0.65rem" }} />
-                          ) : null}
-                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: excluded ? 0.5 : 0 }}>
-                            {employeeSummary(employee)}
-                          </Typography>
-                        </Box>
-                        <IconButton
-                          size="small"
-                          aria-label={excluded ? "Include in schedule" : "Exclude from schedule"}
-                          disabled={excludeSavingUserId === employee.user_id}
-                          onClick={() => handleExcludeToggle(employee, !excluded)}
-                          sx={{ mt: -0.25, flexShrink: 0 }}
-                        >
-                          {excluded ? (
-                            <VisibilityOutlinedIcon fontSize="small" />
-                          ) : (
-                            <VisibilityOffOutlinedIcon fontSize="small" />
-                          )}
-                        </IconButton>
-                      </Stack>
-                      <Button
-                        size="small"
-                        variant="text"
-                        onClick={() => handleExcludeToggle(employee, !excluded)}
-                        disabled={excludeSavingUserId === employee.user_id}
-                        sx={{ mt: 0.25, px: 0, minWidth: 0, fontSize: "0.65rem", textTransform: "none" }}
+                    <Box key={employee.user_id} sx={{ display: "contents" }}>
+                      <Box
+                        sx={{
+                          p: 1.25,
+                          borderBottom: "1px solid #e2e8f0",
+                          bgcolor: excluded ? "#fafafa" : "#fff",
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 1,
+                          boxShadow: excluded ? "none" : "2px 0 6px rgba(15,23,42,0.04)",
+                        }}
                       >
-                        {excluded ? "Include in schedule" : "Exclude from schedule"}
-                      </Button>
-                    </Box>
-                    {DAY_LABELS.map((_, dow) => {
-                      const cellKey = `${employee.user_id}:${dow}`;
-                      const cellEntries = entriesByCell[cellKey] || [];
-                      const isDropTarget = dropTarget === cellKey;
-                      return (
-                        <Box
-                          key={cellKey}
-                          onDragOver={(e) => {
-                            if (excluded) return;
-                            e.preventDefault();
-                            setDropTarget(cellKey);
-                          }}
-                          onDragLeave={() => {
-                            if (dropTarget === cellKey) setDropTarget(null);
-                          }}
-                          onDrop={(e) => {
-                            if (excluded) return;
-                            e.preventDefault();
-                            const entryId = e.dataTransfer.getData("text/plain");
-                            handleDrop(employee.user_id, dow, entryId);
-                          }}
-                          sx={{
-                            p: 0.75,
-                            minHeight: 88,
-                            borderBottom: "1px solid #e2e8f0",
-                            borderLeft: "1px solid #e2e8f0",
-                            bgcolor: excluded
-                              ? "action.hover"
-                              : isDropTarget
-                                ? VEEWASH_DASHBOARD.primaryBlueLight
-                                : "#fff",
-                            opacity: excluded ? 0.72 : 1,
-                            transition: "background-color 0.12s ease",
-                          }}
-                        >
-                          {cellEntries.map((entry) => (
-                            <WeeklyScheduleShiftCard
-                              key={entry.id}
-                              entry={entry}
-                              dragging={draggingId === entry.id}
-                              muted={excluded}
-                              onEdit={openEdit}
-                              onDelete={handleDelete}
-                              onDuplicate={handleDuplicate}
-                              onDragStart={(e) => setDraggingId(e.id)}
-                              onDragEnd={() => setDraggingId(null)}
-                            />
-                          ))}
-                          {!excluded ? (
+                        <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={0.5}>
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography
+                              variant="body2"
+                              fontWeight={800}
+                              noWrap
+                              sx={{
+                                textDecoration: excluded ? "line-through" : "none",
+                                color: excluded ? "text.secondary" : "text.primary",
+                              }}
+                            >
+                              {employee.display_name}
+                            </Typography>
+                            {excluded ? (
+                              <Chip
+                                size="small"
+                                label="Excluded this week"
+                                color="default"
+                                sx={{ mt: 0.5, height: 20, fontSize: "0.62rem", fontWeight: 700 }}
+                              />
+                            ) : null}
+                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                              {employeeSummary(employee, { showCost: showCost && costAllowed })}
+                            </Typography>
+                          </Box>
+                          {canManageExclusions ? (
+                            <Tooltip title={excluded ? "Include in schedule" : "Exclude from this week's schedule"}>
+                              <IconButton
+                                size="small"
+                                aria-label={excluded ? "Include in schedule" : "Exclude from schedule"}
+                                disabled={excludeSavingUserId === employee.user_id}
+                                onClick={() => handleExcludeToggle(employee, !excluded)}
+                                sx={{ mt: -0.25, flexShrink: 0 }}
+                              >
+                                {excluded ? (
+                                  <VisibilityOffOutlinedIcon fontSize="small" />
+                                ) : (
+                                  <PersonOffOutlinedIcon fontSize="small" />
+                                )}
+                              </IconButton>
+                            </Tooltip>
+                          ) : null}
+                        </Stack>
+                        {excluded && canManageExclusions ? (
                           <Button
                             size="small"
-                            startIcon={<AddIcon sx={{ fontSize: 14 }} />}
-                            onClick={() => openCreate(employee.user_id, dow)}
-                            sx={{ mt: 0.25, fontSize: "0.7rem", minWidth: 0, px: 0.75 }}
+                            variant="contained"
+                            color="success"
+                            onClick={() => handleExcludeToggle(employee, false)}
+                            disabled={excludeSavingUserId === employee.user_id}
+                            sx={{ mt: 0.75, fontSize: "0.72rem", textTransform: "none", fontWeight: 700 }}
                           >
-                            Add
+                            Include in schedule
                           </Button>
-                          ) : null}
-                        </Box>
-                      );
-                    })}
-                  </Box>
+                        ) : null}
+                      </Box>
+                      {DAY_LABELS.map((_, dow) => {
+                        const cellKey = `${employee.user_id}:${dow}`;
+                        const cellEntries = entriesByCell[cellKey] || [];
+                        const isDropTarget = dropTarget === cellKey;
+                        return (
+                          <Box
+                            key={cellKey}
+                            onDragOver={(e) => {
+                              if (excluded || !canEdit) return;
+                              e.preventDefault();
+                              setDropTarget(cellKey);
+                            }}
+                            onDragLeave={() => {
+                              if (dropTarget === cellKey) setDropTarget(null);
+                            }}
+                            onDrop={(e) => {
+                              if (excluded || !canEdit) return;
+                              e.preventDefault();
+                              const entryId = e.dataTransfer.getData("text/plain");
+                              handleDrop(employee.user_id, dow, entryId);
+                            }}
+                            sx={{
+                              p: 0.75,
+                              minHeight: 92,
+                              borderBottom: "1px solid #e2e8f0",
+                              borderLeft: "1px solid #e2e8f0",
+                              bgcolor: excluded
+                                ? "#fafafa"
+                                : isDropTarget
+                                  ? VEEWASH_DASHBOARD.primaryBlueLight
+                                  : "#fff",
+                              opacity: excluded ? 0.85 : 1,
+                              transition: "background-color 0.12s ease",
+                            }}
+                          >
+                            {cellEntries.map((entry) => (
+                              <WeeklyScheduleShiftCard
+                                key={entry.id}
+                                entry={entry}
+                                dragging={draggingId === entry.id}
+                                muted={excluded}
+                                showRoleLabels={showRoleLabels}
+                                showBreakMinutes={showBreakMinutes}
+                                onEdit={canEdit ? openEdit : undefined}
+                                onDelete={canEdit ? handleDelete : undefined}
+                                onDuplicate={canEdit ? handleDuplicate : undefined}
+                                onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
+                                onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
+                              />
+                            ))}
+                            {!excluded && canEdit ? (
+                              <Button
+                                size="small"
+                                startIcon={<AddIcon sx={{ fontSize: 14 }} />}
+                                onClick={() => openCreate(employee.user_id, dow)}
+                                sx={{
+                                  mt: 0.25,
+                                  fontSize: "0.7rem",
+                                  minWidth: 0,
+                                  px: 0.75,
+                                  color: "text.secondary",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Add shift
+                              </Button>
+                            ) : null}
+                          </Box>
+                        );
+                      })}
+                    </Box>
                   );
                 })}
               </Box>
@@ -461,7 +548,7 @@ export default function WeeklySchedulePage() {
       </Paper>
 
       <WeeklyScheduleEntryDialog
-        open={dialogOpen}
+        open={dialogOpen && canEdit}
         onClose={() => setDialogOpen(false)}
         onSave={handleSave}
         saving={saving}

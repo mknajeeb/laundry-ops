@@ -10,8 +10,10 @@ import {
   MenuItem,
   Select,
   Stack,
+  Typography,
 } from "@mui/material";
 import ShiftScheduleTimeFields from "../datetime/ShiftScheduleTimeFields";
+import { parseEntryRoles, WEEKLY_SCHEDULE_ROLES } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleEntryDialog({
   open,
@@ -25,7 +27,7 @@ export default function WeeklyScheduleEntryDialog({
   const isEdit = Boolean(entry?.id);
   const [userId, setUserId] = useState(defaultUserId || "");
   const [dayOfWeek, setDayOfWeek] = useState(defaultDay ?? 0);
-  const [role, setRole] = useState("folder");
+  const [roles, setRoles] = useState(["fold"]);
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("16:00");
   const [breakMinutes, setBreakMinutes] = useState(0);
@@ -35,7 +37,7 @@ export default function WeeklyScheduleEntryDialog({
     if (entry) {
       setUserId(entry.user_id);
       setDayOfWeek(entry.day_of_week);
-      setRole(entry.role || "folder");
+      setRoles(parseEntryRoles(entry).length ? parseEntryRoles(entry) : ["fold"]);
       setStartTime(entry.start_time || "09:00");
       setEndTime(entry.end_time || "16:00");
       setBreakMinutes(entry.break_minutes || 0);
@@ -43,15 +45,15 @@ export default function WeeklyScheduleEntryDialog({
     }
     setUserId(defaultUserId || "");
     setDayOfWeek(defaultDay ?? 0);
-    setRole("folder");
+    setRoles(["fold"]);
     setStartTime("09:00");
     setEndTime("16:00");
     setBreakMinutes(0);
   }, [open, entry, defaultUserId, defaultDay]);
 
   const canSave = useMemo(
-    () => Boolean(userId) && startTime && endTime,
-    [userId, startTime, endTime],
+    () => Boolean(userId) && startTime && endTime && roles.length > 0,
+    [userId, startTime, endTime, roles],
   );
 
   const handleSubmit = () => {
@@ -59,7 +61,7 @@ export default function WeeklyScheduleEntryDialog({
     onSave({
       user_id: Number(userId),
       day_of_week: Number(dayOfWeek),
-      role,
+      roles,
       start_time: startTime,
       end_time: endTime,
       break_minutes: breakMinutes,
@@ -72,12 +74,31 @@ export default function WeeklyScheduleEntryDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           <FormControl size="small" fullWidth>
-            <InputLabel>Role</InputLabel>
-            <Select label="Role" value={role} onChange={(e) => setRole(e.target.value)}>
-              <MenuItem value="folder">Folder</MenuItem>
-              <MenuItem value="operator">Operator</MenuItem>
+            <InputLabel>Roles</InputLabel>
+            <Select
+              label="Roles"
+              multiple
+              value={roles}
+              onChange={(e) => {
+                const next = typeof e.target.value === "string" ? e.target.value.split(",") : e.target.value;
+                setRoles(next.length ? next : ["fold"]);
+              }}
+              renderValue={(selected) =>
+                selected
+                  .map((r) => WEEKLY_SCHEDULE_ROLES.find((opt) => opt.value === r)?.label || r)
+                  .join(", ")
+              }
+            >
+              {WEEKLY_SCHEDULE_ROLES.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </MenuItem>
+              ))}
             </Select>
           </FormControl>
+          <Typography variant="caption" color="text.secondary">
+            Select one or more roles for this shift (e.g. Wash + Sort + Fold).
+          </Typography>
           <ShiftScheduleTimeFields
             startTime={startTime}
             endTime={endTime}
