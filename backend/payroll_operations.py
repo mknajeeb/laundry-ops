@@ -507,26 +507,43 @@ def update_time_record(
         raise ValueError("Time record not found")
 
     new_ci = ci if ci is not None else cur.get("clock_in_at")
-    new_co = co if co is not None else cur.get("clock_out_at")
+    if clock_out_at is not None and str(clock_out_at).strip() == "":
+        new_co = None
+    elif co is not None:
+        new_co = co
+    else:
+        new_co = cur.get("clock_out_at")
     if isinstance(new_ci, str):
         new_ci = _parse_clock_dt(new_ci)
     if isinstance(new_co, str):
         new_co = _parse_clock_dt(new_co)
-    if not new_ci or not new_co or new_co <= new_ci:
+    if not new_ci:
+        raise ValueError("Clock in is required")
+    if new_co is not None and new_co <= new_ci:
         raise ValueError("Clock out must be after clock in")
 
-    updates = ["clock_in_at=%s", "clock_out_at=%s"]
-    params: list[Any] = [new_ci, new_co]
+    updates = ["clock_in_at=%s"]
+    params: list[Any] = [new_ci]
+    if new_co is None:
+        updates.append("clock_out_at=NULL")
+        updates.append("status=%s")
+        params.append("active")
+        updates.append("total_break_seconds=%s")
+        params.append(_sum_break_seconds(conn, sid))
+        updates.append("net_work_seconds=NULL")
+    else:
+        updates.append("clock_out_at=%s")
+        params.append(new_co)
+        br = _sum_break_seconds(conn, sid)
+        net = int((new_co - new_ci).total_seconds()) - br
+        updates.extend(["total_break_seconds=%s", "net_work_seconds=%s", "status=%s"])
+        params.extend([br, net, "completed"])
+
     if has_manual:
         updates.append("manual_override=1")
     if has_remarks and remarks is not None:
         updates.append("period_adjustment_remarks=%s")
         params.append(str(remarks)[:2000])
-
-    br = _sum_break_seconds(conn, sid)
-    net = int((new_co - new_ci).total_seconds()) - br
-    updates.extend(["total_break_seconds=%s", "net_work_seconds=%s", "status=%s"])
-    params.extend([br, net, "completed"])
 
     where = "id=%s"
     params.append(sid)

@@ -1450,6 +1450,64 @@ class TestEmployeeActivityBatching:
             )
         assert bulk_result == per_user
 
+    def test_shift_window_uses_same_day_clock_in_not_prior_day_span(self):
+        from datetime import date
+
+        from backend.rinse_processing_productivity import _employee_shift_window_from_sessions
+
+        selected = date(2026, 6, 18)
+        sessions = [
+            {
+                "id": 1,
+                "clock_in_at": datetime(2026, 6, 13, 10, 12),
+                "clock_out_at": None,
+                "status": "active",
+                "net_work_seconds": None,
+            },
+            {
+                "id": 2,
+                "clock_in_at": datetime(2026, 6, 18, 10, 41),
+                "clock_out_at": datetime(2026, 6, 18, 13, 0),
+                "status": "completed",
+                "net_work_seconds": 2 * 3600,
+            },
+        ]
+        clock_in, clock_out, err = _employee_shift_window_from_sessions(
+            sessions,
+            period_start=selected,
+            period_end=selected,
+            last_sync=datetime(2026, 6, 18, 12, 53),
+        )
+        assert err is None
+        assert clock_in == datetime(2026, 6, 18, 10, 41)
+        assert clock_out == datetime(2026, 6, 18, 13, 0)
+
+    def test_shift_window_spanning_session_uses_day_start_not_old_clock_in(self):
+        from datetime import date
+
+        from backend.rinse_folding_et import naive_et_day_start
+        from backend.rinse_processing_productivity import _employee_shift_window_from_sessions
+
+        selected = date(2026, 6, 18)
+        sessions = [
+            {
+                "id": 1,
+                "clock_in_at": datetime(2026, 6, 13, 10, 12),
+                "clock_out_at": None,
+                "status": "active",
+                "net_work_seconds": None,
+            },
+        ]
+        clock_in, clock_out, err = _employee_shift_window_from_sessions(
+            sessions,
+            period_start=selected,
+            period_end=selected,
+            last_sync=datetime(2026, 6, 18, 12, 53),
+        )
+        assert err is None
+        assert clock_in == naive_et_day_start(selected)
+        assert clock_out == datetime(2026, 6, 18, 12, 53)
+
     def test_build_employee_activity_summary_batches_shift_lookups(self):
         from datetime import date
 

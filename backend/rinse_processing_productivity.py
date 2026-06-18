@@ -287,7 +287,8 @@ def _employee_shift_window_from_sessions(
     if not sessions:
         return None, None, "Clock-in missing"
     start_dt, end_incl = period_datetime_bounds_et(period_start, period_end)
-    clock_ins: list[datetime] = []
+    day_clock_ins: list[datetime] = []
+    span_clock_ins: list[datetime] = []
     clock_outs: list[datetime] = []
     for sh in sessions:
         cin = sh.get("clock_in_at")
@@ -300,11 +301,18 @@ def _employee_shift_window_from_sessions(
         overlap_end = min(cout, end_incl)
         if overlap_end <= overlap_start:
             continue
-        clock_ins.append(cin)
-        clock_outs.append(cout)
-    if not clock_ins:
+        if cin >= start_dt:
+            day_clock_ins.append(cin)
+        else:
+            span_clock_ins.append(overlap_start)
+        clock_outs.append(overlap_end)
+    if day_clock_ins:
+        clock_in = min(day_clock_ins)
+    elif span_clock_ins:
+        clock_in = min(span_clock_ins)
+    else:
         return None, None, "Clock-in missing"
-    return min(clock_ins), max(clock_outs), None
+    return clock_in, max(clock_outs), None
 
 
 def build_clocked_processing_summary(

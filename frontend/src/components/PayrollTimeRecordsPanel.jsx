@@ -309,8 +309,12 @@ export default function PayrollTimeRecordsPanel({
   };
 
   const saveEditor = async () => {
-    if (!form.user_id || !form.clock_in_at || !form.clock_out_at) {
-      setError("Worker, clock in, and clock out are required.");
+    if (!form.user_id || !form.clock_in_at) {
+      setError("Worker and clock in are required.");
+      return;
+    }
+    if (editorMode === "add" && !form.clock_out_at) {
+      setError("Clock out is required when adding a completed time record.");
       return;
     }
     setSaving(true);
@@ -730,6 +734,11 @@ export default function PayrollTimeRecordsPanel({
               value={form.clock_out_at}
               onChange={(v) => setForm((f) => ({ ...f, clock_out_at: v }))}
             />
+            {editorMode === "edit" ? (
+              <Typography variant="caption" color="text.secondary">
+                Clock out optional for active shifts — leave blank to keep the session open.
+              </Typography>
+            ) : null}
             <TextField
               fullWidth
               size="small"
