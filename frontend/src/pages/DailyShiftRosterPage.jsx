@@ -17,12 +17,12 @@ import {
   deleteDailyShiftRosterEntry,
   getDailyShiftRoster,
   updateDailyShiftRosterEntry,
-} from "../../api";
-import { yesterdayRange, todayRange } from "../../utils/foldingDateRange";
-import { fmtLaborValue } from "../../utils/employeeProductivityHelpers";
-import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
-import DailyShiftRosterCard from "./DailyShiftRosterCard";
-import DailyShiftRosterEntryDialog from "./DailyShiftRosterEntryDialog";
+} from "../api";
+import { yesterdayRange, todayRange } from "../utils/foldingDateRange";
+import { fmtLaborValue } from "../utils/employeeProductivityHelpers";
+import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+import DailyShiftRosterCard from "../components/shift/DailyShiftRosterCard";
+import DailyShiftRosterEntryDialog from "../components/shift/DailyShiftRosterEntryDialog";
 
 const DATE_PRESETS = [
   { id: "today", label: "Today" },
