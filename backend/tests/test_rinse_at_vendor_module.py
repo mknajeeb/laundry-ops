@@ -133,6 +133,32 @@ class TestWFCompletion:
         assert comp_ts == T3
         assert fields.get("post_clean_weight_time") is not None
 
+    def test_same_minute_final_weight_with_pre_clean_completes(self):
+        """Regression: BARS9TT3I6 — post-clean weigh tied to latest processing minute."""
+        selected = date(2026, 6, 18)
+        tie = datetime(2026, 6, 18, 13, 59)
+        pre = datetime(2026, 6, 18, 10, 51)
+        anchor = datetime(2026, 6, 18, 4, 33)
+        events = [
+            _ev("sent-to-vendor", anchor),
+            _ev("weight-entry", pre),
+            _ev("add-photos", datetime(2026, 6, 18, 11, 23)),
+            _ev("complete-cleaning", datetime(2026, 6, 18, 13, 45)),
+            _ev("add-photos", tie),
+            _ev("weight-entry", tie),
+            _ev("processed-by-vendor", tie),
+        ]
+        status, signal, comp_ts, _, fields = _evaluate_bag_as_of(
+            events,
+            service_type="WF",
+            as_of_end=naive_et_day_end_inclusive(selected),
+            anchor_ts_override=anchor,
+        )
+        assert status == AV_STATUS_COMPLETED
+        assert signal == "post_processing_weight"
+        assert comp_ts == tie
+        assert fields.get("post_clean_weight_time") is not None
+
     def test_clean_rack_without_post_processing_weight_stays_pending(self):
         events = [
             _ev("sent-to-vendor", T0),

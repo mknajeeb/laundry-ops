@@ -191,6 +191,27 @@ def _latest_wf_processing_after_anchor(
     return latest_ts, latest_purpose
 
 
+def _post_processing_weight_events(
+    weights: Sequence[WfWeightEvent],
+    latest_proc_ts: datetime,
+) -> list[WfWeightEvent]:
+    """
+    Distinct weight-entry events that qualify as post-processing.
+
+    Normally strictly after latest processing; same-minute tie allowed when an
+    earlier pre-clean weight exists (portal often batches final weigh with
+    add-photos / processed-by-vendor at one timestamp).
+    """
+    has_pre_clean = any(w.timestamp < latest_proc_ts for w in weights)
+    out: list[WfWeightEvent] = []
+    for w in weights:
+        if w.timestamp > latest_proc_ts:
+            out.append(w)
+        elif w.timestamp == latest_proc_ts and has_pre_clean:
+            out.append(w)
+    return out
+
+
 def derive_wf_clean_weight_fields(
     timeline: Sequence[Mapping[str, Any]],
     *,
@@ -210,7 +231,7 @@ def derive_wf_clean_weight_fields(
     )
     post: WfWeightEvent | None = None
     if latest_proc_ts is not None:
-        post_weights = [w for w in weights if w.timestamp > latest_proc_ts]
+        post_weights = _post_processing_weight_events(weights, latest_proc_ts)
         if post_weights:
             post = post_weights[-1]
 
@@ -239,7 +260,9 @@ def wf_post_processing_weight_completion(
     as_of_end: datetime,
 ) -> WfWeightCompletion | None:
     """
-    WF completes only when a distinct weight-entry exists after the latest processing scan.
+    WF completes when a distinct post-processing weight-entry exists relative to
+    the latest processing scan (including same-minute final weigh when pre-clean
+    weight was recorded earlier).
     """
     latest_proc_ts, _ = _latest_wf_processing_after_anchor(
         timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
@@ -248,7 +271,7 @@ def wf_post_processing_weight_completion(
         return None
 
     weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
-    post_weights = [w for w in weights if w.timestamp > latest_proc_ts]
+    post_weights = _post_processing_weight_events(weights, latest_proc_ts)
     if not post_weights:
         return None
 

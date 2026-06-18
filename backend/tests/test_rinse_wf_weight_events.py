@@ -127,6 +127,32 @@ class TestWfPostProcessingWeightCompletion:
         assert hit is not None
         assert hit.completion_ts == T4
 
+    def test_same_minute_post_weight_with_earlier_pre_clean_completes(self):
+        """Regression: BARS9TT3I6 — final weight same minute as add-photos/processed-by-vendor."""
+        tie = datetime(2026, 6, 18, 13, 59)
+        pre = datetime(2026, 6, 18, 10, 51)
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", pre, weight_lbs=20.0),
+            _ev("add-photos", datetime(2026, 6, 18, 11, 23)),
+            _ev("complete-cleaning", datetime(2026, 6, 18, 13, 45)),
+            _ev("add-photos", tie),
+            _ev("weight-entry", tie, weight_lbs=12.0),
+            _ev("processed-by-vendor", tie),
+        ]
+        hit = wf_post_processing_weight_completion(timeline, anchor_ts=T0, as_of_end=tie)
+        assert hit is not None
+        assert hit.completion_ts == tie
+        assert hit.second_weight_lbs == 12.0
+
+    def test_same_minute_only_weight_without_earlier_pre_clean_incomplete(self):
+        timeline = [
+            _ev("sent-to-vendor", T0),
+            _ev("weight-entry", T1),
+            _ev("add-photos", T1),
+        ]
+        assert wf_post_processing_weight_completion(timeline, anchor_ts=T0, as_of_end=T1) is None
+
 
 class TestWfTwoWeightCompletion:
     def test_two_timestamps_complete(self):

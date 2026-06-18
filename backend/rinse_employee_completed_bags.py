@@ -21,6 +21,7 @@ from backend.rinse_scan_purpose import (
 )
 from backend.rinse_wf_weight_events import (
     _latest_wf_processing_after_anchor,
+    _post_processing_weight_events,
     distinct_wf_weight_events,
     parse_weight_lbs_from_scan_event,
 )
@@ -89,7 +90,7 @@ def _wf_completion_weight_event(
     if latest_proc is None:
         return None, None
     weights = distinct_wf_weight_events(timeline, anchor_ts=anchor_ts, as_of_end=as_of_end)
-    post = [w for w in weights if w.timestamp > latest_proc]
+    post = _post_processing_weight_events(weights, latest_proc)
     if not post:
         return None, None
     last = post[-1]
