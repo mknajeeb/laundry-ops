@@ -277,6 +277,45 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/sorting-chronology", methods=["GET"])
+    def rinse_shift_analysis_sorting_chronology():
+        """Read-only sorting session timeline for a single ET calendar day."""
+        from backend.rinse_sorting_chronology import build_sorting_chronology_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            raw_date = (request.args.get("date_et") or request.args.get("date_start") or "").strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                selected = _today_et()
+            else:
+                selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            employee = (request.args.get("employee") or "").strip() or None
+            bag_id = (request.args.get("bag_id") or "").strip() or None
+            confidence = (request.args.get("confidence") or "").strip() or None
+            payload = build_sorting_chronology_payload(
+                cursor,
+                tenant_oid,
+                selected_date_et=selected,
+                employee_filter=employee,
+                bag_id_filter=bag_id,
+                confidence_filter=confidence,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/employee-productivity", methods=["GET"])
     def rinse_shift_analysis_employee_productivity():
         """Phase 2 — employee productivity only (full bags, no full dashboard reload)."""

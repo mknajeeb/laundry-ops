@@ -35,6 +35,7 @@ import ScoreboardPage from "./pages/ScoreboardPage";
 import RinseFoldingDashboardPage from "./pages/RinseFoldingDashboardPage";
 import ShiftMonitorPage from "./pages/ShiftMonitorPage";
 import DailyShiftRosterPage from "./pages/DailyShiftRosterPage";
+import SortingChronologyPage from "./pages/SortingChronologyPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
 import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
@@ -798,6 +799,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
                     <DailyShiftRosterPage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/sorting-chronology"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <SortingChronologyPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

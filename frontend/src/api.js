@@ -589,6 +589,9 @@ export const getShiftAnalysisPending = (params = {}) =>
 export const getShiftAnalysisRecords = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/records`, { params, timeout: 60000 });
 
+export const getSortingChronology = (params = {}) =>
+  axios.get(`${API_BASE}/rinse/shift-analysis/sorting-chronology`, { params, timeout: 60000 });
+
 export const listFoldingUsers = () =>
   axios.get(`${API_BASE}/rinse/folding/users`, { timeout: 30000 });
 
