@@ -556,6 +556,9 @@ export const deleteDailyShiftRosterEntry = (entryId) =>
 export const importDailyShiftRosterFromPayroll = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/import-from-payroll`, body, { timeout: 30000 });
 
+export const batchSaveDailyShiftRoster = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/batch-save`, body, { timeout: 60000 });
+
 export const getWeeklySchedule = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule`, { params, timeout: 30000 });
 

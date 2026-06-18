@@ -15,6 +15,7 @@ _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 def ensure_daily_shift_roster_table(cursor) -> None:
     if table_exists(cursor, "daily_shift_roster_entries"):
         _ensure_end_time_nullable(cursor)
+        _ensure_excluded_column(cursor)
         return
     cursor.execute(
         """
@@ -29,6 +30,7 @@ def ensure_daily_shift_roster_table(cursor) -> None:
           break_minutes INT NOT NULL DEFAULT 0,
           rate DECIMAL(10,2) NOT NULL DEFAULT 0.00,
           notes TEXT NULL,
+          excluded TINYINT NOT NULL DEFAULT 0,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
           INDEX idx_dsr_org_date (organization_id, roster_date),
@@ -49,6 +51,32 @@ def _ensure_end_time_nullable(cursor) -> None:
             cursor.execute("ALTER TABLE daily_shift_roster_entries MODIFY end_time TIME NULL")
     except Exception:
         return
+
+
+def _ensure_excluded_column(cursor) -> None:
+    try:
+        cursor.execute("SHOW COLUMNS FROM daily_shift_roster_entries LIKE 'excluded'")
+        row = cursor.fetchone()
+        if row:
+            return
+        cursor.execute(
+            "ALTER TABLE daily_shift_roster_entries "
+            "ADD COLUMN excluded TINYINT NOT NULL DEFAULT 0 AFTER notes"
+        )
+    except Exception:
+        return
+
+
+def _is_excluded(data: Mapping[str, Any]) -> bool:
+    raw = data.get("excluded")
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return False
+    try:
+        return int(raw) != 0
+    except (TypeError, ValueError):
+        return bool(raw)
 
 
 def roster_entry_match_key(employee_name: Any, start_time: Any) -> tuple[str, str]:
@@ -157,6 +185,7 @@ def serialize_roster_entry_data(data: Mapping[str, Any]) -> dict[str, Any]:
         "break_minutes": break_min,
         "rate": rate,
         "notes": str(data.get("notes") or "").strip() or None,
+        "excluded": _is_excluded(data),
         "shift_open": shift_open,
         "hours": hours,
         "cost": cost,
@@ -220,6 +249,8 @@ def _validate_entry_payload(data: Mapping[str, Any], *, partial: bool = False) -
     if "notes" in data:
         notes = str(data.get("notes") or "").strip()
         out["notes"] = notes or None
+    if "excluded" in data or not partial:
+        out["excluded"] = _is_excluded(data)
     return out, None
 
 
@@ -233,7 +264,7 @@ def list_roster_entries(
     cursor.execute(
         """
         SELECT id, organization_id, roster_date, employee_name, role,
-               start_time, end_time, break_minutes, rate, notes
+               start_time, end_time, break_minutes, rate, notes, excluded
         FROM daily_shift_roster_entries
         WHERE organization_id = %s AND roster_date = %s
         ORDER BY role ASC, employee_name ASC, start_time ASC, id ASC
@@ -253,7 +284,7 @@ def get_roster_entry(
     cursor.execute(
         """
         SELECT id, organization_id, roster_date, employee_name, role,
-               start_time, end_time, break_minutes, rate, notes
+               start_time, end_time, break_minutes, rate, notes, excluded
         FROM daily_shift_roster_entries
         WHERE organization_id = %s AND id = %s
         LIMIT 1
@@ -281,8 +312,8 @@ def create_roster_entry(
         """
         INSERT INTO daily_shift_roster_entries (
             organization_id, roster_date, employee_name, role,
-            start_time, end_time, break_minutes, rate, notes
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            start_time, end_time, break_minutes, rate, notes, excluded
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -294,6 +325,7 @@ def create_roster_entry(
             payload["break_minutes"],
             payload["rate"],
             payload.get("notes"),
+            1 if payload.get("excluded") else 0,
         ),
     )
     entry_id = int(cursor.lastrowid or 0)
@@ -319,6 +351,7 @@ def update_roster_entry(
         "break_minutes": existing["break_minutes"],
         "rate": existing["rate"],
         "notes": existing.get("notes"),
+        "excluded": existing.get("excluded"),
         **dict(data or {}),
     }
     payload, err = _validate_entry_payload(merged)
@@ -328,7 +361,7 @@ def update_roster_entry(
         """
         UPDATE daily_shift_roster_entries
         SET employee_name=%s, role=%s, start_time=%s, end_time=%s,
-            break_minutes=%s, rate=%s, notes=%s
+            break_minutes=%s, rate=%s, notes=%s, excluded=%s
         WHERE organization_id=%s AND id=%s
         """,
         (
@@ -339,6 +372,7 @@ def update_roster_entry(
             payload["break_minutes"],
             payload["rate"],
             payload.get("notes"),
+            1 if payload.get("excluded") else 0,
             int(organization_id),
             int(entry_id),
         ),
@@ -362,6 +396,34 @@ def delete_roster_entry(
     return True, None
 
 
+def batch_save_roster_entries(
+    cursor,
+    organization_id: int,
+    *,
+    roster_date: date,
+    entries: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Persist draft/prefill roster rows (skips excluded entries)."""
+    ensure_daily_shift_roster_table(cursor)
+    created: list[dict[str, Any]] = []
+    for raw in entries or []:
+        if not isinstance(raw, dict):
+            continue
+        if _is_excluded(raw):
+            continue
+        entry, err = create_roster_entry(
+            cursor,
+            organization_id,
+            roster_date=roster_date,
+            data=raw,
+        )
+        if err:
+            return created, err
+        if entry:
+            created.append(entry)
+    return created, None
+
+
 def build_roster_payload(
     cursor,
     organization_id: int,
@@ -372,12 +434,13 @@ def build_roster_payload(
     from backend.daily_shift_roster_payroll import build_payroll_prefill_entries
 
     entries = list_roster_entries(cursor, organization_id, roster_date=roster_date)
+    included = [e for e in entries if not e.get("excluded")]
     total_hours = round(
-        sum(float(e.get("hours") or 0) for e in entries if e.get("hours") is not None),
+        sum(float(e.get("hours") or 0) for e in included if e.get("hours") is not None),
         4,
     )
     total_cost = round(
-        sum(float(e.get("cost") or 0) for e in entries if e.get("cost") is not None),
+        sum(float(e.get("cost") or 0) for e in included if e.get("cost") is not None),
         2,
     )
     payroll_prefill: list[dict[str, Any]] = []
@@ -403,7 +466,7 @@ def build_roster_payload(
         "payroll_prefill": payroll_prefill if not has_roster else [],
         "payroll_record_count": payroll_record_count,
         "summary": {
-            "employee_count": len(entries),
+            "employee_count": len(included),
             "total_hours": total_hours,
             "total_cost": total_cost,
         },

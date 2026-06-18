@@ -6,6 +6,7 @@ from datetime import date, time
 
 from backend.daily_shift_labor_summary import build_labor_summary
 from backend.daily_shift_roster import (
+    batch_save_roster_entries,
     build_roster_payload,
     calc_cost,
     calc_hours,
@@ -51,11 +52,12 @@ class _FakeCursor:
                 "break_minutes": params[6],
                 "rate": params[7],
                 "notes": params[8],
+                "excluded": params[9] if len(params) > 9 else 0,
             }
             self.rows.append(row)
             return
         if "update daily_shift_roster_entries" in sql_norm:
-            entry_id = params[8]
+            entry_id = params[-1]
             for row in self.rows:
                 if row["id"] == entry_id:
                     row.update(
@@ -67,6 +69,7 @@ class _FakeCursor:
                             "break_minutes": params[4],
                             "rate": params[5],
                             "notes": params[6],
+                            "excluded": params[7],
                         }
                     )
             return
@@ -353,6 +356,111 @@ class TestRosterPayloadMessages:
         )
         assert payload["message"] == "No labor roster recorded for this date."
         assert payload["payroll_prefill"] == []
+
+
+class TestExcludedEntries:
+    def test_excluded_entry_omitted_from_roster_summary(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        org = 3
+        roster_date = date(2026, 6, 18)
+
+        create_roster_entry(
+            cursor,
+            org,
+            roster_date=roster_date,
+            data={
+                "employee_name": "Included Worker",
+                "role": "folder",
+                "start_time": "08:00",
+                "end_time": "16:00",
+                "break_minutes": 0,
+                "rate": 20.0,
+            },
+        )
+        create_roster_entry(
+            cursor,
+            org,
+            roster_date=roster_date,
+            data={
+                "employee_name": "Excluded Worker",
+                "role": "folder",
+                "start_time": "09:00",
+                "end_time": "17:00",
+                "break_minutes": 0,
+                "rate": 20.0,
+                "excluded": True,
+            },
+        )
+
+        monkeypatch.setattr(
+            "backend.daily_shift_roster_payroll.build_payroll_prefill_entries",
+            lambda *_a, **_k: [],
+        )
+        payload = build_roster_payload(cursor, org, roster_date=roster_date, conn=None)
+        assert payload["summary"]["employee_count"] == 1
+        assert payload["summary"]["total_hours"] == 8.0
+        assert payload["summary"]["total_cost"] == 160.0
+        assert len(payload["entries"]) == 2
+
+    def test_excluded_entry_omitted_from_labor_summary(self):
+        roster = [
+            {
+                "employee_name": "Included Worker",
+                "role": "folder",
+                "hours": 8.0,
+                "cost": 160.0,
+                "rate": 20.0,
+            },
+            {
+                "employee_name": "Excluded Worker",
+                "role": "folder",
+                "hours": 8.0,
+                "cost": 160.0,
+                "rate": 20.0,
+                "excluded": True,
+            },
+        ]
+        summary = build_labor_summary(
+            roster,
+            productivity_section={"executive_summary": {"total_bags_completed": 10}},
+        )
+        assert summary["kpis"]["total_labor_hours"] == 8.0
+        assert summary["kpis"]["total_labor_cost"] == 160.0
+        assert len(summary["employee_details"]) == 1
+
+    def test_batch_save_skips_excluded_drafts(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        org = 3
+        roster_date = date(2026, 6, 18)
+        created, err = batch_save_roster_entries(
+            cursor,
+            org,
+            roster_date=roster_date,
+            entries=[
+                {
+                    "employee_name": "Alice Worker",
+                    "role": "folder",
+                    "start_time": "08:00",
+                    "end_time": "16:00",
+                    "break_minutes": 0,
+                    "rate": 19.5,
+                },
+                {
+                    "employee_name": "Bob Worker",
+                    "role": "folder",
+                    "start_time": "09:00",
+                    "end_time": "17:00",
+                    "break_minutes": 0,
+                    "rate": 19.5,
+                    "excluded": True,
+                },
+            ],
+        )
+        assert err is None
+        assert len(created) == 1
+        assert list_roster_entries(cursor, org, roster_date=roster_date)[0]["employee_name"] == "Alice Worker"
 
 
 class TestLaborSummary:

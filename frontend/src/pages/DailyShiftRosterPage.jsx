@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
   Paper,
+  Snackbar,
   Stack,
   TextField,
   ToggleButton,
@@ -13,7 +14,10 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import {
+  batchSaveDailyShiftRoster,
   createDailyShiftRosterEntry,
   deleteDailyShiftRosterEntry,
   getDailyShiftRoster,
@@ -57,7 +61,10 @@ export default function DailyShiftRosterPage() {
   const [editingEntry, setEditingEntry] = useState(null);
   const [editingDraft, setEditingDraft] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [batchSaving, setBatchSaving] = useState(false);
   const [roleSavingKey, setRoleSavingKey] = useState("");
+  const [excludeSavingKey, setExcludeSavingKey] = useState("");
+  const [toast, setToast] = useState("");
 
   const load = useCallback(async (dateEt) => {
     if (!dateEt) return;
@@ -117,12 +124,14 @@ export default function DailyShiftRosterPage() {
     try {
       if (editingEntry?.id) {
         await updateDailyShiftRosterEntry(editingEntry.id, form);
+        setToast("Roster entry saved");
       } else {
         await createDailyShiftRosterEntry({ ...form, date_et: activeDateEt });
         if (editingDraft) {
           const key = draftKey(editingEntry);
           setDraftEntries((prev) => prev.filter((e) => draftKey(e) !== key));
         }
+        setToast("Employee added to roster");
       }
       setDialogOpen(false);
       setEditingEntry(null);
@@ -142,6 +151,7 @@ export default function DailyShiftRosterPage() {
     setError("");
     try {
       await deleteDailyShiftRosterEntry(entry.id);
+      setToast("Roster entry removed");
       await load(activeDateEt);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to delete roster entry");
@@ -161,11 +171,57 @@ export default function DailyShiftRosterPage() {
     setError("");
     try {
       await updateDailyShiftRosterEntry(entry.id, { role });
+      setToast("Role saved");
       await load(activeDateEt);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to update role");
     } finally {
       setRoleSavingKey("");
+    }
+  };
+
+  const handleExcludeToggle = async (entry, excluded) => {
+    const key = draftKey(entry);
+    if (!entry?.id) {
+      setDraftEntries((prev) =>
+        prev.map((e) => (draftKey(e) === key ? { ...e, excluded } : e)),
+      );
+      setToast(excluded ? "Employee excluded from save" : "Employee included in save");
+      return;
+    }
+    setExcludeSavingKey(String(entry.id));
+    setError("");
+    try {
+      await updateDailyShiftRosterEntry(entry.id, { excluded });
+      setToast(excluded ? "Excluded from labor totals" : "Included in labor totals");
+      await load(activeDateEt);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to update exclusion");
+    } finally {
+      setExcludeSavingKey("");
+    }
+  };
+
+  const handleBatchSave = async () => {
+    const toSave = draftEntries.filter((e) => !e.excluded);
+    if (!toSave.length) {
+      setError("No employees selected to save. Include at least one row or add manually.");
+      return;
+    }
+    setBatchSaving(true);
+    setError("");
+    try {
+      const res = await batchSaveDailyShiftRoster({
+        date_et: activeDateEt,
+        entries: draftEntries,
+      });
+      setData(res.data);
+      setDraftEntries([]);
+      setToast(`Roster saved (${res.data?.saved_count ?? toSave.length} employees)`);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to save roster");
+    } finally {
+      setBatchSaving(false);
     }
   };
 
@@ -177,6 +233,7 @@ export default function DailyShiftRosterPage() {
       setData(res.data);
       setDraftEntries([]);
       setActiveDateEt(activeDateEt);
+      setToast(`Imported ${res.data?.imported_count ?? 0} employees from payroll`);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to import from payroll");
     } finally {
@@ -190,8 +247,14 @@ export default function DailyShiftRosterPage() {
   const displayEntries = hasRoster ? entries : draftEntries;
   const infoMessage = data?.message || null;
 
+  const pendingDraftCount = useMemo(
+    () => draftEntries.filter((e) => !e.excluded).length,
+    [draftEntries],
+  );
+  const hasUnsavedDrafts = !hasRoster && pendingDraftCount > 0;
+
   return (
-    <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1, sm: 2 }, py: { xs: 1.5, sm: 2.5 } }}>
+    <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1, sm: 2 }, py: { xs: 1.5, sm: 2.5 }, pb: { xs: 10, sm: 10 } }}>
       <Paper
         elevation={0}
         sx={{
@@ -312,7 +375,7 @@ export default function DailyShiftRosterPage() {
                   Employees
                 </Typography>
                 <Typography variant="h6" fontWeight={800}>
-                  {summary.employee_count ?? entries.length}
+                  {summary.employee_count ?? entries.filter((e) => !e.excluded).length}
                 </Typography>
               </Box>
               <Box>
@@ -334,20 +397,121 @@ export default function DailyShiftRosterPage() {
             </Box>
           ) : null}
 
-          <Stack spacing={1.5}>
-            {displayEntries.map((entry) => (
-              <DailyShiftRosterCard
-                key={entry.id || draftKey(entry)}
-                entry={entry}
-                draft={!hasRoster}
-                onEdit={(e) => openEdit(e, { draft: !hasRoster })}
-                onDelete={handleDelete}
-                onRoleChange={handleRoleChange}
-                roleSaving={roleSavingKey === String(entry.id)}
-              />
-            ))}
-          </Stack>
+          {displayEntries.length === 0 && !loading ? (
+            <Box
+              sx={{
+                py: 4,
+                px: 2,
+                textAlign: "center",
+                borderRadius: 2,
+                border: "1px dashed",
+                borderColor: "divider",
+                mb: 2,
+              }}
+            >
+              <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+                No employees on this roster yet.
+              </Typography>
+              <Button
+                variant="contained"
+                startIcon={<AddIcon />}
+                onClick={openCreate}
+                fullWidth
+                sx={{ maxWidth: 320, mx: "auto", fontWeight: 700 }}
+              >
+                Add Employee
+              </Button>
+            </Box>
+          ) : (
+            <Stack spacing={1.5}>
+              {displayEntries.map((entry) => (
+                <DailyShiftRosterCard
+                  key={entry.id || draftKey(entry)}
+                  entry={entry}
+                  draft={!hasRoster}
+                  onEdit={(e) => openEdit(e, { draft: !hasRoster })}
+                  onDelete={handleDelete}
+                  onRoleChange={handleRoleChange}
+                  onExcludeToggle={handleExcludeToggle}
+                  roleSaving={roleSavingKey === String(entry.id)}
+                  excludeSaving={excludeSavingKey === String(entry.id)}
+                />
+              ))}
+              <Button
+                variant="outlined"
+                startIcon={<AddIcon />}
+                onClick={openCreate}
+                fullWidth
+                sx={{ mt: 0.5, py: 1.25, fontWeight: 700, borderStyle: "dashed" }}
+              >
+                Add another employee
+              </Button>
+            </Stack>
+          )}
         </Box>
+      </Paper>
+
+      <Paper
+        elevation={6}
+        sx={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          zIndex: 1100,
+          borderTop: "1px solid",
+          borderColor: "divider",
+          borderRadius: 0,
+          px: { xs: 1.5, sm: 2 },
+          py: 1.25,
+        }}
+      >
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          alignItems={{ xs: "stretch", sm: "center" }}
+          justifyContent="space-between"
+          sx={{ maxWidth: 1100, mx: "auto" }}
+        >
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ minHeight: 36 }}>
+            {hasUnsavedDrafts ? (
+              <Typography variant="body2" color="warning.main" fontWeight={600}>
+                {pendingDraftCount} unsaved {pendingDraftCount === 1 ? "employee" : "employees"} — review and save
+              </Typography>
+            ) : hasRoster ? (
+              <>
+                <CheckCircleOutlineIcon fontSize="small" color="success" />
+                <Typography variant="body2" color="text.secondary" fontWeight={600}>
+                  All changes saved
+                </Typography>
+              </>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                Import from payroll or add employees manually
+              </Typography>
+            )}
+          </Stack>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={batchSaving ? <CircularProgress size={16} color="inherit" /> : <SaveOutlinedIcon />}
+              onClick={handleBatchSave}
+              disabled={!hasUnsavedDrafts || batchSaving || loading}
+              sx={{ fontWeight: 800, minWidth: { sm: 160 } }}
+            >
+              {batchSaving ? "Saving…" : "Save Roster"}
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<AddIcon />}
+              onClick={openCreate}
+              sx={{ fontWeight: 700, minWidth: { sm: 160 } }}
+            >
+              Add Employee
+            </Button>
+          </Stack>
+        </Stack>
       </Paper>
 
       <DailyShiftRosterEntryDialog
@@ -362,6 +526,15 @@ export default function DailyShiftRosterPage() {
         onSave={handleSave}
         initialEntry={editingEntry}
         saving={saving}
+      />
+
+      <Snackbar
+        open={Boolean(toast)}
+        autoHideDuration={3000}
+        onClose={() => setToast("")}
+        message={toast}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{ mb: 8 }}
       />
     </Box>
   );

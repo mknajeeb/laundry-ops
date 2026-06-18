@@ -73,7 +73,11 @@ def build_labor_summary(
     *,
     productivity_section: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    entries = [dict(e) for e in (roster_entries or []) if isinstance(e, dict)]
+    entries = [
+        dict(e)
+        for e in (roster_entries or [])
+        if isinstance(e, dict) and not e.get("excluded")
+    ]
     if not entries:
         return {
             "available": False,

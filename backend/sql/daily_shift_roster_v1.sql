@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS daily_shift_roster_entries (
   break_minutes INT NOT NULL DEFAULT 0,
   rate DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   notes TEXT NULL,
+  excluded TINYINT NOT NULL DEFAULT 0,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_dsr_org_date (organization_id, roster_date),

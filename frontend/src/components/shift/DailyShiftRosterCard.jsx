@@ -1,5 +1,6 @@
 import {
   Box,
+  Button,
   Chip,
   FormControl,
   IconButton,
@@ -11,6 +12,8 @@ import {
 } from "@mui/material";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
+import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 import { fmtLaborValue } from "../../utils/employeeProductivityHelpers";
 
@@ -41,8 +44,11 @@ export default function DailyShiftRosterCard({
   onEdit,
   onDelete,
   onRoleChange,
+  onExcludeToggle,
   roleSaving = false,
+  excludeSaving = false,
 }) {
+  const excluded = Boolean(entry?.excluded);
   const endLabel = entry?.shift_open || !entry?.end_time ? "Open" : formatTime12(entry.end_time);
 
   return (
@@ -50,29 +56,47 @@ export default function DailyShiftRosterCard({
       sx={{
         p: 2,
         borderRadius: 2.5,
-        bgcolor: draft ? VEEWASH_DASHBOARD.snapshotBg : "#fff",
+        bgcolor: excluded ? "action.hover" : draft ? VEEWASH_DASHBOARD.snapshotBg : "#fff",
         border: "1px solid",
-        borderColor: draft ? VEEWASH_DASHBOARD.snapshotBorder : VEEWASH_DASHBOARD.primaryBlueBorder,
-        boxShadow: VEEWASH_DASHBOARD.cardShadow,
-        transition: "border-color 0.15s ease, box-shadow 0.15s ease",
-        "&:hover": {
-          borderColor: VEEWASH_DASHBOARD.primaryBlue,
-          boxShadow: "0 4px 14px rgba(0, 151, 178, 0.12)",
-        },
+        borderColor: excluded
+          ? "divider"
+          : draft
+            ? VEEWASH_DASHBOARD.snapshotBorder
+            : VEEWASH_DASHBOARD.primaryBlueBorder,
+        boxShadow: excluded ? "none" : VEEWASH_DASHBOARD.cardShadow,
+        opacity: excluded ? 0.72 : 1,
+        transition: "border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease",
+        "&:hover": excluded
+          ? {}
+          : {
+              borderColor: VEEWASH_DASHBOARD.primaryBlue,
+              boxShadow: "0 4px 14px rgba(0, 151, 178, 0.12)",
+            },
       }}
     >
       <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <Typography variant="h6" fontWeight={800} sx={{ fontSize: "1.05rem", lineHeight: 1.25 }}>
+            <Typography
+              variant="h6"
+              fontWeight={800}
+              sx={{
+                fontSize: "1.05rem",
+                lineHeight: 1.25,
+                textDecoration: excluded ? "line-through" : "none",
+              }}
+            >
               {entry.employee_name}
             </Typography>
             {draft ? (
               <Chip size="small" label="From Payroll" color="info" variant="outlined" sx={{ height: 22 }} />
             ) : null}
+            {excluded ? (
+              <Chip size="small" label="Excluded" color="default" variant="filled" sx={{ height: 22 }} />
+            ) : null}
           </Stack>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }} alignItems={{ sm: "center" }}>
-            <FormControl size="small" sx={{ minWidth: 130 }} disabled={roleSaving}>
+            <FormControl size="small" sx={{ minWidth: 130 }} disabled={roleSaving || excluded}>
               <InputLabel id={`roster-role-${entry.id || entry.employee_name}`}>Role</InputLabel>
               <Select
                 labelId={`roster-role-${entry.id || entry.employee_name}`}
@@ -134,6 +158,16 @@ export default function DailyShiftRosterCard({
               {entry.notes}
             </Typography>
           ) : null}
+          <Button
+            size="small"
+            variant="text"
+            startIcon={excluded ? <VisibilityOutlinedIcon /> : <VisibilityOffOutlinedIcon />}
+            onClick={() => onExcludeToggle?.(entry, !excluded)}
+            disabled={excludeSaving}
+            sx={{ mt: 1, px: 0, minWidth: 0, fontWeight: 600, textTransform: "none" }}
+          >
+            {excluded ? "Include in labor totals" : "Exclude from labor totals"}
+          </Button>
         </Box>
         <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0 }}>
           <IconButton size="small" aria-label="Edit roster entry" onClick={() => onEdit?.(entry)}>
