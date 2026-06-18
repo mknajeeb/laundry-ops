@@ -277,6 +277,43 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/operations-timeline", methods=["GET"])
+    def rinse_shift_analysis_operations_timeline():
+        """Read-only shift operations timeline for a single ET calendar day."""
+        from backend.rinse_operations_timeline import build_operations_timeline_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            raw_date = (request.args.get("date_et") or request.args.get("date_start") or "").strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                selected = _today_et()
+            else:
+                selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            view = (request.args.get("view") or "").strip() or None
+            bag_id = (request.args.get("bag_id") or "").strip() or None
+            payload = build_operations_timeline_payload(
+                cursor,
+                tenant_oid,
+                selected_date_et=selected,
+                view_filter=view,
+                bag_id_filter=bag_id,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/sorting-chronology", methods=["GET"])
     def rinse_shift_analysis_sorting_chronology():
         """Read-only sorting session timeline for a single ET calendar day."""

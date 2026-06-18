@@ -66,6 +66,12 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
+    to: "/performance/operations-timeline",
+    labelKey: "nav.operationsTimeline",
+    roles: ["ADMIN", "OPS"],
+    moduleKey: "scoreboard",
+  },
+  {
     to: "/performance/weekly-schedule",
     labelKey: "nav.weeklySchedule",
     roles: ["ADMIN", "OPS"],
