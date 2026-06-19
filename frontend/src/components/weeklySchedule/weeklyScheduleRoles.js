@@ -13,6 +13,7 @@ export const ROLE_STYLES = {
     bg: VEEWASH_DASHBOARD.primaryBlueLight,
     hoverBg: "#d9f0f5",
     chipBg: "#e0f4f8",
+    cellBg: "#f2fafc",
     border: VEEWASH_DASHBOARD.primaryBlueBorder,
     label: "Sort",
   },
@@ -21,6 +22,7 @@ export const ROLE_STYLES = {
     bg: VEEWASH_DASHBOARD.pendingLight,
     hoverBg: "#ffe8cc",
     chipBg: "#fff4e0",
+    cellBg: "#fffbf3",
     border: VEEWASH_DASHBOARD.pendingBorder,
     label: "Wash",
   },
@@ -29,6 +31,7 @@ export const ROLE_STYLES = {
     bg: VEEWASH_DASHBOARD.tealLight,
     hoverBg: "#d4f2ed",
     chipBg: "#e4f7f3",
+    cellBg: "#f3faf8",
     border: VEEWASH_DASHBOARD.tealBorder,
     label: "Fold",
   },
@@ -37,6 +40,7 @@ export const ROLE_STYLES = {
     bg: VEEWASH_DASHBOARD.tealLight,
     hoverBg: "#d4f2ed",
     chipBg: "#e4f7f3",
+    cellBg: "#f3faf8",
     border: VEEWASH_DASHBOARD.tealBorder,
     label: "Fold",
   },
@@ -45,6 +49,7 @@ export const ROLE_STYLES = {
     bg: VEEWASH_DASHBOARD.pendingLight,
     hoverBg: "#ffe8cc",
     chipBg: "#fff4e0",
+    cellBg: "#fffbf3",
     border: VEEWASH_DASHBOARD.pendingBorder,
     label: "Wash",
   },
@@ -79,4 +84,43 @@ export function roleStripeGradient(roles) {
 
 export function roleLabels(roles) {
   return roles.map((r) => ROLE_STYLES[r]?.label || r).join(" · ");
+}
+
+const DROP_TARGET_OVERLAY = "rgba(0, 151, 178, 0.08)";
+
+/** Subtle grid-cell tint from shift roles — lighter than shift card fills. */
+export function cellRoleBackground(entries) {
+  if (!entries?.length) return null;
+
+  const roleCounts = {};
+  for (const entry of entries) {
+    for (const roleKey of parseEntryRoles(entry)) {
+      const key = ROLE_STYLES[roleKey] ? roleKey : "fold";
+      roleCounts[key] = (roleCounts[key] || 0) + 1;
+    }
+  }
+
+  const roles = Object.entries(roleCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([key]) => key);
+  if (!roles.length) return null;
+
+  if (roles.length === 1) {
+    return (ROLE_STYLES[roles[0]] || ROLE_STYLES.fold).cellBg;
+  }
+
+  const colors = roles.map((key) => (ROLE_STYLES[key] || ROLE_STYLES.fold).cellBg);
+  const step = 100 / colors.length;
+  const stops = colors.map((color, i) => `${color} ${i * step}%, ${color} ${(i + 1) * step}%`).join(", ");
+  return `linear-gradient(135deg, ${stops})`;
+}
+
+export function scheduleCellBackground({ entries, excluded, isDropTarget }) {
+  if (excluded) return "#fafafa";
+  const roleBg = cellRoleBackground(entries);
+  if (isDropTarget) {
+    const base = roleBg || "#fff";
+    return `linear-gradient(${DROP_TARGET_OVERLAY}, ${DROP_TARGET_OVERLAY}), ${base}`;
+  }
+  return roleBg || "#fff";
 }

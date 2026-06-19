@@ -32,7 +32,7 @@ import {
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
-import { ROLE_STYLES } from "../components/weeklySchedule/weeklyScheduleRoles";
+import { ROLE_STYLES, scheduleCellBackground } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -549,6 +549,11 @@ export default function WeeklySchedulePage() {
                         const isDropTarget = dropTarget === cellKey;
                         const isEmpty = cellEntries.length === 0;
                         const canAddShift = !excluded && canEdit;
+                        const cellBg = scheduleCellBackground({
+                          entries: cellEntries,
+                          excluded,
+                          isDropTarget,
+                        });
                         return (
                           <Box
                             key={cellKey}
@@ -578,11 +583,7 @@ export default function WeeklySchedulePage() {
                               minHeight: 52,
                               borderBottom: "1px solid #e2e8f0",
                               borderLeft: "1px solid #e2e8f0",
-                              bgcolor: excluded
-                                ? "#fafafa"
-                                : isDropTarget
-                                  ? "rgba(0, 151, 178, 0.08)"
-                                  : "#fff",
+                              background: cellBg,
                               opacity: excluded ? 0.85 : 1,
                               transition: "background-color 0.12s ease",
                               cursor: canAddShift && !isEmpty ? "pointer" : "default",
