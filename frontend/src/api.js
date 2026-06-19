@@ -1438,6 +1438,13 @@ export const putTaUserDocument = (userId, recordId, body) =>
 export const deleteTaUserDocument = (userId, recordId) =>
   axios.delete(`${API_BASE}/api/ta/users/${userId}/documents/${recordId}`);
 
+/** Authenticated stream of an uploaded HR document (private blob proxy). */
+export const getTaUserDocumentFile = (userId, recordId, opts = {}) =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/documents/${recordId}/file`, {
+    responseType: "blob",
+    params: opts.download ? { download: 1 } : undefined,
+  });
+
 export const getDocumentCompliancePolicy = () =>
   axios.get(`${API_BASE}/api/ta/admin/document-compliance-policy`);
 

@@ -1313,23 +1313,42 @@ def build_document_records_export_zip(
             uid = rec.get("user_id")
             code = _safe_zip_segment(str(rec.get("document_code") or "doc"))
             base = f"u{uid}_r{rid}_{code}"
-            urls: list[tuple[str, str]] = []
+            urls: list[tuple[object, str | None, str]] = []
             fu = _s(rec.get("file_uri") or "").strip()
             if fu:
-                urls.append((fu, "file"))
+                from backend.hr_document_upload import parse_hr_document_file_uri, read_employee_document_bytes
+
+                ref = parse_hr_document_file_uri(fu)
+                if ref:
+                    try:
+                        data, ctype = read_employee_document_bytes(fu)
+                        urls.append((data, ctype, "file"))
+                    except ValueError as e:
+                        manifest_lines.append(f"skip record {rid} (file): read failed ({e})")
+                elif _export_http_url_allowed(fu):
+                    urls.append((fu, None, "file"))
+                else:
+                    manifest_lines.append(f"skip record {rid} (file): URL not allowed")
             meta = _load_metadata_dict(rec.get("metadata_json"))
             eu = _s(meta.get("evidence_uri") or "").strip()
             if eu and eu != fu:
-                urls.append((eu, "evidence"))
-            for url, kind in urls:
+                if _export_http_url_allowed(eu):
+                    urls.append((eu, None, "evidence"))
+                else:
+                    manifest_lines.append(f"skip record {rid} (evidence): URL not allowed")
+            for item, ctype_hint, kind in urls:
                 if n_added >= max_files:
                     manifest_lines.append(f"skip record {rid}: max_files ({max_files})")
                     break
-                if not _export_http_url_allowed(url):
-                    manifest_lines.append(f"skip record {rid} ({kind}): URL not allowed")
-                    continue
                 try:
-                    data, ctype = _http_get_bytes(url, max_per_file)
+                    if isinstance(item, (bytes, bytearray)):
+                        data = bytes(item)
+                        ctype = ctype_hint or "application/octet-stream"
+                    else:
+                        if not _export_http_url_allowed(item):
+                            manifest_lines.append(f"skip record {rid} ({kind}): URL not allowed")
+                            continue
+                        data, ctype = _http_get_bytes(item, max_per_file)
                 except Exception as e:
                     manifest_lines.append(f"skip record {rid} ({kind}): fetch failed ({e})")
                     continue

@@ -3570,6 +3570,67 @@ def user_document_file_upload(user_id):
         conn.close()
 
 
+@ta_bp.route("/users/<int:user_id>/documents/<int:record_id>/file", methods=["GET"])
+@require_auth
+def user_document_record_file(user_id, record_id):
+    """Stream an uploaded HR document for authenticated users (private blob proxy)."""
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "Documents require unified payroll"}), 503
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+
+        want_download = str(request.args.get("download") or "").lower() in ("1", "true", "yes")
+        if want_download:
+            if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+                return jsonify({"error": "Forbidden"}), 403
+        elif not user_has_perm(conn, g.ta_user["id"], "users.view"):
+            return jsonify({"error": "Forbidden"}), 403
+
+        oid = int(u.get("organization_id") or _tenant_id())
+        cur = conn.cursor(dictionary=True)
+        ensure_document_compliance_tables(cur)
+        cur.execute(
+            """
+            SELECT id, file_uri, document_name
+            FROM employee_document_records
+            WHERE id=%s AND organization_id=%s AND user_id=%s
+            LIMIT 1
+            """,
+            (int(record_id), oid, int(user_id)),
+        )
+        row = cur.fetchone()
+        if not row or not (row.get("file_uri") or "").strip():
+            return jsonify({"error": "Not found"}), 404
+
+        from backend.hr_document_upload import parse_hr_document_file_uri, read_employee_document_bytes
+
+        try:
+            data, content_type = read_employee_document_bytes(row["file_uri"])
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+
+        ref = parse_hr_document_file_uri(row["file_uri"]) or {}
+        filename = ref.get("filename") or "document"
+        label = str(row.get("document_name") or filename).strip()
+        disposition = "attachment" if want_download else "inline"
+        safe_name = re.sub(r"[^\w.\- ]+", "_", label).strip() or filename
+        return Response(
+            data,
+            mimetype=content_type,
+            headers={
+                "Content-Disposition": f'{disposition}; filename="{safe_name}"',
+                "Cache-Control": "private, no-store",
+            },
+        )
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/admin/document-compliance-policy", methods=["GET", "PUT"])
 @require_auth
 def admin_document_compliance_policy():

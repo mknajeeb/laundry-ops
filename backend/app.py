@@ -6224,35 +6224,8 @@ def serve_local_org_logo(org_id, filename):
 
 @app.route("/media/hr-documents/<int:org_id>/<int:user_id>/<path:filename>", methods=["GET"])
 def serve_local_hr_document(org_id, user_id, filename):
-    """Public read for HR document files stored locally or in Azure Blob."""
-    from backend.hr_document_upload import is_safe_hr_document_filename
-
-    safe = os.path.basename(filename)
-    if not is_safe_hr_document_filename(safe):
-        return jsonify({"error": "Not found"}), 404
-    root = os.path.join(
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "instance", "hr_documents")),
-        str(int(org_id)),
-        str(int(user_id)),
-    )
-    fp = os.path.join(root, safe)
-    if os.path.isfile(fp):
-        return send_from_directory(root, safe, max_age=86400)
-    cc = _ensure_blob_container()
-    if cc is not None:
-        blob_name = f"hr-documents/{int(org_id)}/{int(user_id)}/{safe}"
-        try:
-            bc = cc.get_blob_client(blob_name)
-            data = bc.download_blob().readall()
-            ct = "application/pdf" if safe.lower().endswith(".pdf") else _infer_content_type(safe)
-            return Response(
-                data,
-                mimetype=ct,
-                headers={"Cache-Control": "public, max-age=86400"},
-            )
-        except Exception:
-            pass
-    return jsonify({"error": "Not found"}), 404
+    """Deprecated public path — HR documents are served via authenticated /api/ta/.../file."""
+    return jsonify({"error": "Use authenticated document file API"}), 403
 
 
 @app.route("/auth/platform/organizations", methods=["GET"])

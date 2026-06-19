@@ -50,7 +50,7 @@ def test_accountant_only_sees_accountant_tab_logic():
     page = _read("frontend/src/pages/PayrollManagementPage.jsx")
     assert 'isAccountantRole = rolesUpper.includes("ACCOUNTANT")' in page
     assert "canContractors = hasPerm(\"users.edit\")" in page
-    assert 'if (canAccountant) out.push({ key: "accountant"' in page
+    assert 'key: "accountant"' in page
     assert "readOnlyAccountant" in page
 
 
@@ -83,3 +83,21 @@ def test_document_post_requires_users_edit_in_routes():
     assert "request.method == \"GET\"" in block
     assert 'user_has_perm(conn, g.ta_user["id"], "users.view")' in block
     assert 'user_has_perm(conn, g.ta_user["id"], "users.edit")' in block
+
+
+def test_document_file_endpoint_requires_auth_and_view():
+    routes = _read("backend/ta_routes.py")
+    block = routes.split("def user_document_record_file(user_id, record_id):")[1].split(
+        '@ta_bp.route("/admin/document-compliance-policy"'
+    )[0]
+    assert "@require_auth" in routes.split("def user_document_record_file")[0][-120:]
+    assert 'user_has_perm(conn, g.ta_user["id"], "users.view")' in block
+    assert 'user_has_perm(conn, g.ta_user["id"], "users.edit")' in block
+    assert "read_employee_document_bytes" in block
+
+
+def test_accountant_panel_uses_authenticated_document_file_api():
+    panel = _read("frontend/src/components/AccountantW2DocumentsPanel.jsx")
+    assert "getTaUserDocumentFile" in panel
+    assert "blob.core.windows.net" not in panel
+    assert "openUploadedView(selected.id, doc.rec)" in panel

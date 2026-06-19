@@ -31,6 +31,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
   deleteTaUserDocument,
   getTaHrEmployerSettings,
+  getTaUserDocumentFile,
   getTaUserDocuments,
   getTaUserHrProfile,
   getTaUsers,
@@ -57,17 +58,39 @@ function isW2Employee(user) {
   return lanes.includes("employee_w2");
 }
 
-function openUploadedView(rec) {
-  const uri = rec?.file_uri;
-  if (!uri) return false;
-  window.open(uri, "_blank", "noopener,noreferrer");
-  return true;
+async function fetchDocumentBlob(userId, record, { download = false } = {}) {
+  if (!userId || !record?.id) {
+    return { ok: false, error: "No file on record." };
+  }
+  try {
+    const res = await getTaUserDocumentFile(userId, record.id, { download });
+    if (res.status < 200 || res.status >= 300) {
+      return { ok: false, error: `Could not load file (HTTP ${res.status})` };
+    }
+    const blob = res.data;
+    if (!(blob instanceof Blob) || blob.size === 0) {
+      return { ok: false, error: "Invalid file response" };
+    }
+    return { ok: true, blob };
+  } catch (e) {
+    return { ok: false, error: e.response?.data?.error || e.message || "Could not load file" };
+  }
 }
 
-function openUploadedPrint(rec) {
-  const uri = rec?.file_uri;
-  if (!uri) return false;
-  const w = window.open(uri, "_blank", "noopener,noreferrer");
+async function openUploadedView(userId, rec) {
+  const fetched = await fetchDocumentBlob(userId, rec);
+  if (!fetched.ok) return fetched;
+  const url = URL.createObjectURL(fetched.blob);
+  window.open(url, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return { ok: true };
+}
+
+async function openUploadedPrint(userId, rec) {
+  const fetched = await fetchDocumentBlob(userId, rec);
+  if (!fetched.ok) return fetched;
+  const url = URL.createObjectURL(fetched.blob);
+  const w = window.open(url, "_blank", "noopener,noreferrer");
   if (w) {
     const tryPrint = () => {
       try {
@@ -79,22 +102,25 @@ function openUploadedPrint(rec) {
     };
     w.addEventListener("load", () => setTimeout(tryPrint, 500));
     setTimeout(tryPrint, 1500);
+    window.setTimeout(() => URL.revokeObjectURL(url), 120000);
   }
-  return true;
+  return { ok: true };
 }
 
-function downloadUploaded(rec, label) {
-  const uri = rec?.file_uri;
-  if (!uri) return false;
+async function downloadUploaded(userId, rec, label) {
+  const fetched = await fetchDocumentBlob(userId, rec, { download: true });
+  if (!fetched.ok) return fetched;
+  const url = URL.createObjectURL(fetched.blob);
   const a = document.createElement("a");
-  a.href = uri;
+  a.href = url;
   a.download = label || "document";
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   document.body.appendChild(a);
   a.click();
   a.remove();
-  return true;
+  URL.revokeObjectURL(url);
+  return { ok: true };
 }
 
 export default function AccountantW2DocumentsPanel() {
@@ -373,10 +399,9 @@ export default function AccountantW2DocumentsPanel() {
                             size="small"
                             startIcon={<VisibilityIcon />}
                             disabled={busy === doc.code}
-                            onClick={() => {
-                              if (!openUploadedView(doc.rec)) {
-                                setError("No file on record.");
-                              }
+                            onClick={async () => {
+                              const result = await openUploadedView(selected.id, doc.rec);
+                              if (!result.ok) setError(result.error || "No file on record.");
                             }}
                           >
                             View
@@ -385,10 +410,9 @@ export default function AccountantW2DocumentsPanel() {
                             size="small"
                             startIcon={<PrintIcon />}
                             disabled={busy === doc.code}
-                            onClick={() => {
-                              if (!openUploadedPrint(doc.rec)) {
-                                setError("No file on record.");
-                              }
+                            onClick={async () => {
+                              const result = await openUploadedPrint(selected.id, doc.rec);
+                              if (!result.ok) setError(result.error || "No file on record.");
                             }}
                           >
                             Print
@@ -399,7 +423,10 @@ export default function AccountantW2DocumentsPanel() {
                                 size="small"
                                 startIcon={<DownloadIcon />}
                                 disabled={busy === doc.code}
-                                onClick={() => downloadUploaded(doc.rec, doc.label)}
+                                onClick={async () => {
+                                  const result = await downloadUploaded(selected.id, doc.rec, doc.label);
+                                  if (!result.ok) setError(result.error || "Download failed.");
+                                }}
                               >
                                 Download
                               </Button>
