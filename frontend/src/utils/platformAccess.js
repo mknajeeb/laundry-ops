@@ -32,6 +32,19 @@ export function hasTenantPortalAccess(user) {
   return TENANT_PORTAL_ROLES.some((x) => r.includes(x));
 }
 
+/** True when the user is an external accountant with no other tenant portal roles. */
+export function isAccountantOnlyUser(user) {
+  const r = normalizedRoles(user);
+  if (!r.includes("ACCOUNTANT")) return false;
+  if (hasPlatformAdminRole(user)) return false;
+  return !r.some((role) => role !== "ACCOUNTANT" && TENANT_PORTAL_ROLES.includes(role));
+}
+
+/** Post-login / blocked-route landing path for tenant users. */
+export function tenantDefaultRoute(user) {
+  return isAccountantOnlyUser(user) ? "/payroll" : "/";
+}
+
 /**
  * Sidebar + `<GuardedRoute />`: platform operators may use the full tenant app in org context
  * without a duplicate ADMIN/OPS assignment in user_roles.

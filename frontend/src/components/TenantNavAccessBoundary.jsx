@@ -1,7 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { tenantNavItemForPath, tenantNavItemVisible } from "../constants/tenantNav";
-import { userSatisfiesRoleGate } from "../utils/platformAccess";
+import { isAccountantOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "../utils/platformAccess";
 
 function isLoginPath(path) {
   const p = path || "";
@@ -19,6 +19,14 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
 
   if (!user || isLoginPath(p)) return children;
 
+  if (isAccountantOnlyUser(user)) {
+    const onPayroll = p === "/payroll" || p.startsWith("/payroll/");
+    if (!onPayroll) {
+      return <Navigate to="/payroll" replace />;
+    }
+    return children;
+  }
+
   const item = tenantNavItemForPath(p);
   /** Avoid sending users home while TA permissions are still loading (role gate would fail first). */
   if (
@@ -30,7 +38,7 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
     return children;
   }
   if (item && !tenantNavItemVisible(user, item, payrollNavVisible, hasPerm)) {
-    return <Navigate to="/" replace />;
+    return <Navigate to={tenantDefaultRoute(user)} replace />;
   }
   return children;
 }

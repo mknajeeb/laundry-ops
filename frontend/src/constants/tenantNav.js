@@ -1,5 +1,6 @@
 import {
   hasPlatformAdminRole,
+  isAccountantOnlyUser,
   isTenantModuleEnabled,
   TENANT_PORTAL_ROLES,
   TENANT_STANDARD_OPS_ROLES,
@@ -130,6 +131,11 @@ export const TENANT_NAV_ITEMS = [
  * @param {(key: string) => boolean} [hasPerm] — from `useAuth()`; when omitted, only role gates apply.
  */
 export function tenantNavItemVisible(user, item, payrollNavVisible = true, hasPerm = null) {
+  if (isAccountantOnlyUser(user)) {
+    if (item.to !== "/payroll") return false;
+    if (payrollNavVisible === false) return false;
+    return isTenantModuleEnabled(user, item.moduleKey || "payroll");
+  }
   if (item.to === "/payroll" && payrollNavVisible === false) return false;
   if (item.skipModuleCheck) return hasPlatformAdminRole(user);
   if (item.anyTenantUser) return isTenantModuleEnabled(user, item.moduleKey || "home");

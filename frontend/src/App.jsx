@@ -28,7 +28,7 @@ import TenantNavAccessBoundary from "./components/TenantNavAccessBoundary";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
-import { hasPlatformAdminRole, isPlatformOnlyUser, userSatisfiesRoleGate } from "./utils/platformAccess";
+import { hasPlatformAdminRole, isPlatformOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "./utils/platformAccess";
 
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
@@ -209,7 +209,7 @@ function LoginWithOrgSlugRoute({ user, setUser }) {
 
   if (user) {
     if (userSlug === slug) {
-      return <Navigate to="/" replace />;
+      return <Navigate to={tenantDefaultRoute(user)} replace />;
     }
     return (
       <Box sx={{ flex: 1, minHeight: "36vh", width: "100%", display: "grid", placeItems: "center" }}>
@@ -248,7 +248,7 @@ function GuardedRoute({ user, roles, permissionAnyOf, children }) {
     }
     if (permissionAnyOf.some((k) => hasPerm(k))) return children;
   }
-  return <Navigate to="/" replace />;
+  return <Navigate to={tenantDefaultRoute(user)} replace />;
 }
 
 function TenantOnlyRoute({ user, children }) {
@@ -692,8 +692,8 @@ function AppShell() {
           <TenantNavAccessBoundary user={user} payrollNavVisible={payrollNavVisible}>
           <Routes>
             <Route path="/login/:orgSlug" element={<LoginWithOrgSlugRoute user={user} setUser={setUser} />} />
-            <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage onLoggedIn={setUser} />} />
-            <Route path="/ta-login" element={<Navigate to="/" replace />} />
+            <Route path="/login" element={user ? <Navigate to={tenantDefaultRoute(user)} replace /> : <LoginPage onLoggedIn={setUser} />} />
+            <Route path="/ta-login" element={<Navigate to={tenantDefaultRoute(user)} replace />} />
             <Route path="/time-clock" element={<Navigate to="/clock" replace />} />
             <Route path="/" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><HomePage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/dashboard" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><Dashboard /></GuardedRoute></TenantOnlyRoute>} />
