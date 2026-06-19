@@ -723,8 +723,17 @@ export const getSupplyUsage = (params) =>
 export const getSupplyUsageDosages = () =>
   axios.get(`${API_BASE}/maintenance/supply-usage/dosages`, { timeout: 15000 });
 
+export const getSupplyUsageSettings = () =>
+  axios.get(`${API_BASE}/maintenance/supply-usage/settings`, { timeout: 15000 });
+
+export const getSupplyUsageMappingRules = () =>
+  axios.get(`${API_BASE}/maintenance/supply-usage/mapping-rules`, { timeout: 15000 });
+
 export const updateSupplyUsageDosages = (body) =>
   axios.put(`${API_BASE}/maintenance/supply-usage/dosages`, body, { timeout: 15000 });
+
+export const updateSupplyUsageMappingRules = (body) =>
+  axios.put(`${API_BASE}/maintenance/supply-usage/mapping-rules`, body, { timeout: 15000 });
 
 export const getMachineConfiguration = () =>
   axios.get(`${API_BASE}/maintenance/machine-configuration`, { timeout: 15000 });

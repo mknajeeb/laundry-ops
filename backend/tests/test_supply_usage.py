@@ -11,8 +11,17 @@ from backend.supply_usage import (
     load_orders_for_supply_usage,
     split_order_multiplier,
     supplies_for_usage,
+    _load_split_load_bag_ids,
+    _order_row_from_staging,
 )
-from backend.supply_usage_settings import DEFAULT_DOSAGES, get_supply_usage_dosages
+from backend.supply_usage_settings import (
+    DEFAULT_DOSAGES,
+    DEFAULT_MAPPING_RULES,
+    KEY_SUPPLY_USAGE_MAPPING_RULES,
+    get_supply_usage_dosages,
+    get_supply_usage_mapping_rules,
+    save_supply_usage_mapping_rules,
+)
 
 
 class TestSuppliesForUsage:
@@ -54,6 +63,17 @@ class TestSuppliesForUsage:
             out = supplies_for_usage(raw)
             assert "OxiClean" in out["supplies_used"], raw
 
+    def test_custom_substring_rule(self):
+        rules = [
+            {
+                "instructions": "VIP customer",
+                "supplies": ["Tide", "Downy", "OxiClean"],
+            },
+            {"instructions": "None / default", "supplies": ["Tide"], "default": True},
+        ]
+        out = supplies_for_usage("VIP customer special handling", rules)
+        assert out["supplies_used"] == ["Tide", "Downy", "OxiClean"]
+
 
 class TestSplitOrder:
     def test_split_order_label(self):
@@ -70,6 +90,81 @@ class TestSplitOrder:
 
     def test_split_order_in_instructions(self):
         assert detect_split_order("Split Order; USE OXICLEAN") is True
+
+    def test_split_load_scan_primary(self):
+        assert detect_split_order(has_split_load_scan=True) is True
+        assert split_order_multiplier(has_split_load_scan=True) == 2
+
+    def test_split_load_scan_without_portal_label(self):
+        assert detect_split_order("USE OXICLEAN", has_split_load_scan=True) is True
+        assert split_order_multiplier("USE OXICLEAN", has_split_load_scan=True) == 2
+
+
+class TestSplitLoadScanIntegration:
+    def test_order_row_split_load_scan_sets_multiplier(self):
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "ABC12345",
+                "name_clean": "Test Customer",
+                "special_instructions_raw": "USE OXICLEAN",
+            },
+            split_load_bags={"ABC12345"},
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["split_order"] is True
+        assert row["split_load_scan"] is True
+        assert row["multiplier"] == 2
+        assert row["doses_by_supply"]["Tide"] == 2
+        assert row["doses_by_supply"]["OxiClean"] == 2
+
+    def test_load_split_load_bag_ids_from_scan_events(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = [
+            {"bag_id": "ABC12345", "purpose": "split-load"},
+            {"bag_id": "OTHER123", "purpose": "cleaning"},
+        ]
+
+        from backend import supply_usage as su
+
+        original_te = su.table_exists
+        su.table_exists = lambda _c, table: table == "rinse_bag_scan_events"
+        try:
+            out = _load_split_load_bag_ids(cursor, 3, ["ABC12345", "OTHER123"])
+        finally:
+            su.table_exists = original_te
+
+        assert out == {"ABC12345"}
+
+    def test_load_orders_applies_split_load_scans(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        cursor.fetchall.return_value = [{"bag_id": "SPLITBAG1", "purpose": "split-load"}]
+
+        from backend import supply_usage as su
+
+        staging_row = {
+            "ticket_id": "SPLITBAG1",
+            "name_clean": "Split Customer",
+            "special_instructions_raw": None,
+            "_source": "orders_staging",
+        }
+
+        original_load_staging = su._load_staging_orders
+        original_load_upload = su._load_upload_batch_orders
+        original_te = su.table_exists
+        su._load_staging_orders = lambda *a, **k: [staging_row]
+        su._load_upload_batch_orders = lambda *a, **k: []
+        su.table_exists = lambda _c, table: table == "rinse_bag_scan_events"
+        try:
+            orders = load_orders_for_supply_usage(cursor, 3, date(2026, 6, 18))
+        finally:
+            su._load_staging_orders = original_load_staging
+            su._load_upload_batch_orders = original_load_upload
+            su.table_exists = original_te
+
+        assert len(orders) == 1
+        assert orders[0]["split_order"] is True
+        assert orders[0]["multiplier"] == 2
 
 
 class TestDoseOzMath:
@@ -127,6 +222,44 @@ class TestSupplyUsageSettings:
         cursor.fetchone.return_value = None
         out = get_supply_usage_dosages(cursor, 1)
         assert out == DEFAULT_DOSAGES
+
+    def test_default_mapping_rules(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        rules = get_supply_usage_mapping_rules(cursor, 1)
+        assert len(rules) == len(DEFAULT_MAPPING_RULES)
+        assert rules[-1]["default"] is True
+        assert rules[-1]["supplies"] == ["Tide"]
+
+    def test_mapping_rules_persist_and_reload(self):
+        cursor = MagicMock()
+        stored: dict[str, str] = {}
+
+        def fake_get_setting(_c, _oid, key):
+            return stored.get(key)
+
+        def fake_set_setting(_c, _oid, key, value):
+            stored[key] = value
+
+        from backend import supply_usage_settings as sus
+
+        original_get = sus._get_setting
+        original_set = sus._set_setting
+        sus._get_setting = fake_get_setting
+        sus._set_setting = fake_set_setting
+        try:
+            custom = [
+                {"instructions": "VIP", "supplies": ["Tide", "Downy"]},
+                {"instructions": "None / default", "supplies": ["Tide"], "default": True},
+            ]
+            saved = save_supply_usage_mapping_rules(cursor, 3, custom)
+            assert saved[0]["supplies"] == ["Tide", "Downy"]
+            reloaded = get_supply_usage_mapping_rules(cursor, 3)
+            assert reloaded[0]["instructions"] == "VIP"
+            assert KEY_SUPPLY_USAGE_MAPPING_RULES in stored
+        finally:
+            sus._get_setting = original_get
+            sus._set_setting = original_set
 
 
 class TestLoadUploadBatchOrders:

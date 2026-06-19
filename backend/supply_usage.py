@@ -6,31 +6,24 @@ import re
 from datetime import date
 from typing import Any, Mapping, Sequence
 
+from backend.rinse_bag_completion import normalize_bag_id
+from backend.rinse_scan_purpose import is_split_load_purpose
 from backend.rinse_special_instructions import (
-    _TOKEN_FAB,
-    _TOKEN_HYPO,
-    _TOKEN_OXIC,
-    _classify_part,
-    _split_instruction_parts,
     interpret_special_instructions,
+    _split_instruction_parts,
+    _classify_part,
 )
 from backend.supply_usage_settings import (
     DEFAULT_DOSAGES,
+    DEFAULT_MAPPING_RULES,
     SUPPLY_DOSAGE_KEYS,
     get_supply_usage_dosages,
+    get_supply_usage_mapping_rules,
+    mapping_rules_for_display,
 )
 from backend.ta_helpers import table_exists, table_has_column
 
 SUPPLY_USAGE_PRODUCTS: tuple[str, ...] = SUPPLY_DOSAGE_KEYS
-
-_MAPPING_RULES: tuple[dict[str, str], ...] = (
-    {"instructions": "None / default", "supplies": "Tide"},
-    {"instructions": "Fabric Softener", "supplies": "Tide + Downy"},
-    {"instructions": "Fabric Softener + OxiClean", "supplies": "Tide + Downy + OxiClean"},
-    {"instructions": "OxiClean only", "supplies": "Tide + OxiClean"},
-    {"instructions": "Hypoallergenic (variations)", "supplies": "All Free & Clear only"},
-    {"instructions": "Hypo + OxiClean", "supplies": "All Free & Clear + OxiClean"},
-)
 
 _PORTAL_UI_NOISE_RE = re.compile(
     r"(?:vendor\s+notes|vendor\s+price|add\s+new\s+item|split\s+ticket|processed|save\b)",
@@ -39,8 +32,10 @@ _PORTAL_UI_NOISE_RE = re.compile(
 _SPLIT_ORDER_RE = re.compile(r"\bsplit[\s-]order\b", re.I)
 
 
-def mapping_rules_display() -> list[dict[str, str]]:
-    return [dict(r) for r in _MAPPING_RULES]
+def mapping_rules_display(rules: Sequence[Mapping[str, Any]] | None = None) -> list[dict[str, Any]]:
+    if rules is None:
+        rules = DEFAULT_MAPPING_RULES
+    return mapping_rules_for_display(rules)
 
 
 def _tokens_from_raw(raw: str | None) -> set[str]:
@@ -52,36 +47,66 @@ def _tokens_from_raw(raw: str | None) -> set[str]:
     return tokens
 
 
-def supplies_for_usage(raw: str | None) -> dict[str, Any]:
+def _rule_matches(raw: str | None, rule: Mapping[str, Any]) -> bool:
+    if rule.get("default"):
+        return False
+    requires = set(rule.get("requires") or [])
+    excludes = set(rule.get("excludes") or [])
+    if requires:
+        tokens = _tokens_from_raw(raw)
+        if not requires <= tokens:
+            return False
+        if excludes and (excludes & tokens):
+            return False
+        return True
+    pattern = str(rule.get("instructions") or "").strip()
+    if not pattern or pattern.lower() == "none / default":
+        return False
+    return pattern.lower() in str(raw or "").lower()
+
+
+def _supplies_from_rules(
+    raw: str | None,
+    rules: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    for rule in rules:
+        if rule.get("default"):
+            continue
+        if _rule_matches(raw, rule):
+            return list(rule.get("supplies") or [])
+    for rule in rules:
+        if rule.get("default"):
+            return list(rule.get("supplies") or ["Tide"])
+    return ["Tide"]
+
+
+def supplies_for_usage(
+    raw: str | None,
+    rules: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """
     Map special instructions to Phase 1 supply product names.
 
-    Uses rinse_special_instructions tokenization; hypo routes to All Free & Clear.
+    Uses configurable mapping rules (token-based defaults or substring patterns).
     """
+    rule_list = list(rules or DEFAULT_MAPPING_RULES)
     parsed = interpret_special_instructions(raw)
-    tokens = _tokens_from_raw(raw)
-    hypo = _TOKEN_HYPO in tokens
-    fab = _TOKEN_FAB in tokens
-    oxic = _TOKEN_OXIC in tokens
+    supplies = _supplies_from_rules(raw, rule_list)
+    hypo = "All Free & Clear" in supplies and "Tide" not in supplies
+    fab = "Downy" in supplies
+    oxic = "OxiClean" in supplies
 
     if hypo:
-        supplies = ["All Free & Clear"]
-        if oxic:
-            supplies.append("OxiClean")
         interpretation = parsed.get("supply_interpretation") or "Hypoallergenic soap"
         if oxic and "OxiClean" not in interpretation:
             interpretation = f"{interpretation} + OxiClean"
     elif fab and oxic:
-        supplies = ["Tide", "Downy", "OxiClean"]
         interpretation = "Soap + softener + OxiClean"
     elif fab:
-        supplies = ["Tide", "Downy"]
         interpretation = "Soap + softener"
     elif oxic:
-        supplies = ["Tide", "OxiClean"]
         interpretation = "Soap + OxiClean"
     else:
-        supplies = ["Tide"]
         interpretation = parsed.get("supply_interpretation") or "Standard soap"
 
     return {
@@ -105,8 +130,13 @@ def _strip_portal_ui_noise(text: str) -> str:
     return "; ".join(kept)
 
 
-def detect_split_order(*texts: str | None) -> bool:
-    """True when order labels/tags include a split-order marker (multiplier 2)."""
+def detect_split_order(
+    *texts: str | None,
+    has_split_load_scan: bool = False,
+) -> bool:
+    """True when split-load scan exists or portal labels include split-order (multiplier 2)."""
+    if has_split_load_scan:
+        return True
     for text in texts:
         if not str(text or "").strip():
             continue
@@ -118,8 +148,11 @@ def detect_split_order(*texts: str | None) -> bool:
     return False
 
 
-def split_order_multiplier(*texts: str | None) -> int:
-    return 2 if detect_split_order(*texts) else 1
+def split_order_multiplier(
+    *texts: str | None,
+    has_split_load_scan: bool = False,
+) -> int:
+    return 2 if detect_split_order(*texts, has_split_load_scan=has_split_load_scan) else 1
 
 
 def _display_special_instructions(raw: str | None) -> str | None:
@@ -129,17 +162,24 @@ def _display_special_instructions(raw: str | None) -> str | None:
     return cleaned or None
 
 
-def _order_row_from_staging(row: Mapping[str, Any]) -> dict[str, Any]:
+def _order_row_from_staging(
+    row: Mapping[str, Any],
+    *,
+    split_load_bags: set[str],
+    mapping_rules: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
     raw = row.get("special_instructions_raw")
-    mapped = supplies_for_usage(raw)
+    mapped = supplies_for_usage(raw, mapping_rules)
     ticket_id = str(row.get("ticket_id") or row.get("bag_id") or "").strip()
+    bag_key = normalize_bag_id(ticket_id)
+    has_split_load_scan = bag_key in split_load_bags
     split_texts = (
         raw,
         row.get("supply_interpretation"),
         row.get("notes"),
         row.get("name_clean"),
     )
-    multiplier = split_order_multiplier(*split_texts)
+    multiplier = split_order_multiplier(*split_texts, has_split_load_scan=has_split_load_scan)
     supplies = list(mapped["supplies_used"])
     doses_by_supply = {s: multiplier for s in supplies}
     return {
@@ -150,6 +190,7 @@ def _order_row_from_staging(row: Mapping[str, Any]) -> dict[str, Any]:
         "special_instructions_raw": raw,
         "supply_interpretation": mapped.get("supply_interpretation"),
         "split_order": multiplier > 1,
+        "split_load_scan": has_split_load_scan,
         "multiplier": multiplier,
         "supplies_used": supplies,
         "estimated_doses": sum(doses_by_supply.values()),
@@ -159,6 +200,37 @@ def _order_row_from_staging(row: Mapping[str, Any]) -> dict[str, Any]:
         "service_type": row.get("service_type"),
         "source": row.get("_source") or "orders_staging",
     }
+
+
+def _load_split_load_bag_ids(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> set[str]:
+    """Bag IDs with at least one split-load scan in rinse_bag_scan_events."""
+    if not table_exists(cursor, "rinse_bag_scan_events"):
+        return set()
+    normalized = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not normalized:
+        return set()
+    placeholders = ", ".join(["%s"] * len(normalized))
+    cursor.execute(
+        f"""
+        SELECT bag_id, purpose
+        FROM rinse_bag_scan_events
+        WHERE organization_id = %s
+          AND UPPER(TRIM(bag_id)) IN ({placeholders})
+        """,
+        (int(organization_id), *normalized),
+    )
+    out: set[str] = set()
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bag = normalize_bag_id(row.get("bag_id"))
+        if bag and is_split_load_purpose(row.get("purpose")):
+            out.add(bag)
+    return out
 
 
 def _load_staging_orders(cursor, organization_id: int, target_date: date) -> list[dict[str, Any]]:
@@ -268,8 +340,11 @@ def load_orders_for_supply_usage(
     cursor,
     organization_id: int,
     target_date: date,
+    *,
+    mapping_rules: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Orders for ET date; staging wins over upload batch rows on ticket_id."""
+    rules = list(mapping_rules or get_supply_usage_mapping_rules(cursor, organization_id))
     by_ticket: dict[str, dict[str, Any]] = {}
     for row in _load_upload_batch_orders(cursor, organization_id, target_date):
         tid = str(row.get("ticket_id") or "").strip().upper()
@@ -279,7 +354,12 @@ def load_orders_for_supply_usage(
         tid = str(row.get("ticket_id") or "").strip().upper()
         if tid:
             by_ticket[tid] = row
-    return [_order_row_from_staging(r) for r in by_ticket.values()]
+    ticket_ids = [str(r.get("ticket_id") or "").strip() for r in by_ticket.values()]
+    split_load_bags = _load_split_load_bag_ids(cursor, organization_id, ticket_ids)
+    return [
+        _order_row_from_staging(r, split_load_bags=split_load_bags, mapping_rules=rules)
+        for r in by_ticket.values()
+    ]
 
 
 def _summary_counts(order_rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
@@ -333,7 +413,10 @@ def build_supply_usage_report(
     target_date: date,
 ) -> dict[str, Any]:
     dosages = get_supply_usage_dosages(cursor, organization_id)
-    order_rows = load_orders_for_supply_usage(cursor, organization_id, target_date)
+    mapping_rules = get_supply_usage_mapping_rules(cursor, organization_id)
+    order_rows = load_orders_for_supply_usage(
+        cursor, organization_id, target_date, mapping_rules=mapping_rules
+    )
     order_rows.sort(key=lambda r: (str(r.get("customer") or "").lower(), str(r.get("order_id") or "")))
     return {
         "date_et": target_date.isoformat(),
@@ -342,5 +425,5 @@ def build_supply_usage_report(
         "usage_by_supply": _usage_by_supply(order_rows, dosages),
         "orders": order_rows,
         "dosage_settings": dosages,
-        "mapping_rules": mapping_rules_display(),
+        "mapping_rules": mapping_rules_display(mapping_rules),
     }

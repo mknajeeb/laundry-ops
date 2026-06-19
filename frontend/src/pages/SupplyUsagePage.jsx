@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
   CircularProgress,
+  IconButton,
   Paper,
   Stack,
   Table,
@@ -19,6 +21,7 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import OrderSearchDetailDrawer from "../components/orderSearch/OrderSearchDetailDrawer";
 import PlanningDatePicker from "../components/datetime/PlanningDatePicker";
 import {
@@ -26,6 +29,7 @@ import {
   getSupplyUsage,
   getSupplyUsageDosages,
   updateSupplyUsageDosages,
+  updateSupplyUsageMappingRules,
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
@@ -58,6 +62,24 @@ const CLICKABLE_NUMBER_SX = {
   color: "inherit",
   "&:hover": { textDecoration: "underline" },
 };
+
+function normalizeMappingRule(rule) {
+  const supplies = Array.isArray(rule?.supplies)
+    ? rule.supplies
+    : String(rule?.supplies || "")
+        .split(/[,+]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+  return {
+    instructions: rule?.instructions || "",
+    supplies,
+    default: Boolean(rule?.default),
+  };
+}
+
+function mappingRulesFromReport(reportRules) {
+  return (reportRules || []).map(normalizeMappingRule);
+}
 
 function orderMatchesFilter(row, filter) {
   if (!filter || filter.type === "all") return true;
@@ -210,6 +232,9 @@ export default function SupplyUsagePage() {
   const [dosageDraft, setDosageDraft] = useState({});
   const [savingDosages, setSavingDosages] = useState(false);
   const [dosageMsg, setDosageMsg] = useState("");
+  const [mappingRulesDraft, setMappingRulesDraft] = useState([]);
+  const [savingMappingRules, setSavingMappingRules] = useState(false);
+  const [mappingRulesMsg, setMappingRulesMsg] = useState("");
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -241,6 +266,7 @@ export default function SupplyUsagePage() {
       const d = dosageRes.data || {};
       setDosages(d);
       setDosageDraft(d);
+      setMappingRulesDraft(mappingRulesFromReport(usageRes.data?.mapping_rules));
       setOrderFilter({ type: "all" });
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Failed to load supply usage");
@@ -310,10 +336,42 @@ export default function SupplyUsagePage() {
     }
   };
 
+  const saveMappingRules = async () => {
+    setSavingMappingRules(true);
+    setMappingRulesMsg("");
+    try {
+      const payload = mappingRulesDraft.map((rule) => ({
+        instructions: rule.instructions,
+        supplies: rule.supplies,
+        ...(rule.default ? { default: true } : {}),
+      }));
+      const res = await updateSupplyUsageMappingRules({ mapping_rules: payload });
+      const saved = mappingRulesFromReport(res.data);
+      setMappingRulesDraft(saved);
+      setMappingRulesMsg(t("supplyUsage.mappingRulesSaved"));
+      await loadReport();
+    } catch (e) {
+      setMappingRulesMsg(e?.response?.data?.error || e?.message || "Save failed");
+    } finally {
+      setSavingMappingRules(false);
+    }
+  };
+
+  const addMappingRule = () => {
+    setMappingRulesDraft((prev) => [...prev, { instructions: "", supplies: ["Tide"] }]);
+  };
+
+  const updateMappingRule = (index, patch) => {
+    setMappingRulesDraft((prev) => prev.map((rule, i) => (i === index ? { ...rule, ...patch } : rule)));
+  };
+
+  const deleteMappingRule = (index) => {
+    setMappingRulesDraft((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const orders = report?.orders || [];
   const summary = report?.summary || {};
   const usageBySupply = report?.usage_by_supply || {};
-  const mappingRules = report?.mapping_rules || [];
 
   const filteredOrders = useMemo(
     () => orders.filter((row) => orderMatchesFilter(row, orderFilter)),
@@ -486,22 +544,68 @@ export default function SupplyUsagePage() {
             <Typography variant="subtitle2" fontWeight={700} sx={{ mt: 2, mb: 1 }}>
               {t("supplyUsage.mappingRules")}
             </Typography>
-            <Table size="small" sx={{ mb: 3, maxWidth: 640 }}>
-              <TableHead>
-                <TableRow>
-                  <TableCell>{t("supplyUsage.mappingInstructions")}</TableCell>
-                  <TableCell>{t("supplyUsage.mappingSupplies")}</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {mappingRules.map((rule) => (
-                  <TableRow key={rule.instructions}>
-                    <TableCell>{rule.instructions}</TableCell>
-                    <TableCell>{rule.supplies}</TableCell>
+            <TableContainer component={Paper} elevation={0} sx={{ mb: 2, maxWidth: 900, border: "1px solid", borderColor: "divider" }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow sx={{ bgcolor: "grey.50" }}>
+                    <TableCell>{t("supplyUsage.mappingInstructions")}</TableCell>
+                    <TableCell>{t("supplyUsage.mappingSupplies")}</TableCell>
+                    <TableCell align="right" width={72} />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHead>
+                <TableBody>
+                  {mappingRulesDraft.map((rule, index) => (
+                    <TableRow key={`mapping-rule-${index}`}>
+                      <TableCell>
+                        <TextField
+                          size="small"
+                          fullWidth
+                          value={rule.instructions}
+                          placeholder={rule.default ? "None / default" : "Instruction pattern"}
+                          onChange={(e) => updateMappingRule(index, { instructions: e.target.value })}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Autocomplete
+                          multiple
+                          size="small"
+                          options={USAGE_SUPPLIES}
+                          value={rule.supplies || []}
+                          onChange={(_e, value) => updateMappingRule(index, { supplies: value })}
+                          renderInput={(params) => <TextField {...params} placeholder="Supplies" />}
+                        />
+                      </TableCell>
+                      <TableCell align="right">
+                        <IconButton
+                          size="small"
+                          aria-label={t("supplyUsage.deleteRule")}
+                          onClick={() => deleteMappingRule(index)}
+                          disabled={rule.default}
+                        >
+                          <DeleteOutlineIcon fontSize="small" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <Stack direction="row" spacing={1} sx={{ mb: 2 }}>
+              <Button variant="outlined" size="small" onClick={addMappingRule}>
+                {t("supplyUsage.addMappingRule")}
+              </Button>
+              <Button variant="contained" size="small" onClick={saveMappingRules} disabled={savingMappingRules}>
+                {savingMappingRules ? t("supplyUsage.saving") : t("supplyUsage.saveMappingRules")}
+              </Button>
+            </Stack>
+            {mappingRulesMsg ? (
+              <Alert
+                severity={mappingRulesMsg === t("supplyUsage.mappingRulesSaved") ? "success" : "error"}
+                sx={{ mb: 2 }}
+              >
+                {mappingRulesMsg}
+              </Alert>
+            ) : null}
 
             <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1 }}>
               {t("supplyUsage.dosageSettings")}
