@@ -84,8 +84,89 @@ class TestWashingChronologyRows:
         assert summary["first_washer_load_et"] == datetime(2026, 6, 18, 9, 0)
         assert summary["last_washer_load_et"] == datetime(2026, 6, 18, 11, 0)
 
-    def test_D6E0SRN9QV_duplicate_ingest_collapses_to_one_row(self):
-        """Jun 18 duplicate start-cleaning rows at same timestamp → one row, one rack."""
+    def test_D6E0SRN9QV_split_load_same_timestamp_two_racks(self):
+        """Split load: W26 and W25 start-cleaning at same timestamp → two rows."""
+        ts = datetime(2026, 6, 18, 7, 31)
+        events = [
+            {
+                "id": 1,
+                "bag_id": "D6E0SRN9QV",
+                "rack": "W26-30-VW",
+                "last_location": "W25-30-VW",
+                "user_name": "Jennifer",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": ts,
+                "scan_index": 1,
+            },
+            {
+                "id": 2,
+                "bag_id": "D6E0SRN9QV",
+                "rack": "W25-30-VW",
+                "last_location": "W26-30-VW",
+                "user_name": "Jennifer",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": ts,
+                "scan_index": 2,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 2
+        assert {r["washer_rack"] for r in rows} == {"W26-30-VW", "W25-30-VW"}
+        assert all(r["employee"] == "Jennifer" for r in rows)
+        assert all(r["timestamp_et"] == ts for r in rows)
+
+    def test_D6E0SRN9QV_duplicate_ingest_same_rack_collapses_to_one_row(self):
+        """Eight duplicate ingest rows at same timestamp and rack → one row."""
+        ts = datetime(2026, 6, 18, 7, 31)
+        events = []
+        for ev_id in range(1, 9):
+            events.append(
+                {
+                    "id": ev_id,
+                    "bag_id": "D6E0SRN9QV",
+                    "rack": "W26-30-VW",
+                    "last_location": "W25-30-VW",
+                    "user_name": "Jennifer",
+                    "purpose": "start-cleaning",
+                    "scanned_at_parsed": ts,
+                    "scan_index": 1,
+                }
+            )
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "W26-30-VW"
+        assert rows[0]["employee"] == "Jennifer"
+        summary = build_washing_chronology_summary(rows)
+        assert summary["total_washer_loads"] == 1
+
+    def test_duplicate_ingest_same_event_id_one_row(self):
+        """Same scan event id repeated → one row."""
+        ts = datetime(2026, 6, 18, 7, 31)
+        events = [
+            {
+                "id": 42,
+                "bag_id": "D6E0SRN9QV",
+                "rack": "W26-30-VW",
+                "user_name": "Jennifer",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": ts,
+                "scan_index": 1,
+            },
+            {
+                "id": 42,
+                "bag_id": "D6E0SRN9QV",
+                "rack": "W26-30-VW",
+                "user_name": "Jennifer",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": ts,
+                "scan_index": 1,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+
+    def test_D6E0SRN9QV_duplicate_ingest_alternating_racks_two_rows(self):
+        """Eight duplicate ingest rows alternating W26/W25 at same timestamp → two rows."""
         ts = datetime(2026, 6, 18, 7, 31)
         events = []
         for ev_id in range(1, 9):
@@ -103,11 +184,8 @@ class TestWashingChronologyRows:
                 }
             )
         rows = extract_washing_rows_from_events(events)
-        assert len(rows) == 1
-        assert rows[0]["washer_rack"] == "W26-30-VW"
-        assert rows[0]["employee"] == "Jennifer"
-        summary = build_washing_chronology_summary(rows)
-        assert summary["total_washer_loads"] == 1
+        assert len(rows) == 2
+        assert {r["washer_rack"] for r in rows} == {"W26-30-VW", "W25-30-VW"}
 
     def test_duplicate_same_rack_same_timestamp_one_row(self):
         ts = datetime(2026, 6, 18, 7, 35)

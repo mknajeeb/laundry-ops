@@ -16,7 +16,7 @@ from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_st
 from backend.rinse_machine_rack import (
     cap_machine_load_rows_per_bag,
     dedupe_machine_load_rows,
-    dedupe_scan_events_by_bag_timestamp,
+    dedupe_scan_events_by_id,
     extract_washer_rack,
 )
 from backend.rinse_scan_purpose import is_start_cleaning_purpose, normalize_scan_purpose
@@ -50,7 +50,7 @@ def extract_washing_rows_from_events(
     cleaning_events = [
         ev for ev in events if is_start_cleaning_purpose(ev.get("purpose"))
     ]
-    for ev in dedupe_scan_events_by_bag_timestamp(cleaning_events):
+    for ev in dedupe_scan_events_by_id(cleaning_events):
         rack = extract_washer_rack(ev)
         if not rack:
             continue
@@ -191,9 +191,10 @@ def build_washing_chronology_payload(
         "event_purposes": ["start-cleaning"],
         "grouping_rules": (
             "One row per start-cleaning scan with a washer rack code (W-prefix); "
-            "duplicate ingest rows at the same timestamp collapse to one exclusive machine; "
-            "at most two start-cleaning loads per bag per day (earliest two by time); "
-            "split orders at different times may produce up to two rows for the same bag."
+            "duplicate ingest with the same event id or same bag, employee, timestamp, "
+            "and rack collapse to one row; split loads at the same timestamp with "
+            "different washer racks produce separate rows; at most two start-cleaning "
+            "loads per bag per day (earliest two by time)."
         ),
     }
 

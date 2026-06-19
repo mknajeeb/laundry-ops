@@ -190,3 +190,9 @@ export function compareRinseScanEvents(a, b) {
 export function sortRinseScanEvents(events) {
   return [...(events || [])].sort(compareRinseScanEvents);
 }
+
+/** Normalize GET /rinse/bags/:id/scan-events body (raw array or wrapped). */
+export function parseRinseBagScanEventsResponse(data) {
+  if (Array.isArray(data)) return data;
+  return data?.events || data?.scan_events || [];
+}

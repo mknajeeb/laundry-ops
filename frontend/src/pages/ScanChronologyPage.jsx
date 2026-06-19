@@ -32,6 +32,7 @@ import { getRinseBagScanEvents, getScanChronology } from "../api";
 import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
+import { parseRinseBagScanEventsResponse } from "../utils/rinseTimeFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import VeeWashLogo from "../components/VeeWashLogo";
 
@@ -395,7 +396,7 @@ export default function ScanChronologyPage() {
     setDrawerLoading(true);
     try {
       const res = await getRinseBagScanEvents(row.bag_id);
-      setDrawerScans(res.data?.events || res.data?.scan_events || []);
+      setDrawerScans(parseRinseBagScanEventsResponse(res.data));
     } catch {
       setDrawerScans([]);
     } finally {
@@ -409,7 +410,7 @@ export default function ScanChronologyPage() {
     setDrawerLoading(true);
     try {
       const res = await getRinseBagScanEvents(row.bag_id);
-      setDrawerScans(res.data?.events || res.data?.scan_events || []);
+      setDrawerScans(parseRinseBagScanEventsResponse(res.data));
     } catch {
       setDrawerScans([]);
     } finally {
