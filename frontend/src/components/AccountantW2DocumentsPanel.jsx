@@ -44,6 +44,8 @@ import { openPrintWindow } from "../contractorForms/contractorPrint";
 import {
   ACCOUNTANT_W2_DOCS,
   findDocRecord,
+  hasDocOnFile,
+  resolvePrimaryDocRecord,
 } from "../payroll/accountantW2DocCatalog";
 import DirectDepositFormPrint, {
   buildDirectDepositPrefill,
@@ -225,8 +227,8 @@ export default function AccountantW2DocumentsPanel() {
   const docActions = useMemo(
     () =>
       ACCOUNTANT_W2_DOCS.map((doc) => {
-        const rec = findDocRecord(records, doc.code);
-        const hasFile = !!rec?.file_uri;
+        const rec = resolvePrimaryDocRecord(records, doc.code);
+        const hasFile = hasDocOnFile(records, doc.code);
         return { ...doc, rec, hasFile };
       }),
     [records],
@@ -257,8 +259,8 @@ export default function AccountantW2DocumentsPanel() {
           Employee Documents
         </Typography>
         <Typography variant="body2" sx={{ opacity: 0.92, mb: 2, maxWidth: 640 }}>
-          Direct deposit uses the VeeWash pre-filled form. All other documents are signed copies you
-          upload. Accountants can view and print only; admins can upload, download, and remove files.
+          Print direct deposit from VeeWash. Upload signed copies for the other items. Accountants can
+          view and print; admins can upload and manage files.
         </Typography>
         <Autocomplete
           options={workers}

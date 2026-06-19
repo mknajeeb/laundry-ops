@@ -72,7 +72,9 @@ def test_w2_doc_catalog_upload_only_except_direct_deposit():
     catalog = _read("frontend/src/payroll/accountantW2DocCatalog.js")
     assert "kind: \"hr_form\"" not in catalog
     assert "kind: \"generated\"" in catalog
-    assert catalog.count("kind: \"uploaded\"") >= 6
+    assert catalog.count("kind: \"uploaded\"") == 3
+    assert "hiring_documents" in catalog
+    assert "LEGACY_HIRING_DOC_CODES" in catalog
 
 
 def test_document_post_requires_users_edit_in_routes():
