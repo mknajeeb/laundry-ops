@@ -231,17 +231,26 @@ def extract_sorting_sessions_for_bag(
         return []
 
     sessions: list[dict[str, Any]] = []
-    completed_sort_end: datetime | None = None
+    # Anchor on add-photos completion time, not extended split-load/create-issue end,
+    # so wash/setup scans between add-photos and create-issue still block later rows.
+    completed_sort_anchor_ts: datetime | None = None
     for add_ev_iter, add_ts in add_photos_events:
-        if completed_sort_end is not None:
+        if completed_sort_anchor_ts is not None:
             add_employee = _operator(add_ev_iter)
             if has_post_sort_downstream_between(
-                anchored, after_ts=completed_sort_end, before_ts=add_ts
+                anchored, after_ts=completed_sort_anchor_ts, before_ts=add_ts
+            ):
+                continue
+            prior_employee = str(sessions[-1].get("employee") or "").strip() if sessions else ""
+            if (
+                prior_employee
+                and add_employee
+                and not _operators_match(prior_employee, add_employee)
             ):
                 continue
             if not _has_resort_evidence(
                 tl,
-                after_ts=completed_sort_end,
+                after_ts=completed_sort_anchor_ts,
                 before_ts=add_ts,
                 employee=add_employee,
             ):
@@ -287,8 +296,8 @@ def extract_sorting_sessions_for_bag(
                 "end_event_purpose": session.end_event_purpose,
             }
         )
-        if completed_sort_end is None or end_at > completed_sort_end:
-            completed_sort_end = end_at
+        if completed_sort_anchor_ts is None or add_ts > completed_sort_anchor_ts:
+            completed_sort_anchor_ts = add_ts
     return _dedupe_sessions_by_window(sessions)
 
 

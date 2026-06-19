@@ -379,6 +379,72 @@ class TestSortingChronologySessions:
         assert sessions[0]["end_event_purpose"] == "create-issue"
         assert sessions[0]["duration_seconds"] == 300
 
+    def test_697BP084AA_ignores_jennifer_add_photos_after_wash_before_create_issue(self):
+        """Maria 7:10 add-photos ends sort; start-cleaning before create-issue blocks Jennifer 51m row."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev(
+                "cleaning",
+                datetime(2026, 6, 18, 7, 0),
+                ev_id=2,
+                scan_index=2,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "weight-entry",
+                datetime(2026, 6, 18, 7, 5),
+                ev_id=3,
+                scan_index=3,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "add-photos",
+                datetime(2026, 6, 18, 7, 10),
+                ev_id=4,
+                scan_index=4,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 7, 12),
+                ev_id=5,
+                scan_index=5,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "create-issue",
+                datetime(2026, 6, 18, 7, 15),
+                ev_id=6,
+                scan_index=6,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "cleaning",
+                datetime(2026, 6, 18, 7, 16),
+                ev_id=7,
+                scan_index=7,
+                user="Jennifer (VeeWash)",
+            ),
+            _ev(
+                "add-photos",
+                datetime(2026, 6, 18, 8, 7),
+                ev_id=8,
+                scan_index=8,
+                user="Jennifer (VeeWash)",
+            ),
+        ]
+        sessions = extract_sorting_sessions_for_bag(
+            "697BP084AA",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria (Veewash)"
+        assert sessions[0]["sort_start_et"] == datetime(2026, 6, 18, 7, 0)
+        assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 7, 15)
+        assert sessions[0]["duration_seconds"] == 15 * 60
+        assert sessions[0]["source"] == "cleaning → create-issue"
+
     def test_D6E0SRN9QV_ignores_jennifer_add_photos_after_wash_setup(self):
         """Maria 7:17–7:18 exact; Jennifer 7:31 washer add-photos must not create a row."""
         events = [
