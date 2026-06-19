@@ -621,7 +621,7 @@ def duplicate_entry(
         data={
             "user_id": target_user,
             "day_of_week": target_day,
-            "role": existing["role"],
+            "roles": existing.get("roles") or parse_weekly_roles(existing["role"]),
             "start_time": existing["start_time"],
             "end_time": existing["end_time"],
             "break_minutes": existing["break_minutes"],

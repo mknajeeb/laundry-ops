@@ -838,7 +838,7 @@ def register_rinse_shift_analysis_routes(
             week_start = date.fromisoformat(str(existing["week_start"]))
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entry"] = entry
-            return jsonify(json_safe_rinse(payload)), 201
+            return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
             return jsonify({"error": str(exc)}), 500

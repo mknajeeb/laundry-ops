@@ -22,7 +22,6 @@ import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined
 import {
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
-  duplicateWeeklyScheduleEntry,
   getWeeklySchedule,
   moveWeeklyScheduleEntry,
   setWeeklyScheduleExclusion,
@@ -228,19 +227,6 @@ export default function WeeklySchedulePage() {
     }
   };
 
-  const handleDuplicate = async (entry) => {
-    setError("");
-    try {
-      const res = await duplicateWeeklyScheduleEntry(entry.id, {
-        day_of_week: entry.day_of_week,
-        user_id: entry.user_id,
-      });
-      setData(res.data);
-    } catch (e) {
-      setError(e?.response?.data?.error || "Failed to duplicate shift");
-    }
-  };
-
   const handleDrop = async (userId, dayOfWeek, entryId) => {
     if (!entryId) return;
     setError("");
@@ -388,8 +374,8 @@ export default function WeeklySchedulePage() {
               <Box
                 sx={{
                   display: "grid",
-                  gridTemplateColumns: `minmax(200px, 240px) repeat(7, minmax(132px, 1fr))`,
-                  minWidth: 1100,
+                  gridTemplateColumns: `minmax(156px, 188px) repeat(7, minmax(108px, 1fr))`,
+                  minWidth: 980,
                   gap: 0,
                   border: "1px solid #e2e8f0",
                   borderRadius: 2.5,
@@ -399,7 +385,8 @@ export default function WeeklySchedulePage() {
               >
                 <Box
                   sx={{
-                    p: 1.5,
+                    px: 1,
+                    py: 0.75,
                     bgcolor: "#f8fafc",
                     borderBottom: "1px solid #e2e8f0",
                     position: "sticky",
@@ -417,38 +404,39 @@ export default function WeeklySchedulePage() {
                   <Box
                     key={label}
                     sx={{
-                      p: 1.5,
+                      px: 0.75,
+                      py: 0.65,
                       bgcolor: "#f8fafc",
                       borderBottom: "1px solid #e2e8f0",
                       borderLeft: "1px solid #e2e8f0",
                     }}
                   >
-                    <Typography variant="subtitle2" fontWeight={800}>
+                    <Typography variant="subtitle2" fontWeight={700} sx={{ fontSize: "0.8rem" }}>
                       {label}
                     </Typography>
-                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.35 }}>
-                      {summary.people} people · {summary.hours.toFixed(1)} hrs
+                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.2, lineHeight: 1.2 }}>
+                      {summary.people} · {summary.hours.toFixed(1)}h
                     </Typography>
-                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mt: 0.5 }}>
+                    <Stack direction="row" spacing={0.35} flexWrap="nowrap" useFlexGap sx={{ mt: 0.35 }}>
                       {summary.sort > 0 ? (
                         <Chip
                           size="small"
                           label={`${summary.sort} Sort`}
-                          sx={{ height: 20, fontSize: "0.62rem", fontWeight: 700, bgcolor: ROLE_STYLES.sort.bg, color: ROLE_STYLES.sort.accent, border: `1px solid ${ROLE_STYLES.sort.border}` }}
+                          sx={{ height: 18, fontSize: "0.58rem", fontWeight: 700, bgcolor: ROLE_STYLES.sort.chipBg, color: ROLE_STYLES.sort.accent, border: `1px solid ${ROLE_STYLES.sort.border}` }}
                         />
                       ) : null}
                       {summary.wash > 0 ? (
                         <Chip
                           size="small"
                           label={`${summary.wash} Wash`}
-                          sx={{ height: 20, fontSize: "0.62rem", fontWeight: 700, bgcolor: ROLE_STYLES.wash.bg, color: ROLE_STYLES.wash.accent, border: `1px solid ${ROLE_STYLES.wash.border}` }}
+                          sx={{ height: 18, fontSize: "0.58rem", fontWeight: 700, bgcolor: ROLE_STYLES.wash.chipBg, color: ROLE_STYLES.wash.accent, border: `1px solid ${ROLE_STYLES.wash.border}` }}
                         />
                       ) : null}
                       {summary.fold > 0 ? (
                         <Chip
                           size="small"
                           label={`${summary.fold} Fold`}
-                          sx={{ height: 20, fontSize: "0.62rem", fontWeight: 700, bgcolor: ROLE_STYLES.fold.bg, color: ROLE_STYLES.fold.accent, border: `1px solid ${ROLE_STYLES.fold.border}` }}
+                          sx={{ height: 18, fontSize: "0.58rem", fontWeight: 700, bgcolor: ROLE_STYLES.fold.chipBg, color: ROLE_STYLES.fold.accent, border: `1px solid ${ROLE_STYLES.fold.border}` }}
                         />
                       ) : null}
                     </Stack>
@@ -462,7 +450,8 @@ export default function WeeklySchedulePage() {
                     <Box key={employee.user_id} sx={{ display: "contents" }}>
                       <Box
                         sx={{
-                          p: 1.25,
+                          px: 1,
+                          py: 0.65,
                           borderBottom: "1px solid #e2e8f0",
                           bgcolor: excluded ? "#fafafa" : "#fff",
                           position: "sticky",
@@ -552,14 +541,17 @@ export default function WeeklySchedulePage() {
                               handleDrop(employee.user_id, dow, entryId);
                             }}
                             sx={{
-                              p: 0.75,
-                              minHeight: 92,
+                              px: 0.5,
+                              py: 0.4,
+                              minHeight: 44,
+                              maxHeight: cellEntries.length > 2 ? 108 : undefined,
+                              overflowY: cellEntries.length > 2 ? "auto" : "visible",
                               borderBottom: "1px solid #e2e8f0",
                               borderLeft: "1px solid #e2e8f0",
                               bgcolor: excluded
                                 ? "#fafafa"
                                 : isDropTarget
-                                  ? VEEWASH_DASHBOARD.primaryBlueLight
+                                  ? "rgba(0, 151, 178, 0.08)"
                                   : "#fff",
                               opacity: excluded ? 0.85 : 1,
                               transition: "background-color 0.12s ease",
@@ -575,7 +567,6 @@ export default function WeeklySchedulePage() {
                                 showBreakMinutes={showBreakMinutes}
                                 onEdit={canEdit ? openEdit : undefined}
                                 onDelete={canEdit ? handleDelete : undefined}
-                                onDuplicate={canEdit ? handleDuplicate : undefined}
                                 onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
                                 onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
                               />
@@ -583,18 +574,20 @@ export default function WeeklySchedulePage() {
                             {!excluded && canEdit ? (
                               <Button
                                 size="small"
-                                startIcon={<AddIcon sx={{ fontSize: 14 }} />}
+                                startIcon={<AddIcon sx={{ fontSize: 13 }} />}
                                 onClick={() => openCreate(employee.user_id, dow)}
                                 sx={{
-                                  mt: 0.25,
-                                  fontSize: "0.7rem",
+                                  mt: 0.15,
+                                  py: 0,
+                                  fontSize: "0.65rem",
                                   minWidth: 0,
-                                  px: 0.75,
+                                  minHeight: 22,
+                                  px: 0.5,
                                   color: "text.secondary",
                                   fontWeight: 600,
                                 }}
                               >
-                                Add shift
+                                Add
                               </Button>
                             ) : null}
                           </Box>

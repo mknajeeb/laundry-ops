@@ -6,41 +6,41 @@ export const WEEKLY_SCHEDULE_ROLES = [
   { value: "fold", label: "Fold" },
 ];
 
+/** Subtle role accents — left-bar + chip tint, not full card fills. */
 export const ROLE_STYLES = {
   sort: {
-    accent: VEEWASH_DASHBOARD.primaryBlue,
-    bg: VEEWASH_DASHBOARD.primaryBlueLight,
-    border: VEEWASH_DASHBOARD.primaryBlueBorder,
-    gradient: "linear-gradient(135deg, #e6f5f8 0%, #d4eef5 100%)",
+    accent: VEEWASH_DASHBOARD.primaryBlueDark,
+    bg: "#ffffff",
+    chipBg: "#f0f9fb",
+    border: "rgba(0, 122, 145, 0.22)",
     label: "Sort",
   },
   wash: {
     accent: VEEWASH_DASHBOARD.rushCopper,
-    bg: VEEWASH_DASHBOARD.rushBg,
-    border: VEEWASH_DASHBOARD.rushBorder,
-    gradient: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
+    bg: "#ffffff",
+    chipBg: "#fffaf3",
+    border: "rgba(180, 83, 9, 0.22)",
     label: "Wash",
   },
   fold: {
-    accent: VEEWASH_DASHBOARD.teal,
-    bg: VEEWASH_DASHBOARD.tealLight,
-    border: VEEWASH_DASHBOARD.tealBorder,
-    gradient: "linear-gradient(135deg, #e6f7f5 0%, #d4f0ec 100%)",
+    accent: VEEWASH_DASHBOARD.tealDark,
+    bg: "#ffffff",
+    chipBg: "#f2faf8",
+    border: "rgba(0, 143, 127, 0.22)",
     label: "Fold",
   },
-  // Legacy aliases for older stored rows
   folder: {
-    accent: VEEWASH_DASHBOARD.teal,
-    bg: VEEWASH_DASHBOARD.tealLight,
-    border: VEEWASH_DASHBOARD.tealBorder,
-    gradient: "linear-gradient(135deg, #e6f7f5 0%, #d4f0ec 100%)",
+    accent: VEEWASH_DASHBOARD.tealDark,
+    bg: "#ffffff",
+    chipBg: "#f2faf8",
+    border: "rgba(0, 143, 127, 0.22)",
     label: "Fold",
   },
   operator: {
     accent: VEEWASH_DASHBOARD.rushCopper,
-    bg: VEEWASH_DASHBOARD.rushBg,
-    border: VEEWASH_DASHBOARD.rushBorder,
-    gradient: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
+    bg: "#ffffff",
+    chipBg: "#fffaf3",
+    border: "rgba(180, 83, 9, 0.22)",
     label: "Wash",
   },
 };

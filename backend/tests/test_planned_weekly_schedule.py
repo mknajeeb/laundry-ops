@@ -443,6 +443,34 @@ def test_duplicate_entry_creates_copy():
     assert copied["role"] == "wash"
 
 
+def test_duplicate_entry_preserves_multi_role():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        created, err = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 1,
+                "role": "sort,wash,fold",
+                "start_time": "08:00",
+                "end_time": "14:00",
+            },
+        )
+    assert err is None
+    with patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()):
+        copied, err = duplicate_entry(conn, cursor, 1, created["id"])
+    assert err is None
+    assert copied["role"] == "sort,wash,fold"
+    assert copied["roles"] == ["sort", "wash", "fold"]
+
+
 def test_org_isolation_on_get_and_delete():
     cursor = _FakeCursor()
     conn = MagicMock()
