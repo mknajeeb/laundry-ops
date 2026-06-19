@@ -69,29 +69,40 @@ def rack_candidate_strings(ev: Mapping[str, Any]) -> list[str]:
     return deduped
 
 
-def _extract_rack_preferring_rack_field(
+def canonical_rack_for_event(
     ev: Mapping[str, Any],
     *,
     is_rack_code,
 ) -> str | None:
-    """Prefer the explicit rack column; fall back to other location fields."""
-    rack_field = normalize_rack_code(ev.get("rack"))
-    if rack_field and is_rack_code(rack_field):
-        return rack_field
-    for candidate in rack_candidate_strings(ev):
-        if candidate == rack_field:
+    """
+    Single canonical machine/rack code for one scan event.
+
+    Priority: rack → last_location → last_scan → raw_json Machine/Location.
+    Returns the first valid W or D code only (never multiple candidates).
+    """
+    ordered: list[str] = []
+    for key in ("rack", "last_location", "last_scan"):
+        val = ev.get(key)
+        if val:
+            ordered.append(str(val).strip())
+    ordered.extend(_strings_from_raw_json(ev.get("raw_json")))
+    seen: set[str] = set()
+    for raw in ordered:
+        if not raw or raw in seen:
             continue
-        if is_rack_code(candidate):
-            return normalize_rack_code(candidate)
+        seen.add(raw)
+        code = normalize_rack_code(raw)
+        if code and is_rack_code(code):
+            return code
     return None
 
 
 def extract_washer_rack(ev: Mapping[str, Any]) -> str | None:
-    return _extract_rack_preferring_rack_field(ev, is_rack_code=is_washer_rack_code)
+    return canonical_rack_for_event(ev, is_rack_code=is_washer_rack_code)
 
 
 def extract_dryer_rack(ev: Mapping[str, Any]) -> str | None:
-    return _extract_rack_preferring_rack_field(ev, is_rack_code=is_dryer_rack_code)
+    return canonical_rack_for_event(ev, is_rack_code=is_dryer_rack_code)
 
 
 def _event_id_int(ev: Mapping[str, Any]) -> int | None:
@@ -120,15 +131,31 @@ def dedupe_scan_events_by_id(
     return out
 
 
+def dedupe_scan_events_by_bag_timestamp(
+    events: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """Keep one scan row per bag and parsed timestamp (duplicate ingest at same instant)."""
+    seen: set[tuple[str, Any]] = set()
+    out: list[dict[str, Any]] = []
+    for ev in dedupe_scan_events_by_id(events):
+        bag = str(ev.get("bag_id") or "").strip()
+        ts = ev.get("scanned_at_parsed")
+        key = (bag, ts)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(ev))
+    return out
+
+
 def dedupe_machine_load_rows(
     rows: list[dict[str, Any]],
-    *,
-    rack_field: str,
 ) -> list[dict[str, Any]]:
     """
-    One chronology/utilization row per scan event and per logical machine load.
+    One chronology/utilization row per logical machine load.
 
-    Collapses duplicate ingest rows that share bag, employee, timestamp, and rack.
+    Collapses duplicate ingest rows that share bag, employee, and timestamp.
+    Each surviving row carries one exclusive machine/rack code.
     """
     seen_ids: set[int] = set()
     seen_logical: set[tuple] = set()
@@ -148,7 +175,6 @@ def dedupe_machine_load_rows(
             str(row.get("bag_id") or "").strip(),
             str(row.get("employee") or "").strip(),
             row.get("timestamp_et"),
-            str(row.get(rack_field) or "").strip(),
         )
         if logical in seen_logical:
             continue

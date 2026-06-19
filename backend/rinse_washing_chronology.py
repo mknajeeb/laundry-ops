@@ -15,7 +15,7 @@ from backend.rinse_bag_stage_bounds import event_ts, ts_valid
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start
 from backend.rinse_machine_rack import (
     dedupe_machine_load_rows,
-    dedupe_scan_events_by_id,
+    dedupe_scan_events_by_bag_timestamp,
     extract_washer_rack,
 )
 from backend.rinse_scan_purpose import is_start_cleaning_purpose, normalize_scan_purpose
@@ -43,7 +43,7 @@ def extract_washing_rows_from_events(
     events: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for ev in dedupe_scan_events_by_id(events):
+    for ev in dedupe_scan_events_by_bag_timestamp(events):
         if not is_start_cleaning_purpose(ev.get("purpose")):
             continue
         rack = extract_washer_rack(ev)
@@ -63,7 +63,7 @@ def extract_washing_rows_from_events(
                 "event_purpose": normalize_scan_purpose(ev.get("purpose")),
             }
         )
-    rows = dedupe_machine_load_rows(rows, rack_field="washer_rack")
+    rows = dedupe_machine_load_rows(rows)
     rows.sort(
         key=lambda r: (
             r.get("timestamp_et") is None,
@@ -182,7 +182,7 @@ def build_washing_chronology_payload(
         "event_purposes": ["start-cleaning"],
         "grouping_rules": (
             "One row per start-cleaning scan with a washer rack code (W-prefix); "
-            "duplicate ingest rows at the same timestamp are collapsed; "
+            "duplicate ingest rows at the same timestamp collapse to one exclusive machine; "
             "split orders at different times may produce multiple rows for the same bag."
         ),
     }

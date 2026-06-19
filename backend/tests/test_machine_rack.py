@@ -1,6 +1,7 @@
 """Tests for washer/dryer rack detection."""
 
 from backend.rinse_machine_rack import (
+    canonical_rack_for_event,
     extract_dryer_rack,
     extract_washer_rack,
     is_dryer_rack_code,
@@ -45,3 +46,13 @@ class TestWasherRackDetection:
             "purpose": "start-cleaning",
         }
         assert extract_washer_rack(ev) == "W26-30-VW"
+        assert canonical_rack_for_event(ev, is_rack_code=is_washer_rack_code) == "W26-30-VW"
+
+    def test_canonical_rack_first_valid_code_only(self):
+        ev = {
+            "rack": "Scale",
+            "last_location": "W25-30-VW",
+            "last_scan": "W26-30-VW",
+            "purpose": "start-cleaning",
+        }
+        assert canonical_rack_for_event(ev, is_rack_code=is_washer_rack_code) == "W25-30-VW"
