@@ -57,3 +57,13 @@ class TestDryingChronologyRows:
         summary = build_drying_chronology_summary(rows)
         assert summary["total_drying_scans"] == 2
         assert summary["most_used_dryer"] == "D4-50-VW"
+
+    def test_duplicate_drying_ingest_collapses(self):
+        ts = datetime(2026, 6, 18, 14, 0)
+        events = [
+            _ev("drying", ts, ev_id=i, scan_index=1, rack="D4-50-VW")
+            for i in range(1, 5)
+        ]
+        rows = extract_drying_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["dryer_rack"] == "D4-50-VW"

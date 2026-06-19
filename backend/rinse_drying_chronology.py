@@ -13,7 +13,11 @@ from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import event_ts, ts_valid
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start
-from backend.rinse_machine_rack import extract_dryer_rack
+from backend.rinse_machine_rack import (
+    dedupe_machine_load_rows,
+    dedupe_scan_events_by_id,
+    extract_dryer_rack,
+)
 from backend.rinse_scan_purpose import is_drying_purpose, normalize_scan_purpose
 from backend.ta_helpers import table_exists
 
@@ -39,7 +43,7 @@ def extract_drying_rows_from_events(
     events: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for ev in events:
+    for ev in dedupe_scan_events_by_id(events):
         if not is_drying_purpose(ev.get("purpose")):
             continue
         rack = extract_dryer_rack(ev)
@@ -50,6 +54,7 @@ def extract_drying_rows_from_events(
             continue
         rows.append(
             {
+                "scan_event_id": ev.get("id"),
                 "bag_id": str(ev.get("bag_id") or "").strip(),
                 "employee": _operator(ev),
                 "timestamp_et": ts,
@@ -58,6 +63,7 @@ def extract_drying_rows_from_events(
                 "event_purpose": normalize_scan_purpose(ev.get("purpose")),
             }
         )
+    rows = dedupe_machine_load_rows(rows, rack_field="dryer_rack")
     rows.sort(
         key=lambda r: (
             r.get("timestamp_et") is None,
@@ -175,7 +181,8 @@ def build_drying_chronology_payload(
         "event_purposes": ["drying"],
         "grouping_rules": (
             "One row per drying scan with a dryer rack code (D-prefix); "
-            "each drying scan is a separate row (0, 1, or 2 per bag)."
+            "duplicate ingest rows at the same timestamp are collapsed; "
+            "each distinct drying scan is a separate row (0, 1, or 2 per bag)."
         ),
     }
 

@@ -69,18 +69,92 @@ def rack_candidate_strings(ev: Mapping[str, Any]) -> list[str]:
     return deduped
 
 
-def extract_washer_rack(ev: Mapping[str, Any]) -> str | None:
+def _extract_rack_preferring_rack_field(
+    ev: Mapping[str, Any],
+    *,
+    is_rack_code,
+) -> str | None:
+    """Prefer the explicit rack column; fall back to other location fields."""
+    rack_field = normalize_rack_code(ev.get("rack"))
+    if rack_field and is_rack_code(rack_field):
+        return rack_field
     for candidate in rack_candidate_strings(ev):
-        if is_washer_rack_code(candidate):
+        if candidate == rack_field:
+            continue
+        if is_rack_code(candidate):
             return normalize_rack_code(candidate)
     return None
+
+
+def extract_washer_rack(ev: Mapping[str, Any]) -> str | None:
+    return _extract_rack_preferring_rack_field(ev, is_rack_code=is_washer_rack_code)
 
 
 def extract_dryer_rack(ev: Mapping[str, Any]) -> str | None:
-    for candidate in rack_candidate_strings(ev):
-        if is_dryer_rack_code(candidate):
-            return normalize_rack_code(candidate)
-    return None
+    return _extract_rack_preferring_rack_field(ev, is_rack_code=is_dryer_rack_code)
+
+
+def _event_id_int(ev: Mapping[str, Any]) -> int | None:
+    eid = ev.get("id")
+    if eid is None:
+        return None
+    try:
+        return int(eid)
+    except (TypeError, ValueError):
+        return None
+
+
+def dedupe_scan_events_by_id(
+    events: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
+) -> list[dict[str, Any]]:
+    """Drop duplicate DB/join rows that share the same scan event id."""
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        eid = _event_id_int(ev)
+        if eid is not None:
+            if eid in seen:
+                continue
+            seen.add(eid)
+        out.append(dict(ev))
+    return out
+
+
+def dedupe_machine_load_rows(
+    rows: list[dict[str, Any]],
+    *,
+    rack_field: str,
+) -> list[dict[str, Any]]:
+    """
+    One chronology/utilization row per scan event and per logical machine load.
+
+    Collapses duplicate ingest rows that share bag, employee, timestamp, and rack.
+    """
+    seen_ids: set[int] = set()
+    seen_logical: set[tuple] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        eid = row.get("scan_event_id")
+        if eid is not None:
+            try:
+                eid_int = int(eid)
+            except (TypeError, ValueError):
+                eid_int = None
+            if eid_int is not None:
+                if eid_int in seen_ids:
+                    continue
+                seen_ids.add(eid_int)
+        logical = (
+            str(row.get("bag_id") or "").strip(),
+            str(row.get("employee") or "").strip(),
+            row.get("timestamp_et"),
+            str(row.get(rack_field) or "").strip(),
+        )
+        if logical in seen_logical:
+            continue
+        seen_logical.add(logical)
+        out.append(row)
+    return out
 
 
 def parse_rack_capacity_lb(code: str | None) -> float | None:

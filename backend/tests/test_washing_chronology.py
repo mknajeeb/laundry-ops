@@ -83,3 +83,66 @@ class TestWashingChronologyRows:
         assert summary["most_used_washer"] == "W29-40-VW"
         assert summary["first_washer_load_et"] == datetime(2026, 6, 18, 9, 0)
         assert summary["last_washer_load_et"] == datetime(2026, 6, 18, 12, 0)
+
+    def test_D6E0SRN9QV_duplicate_ingest_collapses_to_one_per_rack(self):
+        """Jun 18 duplicate start-cleaning rows at same timestamp → one row per rack."""
+        ts = datetime(2026, 6, 18, 7, 31)
+        events = []
+        for ev_id in range(1, 9):
+            rack = "W26-30-VW" if ev_id % 2 else "W25-30-VW"
+            events.append(
+                {
+                    "id": ev_id,
+                    "bag_id": "D6E0SRN9QV",
+                    "rack": rack,
+                    "last_location": "W25-30-VW" if rack == "W26-30-VW" else "W26-30-VW",
+                    "user_name": "Jennifer",
+                    "purpose": "start-cleaning",
+                    "scanned_at_parsed": ts,
+                    "scan_index": 1,
+                }
+            )
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 2
+        racks = sorted(r["washer_rack"] for r in rows)
+        assert racks == ["W25-30-VW", "W26-30-VW"]
+        summary = build_washing_chronology_summary(rows)
+        assert summary["total_washer_loads"] == 2
+
+    def test_duplicate_same_rack_same_timestamp_one_row(self):
+        ts = datetime(2026, 6, 18, 7, 35)
+        events = [
+            _ev(
+                "start-cleaning",
+                ts,
+                ev_id=i,
+                rack="W29-40-VW",
+                user="Jennifer",
+            )
+            for i in range(1, 9)
+        ]
+        for ev in events:
+            ev["bag_id"] = "1VMV2DUPUW"
+            ev["last_location"] = "W28-20-VW"
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "W29-40-VW"
+        assert rows[0]["bag_id"] == "1VMV2DUPUW"
+
+    def test_conflicting_rack_fields_on_one_event_uses_rack_column(self):
+        ts = datetime(2026, 6, 18, 7, 31)
+        events = [
+            {
+                "id": 1,
+                "bag_id": "D6E0SRN9QV",
+                "rack": "W26-30-VW",
+                "last_location": "W25-30-VW",
+                "user_name": "Jennifer",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": ts,
+                "scan_index": 1,
+            }
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "W26-30-VW"

@@ -37,3 +37,11 @@ class TestWasherRackDetection:
             "purpose": "start-cleaning",
         }
         assert extract_washer_rack(ev) == "W29-40-VW"
+
+    def test_prefers_rack_field_over_last_location(self):
+        ev = {
+            "rack": "W26-30-VW",
+            "last_location": "W25-30-VW",
+            "purpose": "start-cleaning",
+        }
+        assert extract_washer_rack(ev) == "W26-30-VW"
