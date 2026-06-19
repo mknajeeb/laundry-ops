@@ -18,6 +18,7 @@ from backend.rinse_shift_analysis import (
     _parse_evaluation_time,
 )
 from backend.rinse_scan_time import json_safe_rinse
+from backend.shift_capacity_planner import simulate_shift_capacity
 
 
 def register_rinse_shift_analysis_routes(
@@ -1096,6 +1097,28 @@ def register_rinse_shift_analysis_routes(
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
+    @app.route("/rinse/shift-analysis/shift-capacity-planner/simulate", methods=["GET", "POST"])
+    def rinse_shift_capacity_planner_simulate():
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            if request.method == "POST":
+                body = request.get_json(silent=True) or {}
+            else:
+                body = {k: request.args.get(k) for k in request.args if request.args.get(k) is not None}
+            payload = simulate_shift_capacity(body)
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
             return jsonify({"error": str(exc)}), 500
         finally:
             cursor.close()

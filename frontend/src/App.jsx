@@ -37,6 +37,7 @@ import ShiftMonitorPage from "./pages/ShiftMonitorPage";
 import DailyShiftRosterPage from "./pages/DailyShiftRosterPage";
 import ScanChronologyPage from "./pages/ScanChronologyPage";
 import OperationsTimelinePage from "./pages/OperationsTimelinePage";
+import ShiftCapacityPlannerPage from "./pages/ShiftCapacityPlannerPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
 import WeeklyScheduleEmployeeViewPage from "./pages/WeeklyScheduleEmployeeViewPage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
@@ -827,6 +828,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
                     <OperationsTimelinePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/shift-capacity-planner"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <ShiftCapacityPlannerPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

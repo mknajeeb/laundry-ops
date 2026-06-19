@@ -604,6 +604,9 @@ export const getScanChronology = (params = {}) =>
 export const getOperationsTimeline = (params = {}) =>
   axios.get(`${API_BASE}/rinse/shift-analysis/operations-timeline`, { params, timeout: 60000 });
 
+export const simulateShiftCapacity = (body = {}) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/shift-capacity-planner/simulate`, body, { timeout: 30000 });
+
 export const listFoldingUsers = () =>
   axios.get(`${API_BASE}/rinse/folding/users`, { timeout: 30000 });
 
