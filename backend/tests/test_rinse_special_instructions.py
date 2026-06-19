@@ -4,6 +4,7 @@ import pytest
 
 from backend.rinse_special_instructions import (
     build_special_instructions_raw,
+    format_special_instructions_display,
     interpret_special_instructions,
 )
 
@@ -111,3 +112,43 @@ class TestInterpretSpecialInstructions:
     def test_real_hypo_still_maps(self):
         out = interpret_special_instructions("Use Hypoallergenic Soap")
         assert out["supplies_used"] == ["Hypoallergenic detergent"]
+
+
+class TestFormatSpecialInstructionsDisplay:
+    def test_blank_is_none(self):
+        assert format_special_instructions_display(None) is None
+        assert format_special_instructions_display("") is None
+
+    def test_polluted_catalog_only_is_none(self):
+        assert format_special_instructions_display(CHRISTIAN_CATALOG_ONLY) is None
+
+    def test_polluted_row_shows_friendly_tokens_only(self):
+        out = format_special_instructions_display(CHRISTIAN_POLLUTED_RAW)
+        assert out == "Hypoallergenic + Fabric Softener + OxiClean"
+
+    def test_hypo_only(self):
+        assert format_special_instructions_display("Use Hypoallergenic Soap") == "Hypoallergenic"
+
+    def test_fab_oxic(self):
+        assert (
+            format_special_instructions_display("USE FABRIC SOFTENER; USE OXICLEAN")
+            == "Fabric Softener + OxiClean"
+        )
+
+    def test_oxic_only(self):
+        assert format_special_instructions_display("USE OXICLEAN") == "OxiClean"
+
+    def test_embedded_hypo_in_catalog_blob(self):
+        raw = (
+            "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
+            "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
+            "Bag Bathing Suit Bathing Suit (Bottom) Bathing Suit (Top) Bath Mat Bath Rug Belt Blanket "
+            "Blanket (Large) Blanket (Small) Blouse Boots Boxers Bra Button (Repair) Cloth Mask "
+            "Cloth Mask (Kids) Coat Coat (Down) Comforter Comforter (Down) Couch Cover Cover Cummerbund "
+            "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D Use Hypoallergenic Soap"
+        )
+        assert format_special_instructions_display(raw) == "Hypoallergenic"
+
+    def test_unknown_notes_appended(self):
+        out = format_special_instructions_display("USE OXICLEAN; CALL CUSTOMER BEFORE WASH")
+        assert out == "OxiClean; CALL CUSTOMER BEFORE WASH"

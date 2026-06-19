@@ -556,10 +556,12 @@ export default function SupplyUsagePage() {
                 <TableBody>
                   {mappingRulesDraft.map((rule, index) => (
                     <TableRow key={`mapping-rule-${index}`}>
-                      <TableCell>
+                      <TableCell sx={{ minWidth: 260, whiteSpace: "normal" }}>
                         <TextField
                           size="small"
                           fullWidth
+                          multiline
+                          maxRows={3}
                           value={rule.instructions}
                           placeholder={rule.default ? "None / default" : "Instruction pattern"}
                           onChange={(e) => updateMappingRule(index, { instructions: e.target.value })}

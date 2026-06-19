@@ -11,6 +11,7 @@ from backend.supply_usage import (
     load_orders_for_supply_usage,
     split_order_multiplier,
     supplies_for_usage,
+    _display_special_instructions,
     _load_split_load_bag_ids,
     _order_row_from_staging,
 )
@@ -102,6 +103,34 @@ class TestSuppliesForUsage:
     def test_empty_instructions_default_tide(self):
         out = supplies_for_usage("")
         assert out["supplies_used"] == ["Tide"]
+
+
+class TestDisplaySpecialInstructions:
+    def test_polluted_row_friendly_display(self):
+        from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
+
+        assert _display_special_instructions(CHRISTIAN_POLLUTED_RAW) == (
+            "Hypoallergenic + Fabric Softener + OxiClean"
+        )
+
+    def test_hypo_only_display(self):
+        assert _display_special_instructions("Use Hypoallergenic Soap") == "Hypoallergenic"
+
+    def test_order_row_display_matches_mapping(self):
+        from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
+
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "TEST1234",
+                "name_clean": "Test Customer",
+                "special_instructions_raw": CHRISTIAN_POLLUTED_RAW,
+            },
+            split_load_bags=set(),
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["special_instructions"] == "Hypoallergenic + Fabric Softener + OxiClean"
+        assert row["supplies_used"] == ["All Free & Clear", "Downy", "OxiClean"]
+        assert row["supply_interpretation"] == "Hypoallergenic soap + softener + OxiClean"
 
 
 class TestSplitOrder:

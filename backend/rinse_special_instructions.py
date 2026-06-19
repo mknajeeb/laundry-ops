@@ -12,6 +12,13 @@ _TOKEN_FAB = "USE FABRIC SOFTENER"
 _TOKEN_OXIC = "USE OXICLEAN"
 _TOKEN_HYPO = "USE HYPOALLERGENIC SOAP"
 
+_TOKEN_DISPLAY: dict[str, str] = {
+    _TOKEN_HYPO: "Hypoallergenic",
+    _TOKEN_FAB: "Fabric Softener",
+    _TOKEN_OXIC: "OxiClean",
+}
+_TOKEN_DISPLAY_ORDER = (_TOKEN_HYPO, _TOKEN_FAB, _TOKEN_OXIC)
+
 _HYPO_PART_RE = re.compile(
     r"\bHYPOALLERGENIC\b|\bHYPO\s*[- ]?\s*ALLERG(?:ENIC)?\b|\bUSE\s+HYPO\b",
     re.I,
@@ -71,14 +78,15 @@ def _trailing_supply_parts_from_catalog(part: str) -> list[str]:
             (_TOKEN_FAB, _FAB_PART_RE),
         ):
             m = pattern.search(remainder)
-            if not m or m.end() != len(remainder):
+            if not m:
                 continue
             snippet = remainder[m.start() :].strip()
-            if _classify_part(snippet) == token:
-                found.insert(0, snippet)
-                remainder = remainder[: m.start()].rstrip(" ;,")
-                matched = True
-                break
+            if _classify_part(snippet) != token:
+                continue
+            found.insert(0, snippet)
+            remainder = remainder[: m.start()].rstrip(" ;,")
+            matched = True
+            break
         if not matched:
             break
     return found
@@ -156,6 +164,38 @@ def build_special_instructions_raw(
 def _flag_marked(val: str | None) -> bool:
     s = str(val or "").strip().upper()
     return s in {"X", "YES", "Y", "TRUE", "1", "✓"}
+
+
+def format_special_instructions_display(raw: str | None) -> str | None:
+    """
+    Human-readable customer selections for UI display.
+
+    Uses the same token pipeline as supply mapping (_parts_for_interpretation)
+    so the Special Instructions column matches mapped supplies, never raw portal
+    vendor catalog text or unparsed menu tokens.
+    """
+    parts = _parts_for_interpretation(raw)
+    if not parts:
+        return None
+
+    seen_tokens: set[str] = set()
+    unknown: list[str] = []
+
+    for part in parts:
+        kind = _classify_part(part)
+        if kind and kind != "UNKNOWN":
+            seen_tokens.add(kind)
+        elif kind == "UNKNOWN":
+            cleaned = re.sub(r"\s+", " ", part).strip()
+            if cleaned:
+                unknown.append(cleaned)
+
+    labels = [_TOKEN_DISPLAY[tok] for tok in _TOKEN_DISPLAY_ORDER if tok in seen_tokens]
+    out: list[str] = []
+    if labels:
+        out.append(" + ".join(labels))
+    out.extend(unknown)
+    return "; ".join(out) if out else None
 
 
 def interpret_special_instructions(raw: str | None) -> dict[str, Any]:
