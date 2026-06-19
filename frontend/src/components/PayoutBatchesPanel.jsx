@@ -51,11 +51,8 @@ import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import {
   ACCOUNTANT_BATCH_READY_MESSAGE,
-  ESTIMATE_DISCLAIMER,
-  PAYROLL_ESTIMATE_PURPOSE,
+  MANUAL_DEDUCTIONS_NOTICE,
   SEND_TO_ACCOUNTANT_W2_CONFIRM,
-  formatTaxAmount,
-  isLineTaxIncomplete,
 } from "../payroll/payrollTaxMessages";
 
 const BATCH_STATUS_FLOW = [
@@ -359,7 +356,7 @@ export default function PayoutBatchesPanel({
         mark_line_paid: "Worker marked paid.",
         mark_line_unpaid: "Worker marked unpaid.",
         refresh_rates: "Scheduling/profile rates applied.",
-        recalculate_taxes: "W-2 tax estimates recalculated.",
+        recalculate_taxes: "Tax recalculation is disabled — use Payout Details.",
       };
       setInfo(labels[action] || "Updated.");
     } catch (e) {
@@ -683,10 +680,7 @@ export default function PayoutBatchesPanel({
 
               {isW2 ? (
                 <Alert severity="info" sx={{ mb: 2 }}>
-                  {detail.payroll_estimate_purpose_notice || PAYROLL_ESTIMATE_PURPOSE}
-                  <Typography variant="body2" sx={{ mt: 1, fontWeight: 600 }}>
-                    {detail.estimated_withholding_notice || ESTIMATE_DISCLAIMER}
-                  </Typography>
+                  {detail.payroll_estimate_purpose_notice || MANUAL_DEDUCTIONS_NOTICE}
                 </Alert>
               ) : null}
 
@@ -723,56 +717,6 @@ export default function PayoutBatchesPanel({
                     </Typography>
                     <Typography>${Number(summary.gross_total || 0).toFixed(2)}</Typography>
                   </Box>
-                  {isW2 ? (
-                    <>
-                      <Box>
-                        <Typography variant="caption" color="text.secondary">
-                          Employee taxes (est.)
-                        </Typography>
-                        <Typography>
-                          {summary.taxes_withheld_total != null
-                            ? `$${Number(summary.taxes_withheld_total).toFixed(2)}`
-                            : "—"}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary" display="block">
-                          {ESTIMATE_DISCLAIMER}
-                        </Typography>
-                      </Box>
-                      <Box>
-                        <Typography variant="caption" color="text.secondary">
-                          Net pay (est.)
-                        </Typography>
-                        <Typography>
-                          {summary.net_pay_total != null
-                            ? `$${Number(summary.net_pay_total).toFixed(2)}`
-                            : summary.net_pay_note || "—"}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary" display="block">
-                          {ESTIMATE_DISCLAIMER}
-                        </Typography>
-                      </Box>
-                      <Box>
-                        <Typography variant="caption" color="text.secondary">
-                          Employer taxes (est.)
-                        </Typography>
-                        <Typography>
-                          {summary.employer_taxes_total != null
-                            ? `$${Number(summary.employer_taxes_total).toFixed(2)}`
-                            : "—"}
-                        </Typography>
-                      </Box>
-                      <Box>
-                        <Typography variant="caption" color="text.secondary">
-                          Total payroll cost
-                        </Typography>
-                        <Typography>
-                          {summary.employer_cost_total != null
-                            ? `$${Number(summary.employer_cost_total).toFixed(2)}`
-                            : "—"}
-                        </Typography>
-                      </Box>
-                    </>
-                  ) : null}
                   <Box>
                     <Typography variant="caption" color="text.secondary">
                       Paid
@@ -795,11 +739,6 @@ export default function PayoutBatchesPanel({
                 {isEditable ? (
                   <Button size="small" variant="outlined" onClick={() => runWorkflowAction("refresh_rates")}>
                     Apply scheduling rates
-                  </Button>
-                ) : null}
-                {isEditable && isW2 ? (
-                  <Button size="small" variant="outlined" onClick={() => runWorkflowAction("recalculate_taxes")}>
-                    Recalculate W-2 taxes
                   </Button>
                 ) : null}
                 {detail.status === "draft" ? (
@@ -878,18 +817,6 @@ export default function PayoutBatchesPanel({
                           <TableCell align="right">Sick bal</TableCell>
                           <TableCell align="right">Sick pay</TableCell>
                           <TableCell align="right">Gross</TableCell>
-                          <TableCell align="right">
-                            Taxes (est.)
-                            <Typography variant="caption" color="text.secondary" display="block">
-                              {ESTIMATE_DISCLAIMER}
-                            </Typography>
-                          </TableCell>
-                          <TableCell>
-                            Net pay (est.)
-                            <Typography variant="caption" color="text.secondary" display="block">
-                              {ESTIMATE_DISCLAIMER}
-                            </Typography>
-                          </TableCell>
                         </>
                       ) : isGrossOnly ? (
                         <TableCell align="right">Health credit</TableCell>
@@ -936,24 +863,6 @@ export default function PayoutBatchesPanel({
                             </TableCell>
                             <TableCell align="right">
                               ${Number(ln.gross_wages || ln.gross_amount || 0).toFixed(2)}
-                            </TableCell>
-                            <TableCell align="right">
-                              <Tooltip title={isLineTaxIncomplete(ln) ? ln.net_pay_note || "Profile incomplete" : ""}>
-                                <Typography variant="caption" color="text.secondary">
-                                  {ln.tax_calc_status === "estimated"
-                                    ? formatTaxAmount(ln.employee_taxes_total)
-                                    : ln.tax_calc_status === "profile_incomplete"
-                                      ? "—"
-                                      : "Pending"}
-                                </Typography>
-                              </Tooltip>
-                            </TableCell>
-                            <TableCell>
-                              <Typography variant="caption" color="text.secondary">
-                                {ln.net_pay_display != null
-                                  ? formatTaxAmount(ln.net_pay_display)
-                                  : ln.net_pay_note || "—"}
-                              </Typography>
                             </TableCell>
                           </>
                         ) : isGrossOnly ? (
@@ -1005,7 +914,7 @@ export default function PayoutBatchesPanel({
                     ))}
                     {!detail.lines?.length ? (
                       <TableRow>
-                        <TableCell colSpan={isW2 ? 15 : isGrossOnly ? 8 : 7}>
+                        <TableCell colSpan={isW2 ? 13 : isGrossOnly ? 8 : 7}>
                           <Typography variant="body2" color="text.secondary">
                             No workers in this batch yet. Approve time on Time Records for this pay period,
                             then refresh.

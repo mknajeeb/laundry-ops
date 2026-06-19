@@ -18,7 +18,7 @@ import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
 import {
   ACCOUNTANT_BATCH_READY_MESSAGE,
-  PAYROLL_ESTIMATE_PURPOSE,
+  MANUAL_DEDUCTIONS_NOTICE,
 } from "../payroll/payrollTaxMessages";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
@@ -275,7 +275,7 @@ export default function AccountantW2PayrollPanel() {
             )}
           </Stack>
           <Alert severity="info" sx={{ mb: 2 }}>
-            {PAYROLL_ESTIMATE_PURPOSE}
+            {MANUAL_DEDUCTIONS_NOTICE}
           </Alert>
 
           {loading ? (

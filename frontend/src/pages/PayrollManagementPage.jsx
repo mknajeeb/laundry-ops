@@ -22,7 +22,7 @@ import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
-import { PAYROLL_ESTIMATE_PURPOSE } from "../payroll/payrollTaxMessages";
+import { MANUAL_DEDUCTIONS_NOTICE } from "../payroll/payrollTaxMessages";
 
 /**
  * Payroll Management — operations vs accountant reporting.
@@ -137,7 +137,7 @@ export default function PayrollManagementPage() {
         never mixed in one batch.
       </Typography>
       <Alert className="no-print" severity="info" sx={{ mb: 2, maxWidth: 900 }}>
-        {PAYROLL_ESTIMATE_PURPOSE}
+        {MANUAL_DEDUCTIONS_NOTICE}
       </Alert>
 
       <Tabs

@@ -29,6 +29,8 @@ from backend.payroll_tax_messages import (
     ACCOUNTANT_BATCH_READY_MESSAGE,
     ESTIMATE_DISCLAIMER,
     ESTIMATED_WITHHOLDING_NOTICE,
+    MANUAL_DEDUCTIONS_NOTICE,
+    MANUAL_TAX_DEDUCTIONS_ONLY,
     PAYROLL_ESTIMATE_PURPOSE,
     SEND_TO_ACCOUNTANT_W2_CONFIRM,
 )
@@ -216,6 +218,8 @@ def persist_w2_line_taxes(
     *,
     pay_period_start: Optional[str] = None,
 ) -> None:
+    if MANUAL_TAX_DEDUCTIONS_ONLY:
+        return
     from backend.w2_payroll_tax_engine import calculate_w2_line_taxes
 
     ensure_payout_batch_line_extensions(conn.cursor())
@@ -300,6 +304,8 @@ def persist_w2_line_taxes(
 
 
 def recalculate_w2_batch_taxes(conn, organization_id: int, batch_id: int) -> None:
+    if MANUAL_TAX_DEDUCTIONS_ONLY:
+        return
     from backend.payroll_operations import _recompute_batch_totals
 
     c = conn.cursor(dictionary=True)
@@ -425,7 +431,7 @@ def build_payroll_readiness(
     missing_w4: list[dict],
     lines: list[dict],
 ) -> list[dict]:
-    """Visible checklist for batch workflow — estimates only, not filing readiness."""
+    """Visible checklist for batch workflow — hours, rates, and export readiness."""
     has_lines = bool(lines)
     st = str(batch.get("status") or "draft")
     is_w2 = cat == "w2"
@@ -438,6 +444,55 @@ def build_payroll_readiness(
         "closed",
     )
     rate_ok = has_lines and not missing_rates
+
+    if MANUAL_TAX_DEDUCTIONS_ONLY:
+        export_ok = has_lines and rate_ok and hours_reviewed_ok
+        if not has_lines:
+            export_detail = "Add worker lines first"
+        elif not rate_ok:
+            export_detail = "Resolve missing hourly rates"
+        elif not hours_reviewed_ok:
+            export_detail = "Mark hours reviewed before export"
+        else:
+            export_detail = "Ready for accountant review"
+        return [
+            {
+                "key": "worker_type",
+                "label": "Worker type confirmed",
+                "ok": bool(cat),
+                "applicable": True,
+                "detail": CATEGORY_LABELS.get(cat, cat or "Unset"),
+            },
+            {
+                "key": "rate_present",
+                "label": "Rate present",
+                "ok": rate_ok,
+                "applicable": True,
+                "detail": "All lines have hourly rate" if rate_ok else f"{len(missing_rates)} missing rate(s)",
+            },
+            {
+                "key": "hours_reviewed",
+                "label": "Hours reviewed",
+                "ok": hours_reviewed_ok,
+                "applicable": True,
+                "detail": f"Status: {st.replace('_', ' ')}",
+            },
+            {
+                "key": "accountant_export",
+                "label": "Accountant export ready",
+                "ok": export_ok,
+                "applicable": True,
+                "detail": export_detail,
+            },
+            {
+                "key": "paid_tracking",
+                "label": "Paid/unpaid tracking available",
+                "ok": True,
+                "applicable": True,
+                "detail": "Mark paid/unpaid after send to accountant",
+            },
+        ]
+
     w4_ok = (not missing_w4 and has_lines) if is_w2 else True
     if is_w2:
         w4_detail = (
@@ -569,34 +624,35 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
                     }
                 )
             if cat == "w2":
-                from backend.w2_payroll_tax_engine import fetch_employee_tax_profile
+                if not MANUAL_TAX_DEDUCTIONS_ONLY:
+                    from backend.w2_payroll_tax_engine import fetch_employee_tax_profile
 
-                profile = fetch_employee_tax_profile(conn, int(uid), organization_id)
-                row["w4_summary"] = fetch_w4_compliance_summary(conn, int(uid), organization_id)
-                row["tax_disclaimer"] = ESTIMATE_DISCLAIMER
-                row["tax_calculation_status"] = row.get("tax_calc_status")
-                row["tax_notes"] = row.get("tax_calc_notes")
-                row["profile_incomplete_fields"] = profile.get("missing_fields") or []
-                row["estimated_withholding_notice"] = (
-                    ESTIMATED_WITHHOLDING_NOTICE
-                    if str(row.get("tax_calc_status") or "") == "estimated"
-                    else ""
-                )
-                if not profile.get("w4_complete"):
-                    missing_w4.append(
-                        {
-                            "user_id": uid,
-                            "worker_name": row.get("worker_name_snapshot"),
-                            "missing_fields": profile.get("missing_fields") or [],
-                        }
+                    profile = fetch_employee_tax_profile(conn, int(uid), organization_id)
+                    row["w4_summary"] = fetch_w4_compliance_summary(conn, int(uid), organization_id)
+                    row["tax_disclaimer"] = ESTIMATE_DISCLAIMER
+                    row["tax_calculation_status"] = row.get("tax_calc_status")
+                    row["tax_notes"] = row.get("tax_calc_notes")
+                    row["profile_incomplete_fields"] = profile.get("missing_fields") or []
+                    row["estimated_withholding_notice"] = (
+                        ESTIMATED_WITHHOLDING_NOTICE
+                        if str(row.get("tax_calc_status") or "") == "estimated"
+                        else ""
                     )
+                    if not profile.get("w4_complete"):
+                        missing_w4.append(
+                            {
+                                "user_id": uid,
+                                "worker_name": row.get("worker_name_snapshot"),
+                                "missing_fields": profile.get("missing_fields") or [],
+                            }
+                        )
+                    _mask_incomplete_w2_line_taxes(row)
                 from backend.payroll_accrual import get_sick_leave_balance
 
                 sb = get_sick_leave_balance(conn, organization_id, int(uid))
                 row["sick_balance_hours"] = sb.get("balance_hours")
                 row["sick_hours_accrued_ytd"] = sb.get("ytd_accrued_hours")
                 row["sick_hours_used_ytd"] = sb.get("ytd_used_hours")
-                _mask_incomplete_w2_line_taxes(row)
         ps = str(row.get("payment_status") or "pending")
         row["payment_status_label"] = _line_payment_status_label(ps)
         amt = _money(row.get("total_amount") or 0)
@@ -605,7 +661,7 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             paid_total += amt
         else:
             unpaid_total += amt
-        if cat == "w2":
+        if cat == "w2" and not MANUAL_TAX_DEDUCTIONS_ONLY:
             if str(row.get("tax_calc_status") or "") == "estimated":
                 emp_tax = _sum_estimated_tax_field([row], "total_employee_taxes")
                 if emp_tax is None:
@@ -632,13 +688,17 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
     batch = dict(batch)
     batch["lines"] = enriched_lines
     batch["payment_status"] = _batch_payment_status(enriched_lines)
-    net_total = sum(
-        float(ln.get("net_pay"))
-        for ln in enriched_lines
-        if str(ln.get("tax_calc_status") or "") == "estimated" and ln.get("net_pay") is not None
+    net_total = (
+        0
+        if MANUAL_TAX_DEDUCTIONS_ONLY
+        else sum(
+            float(ln.get("net_pay"))
+            for ln in enriched_lines
+            if str(ln.get("tax_calc_status") or "") == "estimated" and ln.get("net_pay") is not None
+        )
     )
-    taxes_withheld_total = _sum_estimated_tax_field(enriched_lines, "total_employee_taxes")
-    if taxes_withheld_total is None:
+    taxes_withheld_total = None if MANUAL_TAX_DEDUCTIONS_ONLY else _sum_estimated_tax_field(enriched_lines, "total_employee_taxes")
+    if taxes_withheld_total is None and not MANUAL_TAX_DEDUCTIONS_ONLY:
         component_sum = (
             (_sum_estimated_tax_field(enriched_lines, "federal_withholding") or 0)
             + (_sum_estimated_tax_field(enriched_lines, "state_withholding") or 0)
@@ -648,8 +708,8 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             + (_sum_estimated_tax_field(enriched_lines, "additional_medicare_withholding") or 0)
         )
         taxes_withheld_total = component_sum if component_sum > 0 else None
-    employer_tax_total = _sum_estimated_tax_field(enriched_lines, "total_employer_taxes")
-    employer_cost_total = _sum_estimated_tax_field(enriched_lines, "total_employer_cost")
+    employer_tax_total = None if MANUAL_TAX_DEDUCTIONS_ONLY else _sum_estimated_tax_field(enriched_lines, "total_employer_taxes")
+    employer_cost_total = None if MANUAL_TAX_DEDUCTIONS_ONLY else _sum_estimated_tax_field(enriched_lines, "total_employer_cost")
     batch["summary"] = json_safe(
         {
             "worker_category": cat,
@@ -657,18 +717,22 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             "gross_total": float(gross_total),
             "taxes_withheld_total": taxes_withheld_total,
             "net_pay_total": (
-                float(net_total)
-                if cat == "w2" and net_total > 0
-                else (float(gross_total) if cat != "w2" else None)
+                None
+                if MANUAL_TAX_DEDUCTIONS_ONLY and cat == "w2"
+                else (
+                    float(net_total)
+                    if cat == "w2" and net_total > 0
+                    else (float(gross_total) if cat != "w2" else None)
+                )
             ),
-            "net_pay_note": ESTIMATE_DISCLAIMER if cat == "w2" else None,
+            "net_pay_note": None if MANUAL_TAX_DEDUCTIONS_ONLY else (ESTIMATE_DISCLAIMER if cat == "w2" else None),
             "employer_taxes_total": employer_tax_total,
             "employer_cost_total": employer_cost_total,
             "payout_total": float(_money(batch.get("total_payout_amount") or 0)),
             "paid_amount": float(paid_total),
             "unpaid_amount": float(unpaid_total),
             "missing_rate_count": len(missing_rates),
-            "missing_w4_count": len(missing_w4),
+            "missing_w4_count": 0 if MANUAL_TAX_DEDUCTIONS_ONLY else len(missing_w4),
         }
     )
     warnings: list[str] = []
@@ -677,30 +741,36 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             f"{len(missing_rates)} worker(s) have no hourly rate — set rate in Scheduling, "
             "Attendance Setup, employee profile, or contractor profile before approving the batch."
         )
-    if cat == "w2" and missing_w4:
-        for m in missing_w4[:3]:
-            fields = ", ".join(m.get("missing_fields") or ["W-4/payroll tax profile"])
-            warnings.append(
-                f"W-2 {m.get('worker_name') or 'worker'} missing: {fields}"
-            )
-        if len(missing_w4) > 3:
-            warnings.append(f"+{len(missing_w4) - 3} more W-2 worker(s) with incomplete tax profile.")
-    if cat == "w2":
-        warnings.append(ESTIMATE_DISCLAIMER)
-        warnings.append(PAYROLL_ESTIMATE_PURPOSE)
-    elif cat in ("temp", "contractor_1099"):
-        warnings.append("Temp/1099 batches track gross payout only — tax engine does not run.")
+    if not MANUAL_TAX_DEDUCTIONS_ONLY:
+        if cat == "w2" and missing_w4:
+            for m in missing_w4[:3]:
+                fields = ", ".join(m.get("missing_fields") or ["W-4/payroll tax profile"])
+                warnings.append(
+                    f"W-2 {m.get('worker_name') or 'worker'} missing: {fields}"
+                )
+            if len(missing_w4) > 3:
+                warnings.append(f"+{len(missing_w4) - 3} more W-2 worker(s) with incomplete tax profile.")
+        if cat == "w2":
+            warnings.append(ESTIMATE_DISCLAIMER)
+            warnings.append(PAYROLL_ESTIMATE_PURPOSE)
+        elif cat in ("temp", "contractor_1099"):
+            warnings.append("Temp/1099 batches track gross payout only — tax engine does not run.")
     batch["warnings"] = warnings
     batch["missing_rates"] = missing_rates
-    batch["missing_w4"] = missing_w4
+    batch["missing_w4"] = [] if MANUAL_TAX_DEDUCTIONS_ONLY else missing_w4
     batch["available_actions"] = _available_batch_actions(batch)
     batch["readiness"] = build_payroll_readiness(batch, cat, missing_rates, missing_w4, enriched_lines)
-    batch["estimated_withholding_notice"] = ESTIMATED_WITHHOLDING_NOTICE if cat == "w2" else None
+    batch["estimated_withholding_notice"] = None if MANUAL_TAX_DEDUCTIONS_ONLY else (ESTIMATED_WITHHOLDING_NOTICE if cat == "w2" else None)
     batch["payroll_estimate_purpose_notice"] = (
-        PAYROLL_ESTIMATE_PURPOSE
-        if cat == "w2"
-        else "Gross payout tracking only — not a payroll tax filing engine."
+        MANUAL_DEDUCTIONS_NOTICE
+        if MANUAL_TAX_DEDUCTIONS_ONLY and cat == "w2"
+        else (
+            PAYROLL_ESTIMATE_PURPOSE
+            if cat == "w2"
+            else "Gross payout tracking only — not a payroll tax filing engine."
+        )
     )
+    batch["manual_tax_deductions_only"] = MANUAL_TAX_DEDUCTIONS_ONLY
     batch["send_to_accountant_confirm_message"] = (
         SEND_TO_ACCOUNTANT_W2_CONFIRM if cat == "w2" else None
     )
@@ -740,24 +810,25 @@ def validate_batch_for_workflow(batch: dict, action: str) -> None:
         extra = f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""
         raise ValueError(f"Cannot proceed — missing hourly rate for: {names}{extra}")
     if action == "send_to_accountant" and str(batch.get("worker_category")) == "w2":
-        missing_w4 = batch.get("missing_w4") or []
-        if missing_w4:
-            parts = []
-            for m in missing_w4[:3]:
-                fields = ", ".join(m.get("missing_fields") or ["tax profile"])
-                parts.append(f"{m.get('worker_name') or '?'} ({fields})")
-            raise ValueError(
-                "Cannot send W-2 batch — incomplete tax profile for: " + "; ".join(parts)
-            )
-        incomplete_lines = [
-            ln
-            for ln in (batch.get("lines") or [])
-            if str(ln.get("tax_calc_status") or "") == "profile_incomplete"
-        ]
-        if incomplete_lines:
-            raise ValueError(
-                "Cannot send W-2 batch — tax estimates incomplete. Complete employee W-4/payroll profiles."
-            )
+        if not MANUAL_TAX_DEDUCTIONS_ONLY:
+            missing_w4 = batch.get("missing_w4") or []
+            if missing_w4:
+                parts = []
+                for m in missing_w4[:3]:
+                    fields = ", ".join(m.get("missing_fields") or ["tax profile"])
+                    parts.append(f"{m.get('worker_name') or '?'} ({fields})")
+                raise ValueError(
+                    "Cannot send W-2 batch — incomplete tax profile for: " + "; ".join(parts)
+                )
+            incomplete_lines = [
+                ln
+                for ln in (batch.get("lines") or [])
+                if str(ln.get("tax_calc_status") or "") == "profile_incomplete"
+            ]
+            if incomplete_lines:
+                raise ValueError(
+                    "Cannot send W-2 batch — tax estimates incomplete. Complete employee W-4/payroll profiles."
+                )
     lines = batch.get("lines") or []
     if action in ("hours_reviewed", "send_to_accountant") and not lines:
         raise ValueError("Batch has no worker lines.")
@@ -926,6 +997,10 @@ def apply_batch_workflow_action(
         conn.commit()
         return refresh_batch_line_rates(conn, organization_id, batch_id)
     elif action == "recalculate_taxes":
+        if MANUAL_TAX_DEDUCTIONS_ONLY:
+            raise ValueError(
+                "Automated tax calculation is disabled. Enter deductions in Payout Details."
+            )
         if str(batch.get("worker_category")) != "w2":
             raise ValueError(
                 "Tax recalculation applies to W-2 batches only. Temp/1099 remain gross payout tracking."

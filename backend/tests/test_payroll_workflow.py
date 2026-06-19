@@ -73,8 +73,6 @@ def test_build_payroll_readiness_w2_complete():
         "worker_type",
         "rate_present",
         "hours_reviewed",
-        "w4_profile",
-        "tax_estimate",
         "accountant_export",
         "paid_tracking",
     }
@@ -85,11 +83,20 @@ def test_build_payroll_readiness_temp_skips_tax_items():
     batch = {"status": "draft", "worker_category": "temp"}
     lines = [{"rate": 18, "total_amount": 100}]
     items = build_payroll_readiness(batch, "temp", [], [], lines)
-    w4 = next(i for i in items if i["key"] == "w4_profile")
-    tax = next(i for i in items if i["key"] == "tax_estimate")
-    assert w4["ok"] is True
-    assert tax["ok"] is True
-    assert "tax engine does not run" in tax["detail"].lower()
+    keys = {i["key"] for i in items}
+    assert "w4_profile" not in keys
+    assert "tax_estimate" not in keys
+    export = next(i for i in items if i["key"] == "accountant_export")
+    assert export["ok"] is False
+
+
+def test_validate_batch_allows_send_without_w4_in_manual_mode():
+    batch = {
+        "worker_category": "w2",
+        "lines": [{"id": 1, "tax_calc_status": "profile_incomplete"}],
+        "missing_w4": [{"worker_name": "Jane", "missing_fields": ["filing_status"]}],
+    }
+    validate_batch_for_workflow(batch, "send_to_accountant")
 
 
 def test_resolve_worker_hourly_rate_prefers_payroll_schedule():
