@@ -86,6 +86,7 @@ function emptyLineState(line) {
     payment: { ...(pd.payment || {}) },
     settlement: { ...(pd.settlement || {}) },
     use_payment_receipt: Boolean(pd.use_payment_receipt),
+    employee_note: pd.employee_note || "",
   };
 }
 
@@ -121,6 +122,7 @@ export default function PayoutDetailsPanel() {
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [lineDrafts, setLineDrafts] = useState({});
+  const [batchNote, setBatchNote] = useState("");
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
@@ -150,6 +152,7 @@ export default function PayoutDetailsPanel() {
       const batch = res.data;
       setDetail(batch);
       setSelectedId(id);
+      setBatchNote(batch.batch_note || "");
       const drafts = {};
       (batch.lines || []).forEach((ln) => {
         drafts[ln.id] = emptyLineState(ln);
@@ -213,11 +216,13 @@ export default function PayoutDetailsPanel() {
         payment: d.payment,
         settlement: d.settlement,
         use_payment_receipt: d.use_payment_receipt,
+        employee_note: d.employee_note || "",
       },
     }));
     try {
-      const res = await putPayoutBatchDetails(selectedId, { lines });
+      const res = await putPayoutBatchDetails(selectedId, { lines, batch_note: batchNote });
       setDetail(res.data);
+      setBatchNote(res.data.batch_note || "");
       setInfo("Payout details saved.");
       await loadBatches();
     } catch (e) {
@@ -395,6 +400,18 @@ export default function PayoutDetailsPanel() {
                 : "Finalized — paystubs and receipts (cash/check) available for download/print."}
             </Alert>
           ) : null}
+
+          <TextField
+            fullWidth
+            multiline
+            minRows={2}
+            label="Batch note (shown on all paystubs)"
+            disabled={!canEdit}
+            value={batchNote}
+            onChange={(e) => setBatchNote(e.target.value)}
+            sx={{ mt: 2 }}
+            placeholder="e.g. Payroll taxes were not withheld for this pay period..."
+          />
 
           {(detail.lines || []).map((ln) => {
             const draft = lineDrafts[ln.id] || emptyLineState(ln);
@@ -583,6 +600,18 @@ export default function PayoutDetailsPanel() {
                     />
                   ))}
                 </Stack>
+
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  label="Employee note (optional, shown on this paystub)"
+                  disabled={!canEdit}
+                  value={draft.employee_note || ""}
+                  onChange={(e) => updateLineFlag(ln.id, "employee_note", e.target.value)}
+                  sx={{ mt: 2 }}
+                  placeholder="e.g. Employee requested payment in cash..."
+                />
               </Paper>
             );
           })}

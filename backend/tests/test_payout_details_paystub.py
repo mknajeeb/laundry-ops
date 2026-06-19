@@ -352,7 +352,7 @@ def test_line_uses_payment_receipt_modes():
         }
     )
     assert line_uses_payment_receipt(batch_receipt, dd_details) is True
-    assert line_uses_payment_receipt(batch_paystub, cash_details) is True
+    assert line_uses_payment_receipt(batch_paystub, cash_details) is False
     assert line_uses_payment_receipt(batch_paystub, override_details) is True
     assert line_uses_payment_receipt(batch_paystub, dd_details) is False
 
@@ -372,16 +372,17 @@ def test_document_availability_per_line():
     check_details = parse_line_payout_details(
         {"payout_details_json": {"payment": {"method": "check"}}}
     )
-    assert can_generate_paystub_for_line(finalized_batch, cash_details) is False
+    assert can_generate_paystub_for_line(finalized_batch, cash_details) is True
     assert can_generate_receipt_for_line(finalized_batch, cash_details) is True
     assert can_generate_paystub_for_line(finalized_batch, dd_details) is True
     assert can_generate_receipt_for_line(finalized_batch, dd_details) is False
     assert can_generate_receipt_for_line(finalized_batch, check_details) is True
 
     doc_cash = line_document_state(finalized_batch, line, cash_details)
-    assert doc_cash["effective_type"] == "payment_receipt"
+    assert doc_cash["effective_type"] == "official_paystub"
     assert doc_cash["receipt_required"] is True
-    assert doc_cash["paystub_available"] is False
+    assert doc_cash["paystub_available"] is True
+    assert doc_cash["receipt_available"] is True
 
 
 def test_payment_receipt_html_content():
@@ -438,10 +439,122 @@ def test_payment_receipt_html_content():
         assert "FIT" not in html
 
 
-def test_paystub_html_blocks_receipt_lines():
+def test_paystub_html_zero_deductions():
     conn = MagicMock()
     batch = {
         "id": 1,
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-14",
+        "payout_details_finalized_at": "2026-06-20",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "New Hire",
+                "approved_hours": 40,
+                "rate": 20,
+                "gross_amount": 800,
+                "payout_details": {
+                    "employee_deductions": {
+                        "fit": 0,
+                        "ss": 0,
+                        "medicare": 0,
+                        "state": 0,
+                        "local": 0,
+                        "other1": 0,
+                        "other2": 0,
+                    },
+                    "settlement": {"prior_period_adjustment": 0},
+                    "payment": {"method": "direct_deposit", "date": "2026-06-15"},
+                },
+                "payout_totals": {
+                    "gross_pay": 800,
+                    "total_employee_deductions": 0,
+                    "net_pay": 800,
+                    "amount_paid": 800,
+                    "amount_withheld": 0,
+                    "outstanding_balance": 0,
+                    "prior_unpaid_taxes": 0,
+                    "total_employer_taxes": 0,
+                    "employer_cost": 800,
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_paystub_html
+
+        html = generate_paystub_html(conn, 1, 1, 10)
+        assert "Federal Income Tax (FIT)" in html
+        assert "Social Security" in html
+        assert "Medicare" in html
+        assert "State Tax" in html
+        assert "Local Tax" in html
+        assert "Other Deduction" in html
+        assert "Prior Period Adjustment" in html
+        assert "Total Deductions" in html
+        assert "$0.00" in html
+        assert "Net pay" in html
+        assert "$800.00" in html
+
+
+def test_paystub_html_shows_batch_and_employee_notes():
+    conn = MagicMock()
+    batch = {
+        "id": 1,
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-14",
+        "payout_details_finalized_at": "2026-06-20",
+        "document_mode": "official_paystub",
+        "batch_note": "Payroll taxes were not withheld for this pay period.",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "Jane Doe",
+                "approved_hours": 10,
+                "rate": 20,
+                "gross_amount": 200,
+                "payout_details": {
+                    "employee_note": "Employee requested payment in cash.",
+                    "payment": {"method": "cash", "date": "2026-06-15"},
+                    "settlement": {"amount_paid": 200, "prior_period_adjustment": 0},
+                },
+                "payout_totals": {
+                    "gross_pay": 200,
+                    "total_employee_deductions": 0,
+                    "net_pay": 200,
+                    "amount_paid": 200,
+                    "amount_withheld": 0,
+                    "outstanding_balance": 0,
+                    "prior_unpaid_taxes": 0,
+                    "total_employer_taxes": 0,
+                    "employer_cost": 200,
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_paystub_html
+
+        html = generate_paystub_html(conn, 1, 1, 10)
+        assert "Batch Note" in html
+        assert "Payroll taxes were not withheld" in html
+        assert "Employee Note" in html
+        assert "Employee requested payment in cash" in html
+
+
+def test_paystub_html_available_for_cash_payment():
+    conn = MagicMock()
+    batch = {
+        "id": 1,
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-14",
         "payout_details_finalized_at": "2026-06-20",
         "document_mode": "official_paystub",
         "lines": [
@@ -453,7 +566,18 @@ def test_paystub_html_blocks_receipt_lines():
                 "gross_amount": 200,
                 "payout_details": {
                     "payment": {"method": "cash", "date": "2026-06-15"},
-                    "settlement": {"amount_paid": 200},
+                    "settlement": {"amount_paid": 200, "prior_period_adjustment": 0},
+                },
+                "payout_totals": {
+                    "gross_pay": 200,
+                    "total_employee_deductions": 0,
+                    "net_pay": 200,
+                    "amount_paid": 200,
+                    "amount_withheld": 0,
+                    "outstanding_balance": 0,
+                    "prior_unpaid_taxes": 0,
+                    "total_employer_taxes": 0,
+                    "employer_cost": 200,
                 },
             }
         ],
@@ -464,11 +588,10 @@ def test_paystub_html_blocks_receipt_lines():
     ):
         from backend.payroll_payout_details import generate_paystub_html
 
-        try:
-            generate_paystub_html(conn, 1, 1, 10)
-            assert False, "expected ValueError"
-        except ValueError as e:
-            assert "receipt" in str(e).lower()
+        html = generate_paystub_html(conn, 1, 1, 10)
+        assert "VeeWash Official Paystub" in html
+        assert "Cash Worker" in html
+        assert "Employee Deductions" in html
 
 
 def test_finalize_receipt_mode_requires_payment_fields():

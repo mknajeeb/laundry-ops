@@ -19,6 +19,13 @@ EMPLOYEE_DEDUCTION_KEYS = (
     "other1",
     "other2",
 )
+PAYSTUB_DEDUCTION_LINES = (
+    ("fit", "Federal Income Tax (FIT)"),
+    ("ss", "Social Security"),
+    ("medicare", "Medicare"),
+    ("state", "State Tax"),
+    ("local", "Local Tax"),
+)
 EMPLOYER_TAX_KEYS = ("er_ss", "er_medicare", "futa", "suta", "other")
 PAYMENT_METHODS = ("direct_deposit", "check", "cash", "zelle", "other")
 DOCUMENT_MODES = ("payment_receipt", "official_paystub")
@@ -53,6 +60,7 @@ def ensure_payout_details_columns(cursor) -> None:
         ("payout_details_finalized_by", "INT NULL"),
         ("payout_details_audit_json", "JSON NULL"),
         ("document_mode", "VARCHAR(32) NULL"),
+        ("batch_note", "TEXT NULL"),
     ]
     for col, typedef in batch_cols:
         if not table_has_column(cursor, "payout_batches", col):
@@ -185,6 +193,7 @@ def _empty_details() -> dict[str, Any]:
             "prior_period_adjustment": 0.0,
         },
         "use_payment_receipt": False,
+        "employee_note": "",
     }
 
 
@@ -207,6 +216,8 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
             base[section].update(raw[section])
     if "use_payment_receipt" in raw:
         base["use_payment_receipt"] = bool(raw.get("use_payment_receipt"))
+    if "employee_note" in raw:
+        base["employee_note"] = str(raw.get("employee_note") or "").strip()
     for k in EMPLOYEE_DEDUCTION_KEYS:
         base["employee_deductions"][k] = float(_money(base["employee_deductions"].get(k)))
     for k in EMPLOYER_TAX_KEYS:
@@ -280,9 +291,7 @@ def is_cash_payment(details: dict) -> bool:
 def line_uses_payment_receipt(batch: dict, details: dict) -> bool:
     if batch_document_mode(batch) == "payment_receipt":
         return True
-    if bool(details.get("use_payment_receipt")):
-        return True
-    return is_cash_payment(details)
+    return bool(details.get("use_payment_receipt"))
 
 
 def receipt_required_for_line(details: dict) -> bool:
@@ -301,6 +310,8 @@ def can_generate_receipt_for_line(batch: dict, details: dict) -> bool:
     if batch_document_mode(batch) == "payment_receipt":
         return True
     if line_uses_payment_receipt(batch, details):
+        return True
+    if receipt_required_for_line(details):
         return True
     if payment_method_key(details) == "check":
         return True
@@ -466,6 +477,8 @@ def _merge_line_details(existing: dict, patch: dict) -> dict:
                         base[section][key] = val
     if "use_payment_receipt" in patch:
         base["use_payment_receipt"] = bool(patch.get("use_payment_receipt"))
+    if "employee_note" in patch:
+        base["employee_note"] = str(patch.get("employee_note") or "").strip()
     return base
 
 
@@ -486,9 +499,29 @@ def update_payout_batch_details(
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Payout details are finalized — edits are locked")
     lines_patch = body.get("lines") or []
-    if not lines_patch:
-        raise ValueError("lines array required")
+    batch_note = body.get("batch_note")
+    if not lines_patch and batch_note is None:
+        raise ValueError("lines array or batch_note required")
     c = conn.cursor()
+    if batch_note is not None:
+        c.execute(
+            """
+            UPDATE payout_batches SET batch_note=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND organization_id=%s
+            """,
+            (str(batch_note or "").strip() or None, int(batch_id), int(organization_id)),
+        )
+    if not lines_patch:
+        events = _audit_append(batch, "details_updated", actor_id, "batch note")
+        c.execute(
+            """
+            UPDATE payout_batches SET payout_details_audit_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND organization_id=%s
+            """,
+            (json.dumps({"events": events}), int(batch_id), int(organization_id)),
+        )
+        conn.commit()
+        return get_payout_batch_details(conn, organization_id, batch_id) or {}
     for item in lines_patch:
         line_id = item.get("line_id") or item.get("id")
         if not line_id:
@@ -664,6 +697,40 @@ def finalize_payout_details(
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
 
+def _other_deduction_amount(ded: dict) -> float:
+    return round(
+        float(_money(ded.get("other1"))) + float(_money(ded.get("other2"))),
+        2,
+    )
+
+
+def paystub_deduction_rows(details: dict) -> tuple[list[tuple[str, float]], float]:
+    """Return labeled deduction rows and total deductions for paystub display."""
+    ded = details.get("employee_deductions") or {}
+    settlement = details.get("settlement") or {}
+    rows: list[tuple[str, float]] = []
+    for key, label in PAYSTUB_DEDUCTION_LINES:
+        rows.append((label, float(_money(ded.get(key)))))
+    rows.append(("Other Deduction", _other_deduction_amount(ded)))
+    prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    rows.append(("Prior Period Adjustment", prior_adj))
+    total = round(sum(amt for _, amt in rows), 2)
+    return rows, total
+
+
+def _paystub_notes_html(batch: dict, details: dict) -> str:
+    batch_note = str(batch.get("batch_note") or "").strip()
+    employee_note = str(details.get("employee_note") or "").strip()
+    if not batch_note and not employee_note:
+        return ""
+    parts: list[str] = []
+    if batch_note:
+        parts.append(f"<h2>Batch Note</h2>\n<p>{batch_note}</p>")
+    if employee_note:
+        parts.append(f"<h2>Employee Note</h2>\n<p>{employee_note}</p>")
+    return "\n".join(parts)
+
+
 def generate_paystub_html(
     conn, organization_id: int, batch_id: int, line_id: int
 ) -> str:
@@ -682,22 +749,18 @@ def generate_paystub_html(
     if not can_generate_paystub_for_line(batch, details):
         raise ValueError("Official paystub not available for this payment — use payment receipt")
     totals = line.get("payout_totals") or compute_line_totals(line, details)
-    ded = details.get("employee_deductions") or {}
     er = details.get("employer_taxes") or {}
     payment = details.get("payment") or {}
     settlement = details.get("settlement") or {}
     method = _payment_method_label(payment.get("method"))
+    gross = float(totals["gross_pay"])
+    ded_rows, total_deductions = paystub_deduction_rows(details)
+    net_pay = round(gross - total_deductions, 2)
 
-    def row(label: str, amt: float) -> str:
+    def money_row(label: str, amt: float) -> str:
         return f"<tr><td>{label}</td><td style='text-align:right'>${amt:,.2f}</td></tr>"
 
-    ded_rows = "".join(
-        row(k.upper().replace("OTHER", "Other "), float(ded.get(k) or 0))
-        for k in EMPLOYEE_DEDUCTION_KEYS
-        if float(ded.get(k) or 0) > 0
-    )
-    if not ded_rows:
-        ded_rows = row("Total deductions", totals["total_employee_deductions"])
+    ded_html = "".join(money_row(label, amt) for label, amt in ded_rows)
 
     er_label_map = {
         "er_ss": "ER SS",
@@ -707,21 +770,19 @@ def generate_paystub_html(
         "other": "Other",
     }
     er_rows = "".join(
-        row(er_label_map.get(k, k), float(er.get(k) or 0))
+        money_row(er_label_map.get(k, k), float(er.get(k) or 0))
         for k in EMPLOYER_TAX_KEYS
         if float(er.get(k) or 0) > 0
     )
 
-    prior_adj = totals.get("prior_period_adjustment") or 0
-    prior_adj_row = (
-        row("Prior-period adjustment", prior_adj) if float(prior_adj) != 0 else ""
-    )
+    notes_html = _paystub_notes_html(batch, details)
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Paystub — {line.get('worker_name_snapshot')}</title>
 <style>
   body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 24px; }}
   h1 {{ color: #0097b2; font-size: 1.4rem; }}
+  h2 {{ color: #007a91; font-size: 1.05rem; margin-top: 18px; }}
   .meta {{ color: #475569; margin-bottom: 16px; }}
   table {{ width: 100%; border-collapse: collapse; margin: 12px 0; }}
   th, td {{ padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }}
@@ -729,6 +790,7 @@ def generate_paystub_html(
   .total {{ font-weight: 700; }}
   .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; }}
   .internal {{ font-size: 0.85rem; color: #64748b; }}
+  .notes p {{ white-space: pre-wrap; margin: 4px 0 12px; }}
 </style></head><body>
 <div class="brand">
 <h1>VeeWash Official Paystub</h1>
@@ -737,13 +799,12 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}<br
 Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.get('rate') or 0):,.2f}/hr</p>
 <h2>Earnings</h2>
 <table>
-{row('Gross pay', totals['gross_pay'])}
+{money_row('Gross pay', gross)}
 </table>
-<h2>Employee tax deductions</h2>
-<table>{ded_rows}
-<tr class="total"><td>Total deductions</td><td style="text-align:right">${totals['total_employee_deductions']:,.2f}</td></tr>
-{prior_adj_row}
-<tr class="total"><td>Net pay</td><td style="text-align:right">${totals['net_pay']:,.2f}</td></tr>
+<h2>Employee Deductions</h2>
+<table>{ded_html}
+<tr class="total"><td>Total Deductions</td><td style="text-align:right">${total_deductions:,.2f}</td></tr>
+<tr class="total"><td>Net pay</td><td style="text-align:right">${net_pay:,.2f}</td></tr>
 </table>
 <h2>Payment</h2>
 <table>
@@ -754,15 +815,16 @@ Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.ge
 </table>
 <h2>Settlement</h2>
 <table>
-{row('Amount paid', totals['amount_paid'])}
-{row('Amount withheld', totals['amount_withheld'])}
-{row('Prior unpaid taxes', totals['prior_unpaid_taxes'])}
-{row('Outstanding balance', totals['outstanding_balance'])}
+{money_row('Amount paid', totals['amount_paid'])}
+{money_row('Amount withheld', totals['amount_withheld'])}
+{money_row('Prior unpaid taxes', totals['prior_unpaid_taxes'])}
+{money_row('Outstanding balance', totals['outstanding_balance'])}
 </table>
 <h2 class="internal">Employer taxes (internal record)</h2>
-<table class="internal">{er_rows or row('Total employer taxes', totals['total_employer_taxes'])}
+<table class="internal">{er_rows or money_row('Total employer taxes', totals['total_employer_taxes'])}
 <tr class="total"><td>Employer cost</td><td style='text-align:right'>${totals['employer_cost']:,.2f}</td></tr>
 </table>
+{f'<div class="notes">{notes_html}</div>' if notes_html else ''}
 <p class="meta" style="margin-top:24px">Finalized {batch.get('payout_details_finalized_at')}</p>
 </div>
 </body></html>"""
