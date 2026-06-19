@@ -45,6 +45,8 @@ def register_supply_usage_routes(
                 return jsonify({"error": "Invalid date_et; use YYYY-MM-DD"}), 400
             payload = build_supply_usage_report(cursor, tenant_oid, target_date)
             return jsonify(json_safe_rinse(payload))
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
         finally:
             cursor.close()
             conn.close()

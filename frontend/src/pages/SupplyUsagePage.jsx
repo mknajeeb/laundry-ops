@@ -4,6 +4,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Paper,
   Stack,
@@ -37,17 +38,45 @@ const DATE_PRESETS = [
 ];
 
 const SUMMARY_CARDS = [
-  { key: "orders_analyzed", labelKey: "supplyUsage.ordersAnalyzed" },
-  { key: "split_orders", labelKey: "supplyUsage.splitOrders" },
-  { key: "tide_orders", labelKey: "supplyUsage.tideOrders" },
-  { key: "downy_orders", labelKey: "supplyUsage.downyOrders" },
-  { key: "oxiclean_orders", labelKey: "supplyUsage.oxicleanOrders" },
-  { key: "hypo_orders", labelKey: "supplyUsage.hypoOrders" },
+  { key: "orders_analyzed", labelKey: "supplyUsage.ordersAnalyzed", filter: { type: "all" } },
+  { key: "split_orders", labelKey: "supplyUsage.splitOrders", filter: { type: "split" } },
+  { key: "tide_orders", labelKey: "supplyUsage.tideOrders", filter: { type: "supply", supply: "Tide" } },
+  { key: "downy_orders", labelKey: "supplyUsage.downyOrders", filter: { type: "supply", supply: "Downy" } },
+  { key: "oxiclean_orders", labelKey: "supplyUsage.oxicleanOrders", filter: { type: "supply", supply: "OxiClean" } },
+  {
+    key: "hypo_orders",
+    labelKey: "supplyUsage.hypoOrders",
+    filter: { type: "supply", supply: "All Free & Clear" },
+  },
 ];
 
 const USAGE_SUPPLIES = ["Tide", "Downy", "OxiClean", "All Free & Clear"];
 
-function SummaryCard({ label, value }) {
+const CLICKABLE_NUMBER_SX = {
+  cursor: "pointer",
+  textDecoration: "none",
+  color: "inherit",
+  "&:hover": { textDecoration: "underline" },
+};
+
+function orderMatchesFilter(row, filter) {
+  if (!filter || filter.type === "all") return true;
+  if (filter.type === "split") return Boolean(row.split_order);
+  if (filter.type === "supply") {
+    return (row.supplies_used || []).includes(filter.supply);
+  }
+  return true;
+}
+
+function filtersEqual(a, b) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  if (a.type !== b.type) return false;
+  if (a.type === "supply") return a.supply === b.supply;
+  return true;
+}
+
+function SummaryCard({ label, value, onValueClick, active }) {
   return (
     <Paper
       elevation={0}
@@ -55,8 +84,8 @@ function SummaryCard({ label, value }) {
         p: 1.75,
         borderRadius: 2.5,
         border: "1px solid",
-        borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
-        bgcolor: "#fff",
+        borderColor: active ? VEEWASH_DASHBOARD.primaryBlue : VEEWASH_DASHBOARD.primaryBlueBorder,
+        bgcolor: active ? VEEWASH_DASHBOARD.primaryBlueLight : "#fff",
         boxShadow: VEEWASH_DASHBOARD.cardShadow,
         minWidth: 0,
         flex: "1 1 150px",
@@ -65,23 +94,41 @@ function SummaryCard({ label, value }) {
       <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.2 }}>
         {label}
       </Typography>
-      <Typography variant="h5" fontWeight={800} sx={{ lineHeight: 1.15, mt: 0.5 }}>
+      <Typography
+        variant="h5"
+        fontWeight={800}
+        component="button"
+        type="button"
+        onClick={onValueClick}
+        sx={{
+          ...CLICKABLE_NUMBER_SX,
+          lineHeight: 1.15,
+          mt: 0.5,
+          border: 0,
+          bgcolor: "transparent",
+          p: 0,
+          font: "inherit",
+          textAlign: "left",
+        }}
+      >
         {value ?? "—"}
       </Typography>
     </Paper>
   );
 }
 
-function UsageCard({ supply, usage }) {
+function UsageCard({ supply, usage, onMetricClick, active }) {
   const row = usage?.[supply] || {};
+  const handleClick = () => onMetricClick?.({ type: "supply", supply });
+
   return (
     <Paper
       elevation={0}
       sx={{
         p: 2,
         borderRadius: 2.5,
-        border: "1px solid",
-        borderColor: VEEWASH_DASHBOARD.tealBorder,
+        border: active ? "2px solid" : "1px solid",
+        borderColor: active ? VEEWASH_DASHBOARD.teal : VEEWASH_DASHBOARD.tealBorder,
         bgcolor: VEEWASH_DASHBOARD.tealLight,
         boxShadow: VEEWASH_DASHBOARD.cardShadow,
         minWidth: 0,
@@ -93,13 +140,58 @@ function UsageCard({ supply, usage }) {
       </Typography>
       <Stack spacing={0.5}>
         <Typography variant="body2">
-          Orders: <strong>{row.orders ?? 0}</strong>
+          Orders:{" "}
+          <Box
+            component="button"
+            type="button"
+            onClick={handleClick}
+            sx={{
+              ...CLICKABLE_NUMBER_SX,
+              border: 0,
+              bgcolor: "transparent",
+              p: 0,
+              font: "inherit",
+              fontWeight: 700,
+            }}
+          >
+            {row.orders ?? 0}
+          </Box>
         </Typography>
         <Typography variant="body2">
-          Doses: <strong>{row.doses ?? 0}</strong>
+          Doses:{" "}
+          <Box
+            component="button"
+            type="button"
+            onClick={handleClick}
+            sx={{
+              ...CLICKABLE_NUMBER_SX,
+              border: 0,
+              bgcolor: "transparent",
+              p: 0,
+              font: "inherit",
+              fontWeight: 700,
+            }}
+          >
+            {row.doses ?? 0}
+          </Box>
         </Typography>
         <Typography variant="body2">
-          Ounces: <strong>{row.ounces ?? 0}</strong>
+          Ounces:{" "}
+          <Box
+            component="button"
+            type="button"
+            onClick={handleClick}
+            sx={{
+              ...CLICKABLE_NUMBER_SX,
+              border: 0,
+              bgcolor: "transparent",
+              p: 0,
+              font: "inherit",
+              fontWeight: 700,
+            }}
+          >
+            {row.ounces ?? 0}
+          </Box>
         </Typography>
       </Stack>
     </Paper>
@@ -122,6 +214,7 @@ export default function SupplyUsagePage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detail, setDetail] = useState(null);
   const [detailError, setDetailError] = useState("");
+  const [orderFilter, setOrderFilter] = useState({ type: "all" });
 
   const applyDate = useCallback((preset, ymd) => {
     setDatePreset(preset);
@@ -148,6 +241,7 @@ export default function SupplyUsagePage() {
       const d = dosageRes.data || {};
       setDosages(d);
       setDosageDraft(d);
+      setOrderFilter({ type: "all" });
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Failed to load supply usage");
       setReport(null);
@@ -159,6 +253,30 @@ export default function SupplyUsagePage() {
   useEffect(() => {
     loadReport();
   }, [loadReport]);
+
+  const scrollToOrderTable = () => {
+    document.getElementById("supply-usage-orders-table")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const applyOrderFilter = useCallback((filter) => {
+    setOrderFilter(filter);
+    scrollToOrderTable();
+  }, []);
+
+  const clearOrderFilter = () => applyOrderFilter({ type: "all" });
+
+  const filterLabel = useMemo(() => {
+    if (!orderFilter || orderFilter.type === "all") return null;
+    if (orderFilter.type === "split") return t("supplyUsage.splitOrders");
+    if (orderFilter.type === "supply") {
+      if (orderFilter.supply === "All Free & Clear") return t("supplyUsage.hypoOrders");
+      if (orderFilter.supply === "Tide") return t("supplyUsage.tideOrders");
+      if (orderFilter.supply === "Downy") return t("supplyUsage.downyOrders");
+      if (orderFilter.supply === "OxiClean") return t("supplyUsage.oxicleanOrders");
+      return `${orderFilter.supply} orders`;
+    }
+    return null;
+  }, [orderFilter, t]);
 
   const openOrderDetail = async (orderId) => {
     if (!orderId) return;
@@ -197,7 +315,13 @@ export default function SupplyUsagePage() {
   const usageBySupply = report?.usage_by_supply || {};
   const mappingRules = report?.mapping_rules || [];
 
+  const filteredOrders = useMemo(
+    () => orders.filter((row) => orderMatchesFilter(row, orderFilter)),
+    [orders, orderFilter],
+  );
+
   const dateLabel = useMemo(() => activeDateEt, [activeDateEt]);
+  const filterActive = orderFilter && orderFilter.type !== "all";
 
   return (
     <Box
@@ -250,8 +374,14 @@ export default function SupplyUsagePage() {
       ) : (
         <>
           <Stack direction="row" flexWrap="wrap" gap={1.5} sx={{ mb: 3 }}>
-            {SUMMARY_CARDS.map(({ key, labelKey }) => (
-              <SummaryCard key={key} label={t(labelKey)} value={summary[key] ?? 0} />
+            {SUMMARY_CARDS.map(({ key, labelKey, filter }) => (
+              <SummaryCard
+                key={key}
+                label={t(labelKey)}
+                value={summary[key] ?? 0}
+                onValueClick={() => applyOrderFilter(filter)}
+                active={filtersEqual(orderFilter, filter)}
+              />
             ))}
           </Stack>
 
@@ -260,13 +390,41 @@ export default function SupplyUsagePage() {
           </Typography>
           <Stack direction="row" flexWrap="wrap" gap={1.5} sx={{ mb: 3 }}>
             {USAGE_SUPPLIES.map((supply) => (
-              <UsageCard key={supply} supply={supply} usage={usageBySupply} />
+              <UsageCard
+                key={supply}
+                supply={supply}
+                usage={usageBySupply}
+                onMetricClick={applyOrderFilter}
+                active={orderFilter?.type === "supply" && orderFilter.supply === supply}
+              />
             ))}
           </Stack>
 
-          <Typography variant="h6" fontWeight={700} sx={{ mb: 1 }}>
-            {t("supplyUsage.orderDetail")}
-          </Typography>
+          <Stack
+            id="supply-usage-orders-table"
+            direction={{ xs: "column", sm: "row" }}
+            justifyContent="space-between"
+            alignItems={{ sm: "center" }}
+            spacing={1}
+            sx={{ mb: 1 }}
+          >
+            <Typography variant="h6" fontWeight={700}>
+              {t("supplyUsage.orderDetail")}
+            </Typography>
+            {filterActive && filterLabel ? (
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                <Chip
+                  label={`${t("supplyUsage.showingPrefix")}: ${filterLabel} (${filteredOrders.length})`}
+                  color="primary"
+                  variant="outlined"
+                  onDelete={clearOrderFilter}
+                />
+                <Button size="small" onClick={clearOrderFilter}>
+                  {t("supplyUsage.clearFilter")}
+                </Button>
+              </Stack>
+            ) : null}
+          </Stack>
           <TableContainer component={Paper} elevation={0} sx={{ borderRadius: 2.5, border: "1px solid", borderColor: "divider", mb: 4 }}>
             <Table size="small">
               <TableHead>
@@ -287,8 +445,14 @@ export default function SupplyUsagePage() {
                       {t("supplyUsage.noOrders")}
                     </TableCell>
                   </TableRow>
+                ) : filteredOrders.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                      {t("supplyUsage.noOrdersFiltered")}
+                    </TableCell>
+                  </TableRow>
                 ) : (
-                  orders.map((row) => (
+                  filteredOrders.map((row) => (
                     <TableRow key={row.order_id} hover>
                       <TableCell>
                         <Button
