@@ -22,6 +22,7 @@ import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined
 import {
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
+  duplicateWeeklyScheduleEntry,
   getWeeklySchedule,
   moveWeeklyScheduleEntry,
   setWeeklyScheduleExclusion,
@@ -96,6 +97,7 @@ export default function WeeklySchedulePage() {
   const [showCost, setShowCost] = useState(false);
   const [costSaving, setCostSaving] = useState(false);
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
+  const [duplicatingId, setDuplicatingId] = useState(null);
 
   const display = data?.display || {};
   const canEdit = display.can_edit_schedule !== false;
@@ -224,6 +226,22 @@ export default function WeeklySchedulePage() {
       setData(res.data);
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to delete shift");
+    }
+  };
+
+  const handleDuplicate = async (entry) => {
+    setDuplicatingId(entry.id);
+    setError("");
+    try {
+      const res = await duplicateWeeklyScheduleEntry(entry.id, {
+        day_of_week: entry.day_of_week,
+        user_id: entry.user_id,
+      });
+      setData(res.data);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to duplicate shift");
+    } finally {
+      setDuplicatingId(null);
     }
   };
 
@@ -583,6 +601,8 @@ export default function WeeklySchedulePage() {
                                 showBreakMinutes={showBreakMinutes}
                                 onEdit={canEdit ? openEdit : undefined}
                                 onDelete={canEdit ? handleDelete : undefined}
+                                onDuplicate={canEdit ? handleDuplicate : undefined}
+                                duplicating={duplicatingId === entry.id}
                                 onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
                                 onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
                               />

@@ -1,4 +1,5 @@
 import { Box, Chip, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
+import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
 import { parseEntryRoles, primaryRoleStyle, roleStripeGradient, ROLE_STYLES } from "./weeklyScheduleRoles";
@@ -7,9 +8,11 @@ export default function WeeklyScheduleShiftCard({
   entry,
   onEdit,
   onDelete,
+  onDuplicate,
   onDragStart,
   onDragEnd,
   dragging,
+  duplicating = false,
   muted = false,
   showRoleLabels = true,
   showBreakMinutes = true,
@@ -122,7 +125,32 @@ export default function WeeklyScheduleShiftCard({
             ) : null}
           </Stack>
         </Box>
-        {onDelete ? (
+        <Stack direction="row" spacing={0} sx={{ flexShrink: 0 }}>
+          {onDuplicate ? (
+            <Tooltip title="Duplicate shift">
+              <span>
+                <IconButton
+                  size="small"
+                  aria-label="Duplicate shift"
+                  className="shift-card-actions"
+                  disabled={duplicating}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDuplicate?.(entry);
+                  }}
+                  sx={{
+                    p: 0.25,
+                    mt: -0.25,
+                    opacity: 0.45,
+                    "&:hover": { opacity: 1 },
+                  }}
+                >
+                  <ContentCopyOutlinedIcon sx={{ fontSize: 14 }} />
+                </IconButton>
+              </span>
+            </Tooltip>
+          ) : null}
+          {onDelete ? (
           <Tooltip title="Delete shift">
             <IconButton
               size="small"
@@ -143,7 +171,8 @@ export default function WeeklyScheduleShiftCard({
               <DeleteOutlineIcon sx={{ fontSize: 14 }} />
             </IconButton>
           </Tooltip>
-        ) : null}
+          ) : null}
+        </Stack>
       </Stack>
     </Paper>
   );

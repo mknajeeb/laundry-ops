@@ -287,10 +287,9 @@ def compute_schedule_totals(
 
 
 def _load_workers(conn, organization_id: int) -> list[dict[str, Any]]:
-    from backend.payroll_schedule import list_workers
+    from backend.payroll_schedule import list_schedule_workers_for_grid
 
-    workers = list_workers(conn, int(organization_id), active_only=False)
-    return [w for w in workers if w.get("active")]
+    return list_schedule_workers_for_grid(conn, int(organization_id))
 
 
 def _workers_index(workers: Sequence[Mapping[str, Any]]) -> dict[int, dict[str, Any]]:
@@ -464,8 +463,9 @@ def _validate_entry_payload(
 
 
 def _assert_worker_in_org(conn, organization_id: int, user_id: int) -> str | None:
-    workers = _workers_index(_load_workers(conn, organization_id))
-    if int(user_id) not in workers:
+    from backend.payroll_schedule import worker_exists_in_schedule_grid
+
+    if not worker_exists_in_schedule_grid(conn, organization_id, int(user_id)):
         return "worker not found in payroll profiles"
     return None
 

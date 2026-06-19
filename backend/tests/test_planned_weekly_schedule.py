@@ -519,7 +519,10 @@ def test_update_entry_rejects_unknown_worker():
                 "end_time": "16:00",
             },
         )
-    with patch("backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()):
+    with patch(
+        "backend.payroll_schedule.worker_exists_in_schedule_grid",
+        side_effect=lambda conn, org, uid: int(uid) in {10, 20},
+    ):
         updated, err = update_entry(conn, cursor, 1, created["id"], {"user_id": 999})
     assert updated is None
     assert err == "worker not found in payroll profiles"

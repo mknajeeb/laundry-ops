@@ -410,6 +410,81 @@ def _worker_display_name(c, user_id: int) -> str:
     return str(row.get("nm") or f"User #{user_id}")
 
 
+def _schedule_grid_display_name_expr(cursor) -> str:
+    """COALESCE expression for batch worker display names (weekly schedule grid)."""
+    c = cursor if hasattr(cursor, "execute") else cursor.cursor()
+    name_parts: list[str] = []
+    if table_has_column(c, "payroll_profiles", "first_name"):
+        name_parts.append("NULLIF(TRIM(CONCAT(pp.first_name,' ',pp.last_name)), '')")
+    if table_has_column(c, "users", "display_name"):
+        name_parts.append("NULLIF(TRIM(u.display_name), '')")
+    if table_has_column(c, "users", "username"):
+        name_parts.append("NULLIF(TRIM(u.username), '')")
+    if table_has_column(c, "payroll_profiles", "email"):
+        name_parts.append("NULLIF(TRIM(pp.email), '')")
+    if table_has_column(c, "users", "email"):
+        name_parts.append("NULLIF(TRIM(u.email), '')")
+    name_parts.append("CONCAT('User #', u.id)")
+    return f"COALESCE({', '.join(name_parts)})"
+
+
+def list_schedule_workers_for_grid(conn, organization_id: int) -> list[dict[str, Any]]:
+    """Lightweight active workers for weekly schedule — single query, no backfill."""
+    c = _cursor(conn)
+    oid = int(organization_id)
+    user_filter = _users_list_filter(c)
+    display_expr = _schedule_grid_display_name_expr(c)
+    c.execute(
+        f"""
+        SELECT DISTINCT
+               u.id AS user_id,
+               pwp.id AS worker_profile_id,
+               pwp.default_hourly_rate,
+               COALESCE(pwp.active, 1) AS active,
+               {display_expr} AS display_name
+        FROM users u
+        LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
+        LEFT JOIN payroll_worker_profiles pwp
+               ON pwp.organization_id = u.organization_id AND pwp.user_id = u.id
+        WHERE u.organization_id = %s AND {user_filter}
+        ORDER BY display_name ASC, u.id ASC
+        """,
+        (oid,),
+    )
+    out: list[dict[str, Any]] = []
+    for row in c.fetchall() or []:
+        if not row or not int(row.get("user_id") or 0):
+            continue
+        if not int(row.get("active") or 0):
+            continue
+        prof = dict(row)
+        prof["worker_name"] = prof.get("display_name")
+        out.append(json_safe(prof))
+    return out
+
+
+def worker_exists_in_schedule_grid(conn, organization_id: int, user_id: int) -> bool:
+    """Fast membership check for weekly schedule mutations."""
+    c = _cursor(conn)
+    oid = int(organization_id)
+    uid = int(user_id)
+    user_filter = _users_list_filter(c)
+    c.execute(
+        f"""
+        SELECT 1
+        FROM users u
+        LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
+        LEFT JOIN payroll_worker_profiles pwp
+               ON pwp.organization_id = u.organization_id AND pwp.user_id = u.id
+        WHERE u.organization_id = %s AND u.id = %s AND {user_filter}
+          AND COALESCE(pwp.active, 1) = 1
+        LIMIT 1
+        """,
+        (oid, uid),
+    )
+    return bool(c.fetchone())
+
+
 def ensure_worker_profile(
     conn, organization_id: int, user_id: int, *, sync_category: bool = True
 ) -> dict[str, Any]:
