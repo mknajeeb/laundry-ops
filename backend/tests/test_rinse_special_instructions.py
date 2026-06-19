@@ -17,6 +17,8 @@ CHRISTIAN_POLLUTED_RAW = (
     "Use Hypoallergenic Soap"
 )
 
+CHRISTIAN_CATALOG_ONLY = CHRISTIAN_POLLUTED_RAW.split(";")[0]
+
 
 class TestBuildSpecialInstructionsRaw:
     def test_blank_is_none(self):
@@ -95,11 +97,16 @@ class TestInterpretSpecialInstructions:
         assert out["supply_interpretation"] == "Needs review"
 
     def test_christian_portal_vendor_catalog_defaults_tide(self):
-        out = interpret_special_instructions(CHRISTIAN_POLLUTED_RAW)
+        out = interpret_special_instructions(CHRISTIAN_CATALOG_ONLY)
         assert out["supply_interpretation"] == "Standard soap"
         assert out["supplies_used"] == ["Tide"]
         assert out["special_instructions_raw"] is None
         assert out["special_instruction_review"] is False
+
+    def test_polluted_catalog_trailing_tokens_mapped(self):
+        out = interpret_special_instructions(CHRISTIAN_POLLUTED_RAW)
+        assert out["supplies_used"] == ["Hypoallergenic detergent", "Downy", "OxiClean"]
+        assert "Hypoallergenic" in out["supply_interpretation"]
 
     def test_real_hypo_still_maps(self):
         out = interpret_special_instructions("Use Hypoallergenic Soap")

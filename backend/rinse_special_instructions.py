@@ -11,7 +11,6 @@ STANDARD_SUPPLIES = ("Tide",)
 _TOKEN_FAB = "USE FABRIC SOFTENER"
 _TOKEN_OXIC = "USE OXICLEAN"
 _TOKEN_HYPO = "USE HYPOALLERGENIC SOAP"
-_MENU_TOKEN_NORMS = frozenset({_TOKEN_FAB, _TOKEN_OXIC, _TOKEN_HYPO})
 
 _HYPO_PART_RE = re.compile(
     r"\bHYPOALLERGENIC\b|\bHYPO\s*[- ]?\s*ALLERG(?:ENIC)?\b|\bUSE\s+HYPO\b",
@@ -54,23 +53,46 @@ def _is_portal_vendor_catalog_part(part: str) -> bool:
     )
 
 
-def _should_skip_instruction_part(part: str, *, had_vendor_catalog: bool) -> bool:
-    if _is_portal_vendor_catalog_part(part):
-        return True
-    # When vendor UI was scraped in, appended menu labels are not customer prefs.
-    if had_vendor_catalog and _norm_token(part) in _MENU_TOKEN_NORMS:
-        return True
-    return False
+def _trailing_supply_parts_from_catalog(part: str) -> list[str]:
+    """
+    Some scrapes embed supply menu labels at the end of a vendor catalog blob
+    without a semicolon separator. Extract trailing tokens only.
+    """
+    text = re.sub(r"\s+", " ", str(part or "").strip())
+    if not text or not _is_portal_vendor_catalog_part(text):
+        return []
+    found: list[str] = []
+    remainder = text
+    while remainder:
+        matched = False
+        for token, pattern in (
+            (_TOKEN_HYPO, _HYPO_PART_RE),
+            (_TOKEN_OXIC, _OXIC_PART_RE),
+            (_TOKEN_FAB, _FAB_PART_RE),
+        ):
+            m = pattern.search(remainder)
+            if not m or m.end() != len(remainder):
+                continue
+            snippet = remainder[m.start() :].strip()
+            if _classify_part(snippet) == token:
+                found.insert(0, snippet)
+                remainder = remainder[: m.start()].rstrip(" ;,")
+                matched = True
+                break
+        if not matched:
+            break
+    return found
 
 
 def _parts_for_interpretation(raw: str | None) -> list[str]:
     parts = _split_instruction_parts(str(raw or ""))
-    had_vendor_catalog = any(_is_portal_vendor_catalog_part(p) for p in parts)
-    return [
-        part
-        for part in parts
-        if not _should_skip_instruction_part(part, had_vendor_catalog=had_vendor_catalog)
-    ]
+    kept: list[str] = []
+    for part in parts:
+        if _is_portal_vendor_catalog_part(part):
+            kept.extend(_trailing_supply_parts_from_catalog(part))
+            continue
+        kept.append(part)
+    return kept
 
 
 def _classify_part(part: str) -> str | None:

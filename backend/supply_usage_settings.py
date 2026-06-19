@@ -25,9 +25,15 @@ _TOKEN_HYPO = "USE HYPOALLERGENIC SOAP"
 
 DEFAULT_MAPPING_RULES: tuple[dict[str, Any], ...] = (
     {
+        "instructions": "Hypo + Fabric Softener + OxiClean",
+        "supplies": ["All Free & Clear", "Downy", "OxiClean"],
+        "requires": [_TOKEN_HYPO, _TOKEN_FAB, _TOKEN_OXIC],
+    },
+    {
         "instructions": "Hypo + OxiClean",
         "supplies": ["All Free & Clear", "OxiClean"],
         "requires": [_TOKEN_HYPO, _TOKEN_OXIC],
+        "excludes": [_TOKEN_FAB],
     },
     {
         "instructions": "Hypoallergenic (variations)",
