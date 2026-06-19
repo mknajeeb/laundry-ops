@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "./tenantNav";
-import { isAccountantOnlyUser, tenantDefaultRoute } from "../utils/platformAccess";
+import { isAccountantOnlyUser, tenantDefaultRoute, userMayUseKioskLock } from "../utils/platformAccess";
 
 describe("accountant-only navigation", () => {
   const accountantOnly = { id: 1, roles: ["ACCOUNTANT"] };
@@ -30,5 +30,11 @@ describe("accountant-only navigation", () => {
     const checkout = TENANT_NAV_ITEMS.find((item) => item.to === "/checkout");
     expect(tenantNavItemVisible(adminAccountant, home)).toBe(true);
     expect(tenantNavItemVisible(adminAccountant, checkout)).toBe(true);
+  });
+
+  it("blocks kiosk lock for accountant-only users", () => {
+    expect(userMayUseKioskLock(accountantOnly)).toBe(false);
+    expect(userMayUseKioskLock(adminAccountant)).toBe(false);
+    expect(userMayUseKioskLock({ id: 4, roles: ["CHECKOUT"] })).toBe(true);
   });
 });

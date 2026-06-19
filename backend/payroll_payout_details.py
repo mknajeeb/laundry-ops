@@ -247,6 +247,48 @@ def sum_employee_deductions(details: dict) -> float:
     return float(sum(_money(ded.get(k)) for k in EMPLOYEE_DEDUCTION_KEYS))
 
 
+def compute_tax_withheld_breakdown(details: dict) -> dict[str, float]:
+    """Employee tax withheld from payout_details_json (FIT through prior-period adjustment)."""
+    ded = details.get("employee_deductions") or {}
+    settlement = details.get("settlement") or {}
+    other = float(_money(ded.get("other1"))) + float(_money(ded.get("other2")))
+    prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    components = {
+        "federal_income_tax": float(_money(ded.get("fit"))),
+        "social_security": float(_money(ded.get("ss"))),
+        "medicare": float(_money(ded.get("medicare"))),
+        "state_tax": float(_money(ded.get("state"))),
+        "local_tax": float(_money(ded.get("local"))),
+        "other_deduction": other,
+        "prior_period_adjustment": prior_adj,
+    }
+    components["total_tax_withheld"] = round(sum(components.values()), 2)
+    return components
+
+
+def enrich_line_settlement_fields(line: dict, batch: dict) -> dict:
+    """Attach net_paid, tax_withheld, and breakdown for API consumers."""
+    row = dict(line)
+    details = parse_line_payout_details(row)
+    finalized = bool(batch.get("payout_details_finalized_at"))
+    row["payout_details_finalized"] = finalized
+    if finalized:
+        settlement = details.get("settlement") or {}
+        payment = details.get("payment") or {}
+        breakdown = compute_tax_withheld_breakdown(details)
+        row["net_paid"] = float(_money(settlement.get("amount_paid")))
+        row["tax_withheld"] = breakdown["total_tax_withheld"]
+        row["tax_withheld_breakdown"] = json_safe(breakdown)
+        row["payment_date"] = payment.get("date")
+        row["payment_method_settlement"] = payment_method_key(details)
+        row["payment_method_label"] = _payment_method_label(payment.get("method"))
+    else:
+        row["net_paid"] = None
+        row["tax_withheld"] = None
+        row["tax_withheld_breakdown"] = None
+    return row
+
+
 def sum_employer_taxes(details: dict) -> float:
     er = details.get("employer_taxes") or {}
     return float(sum(_money(er.get(k)) for k in EMPLOYER_TAX_KEYS))
@@ -371,6 +413,7 @@ def enrich_line_with_payout_details(line: dict, batch: Optional[dict] = None) ->
     row["payout_details"] = json_safe(details)
     row["payout_totals"] = json_safe(totals)
     if batch:
+        row = enrich_line_settlement_fields(row, batch)
         row["document"] = line_document_state(batch, row, details)
     return json_safe(row)
 
@@ -434,9 +477,14 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
     from backend.payroll_workflow import enrich_payout_batch
 
     batch = enrich_payout_batch(conn, organization_id, batch)
-    lines = [
-        enrich_line_with_payout_details(ln, batch) for ln in batch.get("lines") or []
-    ]
+    lines = []
+    for ln in batch.get("lines") or []:
+        row = dict(ln)
+        uid = row.get("user_id")
+        if uid:
+            meta = _user_display_meta(conn, int(uid))
+            row["employee_id"] = meta["employee_id"]
+        lines.append(enrich_line_with_payout_details(row, batch))
     batch["lines"] = lines
     batch["payout_workflow"] = payout_workflow_state(batch)
     audit = _parse_json_blob(batch.get("payout_details_audit_json"))

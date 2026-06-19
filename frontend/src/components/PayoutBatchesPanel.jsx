@@ -52,6 +52,13 @@ import {
   ACCOUNTANT_BATCH_READY_MESSAGE,
   SEND_TO_ACCOUNTANT_W2_CONFIRM,
 } from "../payroll/payrollTaxMessages";
+import {
+  formatNetPaidDisplay,
+  formatTaxWithheldDisplay,
+  hasTaxWithheldBreakdown,
+  isPayoutDetailsFinalized,
+} from "../payroll/payoutSettlementDisplay";
+import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
 
 const BATCH_STATUS_FLOW = [
   { value: "draft", label: "Draft" },
@@ -138,10 +145,12 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
   isGrossOnly,
   isEditable,
   batchStatus,
+  showSettlementColumns,
   onEditLine,
   onRemoveLine,
   onMarkPaid,
   onMarkUnpaid,
+  onTaxWithheldClick,
 }) {
   const canMarkPaid = ["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"].includes(
     batchStatus,
@@ -164,6 +173,12 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
               </>
             ) : isGrossOnly ? (
               <TableCell align="right">Health credit</TableCell>
+            ) : null}
+            {showSettlementColumns ? (
+              <>
+                <TableCell align="right">Net paid</TableCell>
+                <TableCell align="right">Tax withheld</TableCell>
+              </>
             ) : null}
             <TableCell>Payment</TableCell>
             <TableCell align="right">Actions</TableCell>
@@ -198,6 +213,30 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
               ) : isGrossOnly ? (
                 <TableCell align="right">${Number(ln.health_credit_amount || 0).toFixed(2)}</TableCell>
               ) : null}
+              {showSettlementColumns ? (
+                <>
+                  <TableCell align="right">{formatNetPaidDisplay(ln)}</TableCell>
+                  <TableCell align="right">
+                    {(() => {
+                      const label = formatTaxWithheldDisplay(ln);
+                      const clickable =
+                        isPayoutDetailsFinalized(ln) &&
+                        (hasTaxWithheldBreakdown(ln) || label !== "Pending");
+                      if (!clickable) return label;
+                      return (
+                        <Button
+                          size="small"
+                          variant="text"
+                          sx={{ minWidth: 0, p: 0 }}
+                          onClick={() => onTaxWithheldClick?.(ln)}
+                        >
+                          {label}
+                        </Button>
+                      );
+                    })()}
+                  </TableCell>
+                </>
+              ) : null}
               <TableCell>
                 <Chip
                   size="small"
@@ -227,7 +266,11 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
           ))}
           {!lines.length ? (
             <TableRow>
-              <TableCell colSpan={isW2 ? 9 : isGrossOnly ? 7 : 6}>
+              <TableCell
+                colSpan={
+                  (isW2 ? 9 : isGrossOnly ? 7 : 6) + (showSettlementColumns ? 2 : 0)
+                }
+              >
                 <Typography variant="body2" color="text.secondary">
                   No workers yet. Approve time on Time Records, then refresh from time records.
                 </Typography>
@@ -270,6 +313,7 @@ export default function PayoutBatchesPanel({
   const [detailLoading, setDetailLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState(null);
+  const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
 
   const loadList = useCallback(async () => {
     setError("");
@@ -516,6 +560,7 @@ export default function PayoutBatchesPanel({
   const isEditable = detail?.status === "draft" || detail?.status === "hours_reviewed";
   const isW2 = detail?.worker_category === "w2";
   const isGrossOnly = detail?.worker_category === "temp" || detail?.worker_category === "contractor_1099";
+  const showSettlementColumns = Boolean(detail?.payout_details_finalized_at);
   const summary = detail?.summary || {};
   const batchWarnings = detail?.warnings || [];
   const readinessState = useMemo(() => compactReadiness(detail?.readiness), [detail?.readiness]);
@@ -911,10 +956,18 @@ export default function PayoutBatchesPanel({
                 isGrossOnly={isGrossOnly}
                 isEditable={isEditable}
                 batchStatus={detail.status}
+                showSettlementColumns={showSettlementColumns}
                 onEditLine={(ln) => setLineEdit({ ...ln })}
                 onRemoveLine={removeLine}
                 onMarkPaid={markLinePaid}
                 onMarkUnpaid={markLineUnpaid}
+                onTaxWithheldClick={(ln) =>
+                  setTaxDialog({
+                    open: true,
+                    line: ln,
+                    workerName: ln.worker_name_snapshot || "",
+                  })
+                }
               />
             </>
           )}
@@ -932,6 +985,13 @@ export default function PayoutBatchesPanel({
           <PayoutBatchSummaryPrint batch={detail} />
         </Box>
       ) : null}
+
+      <TaxWithheldBreakdownDialog
+        open={taxDialog.open}
+        onClose={() => setTaxDialog({ open: false, line: null, workerName: "" })}
+        line={taxDialog.line}
+        workerName={taxDialog.workerName}
+      />
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>New payout batch</DialogTitle>

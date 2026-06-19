@@ -46,6 +46,17 @@ export function tenantDefaultRoute(user) {
 }
 
 /**
+ * Shared-tablet kiosk lock + idle redirect — never for accountant-only or platform-only users.
+ * Ops staff with clock access may lock to PIN kiosk explicitly; accountants use payroll only.
+ */
+export function userMayUseKioskLock(user) {
+  if (!user || isAccountantOnlyUser(user) || isPlatformOnlyUser(user)) return false;
+  const roles = normalizedRoles(user);
+  if (roles.some((r) => ["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"].includes(r))) return false;
+  return true;
+}
+
+/**
  * Sidebar + `<GuardedRoute />`: platform operators may use the full tenant app in org context
  * without a duplicate ADMIN/OPS assignment in user_roles.
  */

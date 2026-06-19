@@ -11,7 +11,9 @@ from backend.payroll_payout_details import (
     can_process_accountant_batch,
     can_view_accountant_queue,
     compute_line_totals,
+    compute_tax_withheld_breakdown,
     confirm_accountant_payment,
+    enrich_line_settlement_fields,
     finalize_payout_details,
     is_accountant_batch_list_view,
     line_document_state,
@@ -705,3 +707,60 @@ def test_paystub_blocked_until_finalized():
             assert False, "expected ValueError"
         except ValueError as e:
             assert "finalized" in str(e).lower()
+
+
+def test_compute_tax_withheld_breakdown_includes_all_components():
+    details = parse_line_payout_details(
+        {
+            "payout_details_json": {
+                "employee_deductions": {
+                    "fit": 100,
+                    "ss": 50,
+                    "medicare": 10,
+                    "state": 20,
+                    "local": 5,
+                    "other1": 3,
+                    "other2": 2,
+                },
+                "settlement": {"prior_period_adjustment": 15},
+            }
+        }
+    )
+    breakdown = compute_tax_withheld_breakdown(details)
+    assert breakdown["federal_income_tax"] == 100.0
+    assert breakdown["social_security"] == 50.0
+    assert breakdown["medicare"] == 10.0
+    assert breakdown["state_tax"] == 20.0
+    assert breakdown["local_tax"] == 5.0
+    assert breakdown["other_deduction"] == 5.0
+    assert breakdown["prior_period_adjustment"] == 15.0
+    assert breakdown["total_tax_withheld"] == 205.0
+
+
+def test_enrich_line_settlement_fields_pending_before_finalize():
+    line = {"id": 1, "gross_amount": 1000}
+    batch = {"payout_details_finalized_at": None}
+    row = enrich_line_settlement_fields(line, batch)
+    assert row["payout_details_finalized"] is False
+    assert row["net_paid"] is None
+    assert row["tax_withheld"] is None
+    assert row["tax_withheld_breakdown"] is None
+
+
+def test_enrich_line_settlement_fields_after_finalize():
+    line = {
+        "id": 1,
+        "gross_amount": 1000,
+        "payout_details_json": {
+            "employee_deductions": {"fit": 80, "ss": 40, "medicare": 10},
+            "payment": {"date": "2026-06-01", "method": "direct_deposit"},
+            "settlement": {"amount_paid": 870, "prior_period_adjustment": 0},
+        },
+    }
+    batch = {"payout_details_finalized_at": "2026-06-02T12:00:00"}
+    row = enrich_line_settlement_fields(line, batch)
+    assert row["payout_details_finalized"] is True
+    assert row["net_paid"] == 870.0
+    assert row["tax_withheld"] == 130.0
+    assert row["payment_date"] == "2026-06-01"
+    assert row["payment_method_label"] == "Direct Deposit"

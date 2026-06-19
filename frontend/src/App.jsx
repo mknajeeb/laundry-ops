@@ -28,7 +28,7 @@ import TenantNavAccessBoundary from "./components/TenantNavAccessBoundary";
 import Sidebar from "./components/Sidebar";
 import PlatformSidebar from "./components/PlatformSidebar";
 import { useI18n } from "./i18n/I18nContext";
-import { hasPlatformAdminRole, isPlatformOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "./utils/platformAccess";
+import { hasPlatformAdminRole, isAccountantOnlyUser, isPlatformOnlyUser, tenantDefaultRoute, userMayUseKioskLock, userSatisfiesRoleGate } from "./utils/platformAccess";
 
 import ProductionPage from "./pages/ProductionPage";
 import ScoreboardPage from "./pages/ScoreboardPage";
@@ -395,10 +395,7 @@ function AppShell() {
     };
   }, [user?.id]);
 
-  const kioskRoleExcluded = useMemo(() => {
-    const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
-    return roles.some((r) => ["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"].includes(r));
-  }, [user?.roles]);
+  const kioskRoleExcluded = useMemo(() => !userMayUseKioskLock(user), [user]);
 
   const showKioskLock =
     !!user?.id &&
@@ -479,6 +476,14 @@ function AppShell() {
     if (authLoading || isLoginRoute(pathname) || !user) return;
     if (isPlatformOnlyUser(user) && pathname !== "/platform" && !pathname.startsWith("/platform/")) {
       navigate("/platform", { replace: true });
+      return;
+    }
+    if (
+      isAccountantOnlyUser(user) &&
+      pathname !== "/payroll" &&
+      !pathname.startsWith("/payroll/")
+    ) {
+      navigate("/payroll", { replace: true });
     }
   }, [authLoading, pathname, user, navigate]);
 

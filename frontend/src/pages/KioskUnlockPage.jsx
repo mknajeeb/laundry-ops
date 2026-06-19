@@ -24,6 +24,7 @@ import {
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
+import { tenantDefaultRoute } from "../utils/platformAccess";
 
 const PIN_LEN = 4;
 
@@ -274,7 +275,7 @@ export default function KioskUnlockPage({ onLoggedIn }) {
         }
         setAuthSession(payload);
         onLoggedIn?.(payload.user);
-        navigate("/", { replace: true });
+        navigate(tenantDefaultRoute(payload.user), { replace: true });
       } catch (e) {
         console.error(e);
         const data = e?.response?.data;

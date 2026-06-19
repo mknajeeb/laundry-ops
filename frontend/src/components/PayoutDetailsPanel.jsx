@@ -42,6 +42,13 @@ import {
   setPayoutDocumentMode,
 } from "../api";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
+import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
+import {
+  formatNetPaidDisplay,
+  formatTaxWithheldDisplay,
+  hasTaxWithheldBreakdown,
+  isPayoutDetailsFinalized,
+} from "../payroll/payoutSettlementDisplay";
 
 const DEDUCTION_FIELDS = [
   { key: "fit", label: "FIT" },
@@ -142,6 +149,7 @@ export default function PayoutDetailsPanel() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
 
   const loadBatches = useCallback(async () => {
     try {
@@ -182,6 +190,7 @@ export default function PayoutDetailsPanel() {
 
   const canEdit = detail?.payout_workflow?.can_edit_details;
   const finalized = detail?.payout_workflow?.payout_details_finalized;
+  const readOnlyAccountant = isAccountantRole && !canEdit;
   const awaitingConfirm = detail?.payout_workflow?.awaiting_accountant_confirmation;
   const documentMode =
     detail?.payout_workflow?.document_mode ||
@@ -467,15 +476,45 @@ export default function PayoutDetailsPanel() {
                     <Typography variant="caption" color="text.secondary">
                       {num(ln.approved_hours).toFixed(2)} hrs · ${num(ln.rate).toFixed(2)}/hr · Gross $
                       {totals.gross.toFixed(2)}
+                      {finalized || readOnlyAccountant ? (
+                        <>
+                          {" · Net paid "}
+                          {formatNetPaidDisplay(ln)}
+                          {" · Tax withheld "}
+                          {(() => {
+                            const label = formatTaxWithheldDisplay(ln);
+                            const clickable =
+                              isPayoutDetailsFinalized(ln) &&
+                              (hasTaxWithheldBreakdown(ln) || label !== "Pending");
+                            if (!clickable) return label;
+                            return (
+                              <Button
+                                size="small"
+                                variant="text"
+                                sx={{ minWidth: 0, p: 0, verticalAlign: "baseline", fontSize: "inherit" }}
+                                onClick={() =>
+                                  setTaxDialog({
+                                    open: true,
+                                    line: ln,
+                                    workerName: ln.worker_name_snapshot || "",
+                                  })
+                                }
+                              >
+                                {label}
+                              </Button>
+                            );
+                          })()}
+                        </>
+                      ) : null}
                     </Typography>
                   </Box>
                   <Stack direction="row" spacing={1} alignItems="center">
-                    {showPaystubBtn ? (
+                    {showPaystubBtn && !readOnlyAccountant ? (
                       <Button size="small" startIcon={<PrintIcon />} onClick={() => printPaystub(ln.id)}>
                         Paystub
                       </Button>
                     ) : null}
-                    {showReceiptBtn ? (
+                    {showReceiptBtn && !readOnlyAccountant ? (
                       <Button size="small" startIcon={<PrintIcon />} onClick={() => printReceipt(ln.id)}>
                         Receipt
                       </Button>
@@ -492,6 +531,8 @@ export default function PayoutDetailsPanel() {
                   </Alert>
                 ) : null}
 
+                {!readOnlyAccountant ? (
+                  <>
                 {!isReceiptMode && canEdit ? (
                   <FormControlLabel
                     sx={{ mt: 1 }}
@@ -648,11 +689,20 @@ export default function PayoutDetailsPanel() {
                   sx={{ mt: 2 }}
                   placeholder="e.g. Employee requested payment in cash..."
                 />
+                  </>
+                ) : null}
               </Paper>
             );
           })}
         </Paper>
       ) : null}
+
+      <TaxWithheldBreakdownDialog
+        open={taxDialog.open}
+        onClose={() => setTaxDialog({ open: false, line: null, workerName: "" })}
+        line={taxDialog.line}
+        workerName={taxDialog.workerName}
+      />
 
       <Dialog open={finalizeOpen} onClose={() => setFinalizeOpen(false)}>
         <DialogTitle>Finalize payout details?</DialogTitle>

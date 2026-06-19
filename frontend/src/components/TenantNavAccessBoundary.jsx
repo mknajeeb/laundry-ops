@@ -21,7 +21,8 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
 
   if (isAccountantOnlyUser(user)) {
     const onPayroll = p === "/payroll" || p.startsWith("/payroll/");
-    if (!onPayroll) {
+    const onKiosk = p === "/kiosk" || p.startsWith("/kiosk/");
+    if (onKiosk || !onPayroll) {
       return <Navigate to="/payroll" replace />;
     }
     return children;

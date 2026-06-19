@@ -643,6 +643,10 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
         row = dict(ln)
         uid = row.get("user_id")
         if uid:
+            from backend.payroll_payout_details import _user_display_meta
+
+            meta = _user_display_meta(conn, int(uid))
+            row["employee_id"] = meta["employee_id"]
             rate_info = resolve_worker_hourly_rate(conn, int(uid), organization_id)
             row["worker_category_label"] = rate_info["worker_category_label"]
             row["payment_method"] = row.get("payment_method") or rate_info.get("payment_method")
@@ -695,6 +699,9 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
             paid_total += amt
         else:
             unpaid_total += amt
+        from backend.payroll_payout_details import enrich_line_settlement_fields
+
+        row = enrich_line_settlement_fields(row, batch)
         if cat == "w2" and not MANUAL_TAX_DEDUCTIONS_ONLY:
             if str(row.get("tax_calc_status") or "") == "estimated":
                 emp_tax = _sum_estimated_tax_field([row], "total_employee_taxes")
