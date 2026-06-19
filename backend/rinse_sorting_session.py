@@ -78,6 +78,24 @@ def _must_not_extend_sorting_end(raw: str | None) -> bool:
     )
 
 
+def has_post_sort_downstream_between(
+    anchored: Sequence[Mapping[str, Any]],
+    *,
+    after_ts: datetime,
+    before_ts: datetime,
+) -> bool:
+    """True when wash/dry/setup scans occur after *after_ts* and before *before_ts*."""
+    if not ts_valid(after_ts) or not ts_valid(before_ts) or after_ts >= before_ts:
+        return False
+    for ev in anchored:
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts <= after_ts or ts >= before_ts:
+            continue
+        if _must_not_extend_sorting_end(ev.get("purpose")):
+            return True
+    return False
+
+
 def _last_cleaning_before_ts_by_employee(
     timeline: Sequence[Mapping[str, Any]],
     *,

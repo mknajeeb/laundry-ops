@@ -28,12 +28,14 @@ from backend.rinse_bag_stage_bounds import (
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start, rinse_wall_calendar_date
 from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
+    is_ghost_cleaning_purpose,
     is_lifecycle_sorting_progress_marker_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
 )
 from backend.rinse_sorting_session import (
     compute_sorting_session,
+    has_post_sort_downstream_between,
     same_scan_event,
     session_source_label,
 )
@@ -169,6 +171,27 @@ def _add_photos_events_after_anchor(
     return out
 
 
+def _has_resort_evidence(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    after_ts: datetime,
+    before_ts: datetime,
+    employee: str | None,
+) -> bool:
+    """True when same-employee ghost cleaning after a completed sort signals a true re-sort."""
+    if not employee:
+        return False
+    for ev in timeline:
+        if not is_ghost_cleaning_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts <= after_ts or ts >= before_ts:
+            continue
+        if _operators_match(_operator(ev), employee):
+            return True
+    return False
+
+
 def _dedupe_sessions_by_window(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One row per employee + bag + sort start/end window."""
     seen: set[tuple[Any, ...]] = set()
@@ -208,7 +231,22 @@ def extract_sorting_sessions_for_bag(
         return []
 
     sessions: list[dict[str, Any]] = []
+    completed_sort_end: datetime | None = None
     for add_ev_iter, add_ts in add_photos_events:
+        if completed_sort_end is not None:
+            add_employee = _operator(add_ev_iter)
+            if has_post_sort_downstream_between(
+                anchored, after_ts=completed_sort_end, before_ts=add_ts
+            ):
+                continue
+            if not _has_resort_evidence(
+                tl,
+                after_ts=completed_sort_end,
+                before_ts=add_ts,
+                employee=add_employee,
+            ):
+                continue
+
         weight_pair = _last_weight_before_ts(anchored, before_ts=add_ts)
         if weight_pair is None:
             continue
@@ -249,6 +287,8 @@ def extract_sorting_sessions_for_bag(
                 "end_event_purpose": session.end_event_purpose,
             }
         )
+        if completed_sort_end is None or end_at > completed_sort_end:
+            completed_sort_end = end_at
     return _dedupe_sessions_by_window(sessions)
 
 
@@ -390,6 +430,11 @@ def build_sorting_chronology_payload(
             )
         )
 
+    employees = sorted(
+        {str(s.get("employee") or "").strip() for s in all_sessions if s.get("employee")},
+        key=lambda name: name.casefold(),
+    )
+
     if employee_filter:
         needle = str(employee_filter).strip().lower()
         all_sessions = [
@@ -411,6 +456,7 @@ def build_sorting_chronology_payload(
         "date_et": selected_date_et.isoformat(),
         "summary": summary,
         "sessions": rows,
+        "employees": employees,
         "sorting_event_purposes": sorted(
             {
                 normalize_scan_purpose(p)
@@ -430,6 +476,7 @@ def build_sorting_chronology_payload(
             "One session per post-sent-to-vendor sort cycle (add-photos completion marker); "
             "bounds from rinse_sorting_session (same-employee cleaning/weight start; "
             "add-photos/split-load/create-issue end; wash/dry scans do not extend sorting); "
+            "later add-photos after wash/setup downstream activity are ignored; "
             "sort_start capped forward when employee sorted other bags during the window; "
             "global chronological order; gap_until_next = next session sort_start minus current sort_end."
         ),

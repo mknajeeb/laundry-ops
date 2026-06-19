@@ -215,12 +215,24 @@ export default function ScanChronologyPage() {
   const labels = STAGE_SUMMARY_LABELS[activeStage] || STAGE_SUMMARY_LABELS.weighing;
 
   const employeeOptions = useMemo(() => {
+    if (Array.isArray(data?.employees) && data.employees.length > 0) {
+      return [...data.employees].sort((a, b) => a.localeCompare(b));
+    }
     const set = new Set();
     (data?.sessions || []).forEach((r) => {
       if (r.employee) set.add(r.employee);
     });
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [data]);
+
+  const handleEmployeeFilterChange = (value) => {
+    setEmployeeFilter(value);
+    load(activeDateEt, activeStage, {
+      employee: value,
+      bag_id: bagFilter,
+      confidence: confidenceFilter,
+    });
+  };
 
   const stageLabel = activeStage === "weighing" ? "Weighing" : "Sorting";
 
@@ -300,13 +312,21 @@ export default function ScanChronologyPage() {
 
       <Paper elevation={0} sx={{ p: 1.5, mb: 2, borderRadius: 2, border: "1px solid", borderColor: "divider" }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} flexWrap="wrap" useFlexGap>
-          <TextField
-            size="small"
-            label="Employee"
-            value={employeeFilter}
-            onChange={(e) => setEmployeeFilter(e.target.value)}
-            sx={{ minWidth: 140 }}
-          />
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel>Employee</InputLabel>
+            <Select
+              label="Employee"
+              value={employeeFilter}
+              onChange={(e) => handleEmployeeFilterChange(e.target.value)}
+            >
+              <MenuItem value="">All Employees</MenuItem>
+              {employeeOptions.map((name) => (
+                <MenuItem key={name} value={name}>
+                  {name}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <TextField
             size="small"
             label="Bag ID"
@@ -330,11 +350,6 @@ export default function ScanChronologyPage() {
             Apply filters
           </Button>
         </Stack>
-        {employeeOptions.length > 0 ? (
-          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
-            Employees on this day: {employeeOptions.join(", ")}
-          </Typography>
-        ) : null}
       </Paper>
 
       {error ? (

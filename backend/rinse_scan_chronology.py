@@ -96,6 +96,7 @@ def build_scan_chronology_payload(
         summary = _normalize_weighing_summary(raw.get("summary") or {})
         grouping_rules = raw.get("grouping_rules")
         event_purposes = raw.get("weighing_event_purposes")
+        employees = raw.get("employees") or []
     else:
         raw = build_sorting_chronology_payload(
             cursor,
@@ -109,12 +110,14 @@ def build_scan_chronology_payload(
         summary = _normalize_sorting_summary(raw.get("summary") or {})
         grouping_rules = raw.get("grouping_rules")
         event_purposes = raw.get("sorting_event_purposes")
+        employees = raw.get("employees") or []
 
     return {
         "date_et": selected_date_et.isoformat(),
         "stage": stage_key,
         "summary": summary,
         "sessions": sessions,
+        "employees": employees,
         "event_purposes": event_purposes,
         "grouping_rules": grouping_rules,
     }

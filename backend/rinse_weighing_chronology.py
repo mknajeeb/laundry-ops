@@ -328,6 +328,11 @@ def build_weighing_chronology_payload(
             )
         )
 
+    employees = sorted(
+        {str(s.get("employee") or "").strip() for s in all_sessions if s.get("employee")},
+        key=lambda name: name.casefold(),
+    )
+
     if employee_filter:
         needle = str(employee_filter).strip().lower()
         all_sessions = [
@@ -349,6 +354,7 @@ def build_weighing_chronology_payload(
         "stage": "weighing",
         "summary": summary,
         "sessions": rows,
+        "employees": employees,
         "weighing_event_purposes": sorted(
             {
                 normalize_scan_purpose(p)

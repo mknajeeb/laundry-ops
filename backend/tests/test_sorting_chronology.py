@@ -378,3 +378,133 @@ class TestSortingChronologySessions:
         assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 8, 26)
         assert sessions[0]["end_event_purpose"] == "create-issue"
         assert sessions[0]["duration_seconds"] == 300
+
+    def test_D6E0SRN9QV_ignores_jennifer_add_photos_after_wash_setup(self):
+        """Maria 7:17–7:18 exact; Jennifer 7:31 washer add-photos must not create a row."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 7, 10), ev_id=2, scan_index=2, user="Maria"),
+        ]
+        for idx, minute in enumerate((11, 12, 13, 14, 15), start=3):
+            events.append(
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, minute),
+                    ev_id=idx,
+                    scan_index=idx,
+                    user="Maria",
+                )
+            )
+        events.extend(
+            [
+                _ev("add-photos", datetime(2026, 6, 18, 7, 17), ev_id=8, scan_index=8, user="Maria"),
+                _ev("add-photos", datetime(2026, 6, 18, 7, 18), ev_id=9, scan_index=9, user="Maria"),
+                _ev("start-cleaning", datetime(2026, 6, 18, 7, 30), ev_id=10, scan_index=10, user="Maria"),
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, 30),
+                    ev_id=11,
+                    scan_index=11,
+                    user="Jennifer",
+                ),
+                _ev(
+                    "add-photos",
+                    datetime(2026, 6, 18, 7, 31),
+                    ev_id=12,
+                    scan_index=12,
+                    user="Jennifer",
+                ),
+            ]
+        )
+        sessions = extract_sorting_sessions_for_bag(
+            "D6E0SRN9QV",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["sort_start_et"] == datetime(2026, 6, 18, 7, 10)
+        assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 7, 17)
+
+    def test_1VMV2DUPUW_ignores_jennifer_add_photos_after_create_issue(self):
+        """Maria 7:20–7:28 only; Jennifer washer add-photos at 7:35 must not appear."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 7, 20), ev_id=2, scan_index=2, user="Maria"),
+        ]
+        for idx, minute in enumerate((21, 22, 23), start=3):
+            events.append(
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, minute),
+                    ev_id=idx,
+                    scan_index=idx,
+                    user="Maria",
+                )
+            )
+        events.extend(
+            [
+                _ev("add-photos", datetime(2026, 6, 18, 7, 23), ev_id=6, scan_index=6, user="Maria"),
+                _ev("create-issue", datetime(2026, 6, 18, 7, 28), ev_id=7, scan_index=7, user="Maria"),
+                _ev("start-cleaning", datetime(2026, 6, 18, 7, 35), ev_id=8, scan_index=8, user="Maria"),
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, 35),
+                    ev_id=9,
+                    scan_index=9,
+                    user="Jennifer",
+                ),
+                _ev(
+                    "add-photos",
+                    datetime(2026, 6, 18, 7, 36),
+                    ev_id=10,
+                    scan_index=10,
+                    user="Jennifer",
+                ),
+            ]
+        )
+        sessions = extract_sorting_sessions_for_bag(
+            "1VMV2DUPUW",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["sort_start_et"] == datetime(2026, 6, 18, 7, 20)
+        assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 7, 28)
+
+    def test_COXWJMCCPH_ignores_jennifer_add_photos_after_ready_washer(self):
+        """Maria 8:21–8:26 only; Jennifer add-photos after ready-washer must not appear."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 8, 21), ev_id=2, scan_index=2, user="Maria"),
+            _ev("weight-entry", datetime(2026, 6, 18, 8, 22), ev_id=3, scan_index=3, user="Maria"),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 24), ev_id=4, scan_index=4, user="Maria"),
+            _ev("split-load", datetime(2026, 6, 18, 8, 25), ev_id=5, scan_index=5, user="Maria"),
+            _ev("create-issue", datetime(2026, 6, 18, 8, 26), ev_id=6, scan_index=6, user="Maria"),
+            _ev("ready-washer", datetime(2026, 6, 18, 8, 47), ev_id=7, scan_index=7, user="Maria"),
+            _ev(
+                "weight-entry",
+                datetime(2026, 6, 18, 8, 47),
+                ev_id=8,
+                scan_index=8,
+                user="Jennifer",
+            ),
+            _ev(
+                "add-photos",
+                datetime(2026, 6, 18, 8, 48),
+                ev_id=9,
+                scan_index=9,
+                user="Jennifer",
+            ),
+            _ev("start-cleaning", datetime(2026, 6, 18, 8, 50), ev_id=10, scan_index=10, user="Maria"),
+        ]
+        sessions = extract_sorting_sessions_for_bag(
+            "COXWJMCCPH",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["sort_start_et"] == datetime(2026, 6, 18, 8, 21)
+        assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 8, 26)
