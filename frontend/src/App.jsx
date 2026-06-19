@@ -44,6 +44,7 @@ import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
 import PerformanceBackfillPage from "./pages/PerformanceBackfillPage";
 import RinseFoldingTvPage from "./pages/RinseFoldingTvPage";
 import MaintenancePage from "./pages/MaintenancePage";
+import SupplyUsagePage from "./pages/SupplyUsagePage";
 import RinseBagLookupPage from "./pages/RinseBagLookupPage";
 import RinseOrderSearchPage from "./pages/RinseOrderSearchPage";
 import RinseScheduledSyncPage from "./pages/RinseScheduledSyncPage";
@@ -908,6 +909,16 @@ function AppShell() {
               }
             />
             <Route path="/maintenance" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><MaintenancePage /></GuardedRoute></TenantOnlyRoute>} />
+            <Route
+              path="/maintenance/supply-usage"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user}>
+                    <SupplyUsagePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
             <Route path="/inventory" element={<TenantOnlyRoute user={user}><GuardedRoute user={user}><InventoryPage user={user} /></GuardedRoute></TenantOnlyRoute>} />
             <Route path="/discrepancies" element={<TenantOnlyRoute user={user}><GuardedRoute user={user} roles={["ADMIN", "OPS"]}><DiscrepanciesPage /></GuardedRoute></TenantOnlyRoute>} />
             <Route

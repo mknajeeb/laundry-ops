@@ -717,6 +717,15 @@ export const getOpsUiFlags = () => axios.get(`${API_BASE}/maintenance/ops-ui-fla
 
 export const putOpsUiFlags = (body) => axios.put(`${API_BASE}/maintenance/ops-ui-flags`, body);
 
+export const getSupplyUsage = (params) =>
+  axios.get(`${API_BASE}/maintenance/supply-usage`, { params, timeout: 30000 });
+
+export const getSupplyUsageDosages = () =>
+  axios.get(`${API_BASE}/maintenance/supply-usage/dosages`, { timeout: 15000 });
+
+export const updateSupplyUsageDosages = (body) =>
+  axios.put(`${API_BASE}/maintenance/supply-usage/dosages`, body, { timeout: 15000 });
+
 export const listCheckoutHistorySnapshots = () =>
   axios.get(`${API_BASE}/checkout_history/snapshots`);
 
