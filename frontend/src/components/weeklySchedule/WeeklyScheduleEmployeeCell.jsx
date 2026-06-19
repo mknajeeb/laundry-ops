@@ -3,8 +3,9 @@ import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import {
   ROLE_STYLES,
-  deriveEmployeePrimaryRole,
+  employeeScheduleRoles,
   formatEmployeeWeeklySummary,
+  roleLabels,
 } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleEmployeeCell({
@@ -21,8 +22,9 @@ export default function WeeklyScheduleEmployeeCell({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
-  const primaryRoleKey = deriveEmployeePrimaryRole(employee.user_id, entries);
-  const primaryRoleLabel = primaryRoleKey ? (ROLE_STYLES[primaryRoleKey]?.label || primaryRoleKey) : null;
+  const scheduleRoles = employeeScheduleRoles(employee.user_id, entries);
+  const scheduleRolesLabel = scheduleRoles.length ? roleLabels(scheduleRoles) : null;
+  const primaryRoleKey = scheduleRoles[0] || null;
   const weeklySummary = formatEmployeeWeeklySummary(employee);
 
   const rateParts = [];
@@ -76,19 +78,22 @@ export default function WeeklyScheduleEmployeeCell({
             </Typography>
           </Tooltip>
 
-          {primaryRoleLabel && !excluded ? (
+          {scheduleRolesLabel && !excluded ? (
             <Typography
               variant="caption"
               sx={{
                 display: "block",
                 mt: 0.25,
                 fontWeight: 600,
-                color: (ROLE_STYLES[primaryRoleKey] || ROLE_STYLES.fold).accent,
+                color:
+                  scheduleRoles.length === 1
+                    ? (ROLE_STYLES[primaryRoleKey] || ROLE_STYLES.fold).accent
+                    : "text.secondary",
                 fontSize: "0.75rem",
                 lineHeight: 1.3,
               }}
             >
-              {primaryRoleLabel}
+              {scheduleRolesLabel}
             </Typography>
           ) : null}
 

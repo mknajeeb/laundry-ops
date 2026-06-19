@@ -131,6 +131,18 @@ export function shiftPeriodStyle(entry) {
   return SHIFT_PERIOD_STYLES[shiftPeriodKey(entry)] || SHIFT_PERIOD_STYLES.morning;
 }
 
+/** Unique roles assigned to an employee across their week entries, in Wash · Sort · Fold order. */
+export function employeeScheduleRoles(userId, entries) {
+  const seen = new Set();
+  for (const entry of entries || []) {
+    if (Number(entry.user_id) !== Number(userId)) continue;
+    for (const roleKey of parseEntryRoles(entry)) {
+      seen.add(roleKey);
+    }
+  }
+  return sortRoles([...seen]);
+}
+
 /** Primary role for an employee row — most frequent role across their week entries. */
 export function deriveEmployeePrimaryRole(userId, entries) {
   const counts = {};
