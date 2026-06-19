@@ -1,6 +1,7 @@
 import ContractorPrintLogo from "../contractorForms/ContractorPrintLogo";
 import { resolveCompanyContact } from "../contractorForms/companyContact";
 import { VEEWASH_BRAND, veewashPrintCssVars } from "../theme/veewashBrand";
+import { maskTaxIdLast4, normalizeTaxIdDigits } from "../utils/validation";
 
 function FieldRow({ label, value, wide }) {
   return (
@@ -331,6 +332,19 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
   );
 }
 
+/** SSN/TIN for print — same sources as I-9/W-4 prefill (i9.ssn, then payroll itin_ssn). */
+export function resolveDirectDepositSsnDisplay(payroll, work) {
+  const w = work && typeof work === "object" ? work : {};
+  const i9 = w.i9 && typeof w.i9 === "object" ? w.i9 : {};
+  const digits = normalizeTaxIdDigits(i9.ssn || "");
+  if (digits.length === 9) {
+    return `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}`;
+  }
+  const last4 = String(payroll?.itin_ssn_last4 || "").trim();
+  if (last4) return maskTaxIdLast4(last4);
+  return "";
+}
+
 /** Build prefill object from merged payroll + HR API payloads. */
 export function buildDirectDepositPrefill(payroll, hr, org) {
   const work = hr?.work_json && typeof hr.work_json === "object" ? hr.work_json : {};
@@ -356,7 +370,7 @@ export function buildDirectDepositPrefill(payroll, hr, org) {
     city: addr.city || "",
     state: addr.state || "",
     zip: addr.zip || addr.zip_code || "",
-    ssn_display: payroll?.itin_ssn_last4 ? `***-**-${payroll.itin_ssn_last4}` : "",
+    ssn_display: resolveDirectDepositSsnDisplay(payroll, work),
     date_of_birth: hr?.date_of_birth || work.date_of_birth || "",
     hire_date: payroll?.hire_date || "",
     email: payroll?.email || "",

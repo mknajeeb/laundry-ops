@@ -68,6 +68,13 @@ def test_direct_deposit_uses_veewash_branding():
     assert "ContractorPrintLogo" in form
 
 
+def test_direct_deposit_prefill_resolves_i9_ssn():
+    form = _read("frontend/src/payroll/DirectDepositFormPrint.jsx")
+    assert "resolveDirectDepositSsnDisplay" in form
+    assert "i9.ssn" in form
+    assert "resolveDirectDepositSsnDisplay(payroll, work)" in form
+
+
 def test_w2_doc_catalog_upload_only_except_direct_deposit():
     catalog = _read("frontend/src/payroll/accountantW2DocCatalog.js")
     assert "kind: \"hr_form\"" not in catalog
