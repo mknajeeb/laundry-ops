@@ -12,6 +12,7 @@ from backend.rinse_special_instructions import (
     interpret_special_instructions,
     _split_instruction_parts,
     _classify_part,
+    _parts_for_interpretation,
 )
 from backend.supply_usage_settings import (
     DEFAULT_DOSAGES,
@@ -40,7 +41,7 @@ def mapping_rules_display(rules: Sequence[Mapping[str, Any]] | None = None) -> l
 
 def _tokens_from_raw(raw: str | None) -> set[str]:
     tokens: set[str] = set()
-    for part in _split_instruction_parts(str(raw or "")):
+    for part in _parts_for_interpretation(raw):
         kind = _classify_part(part)
         if kind and kind != "UNKNOWN":
             tokens.add(kind)

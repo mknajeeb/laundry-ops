@@ -7,6 +7,16 @@ from backend.rinse_special_instructions import (
     interpret_special_instructions,
 )
 
+CHRISTIAN_POLLUTED_RAW = (
+    "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
+    "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
+    "Bag Bathing Suit Bathing Suit (Bottom) Bathing Suit (Top) Bath Mat Bath Rug Belt Blanket "
+    "Blanket (Large) Blanket (Small) Blouse Boots Boxers Bra Button (Repair) Cloth Mask "
+    "Cloth Mask (Kids) Coat Coat (Down) Comforter Comforter (Down) Couch Cover Cover Cummerbund "
+    "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D; USE FABRIC SOFTENER; USE OXICLEAN; "
+    "Use Hypoallergenic Soap"
+)
+
 
 class TestBuildSpecialInstructionsRaw:
     def test_blank_is_none(self):
@@ -24,6 +34,13 @@ class TestBuildSpecialInstructionsRaw:
     def test_hypo_flag(self):
         raw = build_special_instructions_raw(use_hypo="X")
         assert "Hypoallergenic" in raw
+
+    def test_vendor_catalog_notes_skipped(self):
+        raw = build_special_instructions_raw(
+            notes=CHRISTIAN_POLLUTED_RAW.split(";")[0],
+            use_hypo="X",
+        )
+        assert raw == "Use Hypoallergenic Soap"
 
 
 class TestInterpretSpecialInstructions:
@@ -70,3 +87,20 @@ class TestInterpretSpecialInstructions:
     def test_case_insensitive_multi(self):
         out = interpret_special_instructions("use fabric softener\nuse oxiclean")
         assert out["supply_interpretation"] == "Soap + softener + OxiClean"
+
+    def test_bare_hypo_in_unrelated_word_does_not_match(self):
+        out = interpret_special_instructions("Customer requested hypothetic sizing chart")
+        assert "Hypoallergenic" not in out["supplies_used"]
+        assert out["special_instruction_review"] is True
+        assert out["supply_interpretation"] == "Needs review"
+
+    def test_christian_portal_vendor_catalog_defaults_tide(self):
+        out = interpret_special_instructions(CHRISTIAN_POLLUTED_RAW)
+        assert out["supply_interpretation"] == "Standard soap"
+        assert out["supplies_used"] == ["Tide"]
+        assert out["special_instructions_raw"] is None
+        assert out["special_instruction_review"] is False
+
+    def test_real_hypo_still_maps(self):
+        out = interpret_special_instructions("Use Hypoallergenic Soap")
+        assert out["supplies_used"] == ["Hypoallergenic detergent"]

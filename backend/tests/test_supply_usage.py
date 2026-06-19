@@ -74,6 +74,24 @@ class TestSuppliesForUsage:
         out = supplies_for_usage("VIP customer special handling", rules)
         assert out["supplies_used"] == ["Tide", "Downy", "OxiClean"]
 
+    def test_christian_portal_pollution_defaults_tide(self):
+        raw = (
+            "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
+            "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
+            "Bag Bathing Suit Bathing Suit (Bottom) Bathing Suit (Top) Bath Mat Bath Rug Belt Blanket "
+            "Blanket (Large) Blanket (Small) Blouse Boots Boxers Bra Button (Repair) Cloth Mask "
+            "Cloth Mask (Kids) Coat Coat (Down) Comforter Comforter (Down) Couch Cover Cover Cummerbund "
+            "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D; USE FABRIC SOFTENER; USE OXICLEAN; "
+            "Use Hypoallergenic Soap"
+        )
+        out = supplies_for_usage(raw)
+        assert out["supplies_used"] == ["Tide"]
+        assert out["supply_interpretation"] == "Standard soap"
+
+    def test_empty_instructions_default_tide(self):
+        out = supplies_for_usage("")
+        assert out["supplies_used"] == ["Tide"]
+
 
 class TestSplitOrder:
     def test_split_order_label(self):

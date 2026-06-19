@@ -1173,6 +1173,26 @@ function extractSpecialInstructionsFromText(combined) {
   return "";
 }
 
+function derivePortalSupplyFlags(collapsedRowText, combined) {
+  const collapsed = String(collapsedRowText || "");
+  const siText = extractSpecialInstructionsFromText(combined);
+  /** List-row + labeled SI only — expanded vendor HTML lists every menu option and false-flags supplies. */
+  const probe = [collapsed, siText].filter(Boolean).join("\n");
+  const tl = probe.toLowerCase();
+  return {
+    USE_OXIC: /\buse\s+oxiclean\b|\buse\s+oxic\b/i.test(probe) ? "X" : "",
+    Use_Hypo:
+      (/\buse\s+hypoallergenic\b/i.test(probe) || /\bhypoallergenic\s+soap\b/i.test(probe)) &&
+      !/hypochlor/.test(tl)
+        ? "X"
+        : "",
+    USE_FAB: /\buse\s+fabric\s+softener\b/i.test(probe) ? "X" : "",
+    Low_DRY: /\blow\s+dry\b/i.test(probe) ? "X" : "",
+    NO_SCEN: /\bno\s*scen|\bno\s*scent|\bunscented\b/i.test(probe) ? "X" : "",
+    Extra_Scen: /\bextra\s*scen|\bextra\s*scent\b/i.test(probe) ? "X" : "",
+  };
+}
+
 /** Portal CSV: first four `<td>`s (or first four logical lines) go out raw; bag parens raw. */
 function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts = null, bagDisplay = "") {
   let combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
@@ -1242,15 +1262,7 @@ function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts =
   if (!wf_lbs && wfLbsM) wf_lbs = wfLbsM[1];
 
   const t = combined;
-  const tl = t.toLowerCase();
-  const flags = {
-    USE_OXIC: /oxic|oxi\s*clean/i.test(t) ? "X" : "",
-    Use_Hypo: /hypoallergenic|\bhypo\b/i.test(t) && !/hypochlor/i.test(tl) ? "X" : "",
-    USE_FAB: /fab(?:ric)?|softener|soft\s*ener/i.test(tl) ? "X" : "",
-    Low_DRY: /low\s*dry/i.test(tl) ? "X" : "",
-    NO_SCEN: /no\s*scen|no\s*scent|unscented/i.test(tl) ? "X" : "",
-    Extra_Scen: /extra\s*scen|extra\s*scent/i.test(tl) ? "X" : "",
-  };
+  const flags = derivePortalSupplyFlags(collapsedRowText, combined);
 
   const skipLine = (l) =>
     !l ||
