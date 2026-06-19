@@ -1164,20 +1164,21 @@ function extractSpecialInstructionsFromText(combined) {
   const text = String(combined || "");
   const labeled =
     text.match(
-      /\bSpecial\s+Instructions\s*:?\s*([\s\S]*?)(?=\n\s*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|$))/i,
+      /\bSpecial\s+Instructions\s*:?\s*([\s\S]*?)(?=\n\s*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|Add\s+new|$))/i,
     ) ||
     text.match(/\bSpecial\s+Instructions\s*:?\s*([^\n]+)/i);
   if (labeled && labeled[1]) {
-    return labeled[1].replace(/\s+/g, " ").trim().slice(0, 500);
+    const out = labeled[1].replace(/\s+/g, " ").trim();
+    if (/^vendor\s+notes/i.test(out)) return "";
+    return out.slice(0, 500);
   }
   return "";
 }
 
 function derivePortalSupplyFlags(collapsedRowText, combined) {
-  const collapsed = String(collapsedRowText || "");
   const siText = extractSpecialInstructionsFromText(combined);
-  /** List-row + labeled SI only — expanded vendor HTML lists every menu option and false-flags supplies. */
-  const probe = [collapsed, siText].filter(Boolean).join("\n");
+  /** Only the labeled Special Instructions field — not list rows or expanded vendor menus. */
+  const probe = siText;
   const tl = probe.toLowerCase();
   return {
     USE_OXIC: /\buse\s+oxiclean\b|\buse\s+oxic\b/i.test(probe) ? "X" : "",

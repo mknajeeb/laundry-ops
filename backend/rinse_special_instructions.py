@@ -29,6 +29,16 @@ _FAB_PART_RE = re.compile(
     re.I,
 )
 
+_LABELED_SI_RE = re.compile(
+    r"\bSpecial\s+Instructions\s*:?\s*"
+    r"([\s\S]*?)"
+    r"(?="
+    r"\n\s*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|Add\s+new)"
+    r"|;?\s*Vendor\s+Notes\b"
+    r"|$)",
+    re.I,
+)
+
 
 def _norm_token(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip()).upper()
@@ -60,44 +70,38 @@ def _is_portal_vendor_catalog_part(part: str) -> bool:
     )
 
 
-def _trailing_supply_parts_from_catalog(part: str) -> list[str]:
-    """
-    Some scrapes embed supply menu labels at the end of a vendor catalog blob
-    without a semicolon separator. Extract trailing tokens only.
-    """
-    text = re.sub(r"\s+", " ", str(part or "").strip())
-    if not text or not _is_portal_vendor_catalog_part(text):
-        return []
-    found: list[str] = []
-    remainder = text
-    while remainder:
-        matched = False
-        for token, pattern in (
-            (_TOKEN_HYPO, _HYPO_PART_RE),
-            (_TOKEN_OXIC, _OXIC_PART_RE),
-            (_TOKEN_FAB, _FAB_PART_RE),
-        ):
-            m = pattern.search(remainder)
-            if not m:
-                continue
-            snippet = remainder[m.start() :].strip()
-            if _classify_part(snippet) != token:
-                continue
-            found.insert(0, snippet)
-            remainder = remainder[: m.start()].rstrip(" ;,")
-            matched = True
-            break
-        if not matched:
-            break
-    return found
+def extract_labeled_special_instructions(raw: str | None) -> str | None:
+    """Return only the portal 'Special Instructions:' label block when present."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    m = _LABELED_SI_RE.search(text)
+    if not m:
+        return None
+    out = re.sub(r"\s+", " ", m.group(1)).strip()
+    if not out or _is_portal_vendor_catalog_part(out):
+        return None
+    return out
 
 
 def _parts_for_interpretation(raw: str | None) -> list[str]:
-    parts = _split_instruction_parts(str(raw or ""))
+    text = str(raw or "").strip()
+    if not text:
+        return []
+
+    labeled = extract_labeled_special_instructions(text)
+    if labeled:
+        return _split_instruction_parts(labeled)
+
+    parts = _split_instruction_parts(text)
+    polluted = any(_is_portal_vendor_catalog_part(p) for p in parts)
     kept: list[str] = []
     for part in parts:
         if _is_portal_vendor_catalog_part(part):
-            kept.extend(_trailing_supply_parts_from_catalog(part))
+            continue
+        kind = _classify_part(part)
+        # Menu template text often appends USE FABRIC SOFTENER without a customer selection.
+        if polluted and kind == _TOKEN_FAB:
             continue
         kept.append(part)
     return kept
@@ -126,7 +130,7 @@ def build_special_instructions_raw(
     use_fab: str | None = None,
     notes: str | None = None,
 ) -> str | None:
-    """Combine explicit Special Instructions column with portal flag columns and notes."""
+    """Build raw SI from the portal Special Instructions field and aligned flag columns."""
     parts: list[str] = []
     seen: set[str] = set()
 
@@ -143,12 +147,13 @@ def build_special_instructions_raw(
         parts.append(t)
 
     si_col = re.sub(r"\s+", " ", str(special_instructions_col or "").strip())
-    if si_col and not _is_portal_vendor_catalog_part(si_col):
-        _add(si_col)
-    for chunk in _split_instruction_parts(notes or ""):
-        if not _is_portal_vendor_catalog_part(chunk):
-            _add(chunk)
+    si_text = extract_labeled_special_instructions(si_col) or si_col
+    if si_text and not _is_portal_vendor_catalog_part(si_text):
+        for chunk in _split_instruction_parts(si_text):
+            if not _is_portal_vendor_catalog_part(chunk):
+                _add(chunk)
 
+    # Flags are only meaningful when they match the labeled SI field (scrape sets them from SI).
     if _flag_marked(use_fab):
         _add("USE FABRIC SOFTENER")
     if _flag_marked(use_oxic):

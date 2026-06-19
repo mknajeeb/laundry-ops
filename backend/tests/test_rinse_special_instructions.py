@@ -4,6 +4,7 @@ import pytest
 
 from backend.rinse_special_instructions import (
     build_special_instructions_raw,
+    extract_labeled_special_instructions,
     format_special_instructions_display,
     interpret_special_instructions,
 )
@@ -19,6 +20,16 @@ CHRISTIAN_POLLUTED_RAW = (
 )
 
 CHRISTIAN_CATALOG_ONLY = CHRISTIAN_POLLUTED_RAW.split(";")[0]
+
+RYAN_TIFFANY_POLLUTED_RAW = (
+    "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
+    "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
+    "Bag Bathing Suit Bathing Suit (Bottom) Bathing Suit (Top) Bath Mat Bath Rug Belt Blanket "
+    "Blanket (Large) Blanket (Small) Blouse Boots Boxers Bra Button (Repair) Cloth Mask "
+    "Cloth Mask (Kids) Coat Coat (Down) Comforter Comforter (Down) Couch Cover Cover Cummerbund "
+    "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D; USE FABRIC SOFTENER; USE OXICLEAN; "
+    "Use Hypoallergenic Soap"
+)
 
 
 class TestBuildSpecialInstructionsRaw:
@@ -42,6 +53,13 @@ class TestBuildSpecialInstructionsRaw:
         raw = build_special_instructions_raw(
             notes=CHRISTIAN_POLLUTED_RAW.split(";")[0],
             use_hypo="X",
+        )
+        assert raw == "Use Hypoallergenic Soap"
+
+    def test_notes_not_merged_into_raw(self):
+        raw = build_special_instructions_raw(
+            notes="USE OXICLEAN",
+            special_instructions_col="Use Hypoallergenic Soap",
         )
         assert raw == "Use Hypoallergenic Soap"
 
@@ -104,10 +122,37 @@ class TestInterpretSpecialInstructions:
         assert out["special_instructions_raw"] is None
         assert out["special_instruction_review"] is False
 
-    def test_polluted_catalog_trailing_tokens_mapped(self):
+    def test_polluted_catalog_trailing_tokens_mapped_without_fabric_softener(self):
         out = interpret_special_instructions(CHRISTIAN_POLLUTED_RAW)
-        assert out["supplies_used"] == ["Hypoallergenic detergent", "Downy", "OxiClean"]
-        assert "Hypoallergenic" in out["supply_interpretation"]
+        assert out["supplies_used"] == ["Hypoallergenic detergent", "OxiClean"]
+        assert "Fabric Softener" not in (out["supply_interpretation"] or "")
+        assert "softener" not in (out["supply_interpretation"] or "").lower()
+
+    def test_ryan_tiffany_polluted_row_no_fabric_softener(self):
+        out = interpret_special_instructions(RYAN_TIFFANY_POLLUTED_RAW)
+        assert out["supplies_used"] == ["Hypoallergenic detergent", "OxiClean"]
+        assert format_special_instructions_display(RYAN_TIFFANY_POLLUTED_RAW) == (
+            "Hypoallergenic + OxiClean"
+        )
+
+    def test_labeled_special_instructions_with_fabric_softener(self):
+        raw = "Special Instructions: USE FABRIC SOFTENER; USE OXICLEAN"
+        out = interpret_special_instructions(raw)
+        assert out["supplies_used"] == ["Tide", "Downy", "OxiClean"]
+
+    def test_portal_menu_pollution_without_selection_defaults_standard(self):
+        out = interpret_special_instructions(CHRISTIAN_CATALOG_ONLY)
+        assert out["supply_interpretation"] == "Standard soap"
+        assert out["supplies_used"] == ["Tide"]
+
+    def test_extract_labeled_special_instructions(self):
+        raw = (
+            "Vendor Notes Vendor Price Wash and Fold "
+            "Special Instructions: Use Hypoallergenic Soap; USE OXICLEAN"
+        )
+        assert extract_labeled_special_instructions(raw) == (
+            "Use Hypoallergenic Soap; USE OXICLEAN"
+        )
 
     def test_real_hypo_still_maps(self):
         out = interpret_special_instructions("Use Hypoallergenic Soap")
@@ -124,7 +169,7 @@ class TestFormatSpecialInstructionsDisplay:
 
     def test_polluted_row_shows_friendly_tokens_only(self):
         out = format_special_instructions_display(CHRISTIAN_POLLUTED_RAW)
-        assert out == "Hypoallergenic + Fabric Softener + OxiClean"
+        assert out == "Hypoallergenic + OxiClean"
 
     def test_hypo_only(self):
         assert format_special_instructions_display("Use Hypoallergenic Soap") == "Hypoallergenic"
@@ -138,7 +183,7 @@ class TestFormatSpecialInstructionsDisplay:
     def test_oxic_only(self):
         assert format_special_instructions_display("USE OXICLEAN") == "OxiClean"
 
-    def test_embedded_hypo_in_catalog_blob(self):
+    def test_embedded_hypo_in_catalog_blob_ignored_without_labeled_si(self):
         raw = (
             "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
             "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
@@ -147,7 +192,7 @@ class TestFormatSpecialInstructionsDisplay:
             "Cloth Mask (Kids) Coat Coat (Down) Comforter Comforter (Down) Couch Cover Cover Cummerbund "
             "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D Use Hypoallergenic Soap"
         )
-        assert format_special_instructions_display(raw) == "Hypoallergenic"
+        assert format_special_instructions_display(raw) is None
 
     def test_unknown_notes_appended(self):
         out = format_special_instructions_display("USE OXICLEAN; CALL CUSTOMER BEFORE WASH")

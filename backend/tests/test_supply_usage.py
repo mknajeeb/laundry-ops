@@ -82,11 +82,31 @@ class TestSuppliesForUsage:
         assert out["supplies_used"] == ["Tide"]
         assert out["supply_interpretation"] == "Standard soap"
 
-    def test_polluted_catalog_trailing_supply_tokens_mapped(self):
+    def test_polluted_catalog_trailing_supply_tokens_mapped_without_fabric_softener(self):
         from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
 
         out = supplies_for_usage(CHRISTIAN_POLLUTED_RAW)
-        assert out["supplies_used"] == ["All Free & Clear", "Downy", "OxiClean"]
+        assert out["supplies_used"] == ["All Free & Clear", "OxiClean"]
+        assert "Downy" not in out["supplies_used"]
+
+    def test_ryan_tiffany_polluted_row_no_fabric_softener(self):
+        from backend.tests.test_rinse_special_instructions import RYAN_TIFFANY_POLLUTED_RAW
+
+        out = supplies_for_usage(RYAN_TIFFANY_POLLUTED_RAW)
+        assert out["supplies_used"] == ["All Free & Clear", "OxiClean"]
+        assert _display_special_instructions(RYAN_TIFFANY_POLLUTED_RAW) == (
+            "Hypoallergenic + OxiClean"
+        )
+
+    def test_labeled_special_instructions_fabric_softener_maps_downy(self):
+        out = supplies_for_usage("Special Instructions: USE FABRIC SOFTENER")
+        assert out["supplies_used"] == ["Tide", "Downy"]
+
+    def test_portal_menu_pollution_defaults_tide_only(self):
+        from backend.tests.test_rinse_special_instructions import CHRISTIAN_CATALOG_ONLY
+
+        out = supplies_for_usage(CHRISTIAN_CATALOG_ONLY)
+        assert out["supplies_used"] == ["Tide"]
 
     def test_polluted_catalog_hypo_only_maps_all_free_clear(self):
         raw = (
@@ -110,8 +130,25 @@ class TestDisplaySpecialInstructions:
         from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
 
         assert _display_special_instructions(CHRISTIAN_POLLUTED_RAW) == (
-            "Hypoallergenic + Fabric Softener + OxiClean"
+            "Hypoallergenic + OxiClean"
         )
+
+    def test_eldar_polluted_row_hypo_only_no_fabric_softener_display(self):
+        from backend.tests.test_rinse_special_instructions import CHRISTIAN_CATALOG_ONLY
+
+        raw = f"{CHRISTIAN_CATALOG_ONLY}; USE FABRIC SOFTENER; Use Hypoallergenic Soap"
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "5DGG7KT7CW",
+                "name_clean": "Eldar Hadad 0",
+                "special_instructions_raw": raw,
+            },
+            split_load_bags=set(),
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["special_instructions"] == "Hypoallergenic"
+        assert row["supplies_used"] == ["All Free & Clear"]
+        assert "Downy" not in row["supplies_used"]
 
     def test_hypo_only_display(self):
         assert _display_special_instructions("Use Hypoallergenic Soap") == "Hypoallergenic"
@@ -128,9 +165,9 @@ class TestDisplaySpecialInstructions:
             split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
-        assert row["special_instructions"] == "Hypoallergenic + Fabric Softener + OxiClean"
-        assert row["supplies_used"] == ["All Free & Clear", "Downy", "OxiClean"]
-        assert row["supply_interpretation"] == "Hypoallergenic soap + softener + OxiClean"
+        assert row["special_instructions"] == "Hypoallergenic + OxiClean"
+        assert row["supplies_used"] == ["All Free & Clear", "OxiClean"]
+        assert "Downy" not in row["supplies_used"]
 
 
 class TestSplitOrder:
