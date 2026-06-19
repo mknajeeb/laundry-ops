@@ -205,9 +205,18 @@ def _load_staging_orders(cursor, organization_id: int, target_date: date) -> lis
     return out
 
 
+def _upload_batches_pk(cursor) -> str:
+    if table_has_column(cursor, "upload_batches", "id"):
+        return "id"
+    if table_has_column(cursor, "upload_batches", "batch_id"):
+        return "batch_id"
+    return "id"
+
+
 def _load_upload_batch_orders(cursor, organization_id: int, target_date: date) -> list[dict[str, Any]]:
     if not table_exists(cursor, "upload_batch_rows") or not table_exists(cursor, "upload_batches"):
         return []
+    ub_pk = _upload_batches_pk(cursor)
     has_ub_org = table_has_column(cursor, "upload_batches", "organization_id")
     has_ticket = table_has_column(cursor, "upload_batch_rows", "ticket_id")
     has_si = table_has_column(cursor, "upload_batch_rows", "special_instructions_raw")
@@ -233,13 +242,16 @@ def _load_upload_batch_orders(cursor, organization_id: int, target_date: date) -
     ticket_clause = ""
     if has_ticket:
         ticket_clause = " AND ubr.ticket_id IS NOT NULL AND TRIM(ubr.ticket_id) != ''"
+    order_by = "ubr.name_clean"
+    if has_ticket:
+        order_by = f"{order_by}, ubr.ticket_id"
     cursor.execute(
         f"""
         SELECT {", ".join(cols)}
         FROM upload_batch_rows ubr
-        INNER JOIN upload_batches ub ON ub.id = ubr.upload_batch_id
+        INNER JOIN upload_batches ub ON ub.{ub_pk} = ubr.upload_batch_id
         WHERE ubr.date_clean = %s{org_clause}{ticket_clause}
-        ORDER BY ubr.name_clean, ubr.ticket_id
+        ORDER BY {order_by}
         """,
         tuple(args),
     )

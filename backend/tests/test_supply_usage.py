@@ -127,3 +127,67 @@ class TestSupplyUsageSettings:
         cursor.fetchone.return_value = None
         out = get_supply_usage_dosages(cursor, 1)
         assert out == DEFAULT_DOSAGES
+
+
+class TestLoadUploadBatchOrders:
+    def test_upload_batches_batch_id_pk_join(self):
+        """Production schema uses upload_batches.batch_id, not id."""
+        from backend import supply_usage as su
+
+        executed: list[tuple[str, tuple]] = []
+
+        def fake_table_exists(cursor, table):
+            return table in ("upload_batch_rows", "upload_batches")
+
+        def fake_table_has_column(cursor, table, col):
+            if table == "upload_batches" and col == "id":
+                return False
+            if table == "upload_batches" and col == "batch_id":
+                return True
+            if table == "upload_batches" and col == "organization_id":
+                return True
+            if table == "upload_batch_rows" and col in ("ticket_id", "date_clean", "special_instructions_raw"):
+                return True
+            return False
+
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+
+        def capture_execute(sql, args=()):
+            executed.append((sql, args))
+
+        cursor.execute = capture_execute
+
+        original_te = su.table_exists
+        original_thc = su.table_has_column
+        su.table_exists = fake_table_exists
+        su.table_has_column = fake_table_has_column
+        try:
+            su._load_upload_batch_orders(cursor, 3, date(2026, 6, 19))
+        finally:
+            su.table_exists = original_te
+            su.table_has_column = original_thc
+
+        assert executed, "expected SQL query"
+        sql = executed[0][0]
+        assert "ub.batch_id = ubr.upload_batch_id" in sql
+        assert "ub.id" not in sql
+
+
+class TestBuildSupplyUsageReportEmptyDay:
+    def test_empty_orders_no_error(self):
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+
+        from backend import supply_usage as su
+
+        original_load = su.load_orders_for_supply_usage
+        su.load_orders_for_supply_usage = lambda *a, **k: []
+        try:
+            report = build_supply_usage_report(cursor, 3, date(2026, 6, 19))
+        finally:
+            su.load_orders_for_supply_usage = original_load
+
+        assert report["date_et"] == "2026-06-19"
+        assert report["summary"]["orders_analyzed"] == 0
+        assert report["orders"] == []
