@@ -1,6 +1,6 @@
 """Tests for washing chronology (read-only shift analysis timeline)."""
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from backend.rinse_washing_chronology import (
     build_washing_chronology_summary,
@@ -146,3 +146,44 @@ class TestWashingChronologyRows:
         rows = extract_washing_rows_from_events(events)
         assert len(rows) == 1
         assert rows[0]["washer_rack"] == "W26-30-VW"
+
+    def test_same_timestamp_other_purpose_does_not_drop_start_cleaning(self):
+        """ready-washer Last Scan at same bag+time must not steal the washer load row."""
+        ts = datetime(2026, 6, 18, 7, 31)
+        events = [
+            {
+                "id": 1,
+                "bag_id": "D6E0SRN9QV",
+                "rack": None,
+                "user_name": "Jennifer (VeeWash)",
+                "purpose": "ready-washer Last Scan",
+                "scanned_at_parsed": ts,
+                "scan_index": 1,
+            },
+            {
+                "id": 2,
+                "bag_id": "D6E0SRN9QV",
+                "rack": "W26-30-VW",
+                "user_name": "Jennifer (VeeWash)",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": ts,
+                "scan_index": 2,
+            },
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 1
+        assert rows[0]["washer_rack"] == "W26-30-VW"
+        assert rows[0]["employee"] == "Jennifer (VeeWash)"
+
+    def test_many_distinct_start_cleaning_times_not_collapsed(self):
+        events = [
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 7, 0) + timedelta(minutes=i),
+                ev_id=i,
+                user="Jennifer (VeeWash)",
+            )
+            for i in range(45)
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 45

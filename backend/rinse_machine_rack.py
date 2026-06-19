@@ -134,7 +134,12 @@ def dedupe_scan_events_by_id(
 def dedupe_scan_events_by_bag_timestamp(
     events: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> list[dict[str, Any]]:
-    """Keep one scan row per bag and parsed timestamp (duplicate ingest at same instant)."""
+    """Keep one scan row per bag and parsed timestamp (duplicate ingest at same instant).
+
+    Apply only within a single purpose family (e.g. start-cleaning rows). Mixing
+    purposes before dedupe drops legitimate loads when ready-washer or settings
+    scans share the same bag and timestamp as a washer start-cleaning scan.
+    """
     seen: set[tuple[str, Any]] = set()
     out: list[dict[str, Any]] = []
     for ev in dedupe_scan_events_by_id(events):

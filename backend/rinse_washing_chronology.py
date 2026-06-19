@@ -43,9 +43,10 @@ def extract_washing_rows_from_events(
     events: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for ev in dedupe_scan_events_by_bag_timestamp(events):
-        if not is_start_cleaning_purpose(ev.get("purpose")):
-            continue
+    cleaning_events = [
+        ev for ev in events if is_start_cleaning_purpose(ev.get("purpose"))
+    ]
+    for ev in dedupe_scan_events_by_bag_timestamp(cleaning_events):
         rack = extract_washer_rack(ev)
         if not rack:
             continue
