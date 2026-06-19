@@ -20,7 +20,17 @@ EMPLOYEE_DEDUCTION_KEYS = (
     "other2",
 )
 EMPLOYER_TAX_KEYS = ("er_ss", "er_medicare", "futa", "suta", "other")
-PAYMENT_METHODS = ("direct_deposit", "check", "cash", "other")
+PAYMENT_METHODS = ("direct_deposit", "check", "cash", "zelle", "other")
+DOCUMENT_MODES = ("payment_receipt", "official_paystub")
+DEFAULT_DOCUMENT_MODE = "official_paystub"
+
+PAYMENT_METHOD_LABELS = {
+    "direct_deposit": "Direct Deposit",
+    "check": "Check",
+    "cash": "Cash",
+    "zelle": "Zelle",
+    "other": "Other",
+}
 
 ADMIN_OFFICER_ROLES = frozenset(
     {"ADMIN", "PAYROLL_ADMIN", "OPS", "OPERATIONS", "SUPERVISOR", "FINANCE"}
@@ -42,6 +52,7 @@ def ensure_payout_details_columns(cursor) -> None:
         ("payout_details_finalized_at", "DATETIME NULL"),
         ("payout_details_finalized_by", "INT NULL"),
         ("payout_details_audit_json", "JSON NULL"),
+        ("document_mode", "VARCHAR(32) NULL"),
     ]
     for col, typedef in batch_cols:
         if not table_has_column(cursor, "payout_batches", col):
@@ -171,7 +182,9 @@ def _empty_details() -> dict[str, Any]:
             "amount_withheld": 0.0,
             "outstanding_balance": 0.0,
             "prior_unpaid_taxes": 0.0,
+            "prior_period_adjustment": 0.0,
         },
+        "use_payment_receipt": False,
     }
 
 
@@ -192,11 +205,19 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
     for section in ("employee_deductions", "employer_taxes", "payment", "settlement"):
         if section in raw and isinstance(raw[section], dict):
             base[section].update(raw[section])
+    if "use_payment_receipt" in raw:
+        base["use_payment_receipt"] = bool(raw.get("use_payment_receipt"))
     for k in EMPLOYEE_DEDUCTION_KEYS:
         base["employee_deductions"][k] = float(_money(base["employee_deductions"].get(k)))
     for k in EMPLOYER_TAX_KEYS:
         base["employer_taxes"][k] = float(_money(base["employer_taxes"].get(k)))
-    for k in ("amount_paid", "amount_withheld", "outstanding_balance", "prior_unpaid_taxes"):
+    for k in (
+        "amount_paid",
+        "amount_withheld",
+        "outstanding_balance",
+        "prior_unpaid_taxes",
+        "prior_period_adjustment",
+    ):
         base["settlement"][k] = float(_money(base["settlement"].get(k)))
     return base
 
@@ -223,8 +244,9 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
     amount_withheld = float(_money(settlement.get("amount_withheld")))
     outstanding = float(_money(settlement.get("outstanding_balance")))
     prior_unpaid = float(_money(settlement.get("prior_unpaid_taxes")))
+    prior_adj = float(_money(settlement.get("prior_period_adjustment")))
     if outstanding == 0 and amount_paid > 0:
-        outstanding = round(net - amount_paid - amount_withheld + prior_unpaid, 2)
+        outstanding = round(net - amount_paid - amount_withheld + prior_unpaid + prior_adj, 2)
     return {
         "gross_pay": gross,
         "total_employee_deductions": emp_ded,
@@ -235,15 +257,101 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
         "amount_withheld": amount_withheld,
         "outstanding_balance": outstanding,
         "prior_unpaid_taxes": prior_unpaid,
+        "prior_period_adjustment": prior_adj,
     }
 
 
-def enrich_line_with_payout_details(line: dict) -> dict:
+def batch_document_mode(batch: dict) -> str:
+    mode = str(batch.get("document_mode") or DEFAULT_DOCUMENT_MODE).strip().lower()
+    if mode not in DOCUMENT_MODES:
+        return DEFAULT_DOCUMENT_MODE
+    return mode
+
+
+def payment_method_key(details: dict) -> str:
+    payment = details.get("payment") or {}
+    return str(payment.get("method") or "direct_deposit").strip().lower()
+
+
+def is_cash_payment(details: dict) -> bool:
+    return payment_method_key(details) == "cash"
+
+
+def line_uses_payment_receipt(batch: dict, details: dict) -> bool:
+    if batch_document_mode(batch) == "payment_receipt":
+        return True
+    if bool(details.get("use_payment_receipt")):
+        return True
+    return is_cash_payment(details)
+
+
+def receipt_required_for_line(details: dict) -> bool:
+    return is_cash_payment(details)
+
+
+def can_generate_paystub_for_line(batch: dict, details: dict) -> bool:
+    if not batch.get("payout_details_finalized_at"):
+        return False
+    return not line_uses_payment_receipt(batch, details)
+
+
+def can_generate_receipt_for_line(batch: dict, details: dict) -> bool:
+    if not batch.get("payout_details_finalized_at"):
+        return False
+    if batch_document_mode(batch) == "payment_receipt":
+        return True
+    if line_uses_payment_receipt(batch, details):
+        return True
+    if payment_method_key(details) == "check":
+        return True
+    return False
+
+
+def line_document_state(batch: dict, line: dict, details: Optional[dict] = None) -> dict[str, Any]:
+    details = details or parse_line_payout_details(line)
+    effective = (
+        "payment_receipt"
+        if line_uses_payment_receipt(batch, details)
+        else "official_paystub"
+    )
+    return json_safe(
+        {
+            "effective_type": effective,
+            "receipt_available": can_generate_receipt_for_line(batch, details),
+            "receipt_required": receipt_required_for_line(details),
+            "paystub_available": can_generate_paystub_for_line(batch, details),
+            "use_payment_receipt": bool(details.get("use_payment_receipt")),
+        }
+    )
+
+
+def _user_display_meta(conn, user_id: Optional[int]) -> dict[str, str]:
+    if not user_id:
+        return {"display_name": "", "employee_id": ""}
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT employee_id, display_name, username FROM users WHERE id=%s LIMIT 1",
+        (int(user_id),),
+    )
+    row = c.fetchone() or {}
+    name = str(row.get("display_name") or row.get("username") or "").strip()
+    emp_id = str(row.get("employee_id") or "").strip()
+    return {"display_name": name, "employee_id": emp_id}
+
+
+def _payment_method_label(method: str) -> str:
+    key = str(method or "").strip().lower()
+    return PAYMENT_METHOD_LABELS.get(key, method or "—")
+
+
+def enrich_line_with_payout_details(line: dict, batch: Optional[dict] = None) -> dict:
     row = dict(line)
     details = parse_line_payout_details(row)
     totals = compute_line_totals(row, details)
     row["payout_details"] = json_safe(details)
     row["payout_totals"] = json_safe(totals)
+    if batch:
+        row["document"] = line_document_state(batch, row, details)
     return json_safe(row)
 
 
@@ -265,6 +373,18 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
     st = str(batch.get("status") or "")
     confirmed = batch.get("accountant_payment_confirmed_at")
     finalized = batch.get("payout_details_finalized_at")
+    doc_mode = batch_document_mode(batch)
+    lines = batch.get("lines") or []
+    receipt_required_pending = False
+    if confirmed and not finalized:
+        for ln in lines:
+            details = ln.get("payout_details") or parse_line_payout_details(ln)
+            if receipt_required_for_line(details):
+                settlement = details.get("settlement") or {}
+                payment = details.get("payment") or {}
+                if not settlement.get("amount_paid") or not payment.get("date"):
+                    receipt_required_pending = True
+                    break
     return json_safe(
         {
             "batch_status": st,
@@ -277,7 +397,11 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "payout_details_finalized": bool(finalized),
             "payout_details_finalized_at": batch.get("payout_details_finalized_at"),
             "payout_details_finalized_by": batch.get("payout_details_finalized_by"),
-            "paystub_available": bool(finalized),
+            "document_mode": doc_mode,
+            "can_set_document_mode": bool(confirmed) and not finalized,
+            "paystub_available": bool(finalized) and doc_mode == "official_paystub",
+            "payment_receipt_available": bool(finalized) and doc_mode == "payment_receipt",
+            "receipt_required_pending": receipt_required_pending,
             "can_edit_details": bool(confirmed) and not finalized,
         }
     )
@@ -288,7 +412,7 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
 
     batch = enrich_payout_batch(conn, organization_id, batch)
     lines = [
-        enrich_line_with_payout_details(ln) for ln in batch.get("lines") or []
+        enrich_line_with_payout_details(ln, batch) for ln in batch.get("lines") or []
     ]
     batch["lines"] = lines
     batch["payout_workflow"] = payout_workflow_state(batch)
@@ -340,6 +464,8 @@ def _merge_line_details(existing: dict, patch: dict) -> dict:
                         base[section][key] = float(_money(val))
                     else:
                         base[section][key] = val
+    if "use_payment_receipt" in patch:
+        base["use_payment_receipt"] = bool(patch.get("use_payment_receipt"))
     return base
 
 
@@ -441,6 +567,68 @@ def confirm_accountant_payment(
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
 
+def set_batch_document_mode(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    document_mode: str,
+    *,
+    actor_id: int,
+) -> dict:
+    ensure_payout_details_columns(conn.cursor())
+    mode = str(document_mode or "").strip().lower()
+    if mode not in DOCUMENT_MODES:
+        raise ValueError("document_mode must be payment_receipt or official_paystub")
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch.get("accountant_payment_confirmed_at"):
+        raise ValueError("Accountant payment confirmation required before document mode")
+    if batch.get("payout_details_finalized_at"):
+        raise ValueError("Document mode cannot be changed after finalize")
+    events = _audit_append(batch, "document_mode_set", actor_id, mode)
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batches SET
+          document_mode=%s,
+          payout_details_audit_json=%s,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            mode,
+            json.dumps({"events": events}),
+            int(batch_id),
+            int(organization_id),
+        ),
+    )
+    conn.commit()
+    return get_payout_batch_details(conn, organization_id, batch_id) or {}
+
+
+def _validate_finalize_batch(batch: dict) -> None:
+    mode = batch_document_mode(batch)
+    lines = batch.get("lines") or []
+    for ln in lines:
+        details = ln.get("payout_details") or parse_line_payout_details(ln)
+        payment = details.get("payment") or {}
+        settlement = details.get("settlement") or {}
+        name = ln.get("worker_name_snapshot") or ln.get("id")
+        if mode == "payment_receipt":
+            if not payment.get("date"):
+                raise ValueError(f"Payment date required for {name} in receipt mode")
+            if not payment.get("method"):
+                raise ValueError(f"Payment method required for {name} in receipt mode")
+            if float(_money(settlement.get("amount_paid"))) <= 0:
+                raise ValueError(f"Amount paid required for {name} in receipt mode")
+        if receipt_required_for_line(details):
+            if not payment.get("date"):
+                raise ValueError(f"Payment date required for cash payment — {name}")
+            if float(_money(settlement.get("amount_paid"))) <= 0:
+                raise ValueError(f"Amount paid required for cash payment — {name}")
+
+
 def finalize_payout_details(
     conn, organization_id: int, batch_id: int, *, actor_id: int
 ) -> dict:
@@ -452,6 +640,8 @@ def finalize_payout_details(
         raise ValueError("Accountant payment confirmation required before finalize")
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Payout details already finalized")
+    enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
+    _validate_finalize_batch(enriched)
     events = _audit_append(batch, "payout_details_finalized", actor_id)
     c = conn.cursor()
     c.execute(
@@ -489,18 +679,14 @@ def generate_paystub_html(
     if not line:
         raise ValueError("Line not found")
     details = line.get("payout_details") or parse_line_payout_details(line)
+    if not can_generate_paystub_for_line(batch, details):
+        raise ValueError("Official paystub not available for this payment — use payment receipt")
     totals = line.get("payout_totals") or compute_line_totals(line, details)
     ded = details.get("employee_deductions") or {}
     er = details.get("employer_taxes") or {}
     payment = details.get("payment") or {}
     settlement = details.get("settlement") or {}
-    method_labels = {
-        "direct_deposit": "Direct Deposit",
-        "check": "Check",
-        "cash": "Cash",
-        "other": "Other",
-    }
-    method = method_labels.get(str(payment.get("method") or ""), payment.get("method") or "—")
+    method = _payment_method_label(payment.get("method"))
 
     def row(label: str, amt: float) -> str:
         return f"<tr><td>{label}</td><td style='text-align:right'>${amt:,.2f}</td></tr>"
@@ -513,6 +699,24 @@ def generate_paystub_html(
     if not ded_rows:
         ded_rows = row("Total deductions", totals["total_employee_deductions"])
 
+    er_label_map = {
+        "er_ss": "ER SS",
+        "er_medicare": "ER Medicare",
+        "futa": "FUTA",
+        "suta": "SUTA",
+        "other": "Other",
+    }
+    er_rows = "".join(
+        row(er_label_map.get(k, k), float(er.get(k) or 0))
+        for k in EMPLOYER_TAX_KEYS
+        if float(er.get(k) or 0) > 0
+    )
+
+    prior_adj = totals.get("prior_period_adjustment") or 0
+    prior_adj_row = (
+        row("Prior-period adjustment", prior_adj) if float(prior_adj) != 0 else ""
+    )
+
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Paystub — {line.get('worker_name_snapshot')}</title>
 <style>
@@ -524,9 +728,10 @@ def generate_paystub_html(
   th {{ text-align: left; color: #007a91; }}
   .total {{ font-weight: 700; }}
   .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; }}
+  .internal {{ font-size: 0.85rem; color: #64748b; }}
 </style></head><body>
 <div class="brand">
-<h1>VeeWash Paystub</h1>
+<h1>VeeWash Official Paystub</h1>
 <p class="meta"><strong>{line.get('worker_name_snapshot')}</strong><br>
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}<br>
 Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.get('rate') or 0):,.2f}/hr</p>
@@ -534,9 +739,10 @@ Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.ge
 <table>
 {row('Gross pay', totals['gross_pay'])}
 </table>
-<h2>Employee deductions</h2>
+<h2>Employee tax deductions</h2>
 <table>{ded_rows}
 <tr class="total"><td>Total deductions</td><td style="text-align:right">${totals['total_employee_deductions']:,.2f}</td></tr>
+{prior_adj_row}
 <tr class="total"><td>Net pay</td><td style="text-align:right">${totals['net_pay']:,.2f}</td></tr>
 </table>
 <h2>Payment</h2>
@@ -553,7 +759,78 @@ Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.ge
 {row('Prior unpaid taxes', totals['prior_unpaid_taxes'])}
 {row('Outstanding balance', totals['outstanding_balance'])}
 </table>
+<h2 class="internal">Employer taxes (internal record)</h2>
+<table class="internal">{er_rows or row('Total employer taxes', totals['total_employer_taxes'])}
+<tr class="total"><td>Employer cost</td><td style='text-align:right'>${totals['employer_cost']:,.2f}</td></tr>
+</table>
 <p class="meta" style="margin-top:24px">Finalized {batch.get('payout_details_finalized_at')}</p>
+</div>
+</body></html>"""
+    return html
+
+
+def generate_payment_receipt_html(
+    conn, organization_id: int, batch_id: int, line_id: int
+) -> str:
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch.get("payout_details_finalized_at"):
+        raise ValueError("Payment receipt not available until payout details are finalized")
+    line = next(
+        (ln for ln in batch.get("lines") or [] if int(ln.get("id")) == int(line_id)),
+        None,
+    )
+    if not line:
+        raise ValueError("Line not found")
+    details = line.get("payout_details") or parse_line_payout_details(line)
+    if not can_generate_receipt_for_line(batch, details):
+        raise ValueError("Payment receipt not available for this line")
+    totals = line.get("payout_totals") or compute_line_totals(line, details)
+    payment = details.get("payment") or {}
+    settlement = details.get("settlement") or {}
+    method = _payment_method_label(payment.get("method"))
+    user_meta = _user_display_meta(conn, line.get("user_id"))
+    employee_id = user_meta.get("employee_id") or "—"
+    prepared = _user_display_meta(conn, batch.get("payout_details_finalized_by"))
+    confirmed = _user_display_meta(conn, batch.get("accountant_payment_confirmed_by"))
+    notes = str(payment.get("notes") or payment.get("reference") or "").strip() or "—"
+
+    def row(label: str, val: str) -> str:
+        return f"<tr><td>{label}</td><td>{val}</td></tr>"
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Payment Receipt — {line.get('worker_name_snapshot')}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 24px; }}
+  h1 {{ color: #0097b2; font-size: 1.4rem; }}
+  .meta {{ color: #475569; margin-bottom: 16px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 12px 0; }}
+  td {{ padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }}
+  .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; }}
+  .notice {{ font-size: 0.85rem; color: #64748b; margin-top: 20px; }}
+</style></head><body>
+<div class="brand">
+<h1>VeeWash Payment Receipt</h1>
+<p class="meta">Proof of manual/cash payment — not a wage statement or official paystub.</p>
+<table>
+{row('Employee', str(line.get('worker_name_snapshot') or '—'))}
+{row('Employee ID', employee_id)}
+{row('Pay period', f"{batch.get('pay_period_start')} – {batch.get('pay_period_end')}")}
+{row('Approved hours', f"{float(line.get('approved_hours') or 0):.2f}")}
+{row('Rate', f"${float(line.get('rate') or 0):,.2f}/hr")}
+{row('Gross earnings', f"${totals['gross_pay']:,.2f}")}
+{row('Amount paid', f"${totals['amount_paid']:,.2f}")}
+{row('Payment method', method)}
+{row('Payment date', str(payment.get('date') or '—'))}
+{row('Notes / reference', notes)}
+</table>
+<table>
+{row('Prepared by', prepared.get('display_name') or '—')}
+{row('Payment confirmed by', confirmed.get('display_name') or '—')}
+</table>
+<p class="notice">This receipt documents payment only. For W-2 periods with tax withholding, retain the official paystub as the wage statement.</p>
+<p class="meta" style="margin-top:12px">Finalized {batch.get('payout_details_finalized_at')}</p>
 </div>
 </body></html>"""
     return html

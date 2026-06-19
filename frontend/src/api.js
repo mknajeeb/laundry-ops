@@ -1253,11 +1253,22 @@ export const confirmPayoutPayment = (batchId) =>
 export const finalizePayoutDetails = (batchId) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/finalize-details`);
 
+export const setPayoutDocumentMode = (batchId, documentMode) =>
+  axios.put(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/document-mode`, {
+    document_mode: documentMode,
+  });
+
 export const getPaystubUrl = (batchId, lineId) =>
   `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystub/${lineId}`;
 
 export const getPaystubHtml = (batchId, lineId) =>
   axios.get(getPaystubUrl(batchId, lineId), { responseType: "text" });
+
+export const getPaymentReceiptUrl = (batchId, lineId) =>
+  `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/payment-receipt/${lineId}`;
+
+export const getPaymentReceiptHtml = (batchId, lineId) =>
+  axios.get(getPaymentReceiptUrl(batchId, lineId), { responseType: "text" });
 
 export const getAccountantYtd = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/accountant/ytd`, { params });

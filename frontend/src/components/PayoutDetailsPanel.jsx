@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Box,
   Button,
   Chip,
   Dialog,
@@ -8,6 +9,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
   InputLabel,
   List,
   ListItemButton,
@@ -16,6 +18,7 @@ import {
   Paper,
   Select,
   Stack,
+  Switch,
   Table,
   TableBody,
   TableCell,
@@ -29,10 +32,12 @@ import SaveIcon from "@mui/icons-material/Save";
 import LockIcon from "@mui/icons-material/Lock";
 import {
   finalizePayoutDetails,
+  getPaymentReceiptHtml,
   getPayoutBatchDetails,
   getPayoutBatches,
   getPaystubHtml,
   putPayoutBatchDetails,
+  setPayoutDocumentMode,
 } from "../api";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
@@ -58,7 +63,13 @@ const PAYMENT_METHODS = [
   { value: "direct_deposit", label: "Direct Deposit" },
   { value: "check", label: "Check" },
   { value: "cash", label: "Cash" },
+  { value: "zelle", label: "Zelle" },
   { value: "other", label: "Other" },
+];
+
+const DOCUMENT_MODES = [
+  { value: "payment_receipt", label: "Payment Receipts" },
+  { value: "official_paystub", label: "Official Paystubs" },
 ];
 
 function num(v) {
@@ -74,6 +85,7 @@ function emptyLineState(line) {
     employer_taxes: { ...(pd.employer_taxes || {}) },
     payment: { ...(pd.payment || {}) },
     settlement: { ...(pd.settlement || {}) },
+    use_payment_receipt: Boolean(pd.use_payment_receipt),
   };
 }
 
@@ -94,6 +106,16 @@ function computeLocalTotals(line, draft) {
   };
 }
 
+async function printHtmlDocument(fetchFn) {
+  const res = await fetchFn();
+  const win = window.open("", "_blank");
+  if (!win) return;
+  win.document.open();
+  win.document.write(res.data);
+  win.document.close();
+  win.onload = () => win.print();
+}
+
 export default function PayoutDetailsPanel() {
   const [batches, setBatches] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -102,7 +124,6 @@ export default function PayoutDetailsPanel() {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
-  const [paystubLine, setPaystubLine] = useState(null);
 
   const loadBatches = useCallback(async () => {
     try {
@@ -146,6 +167,12 @@ export default function PayoutDetailsPanel() {
   const canEdit = detail?.payout_workflow?.can_edit_details;
   const finalized = detail?.payout_workflow?.payout_details_finalized;
   const awaitingConfirm = !detail?.payout_workflow?.accountant_payment_confirmed;
+  const documentMode =
+    detail?.payout_workflow?.document_mode ||
+    detail?.document_mode ||
+    "official_paystub";
+  const isReceiptMode = documentMode === "payment_receipt";
+  const canSetDocumentMode = detail?.payout_workflow?.can_set_document_mode;
 
   const readyBatches = useMemo(
     () =>
@@ -167,6 +194,13 @@ export default function PayoutDetailsPanel() {
     }));
   };
 
+  const updateLineFlag = (lineId, key, value) => {
+    setLineDrafts((prev) => ({
+      ...prev,
+      [lineId]: { ...prev[lineId], [key]: value },
+    }));
+  };
+
   const saveDetails = async () => {
     if (!selectedId || !canEdit) return;
     setError("");
@@ -178,6 +212,7 @@ export default function PayoutDetailsPanel() {
         employer_taxes: d.employer_taxes,
         payment: d.payment,
         settlement: d.settlement,
+        use_payment_receipt: d.use_payment_receipt,
       },
     }));
     try {
@@ -190,13 +225,34 @@ export default function PayoutDetailsPanel() {
     }
   };
 
+  const changeDocumentMode = async (mode) => {
+    if (!selectedId || !canSetDocumentMode) return;
+    setError("");
+    try {
+      const res = await setPayoutDocumentMode(selectedId, mode);
+      setDetail(res.data);
+      setInfo(
+        mode === "payment_receipt"
+          ? "Batch set to Payment Receipt mode."
+          : "Batch set to Official Paystub mode.",
+      );
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Mode change failed");
+    }
+  };
+
   const doFinalize = async () => {
     if (!selectedId) return;
     try {
       const res = await finalizePayoutDetails(selectedId);
       setDetail(res.data);
       setFinalizeOpen(false);
-      setInfo("Payout details finalized. Paystubs are now available.");
+      setInfo(
+        isReceiptMode
+          ? "Payout details finalized. Payment receipts are now available."
+          : "Payout details finalized. Paystubs are now available.",
+      );
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Finalize failed");
@@ -206,17 +262,24 @@ export default function PayoutDetailsPanel() {
   const printPaystub = async (lineId) => {
     if (!selectedId) return;
     try {
-      const res = await getPaystubHtml(selectedId, lineId);
-      const win = window.open("", "_blank");
-      if (!win) return;
-      win.document.open();
-      win.document.write(res.data);
-      win.document.close();
-      win.onload = () => win.print();
+      await printHtmlDocument(() => getPaystubHtml(selectedId, lineId));
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Paystub load failed");
     }
   };
+
+  const printReceipt = async (lineId) => {
+    if (!selectedId) return;
+    try {
+      await printHtmlDocument(() => getPaymentReceiptHtml(selectedId, lineId));
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Receipt load failed");
+    }
+  };
+
+  const finalizeMessage = isReceiptMode
+    ? "This locks payment edits and enables payment receipt generation for all workers in this batch."
+    : "This locks tax/deduction edits and enables official paystub generation. Cash payments still require a payment receipt.";
 
   return (
     <Stack spacing={2}>
@@ -232,7 +295,7 @@ export default function PayoutDetailsPanel() {
           Payout details
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Enter taxes, deductions, payment info, and settlement after accountant confirms payment.
+          After accountant confirms payment, choose document mode and enter payment or tax details.
         </Typography>
       </Paper>
 
@@ -290,6 +353,36 @@ export default function PayoutDetailsPanel() {
             </Stack>
           </Stack>
 
+          {canSetDocumentMode ? (
+            <Stack direction="row" alignItems="center" gap={2} sx={{ mt: 2 }}>
+              <FormControl size="small" sx={{ minWidth: 220 }}>
+                <InputLabel>Batch document mode</InputLabel>
+                <Select
+                  label="Batch document mode"
+                  value={documentMode}
+                  onChange={(e) => changeDocumentMode(e.target.value)}
+                >
+                  {DOCUMENT_MODES.map((m) => (
+                    <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <Typography variant="caption" color="text.secondary">
+                {isReceiptMode
+                  ? "Payment receipts — no tax section. For manual/cash or non-withholding periods."
+                  : "Official paystubs — enter tax deductions. Cash payments still need a receipt."}
+              </Typography>
+            </Stack>
+          ) : finalized ? (
+            <Chip
+              size="small"
+              sx={{ mt: 2 }}
+              label={
+                isReceiptMode ? "Document mode: Payment Receipts" : "Document mode: Official Paystubs"
+              }
+            />
+          ) : null}
+
           {awaitingConfirm ? (
             <Alert severity="warning" sx={{ mt: 2 }}>
               Accountant must confirm payment before you can enter payout details.
@@ -297,16 +390,25 @@ export default function PayoutDetailsPanel() {
           ) : null}
           {finalized ? (
             <Alert severity="success" sx={{ mt: 2 }}>
-              Finalized — paystubs available for download/print.
+              {isReceiptMode
+                ? "Finalized — payment receipts available for download/print."
+                : "Finalized — paystubs and receipts (cash/check) available for download/print."}
             </Alert>
           ) : null}
 
           {(detail.lines || []).map((ln) => {
             const draft = lineDrafts[ln.id] || emptyLineState(ln);
             const totals = computeLocalTotals(ln, draft);
+            const doc = ln.document || {};
+            const method = draft.payment?.method || "direct_deposit";
+            const cashSelected = method === "cash";
+            const receiptRequired = cashSelected || doc.receipt_required;
+            const showPaystubBtn = finalized && doc.paystub_available;
+            const showReceiptBtn = finalized && doc.receipt_available;
+
             return (
               <Paper key={ln.id} variant="outlined" sx={{ p: 2, mt: 2 }}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={1}>
                   <Box>
                     <Typography fontWeight={600}>{ln.worker_name_snapshot}</Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -314,73 +416,103 @@ export default function PayoutDetailsPanel() {
                       {totals.gross.toFixed(2)}
                     </Typography>
                   </Box>
-                  {finalized ? (
-                    <Button
-                      size="small"
-                      startIcon={<PrintIcon />}
-                      onClick={() => printPaystub(ln.id)}
-                    >
-                      Paystub
-                    </Button>
-                  ) : (
-                    <Chip size="small" label="Paystub locked" />
-                  )}
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    {showPaystubBtn ? (
+                      <Button size="small" startIcon={<PrintIcon />} onClick={() => printPaystub(ln.id)}>
+                        Paystub
+                      </Button>
+                    ) : null}
+                    {showReceiptBtn ? (
+                      <Button size="small" startIcon={<PrintIcon />} onClick={() => printReceipt(ln.id)}>
+                        Receipt
+                      </Button>
+                    ) : null}
+                    {!finalized ? (
+                      <Chip size="small" label="Documents locked" />
+                    ) : null}
+                  </Stack>
                 </Stack>
 
-                <Typography variant="subtitle2" sx={{ mt: 2, color: VEEWASH_BRAND.primaryDark }}>
-                  Employee deductions
-                </Typography>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      {DEDUCTION_FIELDS.map((f) => (
-                        <TableCell key={f.key}>{f.label}</TableCell>
+                {cashSelected && !finalized ? (
+                  <Alert severity="info" sx={{ mt: 1 }}>
+                    Cash payment — a payment receipt is required when finalized.
+                  </Alert>
+                ) : null}
+
+                {!isReceiptMode && canEdit ? (
+                  <FormControlLabel
+                    sx={{ mt: 1 }}
+                    control={
+                      <Switch
+                        size="small"
+                        checked={Boolean(draft.use_payment_receipt)}
+                        onChange={(e) =>
+                          updateLineFlag(ln.id, "use_payment_receipt", e.target.checked)
+                        }
+                      />
+                    }
+                    label="Use payment receipt for this employee (override)"
+                  />
+                ) : null}
+
+                {!isReceiptMode ? (
+                  <>
+                    <Typography variant="subtitle2" sx={{ mt: 2, color: VEEWASH_BRAND.primaryDark }}>
+                      Employee deductions
+                    </Typography>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          {DEDUCTION_FIELDS.map((f) => (
+                            <TableCell key={f.key}>{f.label}</TableCell>
+                          ))}
+                          <TableCell>Total</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        <TableRow>
+                          {DEDUCTION_FIELDS.map((f) => (
+                            <TableCell key={f.key}>
+                              <TextField
+                                size="small"
+                                type="number"
+                                disabled={!canEdit}
+                                value={draft.employee_deductions?.[f.key] ?? ""}
+                                onChange={(e) =>
+                                  updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
+                                }
+                                inputProps={{ style: { width: 72 } }}
+                              />
+                            </TableCell>
+                          ))}
+                          <TableCell>${totals.totalDed.toFixed(2)}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+
+                    <Typography variant="subtitle2" sx={{ mt: 2, color: VEEWASH_BRAND.primaryDark }}>
+                      Employer taxes · Employer cost ${totals.employerCost.toFixed(2)}
+                    </Typography>
+                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
+                      {ER_TAX_FIELDS.map((f) => (
+                        <TextField
+                          key={f.key}
+                          size="small"
+                          label={f.label}
+                          type="number"
+                          disabled={!canEdit}
+                          value={draft.employer_taxes?.[f.key] ?? ""}
+                          onChange={(e) =>
+                            updateDraft(ln.id, "employer_taxes", f.key, e.target.value)
+                          }
+                        />
                       ))}
-                      <TableCell>Total</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    <TableRow>
-                      {DEDUCTION_FIELDS.map((f) => (
-                        <TableCell key={f.key}>
-                          <TextField
-                            size="small"
-                            type="number"
-                            disabled={!canEdit}
-                            value={draft.employee_deductions?.[f.key] ?? ""}
-                            onChange={(e) =>
-                              updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
-                            }
-                            inputProps={{ style: { width: 72 } }}
-                          />
-                        </TableCell>
-                      ))}
-                      <TableCell>${totals.totalDed.toFixed(2)}</TableCell>
-                    </TableRow>
-                  </TableBody>
-                </Table>
+                    </Stack>
+                  </>
+                ) : null}
 
                 <Typography variant="subtitle2" sx={{ mt: 2, color: VEEWASH_BRAND.primaryDark }}>
-                  Employer taxes · Employer cost ${totals.employerCost.toFixed(2)}
-                </Typography>
-                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                  {ER_TAX_FIELDS.map((f) => (
-                    <TextField
-                      key={f.key}
-                      size="small"
-                      label={f.label}
-                      type="number"
-                      disabled={!canEdit}
-                      value={draft.employer_taxes?.[f.key] ?? ""}
-                      onChange={(e) =>
-                        updateDraft(ln.id, "employer_taxes", f.key, e.target.value)
-                      }
-                    />
-                  ))}
-                </Stack>
-
-                <Typography variant="subtitle2" sx={{ mt: 2, color: VEEWASH_BRAND.primaryDark }}>
-                  Payment · Net ${totals.net.toFixed(2)}
+                  Payment{!isReceiptMode ? ` · Net $${totals.net.toFixed(2)}` : ""}
                 </Typography>
                 <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
                   <TextField
@@ -388,15 +520,16 @@ export default function PayoutDetailsPanel() {
                     type="date"
                     label="Date"
                     disabled={!canEdit}
+                    required={receiptRequired}
                     InputLabelProps={{ shrink: true }}
                     value={draft.payment?.date || ""}
                     onChange={(e) => updateDraft(ln.id, "payment", "date", e.target.value)}
                   />
-                  <FormControl size="small" disabled={!canEdit}>
+                  <FormControl size="small" disabled={!canEdit} required={receiptRequired}>
                     <InputLabel>Method</InputLabel>
                     <Select
                       label="Method"
-                      value={draft.payment?.method || "direct_deposit"}
+                      value={method}
                       onChange={(e) => updateDraft(ln.id, "payment", "method", e.target.value)}
                     >
                       {PAYMENT_METHODS.map((m) => (
@@ -418,6 +551,13 @@ export default function PayoutDetailsPanel() {
                     value={draft.payment?.reference || ""}
                     onChange={(e) => updateDraft(ln.id, "payment", "reference", e.target.value)}
                   />
+                  <TextField
+                    size="small"
+                    label="Notes"
+                    disabled={!canEdit}
+                    value={draft.payment?.notes || ""}
+                    onChange={(e) => updateDraft(ln.id, "payment", "notes", e.target.value)}
+                  />
                 </Stack>
 
                 <Typography variant="subtitle2" sx={{ mt: 2, color: VEEWASH_BRAND.primaryDark }}>
@@ -425,16 +565,18 @@ export default function PayoutDetailsPanel() {
                 </Typography>
                 <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
                   {[
-                    { key: "amount_paid", label: "Amount paid" },
+                    { key: "amount_paid", label: "Amount paid", required: isReceiptMode || receiptRequired },
                     { key: "amount_withheld", label: "Withheld" },
                     { key: "outstanding_balance", label: "Outstanding" },
                     { key: "prior_unpaid_taxes", label: "Prior unpaid taxes" },
+                    { key: "prior_period_adjustment", label: "Prior-period adjustment" },
                   ].map((f) => (
                     <TextField
                       key={f.key}
                       size="small"
                       label={f.label}
                       type="number"
+                      required={f.required}
                       disabled={!canEdit}
                       value={draft.settlement?.[f.key] ?? ""}
                       onChange={(e) => updateDraft(ln.id, "settlement", f.key, e.target.value)}
@@ -450,23 +592,11 @@ export default function PayoutDetailsPanel() {
       <Dialog open={finalizeOpen} onClose={() => setFinalizeOpen(false)}>
         <DialogTitle>Finalize payout details?</DialogTitle>
         <DialogContent>
-          <Typography variant="body2">
-            This locks tax/deduction edits and enables paystub generation for all workers in this batch.
-          </Typography>
+          <Typography variant="body2">{finalizeMessage}</Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setFinalizeOpen(false)}>Cancel</Button>
           <Button onClick={doFinalize} variant="contained">Finalize</Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={paystubLine != null} onClose={() => setPaystubLine(null)} maxWidth="md" fullWidth>
-        <DialogTitle>Paystub preview</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">Use Print to save as PDF.</Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setPaystubLine(null)}>Close</Button>
         </DialogActions>
       </Dialog>
     </Stack>

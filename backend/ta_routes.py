@@ -5827,6 +5827,80 @@ def payroll_payout_finalize_details(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/document-mode", methods=["PUT"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_document_mode(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            set_batch_document_mode,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        mode = body.get("document_mode")
+        if not mode:
+            return jsonify({"error": "document_mode required"}), 400
+        try:
+            row = set_batch_document_mode(
+                conn, oid, batch_id, mode, actor_id=uid
+            )
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_document_mode failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/payment-receipt/<int:line_id>",
+    methods=["GET"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_payment_receipt(batch_id: int, line_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_finalized_paystub,
+            generate_payment_receipt_html,
+            get_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        if not can_view_finalized_paystub(conn, uid, batch):
+            return jsonify({"error": "Payment receipt not available"}), 403
+        fmt = str(request.args.get("format") or "html").lower()
+        try:
+            html = generate_payment_receipt_html(conn, oid, batch_id, line_id)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        if fmt == "json":
+            line = next(
+                (ln for ln in batch.get("lines") or [] if int(ln["id"]) == int(line_id)),
+                None,
+            )
+            return jsonify({"html": html, "line": line, "batch": batch})
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_payment_receipt failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route(
     "/payroll/payout-batches/<int:batch_id>/paystub/<int:line_id>",
     methods=["GET"],
