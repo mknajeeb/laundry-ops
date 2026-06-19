@@ -25,11 +25,11 @@ from backend.rinse_bag_stage_bounds import (
     lifecycle_anchor as _lifecycle_anchor,
     load_washer_bounds as _load_washer_bounds,
     sort_key_ev as _sort_key_ev,
-from backend.rinse_sorting_session import sorting_session_bounds as _sorting_session_bounds
     ts_valid as _ts_valid,
     visible_timeline as _visible_timeline,
     workitem_eligible_events,
 )
+from backend.rinse_sorting_session import sorting_session_bounds as _sorting_session_bounds
 from backend.rinse_processing_settings import (
     DEFAULT_DRYING_MINUTES,
     DEFAULT_REJECT_AFTER_CREATE_ISSUE,
