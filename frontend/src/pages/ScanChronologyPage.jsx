@@ -44,8 +44,16 @@ const DATE_PRESETS = [
 const STAGE_TABS = [
   { id: "weighing", label: "Weighing" },
   { id: "sorting", label: "Sorting" },
+  { id: "washing", label: "Washing" },
+  { id: "drying", label: "Drying" },
+  { id: "washer_utilization", label: "Washer Utilization" },
+  { id: "dryer_utilization", label: "Dryer Utilization" },
   { id: "user_activity", label: "User Activity" },
 ];
+
+const DURATION_STAGES = new Set(["weighing", "sorting"]);
+const EVENT_STAGES = new Set(["washing", "drying"]);
+const UTIL_STAGES = new Set(["washer_utilization", "dryer_utilization"]);
 
 const ACTIVITY_TYPE_OPTIONS = [
   { id: "all", label: "All" },
@@ -73,6 +81,34 @@ const STAGE_SUMMARY_LABELS = {
     totalTime: "Total Sorting Time",
     avgDuration: "Average Sort Duration",
     totalGap: "Total Gap Time",
+  },
+  washing: {
+    firstStart: "First Washer Load",
+    lastEnd: "Last Washer Load",
+    totalSessions: "Total Washer Loads",
+    uniqueMachines: "Unique Washers Used",
+    mostUsed: "Most Used Washer",
+  },
+  drying: {
+    firstStart: "First Drying Scan",
+    lastEnd: "Last Drying Scan",
+    totalSessions: "Total Drying Scans",
+    uniqueMachines: "Unique Dryers Used",
+    mostUsed: "Most Used Dryer",
+  },
+  washer_utilization: {
+    firstStart: "First Load",
+    lastEnd: "Last Load",
+    totalSessions: "Total Loads",
+    uniqueMachines: "Unique Washers Used",
+    mostUsed: "Most Used Washer",
+  },
+  dryer_utilization: {
+    firstStart: "First Load",
+    lastEnd: "Last Load",
+    totalSessions: "Total Loads",
+    uniqueMachines: "Unique Dryers Used",
+    mostUsed: "Most Used Dryer",
   },
 };
 
@@ -247,6 +283,9 @@ export default function ScanChronologyPage() {
   const stageParam = (searchParams.get("stage") || "weighing").toLowerCase();
   const activeStage = STAGE_TABS.some((t) => t.id === stageParam) ? stageParam : "weighing";
   const isUserActivity = activeStage === "user_activity";
+  const isDurationStage = DURATION_STAGES.has(activeStage);
+  const isEventStage = EVENT_STAGES.has(activeStage);
+  const isUtilStage = UTIL_STAGES.has(activeStage);
 
   const [datePreset, setDatePreset] = useState("today");
   const [customDate, setCustomDate] = useState(todayRange().start);
@@ -382,12 +421,225 @@ export default function ScanChronologyPage() {
     });
   };
 
-  const stageLabel =
-    activeStage === "weighing"
-      ? "Weighing"
-      : activeStage === "sorting"
-        ? "Sorting"
-        : "User Activity";
+  const stageLabel = STAGE_TABS.find((t) => t.id === activeStage)?.label || "Weighing";
+
+  const renderSummaryCards = () => {
+    if (isUserActivity) {
+      return (
+        <>
+          <SummaryCard label="Active Employees" value={summary.active_employees ?? 0} />
+          <SummaryCard label="Total Activities" value={summary.total_activities ?? 0} />
+          <SummaryCard label="Weighing Count" value={summary.weighing_count ?? 0} />
+          <SummaryCard label="Sorting Sessions" value={summary.sorting_sessions ?? 0} />
+          <SummaryCard label="Washer Loads" value={summary.washer_loads ?? 0} />
+          <SummaryCard label="Dryer Loads" value={summary.dryer_loads ?? 0} />
+          <SummaryCard label="First Activity" value={formatDateTime(summary.first_activity_et) || "—"} />
+          <SummaryCard label="Last Activity" value={formatDateTime(summary.last_activity_et) || "—"} />
+        </>
+      );
+    }
+
+    if (isUtilStage) {
+      return (
+        <>
+          <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_load_et) || "—"} />
+          <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_load_et) || "—"} />
+          <SummaryCard label={labels.totalSessions} value={summary.total_loads ?? 0} />
+          <SummaryCard label={labels.uniqueMachines} value={summary.unique_machines_used ?? 0} />
+          <SummaryCard label={labels.mostUsed} value={summary.most_used_machine || "—"} />
+        </>
+      );
+    }
+
+    if (isEventStage) {
+      const totalKey = activeStage === "washing" ? "total_washer_loads" : "total_drying_scans";
+      const uniqueKey = activeStage === "washing" ? "unique_washers_used" : "unique_dryers_used";
+      const mostUsedKey = activeStage === "washing" ? "most_used_washer" : "most_used_dryer";
+      const firstKey = activeStage === "washing" ? "first_washer_load_et" : "first_drying_scan_et";
+      const lastKey = activeStage === "washing" ? "last_washer_load_et" : "last_drying_scan_et";
+      return (
+        <>
+          <SummaryCard label={labels.firstStart} value={formatDateTime(summary[firstKey]) || "—"} />
+          <SummaryCard label={labels.lastEnd} value={formatDateTime(summary[lastKey]) || "—"} />
+          <SummaryCard label={labels.totalSessions} value={summary[totalKey] ?? 0} />
+          <SummaryCard label={labels.uniqueMachines} value={summary[uniqueKey] ?? 0} />
+          <SummaryCard label={labels.mostUsed} value={summary[mostUsedKey] || "—"} />
+        </>
+      );
+    }
+
+    return (
+      <>
+        <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
+        <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_end_et) || "—"} />
+        <SummaryCard label={labels.totalSessions} value={summary.total_sessions ?? 0} />
+        <SummaryCard label={labels.totalTime} value={formatDurationSeconds(summary.total_stage_seconds)} />
+        <SummaryCard label={labels.avgDuration} value={formatDurationSeconds(summary.average_duration_seconds)} />
+        <SummaryCard label={labels.totalGap} value={formatDurationSeconds(summary.total_gap_seconds)} />
+      </>
+    );
+  };
+
+  const renderSessionsTable = () => {
+    if (isUtilStage) {
+      return (
+        <TableContainer
+          component={Paper}
+          elevation={0}
+          sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
+        >
+          <Table size="small" sx={{ minWidth: 640 }}>
+            <TableHead>
+              <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
+                <TableCell>#</TableCell>
+                <TableCell>Time (ET)</TableCell>
+                <TableCell>Machine</TableCell>
+                <TableCell>Employee</TableCell>
+                <TableCell>Bag ID</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {sessions.map((row) => (
+                <TableRow key={`${row.index}-${row.machine}-${row.timestamp_et}`} hover>
+                  <TableCell>{row.index}</TableCell>
+                  <TableCell>{formatDateTime(row.timestamp_et)}</TableCell>
+                  <TableCell>{row.machine || "—"}</TableCell>
+                  <TableCell>{row.employee || "—"}</TableCell>
+                  <TableCell>
+                    <Button
+                      size="small"
+                      onClick={() => openDrawer(row)}
+                      sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                    >
+                      {row.bag_id}
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      );
+    }
+
+    if (isEventStage) {
+      const rackKey = activeStage === "washing" ? "washer_rack" : "dryer_rack";
+      return (
+        <TableContainer
+          component={Paper}
+          elevation={0}
+          sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
+        >
+          <Table size="small" sx={{ minWidth: 640 }}>
+            <TableHead>
+              <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
+                <TableCell>#</TableCell>
+                <TableCell>Bag ID</TableCell>
+                <TableCell>Employee</TableCell>
+                <TableCell>Time (ET)</TableCell>
+                <TableCell>Machine/Rack</TableCell>
+                <TableCell>Event</TableCell>
+                <TableCell>Confidence</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {sessions.map((row) => (
+                <TableRow key={`${row.index}-${row.bag_id}-${row.timestamp_et}`} hover>
+                  <TableCell>{row.index}</TableCell>
+                  <TableCell>
+                    <Button
+                      size="small"
+                      onClick={() => openDrawer(row)}
+                      sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                    >
+                      {row.bag_id}
+                    </Button>
+                  </TableCell>
+                  <TableCell>{row.employee || "—"}</TableCell>
+                  <TableCell>{formatDateTime(row.timestamp_et)}</TableCell>
+                  <TableCell>{row[rackKey] || "—"}</TableCell>
+                  <TableCell>{row.event_purpose || "—"}</TableCell>
+                  <TableCell>{row.confidence || "—"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      );
+    }
+
+    return (
+      <TableContainer
+        component={Paper}
+        elevation={0}
+        sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
+      >
+        <Table size="small" sx={{ minWidth: 640 }}>
+          <TableHead>
+            <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
+              <TableCell>#</TableCell>
+              <TableCell>Bag ID</TableCell>
+              <TableCell>Employee</TableCell>
+              <TableCell>Start (ET)</TableCell>
+              <TableCell>End (ET)</TableCell>
+              <TableCell>Duration</TableCell>
+              <TableCell>Next start</TableCell>
+              <TableCell>Gap</TableCell>
+              <TableCell>Confidence</TableCell>
+              <TableCell>Source</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {sessions.map((row) => {
+              const longGap =
+                row.gap_until_next_seconds != null && row.gap_until_next_seconds >= LONG_GAP_SECONDS;
+              return (
+                <TableRow
+                  key={`${row.index}-${row.bag_id}-${row.start_et}`}
+                  sx={{
+                    bgcolor: longGap ? "warning.50" : undefined,
+                    "&:hover": { bgcolor: longGap ? "warning.100" : "action.hover" },
+                  }}
+                >
+                  <TableCell>{row.index}</TableCell>
+                  <TableCell>
+                    <Button
+                      size="small"
+                      onClick={() => openDrawer(row)}
+                      sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                    >
+                      {row.bag_id}
+                    </Button>
+                  </TableCell>
+                  <TableCell>{row.employee || "—"}</TableCell>
+                  <TableCell>{formatDateTime(row.start_et)}</TableCell>
+                  <TableCell>{formatDateTime(row.end_et)}</TableCell>
+                  <TableCell>{formatDurationSeconds(row.duration_seconds)}</TableCell>
+                  <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
+                  <TableCell
+                    sx={{
+                      fontWeight: longGap ? 700 : 400,
+                      color: longGap ? "warning.dark" : undefined,
+                    }}
+                  >
+                    {row.gap_until_next_seconds != null
+                      ? formatDurationSeconds(row.gap_until_next_seconds)
+                      : "—"}
+                  </TableCell>
+                  <TableCell>{row.confidence || "—"}</TableCell>
+                  <TableCell>
+                    <Typography variant="body2" sx={{ fontSize: "0.75rem" }}>
+                      {row.source || "—"}
+                    </Typography>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    );
+  };
 
   const drawerStageLabel = drawerSession?.activity_label || stageLabel;
 
@@ -541,14 +793,7 @@ export default function ScanChronologyPage() {
           {isUserActivity ? (
             <>
               <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
-                <SummaryCard label="Active Employees" value={summary.active_employees ?? 0} />
-                <SummaryCard label="Total Activities" value={summary.total_activities ?? 0} />
-                <SummaryCard label="Weighing Count" value={summary.weighing_count ?? 0} />
-                <SummaryCard label="Sorting Sessions" value={summary.sorting_sessions ?? 0} />
-                <SummaryCard label="Washer Loads" value={summary.washer_loads ?? 0} />
-                <SummaryCard label="Dryer Loads" value={summary.dryer_loads ?? 0} />
-                <SummaryCard label="First Activity" value={formatDateTime(summary.first_activity_et) || "—"} />
-                <SummaryCard label="Last Activity" value={formatDateTime(summary.last_activity_et) || "—"} />
+                {renderSummaryCards()}
               </Stack>
 
               {employeeGroups.length === 0 ? (
@@ -564,86 +809,15 @@ export default function ScanChronologyPage() {
           ) : (
             <>
               <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
-                <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
-                <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_end_et) || "—"} />
-                <SummaryCard label={labels.totalSessions} value={summary.total_sessions ?? 0} />
-                <SummaryCard label={labels.totalTime} value={formatDurationSeconds(summary.total_stage_seconds)} />
-                <SummaryCard label={labels.avgDuration} value={formatDurationSeconds(summary.average_duration_seconds)} />
-                <SummaryCard label={labels.totalGap} value={formatDurationSeconds(summary.total_gap_seconds)} />
+                {renderSummaryCards()}
               </Stack>
 
               {sessions.length === 0 ? (
-                <Alert severity="info">No {stageLabel.toLowerCase()} sessions for {activeDateEt}.</Alert>
+                <Alert severity="info">
+                  No {stageLabel.toLowerCase()} {isDurationStage ? "sessions" : "records"} for {activeDateEt}.
+                </Alert>
               ) : (
-                <TableContainer
-                  component={Paper}
-                  elevation={0}
-                  sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
-                >
-                  <Table size="small" sx={{ minWidth: 640 }}>
-                    <TableHead>
-                      <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
-                        <TableCell>#</TableCell>
-                        <TableCell>Bag ID</TableCell>
-                        <TableCell>Employee</TableCell>
-                        <TableCell>Start (ET)</TableCell>
-                        <TableCell>End (ET)</TableCell>
-                        <TableCell>Duration</TableCell>
-                        <TableCell>Next start</TableCell>
-                        <TableCell>Gap</TableCell>
-                        <TableCell>Confidence</TableCell>
-                        <TableCell>Source</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {sessions.map((row) => {
-                        const longGap =
-                          row.gap_until_next_seconds != null && row.gap_until_next_seconds >= LONG_GAP_SECONDS;
-                        return (
-                          <TableRow
-                            key={`${row.index}-${row.bag_id}-${row.start_et}`}
-                            sx={{
-                              bgcolor: longGap ? "warning.50" : undefined,
-                              "&:hover": { bgcolor: longGap ? "warning.100" : "action.hover" },
-                            }}
-                          >
-                            <TableCell>{row.index}</TableCell>
-                            <TableCell>
-                              <Button
-                                size="small"
-                                onClick={() => openDrawer(row)}
-                                sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
-                              >
-                                {row.bag_id}
-                              </Button>
-                            </TableCell>
-                            <TableCell>{row.employee || "—"}</TableCell>
-                            <TableCell>{formatDateTime(row.start_et)}</TableCell>
-                            <TableCell>{formatDateTime(row.end_et)}</TableCell>
-                            <TableCell>{formatDurationSeconds(row.duration_seconds)}</TableCell>
-                            <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
-                            <TableCell
-                              sx={{
-                                fontWeight: longGap ? 700 : 400,
-                                color: longGap ? "warning.dark" : undefined,
-                              }}
-                            >
-                              {row.gap_until_next_seconds != null
-                                ? formatDurationSeconds(row.gap_until_next_seconds)
-                                : "—"}
-                            </TableCell>
-                            <TableCell>{row.confidence || "—"}</TableCell>
-                            <TableCell>
-                              <Typography variant="body2" sx={{ fontSize: "0.75rem" }}>
-                                {row.source || "—"}
-                              </Typography>
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </TableContainer>
+                renderSessionsTable()
               )}
             </>
           )}
@@ -683,14 +857,31 @@ export default function ScanChronologyPage() {
             <Typography variant="body2">
               <strong>Source:</strong> {drawerSession.source || "—"}
             </Typography>
-            {drawerSession.machine_or_rack ? (
+            {drawerSession.machine_or_rack ||
+            drawerSession.washer_rack ||
+            drawerSession.dryer_rack ||
+            drawerSession.machine ? (
               <Typography variant="body2">
-                <strong>Machine/Rack:</strong> {drawerSession.machine_or_rack}
+                <strong>Machine/Rack:</strong>{" "}
+                {drawerSession.machine_or_rack ||
+                  drawerSession.washer_rack ||
+                  drawerSession.dryer_rack ||
+                  drawerSession.machine}
+              </Typography>
+            ) : null}
+            {drawerSession.timestamp_et ? (
+              <Typography variant="body2">
+                <strong>Time (ET):</strong> {formatDateTime(drawerSession.timestamp_et)}
               </Typography>
             ) : null}
             {drawerSession.time_et ? (
               <Typography variant="body2">
                 <strong>Time (ET):</strong> {formatDateTime(drawerSession.time_et)}
+              </Typography>
+            ) : null}
+            {drawerSession.event_purpose ? (
+              <Typography variant="body2">
+                <strong>Event:</strong> {drawerSession.event_purpose}
               </Typography>
             ) : null}
           </Stack>
