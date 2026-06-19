@@ -484,7 +484,8 @@ def build_sorting_chronology_payload(
         "grouping_rules": (
             "One session per post-sent-to-vendor sort cycle (add-photos completion marker); "
             "bounds from rinse_sorting_session (same-employee cleaning/weight start; "
-            "add-photos/split-load/create-issue end; wash/dry scans do not extend sorting); "
+            "add-photos/split-load/create-issue/create-workitem end; same-user ready-washer "
+            "only when end is still add-photos; washer-settings/drying do not extend sorting); "
             "later add-photos after wash/setup downstream activity are ignored; "
             "sort_start capped forward when employee sorted other bags during the window; "
             "global chronological order; gap_until_next = next session sort_start minus current sort_end."

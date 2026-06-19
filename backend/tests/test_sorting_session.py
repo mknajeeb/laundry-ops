@@ -176,6 +176,118 @@ class TestSortingSessionEnd:
         assert session.end_event_purpose == "create-issue"
         assert session.sort_end_et == datetime(2026, 6, 18, 9, 10)
 
+    def test_create_workitem_before_add_photos_not_used(self):
+        tl = _timeline(
+            _ev("weight-entry", datetime(2026, 6, 18, 9, 0), ev_id=2, scan_index=2),
+            _ev("create-workitem", datetime(2026, 6, 18, 9, 2), ev_id=3, scan_index=3),
+            _ev("add-photos", datetime(2026, 6, 18, 9, 5), ev_id=4, scan_index=4),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "add-photos"
+        assert session.sort_end_et == datetime(2026, 6, 18, 9, 5)
+
+    def test_create_workitem_before_current_end_not_used(self):
+        tl = _timeline(
+            _ev("weight-entry", datetime(2026, 6, 18, 9, 0), ev_id=2, scan_index=2),
+            _ev("add-photos", datetime(2026, 6, 18, 9, 5), ev_id=3, scan_index=3),
+            _ev("create-workitem", datetime(2026, 6, 18, 9, 8), ev_id=4, scan_index=4),
+            _ev("create-issue", datetime(2026, 6, 18, 9, 10), ev_id=5, scan_index=5),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "create-issue"
+        assert session.sort_end_et == datetime(2026, 6, 18, 9, 10)
+
+    def test_create_workitem_after_create_issue_extends_end(self):
+        tl = _timeline(
+            _ev("cleaning", datetime(2026, 6, 18, 8, 0), ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 6, 18, 8, 5), ev_id=3, scan_index=3),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 10), ev_id=4, scan_index=4),
+            _ev("create-issue", datetime(2026, 6, 18, 8, 15), ev_id=5, scan_index=5),
+            _ev("create-workitem", datetime(2026, 6, 18, 8, 20), ev_id=6, scan_index=6),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "create-workitem"
+        assert session.sort_end_et == datetime(2026, 6, 18, 8, 20)
+
+    def test_latest_create_workitem_after_create_issue_wins(self):
+        tl = _timeline(
+            _ev("weight-entry", datetime(2026, 6, 18, 9, 0), ev_id=2, scan_index=2),
+            _ev("add-photos", datetime(2026, 6, 18, 9, 5), ev_id=3, scan_index=3),
+            _ev("create-issue", datetime(2026, 6, 18, 9, 10), ev_id=4, scan_index=4),
+            _ev("create-workitem", datetime(2026, 6, 18, 9, 12), ev_id=5, scan_index=5),
+            _ev("workitems-added", datetime(2026, 6, 18, 9, 15), ev_id=6, scan_index=6),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "workitems-added"
+        assert session.sort_end_et == datetime(2026, 6, 18, 9, 15)
+
+    def test_same_user_ready_washer_extends_when_end_still_add_photos(self):
+        tl = _timeline(
+            _ev("cleaning", datetime(2026, 6, 18, 8, 0), ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 6, 18, 8, 5), ev_id=3, scan_index=3),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 10), ev_id=4, scan_index=4),
+            _ev("ready-washer", datetime(2026, 6, 18, 8, 25), ev_id=5, scan_index=5),
+            _ev("start-cleaning", datetime(2026, 6, 18, 8, 40), ev_id=6, scan_index=6),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "ready-washer"
+        assert session.sort_end_et == datetime(2026, 6, 18, 8, 25)
+        assert session.confidence == "exact"
+
+    def test_different_user_ready_washer_not_used(self):
+        tl = _timeline(
+            _ev("cleaning", datetime(2026, 6, 18, 8, 0), ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 6, 18, 8, 5), ev_id=3, scan_index=3),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 10), ev_id=4, scan_index=4),
+            _ev("ready-washer", datetime(2026, 6, 18, 8, 25), ev_id=5, scan_index=5, user="Bob"),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "add-photos"
+
+    def test_ready_washer_after_next_cleaning_not_used(self):
+        tl = _timeline(
+            _ev("cleaning", datetime(2026, 6, 18, 8, 0), ev_id=2, scan_index=2),
+            _ev("weight-entry", datetime(2026, 6, 18, 8, 5), ev_id=3, scan_index=3),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 10), ev_id=4, scan_index=4),
+            _ev("start-cleaning", datetime(2026, 6, 18, 8, 20), ev_id=5, scan_index=5),
+            _ev("ready-washer", datetime(2026, 6, 18, 8, 25), ev_id=6, scan_index=6),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "add-photos"
+
+    def test_washer_settings_does_not_extend(self):
+        tl = _timeline(
+            _ev("weight-entry", datetime(2026, 6, 18, 9, 0), ev_id=2, scan_index=2),
+            _ev("add-photos", datetime(2026, 6, 18, 9, 5), ev_id=3, scan_index=3),
+            _ev("washer-settings", datetime(2026, 6, 18, 9, 8), ev_id=4, scan_index=4),
+        )
+        weight_ev, weight_ts = _weight_pair(tl)
+        session = compute_sorting_session(
+            _anchored(tl), tl, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+        assert session.end_event_purpose == "add-photos"
+
 
 class TestSortingSessionHelpers:
     def test_same_scan_event_by_id(self):

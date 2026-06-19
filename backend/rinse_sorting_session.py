@@ -28,6 +28,7 @@ from backend.rinse_scan_purpose import (
     is_washer_settings_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
+    purpose_contains_workitem,
 )
 
 
@@ -67,14 +68,25 @@ def canonical_add_photos_for_weight(
     return _first_add_photos_after(anchored, after_ts=weight_ts)
 
 
-def _must_not_extend_sorting_end(raw: str | None) -> bool:
-    """Wash/dry stages must not extend measured sorting time."""
+def _is_post_sort_downstream_scan(raw: str | None) -> bool:
+    """Wash/dry/setup scans after a sort cycle that block a later add-photos row."""
     return (
         is_ready_washer_purpose(raw)
         or is_washer_settings_purpose(raw)
         or is_start_cleaning_purpose(raw)
         or is_drying_purpose(raw)
         or is_complete_cleaning_purpose(raw)
+    )
+
+
+def _never_sort_end_extension_purpose(raw: str | None) -> bool:
+    """Purposes that must not extend measured sorting end time."""
+    return (
+        is_washer_settings_purpose(raw)
+        or is_start_cleaning_purpose(raw)
+        or is_drying_purpose(raw)
+        or is_complete_cleaning_purpose(raw)
+        or is_add_photos_purpose(raw)
     )
 
 
@@ -91,7 +103,7 @@ def has_post_sort_downstream_between(
         ts = event_ts(ev)
         if not ts_valid(ts) or ts <= after_ts or ts >= before_ts:
             continue
-        if _must_not_extend_sorting_end(ev.get("purpose")):
+        if _is_post_sort_downstream_scan(ev.get("purpose")):
             return True
     return False
 
@@ -149,6 +161,27 @@ def _last_cleaning_before_ts(
     return max(candidates, key=sort_key_ev) if candidates else None
 
 
+def _next_cleaning_start_ts_by_employee(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    after_ts: datetime,
+    employee: str | None,
+) -> datetime | None:
+    if not employee:
+        return None
+    candidates = [
+        event_ts(ev)
+        for ev in timeline
+        if is_cleaning_purpose_for_activity_start(ev.get("purpose"))
+        and ts_valid(event_ts(ev))
+        and event_ts(ev) > after_ts
+        and _operators_match(_operator(ev), employee)
+    ]
+    if not candidates:
+        return None
+    return min(candidates)
+
+
 def _sorting_start_ev(
     anchored: Sequence[Mapping[str, Any]],
     timeline: Sequence[Mapping[str, Any]],
@@ -182,14 +215,19 @@ def _sorting_start_ev(
 
 def _sorting_end_ev(
     anchored: Sequence[Mapping[str, Any]],
+    timeline: Sequence[Mapping[str, Any]],
     *,
     add_photos_ev: Mapping[str, Any],
     add_ts: datetime,
+    cycle_employee: str | None,
 ) -> Mapping[str, Any]:
     """
-    Sort end: default add-photos; extend to latest split-load after add-photos;
-    then to latest create-issue after add-photos (or after split-load).
-    ready-washer / washer-settings / washing / drying do not extend sorting.
+    Sort end priority (never move backward):
+    1. add-photos (base)
+    2. split-load after add-photos
+    3. latest create-issue after add-photos or split-load
+    4. latest create-workitem / workitems-added strictly after current end
+    5. same-user ready-washer only when end is still add-photos, before next cleaning
     """
     end_ev = add_photos_ev
     end_ts = add_ts
@@ -199,7 +237,7 @@ def _sorting_end_ev(
         ts = event_ts(ev)
         if not ts_valid(ts) or ts <= add_ts:
             continue
-        if _must_not_extend_sorting_end(ev.get("purpose")):
+        if _never_sort_end_extension_purpose(ev.get("purpose")):
             continue
         after_add.append(ev)
 
@@ -215,12 +253,53 @@ def _sorting_end_ev(
         for ev in after_add
         if is_create_issue_purpose(ev.get("purpose"))
         and ts_valid(event_ts(ev))
-        and event_ts(ev) >= add_ts
+        and (event_ts(ev) or end_ts) >= add_ts
     ]
     if create_issues:
-        end_ev = max(create_issues, key=sort_key_ev)
+        latest_issue = max(create_issues, key=sort_key_ev)
+        issue_ts = event_ts(latest_issue)
+        if ts_valid(issue_ts) and issue_ts >= end_ts:
+            end_ev = latest_issue
+            end_ts = issue_ts
+
+    workitems = [
+        ev
+        for ev in after_add
+        if purpose_contains_workitem(ev.get("purpose"))
+        and not is_create_issue_purpose(ev.get("purpose"))
+        and ts_valid(event_ts(ev))
+        and (event_ts(ev) or end_ts) > end_ts
+    ]
+    if workitems:
+        end_ev = max(workitems, key=sort_key_ev)
+        end_ts = event_ts(end_ev) or end_ts
+
+    if same_scan_event(end_ev, add_photos_ev) and cycle_employee:
+        next_cleaning_ts = _next_cleaning_start_ts_by_employee(
+            timeline, after_ts=end_ts, employee=cycle_employee
+        )
+        ready_candidates = [
+            ev
+            for ev in after_add
+            if is_ready_washer_purpose(ev.get("purpose"))
+            and _operators_match(_operator(ev), cycle_employee)
+            and ts_valid(event_ts(ev))
+            and (event_ts(ev) or end_ts) > end_ts
+            and (
+                next_cleaning_ts is None
+                or (event_ts(ev) or end_ts) < next_cleaning_ts
+            )
+        ]
+        if ready_candidates:
+            end_ev = max(ready_candidates, key=sort_key_ev)
 
     return end_ev
+
+
+def _is_exact_sort_end_purpose(raw: str | None) -> bool:
+    if is_lifecycle_sorting_progress_marker_purpose(raw):
+        return True
+    return is_ready_washer_purpose(raw)
 
 
 def _session_confidence(
@@ -230,7 +309,7 @@ def _session_confidence(
     start_exact = sort_start_ev is not None and is_cleaning_purpose_for_activity_start(
         sort_start_ev.get("purpose")
     )
-    end_exact = sort_end_ev is not None and is_lifecycle_sorting_progress_marker_purpose(
+    end_exact = sort_end_ev is not None and _is_exact_sort_end_purpose(
         sort_end_ev.get("purpose")
     )
     if start_exact and end_exact:
@@ -290,12 +369,19 @@ def compute_sorting_session(
     if not ts_valid(add_ts):
         return None
 
+    cycle_employee = _operator(add_ev)
     sort_start_ev = _sorting_start_ev(
         anchored, timeline, add_photos_ev=add_ev, add_ts=add_ts
     )
-    sort_end_ev = _sorting_end_ev(anchored, add_photos_ev=add_ev, add_ts=add_ts)
+    sort_end_ev = _sorting_end_ev(
+        anchored,
+        timeline,
+        add_photos_ev=add_ev,
+        add_ts=add_ts,
+        cycle_employee=cycle_employee,
+    )
     employee = (
-        _operator(add_ev)
+        cycle_employee
         or _operator(sort_end_ev)
         or _operator(sort_start_ev)
         or _operator(weight_ev)
