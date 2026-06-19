@@ -255,10 +255,10 @@ export default function OperationsTimelinePage() {
         <Button
           size="small"
           component={RouterLink}
-          to="/performance/sorting-chronology"
+          to="/performance/scan-chronology"
           sx={{ textTransform: "none" }}
         >
-          Sorting Chronology
+          Scan Chronology
         </Button>
         <Button size="small" component={RouterLink} to="/performance/daily-roster" sx={{ textTransform: "none" }}>
           Daily Roster

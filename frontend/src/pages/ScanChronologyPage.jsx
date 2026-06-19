@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
+  Drawer,
   FormControl,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
   Select,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -22,7 +26,9 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { getSortingChronology } from "../api";
+import CloseIcon from "@mui/icons-material/Close";
+import { getRinseBagScanEvents, getScanChronology } from "../api";
+import FoldingScanEventsTable from "../components/folding/FoldingScanEventsTable";
 import { todayRange, yesterdayRange } from "../utils/foldingDateRange";
 import { formatDateTime, formatFoldingDuration } from "../utils/foldingFormat";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
@@ -34,7 +40,31 @@ const DATE_PRESETS = [
   { id: "custom", label: "Custom ET" },
 ];
 
+const STAGE_TABS = [
+  { id: "weighing", label: "Weighing" },
+  { id: "sorting", label: "Sorting" },
+];
+
 const LONG_GAP_SECONDS = 15 * 60;
+
+const STAGE_SUMMARY_LABELS = {
+  weighing: {
+    firstStart: "First Weigh Start",
+    lastEnd: "Last Weigh End",
+    totalSessions: "Total Weighing Sessions",
+    totalTime: "Total Weighing Time",
+    avgDuration: "Average Weigh Duration",
+    totalGap: "Total Gap Time",
+  },
+  sorting: {
+    firstStart: "First Sort Start",
+    lastEnd: "Last Sort End",
+    totalSessions: "Total Sorting Sessions",
+    totalTime: "Total Sorting Time",
+    avgDuration: "Average Sort Duration",
+    totalGap: "Total Gap Time",
+  },
+};
 
 function resolvePreset(isoDate) {
   const today = todayRange().start;
@@ -80,7 +110,11 @@ function SummaryCard({ label, value, sub }) {
   );
 }
 
-export default function SortingChronologyPage() {
+export default function ScanChronologyPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const stageParam = (searchParams.get("stage") || "weighing").toLowerCase();
+  const activeStage = STAGE_TABS.some((t) => t.id === stageParam) ? stageParam : "weighing";
+
   const [datePreset, setDatePreset] = useState("today");
   const [customDate, setCustomDate] = useState(todayRange().start);
   const [activeDateEt, setActiveDateEt] = useState(todayRange().start);
@@ -90,21 +124,24 @@ export default function SortingChronologyPage() {
   const [employeeFilter, setEmployeeFilter] = useState("");
   const [bagFilter, setBagFilter] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState("");
+  const [drawerSession, setDrawerSession] = useState(null);
+  const [drawerScans, setDrawerScans] = useState([]);
+  const [drawerLoading, setDrawerLoading] = useState(false);
 
-  const load = useCallback(async (dateEt, filters = {}) => {
+  const load = useCallback(async (dateEt, stage, filters = {}) => {
     if (!dateEt) return;
     setLoading(true);
     setError("");
     try {
-      const params = { date_et: dateEt };
+      const params = { date_et: dateEt, stage };
       if (filters.employee) params.employee = filters.employee;
       if (filters.bag_id) params.bag_id = filters.bag_id;
       if (filters.confidence) params.confidence = filters.confidence;
-      const res = await getSortingChronology(params);
+      const res = await getScanChronology(params);
       setData(res.data);
       setActiveDateEt(dateEt);
     } catch (e) {
-      setError(e?.response?.data?.error || e?.message || "Failed to load sorting chronology");
+      setError(e?.response?.data?.error || e?.message || "Failed to load scan chronology");
       setData(null);
     } finally {
       setLoading(false);
@@ -112,18 +149,19 @@ export default function SortingChronologyPage() {
   }, []);
 
   useEffect(() => {
-    load(activeDateEt, {
+    load(activeDateEt, activeStage, {
       employee: employeeFilter,
       bag_id: bagFilter,
       confidence: confidenceFilter,
     });
-  }, []); // initial load only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStage]);
 
   const applyDate = (preset, dateEt) => {
     setDatePreset(preset);
     if (dateEt) {
       setCustomDate(dateEt);
-      load(dateEt, {
+      load(dateEt, activeStage, {
         employee: employeeFilter,
         bag_id: bagFilter,
         confidence: confidenceFilter,
@@ -139,15 +177,42 @@ export default function SortingChronologyPage() {
   };
 
   const applyFilters = () => {
-    load(activeDateEt, {
+    load(activeDateEt, activeStage, {
       employee: employeeFilter,
       bag_id: bagFilter,
       confidence: confidenceFilter,
     });
   };
 
+  const handleStageChange = (_, value) => {
+    if (!value || value === activeStage) return;
+    const next = new URLSearchParams(searchParams);
+    next.set("stage", value);
+    setSearchParams(next, { replace: true });
+  };
+
+  const openDrawer = async (row) => {
+    setDrawerSession(row);
+    setDrawerScans([]);
+    setDrawerLoading(true);
+    try {
+      const res = await getRinseBagScanEvents(row.bag_id);
+      setDrawerScans(res.data?.events || res.data?.scan_events || []);
+    } catch {
+      setDrawerScans([]);
+    } finally {
+      setDrawerLoading(false);
+    }
+  };
+
+  const closeDrawer = () => {
+    setDrawerSession(null);
+    setDrawerScans([]);
+  };
+
   const summary = data?.summary || {};
   const sessions = data?.sessions || [];
+  const labels = STAGE_SUMMARY_LABELS[activeStage] || STAGE_SUMMARY_LABELS.weighing;
 
   const employeeOptions = useMemo(() => {
     const set = new Set();
@@ -157,12 +222,14 @@ export default function SortingChronologyPage() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [data]);
 
+  const stageLabel = activeStage === "weighing" ? "Weighing" : "Sorting";
+
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 1200, mx: "auto" }}>
       <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
         <VeeWashLogo height={28} />
         <Typography variant="h5" fontWeight={800} color={VEEWASH_DASHBOARD.primaryBlue}>
-          Sorting Chronology
+          Scan Chronology
         </Typography>
       </Stack>
 
@@ -174,6 +241,16 @@ export default function SortingChronologyPage() {
           Daily Roster
         </Button>
       </Stack>
+
+      <Tabs
+        value={activeStage}
+        onChange={handleStageChange}
+        sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
+      >
+        {STAGE_TABS.map(({ id, label }) => (
+          <Tab key={id} value={id} label={label} sx={{ textTransform: "none", fontWeight: 600 }} />
+        ))}
+      </Tabs>
 
       <Paper
         elevation={0}
@@ -275,31 +352,16 @@ export default function SortingChronologyPage() {
       {data ? (
         <>
           <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
-            <SummaryCard
-              label="First Sort Start"
-              value={formatDateTime(summary.first_sort_start_et) || "—"}
-            />
-            <SummaryCard
-              label="Last Sort End"
-              value={formatDateTime(summary.last_sort_end_et) || "—"}
-            />
-            <SummaryCard label="Total Sessions" value={summary.total_sessions ?? 0} />
-            <SummaryCard
-              label="Total Sorting Time"
-              value={formatDurationSeconds(summary.total_sorting_seconds)}
-            />
-            <SummaryCard
-              label="Total Gap Time"
-              value={formatDurationSeconds(summary.total_gap_seconds)}
-            />
-            <SummaryCard
-              label="Avg Sort Duration"
-              value={formatDurationSeconds(summary.average_sort_duration_seconds)}
-            />
+            <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
+            <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_end_et) || "—"} />
+            <SummaryCard label={labels.totalSessions} value={summary.total_sessions ?? 0} />
+            <SummaryCard label={labels.totalTime} value={formatDurationSeconds(summary.total_stage_seconds)} />
+            <SummaryCard label={labels.avgDuration} value={formatDurationSeconds(summary.average_duration_seconds)} />
+            <SummaryCard label={labels.totalGap} value={formatDurationSeconds(summary.total_gap_seconds)} />
           </Stack>
 
           {sessions.length === 0 ? (
-            <Alert severity="info">No sorting sessions for {activeDateEt}.</Alert>
+            <Alert severity="info">No {stageLabel.toLowerCase()} sessions for {activeDateEt}.</Alert>
           ) : (
             <TableContainer
               component={Paper}
@@ -310,14 +372,15 @@ export default function SortingChronologyPage() {
                 <TableHead>
                   <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
                     <TableCell>#</TableCell>
+                    <TableCell>Bag ID</TableCell>
                     <TableCell>Employee</TableCell>
-                    <TableCell>Bag</TableCell>
-                    <TableCell>Sort start (ET)</TableCell>
-                    <TableCell>Sort end (ET)</TableCell>
+                    <TableCell>Start (ET)</TableCell>
+                    <TableCell>End (ET)</TableCell>
                     <TableCell>Duration</TableCell>
                     <TableCell>Next start</TableCell>
                     <TableCell>Gap</TableCell>
-                    <TableCell>Source / confidence</TableCell>
+                    <TableCell>Confidence</TableCell>
+                    <TableCell>Source</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -326,19 +389,27 @@ export default function SortingChronologyPage() {
                       row.gap_until_next_seconds != null && row.gap_until_next_seconds >= LONG_GAP_SECONDS;
                     return (
                       <TableRow
-                        key={`${row.index}-${row.bag_id}`}
+                        key={`${row.index}-${row.bag_id}-${row.start_et}`}
                         sx={{
                           bgcolor: longGap ? "warning.50" : undefined,
                           "&:hover": { bgcolor: longGap ? "warning.100" : "action.hover" },
                         }}
                       >
                         <TableCell>{row.index}</TableCell>
+                        <TableCell>
+                          <Button
+                            size="small"
+                            onClick={() => openDrawer(row)}
+                            sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                          >
+                            {row.bag_id}
+                          </Button>
+                        </TableCell>
                         <TableCell>{row.employee || "—"}</TableCell>
-                        <TableCell sx={{ fontWeight: 600 }}>{row.bag_id}</TableCell>
-                        <TableCell>{formatDateTime(row.sort_start_et)}</TableCell>
-                        <TableCell>{formatDateTime(row.sort_end_et)}</TableCell>
+                        <TableCell>{formatDateTime(row.start_et)}</TableCell>
+                        <TableCell>{formatDateTime(row.end_et)}</TableCell>
                         <TableCell>{formatDurationSeconds(row.duration_seconds)}</TableCell>
-                        <TableCell>{formatDateTime(row.next_sort_start_et) || "—"}</TableCell>
+                        <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
                         <TableCell
                           sx={{
                             fontWeight: longGap ? 700 : 400,
@@ -349,12 +420,10 @@ export default function SortingChronologyPage() {
                             ? formatDurationSeconds(row.gap_until_next_seconds)
                             : "—"}
                         </TableCell>
+                        <TableCell>{row.confidence || "—"}</TableCell>
                         <TableCell>
                           <Typography variant="body2" sx={{ fontSize: "0.75rem" }}>
                             {row.source || "—"}
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary">
-                            {row.confidence}
                           </Typography>
                         </TableCell>
                       </TableRow>
@@ -366,6 +435,49 @@ export default function SortingChronologyPage() {
           )}
         </>
       ) : null}
+
+      <Drawer
+        anchor="right"
+        open={Boolean(drawerSession)}
+        onClose={closeDrawer}
+        PaperProps={{ sx: { width: { xs: "100%", sm: 480 }, p: 2 } }}
+      >
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2 }}>
+          <Typography variant="h6" fontWeight={700}>
+            Bag {drawerSession?.bag_id}
+          </Typography>
+          <IconButton onClick={closeDrawer} aria-label="Close">
+            <CloseIcon />
+          </IconButton>
+        </Stack>
+        {drawerSession ? (
+          <Stack spacing={1} sx={{ mb: 2 }}>
+            <Typography variant="body2">
+              <strong>Stage:</strong> {stageLabel}
+            </Typography>
+            <Typography variant="body2">
+              <strong>Start event:</strong> {drawerSession.start_event_purpose || drawerSession.source?.split(" → ")[0] || "—"}
+            </Typography>
+            <Typography variant="body2">
+              <strong>End event:</strong> {drawerSession.end_event_purpose || drawerSession.source?.split(" → ").slice(-1)[0] || "—"}
+            </Typography>
+            <Typography variant="body2">
+              <strong>Confidence:</strong> {drawerSession.confidence || "—"}
+            </Typography>
+            <Typography variant="body2">
+              <strong>Source:</strong> {drawerSession.source || "—"}
+            </Typography>
+          </Stack>
+        ) : null}
+        <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+          Full scan list
+        </Typography>
+        {drawerLoading ? (
+          <CircularProgress size={24} />
+        ) : (
+          <FoldingScanEventsTable events={drawerScans} />
+        )}
+      </Drawer>
     </Box>
   );
 }

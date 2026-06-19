@@ -314,9 +314,53 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/scan-chronology", methods=["GET"])
+    def rinse_shift_analysis_scan_chronology():
+        """Read-only scan session timeline (weighing or sorting) for a single ET calendar day."""
+        from backend.rinse_scan_chronology import build_scan_chronology_payload
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            raw_date = (request.args.get("date_et") or request.args.get("date_start") or "").strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                selected = _today_et()
+            else:
+                selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            stage = (request.args.get("stage") or "sorting").strip().lower()
+            employee = (request.args.get("employee") or "").strip() or None
+            bag_id = (request.args.get("bag_id") or "").strip() or None
+            confidence = (request.args.get("confidence") or "").strip() or None
+            payload = build_scan_chronology_payload(
+                cursor,
+                tenant_oid,
+                selected_date_et=selected,
+                stage=stage,
+                employee_filter=employee,
+                bag_id_filter=bag_id,
+                confidence_filter=confidence,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/sorting-chronology", methods=["GET"])
     def rinse_shift_analysis_sorting_chronology():
-        """Read-only sorting session timeline for a single ET calendar day."""
+        """Legacy sorting chronology endpoint — delegates to scan-chronology stage=sorting."""
+        from backend.rinse_scan_chronology import build_scan_chronology_payload
         from backend.rinse_sorting_chronology import build_sorting_chronology_payload
 
         conn = get_db()
@@ -338,14 +382,25 @@ def register_rinse_shift_analysis_routes(
             employee = (request.args.get("employee") or "").strip() or None
             bag_id = (request.args.get("bag_id") or "").strip() or None
             confidence = (request.args.get("confidence") or "").strip() or None
-            payload = build_sorting_chronology_payload(
-                cursor,
-                tenant_oid,
-                selected_date_et=selected,
-                employee_filter=employee,
-                bag_id_filter=bag_id,
-                confidence_filter=confidence,
-            )
+            if request.args.get("stage"):
+                payload = build_scan_chronology_payload(
+                    cursor,
+                    tenant_oid,
+                    selected_date_et=selected,
+                    stage="sorting",
+                    employee_filter=employee,
+                    bag_id_filter=bag_id,
+                    confidence_filter=confidence,
+                )
+            else:
+                payload = build_sorting_chronology_payload(
+                    cursor,
+                    tenant_oid,
+                    selected_date_et=selected,
+                    employee_filter=employee,
+                    bag_id_filter=bag_id,
+                    confidence_filter=confidence,
+                )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500

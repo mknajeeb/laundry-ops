@@ -60,8 +60,8 @@ export const TENANT_NAV_ITEMS = [
     moduleKey: "scoreboard",
   },
   {
-    to: "/performance/sorting-chronology",
-    labelKey: "nav.sortingChronology",
+    to: "/performance/scan-chronology",
+    labelKey: "nav.scanChronology",
     roles: ["ADMIN", "OPS"],
     moduleKey: "scoreboard",
   },

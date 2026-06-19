@@ -94,7 +94,7 @@ function MonitorNav() {
   return (
     <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
       {[
-        ["/performance/sorting-chronology", "Sorting Chronology"],
+        ["/performance/scan-chronology", "Scan Chronology"],
         ["/performance/operations-timeline", "Operations Timeline"],
         ["/performance/settings", "Settings"],
         ["/performance/user-mapping", "User mapping"],
