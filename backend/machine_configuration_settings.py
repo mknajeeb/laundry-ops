@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from backend.rinse_machine_rack import discover_racks_from_scan_events, parse_rack_capacity_lb
+from backend.rinse_machine_rack import discover_racks_from_scan_events
 from backend.ta_helpers import table_exists
 
 KEY_MACHINE_RACK_CONFIG = "machine_rack_config"
@@ -107,36 +107,41 @@ def _parse_positive_float(raw: Any, default: float) -> float:
     return val
 
 
-def _normalize_capacity_map(
-    raw: Any,
-    defaults: Mapping[str, float],
-) -> dict[str, float]:
-    out = dict(defaults)
+def _normalize_capacity_map(raw: Any) -> dict[str, float]:
+    out: dict[str, float] = {}
     if not isinstance(raw, dict):
         return out
     for key, val in raw.items():
         code = str(key or "").strip()
         if not code:
             continue
-        out[code] = _parse_positive_float(val, out.get(code, defaults.get(code, 1.0)))
+        out[code] = _parse_positive_float(val, 1.0)
     return out
 
 
 def get_machine_rack_config(cursor, organization_id: int) -> dict[str, dict[str, float]]:
     raw = _get_setting(cursor, int(organization_id), KEY_MACHINE_RACK_CONFIG)
-    washers = dict(DEFAULT_WASHER_CAPACITIES)
-    dryers = dict(DEFAULT_DRYER_CAPACITIES)
     if not raw:
-        return {"washers": washers, "dryers": dryers}
+        return {
+            "washers": dict(DEFAULT_WASHER_CAPACITIES),
+            "dryers": dict(DEFAULT_DRYER_CAPACITIES),
+        }
     try:
         parsed = json.loads(raw)
     except (TypeError, json.JSONDecodeError):
-        return {"washers": washers, "dryers": dryers}
+        return {
+            "washers": dict(DEFAULT_WASHER_CAPACITIES),
+            "dryers": dict(DEFAULT_DRYER_CAPACITIES),
+        }
     if not isinstance(parsed, dict):
-        return {"washers": washers, "dryers": dryers}
-    washers = _normalize_capacity_map(parsed.get("washers"), DEFAULT_WASHER_CAPACITIES)
-    dryers = _normalize_capacity_map(parsed.get("dryers"), DEFAULT_DRYER_CAPACITIES)
-    return {"washers": washers, "dryers": dryers}
+        return {
+            "washers": dict(DEFAULT_WASHER_CAPACITIES),
+            "dryers": dict(DEFAULT_DRYER_CAPACITIES),
+        }
+    return {
+        "washers": _normalize_capacity_map(parsed.get("washers")),
+        "dryers": _normalize_capacity_map(parsed.get("dryers")),
+    }
 
 
 def save_machine_rack_config(
@@ -144,23 +149,14 @@ def save_machine_rack_config(
     organization_id: int,
     data: Mapping[str, Any],
 ) -> dict[str, dict[str, float]]:
-    current = get_machine_rack_config(cursor, organization_id)
     washers_in = data.get("washers")
     dryers_in = data.get("dryers")
-    if isinstance(washers_in, dict):
-        merged = dict(current["washers"])
-        for key, val in washers_in.items():
-            code = str(key or "").strip()
-            if code:
-                merged[code] = _parse_positive_float(val, merged.get(code, 1.0))
-        current["washers"] = merged
-    if isinstance(dryers_in, dict):
-        merged = dict(current["dryers"])
-        for key, val in dryers_in.items():
-            code = str(key or "").strip()
-            if code:
-                merged[code] = _parse_positive_float(val, merged.get(code, 1.0))
-        current["dryers"] = merged
+    if not isinstance(washers_in, dict) or not isinstance(dryers_in, dict):
+        raise ValueError("washers and dryers must be objects")
+    current = {
+        "washers": _normalize_capacity_map(washers_in),
+        "dryers": _normalize_capacity_map(dryers_in),
+    }
     _set_setting(
         cursor,
         int(organization_id),
@@ -172,9 +168,6 @@ def save_machine_rack_config(
 
 def _fallback_capacity(code: str, kind: str) -> float:
     defaults = DEFAULT_WASHER_CAPACITIES if kind == "washers" else DEFAULT_DRYER_CAPACITIES
-    parsed = parse_rack_capacity_lb(code)
-    if parsed is not None:
-        return parsed
     if code in defaults:
         return defaults[code]
     return 30.0 if kind == "washers" else 50.0

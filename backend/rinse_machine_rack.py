@@ -6,7 +6,8 @@ import json
 import re
 from typing import Any, Mapping
 
-# Rack codes like W24-30-VW or D4-50-VW encode capacity (lb) in the middle segment.
+# Rack codes like W24-30-VW: first segment is machine id, middle may encode lb capacity.
+# Auto-discovery does not infer capacity from codes; use org defaults or manual entry.
 _RACK_CAPACITY_RE = re.compile(r"^[WD]\d+-(\d+)-", re.IGNORECASE)
 
 
@@ -97,30 +98,19 @@ def parse_rack_capacity_lb(code: str | None) -> float | None:
     return val if val > 0 else None
 
 
-def _record_discovered_rack(dest: dict[str, float | None], code: str) -> None:
-    capacity = parse_rack_capacity_lb(code)
-    if code not in dest:
-        dest[code] = capacity
-    elif dest[code] is None and capacity is not None:
-        dest[code] = capacity
-
-
 def discover_racks_from_scan_events(
     events: list[Mapping[str, Any]],
-) -> dict[str, dict[str, float]]:
-    """Collect unique washer/dryer rack codes and inferred capacities from scan rows."""
-    washers: dict[str, float | None] = {}
-    dryers: dict[str, float | None] = {}
+) -> dict[str, dict[str, float | None]]:
+    """Collect unique washer/dryer rack codes from scan rows (capacity not inferred)."""
+    washers: dict[str, None] = {}
+    dryers: dict[str, None] = {}
     for ev in events:
         for candidate in rack_candidate_strings(ev):
             code = normalize_rack_code(candidate)
             if not code:
                 continue
             if is_washer_rack_code(code):
-                _record_discovered_rack(washers, code)
+                washers.setdefault(code, None)
             elif is_dryer_rack_code(code):
-                _record_discovered_rack(dryers, code)
-    return {
-        "washers": {k: v for k, v in washers.items() if v is not None and v > 0},
-        "dryers": {k: v for k, v in dryers.items() if v is not None and v > 0},
-    }
+                dryers.setdefault(code, None)
+    return {"washers": washers, "dryers": dryers}

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
+import DeleteIcon from "@mui/icons-material/Delete";
 import {
   Alert,
   Box,
   Button,
   CircularProgress,
+  IconButton,
   Paper,
   Stack,
   Table,
@@ -14,6 +16,7 @@ import {
   TableHead,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { getMachineConfiguration, updateMachineConfiguration } from "../api";
@@ -21,7 +24,38 @@ import { useI18n } from "../i18n/I18nContext";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import VeeWashLogo from "../components/VeeWashLogo";
 
-function RackTable({ title, rows, draft, onChange, onAdd }) {
+function configToRows(map) {
+  return Object.entries(map || {})
+    .map(([code, capacity]) => ({ code, capacity }))
+    .sort((a, b) => a.code.localeCompare(b.code));
+}
+
+function rowsToConfig(rows) {
+  const out = {};
+  for (const row of rows) {
+    const code = String(row.code || "").trim();
+    if (!code) continue;
+    const cap = parseFloat(row.capacity);
+    out[code] = Number.isFinite(cap) && cap > 0 ? cap : 1;
+  }
+  return out;
+}
+
+function RackTable({ title, rows, onChange, onAdd, onDelete, t }) {
+  const updateRow = (index, patch) => {
+    onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+  };
+
+  const confirmDelete = (index) => {
+    const code = rows[index]?.code || "";
+    const msg = code
+      ? t("machineConfig.deleteConfirm").replace("{code}", code)
+      : t("machineConfig.deleteConfirmGeneric");
+    if (window.confirm(msg)) {
+      onDelete(index);
+    }
+  };
+
   return (
     <Paper
       elevation={0}
@@ -36,33 +70,62 @@ function RackTable({ title, rows, draft, onChange, onAdd }) {
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
         <Typography variant="subtitle1" fontWeight={800}>{title}</Typography>
         <Button size="small" variant="outlined" onClick={onAdd} sx={{ textTransform: "none" }}>
-          Add rack
+          {t("machineConfig.addRack")}
         </Button>
       </Stack>
       <TableContainer>
         <Table size="small">
           <TableHead>
             <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
-              <TableCell>Rack code</TableCell>
-              <TableCell>Capacity (lb)</TableCell>
+              <TableCell>{t("machineConfig.rackCode")}</TableCell>
+              <TableCell>{t("machineConfig.capacityLb")}</TableCell>
+              <TableCell align="right" sx={{ width: 56 }}>{t("common.actions")}</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((code) => (
-              <TableRow key={code}>
-                <TableCell sx={{ fontWeight: 600 }}>{code}</TableCell>
-                <TableCell>
-                  <TextField
-                    size="small"
-                    type="number"
-                    value={draft[code] ?? ""}
-                    onChange={(e) => onChange(code, e.target.value)}
-                    inputProps={{ min: 0, step: 0.5 }}
-                    sx={{ maxWidth: 120 }}
-                  />
+            {rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={3} sx={{ color: "text.secondary", fontStyle: "italic" }}>
+                  {t("machineConfig.noRacks")}
                 </TableCell>
               </TableRow>
-            ))}
+            ) : (
+              rows.map((row, index) => (
+                <TableRow key={`${index}-${row.code}`}>
+                  <TableCell>
+                    <TextField
+                      size="small"
+                      value={row.code}
+                      onChange={(e) => updateRow(index, { code: e.target.value })}
+                      placeholder="W24-30-VW"
+                      sx={{ minWidth: 140 }}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <TextField
+                      size="small"
+                      type="number"
+                      value={row.capacity ?? ""}
+                      onChange={(e) => updateRow(index, { capacity: e.target.value })}
+                      inputProps={{ min: 0, step: 0.5 }}
+                      sx={{ maxWidth: 120 }}
+                    />
+                  </TableCell>
+                  <TableCell align="right">
+                    <Tooltip title={t("machineConfig.deleteRack")}>
+                      <IconButton
+                        size="small"
+                        color="error"
+                        aria-label={t("machineConfig.deleteRack")}
+                        onClick={() => confirmDelete(index)}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
           </TableBody>
         </Table>
       </TableContainer>
@@ -76,16 +139,16 @@ export default function MachineConfigurationPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [washerDraft, setWasherDraft] = useState({});
-  const [dryerDraft, setDryerDraft] = useState({});
+  const [washerRows, setWasherRows] = useState([]);
+  const [dryerRows, setDryerRows] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       const res = await getMachineConfiguration();
-      setWasherDraft(res.data?.washers || {});
-      setDryerDraft(res.data?.dryers || {});
+      setWasherRows(configToRows(res.data?.washers));
+      setDryerRows(configToRows(res.data?.dryers));
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Failed to load machine configuration");
     } finally {
@@ -97,21 +160,12 @@ export default function MachineConfigurationPage() {
     load();
   }, [load]);
 
-  const washerCodes = Object.keys(washerDraft).sort((a, b) => a.localeCompare(b));
-  const dryerCodes = Object.keys(dryerDraft).sort((a, b) => a.localeCompare(b));
-
   const addWasher = () => {
-    const code = prompt("Washer rack code (e.g. W24-30-VW)");
-    if (!code?.trim()) return;
-    const trimmed = code.trim();
-    setWasherDraft((prev) => ({ ...prev, [trimmed]: prev[trimmed] ?? 30 }));
+    setWasherRows((prev) => [...prev, { code: "", capacity: 30 }]);
   };
 
   const addDryer = () => {
-    const code = prompt("Dryer rack code (e.g. D4-50-VW)");
-    if (!code?.trim()) return;
-    const trimmed = code.trim();
-    setDryerDraft((prev) => ({ ...prev, [trimmed]: prev[trimmed] ?? 35 }));
+    setDryerRows((prev) => [...prev, { code: "", capacity: 35 }]);
   };
 
   const save = async () => {
@@ -119,9 +173,13 @@ export default function MachineConfigurationPage() {
     setMessage("");
     setError("");
     try {
-      const res = await updateMachineConfiguration({ washers: washerDraft, dryers: dryerDraft });
-      setWasherDraft(res.data?.washers || {});
-      setDryerDraft(res.data?.dryers || {});
+      const payload = {
+        washers: rowsToConfig(washerRows),
+        dryers: rowsToConfig(dryerRows),
+      };
+      const res = await updateMachineConfiguration(payload);
+      setWasherRows(configToRows(res.data?.washers));
+      setDryerRows(configToRows(res.data?.dryers));
       setMessage(t("machineConfig.saved"));
     } catch (e) {
       setError(e?.response?.data?.error || e?.message || "Save failed");
@@ -171,17 +229,19 @@ export default function MachineConfigurationPage() {
         <>
           <RackTable
             title={t("machineConfig.washers")}
-            rows={washerCodes}
-            draft={washerDraft}
-            onChange={(code, val) => setWasherDraft((prev) => ({ ...prev, [code]: val }))}
+            rows={washerRows}
+            onChange={setWasherRows}
             onAdd={addWasher}
+            onDelete={(index) => setWasherRows((prev) => prev.filter((_, i) => i !== index))}
+            t={t}
           />
           <RackTable
             title={t("machineConfig.dryers")}
-            rows={dryerCodes}
-            draft={dryerDraft}
-            onChange={(code, val) => setDryerDraft((prev) => ({ ...prev, [code]: val }))}
+            rows={dryerRows}
+            onChange={setDryerRows}
             onAdd={addDryer}
+            onDelete={(index) => setDryerRows((prev) => prev.filter((_, i) => i !== index))}
+            t={t}
           />
           <Button
             variant="contained"
