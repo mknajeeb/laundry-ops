@@ -146,3 +146,90 @@ class TestWeighingChronologySessions:
         assert summary["total_sessions"] == 0
         assert summary["total_weighing_seconds"] == 0
         assert summary["first_weigh_start_et"] is None
+
+    def test_spread_weight_scans_end_at_first_not_last(self):
+        """Re-weigh taps over many minutes must end at the first weight-entry."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 7, 10), ev_id=2, scan_index=2, user="Maria"),
+        ]
+        for idx, minute in enumerate(range(11, 46), start=3):
+            events.append(
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, minute),
+                    ev_id=idx,
+                    scan_index=idx,
+                    user="Maria",
+                )
+            )
+        events.append(
+            _ev("add-photos", datetime(2026, 6, 18, 7, 50), ev_id=40, scan_index=40, user="Maria")
+        )
+        sessions = extract_weighing_sessions_for_bag(
+            "8Y75AMQ010",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 6, 18, 7, 11)
+        assert sessions[0]["duration_seconds"] == 60
+
+    def test_post_add_photos_weight_does_not_extend_weighing(self):
+        """Post-sort/post-clean weight after add-photos is not a weigh cycle end."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("weight-entry", datetime(2026, 6, 18, 7, 9), ev_id=2, scan_index=2, user="Maria"),
+            _ev("add-photos", datetime(2026, 6, 18, 7, 18), ev_id=3, scan_index=3, user="Maria"),
+            _ev("cleaning", datetime(2026, 6, 18, 9, 16), ev_id=4, scan_index=4, user="Tarannum"),
+            _ev("add-photos", datetime(2026, 6, 18, 9, 47), ev_id=5, scan_index=5, user="Tarannum"),
+            _ev("weight-entry", datetime(2026, 6, 18, 9, 50), ev_id=6, scan_index=6, user="Tarannum"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "D6E0SRN9QV",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 6, 18, 7, 9)
+        assert sessions[0]["duration_seconds"] == 0
+        assert all(s["employee"] != "Tarannum" for s in sessions)
+
+    def test_EZMSTPNIIG_post_add_photos_weight_rejected(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("weight-entry", datetime(2026, 6, 18, 7, 10), ev_id=2, scan_index=2, user="Maria"),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 1), ev_id=3, scan_index=3, user="Maria"),
+            _ev("cleaning", datetime(2026, 6, 18, 10, 35), ev_id=4, scan_index=4, user="Tarannum"),
+            _ev("add-photos", datetime(2026, 6, 18, 11, 17), ev_id=5, scan_index=5, user="Tarannum"),
+            _ev("weight-entry", datetime(2026, 6, 18, 11, 19), ev_id=6, scan_index=6, user="Tarannum"),
+        ]
+        sessions = extract_weighing_sessions_for_bag(
+            "EZMSTPNIIG",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["weigh_end_et"] == datetime(2026, 6, 18, 7, 10)
+        assert all(int(s["duration_seconds"]) < 30 * 60 for s in sessions)
+
+    def test_regression_db_bags_if_available(self):
+        try:
+            from backend.db import get_db
+            from backend.rinse_shift_analysis import _load_scan_events_for_bags
+        except Exception:
+            return
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        for bag_id in ("D6E0SRN9QV", "EZMSTPNIIG"):
+            events = (_load_scan_events_for_bags(cursor, 3, [bag_id]).get(bag_id)) or []
+            if not events:
+                continue
+            sessions = extract_weighing_sessions_for_bag(
+                bag_id,
+                events,
+                selected_date_et=SELECTED,
+            )
+            assert all(int(s.get("duration_seconds") or 0) < 30 * 60 for s in sessions), bag_id

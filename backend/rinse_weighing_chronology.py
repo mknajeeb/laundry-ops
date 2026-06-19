@@ -92,6 +92,62 @@ def _first_weight_after_ts(
     return _first_weight_in_window(anchored, after_ts=after_ts, before_ts=None)
 
 
+def _last_weight_in_window(
+    anchored: Sequence[Mapping[str, Any]],
+    *,
+    after_ts: datetime,
+    before_ts: datetime | None = None,
+) -> tuple[Mapping[str, Any], datetime] | None:
+    """Most recent weight-entry strictly after *after_ts* and before *before_ts* (if set)."""
+    last: tuple[Mapping[str, Any], datetime] | None = None
+    for ev in anchored:
+        if not is_weight_entry_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts <= after_ts:
+            continue
+        if before_ts is not None and ts >= before_ts:
+            continue
+        if last is None or ts > last[1]:
+            last = (ev, ts)
+    return last
+
+
+def _add_photos_strictly_between(
+    anchored: Sequence[Mapping[str, Any]],
+    *,
+    after_ts: datetime | None,
+    before_ts: datetime | None,
+) -> bool:
+    """True when add-photos occurs strictly between two timestamps."""
+    if not ts_valid(after_ts) or not ts_valid(before_ts) or after_ts >= before_ts:
+        return False
+    for ev in anchored:
+        if not is_add_photos_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts_valid(ts) and after_ts < ts < before_ts:
+            return True
+    return False
+
+
+def _is_post_sort_weigh_end(
+    anchored: Sequence[Mapping[str, Any]],
+    *,
+    weigh_start_et: datetime | None,
+    weigh_end_et: datetime | None,
+) -> bool:
+    """
+    Weighing closes at the first weight-entry; add-photos between start and that
+    weight means the scan is a later-stage post-sort/post-clean tap, not weigh end.
+    """
+    return _add_photos_strictly_between(
+        anchored,
+        after_ts=weigh_start_et,
+        before_ts=weigh_end_et,
+    )
+
+
 def _add_photos_events_after_anchor(
     anchored: Sequence[Mapping[str, Any]],
 ) -> list[tuple[Mapping[str, Any], datetime]]:
@@ -153,6 +209,28 @@ def _session_row_from_result(
     }
 
 
+def _try_append_weighing_session(
+    sessions: list[dict[str, Any]],
+    *,
+    bid: str,
+    timeline: Sequence[Mapping[str, Any]],
+    anchored: Sequence[Mapping[str, Any]],
+    weight_ev: Mapping[str, Any],
+    weight_ts: datetime,
+    selected_date_et: date,
+) -> None:
+    session = compute_weighing_session(timeline, weight_ev=weight_ev, weight_ts=weight_ts)
+    if _is_post_sort_weigh_end(
+        anchored,
+        weigh_start_et=session.weigh_start_et,
+        weigh_end_et=weight_ts,
+    ):
+        return
+    row = _session_row_from_result(bid, session, selected_date_et=selected_date_et)
+    if row is not None:
+        sessions.append(row)
+
+
 def extract_weighing_sessions_for_bag(
     bag_id: str,
     events: Sequence[Mapping[str, Any]],
@@ -178,19 +256,29 @@ def extract_weighing_sessions_for_bag(
         weight_pair = _first_weight_in_window(anchored, after_ts=prev_bound, before_ts=add_ts)
         if weight_pair is not None:
             weight_ev, weight_ts = weight_pair
-            session = compute_weighing_session(tl, weight_ev=weight_ev, weight_ts=weight_ts)
-            row = _session_row_from_result(bid, session, selected_date_et=selected_date_et)
-            if row is not None:
-                sessions.append(row)
+            _try_append_weighing_session(
+                sessions,
+                bid=bid,
+                timeline=tl,
+                anchored=anchored,
+                weight_ev=weight_ev,
+                weight_ts=weight_ts,
+                selected_date_et=selected_date_et,
+            )
         prev_bound = add_ts
 
     orphan = _first_weight_after_ts(anchored, after_ts=prev_bound)
     if orphan is not None:
         weight_ev, weight_ts = orphan
-        session = compute_weighing_session(tl, weight_ev=weight_ev, weight_ts=weight_ts)
-        row = _session_row_from_result(bid, session, selected_date_et=selected_date_et)
-        if row is not None:
-            sessions.append(row)
+        _try_append_weighing_session(
+            sessions,
+            bid=bid,
+            timeline=tl,
+            anchored=anchored,
+            weight_ev=weight_ev,
+            weight_ts=weight_ts,
+            selected_date_et=selected_date_et,
+        )
 
     return _dedupe_sessions_by_window(sessions)
 
