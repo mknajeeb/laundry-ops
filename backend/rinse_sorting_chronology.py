@@ -24,6 +24,7 @@ from backend.rinse_bag_stage_bounds import (
     gaming_events_from_records,
     is_cleaning_purpose_for_activity_start,
     lifecycle_anchor,
+    sort_key_ev,
     ts_valid,
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start, rinse_wall_calendar_date
@@ -121,6 +122,21 @@ def _last_weight_before_ts(
     return last
 
 
+def _same_scan_event(
+    left: Mapping[str, Any] | None,
+    right: Mapping[str, Any] | None,
+) -> bool:
+    """True when *left* and *right* refer to the same scan row (not just the same timestamp)."""
+    if left is None or right is None:
+        return False
+    if left is right:
+        return True
+    left_id, right_id = left.get("id"), right.get("id")
+    if left_id is not None and right_id is not None:
+        return left_id == right_id
+    return sort_key_ev(left) == sort_key_ev(right)
+
+
 def _add_photos_events_after_anchor(
     anchored: Sequence[Mapping[str, Any]],
 ) -> list[tuple[Mapping[str, Any], datetime]]:
@@ -131,6 +147,24 @@ def _add_photos_events_after_anchor(
         ts = event_ts(ev)
         if ts_valid(ts):
             out.append((ev, ts))
+    return out
+
+
+def _dedupe_sessions_by_window(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per employee + bag + sort start/end window."""
+    seen: set[tuple[Any, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for sess in sessions:
+        key = (
+            sess.get("bag_id"),
+            sess.get("employee"),
+            sess.get("sort_start_et"),
+            sess.get("sort_end_et"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(sess)
     return out
 
 
@@ -166,8 +200,8 @@ def extract_sorting_sessions_for_bag(
         )
         if add_ev is None:
             continue
-        # One session per sort cycle: skip add-photos that belong to an earlier cycle's bounds.
-        if event_ts(add_ev) != add_ts:
+        # One session per sort cycle: only the canonical add-photos for this weight window.
+        if not _same_scan_event(add_ev, add_ev_iter):
             continue
 
         start_at = event_ts(sort_start_ev) if sort_start_ev else weight_ts
@@ -196,7 +230,7 @@ def extract_sorting_sessions_for_bag(
                 "end_event_purpose": normalize_scan_purpose(sort_end_ev.get("purpose")) if sort_end_ev else None,
             }
         )
-    return sessions
+    return _dedupe_sessions_by_window(sessions)
 
 
 def chronology_rows_with_gaps(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:

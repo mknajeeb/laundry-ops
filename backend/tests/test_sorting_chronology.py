@@ -193,3 +193,40 @@ class TestSortingChronologySessions:
         assert len(sessions) == 1
         assert sessions[0]["source"] == "cleaning → create-issue"
         assert sessions[0]["end_event_purpose"] == "create-issue"
+
+    def test_one_session_when_duplicate_add_photos_rows_same_timestamp(self):
+        """Repeated add-photos scan rows for one cycle must not duplicate chronology rows."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 7, 10), ev_id=2, scan_index=2, user="Maria"),
+        ]
+        for idx, minute in enumerate((11, 12, 13, 14, 15), start=3):
+            events.append(
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, minute),
+                    ev_id=idx,
+                    scan_index=idx,
+                    user="Maria",
+                )
+            )
+        for dup in range(4):
+            events.append(
+                _ev(
+                    "add-photos",
+                    datetime(2026, 6, 18, 7, 17),
+                    ev_id=100 + dup,
+                    scan_index=8 + dup,
+                    user="Maria",
+                )
+            )
+        events.append(
+            _ev("start-cleaning", datetime(2026, 6, 18, 7, 30), ev_id=200, scan_index=20, user="Maria")
+        )
+        sessions = extract_sorting_sessions_for_bag(
+            "D6E0SRN9QV",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
