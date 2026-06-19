@@ -1,7 +1,7 @@
-import embeddedVeeWashLogo from "../assets/veewash-logo.png";
+import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 
-/** Transparent-background VeeWash logo — bundled for print/PDF and dashboard branding. */
-export const EMBEDDED_VEEWASH_LOGO = embeddedVeeWashLogo;
+/** Transparent-background VeeWash logo — public path for print/PDF and dashboard branding. */
+export const EMBEDDED_VEEWASH_LOGO = VEEWASH_LOGO_URL;
 
 export function contractorLogoSrc(_prefill) {
   return EMBEDDED_VEEWASH_LOGO;

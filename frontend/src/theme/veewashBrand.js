@@ -23,6 +23,9 @@ export const VEEWASH_BRAND = {
   radiusSm: "6px",
 };
 
+/** Stable public URL for bundled VeeWash logo (print, PDF, kiosk, fallbacks). */
+export const VEEWASH_LOGO_URL = "/assets/veewash-logo.png";
+
 /** CSS custom properties block for print forms. */
 export function veewashPrintCssVars() {
   const b = VEEWASH_BRAND;

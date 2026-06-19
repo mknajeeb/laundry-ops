@@ -50,4 +50,27 @@ describe("buildDirectDepositPrefill", () => {
     );
     expect(prefill.state).toBe("CA");
   });
+
+  it('defaults pay_amount to "Full" when no amount is stored', () => {
+    const prefill = buildDirectDepositPrefill({}, { work_json: {} }, {});
+    expect(prefill.pay_amount).toBe("Full");
+  });
+
+  it("uses explicit pay_amount from profile when set", () => {
+    const prefill = buildDirectDepositPrefill(
+      {},
+      { work_json: { pay_amount: "$500.00" } },
+      {},
+    );
+    expect(prefill.pay_amount).toBe("$500.00");
+  });
+
+  it("uses hourly_rate when pay_amount is absent", () => {
+    const prefill = buildDirectDepositPrefill(
+      {},
+      { work_json: { hourly_rate: "18.50" } },
+      {},
+    );
+    expect(prefill.pay_amount).toBe("18.50");
+  });
 });

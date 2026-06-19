@@ -73,6 +73,25 @@ def test_direct_deposit_prefill_resolves_i9_ssn():
     assert "resolveDirectDepositSsnDisplay" in form
     assert "i9.ssn" in form
     assert "resolveDirectDepositSsnDisplay(payroll, work)" in form
+    assert '"Full"' in form
+
+
+def test_direct_deposit_download_uses_pdf():
+    panel = _read("frontend/src/components/AccountantW2DocumentsPanel.jsx")
+    assert "downloadPrintDocumentPdf" in panel
+    assert "direct-deposit-${slug}.pdf" in panel
+
+
+def test_veewash_logo_public_asset_present():
+    logo = ROOT / "frontend" / "public" / "assets" / "veewash-logo.png"
+    assert logo.is_file()
+    assert logo.stat().st_size > 1000
+
+
+def test_paystub_html_includes_embedded_logo():
+    from backend.veewash_branding import veewash_logo_img_html
+
+    assert 'data:image/png;base64,' in veewash_logo_img_html()
 
 
 def test_w2_doc_catalog_upload_only_except_direct_deposit():

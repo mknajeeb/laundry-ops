@@ -41,7 +41,7 @@ import {
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
-import { downloadPrintDocument } from "../contractorForms/contractorPrint";
+import { downloadPrintDocumentPdf } from "../contractorForms/contractorPrint";
 import {
   ACCOUNTANT_W2_DOCS,
   findDocRecord,
@@ -189,18 +189,27 @@ export default function AccountantW2DocumentsPanel() {
     loadEmployee(selected?.id);
   }, [selected?.id, loadEmployee]);
 
-  const downloadDirectDeposit = () => {
+  const downloadDirectDeposit = async () => {
     if (!printRef.current) return;
     const slug =
       String(selected?.label || "employee")
         .trim()
         .replace(/[^\w.-]+/g, "-")
         .replace(/^-+|-+$/g, "") || "employee";
-    downloadPrintDocument(printRef.current, {
-      pageSize: "letter portrait",
-      filename: `direct-deposit-${slug}.html`,
-      title: "Direct Deposit Authorization",
-    });
+    setBusy("direct_deposit_download");
+    setError("");
+    try {
+      const ok = await downloadPrintDocumentPdf(printRef.current, {
+        pageSize: "letter portrait",
+        filename: `direct-deposit-${slug}.pdf`,
+        title: "Direct Deposit Authorization",
+      });
+      if (!ok) setError("Could not generate direct deposit PDF.");
+    } catch (e) {
+      setError(e?.message || "Direct deposit PDF download failed.");
+    } finally {
+      setBusy("");
+    }
   };
 
   const saveUpload = async () => {
@@ -394,8 +403,12 @@ export default function AccountantW2DocumentsPanel() {
                               <PrintIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
-                          <Tooltip title="Download HTML">
-                            <IconButton size="small" onClick={downloadDirectDeposit}>
+                          <Tooltip title="Download PDF">
+                            <IconButton
+                              size="small"
+                              disabled={busy === "direct_deposit_download"}
+                              onClick={downloadDirectDeposit}
+                            >
                               <DownloadIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>

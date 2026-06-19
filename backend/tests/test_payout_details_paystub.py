@@ -480,6 +480,7 @@ def test_payment_receipt_html_content():
 
         html = generate_payment_receipt_html(conn, 1, 1, 10)
         assert "Payment Receipt" in html
+        assert 'data:image/png;base64,' in html
         assert "Jane Doe" in html
         assert "E-100" in html
         assert "not a wage statement" in html
@@ -638,6 +639,7 @@ def test_paystub_html_available_for_cash_payment():
 
         html = generate_paystub_html(conn, 1, 1, 10)
         assert "VeeWash Official Paystub" in html
+        assert 'data:image/png;base64,' in html
         assert "Cash Worker" in html
         assert "Employee Deductions" in html
 

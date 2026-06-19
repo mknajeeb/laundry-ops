@@ -422,7 +422,7 @@ export function buildDirectDepositPrefill(payroll, hr, org) {
     hire_date: payroll?.hire_date || "",
     email: payroll?.email || "",
     pay_type: work.pay_type || "hourly",
-    pay_amount: work.hourly_rate || work.pay_amount || "",
+    pay_amount: String(work.pay_amount || work.hourly_rate || "").trim() || "Full",
     tax_status: "W-2",
     pay_frequency: work.pay_frequency || "weekly",
     federal_filing_status: filing,

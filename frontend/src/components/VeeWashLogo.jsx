@@ -1,12 +1,12 @@
 import { Box } from "@mui/material";
-import veewashLogo from "../assets/veewash-logo.png";
+import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 
 /** Bundled VeeWash mark — PNG with transparent background. */
 export default function VeeWashLogo({ height = 40, sx = {} }) {
   return (
     <Box
       component="img"
-      src={veewashLogo}
+      src={VEEWASH_LOGO_URL}
       alt="VeeWash"
       sx={{
         height,

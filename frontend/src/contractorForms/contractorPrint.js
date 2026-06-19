@@ -25,13 +25,20 @@ function printPageStyles(pageSize = "letter portrait") {
   return { margin, bodyPad };
 }
 
+/** Resolve root-relative asset URLs so print iframes and PDF capture can load images. */
+export function absolutizePrintAssetUrls(html) {
+  if (!html || typeof window === "undefined") return html;
+  const origin = window.location.origin;
+  return html.replace(/(\s(?:src|href)=["'])\/([^"']+)/g, `$1${origin}/$2`);
+}
+
 /** Build standalone HTML for print/download (same shell as openPrintWindow, no print dialog). */
 export function buildPrintDocumentHtml(
   rootEl,
   { pageSize = "letter portrait", title = "Document" } = {},
 ) {
   if (!rootEl) return "";
-  const html = rootEl.innerHTML;
+  const html = absolutizePrintAssetUrls(rootEl.innerHTML);
   const { margin, bodyPad } = printPageStyles(pageSize);
   const safeTitle = String(title || "Document").replace(/[<>&"]/g, "");
   return `<!DOCTYPE html>
@@ -78,12 +85,89 @@ export function downloadPrintDocument(
   return true;
 }
 
+function loadPrintDocumentIframe(html) {
+  return new Promise((resolve, reject) => {
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.cssText =
+      "position:fixed;left:-10000px;top:0;width:8.5in;height:11in;border:0;visibility:hidden;";
+    iframe.onload = () => {
+      const doc = iframe.contentDocument;
+      if (!doc?.body) {
+        iframe.remove();
+        reject(new Error("Print iframe failed to load"));
+        return;
+      }
+      waitForImages(doc).then(() => resolve({ iframe, doc }));
+    };
+    iframe.onerror = () => {
+      iframe.remove();
+      reject(new Error("Print iframe failed to load"));
+    };
+    document.body.appendChild(iframe);
+    iframe.srcdoc = html;
+  });
+}
+
+function pdfFormatFromPageSize(pageSize) {
+  const size = String(pageSize || "letter portrait").toLowerCase();
+  if (size.startsWith("a4")) return { format: "a4", orientation: "portrait" };
+  if (size.includes("landscape")) return { format: "letter", orientation: "landscape" };
+  return { format: "letter", orientation: "portrait" };
+}
+
+/** Download print-ready PDF (does not open the print dialog). */
+export async function downloadPrintDocumentPdf(
+  rootEl,
+  { pageSize = "letter portrait", filename = "document.pdf", title = "Document" } = {},
+) {
+  const html = buildPrintDocumentHtml(rootEl, { pageSize, title });
+  if (!html) return false;
+
+  let iframe;
+  try {
+    const loaded = await loadPrintDocumentIframe(html);
+    iframe = loaded.iframe;
+    const body = loaded.doc.body;
+
+    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+      import("html2canvas"),
+      import("jspdf"),
+    ]);
+
+    const canvas = await html2canvas(body, {
+      scale: 2,
+      backgroundColor: "#ffffff",
+      logging: false,
+      useCORS: true,
+    });
+
+    const { format, orientation } = pdfFormatFromPageSize(pageSize);
+    const pdf = new jsPDF({ orientation, unit: "in", format });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const imgData = canvas.toDataURL("image/jpeg", 0.95);
+    const imgProps = pdf.getImageProperties(imgData);
+    const imgW = pageW;
+    const imgH = (imgProps.height * imgW) / imgProps.width;
+    const y = imgH <= pageH ? 0 : 0;
+    const drawH = imgH <= pageH ? imgH : pageH;
+    const drawW = imgH <= pageH ? imgW : (imgProps.width * drawH) / imgProps.height;
+    const x = imgH <= pageH ? 0 : (pageW - drawW) / 2;
+    pdf.addImage(imgData, "JPEG", x, y, drawW, drawH);
+    pdf.save(filename);
+    return true;
+  } finally {
+    iframe?.remove();
+  }
+}
+
 export function openPrintWindow(rootEl, { pageSize = "letter portrait" } = {}) {
   if (!rootEl) {
     window.print();
     return;
   }
-  const html = rootEl.innerHTML;
+  const html = absolutizePrintAssetUrls(rootEl.innerHTML);
   const { margin, bodyPad } = printPageStyles(pageSize);
   const win = window.open("", "_blank");
   if (!win) {

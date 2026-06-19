@@ -25,14 +25,15 @@ import {
 } from "../api";
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
+import { VEEWASH_LOGO_URL } from "../theme/veewashBrand";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
 import { resolveOrgLogoUrl } from "../utils/resolveOrgLogoUrl";
 
 const PIN_LEN = 4;
 const SUCCESS_RESET_MS = 4000;
 const STORAGE_KEY = "washpro_attendance_org_slug";
-/** Official V/W mark — transparent PNG (brand/vee-wash-mark). */
-const VEEWASH_ATTENDANCE_LOGO = "/veewash-attendance-logo.png";
+/** Official V/W mark — transparent PNG served from public assets. */
+const VEEWASH_ATTENDANCE_LOGO = VEEWASH_LOGO_URL;
 
 const VW = {
   navy: "#16192b",

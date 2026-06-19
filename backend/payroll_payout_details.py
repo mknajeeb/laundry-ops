@@ -840,6 +840,9 @@ def generate_paystub_html(
     )
 
     notes_html = _paystub_notes_html(batch, details)
+    from backend.veewash_branding import veewash_logo_img_html
+
+    logo_html = veewash_logo_img_html(height_px=52)
 
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Paystub — {line.get('worker_name_snapshot')}</title>
@@ -853,11 +856,12 @@ def generate_paystub_html(
   th {{ text-align: left; color: #007a91; }}
   .total {{ font-weight: 700; }}
   .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; }}
+  .brand-head {{ display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }}
   .internal {{ font-size: 0.85rem; color: #64748b; }}
   .notes p {{ white-space: pre-wrap; margin: 4px 0 12px; }}
 </style></head><body>
 <div class="brand">
-<h1>VeeWash Official Paystub</h1>
+<div class="brand-head">{logo_html}<h1 style="margin:0">VeeWash Official Paystub</h1></div>
 <p class="meta"><strong>{line.get('worker_name_snapshot')}</strong><br>
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}<br>
 Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.get('rate') or 0):,.2f}/hr</p>
@@ -921,6 +925,9 @@ def generate_payment_receipt_html(
     prepared = _user_display_meta(conn, batch.get("payout_details_finalized_by"))
     confirmed = _user_display_meta(conn, batch.get("accountant_payment_confirmed_by"))
     notes = str(payment.get("notes") or payment.get("reference") or "").strip() or "—"
+    from backend.veewash_branding import veewash_logo_img_html
+
+    logo_html = veewash_logo_img_html(height_px=52)
 
     def row(label: str, val: str) -> str:
         return f"<tr><td>{label}</td><td>{val}</td></tr>"
@@ -934,10 +941,11 @@ def generate_payment_receipt_html(
   table {{ width: 100%; border-collapse: collapse; margin: 12px 0; }}
   td {{ padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }}
   .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; }}
+  .brand-head {{ display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }}
   .notice {{ font-size: 0.85rem; color: #64748b; margin-top: 20px; }}
 </style></head><body>
 <div class="brand">
-<h1>VeeWash Payment Receipt</h1>
+<div class="brand-head">{logo_html}<h1 style="margin:0">VeeWash Payment Receipt</h1></div>
 <p class="meta">Proof of manual/cash payment — not a wage statement or official paystub.</p>
 <table>
 {row('Employee', str(line.get('worker_name_snapshot') or '—'))}
