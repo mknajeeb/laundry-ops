@@ -49,10 +49,12 @@ export default function PayrollManagementPage() {
   const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
   const canPayoutDetails = canPayout;
   const canAccountantQueue =
-    (isAccountantRole && canAccountant) ||
-    isAdmin ||
-    isPayrollAdmin ||
-    isSuperAdmin;
+    isAccountantRole &&
+    canAccountant &&
+    !canPayout &&
+    !isAdmin &&
+    !isPayrollAdmin &&
+    !isSuperAdmin;
 
   const readOnlyAccountant =
     isAccountantRole && !canPayout && !canTime && !isAdmin && !isPayrollAdmin && !isSuperAdmin;
@@ -65,10 +67,15 @@ export default function PayrollManagementPage() {
     if (canAccountantQueue) {
       out.push({
         key: "accountant_queue",
-        label: readOnlyAccountant ? "Payment confirmation" : "Payment Queue",
+        label: "Payment confirmation",
       });
     }
-    if (canPayoutDetails) out.push({ key: "payout_details", label: "Payout Details" });
+    if (canPayoutDetails) {
+      out.push({
+        key: "payout_details",
+        label: readOnlyAccountant ? "Payout Details" : "Payment & Details",
+      });
+    }
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });

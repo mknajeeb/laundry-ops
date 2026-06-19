@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from backend.payroll_payout_details import (
+    batch_ready_for_payout_details,
     can_confirm_accountant_payment,
     can_edit_payout_details,
     can_generate_paystub_for_line,
@@ -142,6 +143,7 @@ def test_payout_workflow_state_transitions():
     batch = {"status": "approved_for_payment"}
     wf = payout_workflow_state(batch)
     assert wf["awaiting_accountant_confirmation"] is True
+    assert wf["can_edit_details"] is True
     assert wf["paystub_available"] is False
 
     batch2 = {
@@ -150,6 +152,7 @@ def test_payout_workflow_state_transitions():
     }
     wf2 = payout_workflow_state(batch2)
     assert wf2["can_edit_details"] is True
+    assert wf2["awaiting_accountant_confirmation"] is False
     assert wf2["paystub_available"] is False
 
     batch3 = {
@@ -283,11 +286,25 @@ def test_confirm_payment_blocks_wrong_status():
             assert "approved for payment" in str(e).lower()
 
 
-def test_finalize_requires_accountant_confirm():
+def test_can_edit_payout_details_super_admin():
+    conn = MagicMock()
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"SUPER_ADMIN"},
+    ):
+        assert can_edit_payout_details(conn, 1) is True
+
+
+def test_batch_ready_for_payout_details():
+    assert batch_ready_for_payout_details({"status": "approved_for_payment"}) is True
+    assert batch_ready_for_payout_details({"status": "draft"}) is False
+
+
+def test_finalize_requires_approved_status():
     conn = MagicMock()
     with patch(
         "backend.payroll_payout_details.get_payout_batch",
-        return_value={"id": 1, "status": "approved_for_payment"},
+        return_value={"id": 1, "status": "draft"},
     ), patch(
         "backend.payroll_payout_details.ensure_payout_details_columns",
     ):
@@ -295,7 +312,35 @@ def test_finalize_requires_accountant_confirm():
             finalize_payout_details(conn, 1, 1, actor_id=9)
             assert False, "expected ValueError"
         except ValueError as e:
-            assert "accountant" in str(e).lower()
+            assert "approved for payment" in str(e).lower()
+
+
+def test_update_details_allowed_before_accountant_confirm():
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value = cursor
+    cursor.fetchone.side_effect = [
+        (None,),
+        None,
+    ]
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch",
+        return_value={
+            "id": 1,
+            "status": "approved_for_payment",
+            "payout_details_finalized_at": None,
+            "accountant_payment_confirmed_at": None,
+        },
+    ), patch(
+        "backend.payroll_payout_details.ensure_payout_details_columns",
+    ), patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value={"id": 1, "lines": []},
+    ):
+        update_payout_batch_details(
+            conn, 1, 1, {"batch_note": "note"}, actor_id=9
+        )
+        conn.commit.assert_called()
 
 
 def test_update_details_blocks_before_finalize_lock():
@@ -304,6 +349,7 @@ def test_update_details_blocks_before_finalize_lock():
         "backend.payroll_payout_details.get_payout_batch",
         return_value={
             "id": 1,
+            "status": "approved_for_payment",
             "payout_details_finalized_at": "2026-06-19",
             "accountant_payment_confirmed_at": "2026-06-18",
         },
@@ -610,7 +656,7 @@ def test_finalize_receipt_mode_requires_payment_fields():
     }
     with patch(
         "backend.payroll_payout_details.get_payout_batch",
-        return_value={"id": 1, "accountant_payment_confirmed_at": "x"},
+        return_value={"id": 1, "status": "approved_for_payment", "accountant_payment_confirmed_at": "x"},
     ), patch(
         "backend.payroll_payout_details.ensure_payout_details_columns",
     ), patch(
@@ -630,6 +676,7 @@ def test_set_document_mode_blocks_after_finalize():
         "backend.payroll_payout_details.get_payout_batch",
         return_value={
             "id": 1,
+            "status": "approved_for_payment",
             "accountant_payment_confirmed_at": "x",
             "payout_details_finalized_at": "y",
         },

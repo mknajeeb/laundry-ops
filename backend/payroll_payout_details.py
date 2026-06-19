@@ -40,7 +40,16 @@ PAYMENT_METHOD_LABELS = {
 }
 
 ADMIN_OFFICER_ROLES = frozenset(
-    {"ADMIN", "PAYROLL_ADMIN", "OPS", "OPERATIONS", "SUPERVISOR", "FINANCE"}
+    {
+        "ADMIN",
+        "PAYROLL_ADMIN",
+        "SUPER_ADMIN",
+        "PLATFORM_ADMIN",
+        "OPS",
+        "OPERATIONS",
+        "SUPERVISOR",
+        "FINANCE",
+    }
 )
 VIEW_FINALIZED_ROLES = frozenset(
     {"ADMIN", "PAYROLL_ADMIN", "OPS", "OPERATIONS", "SUPERVISOR", "FINANCE", "ACCOUNTANT"}
@@ -380,14 +389,19 @@ def _audit_append(batch: dict, event: str, actor_id: int, detail: str = "") -> l
     return events
 
 
+def batch_ready_for_payout_details(batch: dict) -> bool:
+    return str(batch.get("status") or "") in ACCOUNTANT_QUEUE_STATUSES
+
+
 def payout_workflow_state(batch: dict) -> dict[str, Any]:
     st = str(batch.get("status") or "")
     confirmed = batch.get("accountant_payment_confirmed_at")
     finalized = batch.get("payout_details_finalized_at")
     doc_mode = batch_document_mode(batch)
+    ready = batch_ready_for_payout_details(batch)
     lines = batch.get("lines") or []
     receipt_required_pending = False
-    if confirmed and not finalized:
+    if ready and not finalized:
         for ln in lines:
             details = ln.get("payout_details") or parse_line_payout_details(ln)
             if receipt_required_for_line(details):
@@ -399,9 +413,7 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
     return json_safe(
         {
             "batch_status": st,
-            "awaiting_accountant_confirmation": (
-                st in ACCOUNTANT_QUEUE_STATUSES and not confirmed
-            ),
+            "awaiting_accountant_confirmation": ready and not confirmed,
             "accountant_payment_confirmed": bool(confirmed),
             "accountant_payment_confirmed_at": batch.get("accountant_payment_confirmed_at"),
             "accountant_payment_confirmed_by": batch.get("accountant_payment_confirmed_by"),
@@ -409,11 +421,11 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "payout_details_finalized_at": batch.get("payout_details_finalized_at"),
             "payout_details_finalized_by": batch.get("payout_details_finalized_by"),
             "document_mode": doc_mode,
-            "can_set_document_mode": bool(confirmed) and not finalized,
+            "can_set_document_mode": ready and not finalized,
             "paystub_available": bool(finalized) and doc_mode == "official_paystub",
             "payment_receipt_available": bool(finalized) and doc_mode == "payment_receipt",
             "receipt_required_pending": receipt_required_pending,
-            "can_edit_details": bool(confirmed) and not finalized,
+            "can_edit_details": ready and not finalized,
         }
     )
 
@@ -494,8 +506,8 @@ def update_payout_batch_details(
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
-    if not batch.get("accountant_payment_confirmed_at"):
-        raise ValueError("Accountant must confirm payment before editing payout details")
+    if not batch_ready_for_payout_details(batch):
+        raise ValueError("Batch must be approved for payment before editing payout details")
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Payout details are finalized — edits are locked")
     lines_patch = body.get("lines") or []
@@ -615,8 +627,8 @@ def set_batch_document_mode(
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
-    if not batch.get("accountant_payment_confirmed_at"):
-        raise ValueError("Accountant payment confirmation required before document mode")
+    if not batch_ready_for_payout_details(batch):
+        raise ValueError("Batch must be approved for payment before setting document mode")
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Document mode cannot be changed after finalize")
     events = _audit_append(batch, "document_mode_set", actor_id, mode)
@@ -669,8 +681,8 @@ def finalize_payout_details(
     batch = get_payout_batch(conn, organization_id, batch_id)
     if not batch:
         raise ValueError("Batch not found")
-    if not batch.get("accountant_payment_confirmed_at"):
-        raise ValueError("Accountant payment confirmation required before finalize")
+    if not batch_ready_for_payout_details(batch):
+        raise ValueError("Batch must be approved for payment before finalize")
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Payout details already finalized")
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}

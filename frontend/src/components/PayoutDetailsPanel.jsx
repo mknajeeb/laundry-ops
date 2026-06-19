@@ -30,7 +30,9 @@ import {
 import PrintIcon from "@mui/icons-material/Print";
 import SaveIcon from "@mui/icons-material/Save";
 import LockIcon from "@mui/icons-material/Lock";
+import { useAuth } from "../context/AuthContext";
 import {
+  confirmPayoutPayment,
   finalizePayoutDetails,
   getPaymentReceiptHtml,
   getPayoutBatchDetails,
@@ -118,6 +120,20 @@ async function printHtmlDocument(fetchFn) {
 }
 
 export default function PayoutDetailsPanel() {
+  const { hasPerm, user } = useAuth();
+  const rolesUpper = useMemo(() => {
+    const roles = user?.roles;
+    if (Array.isArray(roles) && roles.length) {
+      return roles.map((r) => String(r).toUpperCase());
+    }
+    if (user?.role_code) return [String(user.role_code).toUpperCase()];
+    return [];
+  }, [user?.roles, user?.role_code]);
+  const isAccountantRole = rolesUpper.includes("ACCOUNTANT");
+  const canConfirmPayment =
+    isAccountantRole &&
+    (hasPerm("users.view") || hasPerm("ta.settings") || hasPerm("users.edit"));
+
   const [batches, setBatches] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -132,11 +148,8 @@ export default function PayoutDetailsPanel() {
       const res = await getPayoutBatches();
       const all = res.data?.items || [];
       setBatches(
-        all.filter(
-          (b) =>
-            b.accountant_payment_confirmed_at ||
-            b.status === "approved_for_payment" ||
-            b.status === "paid",
+        all.filter((b) =>
+          ["approved_for_payment", "paid", "closed"].includes(b.status),
         ),
       );
     } catch {
@@ -169,7 +182,7 @@ export default function PayoutDetailsPanel() {
 
   const canEdit = detail?.payout_workflow?.can_edit_details;
   const finalized = detail?.payout_workflow?.payout_details_finalized;
-  const awaitingConfirm = !detail?.payout_workflow?.accountant_payment_confirmed;
+  const awaitingConfirm = detail?.payout_workflow?.awaiting_accountant_confirmation;
   const documentMode =
     detail?.payout_workflow?.document_mode ||
     detail?.document_mode ||
@@ -177,15 +190,21 @@ export default function PayoutDetailsPanel() {
   const isReceiptMode = documentMode === "payment_receipt";
   const canSetDocumentMode = detail?.payout_workflow?.can_set_document_mode;
 
-  const readyBatches = useMemo(
-    () =>
-      batches.filter((b) => {
-        const wf = b.payout_workflow;
-        if (wf) return wf.accountant_payment_confirmed || wf.can_edit_details;
-        return b.accountant_payment_confirmed_at;
-      }),
-    [batches],
-  );
+  const readyBatches = useMemo(() => batches, [batches]);
+
+  const confirmPayment = async () => {
+    if (!selectedId || !canConfirmPayment) return;
+    setError("");
+    setInfo("");
+    try {
+      const res = await confirmPayoutPayment(selectedId);
+      setDetail(res.data);
+      setInfo("Payment confirmed.");
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Confirm failed");
+    }
+  };
 
   const updateDraft = (lineId, section, key, value) => {
     setLineDrafts((prev) => ({
@@ -297,10 +316,11 @@ export default function PayoutDetailsPanel() {
 
       <Paper sx={{ p: 2, borderTop: `3px solid ${VEEWASH_BRAND.primary}` }}>
         <Typography variant="h6" sx={{ color: VEEWASH_BRAND.primaryDark }}>
-          Payout details
+          Payment &amp; payout details
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          After accountant confirms payment, choose document mode and enter payment or tax details.
+          Enter deductions, payment method, and settlement for approved batches. Accountants
+          may optionally confirm payment after processing on W-2 Payroll.
         </Typography>
       </Paper>
 
@@ -318,16 +338,16 @@ export default function PayoutDetailsPanel() {
               />
               {b.payout_details_finalized_at ? (
                 <Chip size="small" label="Finalized" color="success" />
-              ) : b.accountant_payment_confirmed_at ? (
+              ) : b.payout_workflow?.can_edit_details || b.status === "approved_for_payment" ? (
                 <Chip size="small" label="Ready" color="info" />
               ) : (
-                <Chip size="small" label="Awaiting accountant" />
+                <Chip size="small" label="Pending approval" />
               )}
             </ListItemButton>
           ))}
           {!readyBatches.length ? (
             <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
-              No batches ready for payout details yet.
+              No approved batches ready for payout details yet.
             </Typography>
           ) : null}
         </List>
@@ -340,6 +360,15 @@ export default function PayoutDetailsPanel() {
               {detail.batch_name}
             </Typography>
             <Stack direction="row" spacing={1}>
+              {awaitingConfirm && canConfirmPayment ? (
+                <Button
+                  variant="contained"
+                  onClick={confirmPayment}
+                  sx={{ bgcolor: VEEWASH_BRAND.primary }}
+                >
+                  Confirm payment
+                </Button>
+              ) : null}
               {canEdit ? (
                 <Button startIcon={<SaveIcon />} variant="outlined" onClick={saveDetails}>
                   Save details
@@ -357,6 +386,18 @@ export default function PayoutDetailsPanel() {
               ) : null}
             </Stack>
           </Stack>
+
+          {awaitingConfirm && !canConfirmPayment ? (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Accountant payment confirmation is optional — you can enter payout details now.
+            </Alert>
+          ) : null}
+          {awaitingConfirm && canConfirmPayment ? (
+            <Alert severity="info" sx={{ mt: 2 }}>
+              Confirm payment after processing this batch on W-2 Payroll, or proceed directly to
+              payout details below.
+            </Alert>
+          ) : null}
 
           {canSetDocumentMode ? (
             <Stack direction="row" alignItems="center" gap={2} sx={{ mt: 2 }}>
@@ -388,11 +429,6 @@ export default function PayoutDetailsPanel() {
             />
           ) : null}
 
-          {awaitingConfirm ? (
-            <Alert severity="warning" sx={{ mt: 2 }}>
-              Accountant must confirm payment before you can enter payout details.
-            </Alert>
-          ) : null}
           {finalized ? (
             <Alert severity="success" sx={{ mt: 2 }}>
               {isReceiptMode
