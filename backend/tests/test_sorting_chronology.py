@@ -130,3 +130,66 @@ class TestSortingChronologySessions:
             selected_date_et=SELECTED,
         )
         assert sessions[0]["confidence"] == "inferred"
+
+    def test_one_session_when_multiple_weight_scans_before_add_photos(self):
+        """Maria Jun 18 pattern: repeated scale scans must not duplicate rows."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 7, 10), ev_id=2, scan_index=2, user="Maria"),
+        ]
+        for idx, minute in enumerate((11, 12, 13, 14, 15), start=3):
+            events.append(
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, minute),
+                    ev_id=idx,
+                    scan_index=idx,
+                    user="Maria",
+                )
+            )
+        events.extend(
+            [
+                _ev("add-photos", datetime(2026, 6, 18, 7, 17), ev_id=8, scan_index=8, user="Maria"),
+                _ev("start-cleaning", datetime(2026, 6, 18, 7, 30), ev_id=9, scan_index=9, user="Maria"),
+            ]
+        )
+        sessions = extract_sorting_sessions_for_bag(
+            "D6E0SRN9QV",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["source"] == "cleaning → add-photos"
+        assert sessions[0]["confidence"] == "exact"
+
+    def test_one_session_when_multiple_weight_scans_end_at_create_issue(self):
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 7, 10), ev_id=2, scan_index=2, user="Maria"),
+        ]
+        for idx, minute in enumerate((18, 19, 20, 21, 22), start=3):
+            events.append(
+                _ev(
+                    "weight-entry",
+                    datetime(2026, 6, 18, 7, minute),
+                    ev_id=idx,
+                    scan_index=idx,
+                    user="Maria",
+                )
+            )
+        events.extend(
+            [
+                _ev("add-photos", datetime(2026, 6, 18, 7, 23), ev_id=8, scan_index=8, user="Maria"),
+                _ev("create-issue", datetime(2026, 6, 18, 7, 28), ev_id=9, scan_index=9, user="Maria"),
+                _ev("start-cleaning", datetime(2026, 6, 18, 7, 35), ev_id=10, scan_index=10, user="Maria"),
+            ]
+        )
+        sessions = extract_sorting_sessions_for_bag(
+            "1VMV2DUPUW",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["source"] == "cleaning → create-issue"
+        assert sessions[0]["end_event_purpose"] == "create-issue"

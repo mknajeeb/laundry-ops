@@ -5,7 +5,8 @@ Builds a time-ordered timeline of sorting sessions from rinse_bag_scan_events.
 Does not alter productivity calculations or bag completion logic.
 
 Session grouping:
-- One session per post-anchor weight cycle where sorting occurred (add-photos after weight).
+- One session per post-anchor sort cycle, keyed by each add-photos completion marker.
+- Uses the last weight-entry before that add-photos (not every intermediate weight scan).
 - Bounds reuse sorting_bounds_v2 (same as activity credits / performance sorting stage).
 - Sessions are ordered globally by sort_start_et; gap_until_next is wall time to the next session start.
 """
@@ -15,7 +16,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from backend.rinse_bag_activity_rules import _all_weight_entries_after_anchor, sorting_bounds_v2
+from backend.rinse_bag_activity_rules import sorting_bounds_v2
 from backend.rinse_bag_stage_bounds import (
     event_ts,
     events_on_or_after,
@@ -27,6 +28,7 @@ from backend.rinse_bag_stage_bounds import (
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start, rinse_wall_calendar_date
 from backend.rinse_scan_purpose import (
+    is_add_photos_purpose,
     is_lifecycle_sorting_progress_marker_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
@@ -105,6 +107,33 @@ def _session_touches_date(
     return False
 
 
+def _last_weight_before_ts(
+    anchored: Sequence[Mapping[str, Any]], *, before_ts: datetime
+) -> tuple[Mapping[str, Any], datetime] | None:
+    """Most recent weight-entry strictly before *before_ts*."""
+    last: tuple[Mapping[str, Any], datetime] | None = None
+    for ev in anchored:
+        if not is_weight_entry_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts_valid(ts) and ts < before_ts:
+            last = (ev, ts)
+    return last
+
+
+def _add_photos_events_after_anchor(
+    anchored: Sequence[Mapping[str, Any]],
+) -> list[tuple[Mapping[str, Any], datetime]]:
+    out: list[tuple[Mapping[str, Any], datetime]] = []
+    for ev in anchored:
+        if not is_add_photos_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if ts_valid(ts):
+            out.append((ev, ts))
+    return out
+
+
 def extract_sorting_sessions_for_bag(
     bag_id: str,
     events: Sequence[Mapping[str, Any]],
@@ -121,20 +150,28 @@ def extract_sorting_sessions_for_bag(
     if anchor_ts is None:
         return []
     anchored = events_on_or_after(tl, anchor_ts)
-    weights = _all_weight_entries_after_anchor(anchored)
-    if not weights:
+    add_photos_events = _add_photos_events_after_anchor(anchored)
+    if not add_photos_events:
         return []
 
     sessions: list[dict[str, Any]] = []
-    for weight_ev, weight_ts in weights:
+    for add_ev_iter, add_ts in add_photos_events:
+        weight_pair = _last_weight_before_ts(anchored, before_ts=add_ts)
+        if weight_pair is None:
+            continue
+        weight_ev, weight_ts = weight_pair
+
         add_ev, sort_start_ev, sort_end_ev = sorting_bounds_v2(
             anchored, weight_ts, weight_ev, full_timeline=tl
         )
         if add_ev is None:
             continue
+        # One session per sort cycle: skip add-photos that belong to an earlier cycle's bounds.
+        if event_ts(add_ev) != add_ts:
+            continue
 
         start_at = event_ts(sort_start_ev) if sort_start_ev else weight_ts
-        end_at = event_ts(sort_end_ev) if sort_end_ev else event_ts(add_ev)
+        end_at = event_ts(sort_end_ev) if sort_end_ev else add_ts
         if not ts_valid(start_at):
             continue
         if not ts_valid(end_at):
@@ -337,8 +374,8 @@ def build_sorting_chronology_payload(
             }
         ),
         "grouping_rules": (
-            "One session per post-sent-to-vendor weight cycle with add-photos after weight; "
-            "bounds from sorting_bounds_v2; global chronological order; "
-            "gap_until_next = next session sort_start minus current sort_end."
+            "One session per post-sent-to-vendor sort cycle (add-photos completion marker); "
+            "bounds from sorting_bounds_v2 using last weight before that add-photos; "
+            "global chronological order; gap_until_next = next session sort_start minus current sort_end."
         ),
     }
