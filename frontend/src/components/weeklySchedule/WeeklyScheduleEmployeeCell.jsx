@@ -46,8 +46,8 @@ export default function WeeklyScheduleEmployeeCell({
   return (
     <Box
       sx={{
-        px: 1.5,
-        py: 1,
+        px: 1.15,
+        py: 0.85,
         borderBottom: "1px solid #e2e8f0",
         bgcolor: excluded ? "#fafafa" : "#fff",
         position: "sticky",
@@ -67,7 +67,7 @@ export default function WeeklyScheduleEmployeeCell({
                 lineHeight: 1.35,
                 textDecoration: excluded ? "line-through" : "none",
                 color: excluded ? "text.secondary" : "text.primary",
-                fontSize: "0.9375rem",
+                fontSize: "0.875rem",
                 wordBreak: isMobile ? "break-word" : "normal",
                 overflowWrap: "anywhere",
               }}

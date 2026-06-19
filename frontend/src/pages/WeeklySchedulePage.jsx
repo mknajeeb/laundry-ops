@@ -10,6 +10,8 @@ import {
   Paper,
   Stack,
   Switch,
+  Tab,
+  Tabs,
   Typography,
   useMediaQuery,
   useTheme,
@@ -35,7 +37,17 @@ import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklySchedule
 import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklyScheduleEmployeeCell";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
 import WeeklyScheduleSummaryBar from "../components/weeklySchedule/WeeklyScheduleSummaryBar";
-import { computeWeekSummary, scheduleCellBackground } from "../components/weeklySchedule/weeklyScheduleRoles";
+import {
+  EMPLOYER_TAB,
+  EMPLOYER_TAB_LABELS,
+  filterEmployeesByEmployerTab,
+  pickDefaultEmployerTab,
+} from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
+import {
+  computeFilteredDaySummaries,
+  computeWeekSummary,
+  scheduleCellBackground,
+} from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -63,11 +75,11 @@ function formatWeekRange(weekStart) {
 
 function daySummary(day) {
   return {
-    people: Number(day?.employee_count || 0),
-    hours: Number(day?.total_hours || 0),
-    sort: Number(day?.sort_count || 0),
-    wash: Number(day?.wash_count || 0),
-    fold: Number(day?.fold_count || 0),
+    people: Number(day?.people ?? day?.employee_count ?? 0),
+    hours: Number(day?.hours ?? day?.total_hours ?? 0),
+    sort: Number(day?.sort ?? day?.sort_count ?? 0),
+    wash: Number(day?.wash ?? day?.wash_count ?? 0),
+    fold: Number(day?.fold ?? day?.fold_count ?? 0),
   };
 }
 
@@ -126,8 +138,8 @@ function ScheduleDayCell({
         handleDrop(employee.user_id, dow, entryId);
       }}
       sx={{
-        px: compact ? 0 : 0.65,
-        py: compact ? 0.75 : 0.45,
+        px: compact ? 0 : 0.5,
+        py: compact ? 0.65 : 0.4,
         minHeight: compact ? 0 : 44,
         borderBottom: compact ? "none" : "1px solid #e2e8f0",
         borderLeft: compact ? "none" : "1px solid #e2e8f0",
@@ -228,6 +240,7 @@ export default function WeeklySchedulePage() {
   const [costSaving, setCostSaving] = useState(false);
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
   const [duplicatingId, setDuplicatingId] = useState(null);
+  const [employerTab, setEmployerTab] = useState(EMPLOYER_TAB.VEEWASH);
 
   const display = data?.display || {};
   const canEdit = display.can_edit_schedule !== false;
@@ -289,25 +302,57 @@ export default function WeeklySchedulePage() {
 
   const dayTotals = data?.totals?.day_totals || [];
 
+  useEffect(() => {
+    if (data?.employees?.length) {
+      setEmployerTab(pickDefaultEmployerTab(data.employees));
+    }
+  }, [data?.week_start]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tabEmployees = useMemo(
+    () => filterEmployeesByEmployerTab(data?.employees || [], employerTab),
+    [data?.employees, employerTab],
+  );
+
+  const tabUserIds = useMemo(
+    () => tabEmployees.map((employee) => employee.user_id),
+    [tabEmployees],
+  );
+
   const weekSummary = useMemo(
-    () => (data ? computeWeekSummary(data, { includeExcluded: showExcluded }) : null),
-    [data, showExcluded],
+    () =>
+      data
+        ? computeWeekSummary(data, {
+            includeExcluded: showExcluded,
+            userIds: tabUserIds,
+          })
+        : null,
+    [data, showExcluded, tabUserIds],
+  );
+
+  const filteredDaySummaries = useMemo(
+    () =>
+      data
+        ? computeFilteredDaySummaries(data, {
+            userIds: tabUserIds,
+            includeExcluded: showExcluded,
+          })
+        : [],
+    [data, tabUserIds, showExcluded],
   );
 
   const visibleEmployees = useMemo(() => {
-    const rows = data?.employees || [];
-    if (showExcluded) return rows;
-    return rows.filter((e) => !e.excluded);
-  }, [data?.employees, showExcluded]);
+    if (showExcluded) return tabEmployees;
+    return tabEmployees.filter((e) => !e.excluded);
+  }, [tabEmployees, showExcluded]);
 
   const excludedCount = useMemo(
-    () => (data?.employees || []).filter((e) => e.excluded).length,
-    [data?.employees],
+    () => tabEmployees.filter((e) => e.excluded).length,
+    [tabEmployees],
   );
 
-  const employeeColWidth = isTablet ? "minmax(200px, 220px)" : "minmax(220px, 240px)";
-  const dayColWidth = isTablet ? "minmax(132px, 1fr)" : "minmax(148px, 1fr)";
-  const gridMinWidth = isTablet ? 1144 : 1280;
+  const employeeColWidth = isTablet ? "minmax(180px, 195px)" : "minmax(185px, 200px)";
+  const dayColWidth = isTablet ? "minmax(128px, 1fr)" : "minmax(138px, 1fr)";
+  const gridMinWidth = isTablet ? 1088 : 1200;
 
   const handleExcludeToggle = async (employee, excluded) => {
     setExcludeSavingUserId(employee.user_id);
@@ -450,7 +495,7 @@ export default function WeeklySchedulePage() {
               Weekly Schedule
             </Typography>
             <Typography variant="body2" sx={{ opacity: 0.92, mt: 0.25 }}>
-              Plan labor by day — drag shifts, assign Sort · Wash · Fold roles
+              Plan labor by day — drag shifts, assign Wash · Sort · Fold roles
             </Typography>
           </Box>
           <Stack
@@ -477,6 +522,32 @@ export default function WeeklySchedulePage() {
               <ChevronRightIcon />
             </IconButton>
           </Stack>
+        </Box>
+
+        <Box sx={{ px: 2, pt: 1.5, pb: 0, bgcolor: "#fff", borderBottom: "1px solid #e8eef2" }}>
+          <Tabs
+            value={employerTab}
+            onChange={(_, value) => setEmployerTab(value)}
+            sx={{
+              minHeight: 40,
+              "& .MuiTab-root": {
+                minHeight: 40,
+                py: 0.75,
+                fontWeight: 700,
+                fontSize: "0.8125rem",
+                textTransform: "none",
+              },
+            }}
+          >
+            <Tab
+              value={EMPLOYER_TAB.VEEWASH}
+              label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH).length})`}
+            />
+            <Tab
+              value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
+              label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
+            />
+          </Tabs>
         </Box>
 
         <Box
@@ -619,8 +690,8 @@ export default function WeeklySchedulePage() {
                   >
                     <Box
                       sx={{
-                        px: 1.5,
-                        py: 1,
+                        px: 1.15,
+                        py: 0.85,
                         bgcolor: "#f8fafc",
                         borderBottom: "1px solid #e2e8f0",
                         position: "sticky",
@@ -648,7 +719,10 @@ export default function WeeklySchedulePage() {
                           borderLeft: "1px solid #e2e8f0",
                         }}
                       >
-                        <WeeklyScheduleDayHeader dayLabel={label} summary={daySummary(dayTotals[dow])} />
+                        <WeeklyScheduleDayHeader
+                          dayLabel={label}
+                          summary={daySummary(filteredDaySummaries[dow] || dayTotals[dow])}
+                        />
                       </Box>
                     ))}
 

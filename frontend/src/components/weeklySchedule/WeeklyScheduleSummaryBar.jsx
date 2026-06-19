@@ -44,9 +44,9 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost }) {
   const metrics = [
     { label: "Employees Scheduled", value: summary.employeesScheduled, accent: VEEWASH_DASHBOARD.primaryBlueDark },
     { label: "Total Hours", value: formatHours(summary.totalHours), accent: VEEWASH_DASHBOARD.tealDark },
-    { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
-    { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
     { label: "Wash", value: summary.washCount, accent: ROLE_ACCENT.wash },
+    { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
+    { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
   ];
 
   if (showCost) {

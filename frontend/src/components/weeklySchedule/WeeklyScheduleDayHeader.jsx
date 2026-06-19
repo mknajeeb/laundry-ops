@@ -1,12 +1,12 @@
 import { Box, Typography } from "@mui/material";
-import { ROLE_STYLES } from "./weeklyScheduleRoles";
+import { ROLE_ORDER, ROLE_STYLES } from "./weeklyScheduleRoles";
 
 function roleCountLines(summary) {
-  const lines = [];
-  if (summary.fold > 0) lines.push({ key: "fold", label: "Fold", count: summary.fold });
-  if (summary.sort > 0) lines.push({ key: "sort", label: "Sort", count: summary.sort });
-  if (summary.wash > 0) lines.push({ key: "wash", label: "Wash", count: summary.wash });
-  return lines;
+  return ROLE_ORDER.map((key) => ({
+    key,
+    label: ROLE_STYLES[key]?.label || key,
+    count: Number(summary?.[key] || 0),
+  })).filter((line) => line.count > 0);
 }
 
 export default function WeeklyScheduleDayHeader({ dayLabel, summary }) {

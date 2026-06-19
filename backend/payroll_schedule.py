@@ -441,6 +441,9 @@ def list_schedule_workers_for_grid(conn, organization_id: int) -> list[dict[str,
                pwp.id AS worker_profile_id,
                pwp.default_hourly_rate,
                COALESCE(pwp.active, 1) AS active,
+               COALESCE(pwp.can_work_rinse, 1) AS can_work_rinse,
+               COALESCE(pwp.can_work_drop_off, 1) AS can_work_drop_off,
+               COALESCE(pwp.can_work_both, 1) AS can_work_both,
                {display_expr} AS display_name
         FROM users u
         LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
