@@ -392,8 +392,8 @@ export default function WeeklySchedulePage() {
               <Box
                 sx={{
                   display: "grid",
-                  gridTemplateColumns: `minmax(168px, 200px) repeat(7, minmax(136px, 1fr))`,
-                  minWidth: 1120,
+                  gridTemplateColumns: `minmax(168px, 200px) repeat(7, minmax(158px, 1fr))`,
+                  minWidth: 1274,
                   gap: 0,
                   border: "1px solid #e2e8f0",
                   borderRadius: 2.5,
@@ -435,7 +435,7 @@ export default function WeeklySchedulePage() {
                     <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.2, lineHeight: 1.2 }}>
                       {summary.people} · {summary.hours.toFixed(1)}h
                     </Typography>
-                    <Stack direction="row" spacing={0.35} flexWrap="nowrap" useFlexGap sx={{ mt: 0.35 }}>
+                    <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap sx={{ mt: 0.35, rowGap: 0.25 }}>
                       {summary.sort > 0 ? (
                         <Chip
                           size="small"
@@ -480,29 +480,31 @@ export default function WeeklySchedulePage() {
                       >
                         <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.5}>
                           <Box sx={{ minWidth: 0, flex: 1 }}>
-                            <Typography
-                              variant="body2"
-                              noWrap
-                              sx={{
-                                fontWeight: 800,
-                                lineHeight: 1.35,
-                                textDecoration: excluded ? "line-through" : "none",
-                                color: excluded ? "text.secondary" : "text.primary",
-                              }}
-                            >
-                              <Box component="span" sx={{ fontWeight: 800 }}>
-                                {employee.display_name}
-                              </Box>
-                              {!excluded ? (
-                                <Box component="span" sx={{ fontWeight: 500, color: "text.secondary", fontSize: "0.72rem" }}>
-                                  {" · "}
-                                  {employeeSummary(employee, {
-                                    showCost: showCost && costAllowed,
-                                    showRates: showEmployeeRates,
-                                  })}
+                            <Tooltip title={employee.display_name} enterDelay={400}>
+                              <Typography
+                                variant="body2"
+                                noWrap
+                                sx={{
+                                  fontWeight: 800,
+                                  lineHeight: 1.35,
+                                  textDecoration: excluded ? "line-through" : "none",
+                                  color: excluded ? "text.secondary" : "text.primary",
+                                }}
+                              >
+                                <Box component="span" sx={{ fontWeight: 800 }}>
+                                  {employee.display_name}
                                 </Box>
-                              ) : null}
-                            </Typography>
+                                {!excluded ? (
+                                  <Box component="span" sx={{ fontWeight: 500, color: "text.secondary", fontSize: "0.72rem" }}>
+                                    {" · "}
+                                    {employeeSummary(employee, {
+                                      showCost: showCost && costAllowed,
+                                      showRates: showEmployeeRates,
+                                    })}
+                                  </Box>
+                                ) : null}
+                              </Typography>
+                            </Tooltip>
                             {excluded ? (
                               <Chip
                                 size="small"

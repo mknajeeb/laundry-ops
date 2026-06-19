@@ -53,14 +53,13 @@ export default function WeeklyScheduleShiftCard({
         bgcolor: muted ? "#f8fafc" : primary.bg,
         opacity: dragging ? 0.45 : muted ? 0.72 : 1,
         boxShadow: "none",
-        overflow: "hidden",
+        overflow: "visible",
         transition: "border-color 0.12s ease, background-color 0.12s ease",
         "&:hover": muted
           ? {}
           : {
               bgcolor: primary.hoverBg,
               borderColor: primary.accent,
-              "& .shift-card-actions": { opacity: 1 },
             },
         "&:active": muted ? {} : { cursor: "grabbing" },
         "&::before": {
@@ -70,110 +69,109 @@ export default function WeeklyScheduleShiftCard({
           top: 0,
           bottom: 0,
           width: 4,
+          borderRadius: "6px 0 0 6px",
           background: muted ? "#cbd5e1" : stripe,
         },
       }}
     >
-      <Stack direction="row" alignItems="flex-start" spacing={0.5}>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Box>
+        <Typography
+          variant="caption"
+          fontWeight={700}
+          sx={{
+            color: "text.primary",
+            fontSize: "0.72rem",
+            lineHeight: 1.25,
+            whiteSpace: "nowrap",
+            display: "block",
+          }}
+        >
+          {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
+        </Typography>
+        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25, flexWrap: "wrap", rowGap: 0.25 }}>
           <Typography
             variant="caption"
-            fontWeight={700}
             sx={{
-              color: "text.primary",
-              fontSize: "0.72rem",
-              lineHeight: 1.25,
+              color: "text.secondary",
+              fontSize: "0.68rem",
+              fontWeight: 600,
               whiteSpace: "nowrap",
-              display: "block",
+              flexShrink: 0,
             }}
           >
-            {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
+            {hours.toFixed(1)}h{breakSuffix}
           </Typography>
-          <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25, flexWrap: "wrap" }}>
-            <Typography
-              variant="caption"
-              sx={{ color: "text.secondary", fontSize: "0.68rem", fontWeight: 600, whiteSpace: "nowrap" }}
-            >
-              {hours.toFixed(1)}h{breakSuffix}
-            </Typography>
-            {showRoleLabels ? (
-              <Stack direction="row" spacing={0.35} useFlexGap sx={{ flexWrap: "wrap" }}>
-                {roles.map((roleKey) => {
-                  const style = ROLE_STYLES[roleKey] || ROLE_STYLES.fold;
-                  return (
-                    <Chip
-                      key={roleKey}
-                      size="small"
-                      label={style.label}
-                      sx={{
-                        height: 18,
-                        bgcolor: style.chipBg,
-                        color: style.accent,
-                        border: `1px solid ${style.border}`,
-                        "& .MuiChip-label": {
-                          px: 0.6,
-                          fontSize: "0.62rem",
-                          fontWeight: 700,
-                          lineHeight: 1,
-                          whiteSpace: "nowrap",
-                        },
-                      }}
-                    />
-                  );
-                })}
-              </Stack>
-            ) : null}
-          </Stack>
-        </Box>
-        <Stack direction="row" spacing={0} sx={{ flexShrink: 0 }}>
+          {showRoleLabels ? (
+            <Stack direction="row" spacing={0.35} useFlexGap sx={{ flexWrap: "wrap" }}>
+              {roles.map((roleKey) => {
+                const style = ROLE_STYLES[roleKey] || ROLE_STYLES.fold;
+                return (
+                  <Chip
+                    key={roleKey}
+                    size="small"
+                    label={style.label}
+                    sx={{
+                      height: 18,
+                      bgcolor: style.chipBg,
+                      color: style.accent,
+                      border: `1px solid ${style.border}`,
+                      "& .MuiChip-label": {
+                        px: 0.6,
+                        fontSize: "0.62rem",
+                        fontWeight: 700,
+                        lineHeight: 1,
+                        whiteSpace: "nowrap",
+                      },
+                    }}
+                  />
+                );
+              })}
+            </Stack>
+          ) : null}
+        </Stack>
+      </Box>
+      {(onDuplicate || onDelete) && !muted ? (
+        <Stack
+          direction="row"
+          spacing={0}
+          justifyContent="flex-end"
+          sx={{ mt: -0.1, ml: -0.25, lineHeight: 0 }}
+        >
           {onDuplicate ? (
             <Tooltip title="Duplicate shift">
               <span>
                 <IconButton
                   size="small"
                   aria-label="Duplicate shift"
-                  className="shift-card-actions"
                   disabled={duplicating}
                   onClick={(e) => {
                     e.stopPropagation();
                     onDuplicate?.(entry);
                   }}
-                  sx={{
-                    p: 0.25,
-                    mt: -0.25,
-                    opacity: 0.45,
-                    "&:hover": { opacity: 1 },
-                  }}
+                  sx={{ p: 0.15, opacity: 0.55, "&:hover": { opacity: 1 } }}
                 >
-                  <ContentCopyOutlinedIcon sx={{ fontSize: 14 }} />
+                  <ContentCopyOutlinedIcon sx={{ fontSize: 13 }} />
                 </IconButton>
               </span>
             </Tooltip>
           ) : null}
           {onDelete ? (
-          <Tooltip title="Delete shift">
-            <IconButton
-              size="small"
-              aria-label="Delete shift"
-              className="shift-card-actions"
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete?.(entry);
-              }}
-              sx={{
-                p: 0.25,
-                mt: -0.25,
-                opacity: 0.45,
-                flexShrink: 0,
-                "&:hover": { opacity: 1 },
-              }}
-            >
-              <DeleteOutlineIcon sx={{ fontSize: 14 }} />
-            </IconButton>
-          </Tooltip>
+            <Tooltip title="Delete shift">
+              <IconButton
+                size="small"
+                aria-label="Delete shift"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete?.(entry);
+                }}
+                sx={{ p: 0.15, opacity: 0.55, "&:hover": { opacity: 1 } }}
+              >
+                <DeleteOutlineIcon sx={{ fontSize: 13 }} />
+              </IconButton>
+            </Tooltip>
           ) : null}
         </Stack>
-      </Stack>
+      ) : null}
     </Paper>
   );
 }
