@@ -524,7 +524,7 @@ export default function SupplyUsagePage() {
                       </TableCell>
                       <TableCell>{row.customer || "—"}</TableCell>
                       <TableCell sx={{ maxWidth: 280, whiteSpace: "normal", wordBreak: "break-word" }}>
-                        {row.special_instructions || row.supply_interpretation || "—"}
+                        {row.special_instructions || "—"}
                       </TableCell>
                       <TableCell>{row.split_order ? t("supplyUsage.yes") : t("supplyUsage.no")}</TableCell>
                       <TableCell>{(row.supplies_used || []).join(", ") || "—"}</TableCell>

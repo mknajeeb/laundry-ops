@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from backend.rinse_bag_completion import normalize_bag_id
 from backend.rinse_scan_purpose import is_split_load_purpose
 from backend.rinse_special_instructions import (
+    STANDARD_INTERPRETATION,
     format_special_instructions_display,
     interpret_special_instructions,
     _split_instruction_parts,
@@ -158,7 +159,13 @@ def split_order_multiplier(
 
 
 def _display_special_instructions(raw: str | None) -> str | None:
-    return format_special_instructions_display(raw)
+    """Customer SI column only — never supply defaults like 'Standard soap'."""
+    display = format_special_instructions_display(raw)
+    if not display:
+        return None
+    if display.strip().casefold() == STANDARD_INTERPRETATION.casefold():
+        return None
+    return display
 
 
 def _order_row_from_staging(

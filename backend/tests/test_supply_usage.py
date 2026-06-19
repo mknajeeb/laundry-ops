@@ -133,6 +133,50 @@ class TestSuppliesForUsage:
 
 
 class TestDisplaySpecialInstructions:
+    def test_empty_si_display_not_standard_soap(self):
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "EMPTY001",
+                "name_clean": "Curtis Teegardin",
+                "special_instructions_raw": None,
+            },
+            split_load_bags=set(),
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["special_instructions"] is None
+        assert row["special_instructions"] != "Standard soap"
+        assert row["supply_interpretation"] == "Standard soap"
+        assert row["supplies_used"] == ["Tide"]
+
+    def test_standard_tide_only_display_empty_supplies_tide(self):
+        from backend.tests.test_rinse_special_instructions import CHRISTIAN_CATALOG_ONLY
+
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "STD001",
+                "name_clean": "Standard Customer",
+                "special_instructions_raw": CHRISTIAN_CATALOG_ONLY,
+            },
+            split_load_bags=set(),
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["special_instructions"] is None
+        assert row["supply_interpretation"] == "Standard soap"
+        assert row["supplies_used"] == ["Tide"]
+
+    def test_fab_oxic_display(self):
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "FABOX001",
+                "name_clean": "Fab Oxi Customer",
+                "special_instructions_raw": "USE FABRIC SOFTENER; USE OXICLEAN",
+            },
+            split_load_bags=set(),
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["special_instructions"] == "Fabric Softener + OxiClean"
+        assert row["supplies_used"] == ["Tide", "Downy", "OxiClean"]
+
     def test_polluted_row_display_is_none(self):
         from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
 
@@ -153,6 +197,27 @@ class TestDisplaySpecialInstructions:
         )
         assert row["special_instructions"] is None
         assert row["supplies_used"] == ["Tide"]
+
+    def test_curtis_empty_labeled_si_display_none(self):
+        from backend.tests.test_rinse_special_instructions import CURTIS_EMPTY_SI_PORTAL
+
+        row = _order_row_from_staging(
+            {
+                "ticket_id": "CURTIS001",
+                "name_clean": "Curtis Teegardin",
+                "special_instructions_raw": CURTIS_EMPTY_SI_PORTAL,
+            },
+            split_load_bags=set(),
+            mapping_rules=DEFAULT_MAPPING_RULES,
+        )
+        assert row["special_instructions"] is None
+        assert row["supplies_used"] == ["Tide"]
+
+    def test_display_never_returns_standard_soap_literal(self):
+        assert _display_special_instructions(None) is None
+        assert _display_special_instructions("") is None
+        for raw in ("Standard soap", "standard soap"):
+            assert _display_special_instructions(raw) is None
 
     def test_hypo_only_display(self):
         assert _display_special_instructions("Use Hypoallergenic Soap") == "Hypoallergenic"
