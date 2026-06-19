@@ -13,7 +13,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import AddIcon from "@mui/icons-material/Add";
+import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import AttachMoneyOutlinedIcon from "@mui/icons-material/AttachMoneyOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -374,8 +374,8 @@ export default function WeeklySchedulePage() {
               <Box
                 sx={{
                   display: "grid",
-                  gridTemplateColumns: `minmax(156px, 188px) repeat(7, minmax(108px, 1fr))`,
-                  minWidth: 980,
+                  gridTemplateColumns: `minmax(168px, 200px) repeat(7, minmax(136px, 1fr))`,
+                  minWidth: 1120,
                   gap: 0,
                   border: "1px solid #e2e8f0",
                   borderRadius: 2.5,
@@ -460,18 +460,30 @@ export default function WeeklySchedulePage() {
                           boxShadow: excluded ? "none" : "2px 0 6px rgba(15,23,42,0.04)",
                         }}
                       >
-                        <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={0.5}>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.5}>
                           <Box sx={{ minWidth: 0, flex: 1 }}>
                             <Typography
                               variant="body2"
-                              fontWeight={800}
                               noWrap
                               sx={{
+                                fontWeight: 800,
+                                lineHeight: 1.35,
                                 textDecoration: excluded ? "line-through" : "none",
                                 color: excluded ? "text.secondary" : "text.primary",
                               }}
                             >
-                              {employee.display_name}
+                              <Box component="span" sx={{ fontWeight: 800 }}>
+                                {employee.display_name}
+                              </Box>
+                              {!excluded ? (
+                                <Box component="span" sx={{ fontWeight: 500, color: "text.secondary", fontSize: "0.72rem" }}>
+                                  {" · "}
+                                  {employeeSummary(employee, {
+                                    showCost: showCost && costAllowed,
+                                    showRates: showEmployeeRates,
+                                  })}
+                                </Box>
+                              ) : null}
                             </Typography>
                             {excluded ? (
                               <Chip
@@ -481,12 +493,6 @@ export default function WeeklySchedulePage() {
                                 sx={{ mt: 0.5, height: 20, fontSize: "0.62rem", fontWeight: 700 }}
                               />
                             ) : null}
-                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                              {employeeSummary(employee, {
-                                showCost: showCost && costAllowed,
-                                showRates: showEmployeeRates,
-                              })}
-                            </Typography>
                           </Box>
                           {canManageExclusions ? (
                             <Tooltip title={excluded ? "Include in schedule" : "Exclude from this week's schedule"}>
@@ -523,9 +529,17 @@ export default function WeeklySchedulePage() {
                         const cellKey = `${employee.user_id}:${dow}`;
                         const cellEntries = entriesByCell[cellKey] || [];
                         const isDropTarget = dropTarget === cellKey;
+                        const isEmpty = cellEntries.length === 0;
+                        const canAddShift = !excluded && canEdit;
                         return (
                           <Box
                             key={cellKey}
+                            onClick={(e) => {
+                              if (!canAddShift || isEmpty) return;
+                              if (!e.target.closest("[data-shift-card]")) {
+                                openCreate(employee.user_id, dow);
+                              }
+                            }}
                             onDragOver={(e) => {
                               if (excluded || !canEdit) return;
                               e.preventDefault();
@@ -541,11 +555,9 @@ export default function WeeklySchedulePage() {
                               handleDrop(employee.user_id, dow, entryId);
                             }}
                             sx={{
-                              px: 0.5,
-                              py: 0.4,
-                              minHeight: 44,
-                              maxHeight: cellEntries.length > 2 ? 108 : undefined,
-                              overflowY: cellEntries.length > 2 ? "auto" : "visible",
+                              px: 0.65,
+                              py: 0.55,
+                              minHeight: 52,
                               borderBottom: "1px solid #e2e8f0",
                               borderLeft: "1px solid #e2e8f0",
                               bgcolor: excluded
@@ -555,6 +567,10 @@ export default function WeeklySchedulePage() {
                                   : "#fff",
                               opacity: excluded ? 0.85 : 1,
                               transition: "background-color 0.12s ease",
+                              cursor: canAddShift && !isEmpty ? "pointer" : "default",
+                              "&:hover .schedule-cell-add": canAddShift && isEmpty
+                                ? { opacity: 1, borderColor: "rgba(0, 151, 178, 0.35)" }
+                                : {},
                             }}
                           >
                             {cellEntries.map((entry) => (
@@ -571,24 +587,43 @@ export default function WeeklySchedulePage() {
                                 onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
                               />
                             ))}
-                            {!excluded && canEdit ? (
-                              <Button
-                                size="small"
-                                startIcon={<AddIcon sx={{ fontSize: 13 }} />}
+                            {canAddShift && isEmpty ? (
+                              <Box
+                                className="schedule-cell-add"
+                                role="button"
+                                tabIndex={0}
                                 onClick={() => openCreate(employee.user_id, dow)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    openCreate(employee.user_id, dow);
+                                  }
+                                }}
                                 sx={{
-                                  mt: 0.15,
-                                  py: 0,
-                                  fontSize: "0.65rem",
-                                  minWidth: 0,
-                                  minHeight: 22,
-                                  px: 0.5,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  gap: 0.5,
+                                  minHeight: 40,
+                                  borderRadius: 1.5,
+                                  border: "1.5px dashed #d8e2ea",
+                                  bgcolor: "transparent",
                                   color: "text.secondary",
-                                  fontWeight: 600,
+                                  opacity: 0.55,
+                                  transition: "opacity 0.12s ease, border-color 0.12s ease, background-color 0.12s ease",
+                                  cursor: "pointer",
+                                  "&:hover": {
+                                    opacity: 1,
+                                    borderColor: "rgba(0, 151, 178, 0.35)",
+                                    bgcolor: "rgba(0, 151, 178, 0.04)",
+                                  },
                                 }}
                               >
-                                Add
-                              </Button>
+                                <AddCircleOutlineIcon sx={{ fontSize: 15 }} />
+                                <Typography variant="caption" sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>
+                                  Add shift
+                                </Typography>
+                              </Box>
                             ) : null}
                           </Box>
                         );
