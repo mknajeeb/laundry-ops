@@ -81,6 +81,19 @@ ACCOUNTANT_QUEUE_VIEW_ROLES = frozenset(
     {"ACCOUNTANT", "ADMIN", "PAYROLL_ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}
 )
 
+ACCOUNTANT_BATCH_ADMIN_ROLES = frozenset(
+    {
+        "ADMIN",
+        "PAYROLL_ADMIN",
+        "SUPER_ADMIN",
+        "PLATFORM_ADMIN",
+        "OPS",
+        "OPERATIONS",
+        "SUPERVISOR",
+        "FINANCE",
+    }
+)
+
 
 def can_view_accountant_queue(conn, user_id: int) -> bool:
     from backend.ta_routes import user_has_perm
@@ -100,6 +113,23 @@ def can_confirm_accountant_payment(conn, user_id: int) -> bool:
     if "ACCOUNTANT" in codes:
         return user_has_perm(conn, user_id, "users.view")
     return False
+
+
+def is_accountant_batch_list_view(conn, user_id: int) -> bool:
+    """External accountants see only batches sent to them or already processed."""
+    codes = user_role_codes(conn, user_id)
+    if "ACCOUNTANT" not in codes:
+        return False
+    return not codes & ACCOUNTANT_BATCH_ADMIN_ROLES
+
+
+def can_process_accountant_batch(conn, user_id: int) -> bool:
+    from backend.ta_routes import user_has_perm
+
+    codes = user_role_codes(conn, user_id)
+    if "ACCOUNTANT" not in codes:
+        return False
+    return user_has_perm(conn, user_id, "users.view")
 
 
 def can_edit_payout_details(conn, user_id: int) -> bool:

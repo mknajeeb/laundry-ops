@@ -1232,6 +1232,9 @@ export const getPayoutBatch = (batchId, params) =>
 export const patchPayoutBatch = (batchId, body) =>
   axios.patch(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`, body);
 
+export const processPayoutBatch = (batchId) =>
+  patchPayoutBatch(batchId, { action: "process_batch" });
+
 export const deletePayoutBatch = (batchId) =>
   axios.delete(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`);
 

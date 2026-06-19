@@ -72,12 +72,15 @@ export function mergePayPeriodOptions(generated = [], batches = [], batchStatusL
   return Array.from(map.values()).sort((a, b) => b.start.localeCompare(a.start));
 }
 
-/** Default ~9 weeks (~2 months); expanded loads full history. */
+/** Default ~9 weeks (~2 months); expanded loads full history. batchOnly = accountant periods only. */
 export function buildPayrollPeriodChoices(
   weekStartsOn = 0,
   batches = [],
-  { expanded = false, batchStatusLabel } = {},
+  { expanded = false, batchStatusLabel, batchOnly = false } = {},
 ) {
+  if (batchOnly) {
+    return mergePayPeriodOptions([], batches, batchStatusLabel);
+  }
   const weeksBack = expanded ? 78 : 9;
   const weeksForward = expanded ? 8 : 2;
   const generated = buildPayPeriodOptions(weekStartsOn, { weeksBack, weeksForward });

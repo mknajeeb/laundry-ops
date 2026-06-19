@@ -6,6 +6,8 @@ from backend.payroll_workflow import (
     _batch_payment_status,
     _line_payment_status_label,
     _mask_incomplete_w2_line_taxes,
+    accountant_batch_processing_status,
+    can_process_batch_as_accountant,
     build_payroll_readiness,
     fetch_w4_compliance_summary,
     resolve_worker_hourly_rate,
@@ -116,3 +118,15 @@ def test_resolve_worker_hourly_rate_prefers_payroll_schedule():
     assert out["hourly_rate"] == 22.5
     assert out["rate_source"] == "payroll_schedule"
     assert out["rate_missing"] is False
+
+
+def test_accountant_batch_processing_status_pending_and_processed():
+    assert accountant_batch_processing_status({"status": "sent_to_accountant"}) == "PENDING"
+    assert accountant_batch_processing_status({"status": "accountant_reviewed"}) == "PROCESSED"
+    assert accountant_batch_processing_status({"status": "approved_for_payment"}) == "PROCESSED"
+    assert accountant_batch_processing_status({"status": "draft"}) is None
+
+
+def test_can_process_batch_as_accountant_only_when_sent():
+    assert can_process_batch_as_accountant({"status": "sent_to_accountant"}) is True
+    assert can_process_batch_as_accountant({"status": "accountant_reviewed"}) is False

@@ -42,12 +42,46 @@ TAX_CALC_STATUSES = ("not_applicable", "pending", "calculated")
 BATCH_ACTIONS = (
     "hours_reviewed",
     "send_to_accountant",
+    "process_batch",
     "mark_paid",
     "mark_line_paid",
     "mark_line_unpaid",
     "refresh_rates",
     "recalculate_taxes",
 )
+
+ACCOUNTANT_VISIBLE_STATUSES = frozenset(
+    {
+        "sent_to_accountant",
+        "accountant_reviewed",
+        "approved_for_payment",
+        "paid",
+        "closed",
+    }
+)
+
+ACCOUNTANT_PROCESSED_STATUSES = frozenset(
+    {
+        "accountant_reviewed",
+        "approved_for_payment",
+        "paid",
+        "closed",
+    }
+)
+
+
+def accountant_batch_processing_status(batch: dict) -> Optional[str]:
+    """Accountant W-2 panel: PENDING before review, PROCESSED after."""
+    st = str(batch.get("status") or "")
+    if st == "sent_to_accountant":
+        return "PENDING"
+    if st in ACCOUNTANT_PROCESSED_STATUSES:
+        return "PROCESSED"
+    return None
+
+
+def can_process_batch_as_accountant(batch: dict) -> bool:
+    return str(batch.get("status") or "") == "sent_to_accountant"
 
 
 def ensure_payout_batch_line_extensions(cursor) -> None:
@@ -786,6 +820,8 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
         )
         else None
     )
+    batch["accountant_processing_status"] = accountant_batch_processing_status(batch)
+    batch["can_process_as_accountant"] = can_process_batch_as_accountant(batch)
     return json_safe(batch)
 
 
@@ -953,6 +989,20 @@ def apply_batch_workflow_action(
             """
             UPDATE payout_batch_lines SET payment_status='approved_unpaid', line_status='approved'
             WHERE batch_id=%s AND organization_id=%s AND payment_status IN ('pending', 'approved_unpaid')
+            """,
+            (int(batch_id), int(organization_id)),
+        )
+    elif action == "process_batch":
+        from backend.payroll_payout_details import can_process_accountant_batch
+
+        if not actor_id or not can_process_accountant_batch(conn, int(actor_id)):
+            raise ValueError("Only accountant role can process batches")
+        if str(batch.get("status") or "") != "sent_to_accountant":
+            raise ValueError("Batch must be available for accountant review before processing")
+        c.execute(
+            """
+            UPDATE payout_batches SET status='accountant_reviewed',
+            updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
             """,
             (int(batch_id), int(organization_id)),
         )

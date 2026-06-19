@@ -685,7 +685,12 @@ def _recompute_batch_totals(conn, batch_id: int) -> None:
 
 
 def list_payout_batches(
-    conn, organization_id: int, *, worker_category: Optional[str] = None, limit: int = 100
+    conn,
+    organization_id: int,
+    *,
+    worker_category: Optional[str] = None,
+    limit: int = 100,
+    accountant_visible_only: bool = False,
 ) -> list[dict]:
     ensure_payout_batches_tables(conn.cursor())
     c = conn.cursor(dictionary=True)
@@ -694,10 +699,23 @@ def list_payout_batches(
     if worker_category and worker_category != "all":
         q += " AND worker_category=%s"
         params.append(worker_category)
+    if accountant_visible_only:
+        q += (
+            " AND status IN ("
+            "'sent_to_accountant', 'accountant_reviewed', "
+            "'approved_for_payment', 'paid', 'closed'"
+            ")"
+        )
     q += " ORDER BY pay_period_start DESC, id DESC LIMIT %s"
     params.append(int(limit))
     c.execute(q, params)
-    return [json_safe(r) for r in c.fetchall() or []]
+    rows = [json_safe(r) for r in c.fetchall() or []]
+    if accountant_visible_only:
+        from backend.payroll_workflow import accountant_batch_processing_status
+
+        for row in rows:
+            row["accountant_processing_status"] = accountant_batch_processing_status(row)
+    return rows
 
 
 def _fetch_payout_batch_core(conn, organization_id: int, batch_id: int) -> Optional[dict]:

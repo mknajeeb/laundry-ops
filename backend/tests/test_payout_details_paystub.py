@@ -5,10 +5,12 @@ from unittest.mock import MagicMock, patch
 from backend.payroll_payout_details import (
     can_confirm_accountant_payment,
     can_edit_payout_details,
+    can_process_accountant_batch,
     can_view_accountant_queue,
     compute_line_totals,
     confirm_accountant_payment,
     finalize_payout_details,
+    is_accountant_batch_list_view,
     parse_line_payout_details,
     payout_workflow_state,
     sum_employee_deductions,
@@ -198,6 +200,45 @@ def test_can_view_accountant_queue_roles():
         return_value={"EMPLOYEE"},
     ):
         assert can_view_accountant_queue(conn, 1) is False
+
+
+def test_is_accountant_batch_list_view():
+    conn = MagicMock()
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ACCOUNTANT"},
+    ):
+        assert is_accountant_batch_list_view(conn, 1) is True
+
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ACCOUNTANT", "ADMIN"},
+    ):
+        assert is_accountant_batch_list_view(conn, 1) is False
+
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"PAYROLL_ADMIN"},
+    ):
+        assert is_accountant_batch_list_view(conn, 1) is False
+
+
+def test_can_process_accountant_batch_role():
+    conn = MagicMock()
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ACCOUNTANT"},
+    ), patch(
+        "backend.ta_routes.user_has_perm",
+        return_value=True,
+    ):
+        assert can_process_accountant_batch(conn, 1) is True
+
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ADMIN"},
+    ):
+        assert can_process_accountant_batch(conn, 1) is False
 
 
 def test_can_edit_payout_details_admin():

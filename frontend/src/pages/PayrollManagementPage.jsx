@@ -54,20 +54,42 @@ export default function PayrollManagementPage() {
     isPayrollAdmin ||
     isSuperAdmin;
 
+  const readOnlyAccountant =
+    isAccountantRole && !canPayout && !canTime && !isAdmin && !isPayrollAdmin && !isSuperAdmin;
+
   const sections = useMemo(() => {
     const out = [];
     if (canTime) out.push({ key: "time", label: "Time Records" });
     if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
-    if (canAccountantQueue) out.push({ key: "accountant_queue", label: "Payment Queue" });
+    if (canAccountantQueue) {
+      out.push({
+        key: "accountant_queue",
+        label: readOnlyAccountant ? "Payment confirmation" : "Payment Queue",
+      });
+    }
     if (canPayoutDetails) out.push({ key: "payout_details", label: "Payout Details" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
     if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
-    if (canAccountant) out.push({ key: "accountant", label: "Accountant Reports" });
+    if (canAccountant) {
+      out.push({
+        key: "accountant",
+        label: readOnlyAccountant ? "W-2 Payroll" : "Accountant Reports",
+      });
+    }
     return out;
-  }, [canTime, canPayout, canContractors, canAccountant, canAccountantQueue, canPayoutDetails, t]);
+  }, [
+    canTime,
+    canPayout,
+    canContractors,
+    canAccountant,
+    canAccountantQueue,
+    canPayoutDetails,
+    readOnlyAccountant,
+    t,
+  ]);
 
   const [tab, setTab] = useState(0);
 
@@ -101,12 +123,11 @@ export default function PayrollManagementPage() {
   useEffect(() => {
     if (!sections.length) return;
     const accountantOnly = sections.length === 1 && sections[0]?.key === "accountant";
-    const readOnlyAccountant = isAccountantRole && !canPayout && !canTime && !isAdmin;
     if (accountantOnly || readOnlyAccountant) {
       const idx = sections.findIndex((s) => s.key === "accountant");
       if (idx >= 0) setTab(idx);
     }
-  }, [sections, isAccountantRole, canPayout, canTime, isAdmin]);
+  }, [sections, readOnlyAccountant]);
 
   if (authLoading) {
     return (
@@ -128,30 +149,36 @@ export default function PayrollManagementPage() {
 
   return (
     <Box sx={{ p: { xs: 1.2, md: 2 }, width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
-      <Typography className="no-print" sx={{ fontSize: 28, fontWeight: 700, mb: 0.5 }}>
-        {t("payroll.mgmtTitle")}
+      <Typography className="no-print" sx={{ fontSize: readOnlyAccountant ? 24 : 28, fontWeight: readOnlyAccountant ? 600 : 700, mb: readOnlyAccountant ? 2 : 0.5 }}>
+        {readOnlyAccountant ? "Payroll" : t("payroll.mgmtTitle")}
       </Typography>
-      <Typography className="no-print" variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 720 }}>
-        Approve time on <strong>Time Records</strong>, then open or create a payout batch for the
-        same pay period — approved hours sync automatically by date. W-2, 1099, and temp workers are
-        never mixed in one batch.
-      </Typography>
-      <Alert className="no-print" severity="info" sx={{ mb: 2, maxWidth: 900 }}>
-        {MANUAL_DEDUCTIONS_NOTICE}
-      </Alert>
+      {!readOnlyAccountant ? (
+        <>
+          <Typography className="no-print" variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 720 }}>
+            Approve time on <strong>Time Records</strong>, then open or create a payout batch for the
+            same pay period — approved hours sync automatically by date. W-2, 1099, and temp workers are
+            never mixed in one batch.
+          </Typography>
+          <Alert className="no-print" severity="info" sx={{ mb: 2, maxWidth: 900 }}>
+            {MANUAL_DEDUCTIONS_NOTICE}
+          </Alert>
+        </>
+      ) : null}
 
-      <Tabs
-        className="no-print"
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        variant="scrollable"
-        scrollButtons="auto"
-        sx={{ borderBottom: 1, borderColor: "divider", mb: 0 }}
-      >
-        {sections.map((s) => (
-          <Tab key={s.key} label={s.label} />
-        ))}
-      </Tabs>
+      {sections.length > 1 ? (
+        <Tabs
+          className="no-print"
+          value={tab}
+          onChange={(_, v) => setTab(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          sx={{ borderBottom: 1, borderColor: "divider", mb: 0 }}
+        >
+          {sections.map((s) => (
+            <Tab key={s.key} label={s.label} />
+          ))}
+        </Tabs>
+      ) : null}
 
       {active?.key === "time" || active?.key === "batches" ? (
         <Box sx={{ pt: 2 }}>

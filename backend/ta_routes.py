@@ -5554,12 +5554,17 @@ def payroll_payout_batches():
                 or user_has_perm(conn, g.ta_user["id"], "users.view")
             ):
                 return jsonify({"error": "Forbidden"}), 403
+            from backend.payroll_payout_details import is_accountant_batch_list_view
+
+            uid = int(g.ta_user["id"])
+            accountant_visible_only = is_accountant_batch_list_view(conn, uid)
             return jsonify(
                 {
                     "items": list_payout_batches(
                         conn,
                         oid,
                         worker_category=request.args.get("worker_category"),
+                        accountant_visible_only=accountant_visible_only,
                     )
                 }
             )
@@ -5648,6 +5653,7 @@ def payroll_payout_batch_detail(batch_id):
         if body.get("action") in (
             "hours_reviewed",
             "send_to_accountant",
+            "process_batch",
             "mark_paid",
             "mark_line_paid",
             "mark_line_unpaid",

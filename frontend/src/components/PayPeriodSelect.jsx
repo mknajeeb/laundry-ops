@@ -31,14 +31,16 @@ export default function PayPeriodSelect({
   minWidth = 280,
   size = "small",
   showExpand = true,
+  batchOnly = false,
 }) {
   const options = useMemo(
     () =>
       buildPayrollPeriodChoices(weekStartsOn, batches, {
         expanded,
         batchStatusLabel,
+        batchOnly,
       }),
-    [weekStartsOn, batches, expanded, batchStatusLabel],
+    [weekStartsOn, batches, expanded, batchStatusLabel, batchOnly],
   );
 
   const groups = useMemo(() => groupPayPeriodOptionsByYear(options), [options]);
