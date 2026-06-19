@@ -16,7 +16,7 @@ from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_st
 from backend.rinse_machine_rack import (
     dedupe_machine_load_rows,
     dedupe_scan_events_by_bag_timestamp,
-    extract_dryer_rack,
+    extract_drying_chronology_rack,
 )
 from backend.rinse_scan_purpose import is_drying_purpose, normalize_scan_purpose
 from backend.ta_helpers import table_exists
@@ -45,7 +45,7 @@ def extract_drying_rows_from_events(
     rows: list[dict[str, Any]] = []
     drying_events = [ev for ev in events if is_drying_purpose(ev.get("purpose"))]
     for ev in dedupe_scan_events_by_bag_timestamp(drying_events):
-        rack = extract_dryer_rack(ev)
+        rack = extract_drying_chronology_rack(ev)
         if not rack:
             continue
         ts = event_ts(ev)
@@ -179,9 +179,9 @@ def build_drying_chronology_payload(
         "machines": machines,
         "event_purposes": ["drying"],
         "grouping_rules": (
-            "One row per drying scan with a dryer rack code (D-prefix); "
+            "One row per drying scan with a dryer rack code (D-prefix, or rack field as-is); "
             "duplicate ingest rows at the same timestamp collapse to one exclusive machine; "
-            "each distinct drying scan is a separate row (0, 1, or 2 per bag)."
+            "each distinct drying scan is a separate row (no per-bag cap)."
         ),
     }
 

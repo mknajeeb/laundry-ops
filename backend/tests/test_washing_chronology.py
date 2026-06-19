@@ -78,11 +78,11 @@ class TestWashingChronologyRows:
             ]
         )
         summary = build_washing_chronology_summary(rows)
-        assert summary["total_washer_loads"] == 3
+        assert summary["total_washer_loads"] == 2
         assert summary["unique_washers_used"] == 2
-        assert summary["most_used_washer"] == "W29-40-VW"
+        assert summary["most_used_washer"] in ("W24-30-VW", "W29-40-VW")
         assert summary["first_washer_load_et"] == datetime(2026, 6, 18, 9, 0)
-        assert summary["last_washer_load_et"] == datetime(2026, 6, 18, 12, 0)
+        assert summary["last_washer_load_et"] == datetime(2026, 6, 18, 11, 0)
 
     def test_D6E0SRN9QV_duplicate_ingest_collapses_to_one_row(self):
         """Jun 18 duplicate start-cleaning rows at same timestamp → one row, one rack."""
@@ -175,7 +175,7 @@ class TestWashingChronologyRows:
         assert rows[0]["washer_rack"] == "W26-30-VW"
         assert rows[0]["employee"] == "Jennifer (VeeWash)"
 
-    def test_many_distinct_start_cleaning_times_not_collapsed(self):
+    def test_many_start_cleaning_same_bag_capped_at_two(self):
         events = [
             _ev(
                 "start-cleaning",
@@ -186,4 +186,45 @@ class TestWashingChronologyRows:
             for i in range(45)
         ]
         rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 2
+        assert rows[0]["timestamp_et"] == datetime(2026, 6, 18, 7, 0)
+        assert rows[1]["timestamp_et"] == datetime(2026, 6, 18, 7, 1)
+
+    def test_three_start_cleaning_different_times_capped_at_two(self):
+        events = [
+            _ev("start-cleaning", datetime(2026, 6, 18, 8, 0), ev_id=1, rack="W24-30-VW"),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 9, 0),
+                ev_id=2,
+                scan_index=2,
+                rack="W25-30-VW",
+            ),
+            _ev(
+                "start-cleaning",
+                datetime(2026, 6, 18, 10, 0),
+                ev_id=3,
+                scan_index=3,
+                rack="W26-30-VW",
+            ),
+        ]
+        rows = extract_washing_rows_from_events(events)
+        assert len(rows) == 2
+        assert [r["washer_rack"] for r in rows] == ["W24-30-VW", "W25-30-VW"]
+
+    def test_forty_five_distinct_bags_one_start_cleaning_each(self):
+        events = [
+            {
+                "id": i,
+                "bag_id": f"BAG{i:03d}",
+                "rack": "W24-30-VW",
+                "user_name": "Jennifer (VeeWash)",
+                "purpose": "start-cleaning",
+                "scanned_at_parsed": datetime(2026, 6, 18, 7, 0) + timedelta(minutes=i),
+                "scan_index": 1,
+            }
+            for i in range(45)
+        ]
+        rows = extract_washing_rows_from_events(events)
         assert len(rows) == 45
+        assert len({r["bag_id"] for r in rows}) == 45

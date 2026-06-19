@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any, Mapping
 
 # Rack codes like W24-30-VW: first segment is machine id, middle may encode lb capacity.
@@ -105,6 +106,17 @@ def extract_dryer_rack(ev: Mapping[str, Any]) -> str | None:
     return canonical_rack_for_event(ev, is_rack_code=is_dryer_rack_code)
 
 
+def extract_drying_chronology_rack(ev: Mapping[str, Any]) -> str | None:
+    """Drying chronology rack: canonical D-prefix code, else rack column when D-prefix."""
+    rack = canonical_rack_for_event(ev, is_rack_code=is_dryer_rack_code)
+    if rack:
+        return rack
+    col = normalize_rack_code(ev.get("rack"))
+    if col and is_dryer_rack_code(col):
+        return col
+    return None
+
+
 def _event_id_int(ev: Mapping[str, Any]) -> int | None:
     eid = ev.get("id")
     if eid is None:
@@ -153,13 +165,19 @@ def dedupe_scan_events_by_bag_timestamp(
     return out
 
 
+def _machine_load_row_rack(row: Mapping[str, Any]) -> str:
+    return str(
+        row.get("washer_rack") or row.get("dryer_rack") or ""
+    ).strip()
+
+
 def dedupe_machine_load_rows(
     rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
     One chronology/utilization row per logical machine load.
 
-    Collapses duplicate ingest rows that share bag, employee, and timestamp.
+    Collapses duplicate ingest rows that share bag, employee, timestamp, and rack.
     Each surviving row carries one exclusive machine/rack code.
     """
     seen_ids: set[int] = set()
@@ -180,11 +198,50 @@ def dedupe_machine_load_rows(
             str(row.get("bag_id") or "").strip(),
             str(row.get("employee") or "").strip(),
             row.get("timestamp_et"),
+            _machine_load_row_rack(row),
         )
         if logical in seen_logical:
             continue
         seen_logical.add(logical)
         out.append(row)
+    return out
+
+
+def cap_machine_load_rows_per_bag(
+    rows: list[dict[str, Any]],
+    *,
+    max_per_bag: int = 2,
+) -> list[dict[str, Any]]:
+    """
+    Limit chronology rows per bag (e.g. max two washer loads per order).
+
+    Keeps the earliest rows by timestamp when a bag exceeds the cap.
+    """
+    if max_per_bag <= 0:
+        return []
+    by_bag: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        bag = str(row.get("bag_id") or "").strip()
+        by_bag.setdefault(bag, []).append(row)
+
+    out: list[dict[str, Any]] = []
+    for bag_rows in by_bag.values():
+        bag_rows.sort(
+            key=lambda r: (
+                r.get("timestamp_et") is None,
+                r.get("timestamp_et") or datetime.min,
+                int(r.get("scan_event_id") or 0),
+            )
+        )
+        out.extend(bag_rows[:max_per_bag])
+
+    out.sort(
+        key=lambda r: (
+            r.get("timestamp_et") is None,
+            r.get("timestamp_et") or datetime.min,
+            str(r.get("bag_id") or ""),
+        )
+    )
     return out
 
 

@@ -14,12 +14,16 @@ from typing import Any, Mapping, Sequence
 from backend.rinse_bag_stage_bounds import event_ts, ts_valid
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start
 from backend.rinse_machine_rack import (
+    cap_machine_load_rows_per_bag,
     dedupe_machine_load_rows,
     dedupe_scan_events_by_bag_timestamp,
     extract_washer_rack,
 )
 from backend.rinse_scan_purpose import is_start_cleaning_purpose, normalize_scan_purpose
 from backend.ta_helpers import table_exists
+
+
+MAX_WASHING_START_CLEANING_ROWS_PER_BAG = 2
 
 
 def _operator(ev: Mapping[str, Any] | None) -> str | None:
@@ -65,6 +69,10 @@ def extract_washing_rows_from_events(
             }
         )
     rows = dedupe_machine_load_rows(rows)
+    rows = cap_machine_load_rows_per_bag(
+        rows,
+        max_per_bag=MAX_WASHING_START_CLEANING_ROWS_PER_BAG,
+    )
     rows.sort(
         key=lambda r: (
             r.get("timestamp_et") is None,
@@ -184,7 +192,8 @@ def build_washing_chronology_payload(
         "grouping_rules": (
             "One row per start-cleaning scan with a washer rack code (W-prefix); "
             "duplicate ingest rows at the same timestamp collapse to one exclusive machine; "
-            "split orders at different times may produce multiple rows for the same bag."
+            "at most two start-cleaning loads per bag per day (earliest two by time); "
+            "split orders at different times may produce up to two rows for the same bag."
         ),
     }
 
