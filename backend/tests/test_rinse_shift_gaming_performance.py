@@ -72,7 +72,8 @@ class TestBagActivitySlices:
         assert weighing.needs_review is True
         assert REVIEW_USER_AMBIGUOUS in weighing.review_reasons
 
-    def test_sorting_flags_operator_mismatch_but_assigns_end_user(self):
+    def test_sorting_assigns_add_photos_user_without_cross_employee_start(self):
+        """Bob add-photos is not anchored to Alice's earlier cleaning/workitem scans."""
         events = _sv(
             _ev("cleaning", datetime(2026, 5, 27, 8, 55), user="Alice", ev_id=2, scan_index=2),
             _ev("weight-entry", datetime(2026, 5, 27, 9, 0), user="Alice", ev_id=3, scan_index=3),
@@ -83,8 +84,9 @@ class TestBagActivitySlices:
             s for s in build_bag_activity_slices("B1", events) if s.activity == "sorting"
         )
         assert sorting.assigned_user == "Bob"
-        assert sorting.needs_review is True
-        assert REVIEW_USER_AMBIGUOUS in sorting.review_reasons
+        assert sorting.start_time == datetime(2026, 5, 27, 9, 10)
+        assert sorting.end_time == datetime(2026, 5, 27, 9, 10)
+        assert sorting.needs_review is False
 
     def test_ambiguous_wash_still_counts_in_shift_metrics(self):
         bags = [

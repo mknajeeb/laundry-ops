@@ -25,7 +25,7 @@ from backend.rinse_bag_stage_bounds import (
     lifecycle_anchor as _lifecycle_anchor,
     load_washer_bounds as _load_washer_bounds,
     sort_key_ev as _sort_key_ev,
-    sorting_bounds_after_weight as _sorting_bounds_after_weight,
+from backend.rinse_sorting_session import sorting_session_bounds as _sorting_session_bounds
     ts_valid as _ts_valid,
     visible_timeline as _visible_timeline,
     workitem_eligible_events,
@@ -419,7 +419,9 @@ def derive_bag_lifecycle_status(
                 + timedelta(minutes=int(washing_minutes)),
             }
         elif weight_ev is not None and weight_ts is not None:
-            sorting_start, sorting_end = _sorting_bounds_after_weight(anchored, weight_ts)
+            sorting_start, sorting_end = _sorting_session_bounds(
+                anchored, timeline, weight_ev=weight_ev, weight_ts=weight_ts
+            )
             after_weight = _events_after_ts(anchored, weight_ts)
             if after_weight:
                 status = SORTED_READY_FOR_WASH

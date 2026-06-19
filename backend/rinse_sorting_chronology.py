@@ -7,8 +7,7 @@ Does not alter productivity calculations or bag completion logic.
 Session grouping:
 - One session per post-anchor sort cycle, keyed by each add-photos completion marker.
 - Uses the last weight-entry before that add-photos (not every intermediate weight scan).
-- Bounds reuse sorting_bounds_v2 (same as activity credits / performance sorting stage).
-- Sort start is attributed to the add-photos employee's cleaning/weight, not another employee's weight.
+- Bounds from rinse_sorting_session (standardized sort start/end measurement).
 - Sessions overlapping other bags sorted by the same employee push sort_start forward.
 - Sessions are ordered globally by sort_start_et; gap_until_next is wall time to the next session start.
 """
@@ -18,15 +17,12 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from backend.rinse_bag_activity_rules import sorting_bounds_v2
+from backend.rinse_bag_activity_rules import is_cleaning_purpose_for_activity_start
 from backend.rinse_bag_stage_bounds import (
     event_ts,
     events_on_or_after,
-    first_start_cleaning_after,
     gaming_events_from_records,
-    is_cleaning_purpose_for_activity_start,
     lifecycle_anchor,
-    sort_key_ev,
     ts_valid,
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive, naive_et_day_start, rinse_wall_calendar_date
@@ -35,6 +31,11 @@ from backend.rinse_scan_purpose import (
     is_lifecycle_sorting_progress_marker_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
+)
+from backend.rinse_sorting_session import (
+    compute_sorting_session,
+    same_scan_event,
+    session_source_label,
 )
 from backend.ta_helpers import table_exists
 
@@ -71,37 +72,6 @@ def _duration_seconds(start: datetime | None, end: datetime | None) -> int:
     return max(sec, 0)
 
 
-def _session_confidence(
-    sort_start_ev: Mapping[str, Any] | None,
-    sort_end_ev: Mapping[str, Any] | None,
-    *,
-    start_cleaning_after_weight: bool,
-) -> str:
-    """exact when both bounds come from explicit sorting markers; otherwise inferred."""
-    start_exact = sort_start_ev is not None and is_cleaning_purpose_for_activity_start(
-        sort_start_ev.get("purpose")
-    )
-    end_exact = (
-        start_cleaning_after_weight
-        and sort_end_ev is not None
-        and is_lifecycle_sorting_progress_marker_purpose(sort_end_ev.get("purpose"))
-    )
-    if start_exact and end_exact:
-        return "exact"
-    return "inferred"
-
-
-def _session_source_label(
-    sort_start_ev: Mapping[str, Any] | None,
-    sort_end_ev: Mapping[str, Any] | None,
-) -> str:
-    start_p = normalize_scan_purpose(sort_start_ev.get("purpose")) if sort_start_ev else ""
-    end_p = normalize_scan_purpose(sort_end_ev.get("purpose")) if sort_end_ev else ""
-    if start_p and end_p:
-        return f"{start_p} → {end_p}"
-    return end_p or start_p or "unknown"
-
-
 def _session_touches_date(
     start_at: datetime | None,
     end_at: datetime | None,
@@ -134,67 +104,6 @@ def _last_weight_before_ts(
             continue
         last = (ev, ts)
     return last
-
-
-def _last_cleaning_before_ts_by_employee(
-    timeline: Sequence[Mapping[str, Any]],
-    *,
-    before_ts: datetime,
-    employee: str | None,
-) -> tuple[Mapping[str, Any], datetime] | None:
-    """Most recent cleaning/start-cleaning by *employee* strictly before *before_ts*."""
-    if not employee:
-        return None
-    last: tuple[Mapping[str, Any], datetime] | None = None
-    for ev in timeline:
-        if not is_cleaning_purpose_for_activity_start(ev.get("purpose")):
-            continue
-        ts = event_ts(ev)
-        if not ts_valid(ts) or ts >= before_ts:
-            continue
-        if not _operators_match(_operator(ev), employee):
-            continue
-        last = (ev, ts)
-    return last
-
-
-def _chronology_sort_start_for_employee(
-    anchored: Sequence[Mapping[str, Any]],
-    timeline: Sequence[Mapping[str, Any]],
-    *,
-    before_ts: datetime,
-    sort_employee: str | None,
-    bounds_start_ev: Mapping[str, Any] | None,
-    bounds_start_ts: datetime | None,
-) -> tuple[datetime, Mapping[str, Any] | None]:
-    """
-    Sort start for chronology mirrors productivity attribution: bound by the
-    add-photos employee's own cleaning/weight before add-photos, not another
-    employee's earlier weight on the same bag.
-    """
-    if not sort_employee:
-        if ts_valid(bounds_start_ts):
-            return bounds_start_ts, bounds_start_ev
-        return before_ts, None
-
-    emp_cleaning = _last_cleaning_before_ts_by_employee(
-        timeline, before_ts=before_ts, employee=sort_employee
-    )
-    if emp_cleaning is not None:
-        return emp_cleaning[1], emp_cleaning[0]
-
-    emp_weight = _last_weight_before_ts(
-        anchored, before_ts=before_ts, employee=sort_employee
-    )
-    if emp_weight is not None:
-        return emp_weight[1], emp_weight[0]
-
-    if bounds_start_ev is not None and _operators_match(
-        _operator(bounds_start_ev), sort_employee
-    ):
-        return bounds_start_ts or before_ts, bounds_start_ev
-
-    return before_ts, None
 
 
 def _cap_sessions_by_employee_busy_periods(
@@ -245,21 +154,6 @@ def _cap_sessions_by_employee_busy_periods(
             row["duration_seconds"] = _duration_seconds(capped_start, end_at)
         capped.append(row)
     return capped
-
-
-def _same_scan_event(
-    left: Mapping[str, Any] | None,
-    right: Mapping[str, Any] | None,
-) -> bool:
-    """True when *left* and *right* refer to the same scan row (not just the same timestamp)."""
-    if left is None or right is None:
-        return False
-    if left is right:
-        return True
-    left_id, right_id = left.get("id"), right.get("id")
-    if left_id is not None and right_id is not None:
-        return left_id == right_id
-    return sort_key_ev(left) == sort_key_ev(right)
 
 
 def _add_photos_events_after_anchor(
@@ -315,31 +209,26 @@ def extract_sorting_sessions_for_bag(
 
     sessions: list[dict[str, Any]] = []
     for add_ev_iter, add_ts in add_photos_events:
-        sort_employee = _operator(add_ev_iter)
         weight_pair = _last_weight_before_ts(anchored, before_ts=add_ts)
         if weight_pair is None:
             continue
         weight_ev, weight_ts = weight_pair
 
-        add_ev, bounds_start_ev, sort_end_ev = sorting_bounds_v2(
-            anchored, weight_ts, weight_ev, full_timeline=tl
-        )
-        if add_ev is None:
-            continue
-        # One session per sort cycle: only the canonical add-photos for this weight window.
-        if not _same_scan_event(add_ev, add_ev_iter):
-            continue
-
-        bounds_start_ts = event_ts(bounds_start_ev) if bounds_start_ev else weight_ts
-        start_at, sort_start_ev = _chronology_sort_start_for_employee(
+        session = compute_sorting_session(
             anchored,
             tl,
-            before_ts=add_ts,
-            sort_employee=sort_employee,
-            bounds_start_ev=bounds_start_ev,
-            bounds_start_ts=bounds_start_ts,
+            weight_ev=weight_ev,
+            weight_ts=weight_ts,
+            add_photos_ev=add_ev_iter,
         )
-        end_at = event_ts(sort_end_ev) if sort_end_ev else add_ts
+        if session is None:
+            continue
+        # One session per sort cycle: only the canonical add-photos for this weight window.
+        if not same_scan_event(session.add_photos_ev, add_ev_iter):
+            continue
+
+        start_at = session.sort_start_et
+        end_at = session.sort_end_et
         if not ts_valid(start_at):
             continue
         if not ts_valid(end_at):
@@ -348,20 +237,16 @@ def extract_sorting_sessions_for_bag(
         if not _session_touches_date(start_at, end_at, selected_date_et):
             continue
 
-        sc_after = first_start_cleaning_after(anchored, after_ts=weight_ts) is not None
-        confidence = _session_confidence(sort_start_ev, sort_end_ev, start_cleaning_after_weight=sc_after)
-        employee = sort_employee or _operator(add_ev) or _operator(sort_end_ev) or _operator(sort_start_ev)
-
         sessions.append(
             {
                 "bag_id": bid,
-                "employee": employee,
+                "employee": session.employee,
                 "sort_start_et": start_at,
                 "sort_end_et": end_at,
                 "duration_seconds": _duration_seconds(start_at, end_at),
-                "confidence": confidence,
-                "source": _session_source_label(sort_start_ev, sort_end_ev),
-                "end_event_purpose": normalize_scan_purpose(sort_end_ev.get("purpose")) if sort_end_ev else None,
+                "confidence": session.confidence,
+                "source": session_source_label(session.sort_start_ev, session.sort_end_ev),
+                "end_event_purpose": session.end_event_purpose,
             }
         )
     return _dedupe_sessions_by_window(sessions)
@@ -449,7 +334,6 @@ def _load_bag_ids_with_sorting_activity_on_day(
     if not candidate_ids:
         return []
 
-    # Narrow to bags with sorting-related purposes on that day (Python filter for normalized purposes).
     placeholders = ",".join(["%s"] * len(candidate_ids))
     cursor.execute(
         f"""
@@ -544,8 +428,8 @@ def build_sorting_chronology_payload(
         ),
         "grouping_rules": (
             "One session per post-sent-to-vendor sort cycle (add-photos completion marker); "
-            "bounds from sorting_bounds_v2 using last weight before that add-photos; "
-            "sort start attributed to add-photos employee cleaning/weight (not another employee's weight); "
+            "bounds from rinse_sorting_session (same-employee cleaning/weight start; "
+            "add-photos/split-load/create-issue end; wash/dry scans do not extend sorting); "
             "sort_start capped forward when employee sorted other bags during the window; "
             "global chronological order; gap_until_next = next session sort_start minus current sort_end."
         ),

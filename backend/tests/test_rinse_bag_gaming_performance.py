@@ -96,15 +96,17 @@ class TestSortingStage:
         events = _anchored_weight_events(
             _ev("cleaning", datetime(2026, 5, 27, 8, 55), ev_id=2, scan_index=2),
             _ev("weight-entry", datetime(2026, 5, 27, 9, 0), ev_id=3, scan_index=3),
-            _ev("create-issue", datetime(2026, 5, 27, 9, 4, 30), ev_id=4, scan_index=4),
-            _ev("start-cleaning", datetime(2026, 5, 27, 9, 10), ev_id=5, scan_index=5),
+            _ev("add-photos", datetime(2026, 5, 27, 9, 3), ev_id=4, scan_index=4),
+            _ev("create-issue", datetime(2026, 5, 27, 9, 4, 30), ev_id=5, scan_index=5),
+            _ev("start-cleaning", datetime(2026, 5, 27, 9, 10), ev_id=6, scan_index=6),
         )
         sorting = evaluate_sorting_stage(gaming_events_from_records(events))
         assert sorting.status == STAGE_COMPLETED
-        assert sorting.start_time == datetime(2026, 5, 27, 9, 4, 30)
+        assert sorting.start_time == datetime(2026, 5, 27, 8, 55)
+        assert sorting.end_time == datetime(2026, 5, 27, 9, 4, 30)
         assert sorting.end_event_purpose == "create-issue"
 
-    def test_ghost_cleaning_ignored_in_sorting(self):
+    def test_sorting_start_uses_cleaning_before_add_photos(self):
         events = _anchored_weight_events(
             _ev("cleaning", datetime(2026, 5, 27, 8, 55), ev_id=2, scan_index=2),
             _ev("weight-entry", datetime(2026, 5, 27, 9, 0), ev_id=3, scan_index=3),
@@ -112,7 +114,8 @@ class TestSortingStage:
             _ev("start-cleaning", datetime(2026, 5, 27, 9, 10), ev_id=5, scan_index=5),
         )
         sorting = evaluate_sorting_stage(gaming_events_from_records(events))
-        assert sorting.start_time == datetime(2026, 5, 27, 9, 5)
+        assert sorting.start_time == datetime(2026, 5, 27, 8, 55)
+        assert sorting.end_time == datetime(2026, 5, 27, 9, 5)
         assert sorting.end_event_purpose == "add-photos"
 
 

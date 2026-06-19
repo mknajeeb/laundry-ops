@@ -23,7 +23,6 @@ from backend.rinse_bag_stage_bounds import (
     lifecycle_anchor as _lifecycle_anchor,
     load_washer_bounds as _load_washer_bounds,
     sort_key_ev as _sort_key_ev,
-    sorting_bounds_after_weight as _sorting_bounds_after_weight,
     ts_valid as _ts_valid,
     weighing_performance_bounds as _weighing_performance_bounds,
     _first_add_photos_after,
@@ -34,6 +33,11 @@ from backend.rinse_scan_purpose import (
     is_create_workitem_purpose,
     is_start_cleaning_purpose,
     normalize_scan_purpose,
+)
+from backend.rinse_sorting_session import (
+    canonical_add_photos_for_weight,
+    compute_sorting_session,
+    sorting_session_bounds,
 )
 
 STAGE_COMPLETED = "COMPLETED"
@@ -168,9 +172,11 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
             status=STAGE_EXCEPTION,
             exception_codes=(WEIGHT_ENTRY_MISSING,),
         )
-    start_ev, end_ev = _sorting_bounds_after_weight(anchored, weight_ts, full_timeline=timeline)
-    if start_ev is None:
-        add_missing = _first_add_photos_after(anchored, after_ts=weight_ts) is None
+    session = compute_sorting_session(
+        anchored, timeline, weight_ev=weight_ev, weight_ts=weight_ts
+    )
+    if session is None:
+        add_missing = canonical_add_photos_for_weight(anchored, weight_ts) is None
         return StageTiming(
             start_time=None,
             end_time=None,
@@ -183,6 +189,8 @@ def evaluate_sorting_stage(timeline: Sequence[Mapping[str, Any]]) -> StageTiming
                 else (WEIGHT_ENTRY_MISSING,)
             ),
         )
+    start_ev = session.sort_start_ev
+    end_ev = session.sort_end_ev
     start_at = _event_ts(start_ev)
     if end_ev is None:
         return StageTiming(
@@ -562,7 +570,9 @@ def _sorting_boundary_events(
     weight_ev, weight_ts = _first_weight_after_anchor(anchored)
     if weight_ev is None or weight_ts is None:
         return None, None
-    return _sorting_bounds_after_weight(anchored, weight_ts, full_timeline=timeline)
+    return sorting_session_bounds(
+        anchored, timeline, weight_ev=weight_ev, weight_ts=weight_ts
+    )
 
 
 def _wash_load_boundary_events(

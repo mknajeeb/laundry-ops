@@ -354,3 +354,27 @@ class TestSortingChronologySessions:
             heavy["sort_start_et"], heavy["sort_end_et"]
         )
         assert heavy["duration_seconds"] < 92 * 60
+
+    def test_COXWJMCCPH_ready_washer_does_not_extend_sort_end(self):
+        """Maria 8:21 start; end at split-load/create-issue, not 8:47 ready-washer."""
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 17, 6, 0), ev_id=1),
+            _ev("cleaning", datetime(2026, 6, 18, 8, 21), ev_id=2, scan_index=2, user="Maria"),
+            _ev("weight-entry", datetime(2026, 6, 18, 8, 22), ev_id=3, scan_index=3, user="Maria"),
+            _ev("add-photos", datetime(2026, 6, 18, 8, 24), ev_id=4, scan_index=4, user="Maria"),
+            _ev("split-load", datetime(2026, 6, 18, 8, 25), ev_id=5, scan_index=5, user="Maria"),
+            _ev("create-issue", datetime(2026, 6, 18, 8, 26), ev_id=6, scan_index=6, user="Maria"),
+            _ev("ready-washer", datetime(2026, 6, 18, 8, 47), ev_id=7, scan_index=7, user="Maria"),
+            _ev("start-cleaning", datetime(2026, 6, 18, 8, 50), ev_id=8, scan_index=8, user="Maria"),
+        ]
+        sessions = extract_sorting_sessions_for_bag(
+            "COXWJMCCPH",
+            events,
+            selected_date_et=SELECTED,
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["sort_start_et"] == datetime(2026, 6, 18, 8, 21)
+        assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 8, 26)
+        assert sessions[0]["end_event_purpose"] == "create-issue"
+        assert sessions[0]["duration_seconds"] == 300
