@@ -13,6 +13,7 @@ import { getPayoutBatches } from "../api";
 import AccountantReportsPanel from "../components/AccountantReportsPanel";
 import AccountantPaymentQueuePanel from "../components/AccountantPaymentQueuePanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
+import W2EmployeeFormsPanel from "../components/W2EmployeeFormsPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
 import PayoutDetailsPanel from "../components/PayoutDetailsPanel";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
@@ -77,6 +78,7 @@ export default function PayrollManagementPage() {
       });
     }
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
+    if (canContractors) out.push({ key: "w2forms", label: t("payroll.tabW2Forms") });
     if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
     if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
@@ -217,6 +219,7 @@ export default function PayrollManagementPage() {
         {active?.key === "accountant_queue" ? <AccountantPaymentQueuePanel /> : null}
         {active?.key === "payout_details" ? <PayoutDetailsPanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
+        {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}
         {active?.key === "documents" ? <PayrollDocumentsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}
         {active?.key === "taxsettings" ? <PayrollTaxSettingsPanel /> : null}
