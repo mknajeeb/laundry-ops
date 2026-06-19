@@ -32,6 +32,7 @@ class TestScanChronologyPayload:
                 "drying",
                 "washer_utilization",
                 "dryer_utilization",
+                "coverage_audit",
                 "user_activity",
             }
         )

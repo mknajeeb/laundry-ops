@@ -48,6 +48,7 @@ const STAGE_TABS = [
   { id: "drying", label: "Drying" },
   { id: "washer_utilization", label: "Washer Utilization" },
   { id: "dryer_utilization", label: "Dryer Utilization" },
+  { id: "coverage_audit", label: "Coverage Audit" },
   { id: "user_activity", label: "User Activity" },
 ];
 
@@ -119,6 +120,13 @@ const ACTIVITY_CHIP_COLORS = {
   drying: { bg: "#fff7ed", color: "#c2410c" },
 };
 
+const COVERAGE_STATUS_COLORS = {
+  found: { bg: "#ecfdf5", color: "#047857", label: "Found" },
+  inferred: { bg: "#eff6ff", color: "#1d4ed8", label: "Inferred" },
+  missing: { bg: "#fef2f2", color: "#b91c1c", label: "Missing" },
+  exception: { bg: "#fff7ed", color: "#c2410c", label: "Exception" },
+};
+
 function resolvePreset(isoDate) {
   const today = todayRange().start;
   const yesterday = yesterdayRange().start;
@@ -176,6 +184,23 @@ function ActivityTypeChip({ type, label }) {
   return (
     <Chip
       label={label || type}
+      size="small"
+      sx={{
+        bgcolor: colors.bg,
+        color: colors.color,
+        fontWeight: 700,
+        fontSize: "0.75rem",
+      }}
+    />
+  );
+}
+
+function CoverageStatusChip({ status }) {
+  const key = String(status || "missing").toLowerCase();
+  const colors = COVERAGE_STATUS_COLORS[key] || COVERAGE_STATUS_COLORS.missing;
+  return (
+    <Chip
+      label={colors.label}
       size="small"
       sx={{
         bgcolor: colors.bg,
@@ -283,6 +308,7 @@ export default function ScanChronologyPage() {
   const stageParam = (searchParams.get("stage") || "weighing").toLowerCase();
   const activeStage = STAGE_TABS.some((t) => t.id === stageParam) ? stageParam : "weighing";
   const isUserActivity = activeStage === "user_activity";
+  const isCoverageAudit = activeStage === "coverage_audit";
   const isDurationStage = DURATION_STAGES.has(activeStage);
   const isEventStage = EVENT_STAGES.has(activeStage);
   const isUtilStage = UTIL_STAGES.has(activeStage);
@@ -326,10 +352,10 @@ export default function ScanChronologyPage() {
     () => ({
       employee: employeeFilter,
       bag_id: bagFilter,
-      confidence: isUserActivity ? "" : confidenceFilter,
+      confidence: isUserActivity || isCoverageAudit ? "" : confidenceFilter,
       activity_type: isUserActivity ? activityTypeFilter : undefined,
     }),
-    [employeeFilter, bagFilter, confidenceFilter, activityTypeFilter, isUserActivity],
+    [employeeFilter, bagFilter, confidenceFilter, activityTypeFilter, isUserActivity, isCoverageAudit],
   );
 
   useEffect(() => {
@@ -377,6 +403,20 @@ export default function ScanChronologyPage() {
     }
   };
 
+  const openCoverageDrawer = async (row) => {
+    setDrawerSession({ ...row, coverage_audit: true });
+    setDrawerScans([]);
+    setDrawerLoading(true);
+    try {
+      const res = await getRinseBagScanEvents(row.bag_id);
+      setDrawerScans(res.data?.events || res.data?.scan_events || []);
+    } catch {
+      setDrawerScans([]);
+    } finally {
+      setDrawerLoading(false);
+    }
+  };
+
   const closeDrawer = () => {
     setDrawerSession(null);
     setDrawerScans([]);
@@ -384,6 +424,7 @@ export default function ScanChronologyPage() {
 
   const summary = data?.summary || {};
   const sessions = data?.sessions || [];
+  const coverageRows = data?.rows || sessions;
   const employeeGroups = data?.employee_groups || [];
   const labels = STAGE_SUMMARY_LABELS[activeStage] || STAGE_SUMMARY_LABELS.weighing;
 
@@ -424,6 +465,20 @@ export default function ScanChronologyPage() {
   const stageLabel = STAGE_TABS.find((t) => t.id === activeStage)?.label || "Weighing";
 
   const renderSummaryCards = () => {
+    if (isCoverageAudit) {
+      return (
+        <>
+          <SummaryCard label="Total Processed Bags" value={summary.total_processed_bags ?? 0} />
+          <SummaryCard label="Fully Covered Bags" value={summary.fully_covered_bags ?? 0} />
+          <SummaryCard label="Missing Weighing" value={summary.missing_weighing ?? 0} />
+          <SummaryCard label="Missing Sorting" value={summary.missing_sorting ?? 0} />
+          <SummaryCard label="Missing Washing" value={summary.missing_washing ?? 0} />
+          <SummaryCard label="Missing Drying" value={summary.missing_drying ?? 0} />
+          <SummaryCard label="Exception Bags" value={summary.exception_bags ?? 0} />
+        </>
+      );
+    }
+
     if (isUserActivity) {
       return (
         <>
@@ -479,6 +534,83 @@ export default function ScanChronologyPage() {
       </>
     );
   };
+
+  const renderCoverageAuditTable = () => (
+    <TableContainer
+      component={Paper}
+      elevation={0}
+      sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
+    >
+      <Table size="small" sx={{ minWidth: 960 }}>
+        <TableHead>
+          <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
+            <TableCell>Bag ID</TableCell>
+            <TableCell>Order ID</TableCell>
+            <TableCell>Customer</TableCell>
+            <TableCell>Service</TableCell>
+            <TableCell>Processed/Completed</TableCell>
+            <TableCell>Weighing</TableCell>
+            <TableCell>Sorting</TableCell>
+            <TableCell>Washing</TableCell>
+            <TableCell>Drying</TableCell>
+            <TableCell>Exception Notes</TableCell>
+            <TableCell>Details</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {coverageRows.map((row) => (
+            <TableRow
+              key={row.bag_id}
+              hover
+              sx={{
+                bgcolor: row.has_exception ? "warning.50" : undefined,
+              }}
+            >
+              <TableCell>
+                <Button
+                  size="small"
+                  onClick={() => openDrawer(row)}
+                  sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                >
+                  {row.bag_id}
+                </Button>
+              </TableCell>
+              <TableCell>{row.order_id ?? "—"}</TableCell>
+              <TableCell>{row.customer || "—"}</TableCell>
+              <TableCell>{row.service_type || "—"}</TableCell>
+              <TableCell>{formatDateTime(row.processed_completed_et) || "—"}</TableCell>
+              <TableCell>
+                <CoverageStatusChip status={row.weighing_status} />
+              </TableCell>
+              <TableCell>
+                <CoverageStatusChip status={row.sorting_status} />
+              </TableCell>
+              <TableCell>
+                <CoverageStatusChip status={row.washing_status} />
+              </TableCell>
+              <TableCell>
+                <CoverageStatusChip status={row.drying_status} />
+              </TableCell>
+              <TableCell>
+                <Typography variant="body2" sx={{ fontSize: "0.75rem", maxWidth: 220 }}>
+                  {(row.exception_notes || []).join("; ") || "—"}
+                </Typography>
+              </TableCell>
+              <TableCell>
+                <Button
+                  size="small"
+                  onClick={() => openCoverageDrawer(row)}
+                  sx={{ textTransform: "none", fontWeight: 600, p: 0, minWidth: 0 }}
+                >
+                  View
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </TableContainer>
+  );
 
   const renderSessionsTable = () => {
     if (isUtilStage) {
@@ -749,7 +881,7 @@ export default function ScanChronologyPage() {
                 ))}
               </Select>
             </FormControl>
-          ) : (
+          ) : !isCoverageAudit ? (
             <FormControl size="small" sx={{ minWidth: 130 }}>
               <InputLabel>Confidence</InputLabel>
               <Select
@@ -762,7 +894,7 @@ export default function ScanChronologyPage() {
                 <MenuItem value="inferred">Inferred</MenuItem>
               </Select>
             </FormControl>
-          )}
+          ) : null}
           <TextField
             size="small"
             label="Bag ID"
@@ -806,6 +938,18 @@ export default function ScanChronologyPage() {
                 </Stack>
               )}
             </>
+          ) : isCoverageAudit ? (
+            <>
+              <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
+                {renderSummaryCards()}
+              </Stack>
+
+              {coverageRows.length === 0 ? (
+                <Alert severity="info">No processed bags for {activeDateEt}.</Alert>
+              ) : (
+                renderCoverageAuditTable()
+              )}
+            </>
           ) : (
             <>
               <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
@@ -840,23 +984,56 @@ export default function ScanChronologyPage() {
         </Stack>
         {drawerSession ? (
           <Stack spacing={1} sx={{ mb: 2 }}>
-            <Typography variant="body2">
-              <strong>Stage:</strong> {drawerStageLabel}
-            </Typography>
-            <Typography variant="body2">
-              <strong>Start event:</strong>{" "}
-              {drawerSession.start_event_purpose || drawerSession.source?.split(" → ")[0] || "—"}
-            </Typography>
-            <Typography variant="body2">
-              <strong>End event:</strong>{" "}
-              {drawerSession.end_event_purpose || drawerSession.source?.split(" → ").slice(-1)[0] || "—"}
-            </Typography>
-            <Typography variant="body2">
-              <strong>Confidence:</strong> {drawerSession.confidence || "—"}
-            </Typography>
-            <Typography variant="body2">
-              <strong>Source:</strong> {drawerSession.source || "—"}
-            </Typography>
+            {drawerSession.coverage_audit ? (
+              <>
+                <Typography variant="body2">
+                  <strong>Weighing:</strong>{" "}
+                  <CoverageStatusChip status={drawerSession.weighing_status} />
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Sorting:</strong>{" "}
+                  <CoverageStatusChip status={drawerSession.sorting_status} />
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Washing:</strong>{" "}
+                  <CoverageStatusChip status={drawerSession.washing_status} />
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Drying:</strong>{" "}
+                  <CoverageStatusChip status={drawerSession.drying_status} />
+                </Typography>
+                {(drawerSession.exception_notes || []).length > 0 ? (
+                  <Typography variant="body2">
+                    <strong>Exceptions:</strong> {(drawerSession.exception_notes || []).join("; ")}
+                  </Typography>
+                ) : null}
+                {(drawerSession.inclusion_sources || []).length > 0 ? (
+                  <Typography variant="body2">
+                    <strong>Included via:</strong> {(drawerSession.inclusion_sources || []).join(", ")}
+                  </Typography>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Typography variant="body2">
+                  <strong>Stage:</strong> {drawerStageLabel}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Start event:</strong>{" "}
+                  {drawerSession.start_event_purpose || drawerSession.source?.split(" → ")[0] || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>End event:</strong>{" "}
+                  {drawerSession.end_event_purpose || drawerSession.source?.split(" → ").slice(-1)[0] || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Confidence:</strong> {drawerSession.confidence || "—"}
+                </Typography>
+                <Typography variant="body2">
+                  <strong>Source:</strong> {drawerSession.source || "—"}
+                </Typography>
+              </>
+            )}
             {drawerSession.machine_or_rack ||
             drawerSession.washer_rack ||
             drawerSession.dryer_rack ||

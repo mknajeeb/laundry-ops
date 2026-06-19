@@ -26,6 +26,7 @@ VALID_STAGES = frozenset(
         "drying",
         "washer_utilization",
         "dryer_utilization",
+        "coverage_audit",
         "user_activity",
     }
 )
@@ -387,6 +388,17 @@ def build_scan_chronology_payload(
             confidence_filter=confidence_filter,
             machine_filter=machine_filter,
             activity_type_filter=activity_type_filter,
+        )
+
+    if stage_key == "coverage_audit":
+        from backend.rinse_scan_coverage_audit import build_scan_coverage_audit_payload
+
+        return build_scan_coverage_audit_payload(
+            cursor,
+            organization_id,
+            selected_date_et=selected_date_et,
+            employee_filter=employee_filter,
+            bag_id_filter=bag_id_filter,
         )
 
     common_filters = {
