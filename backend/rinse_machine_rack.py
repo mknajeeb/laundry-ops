@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
+
+# Rack codes like W24-30-VW or D4-50-VW encode capacity (lb) in the middle segment.
+_RACK_CAPACITY_RE = re.compile(r"^[WD]\d+-(\d+)-", re.IGNORECASE)
 
 
 def normalize_rack_code(text: str | None) -> str | None:
@@ -76,3 +80,47 @@ def extract_dryer_rack(ev: Mapping[str, Any]) -> str | None:
         if is_dryer_rack_code(candidate):
             return normalize_rack_code(candidate)
     return None
+
+
+def parse_rack_capacity_lb(code: str | None) -> float | None:
+    """Extract lb capacity from rack code middle segment (e.g. W24-30-VW -> 30)."""
+    s = normalize_rack_code(code)
+    if not s:
+        return None
+    match = _RACK_CAPACITY_RE.match(s)
+    if not match:
+        return None
+    try:
+        val = float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return val if val > 0 else None
+
+
+def _record_discovered_rack(dest: dict[str, float | None], code: str) -> None:
+    capacity = parse_rack_capacity_lb(code)
+    if code not in dest:
+        dest[code] = capacity
+    elif dest[code] is None and capacity is not None:
+        dest[code] = capacity
+
+
+def discover_racks_from_scan_events(
+    events: list[Mapping[str, Any]],
+) -> dict[str, dict[str, float]]:
+    """Collect unique washer/dryer rack codes and inferred capacities from scan rows."""
+    washers: dict[str, float | None] = {}
+    dryers: dict[str, float | None] = {}
+    for ev in events:
+        for candidate in rack_candidate_strings(ev):
+            code = normalize_rack_code(candidate)
+            if not code:
+                continue
+            if is_washer_rack_code(code):
+                _record_discovered_rack(washers, code)
+            elif is_dryer_rack_code(code):
+                _record_discovered_rack(dryers, code)
+    return {
+        "washers": {k: v for k, v in washers.items() if v is not None and v > 0},
+        "dryers": {k: v for k, v in dryers.items() if v is not None and v > 0},
+    }
