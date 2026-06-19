@@ -726,6 +726,12 @@ export const getSupplyUsageDosages = () =>
 export const updateSupplyUsageDosages = (body) =>
   axios.put(`${API_BASE}/maintenance/supply-usage/dosages`, body, { timeout: 15000 });
 
+export const getMachineConfiguration = () =>
+  axios.get(`${API_BASE}/maintenance/machine-configuration`, { timeout: 15000 });
+
+export const updateMachineConfiguration = (body) =>
+  axios.put(`${API_BASE}/maintenance/machine-configuration`, body, { timeout: 15000 });
+
 export const listCheckoutHistorySnapshots = () =>
   axios.get(`${API_BASE}/checkout_history/snapshots`);
 

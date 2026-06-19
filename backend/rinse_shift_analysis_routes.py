@@ -316,7 +316,7 @@ def register_rinse_shift_analysis_routes(
 
     @app.route("/rinse/shift-analysis/scan-chronology", methods=["GET"])
     def rinse_shift_analysis_scan_chronology():
-        """Read-only scan session timeline (weighing or sorting) for a single ET calendar day."""
+        """Read-only scan session timeline for a single ET calendar day."""
         from backend.rinse_scan_chronology import build_scan_chronology_payload
 
         conn = get_db()
@@ -339,6 +339,8 @@ def register_rinse_shift_analysis_routes(
             employee = (request.args.get("employee") or "").strip() or None
             bag_id = (request.args.get("bag_id") or "").strip() or None
             confidence = (request.args.get("confidence") or "").strip() or None
+            machine = (request.args.get("machine") or "").strip() or None
+            activity_type = (request.args.get("activity_type") or "all").strip().lower()
             payload = build_scan_chronology_payload(
                 cursor,
                 tenant_oid,
@@ -347,6 +349,8 @@ def register_rinse_shift_analysis_routes(
                 employee_filter=employee,
                 bag_id_filter=bag_id,
                 confidence_filter=confidence,
+                machine_filter=machine,
+                activity_type_filter=activity_type,
             )
             return jsonify(json_safe_rinse(payload))
         except ValueError as exc:

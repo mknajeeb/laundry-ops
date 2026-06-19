@@ -45,6 +45,7 @@ import PerformanceBackfillPage from "./pages/PerformanceBackfillPage";
 import RinseFoldingTvPage from "./pages/RinseFoldingTvPage";
 import MaintenancePage from "./pages/MaintenancePage";
 import SupplyUsagePage from "./pages/SupplyUsagePage";
+import MachineConfigurationPage from "./pages/MachineConfigurationPage";
 import RinseBagLookupPage from "./pages/RinseBagLookupPage";
 import RinseOrderSearchPage from "./pages/RinseOrderSearchPage";
 import RinseScheduledSyncPage from "./pages/RinseScheduledSyncPage";
@@ -915,6 +916,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user}>
                     <SupplyUsagePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/maintenance/machine-configuration"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user}>
+                    <MachineConfigurationPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }

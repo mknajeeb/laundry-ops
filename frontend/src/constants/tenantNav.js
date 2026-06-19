@@ -104,6 +104,7 @@ export const TENANT_NAV_ITEMS = [
   { to: "/rinse/folding-tv", labelKey: "nav.foldingTv", roles: OPS, moduleKey: "scoreboard" },
   { to: "/maintenance", labelKey: "nav.maintenance", roles: OPS, moduleKey: "maintenance" },
   { to: "/maintenance/supply-usage", labelKey: "nav.supplyUsage", roles: OPS, moduleKey: "maintenance" },
+  { to: "/maintenance/machine-configuration", labelKey: "nav.machineConfiguration", roles: OPS, moduleKey: "maintenance" },
   { to: "/employees", labelKey: "nav.people", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/documents", labelKey: "nav.documents", roles: ["ADMIN"], moduleKey: "people" },
   { to: "/payroll", labelKey: "nav.payrollMgmt", roles: ["ADMIN", "OPS", "ACCOUNTANT"], permissionsAnyOf: ["users.view"], moduleKey: "payroll" },

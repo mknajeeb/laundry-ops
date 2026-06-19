@@ -4,6 +4,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   CircularProgress,
   Drawer,
   FormControl,
@@ -43,6 +44,15 @@ const DATE_PRESETS = [
 const STAGE_TABS = [
   { id: "weighing", label: "Weighing" },
   { id: "sorting", label: "Sorting" },
+  { id: "user_activity", label: "User Activity" },
+];
+
+const ACTIVITY_TYPE_OPTIONS = [
+  { id: "all", label: "All" },
+  { id: "weighing", label: "Weighing" },
+  { id: "sorting", label: "Sorting" },
+  { id: "washing", label: "Washing" },
+  { id: "drying", label: "Drying" },
 ];
 
 const LONG_GAP_SECONDS = 15 * 60;
@@ -66,6 +76,13 @@ const STAGE_SUMMARY_LABELS = {
   },
 };
 
+const ACTIVITY_CHIP_COLORS = {
+  weighing: { bg: "#eef2ff", color: "#4338ca" },
+  sorting: { bg: "#ecfdf5", color: "#047857" },
+  washing: { bg: "#eff6ff", color: "#1d4ed8" },
+  drying: { bg: "#fff7ed", color: "#c2410c" },
+};
+
 function resolvePreset(isoDate) {
   const today = todayRange().start;
   const yesterday = yesterdayRange().start;
@@ -79,6 +96,14 @@ function formatDurationSeconds(seconds) {
   if (!Number.isFinite(s)) return "—";
   if (s <= 0) return "0m";
   return formatFoldingDuration(s);
+}
+
+function formatTimeOnly(iso) {
+  if (!iso) return "—";
+  const formatted = formatDateTime(iso);
+  if (!formatted) return "—";
+  const parts = formatted.split(" ");
+  return parts.length >= 2 ? parts.slice(1).join(" ") : formatted;
 }
 
 function SummaryCard({ label, value, sub }) {
@@ -110,10 +135,118 @@ function SummaryCard({ label, value, sub }) {
   );
 }
 
+function ActivityTypeChip({ type, label }) {
+  const colors = ACTIVITY_CHIP_COLORS[type] || { bg: "#f3f4f6", color: "#374151" };
+  return (
+    <Chip
+      label={label || type}
+      size="small"
+      sx={{
+        bgcolor: colors.bg,
+        color: colors.color,
+        fontWeight: 700,
+        fontSize: "0.75rem",
+      }}
+    />
+  );
+}
+
+function EmployeeActivityCard({ group, onBagClick }) {
+  const summary = group.summary || {};
+  const activities = group.activities || [];
+
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        p: 2,
+        borderRadius: 2,
+        border: "1px solid",
+        borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
+        bgcolor: "#fff",
+      }}
+    >
+      <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1} sx={{ mb: 1.5 }}>
+        <Typography variant="h6" fontWeight={800} color={VEEWASH_DASHBOARD.primaryBlue}>
+          {group.employee}
+        </Typography>
+        <Stack direction="row" flexWrap="wrap" gap={0.75} useFlexGap>
+          <Chip label={`${summary.total_activities ?? 0} activities`} size="small" variant="outlined" />
+          {(summary.weighing_count ?? 0) > 0 ? (
+            <Chip label={`${summary.weighing_count} weigh`} size="small" variant="outlined" />
+          ) : null}
+          {(summary.sorting_sessions ?? 0) > 0 ? (
+            <Chip label={`${summary.sorting_sessions} sort`} size="small" variant="outlined" />
+          ) : null}
+          {(summary.washer_loads ?? 0) > 0 ? (
+            <Chip label={`${summary.washer_loads} wash`} size="small" variant="outlined" />
+          ) : null}
+          {(summary.dryer_loads ?? 0) > 0 ? (
+            <Chip label={`${summary.dryer_loads} dry`} size="small" variant="outlined" />
+          ) : null}
+        </Stack>
+      </Stack>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+        {formatDateTime(summary.first_activity_et) || "—"} → {formatDateTime(summary.last_activity_et) || "—"}
+      </Typography>
+
+      <TableContainer>
+        <Table size="small">
+          <TableHead>
+            <TableRow sx={{ bgcolor: "grey.50" }}>
+              <TableCell sx={{ fontWeight: 700 }}>Time</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Activity</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Bag ID</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Machine/Rack</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Duration</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Source</TableCell>
+              <TableCell sx={{ fontWeight: 700 }}>Confidence</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {activities.map((row, idx) => (
+              <TableRow key={`${row.activity_type}-${row.bag_id}-${row.time_et}-${idx}`} hover>
+                <TableCell>{formatTimeOnly(row.time_et)}</TableCell>
+                <TableCell>
+                  <ActivityTypeChip type={row.activity_type} label={row.activity_label} />
+                </TableCell>
+                <TableCell>
+                  {row.bag_id ? (
+                    <Button
+                      size="small"
+                      onClick={() => onBagClick(row)}
+                      sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                    >
+                      {row.bag_id}
+                    </Button>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+                <TableCell>{row.machine_or_rack || "—"}</TableCell>
+                <TableCell>
+                  {row.duration_seconds != null ? formatDurationSeconds(row.duration_seconds) : "—"}
+                </TableCell>
+                <TableCell>
+                  <Typography variant="body2" sx={{ fontSize: "0.75rem" }}>
+                    {row.source || "—"}
+                  </Typography>
+                </TableCell>
+                <TableCell>{row.confidence || "—"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Paper>
+  );
+}
+
 export default function ScanChronologyPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const stageParam = (searchParams.get("stage") || "weighing").toLowerCase();
   const activeStage = STAGE_TABS.some((t) => t.id === stageParam) ? stageParam : "weighing";
+  const isUserActivity = activeStage === "user_activity";
 
   const [datePreset, setDatePreset] = useState("today");
   const [customDate, setCustomDate] = useState(todayRange().start);
@@ -124,6 +257,7 @@ export default function ScanChronologyPage() {
   const [employeeFilter, setEmployeeFilter] = useState("");
   const [bagFilter, setBagFilter] = useState("");
   const [confidenceFilter, setConfidenceFilter] = useState("");
+  const [activityTypeFilter, setActivityTypeFilter] = useState("all");
   const [drawerSession, setDrawerSession] = useState(null);
   const [drawerScans, setDrawerScans] = useState([]);
   const [drawerLoading, setDrawerLoading] = useState(false);
@@ -137,6 +271,7 @@ export default function ScanChronologyPage() {
       if (filters.employee) params.employee = filters.employee;
       if (filters.bag_id) params.bag_id = filters.bag_id;
       if (filters.confidence) params.confidence = filters.confidence;
+      if (filters.activity_type) params.activity_type = filters.activity_type;
       const res = await getScanChronology(params);
       setData(res.data);
       setActiveDateEt(dateEt);
@@ -148,12 +283,18 @@ export default function ScanChronologyPage() {
     }
   }, []);
 
-  useEffect(() => {
-    load(activeDateEt, activeStage, {
+  const currentFilters = useMemo(
+    () => ({
       employee: employeeFilter,
       bag_id: bagFilter,
-      confidence: confidenceFilter,
-    });
+      confidence: isUserActivity ? "" : confidenceFilter,
+      activity_type: isUserActivity ? activityTypeFilter : undefined,
+    }),
+    [employeeFilter, bagFilter, confidenceFilter, activityTypeFilter, isUserActivity],
+  );
+
+  useEffect(() => {
+    load(activeDateEt, activeStage, currentFilters);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeStage]);
 
@@ -161,11 +302,7 @@ export default function ScanChronologyPage() {
     setDatePreset(preset);
     if (dateEt) {
       setCustomDate(dateEt);
-      load(dateEt, activeStage, {
-        employee: employeeFilter,
-        bag_id: bagFilter,
-        confidence: confidenceFilter,
-      });
+      load(dateEt, activeStage, currentFilters);
     }
   };
 
@@ -177,11 +314,7 @@ export default function ScanChronologyPage() {
   };
 
   const applyFilters = () => {
-    load(activeDateEt, activeStage, {
-      employee: employeeFilter,
-      bag_id: bagFilter,
-      confidence: confidenceFilter,
-    });
+    load(activeDateEt, activeStage, currentFilters);
   };
 
   const handleStageChange = (_, value) => {
@@ -212,29 +345,51 @@ export default function ScanChronologyPage() {
 
   const summary = data?.summary || {};
   const sessions = data?.sessions || [];
+  const employeeGroups = data?.employee_groups || [];
   const labels = STAGE_SUMMARY_LABELS[activeStage] || STAGE_SUMMARY_LABELS.weighing;
 
   const employeeOptions = useMemo(() => {
     if (Array.isArray(data?.employees) && data.employees.length > 0) {
       return [...data.employees].sort((a, b) => a.localeCompare(b));
     }
+    if (isUserActivity) {
+      const set = new Set();
+      employeeGroups.forEach((g) => {
+        if (g.employee) set.add(g.employee);
+      });
+      return [...set].sort((a, b) => a.localeCompare(b));
+    }
     const set = new Set();
     (data?.sessions || []).forEach((r) => {
       if (r.employee) set.add(r.employee);
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [data]);
+  }, [data, employeeGroups, isUserActivity]);
 
   const handleEmployeeFilterChange = (value) => {
     setEmployeeFilter(value);
     load(activeDateEt, activeStage, {
+      ...currentFilters,
       employee: value,
-      bag_id: bagFilter,
-      confidence: confidenceFilter,
     });
   };
 
-  const stageLabel = activeStage === "weighing" ? "Weighing" : "Sorting";
+  const handleActivityTypeFilterChange = (value) => {
+    setActivityTypeFilter(value);
+    load(activeDateEt, activeStage, {
+      ...currentFilters,
+      activity_type: value,
+    });
+  };
+
+  const stageLabel =
+    activeStage === "weighing"
+      ? "Weighing"
+      : activeStage === "sorting"
+        ? "Sorting"
+        : "User Activity";
+
+  const drawerStageLabel = drawerSession?.activity_label || stageLabel;
 
   return (
     <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 1200, mx: "auto" }}>
@@ -327,6 +482,35 @@ export default function ScanChronologyPage() {
               ))}
             </Select>
           </FormControl>
+          {isUserActivity ? (
+            <FormControl size="small" sx={{ minWidth: 150 }}>
+              <InputLabel>Activity type</InputLabel>
+              <Select
+                label="Activity type"
+                value={activityTypeFilter}
+                onChange={(e) => handleActivityTypeFilterChange(e.target.value)}
+              >
+                {ACTIVITY_TYPE_OPTIONS.map(({ id, label }) => (
+                  <MenuItem key={id} value={id}>
+                    {label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          ) : (
+            <FormControl size="small" sx={{ minWidth: 130 }}>
+              <InputLabel>Confidence</InputLabel>
+              <Select
+                label="Confidence"
+                value={confidenceFilter}
+                onChange={(e) => setConfidenceFilter(e.target.value)}
+              >
+                <MenuItem value="">All</MenuItem>
+                <MenuItem value="exact">Exact</MenuItem>
+                <MenuItem value="inferred">Inferred</MenuItem>
+              </Select>
+            </FormControl>
+          )}
           <TextField
             size="small"
             label="Bag ID"
@@ -334,18 +518,6 @@ export default function ScanChronologyPage() {
             onChange={(e) => setBagFilter(e.target.value)}
             sx={{ minWidth: 120 }}
           />
-          <FormControl size="small" sx={{ minWidth: 130 }}>
-            <InputLabel>Confidence</InputLabel>
-            <Select
-              label="Confidence"
-              value={confidenceFilter}
-              onChange={(e) => setConfidenceFilter(e.target.value)}
-            >
-              <MenuItem value="">All</MenuItem>
-              <MenuItem value="exact">Exact</MenuItem>
-              <MenuItem value="inferred">Inferred</MenuItem>
-            </Select>
-          </FormControl>
           <Button size="small" variant="outlined" onClick={applyFilters} disabled={loading}>
             Apply filters
           </Button>
@@ -366,87 +538,114 @@ export default function ScanChronologyPage() {
 
       {data ? (
         <>
-          <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
-            <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
-            <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_end_et) || "—"} />
-            <SummaryCard label={labels.totalSessions} value={summary.total_sessions ?? 0} />
-            <SummaryCard label={labels.totalTime} value={formatDurationSeconds(summary.total_stage_seconds)} />
-            <SummaryCard label={labels.avgDuration} value={formatDurationSeconds(summary.average_duration_seconds)} />
-            <SummaryCard label={labels.totalGap} value={formatDurationSeconds(summary.total_gap_seconds)} />
-          </Stack>
+          {isUserActivity ? (
+            <>
+              <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
+                <SummaryCard label="Active Employees" value={summary.active_employees ?? 0} />
+                <SummaryCard label="Total Activities" value={summary.total_activities ?? 0} />
+                <SummaryCard label="Weighing Count" value={summary.weighing_count ?? 0} />
+                <SummaryCard label="Sorting Sessions" value={summary.sorting_sessions ?? 0} />
+                <SummaryCard label="Washer Loads" value={summary.washer_loads ?? 0} />
+                <SummaryCard label="Dryer Loads" value={summary.dryer_loads ?? 0} />
+                <SummaryCard label="First Activity" value={formatDateTime(summary.first_activity_et) || "—"} />
+                <SummaryCard label="Last Activity" value={formatDateTime(summary.last_activity_et) || "—"} />
+              </Stack>
 
-          {sessions.length === 0 ? (
-            <Alert severity="info">No {stageLabel.toLowerCase()} sessions for {activeDateEt}.</Alert>
+              {employeeGroups.length === 0 ? (
+                <Alert severity="info">No user activity for {activeDateEt}.</Alert>
+              ) : (
+                <Stack spacing={2}>
+                  {employeeGroups.map((group) => (
+                    <EmployeeActivityCard key={group.employee} group={group} onBagClick={openDrawer} />
+                  ))}
+                </Stack>
+              )}
+            </>
           ) : (
-            <TableContainer
-              component={Paper}
-              elevation={0}
-              sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
-            >
-              <Table size="small" sx={{ minWidth: 640 }}>
-                <TableHead>
-                  <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
-                    <TableCell>#</TableCell>
-                    <TableCell>Bag ID</TableCell>
-                    <TableCell>Employee</TableCell>
-                    <TableCell>Start (ET)</TableCell>
-                    <TableCell>End (ET)</TableCell>
-                    <TableCell>Duration</TableCell>
-                    <TableCell>Next start</TableCell>
-                    <TableCell>Gap</TableCell>
-                    <TableCell>Confidence</TableCell>
-                    <TableCell>Source</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {sessions.map((row) => {
-                    const longGap =
-                      row.gap_until_next_seconds != null && row.gap_until_next_seconds >= LONG_GAP_SECONDS;
-                    return (
-                      <TableRow
-                        key={`${row.index}-${row.bag_id}-${row.start_et}`}
-                        sx={{
-                          bgcolor: longGap ? "warning.50" : undefined,
-                          "&:hover": { bgcolor: longGap ? "warning.100" : "action.hover" },
-                        }}
-                      >
-                        <TableCell>{row.index}</TableCell>
-                        <TableCell>
-                          <Button
-                            size="small"
-                            onClick={() => openDrawer(row)}
-                            sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
-                          >
-                            {row.bag_id}
-                          </Button>
-                        </TableCell>
-                        <TableCell>{row.employee || "—"}</TableCell>
-                        <TableCell>{formatDateTime(row.start_et)}</TableCell>
-                        <TableCell>{formatDateTime(row.end_et)}</TableCell>
-                        <TableCell>{formatDurationSeconds(row.duration_seconds)}</TableCell>
-                        <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
-                        <TableCell
-                          sx={{
-                            fontWeight: longGap ? 700 : 400,
-                            color: longGap ? "warning.dark" : undefined,
-                          }}
-                        >
-                          {row.gap_until_next_seconds != null
-                            ? formatDurationSeconds(row.gap_until_next_seconds)
-                            : "—"}
-                        </TableCell>
-                        <TableCell>{row.confidence || "—"}</TableCell>
-                        <TableCell>
-                          <Typography variant="body2" sx={{ fontSize: "0.75rem" }}>
-                            {row.source || "—"}
-                          </Typography>
-                        </TableCell>
+            <>
+              <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 2 }}>
+                <SummaryCard label={labels.firstStart} value={formatDateTime(summary.first_start_et) || "—"} />
+                <SummaryCard label={labels.lastEnd} value={formatDateTime(summary.last_end_et) || "—"} />
+                <SummaryCard label={labels.totalSessions} value={summary.total_sessions ?? 0} />
+                <SummaryCard label={labels.totalTime} value={formatDurationSeconds(summary.total_stage_seconds)} />
+                <SummaryCard label={labels.avgDuration} value={formatDurationSeconds(summary.average_duration_seconds)} />
+                <SummaryCard label={labels.totalGap} value={formatDurationSeconds(summary.total_gap_seconds)} />
+              </Stack>
+
+              {sessions.length === 0 ? (
+                <Alert severity="info">No {stageLabel.toLowerCase()} sessions for {activeDateEt}.</Alert>
+              ) : (
+                <TableContainer
+                  component={Paper}
+                  elevation={0}
+                  sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2 }}
+                >
+                  <Table size="small" sx={{ minWidth: 640 }}>
+                    <TableHead>
+                      <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, "& th": { color: "#fff", fontWeight: 700 } }}>
+                        <TableCell>#</TableCell>
+                        <TableCell>Bag ID</TableCell>
+                        <TableCell>Employee</TableCell>
+                        <TableCell>Start (ET)</TableCell>
+                        <TableCell>End (ET)</TableCell>
+                        <TableCell>Duration</TableCell>
+                        <TableCell>Next start</TableCell>
+                        <TableCell>Gap</TableCell>
+                        <TableCell>Confidence</TableCell>
+                        <TableCell>Source</TableCell>
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                    </TableHead>
+                    <TableBody>
+                      {sessions.map((row) => {
+                        const longGap =
+                          row.gap_until_next_seconds != null && row.gap_until_next_seconds >= LONG_GAP_SECONDS;
+                        return (
+                          <TableRow
+                            key={`${row.index}-${row.bag_id}-${row.start_et}`}
+                            sx={{
+                              bgcolor: longGap ? "warning.50" : undefined,
+                              "&:hover": { bgcolor: longGap ? "warning.100" : "action.hover" },
+                            }}
+                          >
+                            <TableCell>{row.index}</TableCell>
+                            <TableCell>
+                              <Button
+                                size="small"
+                                onClick={() => openDrawer(row)}
+                                sx={{ textTransform: "none", fontWeight: 700, p: 0, minWidth: 0 }}
+                              >
+                                {row.bag_id}
+                              </Button>
+                            </TableCell>
+                            <TableCell>{row.employee || "—"}</TableCell>
+                            <TableCell>{formatDateTime(row.start_et)}</TableCell>
+                            <TableCell>{formatDateTime(row.end_et)}</TableCell>
+                            <TableCell>{formatDurationSeconds(row.duration_seconds)}</TableCell>
+                            <TableCell>{formatDateTime(row.next_start_et) || "—"}</TableCell>
+                            <TableCell
+                              sx={{
+                                fontWeight: longGap ? 700 : 400,
+                                color: longGap ? "warning.dark" : undefined,
+                              }}
+                            >
+                              {row.gap_until_next_seconds != null
+                                ? formatDurationSeconds(row.gap_until_next_seconds)
+                                : "—"}
+                            </TableCell>
+                            <TableCell>{row.confidence || "—"}</TableCell>
+                            <TableCell>
+                              <Typography variant="body2" sx={{ fontSize: "0.75rem" }}>
+                                {row.source || "—"}
+                              </Typography>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+            </>
           )}
         </>
       ) : null}
@@ -468,13 +667,15 @@ export default function ScanChronologyPage() {
         {drawerSession ? (
           <Stack spacing={1} sx={{ mb: 2 }}>
             <Typography variant="body2">
-              <strong>Stage:</strong> {stageLabel}
+              <strong>Stage:</strong> {drawerStageLabel}
             </Typography>
             <Typography variant="body2">
-              <strong>Start event:</strong> {drawerSession.start_event_purpose || drawerSession.source?.split(" → ")[0] || "—"}
+              <strong>Start event:</strong>{" "}
+              {drawerSession.start_event_purpose || drawerSession.source?.split(" → ")[0] || "—"}
             </Typography>
             <Typography variant="body2">
-              <strong>End event:</strong> {drawerSession.end_event_purpose || drawerSession.source?.split(" → ").slice(-1)[0] || "—"}
+              <strong>End event:</strong>{" "}
+              {drawerSession.end_event_purpose || drawerSession.source?.split(" → ").slice(-1)[0] || "—"}
             </Typography>
             <Typography variant="body2">
               <strong>Confidence:</strong> {drawerSession.confidence || "—"}
@@ -482,6 +683,16 @@ export default function ScanChronologyPage() {
             <Typography variant="body2">
               <strong>Source:</strong> {drawerSession.source || "—"}
             </Typography>
+            {drawerSession.machine_or_rack ? (
+              <Typography variant="body2">
+                <strong>Machine/Rack:</strong> {drawerSession.machine_or_rack}
+              </Typography>
+            ) : null}
+            {drawerSession.time_et ? (
+              <Typography variant="body2">
+                <strong>Time (ET):</strong> {formatDateTime(drawerSession.time_et)}
+              </Typography>
+            ) : null}
           </Stack>
         ) : null}
         <Typography variant="subtitle2" fontWeight={700} gutterBottom>
