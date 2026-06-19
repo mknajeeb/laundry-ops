@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from backend.payroll_payout_details import (
     can_confirm_accountant_payment,
     can_edit_payout_details,
+    can_view_accountant_queue,
     compute_line_totals,
     confirm_accountant_payment,
     finalize_payout_details,
@@ -172,6 +173,31 @@ def test_can_confirm_accountant_payment_role():
         return_value=True,
     ):
         assert can_confirm_accountant_payment(conn, 1) is False
+
+
+def test_can_view_accountant_queue_roles():
+    conn = MagicMock()
+    for role in ("ADMIN", "PAYROLL_ADMIN", "SUPER_ADMIN"):
+        with patch(
+            "backend.payroll_payout_details.user_role_codes",
+            return_value={role},
+        ):
+            assert can_view_accountant_queue(conn, 1) is True
+
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"ACCOUNTANT"},
+    ), patch(
+        "backend.ta_routes.user_has_perm",
+        return_value=True,
+    ):
+        assert can_view_accountant_queue(conn, 1) is True
+
+    with patch(
+        "backend.payroll_payout_details.user_role_codes",
+        return_value={"EMPLOYEE"},
+    ):
+        assert can_view_accountant_queue(conn, 1) is False
 
 
 def test_can_edit_payout_details_admin():

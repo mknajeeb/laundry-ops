@@ -5707,12 +5707,12 @@ def payroll_payout_accountant_queue():
     conn = get_db()
     try:
         from backend.payroll_payout_details import (
-            can_confirm_accountant_payment,
+            can_view_accountant_queue,
             list_accountant_payment_queue,
         )
 
         uid = int(g.ta_user["id"])
-        if not can_confirm_accountant_payment(conn, uid):
+        if not can_view_accountant_queue(conn, uid):
             return jsonify({"error": "Forbidden"}), 403
         oid = _tenant_id()
         return jsonify(

@@ -41,13 +41,18 @@ export default function PayrollManagementPage() {
   }, [user?.roles, user?.role_code]);
   const isAdmin = rolesUpper.includes("ADMIN");
   const isPayrollAdmin = rolesUpper.includes("PAYROLL_ADMIN");
+  const isSuperAdmin = rolesUpper.includes("SUPER_ADMIN");
   const isAccountantRole = rolesUpper.includes("ACCOUNTANT");
   const canTime = hasPerm("ta.monitor") || hasPerm("ta.settings") || isAdmin;
   const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin || isPayrollAdmin;
   const canContractors = hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
   const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
   const canPayoutDetails = canPayout;
-  const canAccountantQueue = isAccountantRole && canAccountant;
+  const canAccountantQueue =
+    (isAccountantRole && canAccountant) ||
+    isAdmin ||
+    isPayrollAdmin ||
+    isSuperAdmin;
 
   const sections = useMemo(() => {
     const out = [];

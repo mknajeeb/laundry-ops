@@ -77,6 +77,22 @@ def user_role_codes(conn, user_id: int) -> set[str]:
     return {str(row["code"]).upper() for row in c.fetchall() or []}
 
 
+ACCOUNTANT_QUEUE_VIEW_ROLES = frozenset(
+    {"ACCOUNTANT", "ADMIN", "PAYROLL_ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"}
+)
+
+
+def can_view_accountant_queue(conn, user_id: int) -> bool:
+    from backend.ta_routes import user_has_perm
+
+    codes = user_role_codes(conn, user_id)
+    if codes & (ACCOUNTANT_QUEUE_VIEW_ROLES - {"ACCOUNTANT"}):
+        return True
+    if "ACCOUNTANT" in codes:
+        return user_has_perm(conn, user_id, "users.view")
+    return False
+
+
 def can_confirm_accountant_payment(conn, user_id: int) -> bool:
     from backend.ta_routes import user_has_perm
 
