@@ -30,12 +30,19 @@ _FAB_PART_RE = re.compile(
 )
 
 _LABELED_SI_RE = re.compile(
-    r"\bSpecial\s+Instructions\s*:?\s*"
+    # Do not use `\s*` after the label — it consumes the newline and captures the next
+    # portal field (e.g. "Service Type: …") when Special Instructions is blank.
+    r"\bSpecial\s+Instructions\s*:?[ \t]*"
     r"([\s\S]*?)"
     r"(?="
-    r"\n\s*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|Add\s+new)"
+    r"\n[ \t]*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|Add\s+new)"
     r"|;?\s*Vendor\s+Notes\b"
     r"|$)",
+    re.I,
+)
+
+_PORTAL_FIELD_LABEL_RE = re.compile(
+    r"^(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type|Description|Bag)\s*:",
     re.I,
 )
 
@@ -70,6 +77,16 @@ def _is_portal_vendor_catalog_part(part: str) -> bool:
     )
 
 
+def _is_portal_field_label_part(part: str) -> bool:
+    """Next-field labels accidentally captured when the SI textarea is empty."""
+    return bool(_PORTAL_FIELD_LABEL_RE.match(str(part or "").strip()))
+
+
+def _raw_has_vendor_catalog_pollution(text: str) -> bool:
+    parts = _split_instruction_parts(text)
+    return any(_is_portal_vendor_catalog_part(p) for p in parts)
+
+
 def extract_labeled_special_instructions(raw: str | None) -> str | None:
     """Return only the portal 'Special Instructions:' label block when present."""
     text = str(raw or "").strip()
@@ -79,7 +96,7 @@ def extract_labeled_special_instructions(raw: str | None) -> str | None:
     if not m:
         return None
     out = re.sub(r"\s+", " ", m.group(1)).strip()
-    if not out or _is_portal_vendor_catalog_part(out):
+    if not out or _is_portal_vendor_catalog_part(out) or _is_portal_field_label_part(out):
         return None
     return out
 
@@ -93,15 +110,18 @@ def _parts_for_interpretation(raw: str | None) -> list[str]:
     if labeled:
         return _split_instruction_parts(labeled)
 
+    if re.search(r"\bSpecial\s+Instructions\s*:?", text, re.I):
+        return []
+
+    # Vendor catalog blobs without a labeled SI block must not infer menu tokens
+    # (e.g. trailing "USE FABRIC SOFTENER" from the portal template).
+    if _raw_has_vendor_catalog_pollution(text):
+        return []
+
     parts = _split_instruction_parts(text)
-    polluted = any(_is_portal_vendor_catalog_part(p) for p in parts)
     kept: list[str] = []
     for part in parts:
-        if _is_portal_vendor_catalog_part(part):
-            continue
-        kind = _classify_part(part)
-        # Menu template text often appends USE FABRIC SOFTENER without a customer selection.
-        if polluted and kind == _TOKEN_FAB:
+        if _is_portal_vendor_catalog_part(part) or _is_portal_field_label_part(part):
             continue
         kept.append(part)
     return kept
@@ -146,14 +166,33 @@ def build_special_instructions_raw(
         seen.add(key)
         parts.append(t)
 
-    si_col = re.sub(r"\s+", " ", str(special_instructions_col or "").strip())
-    si_text = extract_labeled_special_instructions(si_col) or si_col
-    if si_text and not _is_portal_vendor_catalog_part(si_text):
-        for chunk in _split_instruction_parts(si_text):
-            if not _is_portal_vendor_catalog_part(chunk):
-                _add(chunk)
+    si_col_full = str(special_instructions_col or "").strip()
+    si_col = re.sub(r"\s+", " ", si_col_full)
+    labeled = extract_labeled_special_instructions(si_col_full) or extract_labeled_special_instructions(
+        si_col
+    )
+    has_labeled_block = bool(re.search(r"\bSpecial\s+Instructions\s*:?", si_col_full, re.I))
+    if labeled:
+        si_text = labeled
+    elif has_labeled_block:
+        si_text = None
+    elif si_col and not _is_portal_vendor_catalog_part(si_col) and not _raw_has_vendor_catalog_pollution(
+        si_col
+    ):
+        si_text = si_col
+    else:
+        si_text = None
 
-    # Flags are only meaningful when they match the labeled SI field (scrape sets them from SI).
+    if si_text:
+        for chunk in _split_instruction_parts(si_text):
+            if _is_portal_vendor_catalog_part(chunk) or _is_portal_field_label_part(chunk):
+                continue
+            _add(chunk)
+
+    # Flag columns are scrape derivatives of the labeled SI field — ignore when SI is empty.
+    if not parts:
+        return None
+
     if _flag_marked(use_fab):
         _add("USE FABRIC SOFTENER")
     if _flag_marked(use_oxic):
@@ -161,9 +200,7 @@ def build_special_instructions_raw(
     if _flag_marked(use_hypo):
         _add("Use Hypoallergenic Soap")
 
-    if not parts:
-        return None
-    return "; ".join(parts)
+    return "; ".join(parts) if parts else None
 
 
 def _flag_marked(val: str | None) -> bool:

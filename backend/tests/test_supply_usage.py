@@ -82,19 +82,26 @@ class TestSuppliesForUsage:
         assert out["supplies_used"] == ["Tide"]
         assert out["supply_interpretation"] == "Standard soap"
 
-    def test_polluted_catalog_trailing_supply_tokens_mapped_without_fabric_softener(self):
+    def test_polluted_catalog_trailing_supply_tokens_default_tide(self):
         from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
 
         out = supplies_for_usage(CHRISTIAN_POLLUTED_RAW)
-        assert out["supplies_used"] == ["All Free & Clear", "OxiClean"]
-        assert "Downy" not in out["supplies_used"]
+        assert out["supplies_used"] == ["Tide"]
+        assert out["supply_interpretation"] == "Standard soap"
 
-    def test_ryan_tiffany_polluted_row_no_fabric_softener(self):
+    def test_ryan_tiffany_polluted_row_defaults_tide(self):
         from backend.tests.test_rinse_special_instructions import RYAN_TIFFANY_POLLUTED_RAW
 
         out = supplies_for_usage(RYAN_TIFFANY_POLLUTED_RAW)
+        assert out["supplies_used"] == ["Tide"]
+        assert _display_special_instructions(RYAN_TIFFANY_POLLUTED_RAW) is None
+
+    def test_ryan_tiffany_labeled_si_hypo_oxic(self):
+        from backend.tests.test_rinse_special_instructions import RYAN_TIFFANY_LABELED_SI
+
+        out = supplies_for_usage(RYAN_TIFFANY_LABELED_SI)
         assert out["supplies_used"] == ["All Free & Clear", "OxiClean"]
-        assert _display_special_instructions(RYAN_TIFFANY_POLLUTED_RAW) == (
+        assert _display_special_instructions(RYAN_TIFFANY_LABELED_SI) == (
             "Hypoallergenic + OxiClean"
         )
 
@@ -108,7 +115,7 @@ class TestSuppliesForUsage:
         out = supplies_for_usage(CHRISTIAN_CATALOG_ONLY)
         assert out["supplies_used"] == ["Tide"]
 
-    def test_polluted_catalog_hypo_only_maps_all_free_clear(self):
+    def test_polluted_catalog_hypo_trailing_token_defaults_tide(self):
         raw = (
             "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
             "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
@@ -118,7 +125,7 @@ class TestSuppliesForUsage:
             "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D; Use Hypoallergenic Soap"
         )
         out = supplies_for_usage(raw)
-        assert out["supplies_used"] == ["All Free & Clear"]
+        assert out["supplies_used"] == ["Tide"]
 
     def test_empty_instructions_default_tide(self):
         out = supplies_for_usage("")
@@ -126,14 +133,12 @@ class TestSuppliesForUsage:
 
 
 class TestDisplaySpecialInstructions:
-    def test_polluted_row_friendly_display(self):
+    def test_polluted_row_display_is_none(self):
         from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
 
-        assert _display_special_instructions(CHRISTIAN_POLLUTED_RAW) == (
-            "Hypoallergenic + OxiClean"
-        )
+        assert _display_special_instructions(CHRISTIAN_POLLUTED_RAW) is None
 
-    def test_eldar_polluted_row_hypo_only_no_fabric_softener_display(self):
+    def test_eldar_polluted_row_defaults_tide(self):
         from backend.tests.test_rinse_special_instructions import CHRISTIAN_CATALOG_ONLY
 
         raw = f"{CHRISTIAN_CATALOG_ONLY}; USE FABRIC SOFTENER; Use Hypoallergenic Soap"
@@ -146,21 +151,20 @@ class TestDisplaySpecialInstructions:
             split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,
         )
-        assert row["special_instructions"] == "Hypoallergenic"
-        assert row["supplies_used"] == ["All Free & Clear"]
-        assert "Downy" not in row["supplies_used"]
+        assert row["special_instructions"] is None
+        assert row["supplies_used"] == ["Tide"]
 
     def test_hypo_only_display(self):
         assert _display_special_instructions("Use Hypoallergenic Soap") == "Hypoallergenic"
 
-    def test_order_row_display_matches_mapping(self):
-        from backend.tests.test_rinse_special_instructions import CHRISTIAN_POLLUTED_RAW
+    def test_order_row_labeled_si_display_matches_mapping(self):
+        from backend.tests.test_rinse_special_instructions import RYAN_TIFFANY_LABELED_SI
 
         row = _order_row_from_staging(
             {
                 "ticket_id": "TEST1234",
                 "name_clean": "Test Customer",
-                "special_instructions_raw": CHRISTIAN_POLLUTED_RAW,
+                "special_instructions_raw": RYAN_TIFFANY_LABELED_SI,
             },
             split_load_bags=set(),
             mapping_rules=DEFAULT_MAPPING_RULES,

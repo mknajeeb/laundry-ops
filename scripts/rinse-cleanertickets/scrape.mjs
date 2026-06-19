@@ -1164,12 +1164,15 @@ function extractSpecialInstructionsFromText(combined) {
   const text = String(combined || "");
   const labeled =
     text.match(
-      /\bSpecial\s+Instructions\s*:?\s*([\s\S]*?)(?=\n\s*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|Add\s+new|$))/i,
+      /\bSpecial\s+Instructions\s*:?[ \t]*([\s\S]*?)(?=\n[ \t]*(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type\s*:|Description\s*:|Bag\s*:|Hide\s+bag|Add\s+new|$))/i,
     ) ||
-    text.match(/\bSpecial\s+Instructions\s*:?\s*([^\n]+)/i);
+    text.match(/\bSpecial\s+Instructions\s*:?[ \t]*([^\n]+)/i);
   if (labeled && labeled[1]) {
     const out = labeled[1].replace(/\s+/g, " ").trim();
-    if (/^vendor\s+notes/i.test(out)) return "";
+    if (!out || /^vendor\s+notes/i.test(out)) return "";
+    if (/^(?:Service\s+Type|Vendor\s+Notes|Vendor\s+Price|Type|Description|Bag)\s*:/i.test(out)) {
+      return "";
+    }
     return out.slice(0, 500);
   }
   return "";

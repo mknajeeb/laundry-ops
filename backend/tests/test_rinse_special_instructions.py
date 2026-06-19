@@ -31,6 +31,23 @@ RYAN_TIFFANY_POLLUTED_RAW = (
     "Use Hypoallergenic Soap"
 )
 
+CURTIS_POLLUTED_RAW = (
+    "Vendor Notes Vendor Price Collateral Dry Clean Hang Dry Launder & Press Leather Cleaning "
+    "Press Only Repair Shine Special Services Specialty Items Wash and Fold Apron Baby Clothing "
+    "Bag Bathing Suit Bathing Suit (Bottom) Bathing Suit (Top) Bath Mat Bath Rug Belt Blanket "
+    "Blanket (Large) Blanket (Small) Blouse Boots Boxers Bra Button (Repair) Cloth Mask "
+    "Cloth Mask (Kids) Coat Coat (Down) Comforter Comforter (Down) Couch Cover Cover Cummerbund "
+    "Curtain Door Hanger Dress (Casual) Dress (Formal) Duvet D; USE OXICLEAN"
+)
+
+CURTIS_EMPTY_SI_PORTAL = """Special Instructions: 
+Service Type: Wash and Fold
+Vendor Notes Vendor Price Collateral Dry Clean Hang Dry"""
+
+RYAN_TIFFANY_LABELED_SI = (
+    "Special Instructions: Use Hypoallergenic Soap; USE OXICLEAN\nService Type: Wash and Fold"
+)
+
 
 class TestBuildSpecialInstructionsRaw:
     def test_blank_is_none(self):
@@ -41,16 +58,34 @@ class TestBuildSpecialInstructionsRaw:
         assert raw == "USE OXICLEAN"
 
     def test_flags_combined(self):
-        raw = build_special_instructions_raw(use_fab="X", use_oxic="X")
+        raw = build_special_instructions_raw(
+            special_instructions_col="USE OXICLEAN",
+            use_fab="X",
+            use_oxic="X",
+        )
         assert "USE FABRIC SOFTENER" in raw
         assert "USE OXICLEAN" in raw
 
+    def test_flags_without_si_column_are_ignored(self):
+        assert build_special_instructions_raw(use_fab="X", use_oxic="X") is None
+
     def test_hypo_flag(self):
-        raw = build_special_instructions_raw(use_hypo="X")
+        raw = build_special_instructions_raw(
+            special_instructions_col="Use Hypoallergenic Soap",
+            use_hypo="X",
+        )
         assert "Hypoallergenic" in raw
 
     def test_vendor_catalog_notes_skipped(self):
         raw = build_special_instructions_raw(
+            notes=CHRISTIAN_POLLUTED_RAW.split(";")[0],
+            use_hypo="X",
+        )
+        assert raw is None
+
+    def test_vendor_catalog_notes_do_not_merge_with_si(self):
+        raw = build_special_instructions_raw(
+            special_instructions_col="Use Hypoallergenic Soap",
             notes=CHRISTIAN_POLLUTED_RAW.split(";")[0],
             use_hypo="X",
         )
@@ -122,18 +157,42 @@ class TestInterpretSpecialInstructions:
         assert out["special_instructions_raw"] is None
         assert out["special_instruction_review"] is False
 
-    def test_polluted_catalog_trailing_tokens_mapped_without_fabric_softener(self):
+    def test_polluted_catalog_trailing_tokens_default_standard(self):
         out = interpret_special_instructions(CHRISTIAN_POLLUTED_RAW)
-        assert out["supplies_used"] == ["Hypoallergenic detergent", "OxiClean"]
-        assert "Fabric Softener" not in (out["supply_interpretation"] or "")
-        assert "softener" not in (out["supply_interpretation"] or "").lower()
+        assert out["supply_interpretation"] == "Standard soap"
+        assert out["supplies_used"] == ["Tide"]
+        assert out["special_instructions_raw"] is None
+        assert out["special_instruction_review"] is False
 
-    def test_ryan_tiffany_polluted_row_no_fabric_softener(self):
+    def test_ryan_tiffany_polluted_row_defaults_standard(self):
         out = interpret_special_instructions(RYAN_TIFFANY_POLLUTED_RAW)
+        assert out["supply_interpretation"] == "Standard soap"
+        assert out["supplies_used"] == ["Tide"]
+        assert format_special_instructions_display(RYAN_TIFFANY_POLLUTED_RAW) is None
+
+    def test_ryan_tiffany_labeled_si_hypo_oxic_only(self):
+        out = interpret_special_instructions(RYAN_TIFFANY_LABELED_SI)
         assert out["supplies_used"] == ["Hypoallergenic detergent", "OxiClean"]
-        assert format_special_instructions_display(RYAN_TIFFANY_POLLUTED_RAW) == (
+        assert format_special_instructions_display(RYAN_TIFFANY_LABELED_SI) == (
             "Hypoallergenic + OxiClean"
         )
+        assert "softener" not in (out["supply_interpretation"] or "").lower()
+
+    def test_curtis_teegardin_empty_si_defaults_standard(self):
+        out = interpret_special_instructions(CURTIS_POLLUTED_RAW)
+        assert out["supply_interpretation"] == "Standard soap"
+        assert out["supplies_used"] == ["Tide"]
+        assert format_special_instructions_display(CURTIS_POLLUTED_RAW) is None
+
+    def test_curtis_empty_labeled_si_ignores_stale_flags(self):
+        raw = build_special_instructions_raw(
+            special_instructions_col=CURTIS_EMPTY_SI_PORTAL,
+            use_fab="X",
+            use_oxic="X",
+            use_hypo="X",
+        )
+        assert raw is None
+        assert format_special_instructions_display(CURTIS_EMPTY_SI_PORTAL) is None
 
     def test_labeled_special_instructions_with_fabric_softener(self):
         raw = "Special Instructions: USE FABRIC SOFTENER; USE OXICLEAN"
@@ -167,9 +226,8 @@ class TestFormatSpecialInstructionsDisplay:
     def test_polluted_catalog_only_is_none(self):
         assert format_special_instructions_display(CHRISTIAN_CATALOG_ONLY) is None
 
-    def test_polluted_row_shows_friendly_tokens_only(self):
-        out = format_special_instructions_display(CHRISTIAN_POLLUTED_RAW)
-        assert out == "Hypoallergenic + OxiClean"
+    def test_polluted_row_shows_none_not_template_tokens(self):
+        assert format_special_instructions_display(CHRISTIAN_POLLUTED_RAW) is None
 
     def test_hypo_only(self):
         assert format_special_instructions_display("Use Hypoallergenic Soap") == "Hypoallergenic"
