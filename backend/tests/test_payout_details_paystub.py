@@ -764,3 +764,67 @@ def test_enrich_line_settlement_fields_after_finalize():
     assert row["tax_withheld"] == 130.0
     assert row["payment_date"] == "2026-06-01"
     assert row["payment_method_label"] == "Direct Deposit"
+
+
+def test_user_display_meta_without_employee_id_column():
+    conn = MagicMock()
+    with patch("backend.payroll_payout_details.table_has_column", return_value=False):
+        c = conn.cursor.return_value
+        c.fetchone.return_value = {
+            "display_name": "Jane Doe",
+            "username": "jane",
+        }
+        from backend.payroll_payout_details import _user_display_meta
+
+        meta = _user_display_meta(conn, 42)
+    assert meta == {"display_name": "Jane Doe", "employee_id": ""}
+    sql = c.execute.call_args[0][0]
+    assert "employee_id" not in sql
+
+
+def test_enrich_payout_batch_without_employee_id_column():
+    conn = MagicMock()
+    batch = {
+        "worker_category": "w2",
+        "status": "accountant_reviewed",
+        "lines": [
+            {
+                "id": 1,
+                "user_id": 42,
+                "worker_name_snapshot": "Jane Doe",
+                "payment_status": "approved_unpaid",
+                "gross_amount": 800,
+                "total_amount": 800,
+                "rate": 20,
+            }
+        ],
+    }
+    with patch("backend.payroll_workflow.ensure_payout_batch_line_extensions"), patch(
+        "backend.payroll_payout_details.table_has_column", return_value=False
+    ), patch(
+        "backend.payroll_payout_details._user_display_meta",
+        return_value={"display_name": "Jane Doe", "employee_id": ""},
+    ), patch(
+        "backend.payroll_workflow.resolve_worker_hourly_rate",
+        return_value={
+            "worker_category_label": "W-2",
+            "payment_method": "",
+            "rate_missing": False,
+            "hourly_rate": 20,
+            "rate_source": "payroll_schedule",
+        },
+    ), patch(
+        "backend.w2_payroll_tax_engine.fetch_employee_tax_profile",
+        return_value={"w4_complete": True, "missing_fields": []},
+    ), patch(
+        "backend.payroll_workflow.fetch_w4_compliance_summary",
+        return_value={"w4_on_file": True, "tax_calc_status": "estimated"},
+    ), patch(
+        "backend.payroll_accrual.get_sick_leave_balance",
+        return_value={"balance_hours": 0},
+    ):
+        from backend.payroll_workflow import enrich_payout_batch
+
+        out = enrich_payout_batch(conn, 1, batch)
+    assert out["lines"][0]["employee_id"] == ""
+    assert out["lines"][0]["worker_name_snapshot"] == "Jane Doe"

@@ -390,9 +390,13 @@ def line_document_state(batch: dict, line: dict, details: Optional[dict] = None)
 def _user_display_meta(conn, user_id: Optional[int]) -> dict[str, str]:
     if not user_id:
         return {"display_name": "", "employee_id": ""}
+    chk = conn.cursor()
+    select_cols = ["display_name", "username"]
+    if table_has_column(chk, "users", "employee_id"):
+        select_cols.insert(0, "employee_id")
     c = conn.cursor(dictionary=True)
     c.execute(
-        "SELECT employee_id, display_name, username FROM users WHERE id=%s LIMIT 1",
+        f"SELECT {', '.join(select_cols)} FROM users WHERE id=%s LIMIT 1",
         (int(user_id),),
     )
     row = c.fetchone() or {}
