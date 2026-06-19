@@ -5700,6 +5700,168 @@ def payroll_payout_batch_detail(batch_id):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/accountant-queue", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_accountant_queue():
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_confirm_accountant_payment,
+            list_accountant_payment_queue,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_confirm_accountant_payment(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        return jsonify(
+            {
+                "items": list_accountant_payment_queue(
+                    conn,
+                    oid,
+                    worker_category=request.args.get("worker_category"),
+                )
+            }
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_accountant_queue failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/details", methods=["GET", "PUT"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_batch_details(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            get_payout_batch_details,
+            update_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        if request.method == "GET":
+            row = get_payout_batch_details(conn, oid, batch_id)
+            if not row:
+                return jsonify({"error": "Not found"}), 404
+            return jsonify(row)
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(silent=True) or {}
+        try:
+            row = update_payout_batch_details(
+                conn, oid, batch_id, body, actor_id=uid
+            )
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_batch_details failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/confirm-payment", methods=["POST"])
+@require_auth
+@require_any_perm("users.view")
+def payroll_payout_confirm_payment(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_confirm_accountant_payment,
+            confirm_accountant_payment,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_confirm_accountant_payment(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        try:
+            row = confirm_accountant_payment(conn, oid, batch_id, actor_id=uid)
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_confirm_payment failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/finalize-details", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_finalize_details(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            finalize_payout_details,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        try:
+            row = finalize_payout_details(conn, oid, batch_id, actor_id=uid)
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_finalize_details failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/paystub/<int:line_id>",
+    methods=["GET"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_paystub(batch_id: int, line_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_finalized_paystub,
+            generate_paystub_html,
+            get_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        if not can_view_finalized_paystub(conn, uid, batch):
+            return jsonify({"error": "Paystub not available"}), 403
+        fmt = str(request.args.get("format") or "html").lower()
+        try:
+            html = generate_paystub_html(conn, oid, batch_id, line_id)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        if fmt == "json":
+            line = next(
+                (ln for ln in batch.get("lines") or [] if int(ln["id"]) == int(line_id)),
+                None,
+            )
+            return jsonify({"html": html, "line": line, "batch": batch})
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_paystub failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/accountant/ytd", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.view", "users.edit")

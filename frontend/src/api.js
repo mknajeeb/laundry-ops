@@ -1235,6 +1235,27 @@ export const patchPayoutBatch = (batchId, body) =>
 export const deletePayoutBatch = (batchId) =>
   axios.delete(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}`);
 
+export const getPayoutAccountantQueue = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/accountant-queue`, { params });
+
+export const getPayoutBatchDetails = (batchId) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/details`);
+
+export const putPayoutBatchDetails = (batchId, body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/details`, body);
+
+export const confirmPayoutPayment = (batchId) =>
+  axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/confirm-payment`);
+
+export const finalizePayoutDetails = (batchId) =>
+  axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/finalize-details`);
+
+export const getPaystubUrl = (batchId, lineId) =>
+  `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystub/${lineId}`;
+
+export const getPaystubHtml = (batchId, lineId) =>
+  axios.get(getPaystubUrl(batchId, lineId), { responseType: "text" });
+
 export const getAccountantYtd = (params) =>
   axios.get(`${API_BASE}/api/ta/payroll/accountant/ytd`, { params });
 

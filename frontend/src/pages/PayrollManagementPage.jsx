@@ -11,8 +11,10 @@ import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { getPayoutBatches } from "../api";
 import AccountantReportsPanel from "../components/AccountantReportsPanel";
+import AccountantPaymentQueuePanel from "../components/AccountantPaymentQueuePanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
+import PayoutDetailsPanel from "../components/PayoutDetailsPanel";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
@@ -38,24 +40,29 @@ export default function PayrollManagementPage() {
     return [];
   }, [user?.roles, user?.role_code]);
   const isAdmin = rolesUpper.includes("ADMIN");
+  const isPayrollAdmin = rolesUpper.includes("PAYROLL_ADMIN");
   const isAccountantRole = rolesUpper.includes("ACCOUNTANT");
   const canTime = hasPerm("ta.monitor") || hasPerm("ta.settings") || isAdmin;
-  const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin;
+  const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin || isPayrollAdmin;
   const canContractors = hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
   const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
+  const canPayoutDetails = canPayout;
+  const canAccountantQueue = isAccountantRole && canAccountant;
 
   const sections = useMemo(() => {
     const out = [];
     if (canTime) out.push({ key: "time", label: "Time Records" });
     if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
+    if (canAccountantQueue) out.push({ key: "accountant_queue", label: "Payment Queue" });
+    if (canPayoutDetails) out.push({ key: "payout_details", label: "Payout Details" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
     if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
     if (canAccountant) out.push({ key: "accountant", label: "Accountant Reports" });
     return out;
-  }, [canTime, canPayout, canContractors, canAccountant, t]);
+  }, [canTime, canPayout, canContractors, canAccountant, canAccountantQueue, canPayoutDetails, t]);
 
   const [tab, setTab] = useState(0);
 
@@ -168,6 +175,8 @@ export default function PayrollManagementPage() {
             onPayPeriodChange={onPayPeriodChange}
           />
         ) : null}
+        {active?.key === "accountant_queue" ? <AccountantPaymentQueuePanel /> : null}
+        {active?.key === "payout_details" ? <PayoutDetailsPanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "documents" ? <PayrollDocumentsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}
