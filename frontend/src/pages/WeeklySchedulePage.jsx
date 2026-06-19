@@ -10,15 +10,15 @@ import {
   Paper,
   Stack,
   Switch,
-  Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import AttachMoneyOutlinedIcon from "@mui/icons-material/AttachMoneyOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
-import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import {
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
@@ -31,8 +31,11 @@ import {
 } from "../api";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleEntryDialog from "../components/weeklySchedule/WeeklyScheduleEntryDialog";
+import WeeklyScheduleDayHeader from "../components/weeklySchedule/WeeklyScheduleDayHeader";
+import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklyScheduleEmployeeCell";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
-import { ROLE_STYLES, scheduleCellBackground } from "../components/weeklySchedule/weeklyScheduleRoles";
+import WeeklyScheduleSummaryBar from "../components/weeklySchedule/WeeklyScheduleSummaryBar";
+import { computeWeekSummary, scheduleCellBackground } from "../components/weeklySchedule/weeklyScheduleRoles";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -58,31 +61,158 @@ function formatWeekRange(weekStart) {
   return `${fmt(start)} – ${fmt(end)}`;
 }
 
-function formatCurrency(value) {
-  const n = Number(value || 0);
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
-}
-
 function daySummary(day) {
-  const people = Number(day?.employee_count || 0);
-  const hours = Number(day?.total_hours || 0);
-  return { people, hours, sort: Number(day?.sort_count || 0), wash: Number(day?.wash_count || 0), fold: Number(day?.fold_count || 0) };
+  return {
+    people: Number(day?.employee_count || 0),
+    hours: Number(day?.total_hours || 0),
+    sort: Number(day?.sort_count || 0),
+    wash: Number(day?.wash_count || 0),
+    fold: Number(day?.fold_count || 0),
+  };
 }
 
-function employeeSummary(employee, { showCost, showRates }) {
-  const days = Number(employee?.scheduled_days || 0);
-  const hours = Number(employee?.total_hours || 0);
-  const parts = [`${days} days`, `${hours.toFixed(1)} hrs`];
-  if (showRates && employee?.default_hourly_rate) {
-    parts.push(`${formatCurrency(employee.default_hourly_rate)}/hr`);
-  }
-  if (showCost) {
-    parts.push(`${formatCurrency(employee?.estimated_cost || 0)} est.`);
-  }
-  return parts.join(" · ");
+function ScheduleDayCell({
+  employee,
+  dow,
+  dayLabel,
+  cellEntries,
+  entriesByCell,
+  dropTarget,
+  setDropTarget,
+  excluded,
+  canEdit,
+  openCreate,
+  handleDrop,
+  draggingId,
+  setDraggingId,
+  duplicatingId,
+  showRoleLabels,
+  showBreakMinutes,
+  openEdit,
+  handleDelete,
+  handleDuplicate,
+  compact = false,
+}) {
+  const cellKey = `${employee.user_id}:${dow}`;
+  const isDropTarget = dropTarget === cellKey;
+  const isEmpty = cellEntries.length === 0;
+  const canAddShift = !excluded && canEdit;
+  const cellBg = scheduleCellBackground({
+    entries: cellEntries,
+    excluded,
+    isDropTarget,
+  });
+
+  return (
+    <Box
+      onClick={(e) => {
+        if (!canAddShift || isEmpty) return;
+        if (!e.target.closest("[data-shift-card]")) {
+          openCreate(employee.user_id, dow);
+        }
+      }}
+      onDragOver={(e) => {
+        if (excluded || !canEdit) return;
+        e.preventDefault();
+        setDropTarget(cellKey);
+      }}
+      onDragLeave={() => {
+        if (dropTarget === cellKey) setDropTarget(null);
+      }}
+      onDrop={(e) => {
+        if (excluded || !canEdit) return;
+        e.preventDefault();
+        const entryId = e.dataTransfer.getData("text/plain");
+        handleDrop(employee.user_id, dow, entryId);
+      }}
+      sx={{
+        px: compact ? 0 : 0.65,
+        py: compact ? 0.75 : 0.45,
+        minHeight: compact ? 0 : 44,
+        borderBottom: compact ? "none" : "1px solid #e2e8f0",
+        borderLeft: compact ? "none" : "1px solid #e2e8f0",
+        background: cellBg,
+        opacity: excluded ? 0.85 : 1,
+        transition: "background-color 0.12s ease",
+        cursor: canAddShift && !isEmpty ? "pointer" : "default",
+        borderRadius: compact ? 1.5 : 0,
+        border: compact ? "1px solid #e8eef2" : undefined,
+        "&:hover .schedule-cell-add": canAddShift && isEmpty
+          ? { opacity: 1, borderColor: "rgba(0, 151, 178, 0.35)" }
+          : {},
+      }}
+    >
+      {compact ? (
+        <Typography
+          variant="overline"
+          sx={{ display: "block", mb: 0.5, fontWeight: 800, letterSpacing: "0.08em", fontSize: "0.65rem" }}
+        >
+          {dayLabel}
+        </Typography>
+      ) : null}
+      {cellEntries.map((entry) => (
+        <WeeklyScheduleShiftCard
+          key={entry.id}
+          entry={entry}
+          dragging={draggingId === entry.id}
+          muted={excluded}
+          showRoleLabels={showRoleLabels}
+          showBreakMinutes={showBreakMinutes}
+          onEdit={canEdit ? openEdit : undefined}
+          onDelete={canEdit ? handleDelete : undefined}
+          onDuplicate={canEdit ? handleDuplicate : undefined}
+          duplicating={duplicatingId === entry.id}
+          onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
+          onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
+        />
+      ))}
+      {canAddShift && isEmpty ? (
+        <Box
+          className="schedule-cell-add"
+          role="button"
+          tabIndex={0}
+          onClick={() => openCreate(employee.user_id, dow)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              openCreate(employee.user_id, dow);
+            }
+          }}
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 0.5,
+            minHeight: 36,
+            borderRadius: 1.25,
+            border: "1.5px dashed #d8e2ea",
+            bgcolor: "transparent",
+            color: "text.secondary",
+            opacity: 0.55,
+            transition: "opacity 0.12s ease, border-color 0.12s ease, background-color 0.12s ease",
+            cursor: "pointer",
+            "&:hover": {
+              opacity: 1,
+              borderColor: "rgba(0, 151, 178, 0.35)",
+              bgcolor: "rgba(0, 151, 178, 0.04)",
+            },
+          }}
+        >
+          <AddCircleOutlineIcon sx={{ fontSize: 15 }} />
+          <Typography variant="caption" sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>
+            Add shift
+          </Typography>
+        </Box>
+      ) : null}
+    </Box>
+  );
 }
 
 export default function WeeklySchedulePage() {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const isTablet = useMediaQuery(theme.breakpoints.between("md", "lg"));
+
   const [weekStart, setWeekStart] = useState(() => normalizeWeekStart(new Date().toISOString().slice(0, 10)));
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -159,6 +289,11 @@ export default function WeeklySchedulePage() {
 
   const dayTotals = data?.totals?.day_totals || [];
 
+  const weekSummary = useMemo(
+    () => (data ? computeWeekSummary(data, { includeExcluded: showExcluded }) : null),
+    [data, showExcluded],
+  );
+
   const visibleEmployees = useMemo(() => {
     const rows = data?.employees || [];
     if (showExcluded) return rows;
@@ -169,6 +304,10 @@ export default function WeeklySchedulePage() {
     () => (data?.employees || []).filter((e) => e.excluded).length,
     [data?.employees],
   );
+
+  const employeeColWidth = isTablet ? "minmax(200px, 220px)" : "minmax(220px, 240px)";
+  const dayColWidth = isTablet ? "minmax(132px, 1fr)" : "minmax(148px, 1fr)";
+  const gridMinWidth = isTablet ? 1144 : 1280;
 
   const handleExcludeToggle = async (employee, excluded) => {
     setExcludeSavingUserId(employee.user_id);
@@ -265,6 +404,23 @@ export default function WeeklySchedulePage() {
     load(next);
   };
 
+  const cellProps = {
+    entriesByCell,
+    dropTarget,
+    setDropTarget,
+    canEdit,
+    openCreate,
+    handleDrop,
+    draggingId,
+    setDraggingId,
+    duplicatingId,
+    showRoleLabels,
+    showBreakMinutes,
+    openEdit,
+    handleDelete,
+    handleDuplicate,
+  };
+
   return (
     <Box sx={{ p: { xs: 1.5, md: 2.5 }, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%" }}>
       <Paper
@@ -311,7 +467,10 @@ export default function WeeklySchedulePage() {
             <IconButton size="small" onClick={() => changeWeek(-1)} sx={{ color: "#fff" }}>
               <ChevronLeftIcon />
             </IconButton>
-            <Typography variant="subtitle2" sx={{ minWidth: 220, textAlign: "center", fontWeight: 700 }}>
+            <Typography
+              variant="subtitle2"
+              sx={{ minWidth: { xs: 180, md: 220 }, textAlign: "center", fontWeight: 700 }}
+            >
               {formatWeekRange(weekStart)}
             </Typography>
             <IconButton size="small" onClick={() => changeWeek(1)} sx={{ color: "#fff" }}>
@@ -374,7 +533,8 @@ export default function WeeklySchedulePage() {
                 </Button>
               }
             >
-              {excludedCount} employee{excludedCount === 1 ? "" : "s"} excluded from this week&apos;s schedule. Toggle &quot;Show excluded&quot; to review and include them.
+              {excludedCount} employee{excludedCount === 1 ? "" : "s"} excluded from this week&apos;s schedule. Toggle
+              &quot;Show excluded&quot; to review and include them.
             </Alert>
           ) : null}
           {error ? (
@@ -388,274 +548,147 @@ export default function WeeklySchedulePage() {
               <CircularProgress size={32} />
             </Stack>
           ) : (
-            <Box sx={{ overflowX: "auto" }}>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: `minmax(168px, 200px) repeat(7, minmax(158px, 1fr))`,
-                  minWidth: 1274,
-                  gap: 0,
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 2.5,
-                  overflow: "hidden",
-                  bgcolor: "#fff",
-                }}
-              >
-                <Box
-                  sx={{
-                    px: 1,
-                    py: 0.75,
-                    bgcolor: "#f8fafc",
-                    borderBottom: "1px solid #e2e8f0",
-                    position: "sticky",
-                    left: 0,
-                    zIndex: 2,
-                  }}
-                >
-                  <Typography variant="overline" fontWeight={800} color="text.secondary" sx={{ letterSpacing: "0.08em" }}>
-                    Employee
-                  </Typography>
-                </Box>
-                {DAY_LABELS.map((label, dow) => {
-                  const summary = daySummary(dayTotals[dow]);
-                  return (
-                  <Box
-                    key={label}
-                    sx={{
-                      px: 0.75,
-                      py: 0.65,
-                      bgcolor: "#f8fafc",
-                      borderBottom: "1px solid #e2e8f0",
-                      borderLeft: "1px solid #e2e8f0",
-                    }}
-                  >
-                    <Typography variant="subtitle2" fontWeight={700} sx={{ fontSize: "0.8rem" }}>
-                      {label}
-                    </Typography>
-                    <Typography variant="caption" display="block" color="text.secondary" sx={{ mt: 0.2, lineHeight: 1.2 }}>
-                      {summary.people} · {summary.hours.toFixed(1)}h
-                    </Typography>
-                    <Stack direction="row" spacing={0.35} flexWrap="wrap" useFlexGap sx={{ mt: 0.35, rowGap: 0.25 }}>
-                      {summary.sort > 0 ? (
-                        <Chip
-                          size="small"
-                          label={`${summary.sort} Sort`}
-                          sx={{ height: 18, fontSize: "0.58rem", fontWeight: 700, bgcolor: ROLE_STYLES.sort.chipBg, color: ROLE_STYLES.sort.accent, border: `1px solid ${ROLE_STYLES.sort.border}` }}
-                        />
-                      ) : null}
-                      {summary.wash > 0 ? (
-                        <Chip
-                          size="small"
-                          label={`${summary.wash} Wash`}
-                          sx={{ height: 18, fontSize: "0.58rem", fontWeight: 700, bgcolor: ROLE_STYLES.wash.chipBg, color: ROLE_STYLES.wash.accent, border: `1px solid ${ROLE_STYLES.wash.border}` }}
-                        />
-                      ) : null}
-                      {summary.fold > 0 ? (
-                        <Chip
-                          size="small"
-                          label={`${summary.fold} Fold`}
-                          sx={{ height: 18, fontSize: "0.58rem", fontWeight: 700, bgcolor: ROLE_STYLES.fold.chipBg, color: ROLE_STYLES.fold.accent, border: `1px solid ${ROLE_STYLES.fold.border}` }}
-                        />
-                      ) : null}
-                    </Stack>
-                  </Box>
-                  );
-                })}
+            <>
+              <WeeklyScheduleSummaryBar
+                summary={weekSummary}
+                showCost={showCost && costAllowed}
+              />
 
-                {(visibleEmployees || []).map((employee) => {
-                  const excluded = Boolean(employee.excluded);
-                  return (
-                    <Box key={employee.user_id} sx={{ display: "contents" }}>
-                      <Box
+              {isMobile ? (
+                <Stack spacing={1.5}>
+                  {(visibleEmployees || []).map((employee) => {
+                    const excluded = Boolean(employee.excluded);
+                    return (
+                      <Paper
+                        key={employee.user_id}
+                        elevation={0}
                         sx={{
-                          px: 1,
-                          py: 0.65,
-                          borderBottom: "1px solid #e2e8f0",
-                          bgcolor: excluded ? "#fafafa" : "#fff",
-                          position: "sticky",
-                          left: 0,
-                          zIndex: 1,
-                          boxShadow: excluded ? "none" : "2px 0 6px rgba(15,23,42,0.04)",
+                          borderRadius: 2.5,
+                          border: "1px solid #e2e8f0",
+                          overflow: "hidden",
+                          bgcolor: "#fff",
                         }}
                       >
-                        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.5}>
-                          <Box sx={{ minWidth: 0, flex: 1 }}>
-                            <Tooltip title={employee.display_name} enterDelay={400}>
-                              <Typography
-                                variant="body2"
-                                noWrap
-                                sx={{
-                                  fontWeight: 800,
-                                  lineHeight: 1.35,
-                                  textDecoration: excluded ? "line-through" : "none",
-                                  color: excluded ? "text.secondary" : "text.primary",
-                                }}
-                              >
-                                <Box component="span" sx={{ fontWeight: 800 }}>
-                                  {employee.display_name}
-                                </Box>
-                                {!excluded ? (
-                                  <Box component="span" sx={{ fontWeight: 500, color: "text.secondary", fontSize: "0.72rem" }}>
-                                    {" · "}
-                                    {employeeSummary(employee, {
-                                      showCost: showCost && costAllowed,
-                                      showRates: showEmployeeRates,
-                                    })}
-                                  </Box>
-                                ) : null}
-                              </Typography>
-                            </Tooltip>
-                            {excluded ? (
-                              <Chip
-                                size="small"
-                                label="Excluded this week"
-                                color="default"
-                                sx={{ mt: 0.5, height: 20, fontSize: "0.62rem", fontWeight: 700 }}
+                        <WeeklyScheduleEmployeeCell
+                          employee={employee}
+                          entries={data?.entries}
+                          excluded={excluded}
+                          canManageExclusions={canManageExclusions}
+                          excludeSaving={excludeSavingUserId === employee.user_id}
+                          onExcludeToggle={handleExcludeToggle}
+                          showCost={showCost}
+                          showRates={showEmployeeRates}
+                          costAllowed={costAllowed}
+                        />
+                        <Box sx={{ px: 1.25, pb: 1.25, display: "grid", gap: 0.75 }}>
+                          {DAY_LABELS.map((dayLabel, dow) => {
+                            const cellKey = `${employee.user_id}:${dow}`;
+                            const cellEntries = entriesByCell[cellKey] || [];
+                            if (!cellEntries.length && excluded) return null;
+                            return (
+                              <ScheduleDayCell
+                                key={cellKey}
+                                employee={employee}
+                                dow={dow}
+                                dayLabel={dayLabel}
+                                cellEntries={cellEntries}
+                                excluded={excluded}
+                                compact
+                                {...cellProps}
                               />
-                            ) : null}
-                          </Box>
-                          {canManageExclusions ? (
-                            <Tooltip title={excluded ? "Include in schedule" : "Exclude from this week's schedule"}>
-                              <IconButton
-                                size="small"
-                                aria-label={excluded ? "Include in schedule" : "Exclude from schedule"}
-                                disabled={excludeSavingUserId === employee.user_id}
-                                onClick={() => handleExcludeToggle(employee, !excluded)}
-                                sx={{ mt: -0.25, flexShrink: 0 }}
-                              >
-                                {excluded ? (
-                                  <VisibilityOffOutlinedIcon fontSize="small" />
-                                ) : (
-                                  <PersonOffOutlinedIcon fontSize="small" />
-                                )}
-                              </IconButton>
-                            </Tooltip>
-                          ) : null}
-                        </Stack>
-                        {excluded && canManageExclusions ? (
-                          <Button
-                            size="small"
-                            variant="contained"
-                            color="success"
-                            onClick={() => handleExcludeToggle(employee, false)}
-                            disabled={excludeSavingUserId === employee.user_id}
-                            sx={{ mt: 0.75, fontSize: "0.72rem", textTransform: "none", fontWeight: 700 }}
-                          >
-                            Include in schedule
-                          </Button>
-                        ) : null}
-                      </Box>
-                      {DAY_LABELS.map((_, dow) => {
-                        const cellKey = `${employee.user_id}:${dow}`;
-                        const cellEntries = entriesByCell[cellKey] || [];
-                        const isDropTarget = dropTarget === cellKey;
-                        const isEmpty = cellEntries.length === 0;
-                        const canAddShift = !excluded && canEdit;
-                        const cellBg = scheduleCellBackground({
-                          entries: cellEntries,
-                          excluded,
-                          isDropTarget,
-                        });
-                        return (
-                          <Box
-                            key={cellKey}
-                            onClick={(e) => {
-                              if (!canAddShift || isEmpty) return;
-                              if (!e.target.closest("[data-shift-card]")) {
-                                openCreate(employee.user_id, dow);
-                              }
-                            }}
-                            onDragOver={(e) => {
-                              if (excluded || !canEdit) return;
-                              e.preventDefault();
-                              setDropTarget(cellKey);
-                            }}
-                            onDragLeave={() => {
-                              if (dropTarget === cellKey) setDropTarget(null);
-                            }}
-                            onDrop={(e) => {
-                              if (excluded || !canEdit) return;
-                              e.preventDefault();
-                              const entryId = e.dataTransfer.getData("text/plain");
-                              handleDrop(employee.user_id, dow, entryId);
-                            }}
-                            sx={{
-                              px: 0.65,
-                              py: 0.55,
-                              minHeight: 52,
-                              borderBottom: "1px solid #e2e8f0",
-                              borderLeft: "1px solid #e2e8f0",
-                              background: cellBg,
-                              opacity: excluded ? 0.85 : 1,
-                              transition: "background-color 0.12s ease",
-                              cursor: canAddShift && !isEmpty ? "pointer" : "default",
-                              "&:hover .schedule-cell-add": canAddShift && isEmpty
-                                ? { opacity: 1, borderColor: "rgba(0, 151, 178, 0.35)" }
-                                : {},
-                            }}
-                          >
-                            {cellEntries.map((entry) => (
-                              <WeeklyScheduleShiftCard
-                                key={entry.id}
-                                entry={entry}
-                                dragging={draggingId === entry.id}
-                                muted={excluded}
-                                showRoleLabels={showRoleLabels}
-                                showBreakMinutes={showBreakMinutes}
-                                onEdit={canEdit ? openEdit : undefined}
-                                onDelete={canEdit ? handleDelete : undefined}
-                                onDuplicate={canEdit ? handleDuplicate : undefined}
-                                duplicating={duplicatingId === entry.id}
-                                onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
-                                onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
-                              />
-                            ))}
-                            {canAddShift && isEmpty ? (
-                              <Box
-                                className="schedule-cell-add"
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => openCreate(employee.user_id, dow)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    openCreate(employee.user_id, dow);
-                                  }
-                                }}
-                                sx={{
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "center",
-                                  gap: 0.5,
-                                  minHeight: 40,
-                                  borderRadius: 1.5,
-                                  border: "1.5px dashed #d8e2ea",
-                                  bgcolor: "transparent",
-                                  color: "text.secondary",
-                                  opacity: 0.55,
-                                  transition: "opacity 0.12s ease, border-color 0.12s ease, background-color 0.12s ease",
-                                  cursor: "pointer",
-                                  "&:hover": {
-                                    opacity: 1,
-                                    borderColor: "rgba(0, 151, 178, 0.35)",
-                                    bgcolor: "rgba(0, 151, 178, 0.04)",
-                                  },
-                                }}
-                              >
-                                <AddCircleOutlineIcon sx={{ fontSize: 15 }} />
-                                <Typography variant="caption" sx={{ fontWeight: 600, whiteSpace: "nowrap" }}>
-                                  Add shift
-                                </Typography>
-                              </Box>
-                            ) : null}
-                          </Box>
-                        );
-                      })}
+                            );
+                          })}
+                        </Box>
+                      </Paper>
+                    );
+                  })}
+                </Stack>
+              ) : (
+                <Box sx={{ overflowX: "auto" }}>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: `${employeeColWidth} repeat(7, ${dayColWidth})`,
+                      minWidth: gridMinWidth,
+                      gap: 0,
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 2.5,
+                      overflow: "hidden",
+                      bgcolor: "#fff",
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        px: 1.5,
+                        py: 1,
+                        bgcolor: "#f8fafc",
+                        borderBottom: "1px solid #e2e8f0",
+                        position: "sticky",
+                        left: 0,
+                        zIndex: 2,
+                        display: "flex",
+                        alignItems: "flex-end",
+                      }}
+                    >
+                      <Typography
+                        variant="overline"
+                        fontWeight={800}
+                        color="text.secondary"
+                        sx={{ letterSpacing: "0.1em", fontSize: "0.68rem" }}
+                      >
+                        Employee
+                      </Typography>
                     </Box>
-                  );
-                })}
-              </Box>
-            </Box>
+                    {DAY_LABELS.map((label, dow) => (
+                      <Box
+                        key={label}
+                        sx={{
+                          bgcolor: "#f8fafc",
+                          borderBottom: "1px solid #e2e8f0",
+                          borderLeft: "1px solid #e2e8f0",
+                        }}
+                      >
+                        <WeeklyScheduleDayHeader dayLabel={label} summary={daySummary(dayTotals[dow])} />
+                      </Box>
+                    ))}
+
+                    {(visibleEmployees || []).map((employee) => {
+                      const excluded = Boolean(employee.excluded);
+                      return (
+                        <Box key={employee.user_id} sx={{ display: "contents" }}>
+                          <WeeklyScheduleEmployeeCell
+                            employee={employee}
+                            entries={data?.entries}
+                            excluded={excluded}
+                            canManageExclusions={canManageExclusions}
+                            excludeSaving={excludeSavingUserId === employee.user_id}
+                            onExcludeToggle={handleExcludeToggle}
+                            showCost={showCost}
+                            showRates={showEmployeeRates}
+                            costAllowed={costAllowed}
+                          />
+                          {DAY_LABELS.map((dayLabel, dow) => {
+                            const cellKey = `${employee.user_id}:${dow}`;
+                            const cellEntries = entriesByCell[cellKey] || [];
+                            return (
+                              <ScheduleDayCell
+                                key={cellKey}
+                                employee={employee}
+                                dow={dow}
+                                dayLabel={dayLabel}
+                                cellEntries={cellEntries}
+                                excluded={excluded}
+                                {...cellProps}
+                              />
+                            );
+                          })}
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                </Box>
+              )}
+            </>
           )}
         </Box>
       </Paper>

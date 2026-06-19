@@ -1,8 +1,23 @@
-import { Box, Chip, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
+import { useState } from "react";
+import {
+  Box,
+  IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
+  Paper,
+  Tooltip,
+  Typography,
+  useMediaQuery,
+  useTheme,
+} from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
-import { parseEntryRoles, primaryRoleStyle, roleStripeGradient, ROLE_STYLES } from "./weeklyScheduleRoles";
+import { parseEntryRoles, roleLabels, shiftPeriodStyle } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleShiftCard({
   entry,
@@ -17,12 +32,21 @@ export default function WeeklyScheduleShiftCard({
   showRoleLabels = true,
   showBreakMinutes = true,
 }) {
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const [menuAnchor, setMenuAnchor] = useState(null);
+  const menuOpen = Boolean(menuAnchor);
+
   const roles = parseEntryRoles(entry);
-  const primary = primaryRoleStyle(entry);
+  const period = shiftPeriodStyle(entry);
   const hours = Number(entry.hours || 0);
   const breakMin = Number(entry.break_minutes || 0);
-  const breakSuffix = showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m` : "";
-  const stripe = roleStripeGradient(roles);
+  const breakSuffix = showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
+  const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
+  const roleText = showRoleLabels ? roleLabels(roles) : "";
+  const hasActions = Boolean((onEdit || onDuplicate || onDelete) && !muted);
+
+  const closeMenu = () => setMenuAnchor(null);
 
   return (
     <Paper
@@ -44,134 +68,168 @@ export default function WeeklyScheduleShiftCard({
       sx={{
         position: "relative",
         pl: 1,
-        pr: 0.75,
-        py: 0.5,
-        mb: 0.5,
-        borderRadius: 1.5,
+        pr: hasActions ? 0.25 : 0.75,
+        py: 0.35,
+        mb: 0.35,
+        borderRadius: 1.25,
         cursor: muted ? "default" : "grab",
-        border: `1px solid ${muted ? "#e8ecf0" : primary.border}`,
-        bgcolor: muted ? "#f8fafc" : primary.bg,
+        border: `1px solid ${muted ? "#e8ecf0" : period.border}`,
+        bgcolor: muted ? "#f8fafc" : period.bg,
         opacity: dragging ? 0.45 : muted ? 0.72 : 1,
         boxShadow: "none",
         overflow: "visible",
-        transition: "border-color 0.12s ease, background-color 0.12s ease",
+        transition: "border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease",
         "&:hover": muted
           ? {}
           : {
-              bgcolor: primary.hoverBg,
-              borderColor: primary.accent,
+              bgcolor: period.hoverBg,
+              borderColor: period.accent,
+              boxShadow: "0 1px 4px rgba(15, 23, 42, 0.06)",
             },
         "&:active": muted ? {} : { cursor: "grabbing" },
-        "&::before": {
-          content: '""',
-          position: "absolute",
-          left: 0,
-          top: 0,
-          bottom: 0,
-          width: 4,
-          borderRadius: "6px 0 0 6px",
-          background: muted ? "#cbd5e1" : stripe,
+        "&:hover .shift-card-menu-btn": {
+          opacity: 1,
         },
       }}
     >
-      <Box>
-        <Typography
-          variant="caption"
-          fontWeight={700}
-          sx={{
-            color: "text.primary",
-            fontSize: "0.72rem",
-            lineHeight: 1.25,
-            whiteSpace: "nowrap",
-            display: "block",
-          }}
-        >
-          {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
-        </Typography>
-        <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mt: 0.25, flexWrap: "wrap", rowGap: 0.25 }}>
+      <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.25, minWidth: 0 }}>
+        <Box sx={{ flex: 1, minWidth: 0, pr: hasActions ? 0 : 0.25 }}>
+          <Typography
+            variant="caption"
+            fontWeight={700}
+            sx={{
+              color: "text.primary",
+              fontSize: "0.72rem",
+              lineHeight: 1.3,
+              whiteSpace: "nowrap",
+              display: "block",
+              overflow: "visible",
+              textOverflow: "clip",
+            }}
+          >
+            {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
+          </Typography>
           <Typography
             variant="caption"
             sx={{
+              display: "block",
+              mt: 0.15,
               color: "text.secondary",
               fontSize: "0.68rem",
-              fontWeight: 600,
+              fontWeight: 700,
+              lineHeight: 1.25,
               whiteSpace: "nowrap",
-              flexShrink: 0,
+              overflow: "visible",
+              textOverflow: "clip",
             }}
           >
-            {hours.toFixed(1)}h{breakSuffix}
+            {hoursLabel}
+            {breakSuffix}
           </Typography>
-          {showRoleLabels ? (
-            <Stack direction="row" spacing={0.35} useFlexGap sx={{ flexWrap: "wrap" }}>
-              {roles.map((roleKey) => {
-                const style = ROLE_STYLES[roleKey] || ROLE_STYLES.fold;
-                return (
-                  <Chip
-                    key={roleKey}
-                    size="small"
-                    label={style.label}
-                    sx={{
-                      height: 18,
-                      bgcolor: style.chipBg,
-                      color: style.accent,
-                      border: `1px solid ${style.border}`,
-                      "& .MuiChip-label": {
-                        px: 0.6,
-                        fontSize: "0.62rem",
-                        fontWeight: 700,
-                        lineHeight: 1,
-                        whiteSpace: "nowrap",
-                      },
-                    }}
-                  />
-                );
-              })}
-            </Stack>
+          {roleText ? (
+            <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                mt: 0.15,
+                color: period.accent,
+                fontSize: "0.68rem",
+                fontWeight: 700,
+                lineHeight: 1.25,
+                whiteSpace: "nowrap",
+                overflow: "visible",
+                textOverflow: "clip",
+              }}
+            >
+              {roleText}
+            </Typography>
           ) : null}
-        </Stack>
-      </Box>
-      {(onDuplicate || onDelete) && !muted ? (
-        <Stack
-          direction="row"
-          spacing={0}
-          justifyContent="flex-end"
-          sx={{ mt: -0.1, ml: -0.25, lineHeight: 0 }}
-        >
-          {onDuplicate ? (
-            <Tooltip title="Duplicate shift">
-              <span>
-                <IconButton
-                  size="small"
-                  aria-label="Duplicate shift"
-                  disabled={duplicating}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDuplicate?.(entry);
-                  }}
-                  sx={{ p: 0.15, opacity: 0.55, "&:hover": { opacity: 1 } }}
-                >
-                  <ContentCopyOutlinedIcon sx={{ fontSize: 13 }} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          ) : null}
-          {onDelete ? (
-            <Tooltip title="Delete shift">
+        </Box>
+
+        {hasActions ? (
+          <>
+            <Tooltip title="Shift actions">
               <IconButton
+                className="shift-card-menu-btn"
                 size="small"
-                aria-label="Delete shift"
+                aria-label="Shift actions"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDelete?.(entry);
+                  setMenuAnchor(e.currentTarget);
                 }}
-                sx={{ p: 0.15, opacity: 0.55, "&:hover": { opacity: 1 } }}
+                sx={{
+                  p: 0.25,
+                  mt: -0.15,
+                  mr: 0.1,
+                  flexShrink: 0,
+                  opacity: isMobile ? 1 : 0,
+                  transition: "opacity 0.12s ease",
+                  color: period.accent,
+                }}
               >
-                <DeleteOutlineIcon sx={{ fontSize: 13 }} />
+                <MoreVertIcon sx={{ fontSize: 16 }} />
               </IconButton>
             </Tooltip>
-          ) : null}
-        </Stack>
-      ) : null}
+            <Menu
+              anchorEl={menuAnchor}
+              open={menuOpen}
+              onClose={closeMenu}
+              onClick={(e) => e.stopPropagation()}
+              anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+              transformOrigin={{ vertical: "top", horizontal: "right" }}
+              slotProps={{ paper: { sx: { minWidth: 160 } } }}
+            >
+              {onEdit ? (
+                <MenuItem
+                  onClick={() => {
+                    closeMenu();
+                    onEdit(entry);
+                  }}
+                >
+                  <ListItemIcon>
+                    <EditOutlinedIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText primaryTypographyProps={{ fontSize: "0.875rem", fontWeight: 600 }}>
+                    Edit shift
+                  </ListItemText>
+                </MenuItem>
+              ) : null}
+              {onDuplicate ? (
+                <MenuItem
+                  disabled={duplicating}
+                  onClick={() => {
+                    closeMenu();
+                    onDuplicate(entry);
+                  }}
+                >
+                  <ListItemIcon>
+                    <ContentCopyOutlinedIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText primaryTypographyProps={{ fontSize: "0.875rem", fontWeight: 600 }}>
+                    Duplicate
+                  </ListItemText>
+                </MenuItem>
+              ) : null}
+              {onDelete ? (
+                <MenuItem
+                  onClick={() => {
+                    closeMenu();
+                    onDelete(entry);
+                  }}
+                  sx={{ color: "error.main" }}
+                >
+                  <ListItemIcon sx={{ color: "error.main" }}>
+                    <DeleteOutlineIcon fontSize="small" />
+                  </ListItemIcon>
+                  <ListItemText primaryTypographyProps={{ fontSize: "0.875rem", fontWeight: 600 }}>
+                    Delete
+                  </ListItemText>
+                </MenuItem>
+              ) : null}
+            </Menu>
+          </>
+        ) : null}
+      </Box>
     </Paper>
   );
 }

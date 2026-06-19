@@ -1,0 +1,111 @@
+import { Box, Typography } from "@mui/material";
+import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
+
+const ROLE_ACCENT = {
+  fold: VEEWASH_DASHBOARD.tealDark,
+  sort: VEEWASH_DASHBOARD.primaryBlueDark,
+  wash: VEEWASH_DASHBOARD.rushCopper,
+};
+
+function formatHours(value) {
+  const n = Number(value || 0);
+  return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+}
+
+function formatCurrency(value) {
+  const n = Number(value || 0);
+  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
+}
+
+function SummaryMetric({ label, value, accent }) {
+  return (
+    <Box component="span" sx={{ display: "inline-flex", alignItems: "baseline", gap: 0.5 }}>
+      <Typography
+        component="span"
+        variant="body2"
+        sx={{ color: "text.secondary", fontWeight: 600, fontSize: "0.8125rem" }}
+      >
+        {label}:
+      </Typography>
+      <Typography
+        component="span"
+        variant="body2"
+        sx={{ fontWeight: 800, color: accent || "text.primary", fontSize: "0.875rem" }}
+      >
+        {value}
+      </Typography>
+    </Box>
+  );
+}
+
+export default function WeeklyScheduleSummaryBar({ summary, showCost }) {
+  if (!summary) return null;
+
+  const metrics = [
+    { label: "Employees Scheduled", value: summary.employeesScheduled, accent: VEEWASH_DASHBOARD.primaryBlueDark },
+    { label: "Total Hours", value: formatHours(summary.totalHours), accent: VEEWASH_DASHBOARD.tealDark },
+    { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
+    { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
+    { label: "Wash", value: summary.washCount, accent: ROLE_ACCENT.wash },
+  ];
+
+  if (showCost) {
+    metrics.push({
+      label: "Estimated Labor Cost",
+      value: formatCurrency(summary.estimatedCost),
+      accent: VEEWASH_DASHBOARD.pendingDark,
+    });
+  }
+
+  return (
+    <Box
+      sx={{
+        mb: 2,
+        px: { xs: 1.5, md: 2 },
+        py: 1.25,
+        borderRadius: 2,
+        bgcolor: "#fff",
+        border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+        boxShadow: VEEWASH_DASHBOARD.cardShadow,
+      }}
+    >
+      <Typography
+        variant="overline"
+        sx={{
+          display: "block",
+          fontWeight: 800,
+          letterSpacing: "0.1em",
+          color: VEEWASH_DASHBOARD.primaryBlueDark,
+          mb: 0.75,
+          fontSize: "0.68rem",
+        }}
+      >
+        Week Summary
+      </Typography>
+      <Box
+        sx={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          columnGap: { xs: 1.5, md: 2.5 },
+          rowGap: 0.75,
+        }}
+      >
+        {metrics.map((metric, index) => (
+          <Box key={metric.label} component="span" sx={{ display: "inline-flex", alignItems: "center" }}>
+            {index > 0 ? (
+              <Typography
+                component="span"
+                variant="body2"
+                sx={{ color: "divider", mx: { xs: 0.75, md: 1.25 }, display: { xs: "none", sm: "inline" } }}
+              >
+                |
+              </Typography>
+            ) : null}
+            <SummaryMetric {...metric} />
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+}

@@ -1,3 +1,5 @@
+import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
+import { normalizeTimeHm } from "../datetime/scheduleTimeUi";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
 export const WEEKLY_SCHEDULE_ROLES = [
@@ -86,6 +88,92 @@ export function roleLabels(roles) {
   return roles.map((r) => ROLE_STYLES[r]?.label || r).join(" · ");
 }
 
+/** Morning vs afternoon card styling — classified by shift start time (before 2 PM = morning). */
+export const SHIFT_PERIOD_STYLES = {
+  morning: {
+    bg: "#e8f4fc",
+    hoverBg: "#dceefb",
+    border: "rgba(59, 130, 246, 0.32)",
+    accent: "#2563eb",
+    label: "Morning",
+  },
+  afternoon: {
+    bg: "#fff4eb",
+    hoverBg: "#ffe8d9",
+    border: "rgba(234, 88, 12, 0.32)",
+    accent: "#ea580c",
+    label: "Afternoon",
+  },
+};
+
+const AFTERNOON_START_MINUTES = 14 * 60;
+
+export function shiftPeriodKey(entry) {
+  const mins = parseTimeToMinutes(normalizeTimeHm(entry?.start_time));
+  if (mins == null) return "morning";
+  return mins >= AFTERNOON_START_MINUTES ? "afternoon" : "morning";
+}
+
+export function shiftPeriodStyle(entry) {
+  return SHIFT_PERIOD_STYLES[shiftPeriodKey(entry)] || SHIFT_PERIOD_STYLES.morning;
+}
+
+/** Primary role for an employee row — most frequent role across their week entries. */
+export function deriveEmployeePrimaryRole(userId, entries) {
+  const counts = {};
+  for (const entry of entries || []) {
+    if (Number(entry.user_id) !== Number(userId)) continue;
+    for (const roleKey of parseEntryRoles(entry)) {
+      counts[roleKey] = (counts[roleKey] || 0) + 1;
+    }
+  }
+  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  return ranked[0]?.[0] || null;
+}
+
+export function formatEmployeeWeeklySummary(employee) {
+  const hours = Number(employee?.total_hours || 0);
+  const days = Number(employee?.scheduled_days || 0);
+  const hrsLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
+  const dayLabel = days === 1 ? "1 day" : `${days} days`;
+  return `${hrsLabel} hrs • ${dayLabel}`;
+}
+
+export function computeWeekSummary(data, { includeExcluded = false } = {}) {
+  const dayTotals = data?.totals?.day_totals || [];
+  const employees = data?.employees || [];
+
+  let totalHours = 0;
+  let sortCount = 0;
+  let washCount = 0;
+  let foldCount = 0;
+  for (const day of dayTotals) {
+    totalHours += Number(day?.total_hours || 0);
+    sortCount += Number(day?.sort_count || 0);
+    washCount += Number(day?.wash_count || 0);
+    foldCount += Number(day?.fold_count || 0);
+  }
+
+  let employeesScheduled = 0;
+  let estimatedCost = 0;
+  for (const employee of employees) {
+    if (employee.excluded && !includeExcluded) continue;
+    if (Number(employee.scheduled_days || 0) > 0) employeesScheduled += 1;
+    if (!employee.excluded) {
+      estimatedCost += Number(employee.estimated_cost || 0);
+    }
+  }
+
+  return {
+    employeesScheduled,
+    totalHours,
+    sortCount,
+    washCount,
+    foldCount,
+    estimatedCost,
+  };
+}
+
 const DROP_TARGET_OVERLAY = "rgba(0, 151, 178, 0.08)";
 
 /** Subtle grid-cell tint from shift roles — lighter than shift card fills. */
@@ -117,10 +205,10 @@ export function cellRoleBackground(entries) {
 
 export function scheduleCellBackground({ entries, excluded, isDropTarget }) {
   if (excluded) return "#fafafa";
-  const roleBg = cellRoleBackground(entries);
+  const base = "#fafbfc";
   if (isDropTarget) {
-    const base = roleBg || "#fff";
     return `linear-gradient(${DROP_TARGET_OVERLAY}, ${DROP_TARGET_OVERLAY}), ${base}`;
   }
-  return roleBg || "#fff";
+  if (entries?.length) return "#f8fafc";
+  return base;
 }
