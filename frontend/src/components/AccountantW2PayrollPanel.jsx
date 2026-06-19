@@ -27,10 +27,19 @@ import { VEEWASH_BRAND } from "../theme/veewashBrand";
 const DEFAULT_OT_MULTIPLIER = 1.5;
 
 function periodStatusLabel(batch) {
-  const st = batch?.accountant_processing_status;
+  if (!batch || typeof batch !== "object") return null;
+  const st = batch.accountant_processing_status;
   if (st === "PENDING" || st === "PROCESSED") return st;
-  if (batch?.status === "sent_to_accountant") return "PENDING";
-  return "PROCESSED";
+  if (batch.status === "sent_to_accountant") return "PENDING";
+  if (
+    batch.status === "accountant_reviewed" ||
+    batch.status === "approved_for_payment" ||
+    batch.status === "paid" ||
+    batch.status === "closed"
+  ) {
+    return "PROCESSED";
+  }
+  return null;
 }
 
 function computeLinePay(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
@@ -150,8 +159,8 @@ export default function AccountantW2PayrollPanel() {
     loadBatchDetail(periodBatch?.id);
   }, [periodBatch?.id, loadBatchDetail]);
 
-  const processingStatus = batch?.accountant_processing_status;
-  const canProcess = batch?.can_process_as_accountant;
+  const processingStatus = periodStatusLabel(batch || periodBatch);
+  const canProcess = Boolean(batch?.can_process_as_accountant);
 
   const totals = useMemo(() => {
     const lines = batch?.lines || [];
@@ -177,6 +186,7 @@ export default function AccountantW2PayrollPanel() {
       const res = await processPayoutBatch(batch.id);
       setBatch(res.data);
       await loadBatches();
+      await loadBatchDetail(batch.id);
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Could not process batch");
     } finally {

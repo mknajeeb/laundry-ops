@@ -56,7 +56,9 @@ export function mergePayPeriodOptions(generated = [], batches = [], batchStatusL
     if (!start || !end) continue;
     const key = periodKey(start, end);
     const baseLabel = formatWeekRangeLabel(start, end);
-    const status = batchStatusLabel ? batchStatusLabel(b.status) : b.status;
+    const status = batchStatusLabel
+      ? batchStatusLabel(b)
+      : b.accountant_processing_status || null;
     const label = status ? `${baseLabel} · ${status}` : baseLabel;
     map.set(key, {
       start,
@@ -65,7 +67,7 @@ export function mergePayPeriodOptions(generated = [], batches = [], batchStatusL
       label,
       year: start.slice(0, 4),
       fromBatch: true,
-      batchStatus: b.status,
+      batchStatus: status || b.accountant_processing_status || b.status,
       batchId: b.id,
     });
   }
