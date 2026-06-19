@@ -9,8 +9,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
   IconButton,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -48,15 +52,15 @@ import {
   hasDocOnFile,
   resolvePrimaryDocRecord,
 } from "../payroll/accountantW2DocCatalog";
+import {
+  ACCOUNTANT_DOC_CATEGORY_OPTIONS,
+  filterAccountantDocumentUsers,
+  mapAccountantDocumentUserOption,
+} from "../payroll/accountantDocumentUsers";
 import DirectDepositFormPrint, {
   buildDirectDepositPrefill,
 } from "../payroll/DirectDepositFormPrint";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
-
-function isW2Employee(user) {
-  const lanes = user?.hr_form_lanes || [];
-  return lanes.includes("employee_w2");
-}
 
 async function fetchDocumentBlob(userId, record, { download = false } = {}) {
   if (!userId || !record?.id) {
@@ -128,6 +132,7 @@ export default function AccountantW2DocumentsPanel() {
   const canUpload = hasPerm("users.edit") || hasPerm("ta.settings");
   const printRef = useRef(null);
 
+  const [category, setCategory] = useState("w2");
   const [workers, setWorkers] = useState([]);
   const [selected, setSelected] = useState(null);
   const [records, setRecords] = useState([]);
@@ -142,17 +147,14 @@ export default function AccountantW2DocumentsPanel() {
   const loadWorkers = useCallback(async () => {
     try {
       const res = await getTaUsers();
-      const list = (res.data?.users || res.data || [])
-        .filter(isW2Employee)
-        .map((u) => ({
-          id: u.id,
-          label: `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.email || `#${u.id}`,
-        }));
+      const list = filterAccountantDocumentUsers(res.data?.users || res.data || [], category).map(
+        mapAccountantDocumentUserOption,
+      );
       setWorkers(list);
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Could not load employees");
     }
-  }, []);
+  }, [category]);
 
   const loadEmployee = useCallback(async (userId) => {
     if (!userId) {
@@ -183,6 +185,7 @@ export default function AccountantW2DocumentsPanel() {
 
   useEffect(() => {
     loadWorkers();
+    setSelected(null);
   }, [loadWorkers]);
 
   useEffect(() => {
@@ -306,26 +309,50 @@ export default function AccountantW2DocumentsPanel() {
           Print direct deposit from VeeWash. Upload signed copies for the other items. Accountants can
           view and print; admins can upload and manage files.
         </Typography>
-        <Autocomplete
-          options={workers}
-          value={selected}
-          onChange={(_, v) => setSelected(v)}
-          getOptionLabel={(o) => o?.label || ""}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              label="W-2 employee"
-              size="small"
-              placeholder="Search by name"
-              sx={{
-                maxWidth: 420,
-                bgcolor: "rgba(255,255,255,0.98)",
-                borderRadius: 1,
-                "& .MuiOutlinedInput-root": { borderRadius: 1 },
-              }}
-            />
-          )}
-        />
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "flex-start" }}>
+          <FormControl
+            size="small"
+            sx={{
+              minWidth: 200,
+              bgcolor: "rgba(255,255,255,0.98)",
+              borderRadius: 1,
+            }}
+          >
+            <InputLabel id="accountant-doc-category-label">Category</InputLabel>
+            <Select
+              labelId="accountant-doc-category-label"
+              label="Category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+            >
+              {ACCOUNTANT_DOC_CATEGORY_OPTIONS.map((o) => (
+                <MenuItem key={o.value} value={o.value}>
+                  {o.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <Autocomplete
+            sx={{ flex: 1, maxWidth: 420 }}
+            options={workers}
+            value={selected}
+            onChange={(_, v) => setSelected(v)}
+            getOptionLabel={(o) => o?.label || ""}
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label={category === "system_users" ? "System user" : "W-2 employee"}
+                size="small"
+                placeholder="Search by name"
+                sx={{
+                  bgcolor: "rgba(255,255,255,0.98)",
+                  borderRadius: 1,
+                  "& .MuiOutlinedInput-root": { borderRadius: 1 },
+                }}
+              />
+            )}
+          />
+        </Stack>
       </Paper>
 
       {selected ? (
@@ -487,7 +514,10 @@ export default function AccountantW2DocumentsPanel() {
           </Table>
         </TableContainer>
       ) : (
-        <Alert severity="info">Select a W-2 employee to manage documents.</Alert>
+        <Alert severity="info">
+          Select a {category === "system_users" ? "system user" : "W-2 employee"} to manage
+          documents.
+        </Alert>
       )}
 
       <Box

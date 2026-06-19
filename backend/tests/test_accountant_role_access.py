@@ -127,3 +127,14 @@ def test_accountant_panel_uses_authenticated_document_file_api():
     assert "getTaUserDocumentFile" in panel
     assert "blob.core.windows.net" not in panel
     assert "openUploadedView(selected.id, doc.rec)" in panel
+
+
+def test_accountant_documents_has_system_users_category():
+    panel = _read("frontend/src/components/AccountantW2DocumentsPanel.jsx")
+    users = _read("frontend/src/payroll/accountantDocumentUsers.js")
+    assert "ACCOUNTANT_DOC_CATEGORY_OPTIONS" in panel
+    assert 'value: "system_users"' in users
+    assert "Alliance Business Consultant" in users or "alliance business consultant" in users
+    assert "New VeeWash Admin" in users or "new veewash admin" in users
+    assert "filterAccountantDocumentUsers" in panel
+    assert "isW2EmployeeForDocuments" in users
