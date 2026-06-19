@@ -1,0 +1,56 @@
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  .app-shell-sidebar,
+  .MuiAppBar-root {
+    display: none !important;
+  }
+
+  .app-main-scroll {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  .weekly-schedule-print-root {
+    background: #fff !important;
+    padding: 0 !important;
+    min-height: auto !important;
+  }
+
+  .weekly-schedule-print-area {
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .weekly-schedule-print-area .MuiPaper-root {
+    box-shadow: none !important;
+  }
+
+  .weekly-schedule-print-header {
+    display: block !important;
+    margin-bottom: 12px;
+  }
+
+  .weekly-schedule-print-only {
+    display: block !important;
+  }
+
+  .weekly-schedule-employee-cell-actions {
+    display: none !important;
+  }
+
+  .shift-card-menu-btn {
+    display: none !important;
+  }
+
+  .schedule-cell-add {
+    display: none !important;
+  }
+}
+
+.weekly-schedule-print-header,
+.weekly-schedule-print-only {
+  display: none;
+}

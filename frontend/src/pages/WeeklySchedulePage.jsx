@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -20,7 +20,9 @@ import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
 import AttachMoneyOutlinedIcon from "@mui/icons-material/AttachMoneyOutlined";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import FileDownloadOutlinedIcon from "@mui/icons-material/FileDownloadOutlined";
 import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
+import PrintIcon from "@mui/icons-material/Print";
 import {
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
@@ -44,34 +46,18 @@ import {
   pickDefaultEmployerTab,
 } from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
 import {
+  DAY_LABELS,
+  formatWeekRange,
+  normalizeWeekStart,
+  shiftWeek,
+} from "../components/weeklySchedule/weeklyScheduleDates";
+import { exportWeeklyScheduleCsv } from "../components/weeklySchedule/weeklyScheduleExport";
+import "../components/weeklySchedule/weeklySchedulePrint.css";
+import {
   computeFilteredDaySummaries,
   computeWeekSummary,
   scheduleCellBackground,
 } from "../components/weeklySchedule/weeklyScheduleRoles";
-
-const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-function normalizeWeekStart(isoDate) {
-  const d = new Date(`${isoDate}T12:00:00`);
-  const dow = d.getDay();
-  d.setDate(d.getDate() - dow);
-  return d.toISOString().slice(0, 10);
-}
-
-function shiftWeek(isoDate, deltaWeeks) {
-  const d = new Date(`${isoDate}T12:00:00`);
-  d.setDate(d.getDate() + deltaWeeks * 7);
-  return normalizeWeekStart(d.toISOString().slice(0, 10));
-}
-
-function formatWeekRange(weekStart) {
-  const start = new Date(`${weekStart}T12:00:00`);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 6);
-  const fmt = (dt) =>
-    dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
 
 function daySummary(day) {
   return {
@@ -241,6 +227,7 @@ export default function WeeklySchedulePage() {
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [employerTab, setEmployerTab] = useState(EMPLOYER_TAB.VEEWASH);
+  const printRef = useRef(null);
 
   const display = data?.display || {};
   const canEdit = display.can_edit_schedule !== false;
@@ -449,6 +436,25 @@ export default function WeeklySchedulePage() {
     load(next);
   };
 
+  const openEmployeeView = (employee) => {
+    const url = `/performance/weekly-schedule/employee/${employee.user_id}?week_start=${weekStart}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  const handleExport = () => {
+    exportWeeklyScheduleCsv({
+      employees: visibleEmployees,
+      entries: data?.entries,
+      weekStart,
+      tabLabel: EMPLOYER_TAB_LABELS[employerTab],
+      showRoleLabels,
+    });
+  };
+
   const cellProps = {
     entriesByCell,
     dropTarget,
@@ -467,8 +473,10 @@ export default function WeeklySchedulePage() {
   };
 
   return (
-    <Box sx={{ p: { xs: 1.5, md: 2.5 }, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%" }}>
+    <Box className="weekly-schedule-print-root" sx={{ p: { xs: 1.5, md: 2.5 }, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%" }}>
       <Paper
+        ref={printRef}
+        className="weekly-schedule-print-area"
         elevation={0}
         sx={{
           borderRadius: 3,
@@ -478,6 +486,7 @@ export default function WeeklySchedulePage() {
         }}
       >
         <Box
+          className="no-print"
           sx={{
             px: { xs: 2, md: 2.5 },
             py: 2,
@@ -494,37 +503,78 @@ export default function WeeklySchedulePage() {
             <Typography variant="h5" fontWeight={800} sx={{ letterSpacing: "-0.02em" }}>
               Weekly Schedule
             </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.92, mt: 0.25 }}>
+            <Typography variant="body2" sx={{ opacity: 0.92, mt: 0.25 }} className="no-print">
               Plan labor by day — drag shifts, assign Wash · Sort · Fold roles
             </Typography>
           </Box>
-          <Stack
-            direction="row"
-            spacing={0.5}
-            alignItems="center"
-            sx={{
-              bgcolor: "rgba(255,255,255,0.14)",
-              borderRadius: 999,
-              px: 0.5,
-              py: 0.25,
-            }}
-          >
-            <IconButton size="small" onClick={() => changeWeek(-1)} sx={{ color: "#fff" }}>
-              <ChevronLeftIcon />
-            </IconButton>
-            <Typography
-              variant="subtitle2"
-              sx={{ minWidth: { xs: 180, md: 220 }, textAlign: "center", fontWeight: 700 }}
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap className="no-print">
+            <Stack
+              direction="row"
+              spacing={0.5}
+              alignItems="center"
+              sx={{
+                bgcolor: "rgba(255,255,255,0.14)",
+                borderRadius: 999,
+                px: 0.5,
+                py: 0.25,
+              }}
             >
-              {formatWeekRange(weekStart)}
-            </Typography>
-            <IconButton size="small" onClick={() => changeWeek(1)} sx={{ color: "#fff" }}>
-              <ChevronRightIcon />
-            </IconButton>
+              <IconButton size="small" onClick={() => changeWeek(-1)} sx={{ color: "#fff" }}>
+                <ChevronLeftIcon />
+              </IconButton>
+              <Typography
+                variant="subtitle2"
+                sx={{ minWidth: { xs: 180, md: 220 }, textAlign: "center", fontWeight: 700 }}
+              >
+                {formatWeekRange(weekStart)}
+              </Typography>
+              <IconButton size="small" onClick={() => changeWeek(1)} sx={{ color: "#fff" }}>
+                <ChevronRightIcon />
+              </IconButton>
+            </Stack>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<FileDownloadOutlinedIcon />}
+              onClick={handleExport}
+              disabled={!visibleEmployees.length}
+              sx={{
+                fontWeight: 700,
+                color: "#fff",
+                borderColor: "rgba(255,255,255,0.45)",
+                "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
+              }}
+            >
+              Export Excel
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<PrintIcon />}
+              onClick={handlePrint}
+              disabled={!visibleEmployees.length}
+              sx={{
+                fontWeight: 700,
+                color: "#fff",
+                borderColor: "rgba(255,255,255,0.45)",
+                "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
+              }}
+            >
+              Print
+            </Button>
           </Stack>
         </Box>
 
-        <Box sx={{ px: 2, pt: 1.5, pb: 0, bgcolor: "#fff", borderBottom: "1px solid #e8eef2" }}>
+        <Box className="weekly-schedule-print-header" sx={{ px: 2, pt: 1.5, pb: 0.5, bgcolor: "#fff" }}>
+          <Typography variant="h6" fontWeight={800}>
+            Weekly Schedule — {EMPLOYER_TAB_LABELS[employerTab]}
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
+            {formatWeekRange(weekStart)}
+          </Typography>
+        </Box>
+
+        <Box sx={{ px: 2, pt: 1.5, pb: 0, bgcolor: "#fff", borderBottom: "1px solid #e8eef2" }} className="no-print">
           <Tabs
             value={employerTab}
             onChange={(_, value) => setEmployerTab(value)}
@@ -547,10 +597,15 @@ export default function WeeklySchedulePage() {
               value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
               label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
             />
+            <Tab
+              value={EMPLOYER_TAB.COMBINED}
+              label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.COMBINED]} (${(data?.employees || []).length})`}
+            />
           </Tabs>
         </Box>
 
         <Box
+          className="no-print"
           sx={{
             px: 2,
             py: 1.25,
@@ -597,6 +652,7 @@ export default function WeeklySchedulePage() {
           {excludedCount > 0 && !showExcluded && canManageExclusions ? (
             <Alert
               severity="info"
+              className="no-print"
               sx={{ mb: 2, borderRadius: 2 }}
               action={
                 <Button color="inherit" size="small" onClick={() => setShowExcluded(true)} sx={{ fontWeight: 700 }}>
@@ -609,13 +665,13 @@ export default function WeeklySchedulePage() {
             </Alert>
           ) : null}
           {error ? (
-            <Alert severity="error" sx={{ mb: 2 }}>
+            <Alert severity="error" sx={{ mb: 2 }} className="no-print">
               {error}
             </Alert>
           ) : null}
 
           {loading ? (
-            <Stack alignItems="center" py={6}>
+            <Stack alignItems="center" py={6} className="no-print">
               <CircularProgress size={32} />
             </Stack>
           ) : (
@@ -650,6 +706,7 @@ export default function WeeklySchedulePage() {
                           showCost={showCost}
                           showRates={showEmployeeRates}
                           costAllowed={costAllowed}
+                          onViewSchedule={openEmployeeView}
                         />
                         <Box sx={{ px: 1.25, pb: 1.25, display: "grid", gap: 0.75 }}>
                           {DAY_LABELS.map((dayLabel, dow) => {
@@ -740,6 +797,7 @@ export default function WeeklySchedulePage() {
                             showCost={showCost}
                             showRates={showEmployeeRates}
                             costAllowed={costAllowed}
+                            onViewSchedule={openEmployeeView}
                           />
                           {DAY_LABELS.map((dayLabel, dow) => {
                             const cellKey = `${employee.user_id}:${dow}`;

@@ -1,5 +1,6 @@
 import { Box, Button, Chip, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme } from "@mui/material";
 import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
+import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import {
   ROLE_STYLES,
@@ -18,6 +19,7 @@ export default function WeeklyScheduleEmployeeCell({
   showCost,
   showRates,
   costAllowed,
+  onViewSchedule,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
@@ -123,6 +125,20 @@ export default function WeeklyScheduleEmployeeCell({
             />
           ) : null}
         </Box>
+
+        {onViewSchedule ? (
+          <Tooltip title="Open employee schedule view">
+            <IconButton
+              size="small"
+              aria-label="Open employee schedule view"
+              className="weekly-schedule-employee-cell-actions"
+              onClick={() => onViewSchedule(employee)}
+              sx={{ mt: -0.25, flexShrink: 0 }}
+            >
+              <OpenInNewOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
 
         {canManageExclusions ? (
           <Tooltip title={excluded ? "Include in schedule" : "Exclude from this week's schedule"}>

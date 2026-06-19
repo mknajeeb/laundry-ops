@@ -3,11 +3,13 @@
 export const EMPLOYER_TAB = {
   VEEWASH: "veewash",
   RINSE_EXCLUSIVE: "rinse_exclusive",
+  COMBINED: "combined",
 };
 
 export const EMPLOYER_TAB_LABELS = {
   [EMPLOYER_TAB.VEEWASH]: "VeeWash",
   [EMPLOYER_TAB.RINSE_EXCLUSIVE]: "Rinse Exclusive",
+  [EMPLOYER_TAB.COMBINED]: "Combined",
 };
 
 function streamFlag(value) {
@@ -23,6 +25,7 @@ export function isRinseExclusiveEmployee(employee) {
 }
 
 export function matchesEmployerTab(employee, tab) {
+  if (tab === EMPLOYER_TAB.COMBINED) return true;
   if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) return isRinseExclusiveEmployee(employee);
   return !isRinseExclusiveEmployee(employee);
 }

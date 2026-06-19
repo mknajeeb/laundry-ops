@@ -38,6 +38,7 @@ import DailyShiftRosterPage from "./pages/DailyShiftRosterPage";
 import ScanChronologyPage from "./pages/ScanChronologyPage";
 import OperationsTimelinePage from "./pages/OperationsTimelinePage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
+import WeeklyScheduleEmployeeViewPage from "./pages/WeeklyScheduleEmployeeViewPage";
 import PerformanceSettingsPage from "./pages/PerformanceSettingsPage";
 import PerformanceUserMappingPage from "./pages/PerformanceUserMappingPage";
 import PerformanceBackfillPage from "./pages/PerformanceBackfillPage";
@@ -824,6 +825,16 @@ function AppShell() {
                 <TenantOnlyRoute user={user}>
                   <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
                     <OperationsTimelinePage />
+                  </GuardedRoute>
+                </TenantOnlyRoute>
+              }
+            />
+            <Route
+              path="/performance/weekly-schedule/employee/:userId"
+              element={
+                <TenantOnlyRoute user={user}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                    <WeeklyScheduleEmployeeViewPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
               }
