@@ -41,7 +41,7 @@ import {
 } from "../api";
 import { useAuth } from "../context/AuthContext";
 import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
-import { openPrintWindow } from "../contractorForms/contractorPrint";
+import { downloadPrintDocument } from "../contractorForms/contractorPrint";
 import {
   ACCOUNTANT_W2_DOCS,
   findDocRecord,
@@ -189,9 +189,18 @@ export default function AccountantW2DocumentsPanel() {
     loadEmployee(selected?.id);
   }, [selected?.id, loadEmployee]);
 
-  const printDirectDeposit = () => {
+  const downloadDirectDeposit = () => {
     if (!printRef.current) return;
-    openPrintWindow(printRef.current, { pageSize: "A4 portrait" });
+    const slug =
+      String(selected?.label || "employee")
+        .trim()
+        .replace(/[^\w.-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "employee";
+    downloadPrintDocument(printRef.current, {
+      pageSize: "letter portrait",
+      filename: `direct-deposit-${slug}.html`,
+      title: "Direct Deposit Authorization",
+    });
   };
 
   const saveUpload = async () => {
@@ -385,8 +394,8 @@ export default function AccountantW2DocumentsPanel() {
                               <PrintIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
-                          <Tooltip title="Download (print to PDF)">
-                            <IconButton size="small" onClick={printDirectDeposit}>
+                          <Tooltip title="Download HTML">
+                            <IconButton size="small" onClick={downloadDirectDeposit}>
                               <DownloadIcon fontSize="small" />
                             </IconButton>
                           </Tooltip>
@@ -481,7 +490,7 @@ export default function AccountantW2DocumentsPanel() {
         onClose={() => setPrintPreviewOpen(false)}
         title="Direct Deposit Authorization"
         printRef={printRef}
-        pageSize="A4 portrait"
+        pageSize="letter portrait"
       />
 
       <Dialog

@@ -44,6 +44,7 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
   const payFreq = String(p.pay_frequency || "weekly").toLowerCase();
   const filing = String(p.federal_filing_status || "single").toLowerCase();
   const acctType = String(dd.account_type || "checking").toLowerCase();
+  const stateDisplay = String(p.state || "").trim().toUpperCase();
 
   return (
     <div className="vw-ddf-root">
@@ -239,13 +240,59 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
         .vw-footer strong { color: #fff; font-weight: 700; }
         @media print {
           @page {
-            size: A4 portrait;
-            margin: 12mm;
+            size: letter portrait;
+            margin: 0.35in;
           }
           .vw-ddf-root {
             width: 100%;
             max-width: 100%;
             margin: 0;
+            font-size: 8.5pt;
+            line-height: 1.32;
+          }
+          .vw-ddf-hero {
+            padding: 0.1in 0.14in 0.08in;
+            margin-bottom: 0.07in;
+          }
+          .vw-ddf-logo {
+            width: 0.55in;
+            height: 0.55in;
+            min-width: 0.55in;
+          }
+          .vw-ddf-company { font-size: 13pt; }
+          .vw-ddf-tagline { font-size: 7.5pt; margin-top: 0.02in; }
+          .vw-ddf-doc-title {
+            font-size: 9.5pt;
+            margin: 0.06in 0 0;
+            padding-top: 0.06in;
+          }
+          .vw-ddf-gold-bar { margin-bottom: 0.06in; height: 2px; }
+          .vw-card { margin-bottom: 0.05in; page-break-inside: avoid; }
+          .vw-card-head { padding: 0.05in 0.1in; }
+          .vw-card-num {
+            width: 0.22in;
+            height: 0.22in;
+            font-size: 8pt;
+          }
+          .vw-card-title { font-size: 9pt; }
+          .vw-card-body { padding: 0.06in 0.1in 0.07in; }
+          .vw-grid { gap: 0.05in 0.08in; }
+          .vw-field-label { font-size: 6.5pt; }
+          .vw-field-value {
+            font-size: 8.5pt;
+            min-height: 0.2in;
+            padding: 0.03in 0.06in;
+          }
+          .vw-pills { gap: 0.04in; margin-top: 0.03in; }
+          .vw-pill { font-size: 7.5pt; padding: 0.02in 0.06in; }
+          .vw-pill-dot { width: 0.1in; height: 0.1in; }
+          .vw-sub-label { font-size: 7pt; margin: 0.05in 0 0.02in; }
+          .vw-footer {
+            margin-top: 0.06in;
+            padding: 0.06in 0.1in;
+            font-size: 7.5pt;
+            line-height: 1.4;
+            page-break-inside: avoid;
           }
         }
       `}</style>
@@ -270,7 +317,7 @@ export default function DirectDepositFormPrint({ prefill = {} }) {
           <FieldRow label="Last Name" value={p.last_name} />
           <FieldRow label="Address" value={p.address_line1} wide />
           <FieldRow label="City" value={p.city} />
-          <FieldRow label="State" value={p.state} />
+          <FieldRow label="State" value={stateDisplay} />
           <FieldRow label="Zip Code" value={p.zip} />
           <FieldRow label="Social Security Number" value={p.ssn_display} />
           <FieldRow label="Date of Birth" value={p.date_of_birth} />
@@ -368,7 +415,7 @@ export function buildDirectDepositPrefill(payroll, hr, org) {
     last_name: payroll?.last_name || "",
     address_line1: addrLine,
     city: addr.city || "",
-    state: addr.state || "",
+    state: String(addr.state || "").trim().toUpperCase(),
     zip: addr.zip || addr.zip_code || "",
     ssn_display: resolveDirectDepositSsnDisplay(payroll, work),
     date_of_birth: hr?.date_of_birth || work.date_of_birth || "",

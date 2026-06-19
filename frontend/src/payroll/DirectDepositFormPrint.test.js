@@ -32,4 +32,22 @@ describe("buildDirectDepositPrefill", () => {
     );
     expect(prefill.ssn_display).toBe("987-65-4321");
   });
+
+  it("uppercases state from mailing address", () => {
+    const prefill = buildDirectDepositPrefill(
+      {},
+      { work_json: { mailing: { state: "ny", city: "Brooklyn" } } },
+      {},
+    );
+    expect(prefill.state).toBe("NY");
+  });
+
+  it("uppercases state from work root when mailing is absent", () => {
+    const prefill = buildDirectDepositPrefill(
+      {},
+      { work_json: { state: "ca" } },
+      {},
+    );
+    expect(prefill.state).toBe("CA");
+  });
 });
