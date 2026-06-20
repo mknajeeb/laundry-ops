@@ -763,6 +763,7 @@ def build_estimated_payout_details_patch(
         int(user_id),
         gross_pay=float(gross or 0),
         pay_period_start=pay_period_start,
+        minimum_withholding=True,
     )
     if calc.get("tax_calc_status") == "profile_incomplete":
         raise ValueError(calc.get("tax_calc_notes") or "Tax profile incomplete")
@@ -791,6 +792,7 @@ def build_estimated_payout_details_patch(
         "employer_taxes": employer_taxes,
         "tax_summary": {
             "estimated": True,
+            "minimum_withholding": True,
             "calc_notes": str(calc.get("tax_calc_notes") or ""),
         },
     }

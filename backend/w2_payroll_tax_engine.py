@@ -19,7 +19,7 @@ from backend.employee_withholding_profile import (
     step2_checkbox_checked,
 )
 from backend.ny_nyc_withholding_2026 import nyc_withholding_nys50, ny_state_withholding_nys50
-from backend.pub_15t_withholding import federal_withholding_pub_15t
+from backend.pub_15t_withholding import federal_minimum_withholding_pub_15t, federal_withholding_pub_15t
 from backend.payroll_tax_messages import ESTIMATE_DISCLAIMER
 from backend.payroll_tax_settings import fetch_payroll_tax_settings
 from backend.payroll_identity import fetch_payroll_profile_row
@@ -329,6 +329,7 @@ def calculate_w2_line_taxes(
     gross_pay: float,
     pay_period_start: Optional[str] = None,
     tax_year: Optional[int] = None,
+    minimum_withholding: bool = False,
 ) -> dict[str, Any]:
     """
     Calculate estimated employee + employer taxes for one W-2 pay period line.
@@ -380,19 +381,36 @@ def calculate_w2_line_taxes(
     # --- Federal income tax (IRS Pub 15-T percentage method) ---
     federal = Decimal("0")
     if not profile.get("exempt_federal"):
-        federal = _d(
-            federal_withholding_pub_15t(
-                taxable_gross,
-                periods_per_year=periods,
-                filing_status=str(profile.get("filing_status") or "single_or_mfs"),
-                dependents_amount_annual=_d(profile.get("dependents_amount")),
-                other_income_annual=_d(profile.get("other_income")),
-                deductions_annual=_d(profile.get("deductions")),
-                extra_withholding_per_period=_d(profile.get("extra_withholding")),
-                step2_checkbox=step2_checkbox_checked(profile),
+        if minimum_withholding:
+            federal = _d(
+                federal_minimum_withholding_pub_15t(
+                    taxable_gross,
+                    periods_per_year=periods,
+                    filing_status=str(profile.get("filing_status") or "single_or_mfs"),
+                    dependents_amount_annual=_d(profile.get("dependents_amount")),
+                    other_income_annual=_d(profile.get("other_income")),
+                    deductions_annual=_d(profile.get("deductions")),
+                    extra_withholding_per_period=_d(profile.get("extra_withholding")),
+                    step2_checkbox=step2_checkbox_checked(profile),
+                )
             )
-        )
-        notes.append("Federal: IRS Pub 15-T percentage method (2026 tables) — estimate.")
+            notes.append(
+                "Federal: minimum withholding — $0 unless annual wages exceed low-wage threshold and Pub 15-T requires FIT."
+            )
+        else:
+            federal = _d(
+                federal_withholding_pub_15t(
+                    taxable_gross,
+                    periods_per_year=periods,
+                    filing_status=str(profile.get("filing_status") or "single_or_mfs"),
+                    dependents_amount_annual=_d(profile.get("dependents_amount")),
+                    other_income_annual=_d(profile.get("other_income")),
+                    deductions_annual=_d(profile.get("deductions")),
+                    extra_withholding_per_period=_d(profile.get("extra_withholding")),
+                    step2_checkbox=step2_checkbox_checked(profile),
+                )
+            )
+            notes.append("Federal: IRS Pub 15-T percentage method (2026 tables) — estimate.")
     else:
         notes.append("Federal: exempt per W-4.")
 
@@ -426,13 +444,12 @@ def calculate_w2_line_taxes(
         )
         notes.append("NYC: NYS-50-T-NYC Method II (2026 tables) — estimate.")
 
-    total_employee = federal + ny_state + nyc + ss_employee + medicare_employee + addl_medicare + _d(
-        profile.get("post_tax_deductions")
-    )
+    post_tax = Decimal("0") if minimum_withholding else _d(profile.get("post_tax_deductions"))
+    total_employee = federal + ny_state + nyc + ss_employee + medicare_employee + addl_medicare + post_tax
 
     # NY Paid Family Leave (employee estimate)
     ny_pfl = Decimal("0")
-    if profile.get("work_state") == "NY":
+    if not minimum_withholding and profile.get("work_state") == "NY":
         pfl_rate = _d(settings.get("ny_pfl_employee_rate") or 0)
         pfl_cap = _d(settings.get("ny_pfl_employee_annual_cap") or 411.91)
         ytd_pfl = get_w2_ytd_deduction(conn, organization_id, user_id, year, "ny_pfl_deduction")
@@ -443,7 +460,7 @@ def calculate_w2_line_taxes(
 
     # NY Disability Benefits (optional employee estimate)
     ny_dbl = Decimal("0")
-    if profile.get("work_state") == "NY" and settings.get("ny_dbl_employee_enabled"):
+    if not minimum_withholding and profile.get("work_state") == "NY" and settings.get("ny_dbl_employee_enabled"):
         dbl_rate = _d(settings.get("ny_dbl_employee_rate") or 0.005)
         weekly_cap = _d(settings.get("ny_dbl_employee_weekly_cap") or 0.60)
         periods = int(profile["pay_periods_per_year"])
@@ -498,6 +515,9 @@ def calculate_w2_line_taxes(
     total_employer = er_ss + er_medicare + futa + ny_suta + ny_reemployment + mctmt + workers_comp
     total_cost = gross + total_employer
 
+    if minimum_withholding:
+        notes.insert(1, "Minimum withholding mode: SS 6.2% + Medicare 1.45% + table NY/NYC only; no PFL/DBL.")
+
     return {
         "gross_pay": _money_json(gross),
         "federal_withholding_estimate": _money_json(federal),
@@ -509,7 +529,7 @@ def calculate_w2_line_taxes(
         "ny_pfl_deduction": _money_json(ny_pfl),
         "ny_dbl_deduction": _money_json(ny_dbl),
         "total_employee_taxes": _money_json(
-            total_employee - _d(profile.get("post_tax_deductions"))
+            total_employee - post_tax
         ),
         "net_pay": _money_json(net),
         "employer_social_security": _money_json(er_ss),

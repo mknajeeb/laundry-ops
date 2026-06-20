@@ -1,15 +1,8 @@
-"""Estimated employee/employer taxes for W-2 catch-up backfill and prefill."""
+"""Deprecated flat-rate catch-up helpers — use w2_payroll_tax_engine minimum withholding instead."""
 
 from __future__ import annotations
 
 from typing import Any
-
-# Flat total employee tax rates (temporary until accountant enters actual withholding).
-_EMPLOYEE_TOTAL_RATE_BY_NAME: dict[str, float] = {
-    "alec coaxum": 0.09,
-    "paola almiron": 0.14,
-}
-_DEFAULT_EMPLOYEE_TOTAL_RATE = 0.12
 
 _SS_RATE = 0.062
 _MEDICARE_RATE = 0.0145
@@ -24,34 +17,17 @@ def _round2(val: float) -> float:
     return round(float(val), 2)
 
 
-def employee_total_tax_rate(worker_name: str) -> float:
-    key = str(worker_name or "").strip().lower()
-    return _EMPLOYEE_TOTAL_RATE_BY_NAME.get(key, _DEFAULT_EMPLOYEE_TOTAL_RATE)
-
-
-def estimate_employee_deductions(gross: float, worker_name: str) -> dict[str, float]:
-    """Split estimated employee taxes into FIT/SS/Medicare/state/local."""
+def estimate_employee_deductions(gross: float, worker_name: str = "") -> dict[str, float]:
+    """SS + Medicare only — no flat FIT/state/local shortcuts."""
     gross_f = float(gross or 0)
     if gross_f <= 0:
         return {k: 0.0 for k in ("fit", "ss", "medicare", "state", "local", "other1", "other2")}
-
-    rate = employee_total_tax_rate(worker_name)
-    ss = _round2(gross_f * _SS_RATE)
-    medicare = _round2(gross_f * _MEDICARE_RATE)
-    target_total = _round2(gross_f * rate)
-    remainder = _round2(max(0.0, target_total - ss - medicare))
-
-    # Low-wage weeks: most tax is SS/Medicare/NY/NYC; FIT often near zero.
-    fit = _round2(remainder * 0.12)
-    state = _round2(remainder * 0.44)
-    local = _round2(remainder - fit - state)
-
     return {
-        "fit": fit,
-        "ss": ss,
-        "medicare": medicare,
-        "state": state,
-        "local": local,
+        "fit": 0.0,
+        "ss": _round2(gross_f * _SS_RATE),
+        "medicare": _round2(gross_f * _MEDICARE_RATE),
+        "state": 0.0,
+        "local": 0.0,
         "other1": 0.0,
         "other2": 0.0,
     }
@@ -85,7 +61,7 @@ def estimate_catchup_line_details(
     amount_withheld: float = 0.0,
     amount_paid: float | None = None,
 ) -> dict[str, Any]:
-    """Build payout_details patch for a catch-up period (estimated taxes, optional prior balance)."""
+    """Build payout_details patch (minimum SS/Medicare only — use backfill script for table estimates)."""
     gross_f = float(gross or 0)
     emp = estimate_employee_deductions(gross_f, worker_name)
     er = estimate_employer_taxes(gross_f)
@@ -115,6 +91,7 @@ def estimate_catchup_line_details(
         },
         "tax_summary": {
             "estimated": True,
+            "minimum_withholding": True,
             "current_period_taxes": current_liability,
             "prior_tax_balance": prior,
             "total_tax_liability": _round2(current_liability + prior),

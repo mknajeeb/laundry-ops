@@ -294,7 +294,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         drafts[ln.id] = emptyLineState(ln);
       });
       setLineDrafts(drafts);
-      setInfo("Estimated withholding applied — review and edit before finalizing.");
+      setInfo("Minimum estimated withholding applied — review and edit before finalizing.");
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Auto-fill failed");
     }
@@ -372,7 +372,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
             {canEdit ? (
               <Button size="small" onClick={autoFillEstimates} disabled={finalized}>
-                Auto-fill estimated withholding
+                Auto-fill minimum withholding
               </Button>
             ) : null}
             {canEdit ? (

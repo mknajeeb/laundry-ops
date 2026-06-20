@@ -88,3 +88,39 @@ def federal_withholding_pub_15t(
     annual_tax = annual_bracket_tax(adjusted_annual, schedule)
     period_tax = annual_tax / periods + extra_withholding_per_period
     return q2(max(Decimal("0"), period_tax))
+
+
+def federal_minimum_withholding_pub_15t(
+    period_wages: Decimal,
+    *,
+    periods_per_year: int = 26,
+    filing_status: str = "single_or_mfs",
+    dependents_amount_annual: Decimal = Decimal("0"),
+    other_income_annual: Decimal = Decimal("0"),
+    deductions_annual: Decimal = Decimal("0"),
+    extra_withholding_per_period: Decimal = Decimal("0"),
+    step2_checkbox: bool = False,
+    low_wage_annual_threshold: Decimal = Decimal("15000"),
+) -> float:
+    """
+    Minimum payroll withholding: $0 federal unless annualized wages clearly exceed
+    a low-wage threshold and Pub 15-T computes positive withholding.
+    """
+    wages = Decimal(str(period_wages or 0))
+    if wages <= 0:
+        return 0.0
+    periods = max(1, int(periods_per_year))
+    annual_wages = wages * periods
+    if annual_wages < low_wage_annual_threshold:
+        return 0.0
+    fit = federal_withholding_pub_15t(
+        wages,
+        periods_per_year=periods,
+        filing_status=filing_status,
+        dependents_amount_annual=dependents_amount_annual,
+        other_income_annual=other_income_annual,
+        deductions_annual=deductions_annual,
+        extra_withholding_per_period=extra_withholding_per_period,
+        step2_checkbox=step2_checkbox,
+    )
+    return fit if fit > 0 else 0.0
