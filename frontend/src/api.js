@@ -1270,9 +1270,12 @@ export const setPayoutDocumentMode = (batchId, documentMode) =>
 export const getPaystubUrl = (batchId, lineId) =>
   `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystub/${lineId}`;
 
-export const getPaystubHtml = (batchId, lineId, { preview = false } = {}) =>
+export const getPaystubHtml = (batchId, lineId, { preview = false, copy = "employee" } = {}) =>
   axios.get(getPaystubUrl(batchId, lineId), {
-    params: preview ? { preview: 1 } : {},
+    params: {
+      ...(preview ? { preview: 1 } : {}),
+      ...(copy ? { copy } : {}),
+    },
     responseType: "text",
   });
 
@@ -1283,8 +1286,17 @@ export const postPaystubPreviewHtml = (batchId, lineId, body) =>
     { responseType: "text" },
   );
 
-export const getBatchPaystubsHtml = (batchId, { preview = false } = {}) =>
+export const getBatchPaystubsHtml = (batchId, { preview = false, copy = "employee" } = {}) =>
   axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystubs`, {
+    params: {
+      ...(preview ? { preview: 1 } : {}),
+      ...(copy ? { copy } : {}),
+    },
+    responseType: "text",
+  });
+
+export const getEmployerPayrollPacketHtml = (batchId, { preview = false } = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/employer-packet`, {
     params: preview ? { preview: 1 } : {},
     responseType: "text",
   });

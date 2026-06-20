@@ -35,15 +35,21 @@ def test_profile_override_tarannum_married():
     assert is_married_filing(profile)
 
 
-def test_federal_minimum_low_wage_zero():
+def test_federal_minimum_matches_pub_15t_no_annual_gate():
     from backend.pub_15t_withholding import federal_minimum_withholding_pub_15t
 
-    fit = federal_minimum_withholding_pub_15t(
-        Decimal("120"),
+    wages = Decimal("120")
+    pub = federal_withholding_pub_15t(
+        wages,
         periods_per_year=52,
         filing_status="single_or_mfs",
     )
-    assert fit == 0.0
+    minimum = federal_minimum_withholding_pub_15t(
+        wages,
+        periods_per_year=52,
+        filing_status="single_or_mfs",
+    )
+    assert minimum == pub
 
 
 def test_federal_step2_higher_than_standard():

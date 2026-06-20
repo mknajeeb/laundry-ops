@@ -149,12 +149,17 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
             merged = apply_settlement_math(patch, gross)
 
         existing = parse_line_payout_details(row)
+        before_ded = dict((existing.get("employee_deductions") or {}))
+        before_withheld = float((existing.get("settlement") or {}).get("amount_withheld") or 0)
+        before_paid = float((existing.get("settlement") or {}).get("amount_paid") or 0)
+
         for section in ("employee_deductions", "employer_taxes", "payment", "settlement", "tax_summary"):
             if section in merged:
                 existing[section] = {**(existing.get(section) or {}), **merged[section]}
         merged = reconcile_tax_summary(existing)
         merged = apply_settlement_math(merged, gross)
 
+        after_ded = dict((merged.get("employee_deductions") or {}))
         entry = {
             "batch_name": batch_name,
             "line_id": row["line_id"],
@@ -166,6 +171,25 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
             "amount_paid": merged["settlement"]["amount_paid"],
             "tax_balance_owed": merged["settlement"]["tax_balance_owed"],
         }
+        if is_catchup:
+            entry["before"] = {
+                "fit": float(before_ded.get("fit") or 0),
+                "ss": float(before_ded.get("ss") or 0),
+                "medicare": float(before_ded.get("medicare") or 0),
+                "state": float(before_ded.get("state") or 0),
+                "local": float(before_ded.get("local") or 0),
+                "amount_withheld": before_withheld,
+                "amount_paid": before_paid,
+            }
+            entry["after"] = {
+                "fit": float(after_ded.get("fit") or 0),
+                "ss": float(after_ded.get("ss") or 0),
+                "medicare": float(after_ded.get("medicare") or 0),
+                "state": float(after_ded.get("state") or 0),
+                "local": float(after_ded.get("local") or 0),
+                "amount_withheld": float(merged["settlement"]["amount_withheld"] or 0),
+                "amount_paid": float(merged["settlement"]["amount_paid"] or 0),
+            }
         report["lines"].append(entry)
 
         if not is_catchup:
@@ -200,6 +224,41 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
     return report
 
 
+def _print_before_after_table(report: dict) -> None:
+    rows = [
+        ln
+        for ln in report.get("lines") or []
+        if ln.get("batch_name") == CATCHUP_BATCH_NAME and ln.get("before")
+    ]
+    if not rows:
+        return
+    header = (
+        f"{'Worker':<28} {'Gross':>8} {'FIT':>7} {'State':>7} {'Local':>7} "
+        f"{'SS':>7} {'Med':>7} {'Withheld':>9} {'Paid':>9}"
+    )
+    print("\nW2-2026-006 withholding — BEFORE (current DB)")
+    print(header)
+    print("-" * len(header))
+    for ln in rows:
+        b = ln["before"]
+        print(
+            f"{ln['worker']:<28} {ln['gross']:>8.2f} {b['fit']:>7.2f} {b['state']:>7.2f} "
+            f"{b['local']:>7.2f} {b['ss']:>7.2f} {b['medicare']:>7.2f} "
+            f"{b['amount_withheld']:>9.2f} {b['amount_paid']:>9.2f}"
+        )
+    print("\nW2-2026-006 withholding — AFTER (recalculated, catch-up $0)")
+    print(header)
+    print("-" * len(header))
+    for ln in rows:
+        a = ln["after"]
+        print(
+            f"{ln['worker']:<28} {ln['gross']:>8.2f} {a['fit']:>7.2f} {a['state']:>7.2f} "
+            f"{a['local']:>7.2f} {a['ss']:>7.2f} {a['medicare']:>7.2f} "
+            f"{a['amount_withheld']:>9.2f} {a['amount_paid']:>9.2f}"
+        )
+    print()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Backfill W2 tax catch-up estimates")
     parser.add_argument("--org-id", type=int, required=True)
@@ -208,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     apply = bool(args.apply)
     report = backfill(args.org_id, apply=apply)
+    _print_before_after_table(report)
     print(json.dumps(report, indent=2))
     return 0
 

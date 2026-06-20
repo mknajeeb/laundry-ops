@@ -156,9 +156,13 @@ def fetch_employee_tax_profile(
             home_city = work_city or str(u.get("city") or "").strip()
     if not work_state:
         work_state = "NY"
-    nyc_resident = comp.get("nyc_resident")
-    if nyc_resident is None:
-        nyc_resident = "new york" in home_city.lower() or home_city.lower() in ("nyc", "queens", "brooklyn", "bronx", "staten island")
+    nyc_raw = comp.get("nyc_resident")
+    if nyc_raw is None or str(nyc_raw).strip() == "":
+        nyc_resident: Optional[bool] = None
+    elif isinstance(nyc_raw, bool):
+        nyc_resident = nyc_raw
+    else:
+        nyc_resident = str(nyc_raw).strip().lower() in ("true", "1", "yes")
 
     missing: list[str] = []
     if not str(filing_status).strip():
@@ -190,7 +194,7 @@ def fetch_employee_tax_profile(
         "work_state": work_state,
         "work_city": work_city,
         "home_city": home_city,
-        "nyc_resident": bool(nyc_resident),
+        "nyc_resident": nyc_resident,
         "hourly_rate": rate_info.get("hourly_rate"),
         "rate_missing": rate_info.get("rate_missing"),
         "w4_complete": len(missing) == 0,
@@ -395,7 +399,7 @@ def calculate_w2_line_taxes(
                 )
             )
             notes.append(
-                "Federal: minimum withholding — $0 unless annual wages exceed low-wage threshold and Pub 15-T requires FIT."
+                "Federal: IRS Pub 15-T percentage method (2026 tables) — estimate."
             )
         else:
             federal = _d(
@@ -516,7 +520,7 @@ def calculate_w2_line_taxes(
     total_cost = gross + total_employer
 
     if minimum_withholding:
-        notes.insert(1, "Minimum withholding mode: SS 6.2% + Medicare 1.45% + table NY/NYC only; no PFL/DBL.")
+        notes.insert(1, "Minimum withholding mode: Pub 15-T FIT + NY/NYC tables + SS/Medicare; no PFL/DBL.")
 
     return {
         "gross_pay": _money_json(gross),

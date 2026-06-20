@@ -15,6 +15,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -41,6 +42,7 @@ import {
   getPayoutBatches,
   getPaystubHtml,
   getBatchPaystubsHtml,
+  getEmployerPayrollPacketHtml,
   getPayRegisterHtml,
   postPaystubPreviewHtml,
   putPayoutBatchDetails,
@@ -194,6 +196,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState(null);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
+  const [paystubCopyMode, setPaystubCopyMode] = useState("employee");
 
   const loadBatches = useCallback(async () => {
     try {
@@ -338,18 +341,25 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
-  const showPaystubActions = !isReceiptMode && Boolean(
-    detail?.payout_workflow?.paystub_preview_available || detail?.payout_workflow?.paystub_available,
-  );
+  const showPaystubActions =
+    !isReceiptMode &&
+    Boolean(
+      detail?.payout_workflow?.paystub_preview_available ||
+        detail?.payout_workflow?.paystub_available ||
+        detail?.payout_workflow?.can_edit_details ||
+        detail?.status === "approved_for_payment",
+    );
 
   const fetchPaystubHtml = (lineId, draft) => {
+    const copy = paystubCopyMode;
     if (finalized) {
-      return () => getPaystubHtml(selectedId, lineId);
+      return () => getPaystubHtml(selectedId, lineId, { copy });
     }
     return () =>
       postPaystubPreviewHtml(selectedId, lineId, {
         payout_details: payoutDetailsPayload(draft),
         batch_note: batchNote,
+        copy,
       });
   };
 
@@ -377,6 +387,29 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const previewAllPaystubs = async () => {
+    if (!selectedId || !showPaystubActions) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      const copy = paystubCopyMode;
+      if (copy === "employer") {
+        await previewHtmlDocument(() =>
+          getEmployerPayrollPacketHtml(selectedId, { preview: !finalized }),
+        );
+      } else {
+        await previewHtmlDocument(() =>
+          getBatchPaystubsHtml(selectedId, { preview: !finalized, copy: "employee" }),
+        );
+      }
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Preview all paystubs failed");
+    }
+  };
+
   const printAllPaystubs = async () => {
     if (!selectedId || !showPaystubActions) return;
     setError("");
@@ -385,9 +418,16 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         const ok = await saveDetails({ silent: true });
         if (!ok) return;
       }
-      await printHtmlDocument(() =>
-        getBatchPaystubsHtml(selectedId, { preview: !finalized }),
-      );
+      const copy = paystubCopyMode;
+      if (copy === "employer") {
+        await printHtmlDocument(() =>
+          getEmployerPayrollPacketHtml(selectedId, { preview: !finalized }),
+        );
+      } else {
+        await printHtmlDocument(() =>
+          getBatchPaystubsHtml(selectedId, { preview: !finalized, copy: "employee" }),
+        );
+      }
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Print all paystubs failed");
     }
@@ -459,11 +499,25 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
 
           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end" flexWrap="wrap">
             {showPaystubActions ? (
-              <Button size="small" startIcon={<PrintIcon />} onClick={printAllPaystubs}>
-                Print All Paystubs
-              </Button>
+              <>
+                <Select
+                  size="small"
+                  value={paystubCopyMode}
+                  onChange={(e) => setPaystubCopyMode(e.target.value)}
+                  sx={{ minWidth: 170, fontSize: "0.8rem" }}
+                >
+                  <MenuItem value="employee">Employee Copy</MenuItem>
+                  <MenuItem value="employer">Employer Copy / Packet</MenuItem>
+                </Select>
+                <Button size="small" startIcon={<VisibilityIcon />} onClick={previewAllPaystubs}>
+                  Preview All Paystubs
+                </Button>
+                <Button size="small" startIcon={<PrintIcon />} onClick={printAllPaystubs}>
+                  Print All Paystubs
+                </Button>
+              </>
             ) : null}
-            <Button size="small" startIcon={<PrintIcon />} onClick={printPayRegister}>
+            <Button size="small" startIcon={<PrintIcon />} onClick={printPayRegister} disabled={!detail}>
               Print Pay Register
             </Button>
             {canEdit ? (

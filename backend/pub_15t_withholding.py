@@ -100,22 +100,12 @@ def federal_minimum_withholding_pub_15t(
     deductions_annual: Decimal = Decimal("0"),
     extra_withholding_per_period: Decimal = Decimal("0"),
     step2_checkbox: bool = False,
-    low_wage_annual_threshold: Decimal = Decimal("15000"),
+    low_wage_annual_threshold: Decimal = Decimal("15000"),  # unused — kept for call-site compat
 ) -> float:
-    """
-    Minimum payroll withholding: $0 federal unless annualized wages clearly exceed
-    a low-wage threshold and Pub 15-T computes positive withholding.
-    """
-    wages = Decimal(str(period_wages or 0))
-    if wages <= 0:
-        return 0.0
-    periods = max(1, int(periods_per_year))
-    annual_wages = wages * periods
-    if annual_wages < low_wage_annual_threshold:
-        return 0.0
-    fit = federal_withholding_pub_15t(
-        wages,
-        periods_per_year=periods,
+    """Official Pub 15-T withholding (no artificial annual wage gate)."""
+    return federal_withholding_pub_15t(
+        period_wages,
+        periods_per_year=periods_per_year,
         filing_status=filing_status,
         dependents_amount_annual=dependents_amount_annual,
         other_income_annual=other_income_annual,
@@ -123,4 +113,3 @@ def federal_minimum_withholding_pub_15t(
         extra_withholding_per_period=extra_withholding_per_period,
         step2_checkbox=step2_checkbox,
     )
-    return fit if fit > 0 else 0.0

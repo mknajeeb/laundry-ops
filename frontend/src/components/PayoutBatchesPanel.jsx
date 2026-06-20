@@ -535,7 +535,7 @@ export default function PayoutBatchesPanel({
       return;
     }
     if (actionKey === "view_documents") {
-      onNavigateTab?.("documents");
+      onNavigateTab?.("payout_details", selectedId);
       return;
     }
     setActionLoading(true);

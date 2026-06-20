@@ -537,17 +537,21 @@ def test_paystub_html_zero_deductions():
     ):
         from backend.payroll_payout_details import generate_paystub_html
 
-        html = generate_paystub_html(conn, 1, 1, 10)
-        assert "Federal Income Tax" in html
-        assert "Social Security" in html
-        assert "Medicare" in html
-        assert "NY State Tax" in html
-        assert "NYC Local Tax" in html
-        assert "Total employee taxes" in html
-        assert "Tax Balances" in html
-        assert "$0.00" in html
-        assert "Net paid to employee" in html
-        assert "$800.00" in html
+        emp = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
+        assert "EMPLOYEE COPY" in emp
+        assert "GROSS PAY" in emp
+        assert "EMPLOYEE TAXES" in emp
+        assert "ACTUAL PAID" in emp
+        assert "$800.00" in emp
+        assert "Federal Income Tax" not in emp
+        assert "Employer Taxes" not in emp
+        assert "Estimated Tax Liability" in emp
+
+        er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
+        assert "EMPLOYER COPY" in er
+        assert "Federal Income Tax" in er
+        assert "Employer Taxes" in er
+        assert "Tax Balances (Audit)" in er
 
 
 def test_paystub_html_shows_batch_and_employee_notes():
@@ -591,11 +595,15 @@ def test_paystub_html_shows_batch_and_employee_notes():
     ):
         from backend.payroll_payout_details import generate_paystub_html
 
-        html = generate_paystub_html(conn, 1, 1, 10)
-        assert "Batch Note" in html
-        assert "Payroll taxes were not withheld" in html
-        assert "Employee Note" in html
-        assert "Employee requested payment in cash" in html
+        emp = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
+        assert "Payroll taxes were not withheld" in emp
+        assert "Employee requested payment in cash" not in emp
+
+        er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
+        assert "Batch Note" in er
+        assert "Payroll taxes were not withheld" in er
+        assert "Employee Note" in er
+        assert "Employee requested payment in cash" in er
 
 
 def test_paystub_html_available_for_cash_payment():
@@ -637,11 +645,17 @@ def test_paystub_html_available_for_cash_payment():
     ):
         from backend.payroll_payout_details import generate_paystub_html
 
-        html = generate_paystub_html(conn, 1, 1, 10)
-        assert "VeeWash Official Paystub" in html
+        html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
+        assert "Employee Paystub" in html
         assert 'data:image/png;base64,' in html
         assert "Cash Worker" in html
-        assert "Employee Taxes" in html
+        assert "EMPLOYEE CASH RECEIPT" in html
+        assert "Amount Received" in html
+        assert "Employer Taxes" not in html
+
+        er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
+        assert "EMPLOYEE CASH RECEIPT" not in er
+        assert "Employer Taxes" in er
 
 
 def test_finalize_receipt_mode_requires_payment_fields():
@@ -745,6 +759,51 @@ def test_paystub_blocked_until_finalized():
             assert False, "expected ValueError"
         except ValueError as e:
             assert "finalized" in str(e).lower()
+
+
+def test_employer_payroll_packet_combines_records():
+    conn = MagicMock()
+    batch = {
+        "id": 1,
+        "batch_name": "W2-2026-006",
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-07",
+        "payout_details_finalized_at": "2026-06-20",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "Jane",
+                "approved_hours": 10,
+                "rate": 20,
+                "gross_amount": 200,
+                "payout_details": {
+                    "payment": {"method": "direct_deposit", "date": "2026-06-15"},
+                    "settlement": {"amount_paid": 200},
+                },
+                "payout_totals": {
+                    "gross_pay": 200,
+                    "total_employee_deductions": 0,
+                    "net_pay": 200,
+                    "amount_paid": 200,
+                    "amount_withheld": 0,
+                    "total_employer_taxes": 10,
+                    "employer_cost": 210,
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_employer_payroll_packet_html
+
+        html = generate_employer_payroll_packet_html(conn, 1, 1)
+        assert "Employer Payroll Packet" in html
+        assert "EMPLOYER COPY" in html
+        assert "Pay Register" in html
+        assert "Jane" in html
 
 
 def test_compute_tax_withheld_breakdown_includes_all_components():

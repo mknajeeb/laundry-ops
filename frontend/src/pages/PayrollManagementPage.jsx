@@ -18,7 +18,6 @@ import PayoutDetailsPanel from "../components/PayoutDetailsPanel";
 import PayrollDashboard from "../components/PayrollDashboard";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
-import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
 import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
@@ -57,7 +56,6 @@ export default function PayrollManagementPage() {
     if (canTime) out.push({ key: "time", label: "Time Records" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
     if (canPayoutDetails) out.push({ key: "payout_details", label: "Payment & Details" });
-    if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canContractors) out.push({ key: "w2forms", label: t("payroll.tabW2Forms") });
@@ -133,7 +131,12 @@ export default function PayrollManagementPage() {
         return;
       }
       if (action === "view_documents") {
-        goToTab("documents");
+        if (batch?.id) {
+          setDetailsBatchId(batch.id);
+          goToTab("payout_details");
+        } else {
+          goToTab("accountant_payroll");
+        }
         return;
       }
       if (action === "await_accountant") return;
@@ -256,7 +259,6 @@ export default function PayrollManagementPage() {
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}
-        {active?.key === "documents" ? <PayrollDocumentsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}
         {active?.key === "taxsettings" ? <PayrollTaxSettingsPanel /> : null}
       </Box>
