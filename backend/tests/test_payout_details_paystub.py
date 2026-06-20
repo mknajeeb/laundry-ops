@@ -880,18 +880,19 @@ def test_paystub_employee_tax_balance_catchup_flow():
                         "catch_up_withholding": 40,
                     },
                 },
-                "payout_totals": {
-                    "gross_pay": 200,
-                    "total_employee_deductions": 25,
-                    "net_pay": 135,
-                    "amount_paid": 135,
-                    "amount_withheld": 65,
-                    "prior_tax_balance": 80,
-                    "catch_up_withholding": 40,
-                    "remaining_tax_balance": 40,
-                    "current_period_taxes": 25,
-                    "tax_balance_owed": 0,
-                },
+                    "payout_totals": {
+                        "gross_pay": 200,
+                        "total_employee_deductions": 25,
+                        "net_pay": 135,
+                        "amount_paid": 135,
+                        "amount_withheld": 65,
+                        "prior_tax_balance": 80,
+                        "catch_up_withholding": 40,
+                        "tax_catch_up_adjustment": 40,
+                        "remaining_tax_balance": 40,
+                        "current_period_taxes": 25,
+                        "tax_balance_owed": 0,
+                    },
             }
         ],
     }
@@ -909,6 +910,30 @@ def test_paystub_employee_tax_balance_catchup_flow():
         assert "Remaining balance" in html
         assert "$80.00" in html
         assert "$40.00" in html
+
+
+def test_paystub_employee_tax_balance_prior_adj_collection_labels():
+    from backend.payroll_payout_details import _employee_tax_balance_html
+
+    html = _employee_tax_balance_html(
+        {
+            "prior_tax_balance": 18.21,
+            "prior_period_adjustment": 17.0,
+            "tax_catch_up_adjustment": 17.0,
+            "tax_balance_owed": 18.21,
+            "current_period_taxes": 18.21,
+            "amount_withheld": 17.0,
+            "total_tax_liability": 19.42,
+            "remaining_tax_balance": 19.42,
+        }
+    )
+    assert "Withheld this period" in html
+    assert "Prior balance collected" in html
+    assert "Catch-up collected" not in html
+    withheld_row = html.split("Withheld this period")[1].split("</tr>")[0]
+    prior_row = html.split("Prior balance collected")[1].split("</tr>")[0]
+    assert "$0.00" in withheld_row
+    assert "$17.00" in prior_row
 
 
 def test_apply_carryover_prior_tax_balance_from_finalized_line():

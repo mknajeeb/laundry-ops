@@ -1925,7 +1925,7 @@ def _employee_tax_balance_html(totals: dict) -> str:
     """Compact tax balance block for employee paystub copy."""
     prior = float(totals.get("prior_tax_balance") or 0)
     prior_adj = float(totals.get("prior_period_adjustment") or 0)
-    catch_up = float(totals.get("catch_up_withholding") or 0)
+    prior_collected = float(totals.get("tax_catch_up_adjustment") or 0)
     period_balance = float(totals.get("tax_balance_owed") or 0)
     current_period = float(totals.get("current_period_taxes") or 0)
     withheld = float(totals.get("amount_withheld") or 0)
@@ -1939,16 +1939,26 @@ def _employee_tax_balance_html(totals: dict) -> str:
     withheld_current = (
         0.0
         if paid_full_gross
-        else round(min(current_period, max(0.0, withheld - catch_up)), 2)
+        else round(min(current_period, max(0.0, withheld - prior_collected)), 2)
     )
 
-    if current_period <= 0 and prior <= 0 and catch_up <= 0 and remaining <= 0:
+    if current_period <= 0 and prior <= 0 and prior_collected <= 0 and remaining <= 0:
         return ""
 
-    if prior > 0 or catch_up > 0:
+    if prior > 0 or prior_collected > 0:
         prior_adj_row = (
             _paystub_money_row("Prior period adjustment", -prior_adj)
             if prior_adj > 0
+            else ""
+        )
+        prior_collected_label = (
+            "Prior balance collected"
+            if prior_adj > 0 and prior_collected > 0
+            else "Catch-up collected"
+        )
+        prior_collected_row = (
+            _paystub_money_row(prior_collected_label, prior_collected)
+            if prior_collected > 0
             else ""
         )
         rows_html = (
@@ -1957,7 +1967,7 @@ def _employee_tax_balance_html(totals: dict) -> str:
             + prior_adj_row
             + _paystub_money_row("Total estimated liability", total_liability)
             + _paystub_money_row("Withheld this period", withheld_current)
-            + _paystub_money_row("Catch-up collected", catch_up)
+            + prior_collected_row
             + _paystub_money_row("Remaining balance", remaining, True)
         )
         return f"""
