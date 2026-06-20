@@ -112,6 +112,10 @@ function emptyLineState(line, batch = null) {
   };
 }
 
+function roundMoney(n) {
+  return Math.round(num(n) * 100) / 100;
+}
+
 function computeLocalTotals(line, draft) {
   const gross = num(line.gross_amount || line.total_amount);
   const currentTax = DEDUCTION_FIELDS.reduce(
@@ -126,6 +130,47 @@ function computeLocalTotals(line, draft) {
   return { gross, totalDed: currentTax, totalEr: er, net, withheld, catchUp, paidFullGross };
 }
 
+function reconcileLocalTaxSummary(draft, totals) {
+  const settlement = { ...(draft.settlement || {}) };
+  const taxSummary = { ...(draft.tax_summary || {}) };
+  const currentPeriod = totals.totalDed;
+  const priorBalance = num(settlement.prior_unpaid_taxes);
+  const priorAdj = num(settlement.prior_period_adjustment);
+  let catchUp = totals.catchUp;
+  const paidFullGross = totals.paidFullGross;
+
+  if (paidFullGross) {
+    catchUp = 0;
+    settlement.catch_up_withholding = 0;
+  }
+
+  const actualWithheld = totals.withheld;
+  const totalLiability = roundMoney(currentPeriod + priorBalance + priorAdj);
+
+  let periodBalance;
+  if (paidFullGross) {
+    periodBalance = roundMoney(currentPeriod);
+  } else {
+    const withheldForCurrent = roundMoney(
+      Math.min(currentPeriod, Math.max(0, actualWithheld - catchUp)),
+    );
+    periodBalance = roundMoney(currentPeriod - withheldForCurrent);
+  }
+
+  const remaining = roundMoney(priorBalance + periodBalance + priorAdj - catchUp);
+
+  settlement.tax_balance_owed = periodBalance;
+  taxSummary.current_period_taxes = currentPeriod;
+  taxSummary.prior_tax_balance = priorBalance;
+  taxSummary.total_tax_liability = totalLiability;
+  taxSummary.actual_tax_withheld = actualWithheld;
+  taxSummary.tax_balance_owed = periodBalance;
+  taxSummary.remaining_balance = remaining;
+  taxSummary.tax_catch_up_adjustment = catchUp;
+
+  return { ...draft, settlement, tax_summary: taxSummary };
+}
+
 function applyLocalSettlementMath(draft, line) {
   const totals = computeLocalTotals(line, draft);
   const settlement = { ...(draft.settlement || {}) };
@@ -138,7 +183,8 @@ function applyLocalSettlementMath(draft, line) {
     settlement.amount_paid = totals.net;
   }
   settlement.outstanding_balance = 0;
-  return { ...draft, settlement };
+  const withSettlement = { ...draft, settlement };
+  return reconcileLocalTaxSummary(withSettlement, totals);
 }
 
 async function previewHtmlDocument(fetchFn) {
@@ -264,8 +310,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       };
       const shouldRecalc =
         section === "employee_deductions" ||
-        (section === "settlement" &&
-          ["catch_up_withholding", "paid_full_gross_without_withholding"].includes(key));
+        section === "settlement";
       return {
         ...prev,
         [lineId]: shouldRecalc && line ? applyLocalSettlementMath(nextDraft, line) : nextDraft,
@@ -896,9 +941,8 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     type="number"
                                     label="Tax balance owed"
                                     value={draft.settlement?.tax_balance_owed ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "tax_balance_owed", e.target.value)
-                                    }
+                                    InputProps={{ readOnly: true }}
+                                    helperText="Updates when tax lines or paid-full-gross change"
                                   />
                                   <FormControlLabel
                                     control={

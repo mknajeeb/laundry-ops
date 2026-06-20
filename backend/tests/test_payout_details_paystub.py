@@ -564,6 +564,56 @@ def test_paystub_html_zero_deductions():
         assert "Tax Balances (Audit)" in er
 
 
+def test_paystub_note_includes_period_tax_balance_when_gross_paid():
+    conn = MagicMock()
+    batch = {
+        "id": 1,
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-14",
+        "payout_details_finalized_at": "2026-06-20",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "Cash Worker",
+                "approved_hours": 10,
+                "rate": 11.9,
+                "gross_amount": 119,
+                "payout_details": {
+                    "employee_deductions": {"fit": 4.21, "ss": 7.38, "medicare": 1.73},
+                    "payment": {"method": "cash", "date": "2026-06-14"},
+                    "settlement": {
+                        "amount_paid": 119,
+                        "amount_withheld": 0,
+                        "paid_full_gross_without_withholding": True,
+                        "tax_balance_owed": 13.32,
+                    },
+                    "tax_summary": {"tax_balance_owed": 13.32, "current_period_taxes": 13.32},
+                },
+                "payout_totals": {
+                    "gross_pay": 119,
+                    "total_employee_deductions": 13.32,
+                    "net_pay": 105.68,
+                    "amount_paid": 119,
+                    "amount_withheld": 0,
+                    "tax_balance_owed": 13.32,
+                    "current_period_taxes": 13.32,
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_paystub_html
+
+        html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
+        assert "taxes were not withheld" in html.lower()
+        assert "$13.32" in html
+        assert "not collected with this payment" in html.lower()
+
+
 def test_paystub_html_shows_batch_and_employee_notes():
     conn = MagicMock()
     batch = {

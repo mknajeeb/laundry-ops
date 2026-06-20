@@ -1402,10 +1402,17 @@ def _render_paystub_html(
     )
 
     gross_paid_note = ""
+    tax_balance = float(totals.get("tax_balance_owed") or 0)
     if paid_full_gross or (net_paid > net_pay and withheld < emp_tax_total * 0.5):
-        gross_paid_note = (
-            "<p class='note-box'>Amount paid exceeds net pay because taxes were not withheld from this payment.</p>"
-        )
+        parts = [
+            "Amount paid exceeds net pay because taxes were not withheld from this payment."
+        ]
+        if tax_balance > 0:
+            parts.append(
+                f"Estimated tax balance for this period: ${tax_balance:,.2f} "
+                "(not collected with this payment)."
+            )
+        gross_paid_note = f"<p class='note-box'>{' '.join(parts)}</p>"
 
     worker = line.get("worker_name_snapshot") or ""
     emp_id = line.get("employee_id") or ""
