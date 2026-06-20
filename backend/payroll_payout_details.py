@@ -57,6 +57,17 @@ VIEW_FINALIZED_ROLES = frozenset(
 
 ACCOUNTANT_QUEUE_STATUSES = frozenset({"approved_for_payment", "paid", "closed"})
 
+PAYOUT_DETAILS_EDIT_STATUSES = frozenset(
+    {
+        "hours_reviewed",
+        "sent_to_accountant",
+        "accountant_reviewed",
+        "approved_for_payment",
+        "paid",
+        "closed",
+    }
+)
+
 
 def ensure_payout_details_columns(cursor) -> None:
     from backend.payroll_operations import ensure_payout_batches_tables
@@ -437,7 +448,7 @@ def _audit_append(batch: dict, event: str, actor_id: int, detail: str = "") -> l
 
 
 def batch_ready_for_payout_details(batch: dict) -> bool:
-    return str(batch.get("status") or "") in ACCOUNTANT_QUEUE_STATUSES
+    return str(batch.get("status") or "") in PAYOUT_DETAILS_EDIT_STATUSES
 
 
 def payout_workflow_state(batch: dict) -> dict[str, Any]:
@@ -491,6 +502,9 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
         lines.append(enrich_line_with_payout_details(row, batch))
     batch["lines"] = lines
     batch["payout_workflow"] = payout_workflow_state(batch)
+    from backend.payroll_status_display import enrich_batch_payroll_display
+
+    batch = enrich_batch_payroll_display(batch)
     audit = _parse_json_blob(batch.get("payout_details_audit_json"))
     batch["payout_details_audit"] = audit.get("events") or []
     return json_safe(batch)
@@ -518,6 +532,9 @@ def list_accountant_payment_queue(
     for row in rows:
         item = dict(row)
         item["payout_workflow"] = payout_workflow_state(item)
+        from backend.payroll_status_display import enrich_list_item_payroll_display
+
+        enrich_list_item_payroll_display(item)
         out.append(json_safe(item))
     return out
 

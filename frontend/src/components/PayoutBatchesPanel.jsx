@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -49,53 +49,18 @@ import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { WORKER_CATEGORY_OPTIONS } from "../payroll/payrollDocumentChecklists";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 import {
-  ACCOUNTANT_BATCH_READY_MESSAGE,
-  SEND_TO_ACCOUNTANT_W2_CONFIRM,
-} from "../payroll/payrollTaxMessages";
+  displayStatusColor,
+  displayStatusLabel,
+} from "../payroll/payrollBatchStatus";
 import {
-  formatNetPaidDisplay,
   formatTaxWithheldDisplay,
   hasTaxWithheldBreakdown,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
 
-const BATCH_STATUS_FLOW = [
-  { value: "draft", label: "Draft" },
-  { value: "hours_reviewed", label: "Hours reviewed" },
-  { value: "sent_to_accountant", label: "Sent to accountant" },
-  { value: "accountant_reviewed", label: "Accountant reviewed" },
-  { value: "approved_for_payment", label: "Approved for payment" },
-  { value: "paid", label: "Paid" },
-  { value: "closed", label: "Closed" },
-];
-
 const CATEGORY_BATCH = WORKER_CATEGORY_OPTIONS.filter((o) => o.value !== "all");
-
-function batchPaymentLabel(st) {
-  if (st === "paid") return "Paid";
-  if (st === "partially_paid") return "Partially paid";
-  if (st === "approved_unpaid") return "Approved — unpaid";
-  return "Pending";
-}
-
-function batchPaymentColor(st) {
-  if (st === "paid") return "success";
-  if (st === "partially_paid") return "warning";
-  if (st === "approved_unpaid") return "info";
-  return "default";
-}
-
-function formatStatusLabel(status) {
-  return String(status || "draft").replace(/_/g, " ");
-}
-
-function compactReadiness(readiness = []) {
-  const applicable = readiness.filter((item) => item.applicable !== false);
-  if (!applicable.length) return { ready: true, needs: [] };
-  const needs = applicable.filter((item) => !item.ok).map((item) => item.label);
-  return { ready: needs.length === 0, needs };
-}
 
 function PayoutBatchSummaryPrint({ batch }) {
   const b = batch || {};
@@ -111,7 +76,7 @@ function PayoutBatchSummaryPrint({ batch }) {
         <br />
         <strong>Category:</strong> {b.worker_category_label || b.worker_category}
         <br />
-        <strong>Status:</strong> {b.status}
+        <strong>Status:</strong> {displayStatusLabel(b)}
       </p>
       <table className="contractor-payment-table">
         <thead>
@@ -141,8 +106,6 @@ function PayoutBatchSummaryPrint({ batch }) {
 
 const BatchWorkerTable = memo(function BatchWorkerTable({
   lines,
-  isW2,
-  isGrossOnly,
   isEditable,
   batchStatus,
   showSettlementColumns,
@@ -152,125 +115,171 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
   onMarkUnpaid,
   onTaxWithheldClick,
 }) {
+  const [expanded, setExpanded] = useState({});
   const canMarkPaid = ["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"].includes(
     batchStatus,
   );
+
+  const toggle = (id) => setExpanded((p) => ({ ...p, [id]: !p[id] }));
+
+  const lineGross = (ln) =>
+    Number(ln.gross_wages || ln.gross_amount || ln.total_amount || 0);
+
+  const lineTaxAmount = (ln) => {
+    if (isPayoutDetailsFinalized(ln) && ln.tax_withheld != null) {
+      return Number(ln.tax_withheld);
+    }
+    const ded = ln.payout_details?.employee_deductions;
+    if (ded) {
+      return Object.values(ded).reduce((s, v) => s + Number(v || 0), 0);
+    }
+    return null;
+  };
+
+  const lineNetAmount = (ln) => {
+    if (isPayoutDetailsFinalized(ln) && ln.net_paid != null) {
+      return Number(ln.net_paid);
+    }
+    const gross = lineGross(ln);
+    const tax = lineTaxAmount(ln);
+    return tax != null ? gross - tax : null;
+  };
+
+  const linePaidAmount = (ln) => {
+    const settlement = ln.payout_details?.settlement || {};
+    const paid = Number(settlement.amount_paid || 0);
+    if (paid > 0) return paid;
+    if (ln.payment_status === "paid") return lineNetAmount(ln) || 0;
+    return 0;
+  };
+
+  const lineOutstandingAmount = (ln) => {
+    const settlement = ln.payout_details?.settlement || {};
+    const out = Number(settlement.outstanding_balance || 0);
+    if (out > 0) return out;
+    const net = lineNetAmount(ln);
+    if (net == null) return null;
+    return Math.max(0, net - linePaidAmount(ln));
+  };
+
+  const linePaymentHint = (ln) => {
+    if (ln.payment_status === "paid") return "Payment completed for this employee.";
+    if (ln.payment_status === "approved_unpaid") return "Not yet paid.";
+    return "Payment not yet recorded.";
+  };
+
+  const formatAmt = (n) => (n == null || !Number.isFinite(n) ? "—" : `$${n.toFixed(2)}`);
 
   return (
     <TableContainer>
       <Table size="small">
         <TableHead>
           <TableRow>
+            <TableCell width={36} />
             <TableCell>Worker</TableCell>
-            <TableCell align="right">Reg hrs</TableCell>
-            {isW2 ? <TableCell align="right">OT</TableCell> : null}
-            <TableCell align="right">Rate</TableCell>
-            <TableCell align="right">Total</TableCell>
-            {isW2 ? (
-              <>
-                <TableCell align="right">Sick used</TableCell>
-                <TableCell align="right">Gross</TableCell>
-              </>
-            ) : isGrossOnly ? (
-              <TableCell align="right">Health credit</TableCell>
-            ) : null}
-            {showSettlementColumns ? (
-              <>
-                <TableCell align="right">Net paid</TableCell>
-                <TableCell align="right">Tax withheld</TableCell>
-              </>
-            ) : null}
-            <TableCell>Payment</TableCell>
-            <TableCell align="right">Actions</TableCell>
+            <TableCell align="right">Gross</TableCell>
+            <TableCell align="right">Tax</TableCell>
+            <TableCell align="right">Net</TableCell>
+            <TableCell align="right">Paid</TableCell>
+            <TableCell align="right">Outstanding</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
-          {lines.map((ln) => (
-            <TableRow key={ln.id} hover>
-              <TableCell>{ln.worker_name_snapshot}</TableCell>
-              <TableCell align="right">{Number(ln.approved_hours || 0).toFixed(2)}</TableCell>
-              {isW2 ? (
-                <TableCell align="right">{Number(ln.ot_hours || 0).toFixed(2)}</TableCell>
-              ) : null}
-              <TableCell align="right">
-                {Number(ln.rate || 0) <= 0 ? (
-                  <Typography component="span" color="warning.main" variant="body2">
-                    Missing
-                    {ln.suggested_rate ? ` (suggest $${Number(ln.suggested_rate).toFixed(2)})` : ""}
-                  </Typography>
-                ) : (
-                  `$${Number(ln.rate || 0).toFixed(2)}`
-                )}
-              </TableCell>
-              <TableCell align="right">${Number(ln.total_amount || 0).toFixed(2)}</TableCell>
-              {isW2 ? (
-                <>
-                  <TableCell align="right">{Number(ln.sick_hours_used || 0).toFixed(2)}</TableCell>
-                  <TableCell align="right">
-                    ${Number(ln.gross_wages || ln.gross_amount || 0).toFixed(2)}
+          {lines.map((ln) => {
+            const isOpen = expanded[ln.id];
+            const gross = lineGross(ln);
+            const tax = lineTaxAmount(ln);
+            const net = lineNetAmount(ln);
+            const paid = linePaidAmount(ln);
+            const outstanding = lineOutstandingAmount(ln);
+            const taxDisplay = showSettlementColumns
+              ? (() => {
+                  const label = formatTaxWithheldDisplay(ln);
+                  const clickable =
+                    isPayoutDetailsFinalized(ln) &&
+                    (hasTaxWithheldBreakdown(ln) || label !== "Pending");
+                  if (!clickable) return formatAmt(tax);
+                  return (
+                    <Button
+                      size="small"
+                      variant="text"
+                      sx={{ minWidth: 0, p: 0 }}
+                      onClick={() => onTaxWithheldClick?.(ln)}
+                    >
+                      {formatAmt(tax)}
+                    </Button>
+                  );
+                })()
+              : formatAmt(tax);
+
+            return (
+              <Fragment key={ln.id}>
+                <TableRow hover sx={{ "& td": { py: 0.5 } }}>
+                  <TableCell>
+                    <IconButton size="small" onClick={() => toggle(ln.id)}>
+                      <ExpandMoreIcon
+                        fontSize="small"
+                        sx={{ transform: isOpen ? "rotate(180deg)" : "none" }}
+                      />
+                    </IconButton>
                   </TableCell>
-                </>
-              ) : isGrossOnly ? (
-                <TableCell align="right">${Number(ln.health_credit_amount || 0).toFixed(2)}</TableCell>
-              ) : null}
-              {showSettlementColumns ? (
-                <>
-                  <TableCell align="right">{formatNetPaidDisplay(ln)}</TableCell>
-                  <TableCell align="right">
-                    {(() => {
-                      const label = formatTaxWithheldDisplay(ln);
-                      const clickable =
-                        isPayoutDetailsFinalized(ln) &&
-                        (hasTaxWithheldBreakdown(ln) || label !== "Pending");
-                      if (!clickable) return label;
-                      return (
-                        <Button
+                  <TableCell>
+                    <Tooltip title={linePaymentHint(ln)}>
+                      <span>{ln.worker_name_snapshot}</span>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell align="right">${gross.toFixed(2)}</TableCell>
+                  <TableCell align="right">{taxDisplay}</TableCell>
+                  <TableCell align="right">{formatAmt(net)}</TableCell>
+                  <TableCell align="right">{formatAmt(paid)}</TableCell>
+                  <TableCell align="right">{formatAmt(outstanding)}</TableCell>
+                </TableRow>
+                <TableRow key={`${ln.id}-exp`}>
+                  <TableCell colSpan={7} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
+                    <Collapse in={isOpen}>
+                      <Stack
+                        direction="row"
+                        spacing={2}
+                        flexWrap="wrap"
+                        useFlexGap
+                        sx={{ py: 1, pl: 1 }}
+                        alignItems="center"
+                      >
+                        <Typography variant="caption" color="text.secondary">
+                          {Number(ln.approved_hours || 0).toFixed(2)} reg hrs
+                          {ln.ot_hours ? ` · ${Number(ln.ot_hours).toFixed(2)} OT` : ""}
+                          · ${Number(ln.rate || 0).toFixed(2)}/hr
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {linePaymentHint(ln)}
+                        </Typography>
+                        {canMarkPaid && ln.payment_status !== "paid" ? (
+                          <Button size="small" onClick={() => onMarkPaid(ln.id)}>Mark paid</Button>
+                        ) : null}
+                        {ln.payment_status === "paid" ? (
+                          <Button size="small" onClick={() => onMarkUnpaid(ln.id)}>Mark unpaid</Button>
+                        ) : null}
+                        <IconButton size="small" onClick={() => onEditLine(ln)} disabled={!isEditable}>
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton
                           size="small"
-                          variant="text"
-                          sx={{ minWidth: 0, p: 0 }}
-                          onClick={() => onTaxWithheldClick?.(ln)}
+                          color="error"
+                          onClick={() => onRemoveLine(ln.id)}
+                          disabled={!isEditable}
                         >
-                          {label}
-                        </Button>
-                      );
-                    })()}
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Stack>
+                    </Collapse>
                   </TableCell>
-                </>
-              ) : null}
-              <TableCell>
-                <Chip
-                  size="small"
-                  color={ln.payment_status === "paid" ? "success" : "warning"}
-                  label={ln.payment_status_label || ln.payment_status || "Pending"}
-                />
-              </TableCell>
-              <TableCell align="right" sx={{ whiteSpace: "nowrap" }}>
-                {canMarkPaid && ln.payment_status !== "paid" ? (
-                  <Button size="small" onClick={() => onMarkPaid(ln.id)}>
-                    Mark paid
-                  </Button>
-                ) : null}
-                {ln.payment_status === "paid" ? (
-                  <Button size="small" onClick={() => onMarkUnpaid(ln.id)}>
-                    Unpaid
-                  </Button>
-                ) : null}
-                <IconButton size="small" onClick={() => onEditLine(ln)} disabled={!isEditable}>
-                  <EditIcon fontSize="small" />
-                </IconButton>
-                <IconButton size="small" color="error" onClick={() => onRemoveLine(ln.id)} disabled={!isEditable}>
-                  <DeleteIcon fontSize="small" />
-                </IconButton>
-              </TableCell>
-            </TableRow>
-          ))}
+                </TableRow>
+              </Fragment>
+            );
+          })}
           {!lines.length ? (
             <TableRow>
-              <TableCell
-                colSpan={
-                  (isW2 ? 9 : isGrossOnly ? 7 : 6) + (showSettlementColumns ? 2 : 0)
-                }
-              >
+              <TableCell colSpan={7}>
                 <Typography variant="body2" color="text.secondary">
                   No workers yet. Approve time on Time Records, then refresh from time records.
                 </Typography>
@@ -287,6 +296,8 @@ export default function PayoutBatchesPanel({
   payPeriodStart = "",
   payPeriodEnd = "",
   onPayPeriodChange,
+  onNavigateTab,
+  onBatchesChange,
 }) {
   const printRef = useRef(null);
   const autoPickRef = useRef(false);
@@ -309,8 +320,8 @@ export default function PayoutBatchesPanel({
     notes: "",
   });
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
-  const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState(null);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
@@ -474,14 +485,16 @@ export default function PayoutBatchesPanel({
       setDetail(res.data);
       await loadList();
       const labels = {
-        hours_reviewed: "Hours marked reviewed.",
-        send_to_accountant: "Batch sent to accountant.",
-        mark_paid: "Batch marked paid.",
+        approve_hours: "Hours approved — ready for payroll.",
+        hours_reviewed: "Hours approved.",
+        send_to_accountant: "Ready for payroll.",
+        mark_paid: "Payroll marked paid.",
         mark_line_paid: "Worker marked paid.",
         mark_line_unpaid: "Worker marked unpaid.",
         refresh_rates: "Scheduling rates applied.",
       };
       setInfo(labels[action] || "Updated.");
+      onBatchesChange?.();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Action failed");
     }
@@ -498,13 +511,22 @@ export default function PayoutBatchesPanel({
     [selectedId],
   );
 
-  const setBatchStatus = async (status) => {
+  const handlePrimaryAction = async (actionKey) => {
+    if (!selectedId && actionKey !== "enter_details" && actionKey !== "view_documents") return;
+    if (actionKey === "enter_details") {
+      onNavigateTab?.("payout_details", selectedId);
+      return;
+    }
+    if (actionKey === "view_documents") {
+      onNavigateTab?.("documents");
+      return;
+    }
+    setActionLoading(true);
     try {
-      const res = await patchPayoutBatch(selectedId, { status });
-      setDetail(res.data);
-      await loadList();
-    } catch (e) {
-      setError(e.response?.data?.error || e.message || "Status update failed");
+      await runWorkflowAction(actionKey);
+      if (actionKey === "approve_hours") onNavigateTab?.("payout_details", selectedId);
+    } finally {
+      setActionLoading(false);
     }
   };
 
@@ -561,9 +583,7 @@ export default function PayoutBatchesPanel({
   const isW2 = detail?.worker_category === "w2";
   const isGrossOnly = detail?.worker_category === "temp" || detail?.worker_category === "contractor_1099";
   const showSettlementColumns = Boolean(detail?.payout_details_finalized_at);
-  const summary = detail?.summary || {};
   const batchWarnings = detail?.warnings || [];
-  const readinessState = useMemo(() => compactReadiness(detail?.readiness), [detail?.readiness]);
   const workerLines = detail?.lines || [];
 
   const openEditBatch = () => {
@@ -697,7 +717,12 @@ export default function PayoutBatchesPanel({
                   primaryTypographyProps={{ noWrap: true, variant: "body2" }}
                   secondaryTypographyProps={{ variant: "caption" }}
                 />
-                <Chip size="small" label={formatStatusLabel(b.status)} sx={{ ml: 0.5, flexShrink: 0 }} />
+                <Chip
+                  size="small"
+                  label={displayStatusLabel(b)}
+                  color={displayStatusColor(b)}
+                  sx={{ ml: 0.5, flexShrink: 0 }}
+                />
                 {b.status === "draft" || b.status === "hours_reviewed" ? (
                   <Tooltip title="Delete batch">
                     <IconButton
@@ -730,80 +755,13 @@ export default function PayoutBatchesPanel({
             <Typography color="text.secondary">Select a batch from the list.</Typography>
           ) : (
             <>
-              <Stack
-                direction={{ xs: "column", md: "row" }}
-                justifyContent="space-between"
-                spacing={1}
-                sx={{ mb: 1.5 }}
-              >
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="h6" noWrap>
-                    {detail.batch_name}
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {detail.worker_category_label} · {detail.pay_period_start} – {detail.pay_period_end}
-                  </Typography>
-                  <Stack direction="row" spacing={0.75} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap alignItems="center">
-                    <Chip
-                      size="small"
-                      label={formatStatusLabel(detail.status)}
-                      color={detail.status === "paid" ? "success" : "default"}
-                    />
-                    <Chip
-                      size="small"
-                      label={batchPaymentLabel(detail.payment_status)}
-                      color={batchPaymentColor(detail.payment_status)}
-                      variant="outlined"
-                    />
-                    {readinessState.ready ? (
-                      <Chip size="small" color="success" label="Ready to send" variant="outlined" />
-                    ) : (
-                      readinessState.needs.map((need) => (
-                        <Chip key={need} size="small" color="warning" label={`Needs: ${need}`} variant="outlined" />
-                      ))
-                    )}
-                  </Stack>
-                  <Typography variant="body2" sx={{ mt: 1 }}>
-                    <strong>${Number(detail.total_payout_amount || 0).toFixed(2)}</strong> gross ·{" "}
-                    {detail.worker_count} workers · {Number(detail.total_approved_hours || 0).toFixed(2)} hrs
-                    {summary.paid_amount || summary.unpaid_amount ? (
-                      <>
-                        {" "}
-                        · Paid ${Number(summary.paid_amount || 0).toFixed(2)} · Unpaid $
-                        {Number(summary.unpaid_amount || 0).toFixed(2)}
-                      </>
-                    ) : null}
-                  </Typography>
-                  {isW2 ? (
-                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                      Tax estimates only — enter deductions on Payment &amp; Details.
-                    </Typography>
-                  ) : isGrossOnly ? (
-                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                      Gross payout tracking only. Use Payment &amp; Details for payment records.
-                    </Typography>
-                  ) : null}
-                  {!isEditable ? (
-                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                      Locked for editing — set status to Draft in advanced options to change lines.
-                    </Typography>
-                  ) : null}
-                </Box>
-                <Stack direction="row" spacing={0.5} flexShrink={0}>
-                  <Button size="small" startIcon={<EditIcon />} onClick={openEditBatch} disabled={!isEditable}>
-                    Edit
-                  </Button>
-                  <Button
-                    size="small"
-                    color="error"
-                    startIcon={<DeleteIcon />}
-                    onClick={() => setDeleteOpen(true)}
-                    disabled={!isEditable}
-                  >
-                    Delete
-                  </Button>
-                </Stack>
-              </Stack>
+              <Box sx={{ mb: 1 }}>
+                <PayrollBatchSummaryCard
+                  batch={detail}
+                  onPrimaryAction={(actionKey) => handlePrimaryAction(actionKey)}
+                  primaryLoading={actionLoading}
+                />
+              </Box>
 
               {batchWarnings.length ? (
                 <Stack spacing={0.5} sx={{ mb: 1.5 }}>
@@ -815,44 +773,20 @@ export default function PayoutBatchesPanel({
                 </Stack>
               ) : null}
 
-              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
-                {detail.status === "draft" ? (
-                  <Button
-                    size="small"
-                    variant="contained"
-                    onClick={() => runWorkflowAction("hours_reviewed")}
-                    disabled={!workerLines.length}
-                  >
-                    Mark hours reviewed
-                  </Button>
-                ) : null}
-                {detail.status === "hours_reviewed" ? (
-                  <Button
-                    size="small"
-                    variant="contained"
-                    onClick={() => (isW2 ? setSendConfirmOpen(true) : runWorkflowAction("send_to_accountant"))}
-                  >
-                    Send to accountant
-                  </Button>
-                ) : null}
-                {["sent_to_accountant", "accountant_reviewed", "approved_for_payment", "paid"].includes(
-                  detail.status,
-                ) ? (
-                  <Button
-                    size="small"
-                    variant="contained"
-                    color="success"
-                    onClick={() => runWorkflowAction("mark_paid")}
-                    disabled={detail.payment_status === "paid"}
-                  >
-                    Mark batch paid
-                  </Button>
-                ) : null}
+              <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
+                <IconButton
+                  size="small"
+                  onClick={(e) => setMoreAnchor(e.currentTarget)}
+                  aria-label="More actions"
+                >
+                  <MoreVertIcon fontSize="small" />
+                </IconButton>
                 <Button
                   size="small"
                   variant="text"
                   endIcon={
                     <ExpandMoreIcon
+                      fontSize="small"
                       sx={{
                         transform: advancedOpen ? "rotate(180deg)" : "rotate(0deg)",
                         transition: "transform 0.2s",
@@ -861,11 +795,8 @@ export default function PayoutBatchesPanel({
                   }
                   onClick={() => setAdvancedOpen((v) => !v)}
                 >
-                  Advanced
+                  More
                 </Button>
-                <IconButton size="small" onClick={(e) => setMoreAnchor(e.currentTarget)} aria-label="More actions">
-                  <MoreVertIcon />
-                </IconButton>
               </Stack>
 
               <Collapse in={advancedOpen}>
@@ -878,20 +809,19 @@ export default function PayoutBatchesPanel({
                       Apply scheduling rates
                     </Button>
                   ) : null}
-                  <FormControl size="small" sx={{ minWidth: 180 }}>
-                    <InputLabel>Batch status</InputLabel>
-                    <Select
-                      label="Batch status"
-                      value={detail.status || "draft"}
-                      onChange={(e) => setBatchStatus(e.target.value)}
-                    >
-                      {BATCH_STATUS_FLOW.map((s) => (
-                        <MenuItem key={s.value} value={s.value}>
-                          {s.label}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
+                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={openEditBatch} disabled={!isEditable}>
+                    Edit batch
+                  </Button>
+                  <Button
+                    size="small"
+                    color="error"
+                    variant="outlined"
+                    startIcon={<DeleteIcon />}
+                    onClick={() => setDeleteOpen(true)}
+                    disabled={!isEditable}
+                  >
+                    Delete
+                  </Button>
                   <Button size="small" variant="outlined" startIcon={<PrintIcon />} onClick={() => setPrintPreviewOpen(true)}>
                     Print preview
                   </Button>
@@ -952,8 +882,6 @@ export default function PayoutBatchesPanel({
 
               <BatchWorkerTable
                 lines={workerLines}
-                isW2={isW2}
-                isGrossOnly={isGrossOnly}
                 isEditable={isEditable}
                 batchStatus={detail.status}
                 showSettlementColumns={showSettlementColumns}
@@ -1011,30 +939,6 @@ export default function PayoutBatchesPanel({
           <Button onClick={() => setEditOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={saveBatchEdit}>
             Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog open={sendConfirmOpen} onClose={() => setSendConfirmOpen(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Send to accountant?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            {detail?.send_to_accountant_confirm_message || SEND_TO_ACCOUNTANT_W2_CONFIRM}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            {ACCOUNTANT_BATCH_READY_MESSAGE}
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setSendConfirmOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            onClick={async () => {
-              setSendConfirmOpen(false);
-              await runWorkflowAction("send_to_accountant");
-            }}
-          >
-            Confirm
           </Button>
         </DialogActions>
       </Dialog>

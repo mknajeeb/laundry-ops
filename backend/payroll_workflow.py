@@ -40,6 +40,7 @@ PAYMENT_STATUSES = ("pending", "approved_unpaid", "paid")
 TAX_CALC_STATUSES = ("not_applicable", "pending", "calculated")
 
 BATCH_ACTIONS = (
+    "approve_hours",
     "hours_reviewed",
     "send_to_accountant",
     "process_batch",
@@ -829,17 +830,19 @@ def enrich_payout_batch(conn, organization_id: int, batch: dict) -> dict:
     )
     batch["accountant_processing_status"] = accountant_batch_processing_status(batch)
     batch["can_process_as_accountant"] = can_process_batch_as_accountant(batch)
-    return json_safe(batch)
+    from backend.payroll_status_display import enrich_batch_payroll_display
+
+    return enrich_batch_payroll_display(json_safe(batch))
 
 
 def _available_batch_actions(batch: dict) -> list[str]:
-    st = str(batch.get("status") or "draft")
+    from backend.payroll_status_display import compute_display_status
+
+    ds = compute_display_status(batch)
     actions: list[str] = []
-    if st == "draft":
-        actions.append("hours_reviewed")
-    elif st == "hours_reviewed":
-        actions.append("send_to_accountant")
-    elif st in ("sent_to_accountant", "accountant_reviewed", "approved_for_payment"):
+    if ds == "draft":
+        actions.append("approve_hours")
+    elif ds == "ready_to_pay":
         actions.append("mark_paid")
         actions.append("mark_line_paid")
         actions.append("mark_line_unpaid")
@@ -965,7 +968,45 @@ def apply_batch_workflow_action(
     ensure_payout_batch_line_extensions(conn.cursor())
     c = conn.cursor()
     pd = payment_date or str(date.today())
-    if action == "hours_reviewed":
+    if action == "approve_hours":
+        validate_batch_for_workflow(batch, "hours_reviewed")
+        c.execute(
+            """
+            UPDATE payout_batches SET status='hours_reviewed', approved_by=COALESCE(approved_by, %s),
+            updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
+            """,
+            (actor_id, int(batch_id), int(organization_id)),
+        )
+        c.execute(
+            """
+            UPDATE payout_batch_lines SET payment_status='approved_unpaid', line_status='approved'
+            WHERE batch_id=%s AND organization_id=%s AND payment_status='pending'
+            """,
+            (int(batch_id), int(organization_id)),
+        )
+        conn.commit()
+        batch = get_payout_batch(conn, organization_id, batch_id)
+        if not batch:
+            raise ValueError("Batch not found")
+        batch = enrich_payout_batch(conn, organization_id, batch)
+        validate_batch_for_workflow(batch, "send_to_accountant")
+        c.execute(
+            """
+            UPDATE payout_batches SET status='sent_to_accountant',
+            sent_to_accountant_at=COALESCE(sent_to_accountant_at, NOW()),
+            approved_by=COALESCE(approved_by, %s), updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND organization_id=%s
+            """,
+            (actor_id, int(batch_id), int(organization_id)),
+        )
+        c.execute(
+            """
+            UPDATE payout_batch_lines SET payment_status='approved_unpaid', line_status='approved'
+            WHERE batch_id=%s AND organization_id=%s AND payment_status IN ('pending', 'approved_unpaid')
+            """,
+            (int(batch_id), int(organization_id)),
+        )
+    elif action == "hours_reviewed":
         validate_batch_for_workflow(batch, action)
         c.execute(
             """
@@ -1008,7 +1049,7 @@ def apply_batch_workflow_action(
             raise ValueError("Batch must be available for accountant review before processing")
         c.execute(
             """
-            UPDATE payout_batches SET status='accountant_reviewed',
+            UPDATE payout_batches SET status='approved_for_payment',
             updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
             """,
             (int(batch_id), int(organization_id)),

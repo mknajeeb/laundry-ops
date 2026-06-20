@@ -127,6 +127,18 @@ def test_accountant_batch_processing_status_pending_and_processed():
     assert accountant_batch_processing_status({"status": "draft"}) is None
 
 
+def test_available_actions_use_display_status():
+    from backend.payroll_workflow import _available_batch_actions
+
+    assert "approve_hours" in _available_batch_actions({"status": "draft"})
+    assert "mark_paid" in _available_batch_actions(
+        {
+            "status": "approved_for_payment",
+            "payout_details_finalized_at": "2026-01-01",
+        }
+    )
+
+
 def test_can_process_batch_as_accountant_only_when_sent():
     assert can_process_batch_as_accountant({"status": "sent_to_accountant"}) is True
     assert can_process_batch_as_accountant({"status": "accountant_reviewed"}) is False

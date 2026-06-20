@@ -9,13 +9,13 @@ import {
 } from "@mui/material";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
-import { getPayoutBatches } from "../api";
-import AccountantReportsPanel from "../components/AccountantReportsPanel";
-import AccountantPaymentQueuePanel from "../components/AccountantPaymentQueuePanel";
+import { getPayoutBatches, patchPayoutBatch } from "../api";
+import AccountantPayrollPanel from "../components/AccountantPayrollPanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import W2EmployeeFormsPanel from "../components/W2EmployeeFormsPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
 import PayoutDetailsPanel from "../components/PayoutDetailsPanel";
+import PayrollDashboard from "../components/PayrollDashboard";
 import PayrollWorkerPaymentsPanel from "../components/PayrollWorkerPaymentsPanel";
 import PayrollTaxSettingsPanel from "../components/PayrollTaxSettingsPanel";
 import PayrollDocumentsPanel from "../components/PayrollDocumentsPanel";
@@ -23,12 +23,7 @@ import PayrollTimeRecordsPanel from "../components/PayrollTimeRecordsPanel";
 import PayrollSchedulingPanel from "../components/PayrollSchedulingPanel";
 import PayrollPeriodSearchBar from "../components/PayrollPeriodSearchBar";
 import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
-import { MANUAL_DEDUCTIONS_NOTICE } from "../payroll/payrollTaxMessages";
 
-/**
- * Payroll Management — operations vs accountant reporting.
- * Worker categories (W-2, 1099, Temp) stay separate across tabs.
- */
 export default function PayrollManagementPage() {
   const { hasPerm, loading: authLoading, user } = useAuth();
   const { t } = useI18n();
@@ -48,45 +43,28 @@ export default function PayrollManagementPage() {
   const canPayout = hasPerm("ta.settings") || hasPerm("users.edit") || isAdmin || isPayrollAdmin;
   const canContractors = hasPerm("users.edit") || hasPerm("ta.settings") || isAdmin;
   const canAccountant = hasPerm("users.view") || hasPerm("ta.settings") || isAdmin;
-  const canPayoutDetails = canPayout;
-  const canAccountantQueue =
-    isAccountantRole &&
-    canAccountant &&
-    !canPayout &&
-    !isAdmin &&
-    !isPayrollAdmin &&
-    !isSuperAdmin;
+  const canPayoutDetails = canPayout || (isAccountantRole && canAccountant);
 
   const readOnlyAccountant =
     isAccountantRole && !canPayout && !canTime && !isAdmin && !isPayrollAdmin && !isSuperAdmin;
 
   const sections = useMemo(() => {
     const out = [];
+    if (readOnlyAccountant) {
+      out.push({ key: "accountant_payroll", label: "Accountant Payroll" });
+      return out;
+    }
     if (canTime) out.push({ key: "time", label: "Time Records" });
-    if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
-    if (canAccountantQueue) {
-      out.push({
-        key: "accountant_queue",
-        label: "Payment confirmation",
-      });
-    }
-    if (canPayoutDetails) {
-      out.push({
-        key: "payout_details",
-        label: readOnlyAccountant ? "Payout Details" : "Payment & Details",
-      });
-    }
+    if (canPayoutDetails) out.push({ key: "payout_details", label: "Payment & Details" });
+    if (canPayout) out.push({ key: "documents", label: "Documents" });
+    if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canContractors) out.push({ key: "w2forms", label: t("payroll.tabW2Forms") });
-    if (canPayout) out.push({ key: "documents", label: "Documents" });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
     if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
-    if (canAccountant) {
-      out.push({
-        key: "accountant",
-        label: readOnlyAccountant ? "W-2 Payroll" : "Accountant Reports",
-      });
+    if (isAccountantRole && canAccountant) {
+      out.push({ key: "accountant_payroll", label: "Accountant Payroll" });
     }
     return out;
   }, [
@@ -94,13 +72,16 @@ export default function PayrollManagementPage() {
     canPayout,
     canContractors,
     canAccountant,
-    canAccountantQueue,
     canPayoutDetails,
     readOnlyAccountant,
+    isAccountantRole,
     t,
   ]);
 
   const [tab, setTab] = useState(0);
+  const [detailsBatchId, setDetailsBatchId] = useState(null);
+  const [primaryLoading, setPrimaryLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState("");
 
   const [payPeriod, setPayPeriod] = useState(() => {
     const r = defaultPayPeriodRange(0);
@@ -112,13 +93,9 @@ export default function PayrollManagementPage() {
     };
   });
 
-  const onPayPeriodChange = useCallback((patch) => {
-    setPayPeriod((prev) => ({ ...prev, ...patch }));
-  }, []);
-
   const [payoutBatchesForSearch, setPayoutBatchesForSearch] = useState([]);
 
-  useEffect(() => {
+  const refreshBatches = useCallback(() => {
     if (!canTime && !canPayout) return;
     getPayoutBatches()
       .then((res) => setPayoutBatchesForSearch(res.data?.items || []))
@@ -126,17 +103,60 @@ export default function PayrollManagementPage() {
   }, [canTime, canPayout]);
 
   useEffect(() => {
+    refreshBatches();
+  }, [refreshBatches]);
+
+  useEffect(() => {
     if (tab >= sections.length) setTab(Math.max(0, sections.length - 1));
   }, [sections.length, tab]);
 
-  useEffect(() => {
-    if (!sections.length) return;
-    const accountantOnly = sections.length === 1 && sections[0]?.key === "accountant";
-    if (accountantOnly || readOnlyAccountant) {
-      const idx = sections.findIndex((s) => s.key === "accountant");
+  const tabIndexForKey = useCallback(
+    (key) => sections.findIndex((s) => s.key === key),
+    [sections],
+  );
+
+  const goToTab = useCallback(
+    (key, batchId = null) => {
+      if (batchId) setDetailsBatchId(batchId);
+      const idx = tabIndexForKey(key);
       if (idx >= 0) setTab(idx);
-    }
-  }, [sections, readOnlyAccountant]);
+    },
+    [tabIndexForKey],
+  );
+
+  const handleDashboardPrimaryAction = useCallback(
+    async (action, batch) => {
+      setDashboardError("");
+      if (action === "enter_details") {
+        setDetailsBatchId(batch?.id);
+        goToTab("payout_details");
+        return;
+      }
+      if (action === "view_documents") {
+        goToTab("documents");
+        return;
+      }
+      if (action === "approve_hours" || action === "mark_paid") {
+        if (!batch?.id) return;
+        setPrimaryLoading(true);
+        try {
+          await patchPayoutBatch(batch.id, { action });
+          refreshBatches();
+          if (action === "approve_hours") {
+            setDetailsBatchId(batch.id);
+            goToTab("payout_details", batch.id);
+          } else {
+            goToTab("batches");
+          }
+        } catch (e) {
+          setDashboardError(e.response?.data?.error || e.message || "Action failed");
+        } finally {
+          setPrimaryLoading(false);
+        }
+      }
+    },
+    [goToTab, refreshBatches],
+  );
 
   if (authLoading) {
     return (
@@ -157,20 +177,26 @@ export default function PayrollManagementPage() {
   const active = sections[tab] || sections[0];
 
   return (
-    <Box sx={{ p: { xs: 1.2, md: 2 }, width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
-      <Typography className="no-print" sx={{ fontSize: readOnlyAccountant ? 24 : 28, fontWeight: readOnlyAccountant ? 600 : 700, mb: readOnlyAccountant ? 2 : 0.5 }}>
+    <Box sx={{ p: { xs: 1, md: 1.5 }, width: "100%", maxWidth: "100%", boxSizing: "border-box" }}>
+      <Typography sx={{ fontSize: 24, fontWeight: 700, mb: 1 }}>
         {readOnlyAccountant ? "Payroll" : t("payroll.mgmtTitle")}
       </Typography>
-      {!readOnlyAccountant ? (
+
+      {!readOnlyAccountant && canPayout ? (
         <>
-          <Typography className="no-print" variant="body2" color="text.secondary" sx={{ mb: 2, maxWidth: 720 }}>
-            Approve time on <strong>Time Records</strong>, then open or create a payout batch for the
-            same pay period — approved hours sync automatically by date. W-2, 1099, and temp workers are
-            never mixed in one batch.
-          </Typography>
-          <Alert className="no-print" severity="info" sx={{ mb: 2, maxWidth: 900 }}>
-            {MANUAL_DEDUCTIONS_NOTICE}
-          </Alert>
+          {dashboardError ? (
+            <Alert severity="error" sx={{ mb: 1 }} onClose={() => setDashboardError("")}>
+              {dashboardError}
+            </Alert>
+          ) : null}
+          <PayrollDashboard
+            payPeriodStart={payPeriod.start}
+            payPeriodEnd={payPeriod.end}
+            batches={payoutBatchesForSearch}
+            onPrimaryAction={handleDashboardPrimaryAction}
+            onOpenBatches={() => goToTab("batches")}
+            primaryLoading={primaryLoading}
+          />
         </>
       ) : null}
 
@@ -181,16 +207,16 @@ export default function PayrollManagementPage() {
           onChange={(_, v) => setTab(v)}
           variant="scrollable"
           scrollButtons="auto"
-          sx={{ borderBottom: 1, borderColor: "divider", mb: 0 }}
+          sx={{ borderBottom: 1, borderColor: "divider", mb: 0, minHeight: 40 }}
         >
           {sections.map((s) => (
-            <Tab key={s.key} label={s.label} />
+            <Tab key={s.key} label={s.label} sx={{ minHeight: 40, py: 0.5 }} />
           ))}
         </Tabs>
       ) : null}
 
       {active?.key === "time" || active?.key === "batches" ? (
-        <Box sx={{ pt: 2 }}>
+        <Box sx={{ pt: 1 }}>
           <PayrollPeriodSearchBar
             value={payPeriod}
             onChange={setPayPeriod}
@@ -199,13 +225,13 @@ export default function PayrollManagementPage() {
         </Box>
       ) : null}
 
-      <Box sx={{ pt: active?.key === "time" || active?.key === "batches" ? 0 : 2 }} role="tabpanel">
+      <Box sx={{ pt: 1 }} role="tabpanel">
         {active?.key === "time" ? (
           <PayrollTimeRecordsPanel
             payPeriodStart={payPeriod.start}
             payPeriodEnd={payPeriod.end}
             linkedCategory={payPeriod.category}
-            onPayPeriodChange={onPayPeriodChange}
+            onPayPeriodChange={setPayPeriod}
           />
         ) : null}
         {active?.key === "schedule" ? <PayrollSchedulingPanel /> : null}
@@ -213,17 +239,20 @@ export default function PayrollManagementPage() {
           <PayoutBatchesPanel
             payPeriodStart={payPeriod.start}
             payPeriodEnd={payPeriod.end}
-            onPayPeriodChange={onPayPeriodChange}
+            onPayPeriodChange={setPayPeriod}
+            onNavigateTab={goToTab}
+            onBatchesChange={refreshBatches}
           />
         ) : null}
-        {active?.key === "accountant_queue" ? <AccountantPaymentQueuePanel /> : null}
-        {active?.key === "payout_details" ? <PayoutDetailsPanel /> : null}
+        {active?.key === "payout_details" ? (
+          <PayoutDetailsPanel initialBatchId={detailsBatchId} />
+        ) : null}
+        {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}
         {active?.key === "documents" ? <PayrollDocumentsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}
         {active?.key === "taxsettings" ? <PayrollTaxSettingsPanel /> : null}
-        {active?.key === "accountant" ? <AccountantReportsPanel /> : null}
       </Box>
     </Box>
   );

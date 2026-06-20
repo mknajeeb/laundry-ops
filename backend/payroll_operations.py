@@ -710,11 +710,15 @@ def list_payout_batches(
     params.append(int(limit))
     c.execute(q, params)
     rows = [json_safe(r) for r in c.fetchall() or []]
+    from backend.payroll_status_display import enrich_list_item_payroll_display
+
     if accountant_visible_only:
         from backend.payroll_workflow import accountant_batch_processing_status
 
         for row in rows:
             row["accountant_processing_status"] = accountant_batch_processing_status(row)
+    for row in rows:
+        enrich_list_item_payroll_display(row)
     return rows
 
 
