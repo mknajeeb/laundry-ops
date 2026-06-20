@@ -19,8 +19,8 @@ DEFAULTS: dict[str, Any] = {
     "target_time": "12:00 PM",
     "bag_count": 50,
     "avg_lbs_per_bag": 20,
-    "single_bag_load_pct": 20,
-    "two_bag_split_pct": 40,
+    "orders_using_2_washers": None,
+    "orders_using_2_dryers": None,
     "sorter_early_start_min": 0,
     "sorter_break_after_bags": 0,
     "sorter_break_duration_min": 0,
@@ -28,8 +28,6 @@ DEFAULTS: dict[str, Any] = {
     "washer_break_duration_min": 0,
     "washer_count": 4,
     "dryer_count": 4,
-    "washer_capacity_lb": 50,
-    "dryer_capacity_lb": 50,
     "wash_cycle_min": 30,
     "dry_cycle_min": 45,
     "weigh_min_per_bag": 1,
@@ -168,82 +166,114 @@ def build_uniform_bag_weights(bag_count: int, avg_lb: float) -> list[float]:
     return [avg_lb] * bag_count
 
 
+def _default_split_order_count(bag_count: int) -> int:
+    """Default: 80% of orders use 2 machines (40 of 50 baseline)."""
+    return min(bag_count, int(round(bag_count * 0.8)))
+
+
+def _parse_split_order_count(
+    raw_count: Any,
+    raw_pct: Any,
+    *,
+    bag_count: int,
+    count_name: str,
+    pct_name: str,
+    default_count: int | None = None,
+) -> int:
+    if default_count is None:
+        default_count = _default_split_order_count(bag_count)
+    has_count = raw_count is not None and str(raw_count).strip() != ""
+    has_pct = raw_pct is not None and str(raw_pct).strip() != ""
+    if has_count and has_pct:
+        raise ValueError(f"Provide either {count_name} or {pct_name}, not both")
+    if has_count:
+        n = _non_negative_int(raw_count, count_name)
+    elif has_pct:
+        pct = _non_negative_float(raw_pct, pct_name)
+        if pct > 100.0001:
+            raise ValueError(f"{pct_name} must be <= 100")
+        n = int(round(bag_count * pct / 100.0))
+    else:
+        n = default_count
+    if n > bag_count:
+        raise ValueError(f"{count_name} must be <= bag_count ({bag_count})")
+    return n
+
+
+def build_order_machine_loads(bag_count: int, *, orders_using_2: int) -> list[int]:
+    """Per-order washer or dryer load count (1 or 2 machines)."""
+    if orders_using_2 < 0 or orders_using_2 > bag_count:
+        raise ValueError("orders_using_2 must be between 0 and bag_count")
+    return [2] * orders_using_2 + [1] * (bag_count - orders_using_2)
+
+
 def compute_split_load_distribution(
     bag_count: int,
     *,
-    single_pct: float,
-    two_split_pct: float,
+    orders_using_2_washers: int,
+    orders_using_2_dryers: int,
 ) -> dict[str, int]:
-    if single_pct < 0 or two_split_pct < 0:
-        raise ValueError("split load percentages must be >= 0")
-    if single_pct + two_split_pct > 100.0001:
-        raise ValueError("single_bag_load_pct + two_bag_split_pct must be <= 100")
-
-    single_bags = int(round(bag_count * single_pct / 100.0))
-    two_split_bags = int(round(bag_count * two_split_pct / 100.0))
-    if two_split_bags % 2 == 1:
-        two_split_bags = max(0, two_split_bags - 1)
-    if single_bags + two_split_bags > bag_count:
-        two_split_bags = max(0, two_split_bags - (single_bags + two_split_bags - bag_count))
-    multi_bags = max(0, bag_count - single_bags - two_split_bags)
-
+    orders_1_washer = bag_count - orders_using_2_washers
+    orders_1_dryer = bag_count - orders_using_2_dryers
+    washer_loads_total = orders_using_2_washers * 2 + orders_1_washer
+    dryer_loads_total = orders_using_2_dryers * 2 + orders_1_dryer
     return {
-        "single_bag_orders": single_bags,
-        "two_bag_split_orders": two_split_bags,
-        "multi_bag_orders": multi_bags,
-        "single_loads": single_bags,
-        "two_bag_split_loads": two_split_bags // 2,
-        "multi_bag_loads": 0,  # filled by build_wash_load_plan
+        "orders_using_2_washers": orders_using_2_washers,
+        "orders_using_1_washer": orders_1_washer,
+        "orders_using_2_dryers": orders_using_2_dryers,
+        "orders_using_1_dryer": orders_1_dryer,
+        "washer_loads_total": washer_loads_total,
+        "dryer_loads_total": dryer_loads_total,
     }
-
-
-def build_wash_load_plan(
-    bag_count: int,
-    *,
-    single_pct: float,
-    two_split_pct: float,
-    avg_lb: float,
-    washer_capacity_lb: float,
-) -> list[int]:
-    dist = compute_split_load_distribution(
-        bag_count, single_pct=single_pct, two_split_pct=two_split_pct
-    )
-    plan: list[int] = [1] * dist["single_loads"] + [2] * dist["two_bag_split_loads"]
-    multi_bags = dist["multi_bag_orders"]
-    bags_per_multi = max(1, int(washer_capacity_lb // avg_lb))
-    while multi_bags > 0:
-        take = min(multi_bags, bags_per_multi)
-        plan.append(take)
-        multi_bags -= take
-    dist["multi_bag_loads"] = len(plan) - dist["single_loads"] - dist["two_bag_split_loads"]
-    return plan
 
 
 def split_distribution_summary(
     bag_count: int,
     *,
-    single_pct: float,
-    two_split_pct: float,
+    orders_using_2_washers: int,
+    orders_using_2_dryers: int,
     avg_lb: float,
-    washer_capacity_lb: float,
 ) -> dict[str, Any]:
     dist = compute_split_load_distribution(
-        bag_count, single_pct=single_pct, two_split_pct=two_split_pct
-    )
-    plan = build_wash_load_plan(
         bag_count,
-        single_pct=single_pct,
-        two_split_pct=two_split_pct,
-        avg_lb=avg_lb,
-        washer_capacity_lb=washer_capacity_lb,
+        orders_using_2_washers=orders_using_2_washers,
+        orders_using_2_dryers=orders_using_2_dryers,
     )
-    dist["multi_bag_loads"] = len(plan) - dist["single_loads"] - dist["two_bag_split_loads"]
-    dist["total_wash_loads"] = len(plan)
-    dist["load_plan_preview"] = plan[:12]
+    order_washer_loads = build_order_machine_loads(
+        bag_count, orders_using_2=orders_using_2_washers
+    )
+    order_dryer_loads = build_order_machine_loads(
+        bag_count, orders_using_2=orders_using_2_dryers
+    )
+    dist["order_washer_loads_preview"] = order_washer_loads[:12]
+    dist["order_dryer_loads_preview"] = order_dryer_loads[:12]
+    dist["total_wash_loads"] = dist["washer_loads_total"]
+    dist["total_dryer_loads"] = dist["dryer_loads_total"]
+    dist["avg_lbs_per_washer_load"] = round(
+        bag_count * avg_lb / max(1, dist["washer_loads_total"]), 1
+    )
+    dist["avg_lbs_per_dryer_load"] = round(
+        bag_count * avg_lb / max(1, dist["dryer_loads_total"]), 1
+    )
     dist["summary_lines"] = [
-        f"{dist['single_bag_orders']} of {bag_count} → single-bag loads ({dist['single_loads']} loads)",
-        f"{dist['two_bag_split_orders']} of {bag_count} → 2-bag split loads ({dist['two_bag_split_loads']} loads)",
-        f"{dist['multi_bag_orders']} of {bag_count} → capacity-packed loads ({dist['multi_bag_loads']} loads)",
+        (
+            f"{orders_using_2_washers} of {bag_count} orders → 2 washers each "
+            f"({orders_using_2_washers * 2} washer loads)"
+        ),
+        (
+            f"{dist['orders_using_1_washer']} of {bag_count} orders → 1 washer each "
+            f"({dist['orders_using_1_washer']} washer loads)"
+        ),
+        f"Total washer loads: {dist['washer_loads_total']}",
+        (
+            f"{orders_using_2_dryers} of {bag_count} orders → 2 dryers each "
+            f"({orders_using_2_dryers * 2} dryer loads)"
+        ),
+        (
+            f"{dist['orders_using_1_dryer']} of {bag_count} orders → 1 dryer each "
+            f"({dist['orders_using_1_dryer']} dryer loads)"
+        ),
+        f"Total dryer loads: {dist['dryer_loads_total']}",
     ]
     return dist
 
@@ -279,14 +309,13 @@ class PlannerInputs:
     bag_count: int
     avg_lbs_per_bag: float
     bag_weights: list[float]
-    wash_load_plan: list[int]
-    single_bag_load_pct: float
-    two_bag_split_pct: float
+    order_washer_loads: list[int]
+    order_dryer_loads: list[int]
+    orders_using_2_washers: int
+    orders_using_2_dryers: int
     split_distribution: dict[str, Any]
     washer_count: int
     dryer_count: int
-    washer_capacity_lb: float
-    dryer_capacity_lb: float
     wash_cycle_min: int
     dry_cycle_min: int
     weigh_min_per_bag: float
@@ -327,49 +356,87 @@ class PlannerInputs:
 
     def estimate_wash_loads(self) -> list[dict[str, Any]]:
         loads: list[dict[str, Any]] = []
-        bag_idx = 1
-        for bags in self.wash_load_plan:
-            loads.append(
-                {
-                    "bags": bags,
-                    "pounds": round(bags * self.avg_lbs_per_bag, 1),
-                    "bag_start": bag_idx,
-                    "bag_end": bag_idx + bags - 1,
-                    "load_type": (
-                        "single" if bags == 1
-                        else "two_bag_split" if bags == 2
-                        else "capacity_packed"
-                    ),
-                }
-            )
-            bag_idx += bags
+        load_id = 1
+        for order_idx, machine_count in enumerate(self.order_washer_loads, start=1):
+            for split_idx in range(machine_count):
+                loads.append(
+                    {
+                        "order": order_idx,
+                        "bags": 1,
+                        "pounds": round(self.avg_lbs_per_bag, 1),
+                        "bag_start": order_idx,
+                        "bag_end": order_idx,
+                        "load_type": "two_washer_split" if machine_count == 2 else "single_washer",
+                        "split_part": split_idx + 1 if machine_count > 1 else None,
+                        "load_id": load_id,
+                    }
+                )
+                load_id += 1
         return loads
 
     @property
     def total_wash_loads(self) -> int:
-        return len(self.estimate_wash_loads())
+        return sum(self.order_washer_loads)
+
+    @property
+    def total_dryer_loads(self) -> int:
+        return sum(self.order_dryer_loads)
 
     @property
     def avg_bags_per_wash_load(self) -> float:
-        loads = self.estimate_wash_loads()
-        if not loads:
+        if self.total_wash_loads <= 0:
             return 0.0
-        return sum(ld["bags"] for ld in loads) / len(loads)
+        return self.bag_count / self.total_wash_loads
+
+    @property
+    def washer_cycle_orders(self) -> list[int]:
+        cycles: list[int] = []
+        for order_id, machine_count in enumerate(self.order_washer_loads, start=1):
+            cycles.extend([order_id] * machine_count)
+        return cycles
 
 
 @dataclass
 class WashLoad:
     load_id: int
     washer_id: int
+    order_id: int
     bag_start: int
     bag_end: int
     bags: int
     pounds: float
     wash_start: int
     wash_end: int
+    split_part: int | None = None
     dry_start: int | None = None
     dry_end: int | None = None
     dryer_id: int | None = None
+
+
+@dataclass
+class DryerJob:
+    order_id: int
+    bag_start: int
+    bag_end: int
+    bags: int
+    pounds: float
+    ready_at: int
+    split_part: int | None = None
+    wash_load_ids: list[int] = field(default_factory=list)
+
+
+@dataclass
+class DryCycle:
+    cycle_id: int
+    order_id: int
+    bag_start: int
+    bag_end: int
+    bags: int
+    pounds: float
+    dry_start: int
+    dry_end: int
+    dryer_id: int
+    split_part: int | None = None
 
 
 @dataclass
@@ -386,14 +453,19 @@ class SimState:
     ready_for_fold: float = 0.0
     washer_free_at: list[int] = field(default_factory=list)
     dryer_free_at: list[int] = field(default_factory=list)
-    waiting_dryer: list[WashLoad] = field(default_factory=list)
     loads: list[WashLoad] = field(default_factory=list)
+    dry_cycles: list[DryCycle] = field(default_factory=list)
     next_load_id: int = 1
+    next_dry_cycle_id: int = 1
     pause_new_wash: bool = False
     weigh_remainder: float = 0.0
     sort_remainder: float = 0.0
     fold_remainder: float = 0.0
-    load_plan_queue: list[int] = field(default_factory=list)
+    next_wash_order: int = 0
+    order_wash_finished: dict[int, int] = field(default_factory=dict)
+    order_dryer_finished: dict[int, int] = field(default_factory=dict)
+    orders_dryer_queued: set[int] = field(default_factory=set)
+    pending_dryer_jobs: list[DryerJob] = field(default_factory=list)
     sorter_bags_since_break: int = 0
     sorter_on_break_until: int | None = None
 
@@ -407,26 +479,35 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
 
     bag_count = _positive_int(raw.get("bag_count"), "bag_count")
     avg_lbs = _positive_float(raw.get("avg_lbs_per_bag"), "avg_lbs_per_bag")
-    single_pct = _non_negative_float(raw.get("single_bag_load_pct"), "single_bag_load_pct")
-    two_split_pct = _non_negative_float(raw.get("two_bag_split_pct"), "two_bag_split_pct")
+    user_raw = data or {}
 
-    washer_cap = _positive_float(raw.get("washer_capacity_lb"), "washer_capacity_lb")
+    orders_2_washers = _parse_split_order_count(
+        user_raw.get("orders_using_2_washers"),
+        user_raw.get("orders_using_2_washers_pct"),
+        bag_count=bag_count,
+        count_name="orders_using_2_washers",
+        pct_name="orders_using_2_washers_pct",
+    )
+    orders_2_dryers = _parse_split_order_count(
+        user_raw.get("orders_using_2_dryers"),
+        user_raw.get("orders_using_2_dryers_pct"),
+        bag_count=bag_count,
+        count_name="orders_using_2_dryers",
+        pct_name="orders_using_2_dryers_pct",
+    )
     split_dist = split_distribution_summary(
         bag_count,
-        single_pct=single_pct,
-        two_split_pct=two_split_pct,
+        orders_using_2_washers=orders_2_washers,
+        orders_using_2_dryers=orders_2_dryers,
         avg_lb=avg_lbs,
-        washer_capacity_lb=washer_cap,
     )
-    wash_load_plan = build_wash_load_plan(
-        bag_count,
-        single_pct=single_pct,
-        two_split_pct=two_split_pct,
-        avg_lb=avg_lbs,
-        washer_capacity_lb=washer_cap,
+    order_washer_loads = build_order_machine_loads(
+        bag_count, orders_using_2=orders_2_washers
+    )
+    order_dryer_loads = build_order_machine_loads(
+        bag_count, orders_using_2=orders_2_dryers
     )
     bag_weights = build_uniform_bag_weights(bag_count, avg_lbs)
-    dryer_cap = _positive_float(raw.get("dryer_capacity_lb"), "dryer_capacity_lb")
     wash_cycle = _positive_int(raw.get("wash_cycle_min"), "wash_cycle_min")
     dry_cycle = _positive_int(raw.get("dry_cycle_min"), "dry_cycle_min")
     weigh_min = _positive_float(raw.get("weigh_min_per_bag"), "weigh_min_per_bag")
@@ -492,14 +573,13 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
         bag_count=bag_count,
         avg_lbs_per_bag=avg_lbs,
         bag_weights=bag_weights,
-        wash_load_plan=wash_load_plan,
-        single_bag_load_pct=single_pct,
-        two_bag_split_pct=two_split_pct,
+        order_washer_loads=order_washer_loads,
+        order_dryer_loads=order_dryer_loads,
+        orders_using_2_washers=orders_2_washers,
+        orders_using_2_dryers=orders_2_dryers,
         split_distribution=split_dist,
         washer_count=washer_count,
         dryer_count=dryer_count,
-        washer_capacity_lb=washer_cap,
-        dryer_capacity_lb=dryer_cap,
         wash_cycle_min=wash_cycle,
         dry_cycle_min=dry_cycle,
         weigh_min_per_bag=weigh_min,
@@ -532,7 +612,6 @@ def _init_state(inp: PlannerInputs) -> SimState:
         incoming_bags=list(inp.bag_weights),
         washer_free_at=[inp.start_min] * inp.washer_count,
         dryer_free_at=[inp.start_min] * inp.dryer_count,
-        load_plan_queue=list(inp.wash_load_plan),
     )
     if inp.uses_dedicated_weigher:
         state.weigh_queue = []
@@ -551,23 +630,23 @@ def _bags_in_washer(state: SimState) -> int:
 
 
 def _bags_washed_waiting(state: SimState) -> int:
-    return sum(ld.bags for ld in state.waiting_dryer)
+    return sum(job.bags for job in state.pending_dryer_jobs)
 
 
 def _bags_in_dryer(state: SimState) -> int:
     return sum(
-        ld.bags
-        for ld in state.loads
-        if ld.dry_start is not None and ld.dry_end is not None and ld.dry_start <= state.minute < ld.dry_end
+        cycle.bags
+        for cycle in state.dry_cycles
+        if cycle.dry_start <= state.minute < cycle.dry_end
     )
 
 
-def _bags_dried_complete(state: SimState) -> int:
-    dried = sum(
-        ld.bags
-        for ld in state.loads
-        if ld.dry_end is not None and ld.dry_end <= state.minute
-    )
+def _bags_dried_complete(state: SimState, inp: PlannerInputs) -> int:
+    dried = 0
+    for order_id in range(1, inp.bag_count + 1):
+        expected = inp.order_dryer_loads[order_id - 1]
+        if state.order_dryer_finished.get(order_id, 0) >= expected:
+            dried += 1
     return dried
 
 
@@ -593,7 +672,7 @@ def _snapshot(state: SimState, inp: PlannerInputs) -> dict[str, Any]:
     in_washer = _bags_in_washer(state)
     washed_waiting = _bags_washed_waiting(state)
     in_dryer = _bags_in_dryer(state)
-    dried_complete = _bags_dried_complete(state)
+    dried_complete = _bags_dried_complete(state, inp)
     ready_fold = int(state.ready_for_fold + state.folded)
 
     weighed_backlog = len(state.incoming_bags) + len(state.weigh_queue)
@@ -684,7 +763,7 @@ def _can_start_wash(state: SimState, inp: PlannerInputs, strategy: StrategyName)
         return False
     if strategy == "dryer_push":
         elapsed = state.minute - inp.start_min
-        if elapsed >= inp.dryer_push_wash_window_min and state.waiting_dryer:
+        if elapsed >= inp.dryer_push_wash_window_min and state.pending_dryer_jobs:
             return False
     return True
 
@@ -695,121 +774,168 @@ def _washer_prep_minutes(inp: PlannerInputs, bag_count: int) -> int:
     return max(1, int(math.ceil(bag_count * inp.weigh_min_per_bag)))
 
 
-def _take_planned_load(state: SimState, inp: PlannerInputs) -> list[tuple[int, float]] | None:
-    if not state.load_plan_queue or not state.sorted_pool:
+def _take_next_wash_order(state: SimState, inp: PlannerInputs) -> tuple[int, float, int] | None:
+    """Return (order_id, weight, washer_loads) when the next order is ready to wash."""
+    if state.next_wash_order >= inp.bag_count:
         return None
-    need = state.load_plan_queue[0]
-    if len(state.sorted_pool) < need:
-        if state.sorted_count < inp.bag_count:
-            return None
-        need = len(state.sorted_pool)
-    if need <= 0:
-        state.load_plan_queue.pop(0)
+    order_id = state.next_wash_order + 1
+    if not state.sorted_pool or state.sorted_pool[0][0] != order_id:
         return None
-    chunk = state.sorted_pool[:need]
-    state.sorted_pool = state.sorted_pool[need:]
-    state.load_plan_queue.pop(0)
-    return chunk
+    _, weight = state.sorted_pool.pop(0)
+    washer_loads = inp.order_washer_loads[state.next_wash_order]
+    state.next_wash_order += 1
+    return order_id, weight, washer_loads
+
+
+def _maybe_queue_dryer_jobs(state: SimState, inp: PlannerInputs, load: WashLoad) -> None:
+    order_id = load.order_id
+    state.order_wash_finished[order_id] = state.order_wash_finished.get(order_id, 0) + 1
+    expected = inp.order_washer_loads[order_id - 1]
+    if state.order_wash_finished[order_id] < expected or order_id in state.orders_dryer_queued:
+        return
+    state.orders_dryer_queued.add(order_id)
+    order_loads = [ld for ld in state.loads if ld.order_id == order_id]
+    ready_at = max(ld.wash_end for ld in order_loads) + inp.transfer_min
+    dryer_count = inp.order_dryer_loads[order_id - 1]
+    pounds = round(order_loads[0].pounds, 1)
+    for part in range(1, dryer_count + 1):
+        state.pending_dryer_jobs.append(
+            DryerJob(
+                order_id=order_id,
+                bag_start=order_id,
+                bag_end=order_id,
+                bags=1,
+                pounds=pounds,
+                ready_at=ready_at,
+                split_part=part if dryer_count > 1 else None,
+                wash_load_ids=[ld.load_id for ld in order_loads],
+            )
+        )
+    state.pending_dryer_jobs.sort(
+        key=lambda job: (job.ready_at, job.order_id, job.split_part or 0)
+    )
 
 
 def _start_wash_loads(state: SimState, inp: PlannerInputs, strategy: StrategyName) -> None:
     if not _can_start_wash(state, inp, strategy):
         if strategy == "dryer_push":
             elapsed = state.minute - inp.start_min
-            if elapsed >= inp.dryer_push_wash_window_min and state.waiting_dryer:
+            if elapsed >= inp.dryer_push_wash_window_min and state.pending_dryer_jobs:
                 state.pause_new_wash = True
         return
 
     loads_started = len(state.loads)
     estimated_total = inp.total_wash_loads
 
-    while loads_started < estimated_total and state.sorted_pool:
-        chunk_entries = _take_planned_load(state, inp)
-        if not chunk_entries:
+    while loads_started < estimated_total:
+        order_chunk = _take_next_wash_order(state, inp)
+        if order_chunk is None:
             break
-        chunk_weights = [w for _, w in chunk_entries]
-        chunk_len = len(chunk_weights)
-        slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
-        free_at = state.washer_free_at[slot_idx]
-        if free_at > state.minute:
-            state.sorted_pool = chunk_entries + state.sorted_pool
-            state.load_plan_queue.insert(0, chunk_len)
-            break
-        prep = _washer_prep_minutes(inp, chunk_len)
-        start = max(state.minute, free_at) + prep
-        end = start + inp.wash_cycle_min
-        bag_start = chunk_entries[0][0]
-        bag_end = chunk_entries[-1][0]
-        load = WashLoad(
-            load_id=state.next_load_id,
-            washer_id=slot_idx + 1,
-            bag_start=bag_start,
-            bag_end=bag_end,
-            bags=chunk_len,
-            pounds=round(sum(chunk_weights), 1),
-            wash_start=start,
-            wash_end=end,
-        )
-        state.next_load_id += 1
-        state.loads.append(load)
-        state.waiting_dryer.append(load)
-        state.washer_free_at[slot_idx] = end
-        if inp.uses_washer_weighing:
-            state.weighed_count += chunk_len
-        loads_started += 1
-
-    if (
-        state.sorted_count >= inp.bag_count
-        and state.sorted_pool
-        and _can_start_wash(state, inp, strategy)
-        and not state.load_plan_queue
-    ):
-        slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
-        free_at = state.washer_free_at[slot_idx]
-        if free_at <= state.minute:
-            chunk_entries = list(state.sorted_pool)
-            chunk_weights = [w for _, w in chunk_entries]
-            prep = _washer_prep_minutes(inp, len(chunk_entries))
+        order_id, weight, washer_loads = order_chunk
+        chunk_entries = [(order_id, weight)]
+        for split_part in range(1, washer_loads + 1):
+            if loads_started >= estimated_total:
+                break
+            slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
+            free_at = state.washer_free_at[slot_idx]
+            if free_at > state.minute:
+                state.sorted_pool = chunk_entries + state.sorted_pool
+                state.next_wash_order -= 1
+                return
+            prep = _washer_prep_minutes(inp, 1) if split_part == 1 else 0
             start = max(state.minute, free_at) + prep
             end = start + inp.wash_cycle_min
             load = WashLoad(
                 load_id=state.next_load_id,
                 washer_id=slot_idx + 1,
-                bag_start=chunk_entries[0][0],
-                bag_end=chunk_entries[-1][0],
-                bags=len(chunk_entries),
-                pounds=round(sum(chunk_weights), 1),
+                order_id=order_id,
+                bag_start=order_id,
+                bag_end=order_id,
+                bags=1,
+                pounds=round(weight, 1),
+                wash_start=start,
+                wash_end=end,
+                split_part=split_part if washer_loads > 1 else None,
+            )
+            state.next_load_id += 1
+            state.loads.append(load)
+            state.washer_free_at[slot_idx] = end
+            if inp.uses_washer_weighing and split_part == 1:
+                state.weighed_count += 1
+            loads_started += 1
+
+    if (
+        state.sorted_count >= inp.bag_count
+        and state.sorted_pool
+        and _can_start_wash(state, inp, strategy)
+        and state.next_wash_order >= inp.bag_count
+    ):
+        slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
+        free_at = state.washer_free_at[slot_idx]
+        if free_at <= state.minute:
+            chunk_entries = list(state.sorted_pool)
+            oid, weight = chunk_entries[0]
+            prep = _washer_prep_minutes(inp, 1)
+            start = max(state.minute, free_at) + prep
+            end = start + inp.wash_cycle_min
+            load = WashLoad(
+                load_id=state.next_load_id,
+                washer_id=slot_idx + 1,
+                order_id=oid,
+                bag_start=oid,
+                bag_end=oid,
+                bags=1,
+                pounds=round(weight, 1),
                 wash_start=start,
                 wash_end=end,
             )
             state.next_load_id += 1
             state.loads.append(load)
-            state.waiting_dryer.append(load)
             state.sorted_pool = []
             state.washer_free_at[slot_idx] = end
             if inp.uses_washer_weighing:
-                state.weighed_count += len(chunk_entries)
+                state.weighed_count += 1
 
 
 def _release_to_dryers(state: SimState, inp: PlannerInputs) -> None:
-    ready = [ld for ld in state.waiting_dryer if ld.wash_end + inp.transfer_min <= state.minute]
-    ready.sort(key=lambda ld: ld.wash_end)
-    for load in ready:
+    for load in state.loads:
+        if load.wash_end == state.minute:
+            _maybe_queue_dryer_jobs(state, inp, load)
+
+    ready_jobs = [job for job in state.pending_dryer_jobs if job.ready_at <= state.minute]
+    ready_jobs.sort(key=lambda job: (job.ready_at, job.order_id, job.split_part or 0))
+    for job in list(ready_jobs):
         slot_idx = min(range(len(state.dryer_free_at)), key=lambda i: state.dryer_free_at[i])
         free_at = state.dryer_free_at[slot_idx]
-        start = max(state.minute, free_at, load.wash_end + inp.transfer_min)
+        start = max(state.minute, free_at, job.ready_at)
         end = start + inp.dry_cycle_min
-        load.dry_start = start
-        load.dry_end = end
-        load.dryer_id = slot_idx + 1
-        state.waiting_dryer.remove(load)
+        cycle = DryCycle(
+            cycle_id=state.next_dry_cycle_id,
+            order_id=job.order_id,
+            bag_start=job.bag_start,
+            bag_end=job.bag_end,
+            bags=job.bags,
+            pounds=job.pounds,
+            dry_start=start,
+            dry_end=end,
+            dryer_id=slot_idx + 1,
+            split_part=job.split_part,
+        )
+        state.next_dry_cycle_id += 1
+        state.dry_cycles.append(cycle)
         state.dryer_free_at[slot_idx] = end
+        state.pending_dryer_jobs.remove(job)
 
 
 def _release_to_fold(state: SimState, inp: PlannerInputs) -> None:
-    for load in state.loads:
-        if load.dry_end is not None and load.dry_end == state.minute:
-            state.ready_for_fold += load.bags
+    for cycle in state.dry_cycles:
+        if cycle.dry_end != state.minute:
+            continue
+        order_id = cycle.order_id
+        state.order_dryer_finished[order_id] = state.order_dryer_finished.get(order_id, 0) + 1
+        expected = inp.order_dryer_loads[order_id - 1]
+        if state.order_dryer_finished[order_id] >= expected:
+            state.ready_for_fold += 1
 
 
 def _step_fold(state: SimState, inp: PlannerInputs) -> None:
@@ -825,7 +951,7 @@ def _step_fold(state: SimState, inp: PlannerInputs) -> None:
 
 
 def _resume_wash(state: SimState, strategy: StrategyName) -> None:
-    if strategy == "dryer_push" and state.pause_new_wash and not state.waiting_dryer:
+    if strategy == "dryer_push" and state.pause_new_wash and not state.pending_dryer_jobs:
         state.pause_new_wash = False
 
 
@@ -878,28 +1004,33 @@ def _build_washer_timeline(loads: list[WashLoad], inp: PlannerInputs) -> list[di
     ]
 
 
-def _build_dryer_timeline(loads: list[WashLoad], inp: PlannerInputs) -> list[dict[str, Any]]:
+def _build_dryer_timeline(dry_cycles: list[DryCycle], inp: PlannerInputs) -> list[dict[str, Any]]:
     lanes: list[list[dict[str, Any]]] = [[] for _ in range(inp.dryer_count)]
-    end_minute = max((ld.dry_end or inp.start_min for ld in loads), default=inp.start_min)
-    for ld in loads:
-        if ld.dryer_id is None or ld.dry_start is None:
-            continue
-        lanes[ld.dryer_id - 1].append(
+    end_minute = max((cycle.dry_end for cycle in dry_cycles), default=inp.start_min)
+    for cycle in dry_cycles:
+        lanes[cycle.dryer_id - 1].append(
             {
-                "load_id": ld.load_id,
+                "load_id": cycle.cycle_id,
                 "label": (
-                    f"Dryer {ld.dryer_id}: {_minutes_to_label(ld.dry_start)}-"
-                    f"{_minutes_to_label(ld.dry_end or ld.dry_start)} | Bags {ld.bag_start}-{ld.bag_end} | "
-                    f"{ld.pounds} lb"
+                    f"Dryer {cycle.dryer_id}: {_minutes_to_label(cycle.dry_start)}-"
+                    f"{_minutes_to_label(cycle.dry_end)} | Order {cycle.order_id} | "
+                    f"{cycle.pounds} lb"
                 ),
-                "dryer_id": ld.dryer_id,
-                "start": _minutes_to_label(ld.dry_start),
-                "end": _minutes_to_label(ld.dry_end) if ld.dry_end else None,
-                "bag_start": ld.bag_start,
-                "bag_end": ld.bag_end,
-                "bags": ld.bags,
-                "pounds": ld.pounds,
-                "status": _load_status_at(ld, end_minute, stage="dryer"),
+                "dryer_id": cycle.dryer_id,
+                "start": _minutes_to_label(cycle.dry_start),
+                "end": _minutes_to_label(cycle.dry_end),
+                "bag_start": cycle.bag_start,
+                "bag_end": cycle.bag_end,
+                "bags": cycle.bags,
+                "pounds": cycle.pounds,
+                "order_id": cycle.order_id,
+                "status": (
+                    "drying"
+                    if cycle.dry_start <= end_minute < cycle.dry_end
+                    else "ready_to_fold"
+                    if end_minute >= cycle.dry_end
+                    else "waiting"
+                ),
             }
         )
     return [
@@ -972,13 +1103,8 @@ class UtilizationTracker:
         for i, free_at in enumerate(state.dryer_free_at, start=1):
             key = f"dryer_{i}"
             if key in self.slots:
-                for ld in state.loads:
-                    if (
-                        ld.dryer_id == i
-                        and ld.dry_start is not None
-                        and ld.dry_end is not None
-                        and ld.dry_start <= state.minute < ld.dry_end
-                    ):
+                for cycle in state.dry_cycles:
+                    if cycle.dryer_id == i and cycle.dry_start <= state.minute < cycle.dry_end:
                         self.slots[key].busy_minutes += 1
                         break
         if state.ready_for_fold > 0 and inp.folder_count > 0 and "folders" in self.slots:
@@ -1118,19 +1244,26 @@ def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]
         _step_fold(state, inp)
         util.tick_legacy(state, inp)
 
-        washed_bags = sum(ld.bags for ld in state.loads if ld.wash_end <= t)
-        dried_bags = sum(ld.bags for ld in state.loads if ld.dry_end is not None and ld.dry_end <= t)
+        washed_orders = len(
+            {
+                ld.order_id
+                for ld in state.loads
+                if ld.wash_end <= t
+                and state.order_wash_finished.get(ld.order_id, 0)
+                >= inp.order_washer_loads[ld.order_id - 1]
+            }
+        )
+        dried_bags = _bags_dried_complete(state, inp)
 
-        if first_ready_min is None and dried_bags > 0:
-            first_ready_min = min(
-                ld.dry_end for ld in state.loads if ld.dry_end is not None and ld.dry_end <= t
-            )
-        if all_wash_done_min is None and washed_bags >= inp.bag_count and not state.waiting_dryer:
-            all_in_dryer_or_done = all(
-                ld.dry_start is not None or ld.wash_end <= t for ld in state.loads
-            )
-            if all_in_dryer_or_done and len(state.loads) >= inp.total_wash_loads:
-                all_wash_done_min = t
+        if first_ready_min is None and state.ready_for_fold > 0:
+            first_ready_min = min(cycle.dry_end for cycle in state.dry_cycles)
+        if (
+            all_wash_done_min is None
+            and len(state.loads) >= inp.total_wash_loads
+            and washed_orders >= inp.bag_count
+            and not state.pending_dryer_jobs
+        ):
+            all_wash_done_min = t
         if all_dry_done_min is None and dried_bags >= inp.bag_count:
             all_dry_done_min = t
         if state.folded >= inp.bag_count and all_folded_min is None:
@@ -1167,11 +1300,12 @@ def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]
             "all_folded": _minutes_to_label(all_folded_min) if all_folded_min else None,
             "bottleneck": final["bottleneck"],
             "total_wash_loads": inp.total_wash_loads,
+            "total_dryer_loads": inp.total_dryer_loads,
             "avg_bags_per_wash_load": round(inp.avg_bags_per_wash_load, 2),
             "estimated_load_plan": estimated_loads[:8],
         },
         "washer_timeline": _build_washer_timeline(state.loads, inp),
-        "dryer_timeline": _build_dryer_timeline(state.loads, inp),
+        "dryer_timeline": _build_dryer_timeline(state.dry_cycles, inp),
         "resource_utilization": util.to_list(),
         "utilization_bottleneck": util.primary_bottleneck(),
         "alerts": _build_alerts(inp, milestones, final),
@@ -1285,6 +1419,7 @@ class OrderTrack:
 class OpLoad:
     load_id: int
     washer_id: int
+    order_id: int
     bag_ids: list[int]
     pounds: float
     wash_start: int
@@ -1295,6 +1430,7 @@ class OpLoad:
     wash_loaded_end: int | None = None
     transfer_end: int | None = None
     dryer_loaded_end: int | None = None
+    dryer_split_part: int | None = None
 
 
 @dataclass
@@ -1323,7 +1459,9 @@ class OpSimState:
     washer_person_task: str | None = None
     washer_person_task_end: int = 0
     washer_person_task_load_id: int | None = None
-    pending_washer_tasks: list[tuple[str, int | None]] = field(default_factory=list)
+    pending_washer_tasks: list[tuple[str, int | None, int | None, int | None]] = field(
+        default_factory=list
+    )
     washer_person_log: list[dict[str, Any]] = field(default_factory=list)
     next_actions: list[dict[str, Any]] = field(default_factory=list)
     sorting_paused: bool = False
@@ -1336,7 +1474,12 @@ class OpSimState:
     switch_to_folding_min: int | None = None
     sorting_continues: bool = True
     washer_pauses_for_moves: bool = False
-    load_plan_queue: list[int] = field(default_factory=list)
+    next_wash_cycle_idx: int = 0
+    order_pool_consumed: set[int] = field(default_factory=set)
+    orders_wash_weighed: set[int] = field(default_factory=set)
+    order_wash_unloaded: dict[int, int] = field(default_factory=dict)
+    order_dryer_scheduled: dict[int, int] = field(default_factory=dict)
+    pending_dryer_jobs: list[DryerJob] = field(default_factory=list)
     sorter_bags_since_break: int = 0
     sorter_on_break_until: int | None = None
     washer_bags_since_break: int = 0
@@ -1359,7 +1502,6 @@ def _init_op_state(inp: PlannerInputs) -> OpSimState:
         dryer_free_at=[inp.start_min] * inp.dryer_count,
         washer_person_free_at=inp.start_min,
         batch_target=inp.batch_size,
-        load_plan_queue=list(inp.wash_load_plan),
     )
     if inp.uses_dedicated_weigher:
         state.incoming_bags = list(inp.bag_weights)
@@ -1535,6 +1677,8 @@ def _complete_washer_person_task(state: OpSimState, inp: PlannerInputs) -> None:
             )
     elif task == "unload_transfer" and load:
         load.transfer_end = state.washer_person_task_end
+        order_id = load.order_id
+        state.order_wash_unloaded[order_id] = state.order_wash_unloaded.get(order_id, 0) + 1
         for oid in load.bag_ids:
             order = _order_by_id(state, oid)
             order.wait_before_dryer_end = state.washer_person_task_end
@@ -1547,16 +1691,24 @@ def _complete_washer_person_task(state: OpSimState, inp: PlannerInputs) -> None:
                 f"Unload & move load {load.load_id} to dryers",
                 category="transfer",
             )
-        state.pending_washer_tasks.append(("load_dryer", load.load_id))
+        expected_wash = inp.order_washer_loads[order_id - 1]
+        if state.order_wash_unloaded[order_id] >= expected_wash:
+            ready_at = state.washer_person_task_end
+            dryer_count = inp.order_dryer_loads[order_id - 1]
+            for part in range(1, dryer_count + 1):
+                state.pending_washer_tasks.append(("load_dryer", load.load_id, order_id, part))
         state.washer_pauses_for_moves = True
-    elif task == "load_dryer" and load:
-        load.dryer_loaded_end = state.washer_person_task_end
-        for oid in load.bag_ids:
-            order = _order_by_id(state, oid)
-            order.dryer_id = load.dryer_id
-            order.dryer_load_id = load.load_id
-            order.dry_start = load.dry_start
-            order.dry_end = load.dry_end
+    elif task == "load_dryer":
+        load_id = state.washer_person_task_load_id
+        load = next((ld for ld in state.loads if ld.load_id == load_id), None) if load_id else None
+        if load:
+            load.dryer_loaded_end = state.washer_person_task_end
+            for oid in load.bag_ids:
+                order = _order_by_id(state, oid)
+                order.dryer_id = load.dryer_id
+                order.dryer_load_id = load.load_id
+                order.dry_start = load.dry_start
+                order.dry_end = load.dry_end
         _maybe_trigger_washer_break(state, inp)
 
 
@@ -1566,18 +1718,34 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
 
     # Priority 1: load dryers for transferred loads
     while _washer_person_idle(state, inp) and state.pending_washer_tasks:
-        task_name, load_id = state.pending_washer_tasks.pop(0)
+        task_name, load_id, order_id, split_part = state.pending_washer_tasks.pop(0)
         if task_name != "load_dryer":
-            state.pending_washer_tasks.insert(0, (task_name, load_id))
+            state.pending_washer_tasks.insert(0, (task_name, load_id, order_id, split_part))
             break
         load = next((ld for ld in state.loads if ld.load_id == load_id), None)
-        if load is None or load.dry_start is not None:
+        if load is None:
+            continue
+        if load.dry_start is not None and (split_part or 1) <= 1:
             continue
         slot_idx = min(range(len(state.dryer_free_at)), key=lambda i: state.dryer_free_at[i])
         dryer_free = state.dryer_free_at[slot_idx]
         start_after_load = max(state.minute, state.washer_person_free_at, dryer_free)
         dry_start = start_after_load + inp.load_dryer_min
         dry_end = dry_start + inp.dry_cycle_min
+        if split_part and split_part > 1:
+            dry_load = OpLoad(
+                load_id=state.next_load_id,
+                washer_id=load.washer_id,
+                order_id=load.order_id,
+                bag_ids=list(load.bag_ids),
+                pounds=load.pounds,
+                wash_start=load.wash_start,
+                wash_end=load.wash_end,
+                dryer_split_part=split_part,
+            )
+            state.next_load_id += 1
+            state.loads.append(dry_load)
+            load = dry_load
         load.dryer_id = slot_idx + 1
         load.dry_start = dry_start
         load.dry_end = dry_end
@@ -1588,13 +1756,13 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
             "load_dryer",
             inp.load_dryer_min,
             load_id=load.load_id,
-            label=f"Load dryer D{load.dryer_id} · load {load.load_id}",
+            label=f"Load dryer D{load.dryer_id} · order {load.order_id}",
         )
         _add_next_action(
             state,
             start_after_load,
             start_after_load + inp.load_dryer_min,
-            f"Load dryer D{load.dryer_id} · bags {load.bag_ids[0]}–{load.bag_ids[-1]}",
+            f"Load dryer D{load.dryer_id} · order {load.order_id}",
             category="dryer",
         )
         return
@@ -1621,39 +1789,37 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
     if batch_mode and not state.sorting_paused and state.batch_sorted < state.batch_target:
         return
 
-    while _washer_person_idle(state, inp) and state.sorted_pool:
+    while _washer_person_idle(state, inp) and state.next_wash_cycle_idx < inp.total_wash_loads:
         if batch_mode and state.batch_wash_started and state.finished_wash_queue:
             return
-        chunk_entries: list[tuple[int, float]] | None = None
-        if state.load_plan_queue:
-            need = state.load_plan_queue[0]
-            if len(state.sorted_pool) >= need:
-                chunk_entries = state.sorted_pool[:need]
-                state.sorted_pool = state.sorted_pool[need:]
-                state.load_plan_queue.pop(0)
-            elif state.sorted_count >= inp.bag_count:
-                need = len(state.sorted_pool)
-                chunk_entries = list(state.sorted_pool)
-                state.sorted_pool = []
-                state.load_plan_queue.pop(0)
-        if chunk_entries is None:
-            break
-        chunk_weights = [w for _, w in chunk_entries]
-        chunk_len = len(chunk_weights)
+        order_id = inp.washer_cycle_orders[state.next_wash_cycle_idx]
+        if order_id not in state.order_pool_consumed:
+            if not state.sorted_pool or state.sorted_pool[0][0] != order_id:
+                break
+            oid, weight = state.sorted_pool.pop(0)
+            state.order_pool_consumed.add(order_id)
+        else:
+            oid = order_id
+            weight = inp.avg_lbs_per_bag
         slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
         washer_free = state.washer_free_at[slot_idx]
         if washer_free > state.minute and not batch_mode:
             break
-        prep = max(0, int(math.ceil(chunk_len * inp.weigh_min_per_bag))) if inp.uses_washer_weighing else 0
+        prep = (
+            max(0, int(math.ceil(inp.weigh_min_per_bag)))
+            if inp.uses_washer_weighing and order_id not in state.orders_wash_weighed
+            else 0
+        )
         person_start = max(state.minute, state.washer_person_free_at, washer_free)
         wash_start = person_start + inp.load_washer_min + prep
         wash_end = wash_start + inp.wash_cycle_min
-        bag_ids = [oid for oid, _ in chunk_entries]
+        bag_ids = [oid]
         load = OpLoad(
             load_id=state.next_load_id,
             washer_id=slot_idx + 1,
+            order_id=order_id,
             bag_ids=bag_ids,
-            pounds=round(sum(chunk_weights), 1),
+            pounds=round(weight, 1),
             wash_start=wash_start,
             wash_end=wash_end,
         )
@@ -1661,16 +1827,18 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
         state.loads.append(load)
         state.washer_free_at[slot_idx] = wash_end
         state.batch_wash_started = True
-        state.washer_bags_since_break += chunk_len
-        if inp.uses_washer_weighing:
-            state.weighed_count += chunk_len
+        state.washer_bags_since_break += 1
+        state.next_wash_cycle_idx += 1
+        if inp.uses_washer_weighing and order_id not in state.orders_wash_weighed:
+            state.weighed_count += 1
+            state.orders_wash_weighed.add(order_id)
         _start_washer_person_task(
             state,
             inp,
             "load_washer",
             inp.load_washer_min + prep,
             load_id=load.load_id,
-            label=f"Load washer W{load.washer_id} · bags {bag_ids[0]}–{bag_ids[-1]}",
+            label=f"Load washer W{load.washer_id} · order {order_id}",
         )
         if state.first_wash_start is None:
             bags_before = state.sorted_count - len(state.sorted_pool)
@@ -1694,12 +1862,15 @@ def _release_finished_wash(state: OpSimState) -> None:
 def _release_ready_fold(state: OpSimState, inp: PlannerInputs) -> None:
     for load in state.loads:
         if load.dry_end is not None and load.dry_end == state.minute:
-            for oid in load.bag_ids:
-                order = _order_by_id(state, oid)
+            order_id = load.order_id
+            state.order_dryer_scheduled[order_id] = state.order_dryer_scheduled.get(order_id, 0) + 1
+            expected = inp.order_dryer_loads[order_id - 1]
+            if state.order_dryer_scheduled[order_id] >= expected:
+                order = _order_by_id(state, order_id)
                 order.ready_to_fold = load.dry_end + inp.unload_dryer_min
-            state.ready_for_fold += len(load.bag_ids)
-            if state.switch_to_folding_min is None and state.ready_for_fold > 0:
-                state.switch_to_folding_min = load.dry_end + inp.unload_dryer_min
+                state.ready_for_fold += 1
+                if state.switch_to_folding_min is None:
+                    state.switch_to_folding_min = load.dry_end + inp.unload_dryer_min
 
 
 def _step_op_fold(state: OpSimState, inp: PlannerInputs) -> None:
@@ -2131,8 +2302,8 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "target_time": _minutes_to_label(inp.target_min),
             "bag_count": inp.bag_count,
             "avg_lbs_per_bag": inp.avg_lbs_per_bag,
-            "single_bag_load_pct": inp.single_bag_load_pct,
-            "two_bag_split_pct": inp.two_bag_split_pct,
+            "orders_using_2_washers": inp.orders_using_2_washers,
+            "orders_using_2_dryers": inp.orders_using_2_dryers,
             "split_distribution": inp.split_distribution,
             "sorter_early_start_min": inp.sorter_early_start_min,
             "sorter_break_after_bags": inp.sorter_break_after_bags,
@@ -2141,8 +2312,6 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "washer_break_duration_min": inp.washer_break_duration_min,
             "washer_count": inp.washer_count,
             "dryer_count": inp.dryer_count,
-            "washer_capacity_lb": inp.washer_capacity_lb,
-            "dryer_capacity_lb": inp.dryer_capacity_lb,
             "wash_cycle_min": inp.wash_cycle_min,
             "dry_cycle_min": inp.dry_cycle_min,
             "weigh_min_per_bag": inp.weigh_min_per_bag,
@@ -2160,6 +2329,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
             "unload_dryer_min": inp.unload_dryer_min,
             "washer_transfer_min": inp.washer_transfer_min,
             "total_wash_loads": inp.total_wash_loads,
+            "total_dryer_loads": inp.total_dryer_loads,
             "avg_bags_per_wash_load": round(inp.avg_bags_per_wash_load, 2),
             "estimated_load_plan": inp.estimate_wash_loads()[:8],
         },

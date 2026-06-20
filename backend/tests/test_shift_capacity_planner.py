@@ -4,8 +4,8 @@ import pytest
 
 from backend.shift_capacity_planner import (
     DEFAULTS,
+    build_order_machine_loads,
     build_uniform_bag_weights,
-    build_wash_load_plan,
     compute_split_load_distribution,
     pack_load_from_pool,
     parse_planner_inputs,
@@ -107,39 +107,42 @@ class TestSplitLoadDistribution:
         assert len(weights) == 10
         assert all(w == 20 for w in weights)
 
-    def test_split_distribution_counts(self):
-        dist = compute_split_load_distribution(50, single_pct=20, two_split_pct=40)
-        assert dist["single_bag_orders"] == 10
-        assert dist["two_bag_split_orders"] == 20
-        assert dist["multi_bag_orders"] == 20
-        assert dist["two_bag_split_loads"] == 10
+    def test_split_distribution_50_orders_40_two_washer(self):
+        dist = compute_split_load_distribution(
+            50, orders_using_2_washers=40, orders_using_2_dryers=40
+        )
+        assert dist["orders_using_2_washers"] == 40
+        assert dist["orders_using_1_washer"] == 10
+        assert dist["washer_loads_total"] == 90
+        assert dist["dryer_loads_total"] == 90
 
-    def test_build_wash_load_plan_types(self):
-        plan = build_wash_load_plan(
-            50, single_pct=20, two_split_pct=40, avg_lb=20, washer_capacity_lb=50
-        )
-        assert sum(plan) == 50
-        assert plan.count(1) == 10
-        assert len([x for x in plan if x == 2]) >= 10
+    def test_build_order_machine_loads(self):
+        loads = build_order_machine_loads(50, orders_using_2=40)
+        assert len(loads) == 50
+        assert loads.count(2) == 40
+        assert loads.count(1) == 10
+        assert sum(loads) == 90
 
-    def test_higher_split_pct_more_two_bag_loads(self):
-        low = simulate_shift_capacity(
-            _default_payload(single_bag_load_pct=40, two_bag_split_pct=10)
-        )
-        high = simulate_shift_capacity(
-            _default_payload(single_bag_load_pct=10, two_bag_split_pct=60)
-        )
-        low_two = low["inputs"]["split_distribution"]["two_bag_split_loads"]
-        high_two = high["inputs"]["split_distribution"]["two_bag_split_loads"]
-        assert high_two > low_two
+    def test_higher_two_washer_count_more_wash_loads(self):
+        low = simulate_shift_capacity(_default_payload(orders_using_2_washers=10))
+        high = simulate_shift_capacity(_default_payload(orders_using_2_washers=40))
+        assert high["inputs"]["total_wash_loads"] > low["inputs"]["total_wash_loads"]
+        assert high["inputs"]["total_wash_loads"] == 90
+        assert low["inputs"]["total_wash_loads"] == 60
 
     def test_split_summary_lines_in_response(self):
         result = simulate_shift_capacity(_default_payload())
         lines = result["inputs"]["split_distribution"]["summary_lines"]
-        assert len(lines) == 3
+        assert len(lines) == 6
+        assert "90" in lines[2]
         assert "50" in lines[0]
 
-    def test_pack_load_respects_capacity(self):
+    def test_pct_input_for_two_washer_orders(self):
+        inp = parse_planner_inputs({"bag_count": 50, "orders_using_2_washers_pct": 80})
+        assert inp.orders_using_2_washers == 40
+        assert inp.total_wash_loads == 90
+
+    def test_pack_load_from_pool_still_works(self):
         pool = [20, 20, 30, 50]
         chunk, rem = pack_load_from_pool(pool, 50)
         assert sum(chunk) <= 50
@@ -208,6 +211,10 @@ class TestShiftCapacityPlannerInvalid:
         with pytest.raises(ValueError):
             simulate_shift_capacity({"bag_count": -1})
 
+    def test_orders_using_2_washers_exceeds_bag_count(self):
+        with pytest.raises(ValueError, match="orders_using_2_washers"):
+            parse_planner_inputs({"bag_count": 10, "orders_using_2_washers": 11})
+
 
 class TestShiftCapacityPlannerCustomStaff:
     def test_explicit_weigher_sorter_counts(self):
@@ -268,6 +275,8 @@ class TestOperationalSimulation:
     def test_washer_person_busy_blocks_new_loads(self):
         payload = _default_payload(
             bag_count=16,
+            orders_using_2_washers=8,
+            orders_using_2_dryers=8,
             washer_count=1,
             dryer_count=1,
             batch_size=8,
@@ -318,9 +327,11 @@ class TestOperationalSimulation:
         with pytest.raises(ValueError, match="washing_strategy"):
             parse_planner_inputs({"washing_strategy": "invalid"})
 
-    def test_invalid_split_pct_sum(self):
-        with pytest.raises(ValueError, match="must be <= 100"):
-            parse_planner_inputs({"single_bag_load_pct": 60, "two_bag_split_pct": 50})
+    def test_cannot_provide_count_and_pct(self):
+        with pytest.raises(ValueError, match="not both"):
+            parse_planner_inputs(
+                {"orders_using_2_washers": 10, "orders_using_2_washers_pct": 50}
+            )
 
 
 class TestResourceUtilization:

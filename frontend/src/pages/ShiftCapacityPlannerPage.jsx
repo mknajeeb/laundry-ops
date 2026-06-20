@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
-  Collapse,
   FormControl,
   Grid,
   InputLabel,
@@ -27,7 +29,6 @@ import {
   Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import { simulateShiftCapacity } from "../api";
 import { useI18n } from "../i18n/I18nContext";
@@ -39,8 +40,9 @@ const DEFAULT_INPUTS = {
   target_time: "12:00 PM",
   bag_count: 50,
   avg_lbs_per_bag: 20,
-  single_bag_load_pct: 20,
-  two_bag_split_pct: 40,
+  orders_using_2_washers: 40,
+  orders_using_2_dryers: 40,
+  split_input_mode: "count",
   sorter_early_start_min: 0,
   sorter_break_after_bags: 0,
   sorter_break_duration_min: 0,
@@ -48,8 +50,6 @@ const DEFAULT_INPUTS = {
   washer_break_duration_min: 0,
   washer_count: 4,
   dryer_count: 4,
-  washer_capacity_lb: 50,
-  dryer_capacity_lb: 50,
   wash_cycle_min: 30,
   dry_cycle_min: 45,
   weigh_min_per_bag: 1,
@@ -75,8 +75,9 @@ const WASHING_STRATEGIES = [
 ];
 
 const BATCH_SIZE_OPTIONS = [6, 8, 10, 12];
-
 const MILESTONE_ORDER = ["8:00 AM", "9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM"];
+const INPUT_TABS = ["Time & volume", "Split loads", "Staff & ops", "What-if"];
+const RESULT_TABS = ["Strategy", "Milestones", "Orders", "Washer lanes", "Dryer lanes", "Utilization"];
 
 const STAGE_COLORS = {
   weighing: "#2563eb",
@@ -100,19 +101,30 @@ const STATUS_COLORS = {
   transferred: "#64748b",
 };
 
+function calcLoadTotals(bagCount, orders2) {
+  const n = Math.min(Math.max(0, Number(orders2) || 0), bagCount);
+  const single = bagCount - n;
+  return {
+    orders2: n,
+    orders1: single,
+    washerLoads: n * 2 + single,
+    dryerLoads: n * 2 + single,
+  };
+}
+
 function TopCard({ label, value, sub, variant = "total" }) {
   const style = KPI_VARIANT_STYLES[variant] || KPI_VARIANT_STYLES.total;
   return (
     <Paper
       elevation={0}
       sx={{
-        p: 1.5,
+        p: 1.25,
         borderRadius: 2,
         border: "2px solid",
         borderColor: style.border,
         bgcolor: style.bg,
         minWidth: 0,
-        flex: "1 1 140px",
+        flex: "1 1 120px",
       }}
     >
       <Typography variant="caption" fontWeight={700} sx={{ color: style.accent, textTransform: "uppercase" }}>
@@ -130,100 +142,75 @@ function TopCard({ label, value, sub, variant = "total" }) {
   );
 }
 
-function ResourceUtilizationPanel({ utilization }) {
-  if (!utilization?.length) return null;
+function numField(key, label, inputs, onChange, { min = 0, step = 1, helperText } = {}) {
   return (
-    <Paper elevation={0} sx={{ p: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
-      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
-        Resource utilization
-      </Typography>
-      <Stack spacing={1}>
-        {utilization.map((row) => (
-          <Box key={row.resource}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.25 }}>
-              <Typography variant="caption" fontWeight={700} sx={{ textTransform: "capitalize" }}>
-                {row.resource.replace(/_/g, " ")}
-                {row.is_bottleneck ? (
-                  <Chip size="small" label="bottleneck" color="error" sx={{ ml: 0.5, height: 18, fontSize: 10 }} />
-                ) : null}
-                {row.has_excess_idle ? (
-                  <Chip size="small" label="idle" color="info" sx={{ ml: 0.5, height: 18, fontSize: 10 }} />
-                ) : null}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {row.utilization_pct}% busy · {row.idle_minutes}m idle
-              </Typography>
-            </Stack>
-            <LinearProgress
-              variant="determinate"
-              value={row.utilization_pct}
-              sx={{
-                height: 8,
-                borderRadius: 1,
-                bgcolor: "#e2e8f0",
-                "& .MuiLinearProgress-bar": {
-                  bgcolor: row.is_bottleneck ? "#dc2626" : row.has_excess_idle ? "#94a3b8" : "#0891b2",
-                },
-              }}
-            />
-          </Box>
-        ))}
-      </Stack>
-    </Paper>
+    <TextField
+      key={key}
+      label={label}
+      type="number"
+      size="small"
+      value={inputs[key]}
+      onChange={(e) => onChange(key, e.target.value)}
+      inputProps={{ min, step }}
+      helperText={helperText}
+      fullWidth
+    />
   );
 }
 
-function SplitDistributionCard({ splitDist, bagCount }) {
-  if (!splitDist) return null;
+function ResourceUtilizationPanel({ utilization }) {
+  if (!utilization?.length) return null;
   return (
-    <Paper
-      elevation={0}
-      sx={{ p: 2, borderRadius: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}
-    >
+    <Stack spacing={1}>
+      {utilization.map((row) => (
+        <Box key={row.resource}>
+          <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.25 }}>
+            <Typography variant="caption" fontWeight={700} sx={{ textTransform: "capitalize" }}>
+              {row.resource.replace(/_/g, " ")}
+              {row.is_bottleneck ? (
+                <Chip size="small" label="bottleneck" color="error" sx={{ ml: 0.5, height: 18, fontSize: 10 }} />
+              ) : null}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {row.utilization_pct}% · {row.idle_minutes}m idle
+            </Typography>
+          </Stack>
+          <LinearProgress
+            variant="determinate"
+            value={row.utilization_pct}
+            sx={{
+              height: 6,
+              borderRadius: 1,
+              bgcolor: "#e2e8f0",
+              "& .MuiLinearProgress-bar": {
+                bgcolor: row.is_bottleneck ? "#dc2626" : "#0891b2",
+              },
+            }}
+          />
+        </Box>
+      ))}
+    </Stack>
+  );
+}
+
+function SplitDistributionCard({ splitDist, bagCount, totals }) {
+  if (!splitDist && !totals) return null;
+  return (
+    <Paper elevation={0} sx={{ p: 1.5, borderRadius: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
       <Typography variant="subtitle2" fontWeight={800} gutterBottom>
-        Load split distribution ({bagCount} orders)
+        Load split ({bagCount} orders)
       </Typography>
-      <Stack spacing={0.5}>
-        {(splitDist.summary_lines || []).map((line) => (
-          <Typography key={line} variant="body2">
+      <Stack spacing={0.35}>
+        {(splitDist?.summary_lines || []).slice(0, 6).map((line) => (
+          <Typography key={line} variant="body2" sx={{ fontSize: 13 }}>
             {line}
           </Typography>
         ))}
       </Stack>
-      <Stack direction="row" flexWrap="wrap" gap={0.75} sx={{ mt: 1 }}>
-        <Chip size="small" label={`${splitDist.total_wash_loads} wash loads`} />
-        <Chip size="small" label={`${splitDist.single_loads} single`} />
-        <Chip size="small" label={`${splitDist.two_bag_split_loads} × 2-bag split`} />
-        <Chip size="small" label={`${splitDist.multi_bag_loads} capacity-packed`} />
+      <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
+        <Chip size="small" label={`${totals?.washerLoads ?? splitDist?.washer_loads_total} washer loads`} />
+        <Chip size="small" label={`${totals?.dryerLoads ?? splitDist?.dryer_loads_total} dryer loads`} />
       </Stack>
-    </Paper>
-  );
-}
-
-function WhatIfComparison({ whatIf }) {
-  if (!whatIf?.comparison) return null;
-  const { baseline, scenario, delta } = whatIf.comparison;
-  return (
-    <Paper elevation={0} sx={{ p: 2, border: "2px solid", borderColor: "#f59e0b", bgcolor: "#fffbeb" }}>
-      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
-        What-if vs baseline
-      </Typography>
-      <Grid container spacing={1.5}>
-        <Grid item xs={12} sm={4}>
-          <TopCard label="Baseline folded" value={baseline.bags_folded} sub={`Bottleneck: ${baseline.bottleneck || "—"}`} variant="snapshot" />
-        </Grid>
-        <Grid item xs={12} sm={4}>
-          <TopCard label="Scenario folded" value={scenario.bags_folded} sub={`Bottleneck: ${scenario.bottleneck || "—"}`} variant="pending" />
-        </Grid>
-        <Grid item xs={12} sm={4}>
-          <TopCard
-            label="Delta"
-            value={delta.bags_folded >= 0 ? `+${delta.bags_folded}` : delta.bags_folded}
-            sub={[delta.first_wash_start, delta.switch_to_folding].filter(Boolean).join(" · ") || "—"}
-            variant={delta.bags_folded >= 0 ? "completed" : "total"}
-          />
-        </Grid>
-      </Grid>
     </Paper>
   );
 }
@@ -255,42 +242,26 @@ function MilestoneTable({ milestones }) {
   if (!rows.length) return null;
   return (
     <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
-      <Table size="small">
+      <Table size="small" stickyHeader>
         <TableHead>
           <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
             <TableCell sx={{ fontWeight: 700 }}>Time</TableCell>
-            <TableCell align="right">Weighed</TableCell>
             <TableCell align="right">Sorted</TableCell>
-            <TableCell align="right">In washer</TableCell>
-            <TableCell align="right">Washed</TableCell>
-            <TableCell align="right">In dryer</TableCell>
-            <TableCell align="right">Dried</TableCell>
-            <TableCell align="right">Ready fold</TableCell>
+            <TableCell align="right">In wash</TableCell>
+            <TableCell align="right">In dry</TableCell>
             <TableCell align="right">Folded</TableCell>
             <TableCell>Bottleneck</TableCell>
-            <TableCell>Action</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {rows.map((row) => (
             <TableRow key={row.time} hover>
               <TableCell sx={{ fontWeight: 700 }}>{row.time}</TableCell>
-              <TableCell align="right">{row.bags_weighed}</TableCell>
               <TableCell align="right">{row.bags_sorted}</TableCell>
               <TableCell align="right">{row.bags_in_washer}</TableCell>
-              <TableCell align="right">{row.bags_washed_complete}</TableCell>
               <TableCell align="right">{row.bags_in_dryer}</TableCell>
-              <TableCell align="right">{row.bags_dried_complete}</TableCell>
-              <TableCell align="right">{row.bags_ready_for_folding}</TableCell>
               <TableCell align="right">{row.bags_folded}</TableCell>
-              <TableCell>
-                <BottleneckChip stage={row.bottleneck} />
-              </TableCell>
-              <TableCell>
-                <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                  {row.action_needed}
-                </Typography>
-              </TableCell>
+              <TableCell><BottleneckChip stage={row.bottleneck} /></TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -299,89 +270,20 @@ function MilestoneTable({ milestones }) {
   );
 }
 
-function OperationalBatchCard({ operational }) {
-  if (!operational) return null;
-  const guidance = operational.guidance || {};
-  return (
-    <Paper
-      elevation={0}
-      sx={{
-        p: 2,
-        borderRadius: 2,
-        border: "2px solid",
-        borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
-        bgcolor: VEEWASH_DASHBOARD.primaryBlueLight,
-      }}
-    >
-      <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-        Recommended batch: {operational.recommended_batch_size} bags
-      </Typography>
-      <Stack direction="row" flexWrap="wrap" gap={0.75}>
-        <Chip size="small" label={`1st wash ${guidance.first_wash_batch_start || "—"}`} />
-        <Chip size="small" label={`Return unload ${guidance.washer_return_to_unload || "—"}`} />
-        <Chip size="small" label={`Sort before wash ${guidance.bags_sorted_before_first_wash ?? "—"}`} />
-        <Chip
-          size="small"
-          label={guidance.sorting_continues_while_washing ? "Sort while washing" : "Batch sort only"}
-          color={guidance.sorting_continues_while_washing ? "success" : "warning"}
-        />
-        <Chip
-          size="small"
-          label={guidance.washer_pauses_for_dryer_moves ? "Washer pauses for moves" : "No wash pause"}
-        />
-        <Chip size="small" label={`Switch to fold ${guidance.switch_labor_to_folding || "—"}`} />
-      </Stack>
-    </Paper>
-  );
-}
-
-function NextActionTimeline({ actions }) {
-  if (!actions?.length) return null;
-  return (
-    <Paper elevation={0} sx={{ p: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
-      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
-        Next actions
-      </Typography>
-      <Stack spacing={0.75}>
-        {actions.map((block, i) => (
-          <Box
-            key={`${block.start}-${block.action}-${i}`}
-            sx={{
-              p: 1,
-              borderRadius: 1,
-              borderLeft: "4px solid",
-              borderColor: STAGE_COLORS[block.category] || STAGE_COLORS.none,
-              bgcolor: "#fff",
-            }}
-          >
-            <Typography variant="body2" fontWeight={700}>
-              {block.start} – {block.end}
-            </Typography>
-            <Typography variant="body2">{block.action}</Typography>
-          </Box>
-        ))}
-      </Stack>
-    </Paper>
-  );
-}
-
 function OrderTimelineTable({ rows }) {
   if (!rows?.length) return null;
-  const preview = rows.slice(0, 20);
+  const preview = rows.slice(0, 25);
   return (
-    <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
-      <Table size="small">
+    <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder, maxHeight: 420 }}>
+      <Table size="small" stickyHeader>
         <TableHead>
           <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
-            <TableCell sx={{ fontWeight: 700 }}>Order</TableCell>
+            <TableCell sx={{ fontWeight: 700 }}>#</TableCell>
             <TableCell>Sorted</TableCell>
             <TableCell>Washer</TableCell>
-            <TableCell>Wash start</TableCell>
-            <TableCell>Wash end</TableCell>
+            <TableCell>Wash</TableCell>
             <TableCell>Dryer</TableCell>
-            <TableCell>Dry start</TableCell>
-            <TableCell>Dry end</TableCell>
-            <TableCell>Ready fold</TableCell>
+            <TableCell>Dry</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -390,100 +292,51 @@ function OrderTimelineTable({ rows }) {
               <TableCell sx={{ fontWeight: 700 }}>{row.order}</TableCell>
               <TableCell>{row.sorted_time || "—"}</TableCell>
               <TableCell>{row.washer || "—"}</TableCell>
-              <TableCell>{row.wash_start || "—"}</TableCell>
-              <TableCell>{row.wash_end || "—"}</TableCell>
+              <TableCell>{row.wash_start ? `${row.wash_start}–${row.wash_end}` : "—"}</TableCell>
               <TableCell>{row.dryer || "—"}</TableCell>
-              <TableCell>{row.dry_start || "—"}</TableCell>
-              <TableCell>{row.dry_end || "—"}</TableCell>
-              <TableCell>{row.ready_fold || "—"}</TableCell>
+              <TableCell>{row.dry_start ? `${row.dry_start}–${row.dry_end}` : "—"}</TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
-      {rows.length > preview.length ? (
-        <Typography variant="caption" color="text.secondary" sx={{ p: 1, display: "block" }}>
-          Showing {preview.length} of {rows.length} orders
-        </Typography>
-      ) : null}
     </TableContainer>
   );
 }
 
-function TimelineLanes({ washerTimeline, dryerTimeline }) {
+function TimelineLanes({ washerTimeline, dryerTimeline, compact }) {
+  const laneSx = compact ? { maxHeight: 360, overflow: "auto" } : {};
   return (
-    <Grid container spacing={2}>
-      <Grid item xs={12} lg={6}>
-        <Typography variant="subtitle2" fontWeight={800} gutterBottom>
-          Washer lanes
-        </Typography>
-        <Stack spacing={1.5}>
+    <Grid container spacing={1.5}>
+      <Grid item xs={12} md={6}>
+        <Typography variant="subtitle2" fontWeight={800} gutterBottom>Washer lanes</Typography>
+        <Stack spacing={1} sx={laneSx}>
           {(washerTimeline || []).map((lane) => (
-            <Paper key={`w-${lane.washer_id}`} variant="outlined" sx={{ p: 1.25, borderRadius: 1.5 }}>
-              <Typography variant="caption" fontWeight={800} color="primary" display="block" sx={{ mb: 0.75 }}>
+            <Paper key={`w-${lane.washer_id}`} variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+              <Typography variant="caption" fontWeight={800} color="primary" display="block" sx={{ mb: 0.5 }}>
                 Washer {lane.washer_id}
               </Typography>
-              <Stack spacing={0.75}>
-                {lane.loads.map((load) => (
-                  <Box
-                    key={load.load_id}
-                    sx={{
-                      p: 1,
-                      borderRadius: 1,
-                      border: "1px solid",
-                      borderColor: STAGE_COLORS.washing,
-                      bgcolor: `${STAGE_COLORS.washing}08`,
-                    }}
-                  >
-                    <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={0.5}>
-                      <Typography variant="body2" fontWeight={700}>
-                        {load.start} → {load.end}
-                      </Typography>
-                      {load.status ? <StatusChip status={load.status} /> : null}
-                    </Stack>
-                    <Typography variant="caption" color="text.secondary">
-                      Bags {load.bag_start}–{load.bag_end} · {load.pounds} lb · {load.bags} bags
-                    </Typography>
-                  </Box>
-                ))}
-              </Stack>
+              {lane.loads.map((load) => (
+                <Typography key={load.load_id} variant="caption" display="block" sx={{ lineHeight: 1.5 }}>
+                  {load.start}–{load.end} · order {load.bag_start} · {load.pounds} lb
+                </Typography>
+              ))}
             </Paper>
           ))}
         </Stack>
       </Grid>
-      <Grid item xs={12} lg={6}>
-        <Typography variant="subtitle2" fontWeight={800} gutterBottom>
-          Dryer lanes
-        </Typography>
-        <Stack spacing={1.5}>
+      <Grid item xs={12} md={6}>
+        <Typography variant="subtitle2" fontWeight={800} gutterBottom>Dryer lanes</Typography>
+        <Stack spacing={1} sx={laneSx}>
           {(dryerTimeline || []).map((lane) => (
-            <Paper key={`d-${lane.dryer_id}`} variant="outlined" sx={{ p: 1.25, borderRadius: 1.5 }}>
-              <Typography variant="caption" fontWeight={800} color="warning.dark" display="block" sx={{ mb: 0.75 }}>
+            <Paper key={`d-${lane.dryer_id}`} variant="outlined" sx={{ p: 1, borderRadius: 1 }}>
+              <Typography variant="caption" fontWeight={800} color="warning.dark" display="block" sx={{ mb: 0.5 }}>
                 Dryer {lane.dryer_id}
               </Typography>
-              <Stack spacing={0.75}>
-                {lane.loads.map((load) => (
-                  <Box
-                    key={load.load_id}
-                    sx={{
-                      p: 1,
-                      borderRadius: 1,
-                      border: "1px solid",
-                      borderColor: STAGE_COLORS.drying,
-                      bgcolor: `${STAGE_COLORS.drying}08`,
-                    }}
-                  >
-                    <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={0.5}>
-                      <Typography variant="body2" fontWeight={700}>
-                        {load.start} → {load.end}
-                      </Typography>
-                      {load.status ? <StatusChip status={load.status} /> : null}
-                    </Stack>
-                    <Typography variant="caption" color="text.secondary">
-                      Bags {load.bag_start}–{load.bag_end} · {load.pounds} lb · {load.bags} bags
-                    </Typography>
-                  </Box>
-                ))}
-              </Stack>
+              {lane.loads.map((load) => (
+                <Typography key={load.load_id} variant="caption" display="block" sx={{ lineHeight: 1.5 }}>
+                  {load.start}–{load.end} · order {load.bag_start ?? load.bag_end} · {load.pounds} lb
+                </Typography>
+              ))}
             </Paper>
           ))}
         </Stack>
@@ -492,59 +345,181 @@ function TimelineLanes({ washerTimeline, dryerTimeline }) {
   );
 }
 
-function StrategyCard({ recommendation, staffing }) {
+function StrategyPanel({ recommendation, staffing, operational, opGuidance, inputsMeta }) {
   if (!recommendation) return null;
   const staff = recommendation.suggested_staff || {};
   return (
-    <Paper
-      elevation={0}
-      sx={{
-        p: 2,
-        mb: 2,
-        borderRadius: 2,
-        border: "2px solid",
-        borderColor: VEEWASH_DASHBOARD.tealBorder,
-        bgcolor: VEEWASH_DASHBOARD.tealLight,
-      }}
-    >
-      <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+    <Stack spacing={1.5}>
+      <Paper elevation={0} sx={{ p: 1.5, borderRadius: 2, border: "2px solid", borderColor: VEEWASH_DASHBOARD.tealBorder, bgcolor: VEEWASH_DASHBOARD.tealLight }}>
+        <Typography variant="subtitle1" fontWeight={800} gutterBottom>
           Recommended: {recommendation.label}
         </Typography>
-        <Chip size="small" label="Best fit" color="success" sx={{ fontWeight: 700 }} />
-      </Stack>
-      <Stack direction="row" flexWrap="wrap" gap={0.75}>
-        <Chip size="small" label={`Start ${recommendation.start_time}`} />
-        <Chip size="small" label={`Weighers ${staff.weighers ?? staffing?.weighers ?? 0}`} />
-        <Chip size="small" label={`Sorters ${staff.sorters ?? staffing?.sorters ?? 0}`} />
-        <Chip size="small" label={`Folders ${staff.folders ?? staffing?.folders ?? 0}`} />
-        <Chip size="small" label={`Washers ${staff.washers ?? "—"}`} />
-        <Chip size="small" label={`Dryers ${staff.dryers ?? "—"}`} />
-        <Chip size="small" label={`1st fold-ready ${recommendation.first_fold_ready || "—"}`} />
-        <Chip size="small" label={`All washed ${recommendation.all_washing_done || "—"}`} />
-        <Chip size="small" label={`All dried ${recommendation.all_drying_done || "—"}`} />
-        <Chip size="small" label={`All folded ${recommendation.all_folding_done || "—"}`} />
-        <BottleneckChip stage={recommendation.main_bottleneck} />
-      </Stack>
-      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-        {recommendation.reason}
-      </Typography>
-    </Paper>
+        <Stack direction="row" flexWrap="wrap" gap={0.5}>
+          <Chip size="small" label={`Start ${recommendation.start_time}`} />
+          <Chip size="small" label={`Weighers ${staff.weighers ?? staffing?.weighers ?? 0}`} />
+          <Chip size="small" label={`Sorters ${staff.sorters ?? staffing?.sorters ?? 0}`} />
+          <Chip size="small" label={`Folders ${staff.folders ?? staffing?.folders ?? 0}`} />
+          <Chip size="small" label={`1st fold ${recommendation.first_fold_ready || "—"}`} />
+          <BottleneckChip stage={recommendation.main_bottleneck} />
+        </Stack>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+          {recommendation.reason}
+        </Typography>
+      </Paper>
+      <Paper elevation={0} sx={{ p: 1.5, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
+        <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+          Batch guidance · size {operational?.recommended_batch_size ?? "—"}
+        </Typography>
+        <Stack direction="row" flexWrap="wrap" gap={0.5}>
+          <Chip size="small" label={`1st wash ${opGuidance.first_wash_batch_start || "—"}`} />
+          <Chip size="small" label={`Unload ${opGuidance.washer_return_to_unload || "—"}`} />
+          <Chip size="small" label={`Switch fold ${opGuidance.switch_labor_to_folding || "—"}`} />
+          <Chip size="small" label={`${inputsMeta.total_wash_loads} wash / ${inputsMeta.total_dryer_loads} dry loads`} />
+        </Stack>
+      </Paper>
+    </Stack>
   );
 }
 
-function numField(key, label, inputs, onChange, { min = 0, step = 1 } = {}) {
+function InputPanel({ tab, inputs, onChange, previewTotals }) {
+  if (tab === 0) {
+    return (
+      <Stack spacing={1.25}>
+        <TextField label="Start time" size="small" value={inputs.start_time} onChange={(e) => onChange("start_time", e.target.value)} fullWidth />
+        <TextField label="Target time" size="small" value={inputs.target_time} onChange={(e) => onChange("target_time", e.target.value)} fullWidth />
+        {numField("bag_count", "Total orders/bags", inputs, onChange, { min: 1 })}
+        {numField("avg_lbs_per_bag", "Avg lb/bag", inputs, onChange, { min: 1 })}
+        <Grid container spacing={1}>
+          <Grid item xs={6}>{numField("washer_count", "Washers", inputs, onChange, { min: 1 })}</Grid>
+          <Grid item xs={6}>{numField("dryer_count", "Dryers", inputs, onChange, { min: 1 })}</Grid>
+          <Grid item xs={6}>{numField("wash_cycle_min", "Wash cycle (min)", inputs, onChange, { min: 1 })}</Grid>
+          <Grid item xs={6}>{numField("dry_cycle_min", "Dry cycle (min)", inputs, onChange, { min: 1 })}</Grid>
+        </Grid>
+      </Stack>
+    );
+  }
+  if (tab === 1) {
+    const bagCount = Number(inputs.bag_count) || 0;
+    const mode = inputs.split_input_mode;
+    const pctWash = bagCount ? Math.round((Number(inputs.orders_using_2_washers) / bagCount) * 100) : 0;
+    const pctDry = bagCount ? Math.round((Number(inputs.orders_using_2_dryers) / bagCount) * 100) : 0;
+    return (
+      <Stack spacing={1.25}>
+        <FormControl size="small" fullWidth>
+          <InputLabel>Input mode</InputLabel>
+          <Select label="Input mode" value={mode} onChange={(e) => onChange("split_input_mode", e.target.value)}>
+            <MenuItem value="count">Order counts</MenuItem>
+            <MenuItem value="pct">Percentages</MenuItem>
+          </Select>
+        </FormControl>
+        {mode === "count" ? (
+          <>
+            {numField(
+              "orders_using_2_washers",
+              "Orders using 2 washers",
+              inputs,
+              onChange,
+              { min: 0, helperText: `${previewTotals.orders1Wash} orders use 1 washer → ${previewTotals.washerLoads} washer loads` }
+            )}
+            {numField(
+              "orders_using_2_dryers",
+              "Orders using 2 dryers",
+              inputs,
+              onChange,
+              { min: 0, helperText: `${previewTotals.orders1Dry} orders use 1 dryer → ${previewTotals.dryerLoads} dryer loads` }
+            )}
+          </>
+        ) : (
+          <>
+            {numField(
+              "orders_using_2_washers",
+              "Orders using 2 washers (%)",
+              inputs,
+              onChange,
+              { min: 0, max: 100, helperText: `≈ ${Math.round(bagCount * pctWash / 100)} orders · ${previewTotals.washerLoads} washer loads` }
+            )}
+            {numField(
+              "orders_using_2_dryers",
+              "Orders using 2 dryers (%)",
+              inputs,
+              onChange,
+              { min: 0, max: 100, helperText: `≈ ${Math.round(bagCount * pctDry / 100)} orders · ${previewTotals.dryerLoads} dryer loads` }
+            )}
+          </>
+        )}
+        <Alert severity="info" sx={{ py: 0.25, "& .MuiAlert-message": { fontSize: 12 } }}>
+          Split is per order: lights+darks may use 2 washers. Dryer split is independent.
+        </Alert>
+      </Stack>
+    );
+  }
+  if (tab === 2) {
+    return (
+      <Stack spacing={1.25}>
+        <FormControl size="small" fullWidth>
+          <InputLabel>Weighing handled by</InputLabel>
+          <Select label="Weighing handled by" value={inputs.weighing_handled_by} onChange={(e) => onChange("weighing_handled_by", e.target.value)}>
+            <MenuItem value="dedicated_weigher">Dedicated weigher</MenuItem>
+            <MenuItem value="sorter">Sorter</MenuItem>
+            <MenuItem value="washer">Washer</MenuItem>
+          </Select>
+        </FormControl>
+        <Grid container spacing={1}>
+          <Grid item xs={4}>{numField("weigh_min_per_bag", "Weigh min", inputs, onChange, { min: 0.1, step: 0.1 })}</Grid>
+          <Grid item xs={4}>{numField("sort_min_per_bag", "Sort min", inputs, onChange, { min: 0.1, step: 0.1 })}</Grid>
+          <Grid item xs={4}>{numField("fold_min_per_bag", "Fold min", inputs, onChange, { min: 0.1, step: 0.1 })}</Grid>
+        </Grid>
+        <Grid container spacing={1}>
+          <Grid item xs={4}>{numField("folder_count", "Folders", inputs, onChange, { min: 0 })}</Grid>
+          {inputs.weighing_handled_by === "dedicated_weigher" ? (
+            <Grid item xs={4}>
+              <TextField label="Weighers (auto)" size="small" value={inputs.weigher_count} onChange={(e) => onChange("weigher_count", e.target.value)} fullWidth />
+            </Grid>
+          ) : null}
+          <Grid item xs={4}>
+            <TextField label="Sorters (auto)" size="small" value={inputs.sorter_count} onChange={(e) => onChange("sorter_count", e.target.value)} fullWidth />
+          </Grid>
+        </Grid>
+        <FormControl size="small" fullWidth>
+          <InputLabel>Washing strategy</InputLabel>
+          <Select label="Washing strategy" value={inputs.washing_strategy} onChange={(e) => onChange("washing_strategy", e.target.value)}>
+            {WASHING_STRATEGIES.map((s) => (
+              <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <FormControl size="small" fullWidth>
+          <InputLabel>Batch size</InputLabel>
+          <Select label="Batch size" value={Number(inputs.batch_size)} onChange={(e) => onChange("batch_size", e.target.value)}>
+            {BATCH_SIZE_OPTIONS.map((n) => (
+              <MenuItem key={n} value={n}>{n} bags</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <Accordion disableGutters elevation={0} sx={{ border: "1px solid", borderColor: "divider", "&:before": { display: "none" } }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 40, "& .MuiAccordionSummary-content": { my: 0.5 } }}>
+            <Typography variant="caption" fontWeight={700}>Washer person timings</Typography>
+          </AccordionSummary>
+          <AccordionDetails sx={{ pt: 0 }}>
+            <Grid container spacing={1}>
+              <Grid item xs={6}>{numField("load_washer_min", "Load washer", inputs, onChange, { min: 0 })}</Grid>
+              <Grid item xs={6}>{numField("unload_washer_min", "Unload washer", inputs, onChange, { min: 0 })}</Grid>
+              <Grid item xs={6}>{numField("washer_transfer_min", "Transfer", inputs, onChange, { min: 0 })}</Grid>
+              <Grid item xs={6}>{numField("load_dryer_min", "Load dryer", inputs, onChange, { min: 0 })}</Grid>
+            </Grid>
+          </AccordionDetails>
+        </Accordion>
+      </Stack>
+    );
+  }
   return (
-    <TextField
-      key={key}
-      label={label}
-      type="number"
-      size="small"
-      value={inputs[key]}
-      onChange={(e) => onChange(key, e.target.value)}
-      inputProps={{ min, step }}
-      fullWidth
-    />
+    <Stack spacing={1.25}>
+      {numField("sorter_early_start_min", "Sorter early start (min)", inputs, onChange, { min: 0 })}
+      {numField("sorter_break_after_bags", "Sorter break after bags", inputs, onChange, { min: 0 })}
+      {numField("sorter_break_duration_min", "Sorter break (min)", inputs, onChange, { min: 0 })}
+      {numField("washer_break_after_bags", "Washer break after bags", inputs, onChange, { min: 0 })}
+      {numField("washer_break_duration_min", "Washer break (min)", inputs, onChange, { min: 0 })}
+    </Stack>
   );
 }
 
@@ -554,49 +529,60 @@ export default function ShiftCapacityPlannerPage() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [tab, setTab] = useState(0);
-  const [legacyTab, setLegacyTab] = useState(0);
-  const [whatIfOpen, setWhatIfOpen] = useState(false);
+  const [inputTab, setInputTab] = useState(0);
+  const [resultTab, setResultTab] = useState(0);
 
   const onChange = useCallback((key, value) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  const bagCount = Number(inputs.bag_count) || 0;
+  const previewTotals = useMemo(() => {
+    const mode = inputs.split_input_mode;
+    let orders2Wash = Number(inputs.orders_using_2_washers) || 0;
+    let orders2Dry = Number(inputs.orders_using_2_dryers) || 0;
+    if (mode === "pct") {
+      orders2Wash = Math.round(bagCount * orders2Wash / 100);
+      orders2Dry = Math.round(bagCount * orders2Dry / 100);
+    }
+    const washTotals = calcLoadTotals(bagCount, orders2Wash);
+    const dryTotals = calcLoadTotals(bagCount, orders2Dry);
+    return {
+      orders2Wash: washTotals.orders2,
+      orders1Wash: washTotals.orders1,
+      washerLoads: washTotals.washerLoads,
+      orders2Dry: dryTotals.orders2,
+      orders1Dry: dryTotals.orders1,
+      dryerLoads: dryTotals.dryerLoads,
+    };
+  }, [inputs, bagCount]);
+
   const payload = useMemo(() => {
     const body = { ...inputs };
+    delete body.split_input_mode;
     ["weigher_count", "sorter_count"].forEach((k) => {
       if (body[k] === "" || body[k] == null) delete body[k];
       else body[k] = Number(body[k]);
     });
-    [
-      "bag_count",
-      "avg_lbs_per_bag",
-      "single_bag_load_pct",
-      "two_bag_split_pct",
-      "sorter_early_start_min",
-      "sorter_break_after_bags",
-      "sorter_break_duration_min",
-      "washer_break_after_bags",
-      "washer_break_duration_min",
-      "washer_count",
-      "dryer_count",
-      "washer_capacity_lb",
-      "dryer_capacity_lb",
-      "wash_cycle_min",
-      "dry_cycle_min",
-      "weigh_min_per_bag",
-      "sort_min_per_bag",
-      "fold_min_per_bag",
-      "folder_count",
-      "batch_size",
-      "load_washer_min",
-      "unload_washer_min",
-      "load_dryer_min",
-      "unload_dryer_min",
-      "washer_transfer_min",
-    ].forEach((k) => {
-      body[k] = Number(body[k]);
-    });
+    const numericKeys = [
+      "bag_count", "avg_lbs_per_bag", "sorter_early_start_min", "sorter_break_after_bags",
+      "sorter_break_duration_min", "washer_break_after_bags", "washer_break_duration_min",
+      "washer_count", "dryer_count", "wash_cycle_min", "dry_cycle_min",
+      "weigh_min_per_bag", "sort_min_per_bag", "fold_min_per_bag", "folder_count",
+      "batch_size", "load_washer_min", "unload_washer_min", "load_dryer_min",
+      "unload_dryer_min", "washer_transfer_min",
+    ];
+    numericKeys.forEach((k) => { body[k] = Number(body[k]); });
+
+    if (inputs.split_input_mode === "pct") {
+      delete body.orders_using_2_washers;
+      delete body.orders_using_2_dryers;
+      body.orders_using_2_washers_pct = Number(inputs.orders_using_2_washers);
+      body.orders_using_2_dryers_pct = Number(inputs.orders_using_2_dryers);
+    } else {
+      body.orders_using_2_washers = Number(inputs.orders_using_2_washers);
+      body.orders_using_2_dryers = Number(inputs.orders_using_2_dryers);
+    }
     return body;
   }, [inputs]);
 
@@ -620,205 +606,168 @@ export default function ShiftCapacityPlannerPage() {
 
   const staffing = result?.staffing;
   const operational = result?.operational;
-  const opStrategyKeys = ["continuous_washing", "batch_washing", "hybrid_recommended"];
-  const opStrategyKey = opStrategyKeys[tab] || "hybrid_recommended";
-  const opData = operational?.strategies?.[opStrategyKey] || operational?.active_strategy;
+  const opData = operational?.active_strategy || operational?.strategies?.[inputs.washing_strategy];
   const opGuidance = opData?.guidance || operational?.guidance || {};
-  const legacyStrategy = legacyTab === 0 ? "continuous_washing" : "dryer_push";
+  const legacyStrategy = result?.recommendation?.recommended || "continuous_washing";
   const legacyData = result?.strategies?.[legacyStrategy];
-  const legacySummary = legacyData?.summary || {};
   const inputsMeta = result?.inputs || {};
   const splitDist = inputsMeta.split_distribution;
   const resourceUtil = opData?.resource_utilization || result?.resource_utilization || [];
 
+  const stickySummary = result ? (
+    <Paper
+      elevation={2}
+      sx={{
+        position: "sticky",
+        top: 0,
+        zIndex: 10,
+        p: 1.25,
+        mb: 1.5,
+        borderRadius: 2,
+        border: "1px solid",
+        borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
+        bgcolor: "#fff",
+      }}
+    >
+      <Stack direction="row" flexWrap="wrap" gap={1}>
+        <TopCard label="Orders" value={inputsMeta.bag_count ?? bagCount} sub={`${previewTotals.washerLoads} wash · ${previewTotals.dryerLoads} dry loads`} variant="total" />
+        <TopCard label="Strategy" value={result.recommendation?.label?.split(" ")[0] || "—"} sub={result.recommendation?.main_bottleneck || "—"} variant="info" />
+        <TopCard label="1st wash" value={opGuidance.first_wash_batch_start || "—"} sub={`Fold switch ${opGuidance.switch_labor_to_folding || "—"}`} variant="pending" />
+        <TopCard label="Folded @ target" value={legacyData?.final?.bags_folded ?? "—"} sub={`/${inputsMeta.bag_count}`} variant="completed" />
+        <TopCard label="Batch" value={operational?.recommended_batch_size ?? "—"} sub={inputs.washing_strategy.replace(/_/g, " ")} variant="snapshot" />
+      </Stack>
+    </Paper>
+  ) : null;
+
+  const resultContent = () => {
+    if (!result) return null;
+    switch (resultTab) {
+      case 0:
+        return (
+          <StrategyPanel
+            recommendation={result.recommendation}
+            staffing={staffing}
+            operational={operational}
+            opGuidance={opGuidance}
+            inputsMeta={inputsMeta}
+          />
+        );
+      case 1:
+        return (
+          <Stack spacing={1}>
+            <MilestoneTable milestones={legacyData?.milestones} />
+            {(legacyData?.alerts || []).slice(0, 3).map((msg, i) => (
+              <Alert key={i} severity="info" sx={{ py: 0.25 }}>{msg}</Alert>
+            ))}
+            {result.what_if ? (
+              <Alert severity="warning" sx={{ py: 0.25 }}>
+                What-if Δ folded: {result.what_if.comparison?.delta?.bags_folded ?? 0}
+              </Alert>
+            ) : null}
+          </Stack>
+        );
+      case 2:
+        return <OrderTimelineTable rows={opData?.order_timeline || operational?.order_timeline} />;
+      case 3:
+        return <TimelineLanes washerTimeline={opData?.washer_timeline || operational?.washer_timeline} dryerTimeline={[]} compact />;
+      case 4:
+        return <TimelineLanes washerTimeline={[]} dryerTimeline={opData?.dryer_timeline || operational?.dryer_timeline} compact />;
+      case 5:
+        return <ResourceUtilizationPanel utilization={resourceUtil} />;
+      default:
+        return null;
+    }
+  };
+
   return (
-    <Box sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100vh", pb: 4 }}>
-      <Box sx={{ bgcolor: VEEWASH_DASHBOARD.workloadHeaderBg, color: "#fff", px: { xs: 2, md: 3 }, py: 2 }}>
+    <Box sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100vh", pb: 3 }}>
+      <Box sx={{ bgcolor: VEEWASH_DASHBOARD.workloadHeaderBg, color: "#fff", px: { xs: 2, md: 3 }, py: 1.5 }}>
         <Stack direction="row" alignItems="center" spacing={1.5}>
-          <VeeWashLogo height={28} variant="light" />
+          <VeeWashLogo height={26} variant="light" />
           <Box>
-            <Typography variant="h5" fontWeight={800}>
-              {t("nav.shiftCapacityPlanner")}
-            </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.9 }}>
-              {t("shiftCapacityPlanner.subtitle")}
-            </Typography>
+            <Typography variant="h6" fontWeight={800}>{t("nav.shiftCapacityPlanner")}</Typography>
+            <Typography variant="caption" sx={{ opacity: 0.9 }}>{t("shiftCapacityPlanner.subtitle")}</Typography>
           </Box>
         </Stack>
       </Box>
 
-      <Box sx={{ px: { xs: 2, md: 3 }, pt: 2, maxWidth: 1400, mx: "auto" }}>
-        <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 2 }}>
+      <Box sx={{ px: { xs: 1.5, md: 2.5 }, pt: 1.5, maxWidth: 1500, mx: "auto" }}>
+        <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1.5 }}>
           <Button size="small" component={RouterLink} to="/performance" sx={{ textTransform: "none", fontWeight: 600 }}>
             {t("nav.shiftAnalysis")}
           </Button>
-          <Button size="small" component={RouterLink} to="/performance/operations-timeline" sx={{ textTransform: "none", fontWeight: 600 }}>
-            {t("nav.operationsTimeline")}
-          </Button>
         </Stack>
 
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={3}>
-            <Paper elevation={0} sx={{ p: 2, borderRadius: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder, position: "sticky", top: 16 }}>
-              <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-                {t("shiftCapacityPlanner.inputs")}
-              </Typography>
-              <Stack spacing={1.25}>
-                <TextField label="Start time" size="small" value={inputs.start_time} onChange={(e) => onChange("start_time", e.target.value)} fullWidth />
-                <TextField label="Target time" size="small" value={inputs.target_time} onChange={(e) => onChange("target_time", e.target.value)} fullWidth />
-                {numField("bag_count", "Bag count", inputs, onChange, { min: 1 })}
-                {numField("avg_lbs_per_bag", "Avg lb/bag", inputs, onChange, { min: 1 })}
-                <Typography variant="caption" fontWeight={700} color="text.secondary">
-                  Load split %
-                </Typography>
-                {numField("single_bag_load_pct", "Single-bag load %", inputs, onChange, { min: 0, max: 100 })}
-                {numField("two_bag_split_pct", "2-bag split load %", inputs, onChange, { min: 0, max: 100 })}
-                <Typography variant="caption" color="text.secondary">
-                  Remainder → capacity-packed loads
-                </Typography>
-                <FormControl size="small" fullWidth>
-                  <InputLabel>Weighing handled by</InputLabel>
-                  <Select
-                    label="Weighing handled by"
-                    value={inputs.weighing_handled_by}
-                    onChange={(e) => onChange("weighing_handled_by", e.target.value)}
-                  >
-                    <MenuItem value="dedicated_weigher">Dedicated weigher</MenuItem>
-                    <MenuItem value="sorter">Sorter</MenuItem>
-                    <MenuItem value="washer">Washer</MenuItem>
-                  </Select>
-                </FormControl>
-                {numField("washer_count", "Washers", inputs, onChange, { min: 1 })}
-                {numField("dryer_count", "Dryers", inputs, onChange, { min: 1 })}
-                {numField("washer_capacity_lb", "Washer cap (lb)", inputs, onChange, { min: 1 })}
-                {numField("dryer_capacity_lb", "Dryer cap (lb)", inputs, onChange, { min: 1 })}
-                {numField("wash_cycle_min", "Wash cycle (min)", inputs, onChange, { min: 1 })}
-                {numField("dry_cycle_min", "Dry cycle (min)", inputs, onChange, { min: 1 })}
-                {numField("weigh_min_per_bag", "Weigh min/bag", inputs, onChange, { min: 0.1, step: 0.1 })}
-                {numField("sort_min_per_bag", "Sort min/bag", inputs, onChange, { min: 0.1, step: 0.1 })}
-                {numField("fold_min_per_bag", "Fold min/bag", inputs, onChange, { min: 0.1, step: 0.1 })}
-                {numField("folder_count", "Folders", inputs, onChange, { min: 0 })}
-                {inputs.weighing_handled_by === "dedicated_weigher" ? (
-                  <TextField label="Weighers (blank=auto)" size="small" value={inputs.weigher_count} onChange={(e) => onChange("weigher_count", e.target.value)} fullWidth />
-                ) : null}
-                <TextField label="Sorters (blank=auto)" size="small" value={inputs.sorter_count} onChange={(e) => onChange("sorter_count", e.target.value)} fullWidth />
-                <Typography variant="caption" fontWeight={700} color="text.secondary">
-                  Operational simulation
-                </Typography>
-                <FormControl size="small" fullWidth>
-                  <InputLabel>Washing strategy</InputLabel>
-                  <Select
-                    label="Washing strategy"
-                    value={inputs.washing_strategy}
-                    onChange={(e) => onChange("washing_strategy", e.target.value)}
-                  >
-                    {WASHING_STRATEGIES.map((s) => (
-                      <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <FormControl size="small" fullWidth>
-                  <InputLabel>Batch size</InputLabel>
-                  <Select
-                    label="Batch size"
-                    value={Number(inputs.batch_size)}
-                    onChange={(e) => onChange("batch_size", e.target.value)}
-                  >
-                    {BATCH_SIZE_OPTIONS.map((n) => (
-                      <MenuItem key={n} value={n}>{n} bags</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                {numField("load_washer_min", "Load washer (min)", inputs, onChange, { min: 0 })}
-                {numField("unload_washer_min", "Unload washer (min)", inputs, onChange, { min: 0 })}
-                {numField("washer_transfer_min", "Transfer/load (min)", inputs, onChange, { min: 0 })}
-                {numField("load_dryer_min", "Load dryer (min)", inputs, onChange, { min: 0 })}
-                {numField("unload_dryer_min", "Unload dryer (min)", inputs, onChange, { min: 0 })}
-                <Button
-                  size="small"
-                  onClick={() => setWhatIfOpen((v) => !v)}
-                  endIcon={whatIfOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                  sx={{ justifyContent: "space-between", fontWeight: 700, textTransform: "none" }}
+        <Grid container spacing={2} alignItems="flex-start">
+          <Grid item xs={12} lg={3.5}>
+            <Paper
+              elevation={0}
+              sx={{
+                borderRadius: 2,
+                border: "1px solid",
+                borderColor: VEEWASH_DASHBOARD.primaryBlueBorder,
+                display: "flex",
+                flexDirection: "column",
+                maxHeight: { lg: "calc(100vh - 120px)" },
+                position: { lg: "sticky" },
+                top: { lg: 12 },
+              }}
+            >
+              <Box sx={{ px: 1.5, pt: 1.5, pb: 0 }}>
+                <Typography variant="subtitle2" fontWeight={800}>{t("shiftCapacityPlanner.inputs")}</Typography>
+                <Tabs
+                  value={inputTab}
+                  onChange={(_, v) => setInputTab(v)}
+                  variant="scrollable"
+                  scrollButtons="auto"
+                  sx={{ minHeight: 36, mt: 0.5, "& .MuiTab-root": { minHeight: 36, py: 0.5, fontSize: 12, textTransform: "none" } }}
                 >
-                  What-if scenarios
-                </Button>
-                <Collapse in={whatIfOpen}>
-                  <Stack spacing={1.25}>
-                    {numField("sorter_early_start_min", "Sorter early start (min)", inputs, onChange, { min: 0 })}
-                    {numField("sorter_break_after_bags", "Sorter break after bags", inputs, onChange, { min: 0 })}
-                    {numField("sorter_break_duration_min", "Sorter break (min)", inputs, onChange, { min: 0 })}
-                    {numField("washer_break_after_bags", "Washer break after bags", inputs, onChange, { min: 0 })}
-                    {numField("washer_break_duration_min", "Washer break (min)", inputs, onChange, { min: 0 })}
-                  </Stack>
-                </Collapse>
-                <Button variant="contained" startIcon={loading ? <CircularProgress size={18} color="inherit" /> : <PlayArrowIcon />} onClick={runSim} disabled={loading} sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, fontWeight: 700 }}>
+                  {INPUT_TABS.map((label) => (
+                    <Tab key={label} label={label} />
+                  ))}
+                </Tabs>
+              </Box>
+              <Box sx={{ px: 1.5, py: 1.25, overflow: "auto", flex: 1 }}>
+                <InputPanel tab={inputTab} inputs={inputs} onChange={onChange} previewTotals={previewTotals} />
+              </Box>
+              <Box sx={{ p: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
+                <Button
+                  variant="contained"
+                  fullWidth
+                  startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <PlayArrowIcon />}
+                  onClick={runSim}
+                  disabled={loading}
+                  sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, fontWeight: 700 }}
+                >
                   {t("shiftCapacityPlanner.run")}
                 </Button>
-              </Stack>
+              </Box>
             </Paper>
           </Grid>
 
-          <Grid item xs={12} md={9}>
-            {error ? <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert> : null}
-
-            {result ? (
-              <Stack spacing={2}>
-                <SplitDistributionCard splitDist={splitDist} bagCount={inputsMeta.bag_count} />
-                <WhatIfComparison whatIf={result.what_if} />
-
-                <OperationalBatchCard operational={operational} />
-
-                <Stack direction="row" flexWrap="wrap" gap={1}>
-                  <TopCard label="Batch size" value={operational?.recommended_batch_size ?? "—"} sub={`Strategy ${inputs.washing_strategy}`} variant="total" />
-                  <TopCard label="1st wash" value={opGuidance.first_wash_batch_start || "—"} sub={`Unload ${opGuidance.washer_return_to_unload || "—"}`} variant="pending" />
-                  <TopCard label="Sort before wash" value={opGuidance.bags_sorted_before_first_wash ?? "—"} sub={opGuidance.sorting_continues_while_washing ? "Sort continues" : "Batch sort"} variant="info" />
-                  <TopCard label="Switch to fold" value={opGuidance.switch_labor_to_folding || "—"} sub={`Folded ${opData?.summary?.bags_folded ?? "—"}`} variant="completed" />
-                  <TopCard label="Wash loads" value={inputsMeta.total_wash_loads} sub={`Avg ${inputsMeta.avg_bags_per_wash_load} bags/load`} variant="snapshot" />
-                </Stack>
-
-                <Tabs value={tab} onChange={(_, v) => setTab(v)}>
-                  <Tab label="Continuous" />
-                  <Tab label="Batch" />
-                  <Tab label="Hybrid" />
-                </Tabs>
-
-                <NextActionTimeline actions={opData?.next_actions || operational?.next_actions} />
-
-                {(opData?.bottleneck_alerts || operational?.bottleneck_alerts || []).map((msg, i) => (
-                  <Alert key={i} severity={i === 0 ? "warning" : "info"} sx={{ py: 0.25 }}>
-                    {msg}
-                  </Alert>
-                ))}
-
-                <ResourceUtilizationPanel utilization={resourceUtil} />
-
-                <Typography variant="subtitle2" fontWeight={800}>
-                  Order timeline
-                </Typography>
-                <OrderTimelineTable rows={opData?.order_timeline || operational?.order_timeline} />
-
-                <TimelineLanes
-                  washerTimeline={opData?.washer_timeline || operational?.washer_timeline}
-                  dryerTimeline={opData?.dryer_timeline || operational?.dryer_timeline}
-                />
-
-                <StrategyCard recommendation={result.recommendation} staffing={staffing} />
-
-                <Typography variant="subtitle2" fontWeight={800}>
-                  Legacy milestone view
-                </Typography>
-                <Tabs value={legacyTab} onChange={(_, v) => setLegacyTab(v)}>
-                  <Tab label="Continuous Washing" />
-                  <Tab label="Dryer Push" />
-                </Tabs>
-                <MilestoneTable milestones={legacyData?.milestones} />
-                {(legacyData?.alerts || []).map((msg, i) => (
-                  <Alert key={`legacy-${i}`} severity="info" sx={{ py: 0.25 }}>{msg}</Alert>
-                ))}
-              </Stack>
-            ) : loading ? (
+          <Grid item xs={12} lg={8.5}>
+            {error ? <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert> : null}
+            {loading && !result ? (
               <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
                 <CircularProgress sx={{ color: VEEWASH_DASHBOARD.primaryBlue }} />
+              </Box>
+            ) : null}
+            {result ? (
+              <Box>
+                {stickySummary}
+                <SplitDistributionCard splitDist={splitDist} bagCount={inputsMeta.bag_count} totals={previewTotals} />
+                <Tabs
+                  value={resultTab}
+                  onChange={(_, v) => setResultTab(v)}
+                  variant="scrollable"
+                  scrollButtons="auto"
+                  sx={{ mt: 1.5, mb: 1, minHeight: 40, "& .MuiTab-root": { minHeight: 40, textTransform: "none", fontWeight: 600 } }}
+                >
+                  {RESULT_TABS.map((label) => (
+                    <Tab key={label} label={label} />
+                  ))}
+                </Tabs>
+                <Box sx={{ minHeight: 320 }}>{resultContent()}</Box>
               </Box>
             ) : null}
           </Grid>
