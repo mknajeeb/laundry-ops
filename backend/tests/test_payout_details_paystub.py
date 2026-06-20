@@ -906,8 +906,9 @@ def test_paystub_employee_tax_balance_catchup_flow():
         assert "This period estimated tax" in html
         assert "Prior tax balance" in html
         assert "Total estimated liability" in html
-        assert "Catch-up collected" in html
         assert "Remaining balance" in html
+        assert "Catch-up collected" not in html
+        assert "Withheld this period" not in html
         assert "$80.00" in html
         assert "$40.00" in html
 
@@ -927,13 +928,13 @@ def test_paystub_employee_tax_balance_prior_adj_collection_labels():
             "remaining_tax_balance": 19.42,
         }
     )
-    assert "Withheld this period" in html
-    assert "Prior balance collected" in html
+    assert "This period estimated tax" in html
+    assert "Prior period adjustment" in html
+    assert "Remaining balance" in html
+    assert "Withheld this period" not in html
     assert "Catch-up collected" not in html
-    withheld_row = html.split("Withheld this period")[1].split("</tr>")[0]
-    prior_row = html.split("Prior balance collected")[1].split("</tr>")[0]
-    assert "$0.00" in withheld_row
-    assert "$17.00" in prior_row
+    assert "Prior balance collected" not in html
+    assert "$19.42" in html
 
 
 def test_apply_carryover_prior_tax_balance_from_finalized_line():

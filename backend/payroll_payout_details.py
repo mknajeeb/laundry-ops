@@ -1928,19 +1928,8 @@ def _employee_tax_balance_html(totals: dict) -> str:
     prior_collected = float(totals.get("tax_catch_up_adjustment") or 0)
     period_balance = float(totals.get("tax_balance_owed") or 0)
     current_period = float(totals.get("current_period_taxes") or 0)
-    withheld = float(totals.get("amount_withheld") or 0)
     total_liability = float(totals.get("total_tax_liability") or 0)
-    paid_full_gross = bool(totals.get("paid_full_gross_without_withholding"))
-
     remaining = float(totals.get("remaining_tax_balance") or 0)
-    if remaining < 0:
-        remaining = round(max(0.0, total_liability - withheld), 2)
-
-    withheld_current = (
-        0.0
-        if paid_full_gross
-        else round(min(current_period, max(0.0, withheld - prior_collected)), 2)
-    )
 
     if current_period <= 0 and prior <= 0 and prior_collected <= 0 and remaining <= 0:
         return ""
@@ -1951,23 +1940,11 @@ def _employee_tax_balance_html(totals: dict) -> str:
             if prior_adj > 0
             else ""
         )
-        prior_collected_label = (
-            "Prior balance collected"
-            if prior_adj > 0 and prior_collected > 0
-            else "Catch-up collected"
-        )
-        prior_collected_row = (
-            _paystub_money_row(prior_collected_label, prior_collected)
-            if prior_collected > 0
-            else ""
-        )
         rows_html = (
             _paystub_money_row("This period estimated tax", current_period)
             + _paystub_money_row("Prior tax balance", prior)
             + prior_adj_row
             + _paystub_money_row("Total estimated liability", total_liability)
-            + _paystub_money_row("Withheld this period", withheld_current)
-            + prior_collected_row
             + _paystub_money_row("Remaining balance", remaining, True)
         )
         return f"""
@@ -1979,10 +1956,8 @@ def _employee_tax_balance_html(totals: dict) -> str:
     if period_balance <= 0 and remaining <= 0:
         return ""
     balance = period_balance if period_balance > 0 else remaining
-    actually_withheld = withheld_current
     rows_html = (
         _paystub_money_row("Estimated tax liability", current_period)
-        + _paystub_money_row("Actually withheld", actually_withheld)
         + _paystub_money_row("Estimated tax balance", balance, True)
     )
     return f"""
