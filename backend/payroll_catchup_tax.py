@@ -109,6 +109,7 @@ def estimate_catchup_line_details(
             "outstanding_balance": 0.0,
             "prior_unpaid_taxes": prior,
             "prior_period_adjustment": 0.0,
+            "catch_up_withholding": 0.0,
             "paid_full_gross_without_withholding": paid_full_gross_without_withholding,
             "tax_balance_owed": tax_balance,
         },

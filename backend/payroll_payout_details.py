@@ -222,6 +222,7 @@ def _empty_details() -> dict[str, Any]:
             "outstanding_balance": 0.0,
             "prior_unpaid_taxes": 0.0,
             "prior_period_adjustment": 0.0,
+            "catch_up_withholding": 0.0,
             "paid_full_gross_without_withholding": False,
             "tax_balance_owed": 0.0,
         },
@@ -271,6 +272,7 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
         "outstanding_balance",
         "prior_unpaid_taxes",
         "prior_period_adjustment",
+        "catch_up_withholding",
         "tax_balance_owed",
     ):
         base["settlement"][k] = float(_money(base["settlement"].get(k)))
@@ -292,7 +294,10 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
         base["tax_summary"][k] = float(_money(base["tax_summary"].get(k)))
     if "estimated" in base["tax_summary"]:
         base["tax_summary"]["estimated"] = bool(base["tax_summary"].get("estimated"))
+    gross = float(_money(line.get("gross_amount") or line.get("total_amount") or 0))
     base = reconcile_tax_summary(base)
+    if gross > 0:
+        base = apply_settlement_math(base, gross)
     return base
 
 
@@ -307,27 +312,31 @@ def sum_employer_taxes(details: dict) -> float:
 
 
 def reconcile_tax_summary(details: dict) -> dict:
-    """Compute tax liability vs actual withheld for paystubs and accountant audit trail."""
+    """Compute tax liability vs withheld amounts (catch-up is manager-entered only)."""
     ded = details.get("employee_deductions") or {}
-    settlement = details.get("settlement") or {}
+    settlement = dict(details.get("settlement") or {})
     tax_summary = dict(details.get("tax_summary") or {})
 
     current_period = float(sum(_money(ded.get(k)) for k in EMPLOYEE_DEDUCTION_KEYS))
     prior_balance = float(_money(settlement.get("prior_unpaid_taxes")))
     prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    catch_up = float(_money(settlement.get("catch_up_withholding")))
+    paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
+    if paid_full_gross:
+        catch_up = 0.0
+        settlement["catch_up_withholding"] = 0.0
+
     actual_withheld = float(_money(settlement.get("amount_withheld")))
     total_liability = round(current_period + prior_balance + prior_adj, 2)
-    period_balance = round(current_period - actual_withheld, 2)
-    remaining = round(total_liability - actual_withheld, 2)
-    catch_up = prior_balance if prior_balance > 0 and actual_withheld > current_period else 0.0
-    if catch_up and actual_withheld > 0:
-        catch_up = round(min(prior_balance, actual_withheld - current_period), 2)
-        if catch_up < 0:
-            catch_up = 0.0
 
-    stored_balance = settlement.get("tax_balance_owed")
-    if stored_balance is None or float(_money(stored_balance)) == 0 and period_balance > 0:
-        settlement["tax_balance_owed"] = period_balance
+    if paid_full_gross:
+        period_balance = round(current_period, 2)
+    else:
+        withheld_for_current = round(min(current_period, max(0.0, actual_withheld - catch_up)), 2)
+        period_balance = round(current_period - withheld_for_current, 2)
+
+    remaining = round(prior_balance + period_balance + prior_adj - catch_up, 2)
+    settlement["tax_balance_owed"] = period_balance
 
     tax_summary.update(
         {
@@ -335,7 +344,7 @@ def reconcile_tax_summary(details: dict) -> dict:
             "prior_tax_balance": prior_balance,
             "total_tax_liability": total_liability,
             "actual_tax_withheld": actual_withheld,
-            "tax_balance_owed": float(_money(settlement.get("tax_balance_owed"))),
+            "tax_balance_owed": period_balance,
             "remaining_balance": remaining,
             "tax_catch_up_adjustment": catch_up,
         }
@@ -343,6 +352,32 @@ def reconcile_tax_summary(details: dict) -> dict:
     details["settlement"] = settlement
     details["tax_summary"] = tax_summary
     return details
+
+
+def apply_settlement_math(details: dict, gross: float) -> dict:
+    """Derive withheld and net pay from current taxes + optional catch-up withholding."""
+    details = reconcile_tax_summary(dict(details))
+    settlement = details.get("settlement") or {}
+    tax_summary = details.get("tax_summary") or {}
+    gross_f = float(_money(gross))
+    current_period = float(tax_summary.get("current_period_taxes") or 0)
+    paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
+    catch_up = float(_money(settlement.get("catch_up_withholding")))
+
+    if paid_full_gross:
+        catch_up = 0.0
+        settlement["catch_up_withholding"] = 0.0
+        withheld = 0.0
+        paid = round(gross_f, 2)
+    else:
+        withheld = round(current_period + catch_up, 2)
+        paid = round(max(0.0, gross_f - withheld), 2)
+
+    settlement["amount_withheld"] = withheld
+    settlement["amount_paid"] = paid
+    settlement["outstanding_balance"] = 0.0
+    details["settlement"] = settlement
+    return reconcile_tax_summary(details)
 
 
 def compute_tax_withheld_breakdown(details: dict) -> dict[str, float]:
@@ -368,6 +403,7 @@ def compute_tax_withheld_breakdown(details: dict) -> dict[str, float]:
         "tax_balance_owed": float(tax_summary.get("tax_balance_owed") or 0),
         "remaining_balance": float(tax_summary.get("remaining_balance") or 0),
         "tax_catch_up_adjustment": float(tax_summary.get("tax_catch_up_adjustment") or 0),
+        "catch_up_withholding": float(_money(settlement.get("catch_up_withholding"))),
     }
     components["total_tax_withheld"] = components["actual_tax_withheld"]
     return components
@@ -382,10 +418,19 @@ def enrich_line_settlement_fields(line: dict, batch: dict) -> dict:
     if finalized:
         settlement = details.get("settlement") or {}
         payment = details.get("payment") or {}
+        gross = float(_money(row.get("gross_amount") or row.get("total_amount") or 0))
         breakdown = compute_tax_withheld_breakdown(details)
+        paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
         row["net_paid"] = float(_money(settlement.get("amount_paid")))
-        row["tax_withheld"] = breakdown["actual_tax_withheld"]
+        if paid_full_gross:
+            row["tax_withheld"] = 0.0
+            if row["net_paid"] <= 0 and gross > 0:
+                row["net_paid"] = gross
+        else:
+            row["tax_withheld"] = breakdown["actual_tax_withheld"]
         row["tax_liability"] = breakdown["total_employee_taxes"]
+        row["prior_tax_balance"] = breakdown["prior_tax_balance"]
+        row["catch_up_withholding"] = float(_money(settlement.get("catch_up_withholding")))
         row["tax_withheld_breakdown"] = json_safe(breakdown)
         row["tax_summary"] = json_safe(details.get("tax_summary") or {})
         row["payment_date"] = payment.get("date")
@@ -409,8 +454,10 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
     gross = float(_money(line.get("gross_amount") or line.get("total_amount") or 0))
     emp_ded = sum_employee_deductions(details)
     er_tax = sum_employer_taxes(details)
-    net = round(gross - emp_ded, 2)
+    catch_up = float(_money((details.get("settlement") or {}).get("catch_up_withholding")))
+    net = round(gross - emp_ded - catch_up, 2)
     employer_cost = round(gross + er_tax, 2)
+    details = apply_settlement_math(details, gross)
     settlement = details.get("settlement") or {}
     tax_summary = details.get("tax_summary") or {}
     amount_paid = float(_money(settlement.get("amount_paid")))
@@ -418,10 +465,9 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
     outstanding = float(_money(settlement.get("outstanding_balance")))
     prior_unpaid = float(_money(settlement.get("prior_unpaid_taxes")))
     prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    catch_up = float(_money(settlement.get("catch_up_withholding")))
     paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
     net_paid_to_employee = amount_paid if amount_paid > 0 else (gross if paid_full_gross else net)
-    if outstanding == 0 and amount_paid > 0 and not paid_full_gross:
-        outstanding = round(net - amount_paid - amount_withheld + prior_unpaid + prior_adj, 2)
     return {
         "gross_pay": gross,
         "total_employee_deductions": emp_ded,
@@ -439,6 +485,7 @@ def compute_line_totals(line: dict, details: Optional[dict] = None) -> dict[str,
         "total_tax_liability": float(tax_summary.get("total_tax_liability") or 0),
         "tax_balance_owed": float(tax_summary.get("tax_balance_owed") or 0),
         "remaining_tax_balance": float(tax_summary.get("remaining_balance") or 0),
+        "catch_up_withholding": catch_up,
         "tax_catch_up_adjustment": float(tax_summary.get("tax_catch_up_adjustment") or 0),
         "paid_full_gross_without_withholding": paid_full_gross,
     }
@@ -805,7 +852,7 @@ def estimate_payout_batch_taxes(
             **(estimate.get("tax_summary") or {}),
             "estimated": True,
         }
-        merged = reconcile_tax_summary(merged)
+        merged = apply_settlement_math(merged, gross)
         c2 = conn.cursor()
         c2.execute(
             "UPDATE payout_batch_lines SET payout_details_json=%s WHERE id=%s",
@@ -826,8 +873,14 @@ def estimate_payout_batch_taxes(
     return get_payout_batch_details(conn, organization_id, batch_id) or {}
 
 
-def _merge_line_details(existing: dict, patch: dict) -> dict:
-    base = parse_line_payout_details({"payout_details_json": existing})
+def _merge_line_details(existing: dict, patch: dict, *, gross: float = 0) -> dict:
+    base = parse_line_payout_details(
+        {
+            "payout_details_json": existing,
+            "gross_amount": gross,
+            "total_amount": gross,
+        }
+    )
     for section in ("employee_deductions", "employer_taxes", "payment", "settlement", "tax_summary"):
         if section in patch and isinstance(patch[section], dict):
             for key, val in patch[section].items():
@@ -850,7 +903,11 @@ def _merge_line_details(existing: dict, patch: dict) -> dict:
         base["use_payment_receipt"] = bool(patch.get("use_payment_receipt"))
     if "employee_note" in patch:
         base["employee_note"] = str(patch.get("employee_note") or "").strip()
-    return reconcile_tax_summary(base)
+    gross_f = float(_money(gross))
+    base = reconcile_tax_summary(base)
+    if gross_f > 0:
+        base = apply_settlement_math(base, gross_f)
+    return base
 
 
 def update_payout_batch_details(
@@ -899,7 +956,7 @@ def update_payout_batch_details(
             continue
         c.execute(
             """
-            SELECT payout_details_json FROM payout_batch_lines
+            SELECT payout_details_json, gross_amount, total_amount FROM payout_batch_lines
             WHERE id=%s AND batch_id=%s AND organization_id=%s
             """,
             (int(line_id), int(batch_id), int(organization_id)),
@@ -907,9 +964,12 @@ def update_payout_batch_details(
         row = c.fetchone()
         if not row:
             raise ValueError(f"Line {line_id} not found in batch")
+        row_dict = row if isinstance(row, dict) else {"payout_details_json": row[0], "gross_amount": row[1], "total_amount": row[2]}
+        line_gross = float(_money(row_dict.get("gross_amount") or row_dict.get("total_amount") or 0))
         merged = _merge_line_details(
-            _parse_json_blob(row[0] if not isinstance(row, dict) else row.get("payout_details_json")),
+            _parse_json_blob(row_dict.get("payout_details_json")),
             item.get("payout_details") or item,
+            gross=line_gross,
         )
         c.execute(
             """

@@ -1,6 +1,9 @@
 """
 Backfill estimated taxes for W2-2026-002 through W2-2026-006 catch-up payroll.
 
+Prior tax balances are stored for display only. Catch-up withholding defaults to $0;
+managers must enter catch-up amounts manually in Payment & Details.
+
 Usage (from repo root):
   python -m backend.scripts.backfill_w2_tax_catchup --org-id 3 --dry-run
   python -m backend.scripts.backfill_w2_tax_catchup --org-id 3 --apply
@@ -18,13 +21,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.payroll_payout_details import (
+    apply_settlement_math,
     build_estimated_payout_details_patch,
     ensure_payout_details_columns,
     infer_pay_frequency_from_batch,
     parse_line_payout_details,
     reconcile_tax_summary,
 )
-
 
 CATCHUP_BATCH_NAMES = (
     "W2-2026-002",
@@ -66,7 +69,7 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
     ensure_payout_details_columns(conn.cursor())
 
     prior_balances = _prior_balance_by_user(conn, org_id, CATCHUP_BATCH_NAMES)
-    report: dict = {"prior_balances": prior_balances, "lines": []}
+    report: dict = {"prior_balances_from_db": prior_balances, "lines": []}
 
     c = conn.cursor(dictionary=True)
     all_names = list(CATCHUP_BATCH_NAMES) + [CATCHUP_BATCH_NAME]
@@ -86,7 +89,7 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
     )
     rows = c.fetchall() or []
     updater = conn.cursor()
-    running_balance: dict[int, float] = dict(prior_balances)
+    running_balance: dict[int, float] = {}
 
     for row in rows:
         batch_name = str(row["batch_name"])
@@ -121,46 +124,36 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
             )
             continue
 
-        current_liability = round(
-            sum(float(v or 0) for v in (patch.get("employee_deductions") or {}).values()),
-            2,
-        )
+        patch.setdefault("settlement", {})
+        patch.setdefault("payment", {})
         if is_catchup:
-            withheld_target = round(current_liability + prior, 2)
-            withheld = round(min(gross, withheld_target), 2)
-            patch.setdefault("settlement", {})
             patch["settlement"].update(
                 {
                     "prior_unpaid_taxes": prior,
-                    "amount_withheld": withheld,
-                    "amount_paid": round(max(0.0, gross - withheld), 2),
+                    "catch_up_withholding": 0.0,
                     "paid_full_gross_without_withholding": False,
                 }
             )
-            patch.setdefault("tax_summary", {})
             patch["tax_summary"]["prior_tax_balance"] = prior
-            patch = reconcile_tax_summary(patch)
+            merged = apply_settlement_math(patch, gross)
         else:
-            patch.setdefault("settlement", {})
             patch["settlement"].update(
                 {
                     "prior_unpaid_taxes": 0.0,
-                    "amount_withheld": 0.0,
-                    "amount_paid": gross,
+                    "catch_up_withholding": 0.0,
                     "paid_full_gross_without_withholding": True,
                 }
             )
-            patch.setdefault("payment", {})
             patch["payment"]["method"] = "cash"
             patch["payment"]["cash_amount"] = gross
-            patch = reconcile_tax_summary(patch)
+            merged = apply_settlement_math(patch, gross)
 
         existing = parse_line_payout_details(row)
-        merged = dict(existing)
         for section in ("employee_deductions", "employer_taxes", "payment", "settlement", "tax_summary"):
-            if section in patch:
-                merged[section] = {**(merged.get(section) or {}), **patch[section]}
-        merged = reconcile_tax_summary(merged)
+            if section in merged:
+                existing[section] = {**(existing.get(section) or {}), **merged[section]}
+        merged = reconcile_tax_summary(existing)
+        merged = apply_settlement_math(merged, gross)
 
         entry = {
             "batch_name": batch_name,
@@ -168,6 +161,7 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
             "worker": worker,
             "gross": gross,
             "prior_balance": prior if is_catchup else 0,
+            "catch_up_withholding": merged["settlement"]["catch_up_withholding"],
             "amount_withheld": merged["settlement"]["amount_withheld"],
             "amount_paid": merged["settlement"]["amount_paid"],
             "tax_balance_owed": merged["settlement"]["tax_balance_owed"],
@@ -186,6 +180,15 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
                 """,
                 (json.dumps(merged), int(row["line_id"])),
             )
+            if not is_catchup and float(merged["settlement"]["amount_paid"]) >= gross and gross > 0:
+                updater.execute(
+                    """
+                    UPDATE payout_batch_lines
+                    SET payment_status='paid', line_status='paid'
+                    WHERE id=%s
+                    """,
+                    (int(row["line_id"]),),
+                )
 
     if apply:
         conn.commit()

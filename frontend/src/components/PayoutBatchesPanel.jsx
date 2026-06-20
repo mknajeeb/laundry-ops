@@ -125,13 +125,23 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
   const lineGross = (ln) =>
     Number(ln.gross_wages || ln.gross_amount || ln.total_amount || 0);
 
+  const linePaidFullGross = (ln) => {
+    const settlement = ln.payout_details?.settlement || {};
+    return Boolean(settlement.paid_full_gross_without_withholding);
+  };
+
   const lineTaxAmount = (ln) => {
-    if (isPayoutDetailsFinalized(ln) && ln.tax_withheld != null) {
-      return Number(ln.tax_withheld);
+    if (isPayoutDetailsFinalized(ln)) {
+      if (linePaidFullGross(ln)) return 0;
+      if (ln.tax_withheld != null) return Number(ln.tax_withheld);
     }
+    const settlement = ln.payout_details?.settlement || {};
+    if (linePaidFullGross(ln)) return 0;
     const ded = ln.payout_details?.employee_deductions;
+    const catchUp = Number(settlement.catch_up_withholding || 0);
     if (ded) {
-      return Object.values(ded).reduce((s, v) => s + Number(v || 0), 0);
+      const emp = Object.values(ded).reduce((s, v) => s + Number(v || 0), 0);
+      return emp + catchUp;
     }
     return null;
   };
@@ -141,20 +151,24 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
       return Number(ln.net_paid);
     }
     const gross = lineGross(ln);
+    if (linePaidFullGross(ln)) return gross;
     const tax = lineTaxAmount(ln);
     return tax != null ? gross - tax : null;
   };
 
   const linePaidAmount = (ln) => {
     const settlement = ln.payout_details?.settlement || {};
+    const gross = lineGross(ln);
     const paid = Number(settlement.amount_paid || 0);
     if (paid > 0) return paid;
+    if (linePaidFullGross(ln) && gross > 0) return gross;
     if (ln.payment_status === "paid") return lineNetAmount(ln) || 0;
     return 0;
   };
 
   const lineOutstandingAmount = (ln) => {
     const settlement = ln.payout_details?.settlement || {};
+    if (linePaidFullGross(ln) && linePaidAmount(ln) >= lineGross(ln)) return 0;
     const out = Number(settlement.outstanding_balance || 0);
     if (out > 0) return out;
     const net = lineNetAmount(ln);
@@ -163,7 +177,9 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
   };
 
   const linePaymentHint = (ln) => {
-    if (ln.payment_status === "paid") return "Payment completed for this employee.";
+    if (ln.payment_status === "paid" || (linePaidFullGross(ln) && linePaidAmount(ln) >= lineGross(ln))) {
+      return "Payment completed for this employee.";
+    }
     if (ln.payment_status === "approved_unpaid") return "Not yet paid.";
     return "Payment not yet recorded.";
   };

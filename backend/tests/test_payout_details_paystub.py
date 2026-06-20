@@ -99,25 +99,25 @@ def test_settlement_scenario_a_full_payment():
 
 
 def test_settlement_scenario_b_withheld():
-    """Scenario B: partial payment with withholding."""
+    """Current-period withholding follows deductions; catch-up is separate."""
     line = {"gross_amount": 1000}
     details = parse_line_payout_details(
         {
+            "gross_amount": 1000,
             "payout_details_json": {
                 "employee_deductions": {"fit": 200},
                 "settlement": {
-                    "amount_paid": 600,
-                    "amount_withheld": 100,
-                    "outstanding_balance": 100,
+                    "catch_up_withholding": 0,
                     "prior_unpaid_taxes": 0,
                 },
-            }
+            },
         }
     )
     totals = compute_line_totals(line, details)
     assert totals["net_pay"] == 800.0
-    assert totals["amount_withheld"] == 100.0
-    assert totals["outstanding_balance"] == 100.0
+    assert totals["amount_withheld"] == 200.0
+    assert totals["amount_paid"] == 800.0
+    assert totals["outstanding_balance"] == 0.0
 
 
 def test_settlement_scenario_c_prior_unpaid_catchup():
@@ -767,7 +767,7 @@ def test_enrich_line_settlement_fields_after_finalize():
     row = enrich_line_settlement_fields(line, batch)
     assert row["payout_details_finalized"] is True
     assert row["net_paid"] == 870.0
-    assert row["tax_withheld"] == 0.0
+    assert row["tax_withheld"] == 130.0
     assert row["tax_liability"] == 130.0
     assert row["payment_date"] == "2026-06-01"
     assert row["payment_method_label"] == "Direct Deposit"

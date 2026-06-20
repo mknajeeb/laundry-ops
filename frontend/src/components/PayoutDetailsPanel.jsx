@@ -103,12 +103,31 @@ function emptyLineState(line) {
 
 function computeLocalTotals(line, draft) {
   const gross = num(line.gross_amount || line.total_amount);
-  const ded = DEDUCTION_FIELDS.reduce(
+  const currentTax = DEDUCTION_FIELDS.reduce(
     (s, f) => s + num(draft.employee_deductions?.[f.key]),
     0,
   );
+  const catchUp = num(draft.settlement?.catch_up_withholding);
+  const paidFullGross = Boolean(draft.settlement?.paid_full_gross_without_withholding);
   const er = ER_TAX_FIELDS.reduce((s, f) => s + num(draft.employer_taxes?.[f.key]), 0);
-  return { gross, totalDed: ded, totalEr: er, net: gross - ded };
+  const withheld = paidFullGross ? 0 : currentTax + catchUp;
+  const net = paidFullGross ? gross : Math.max(0, gross - currentTax - catchUp);
+  return { gross, totalDed: currentTax, totalEr: er, net, withheld, catchUp, paidFullGross };
+}
+
+function applyLocalSettlementMath(draft, line) {
+  const totals = computeLocalTotals(line, draft);
+  const settlement = { ...(draft.settlement || {}) };
+  if (totals.paidFullGross) {
+    settlement.catch_up_withholding = 0;
+    settlement.amount_withheld = 0;
+    settlement.amount_paid = totals.gross;
+  } else {
+    settlement.amount_withheld = totals.withheld;
+    settlement.amount_paid = totals.net;
+  }
+  settlement.outstanding_balance = 0;
+  return { ...draft, settlement };
 }
 
 async function printHtmlDocument(fetchFn) {
@@ -202,13 +221,21 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const canSetDocumentMode = detail?.payout_workflow?.can_set_document_mode && canEditDetails;
 
   const updateDraft = (lineId, section, key, value) => {
-    setLineDrafts((prev) => ({
-      ...prev,
-      [lineId]: {
+    setLineDrafts((prev) => {
+      const line = (detail?.lines || []).find((ln) => ln.id === lineId);
+      const nextDraft = {
         ...prev[lineId],
         [section]: { ...prev[lineId][section], [key]: value },
-      },
-    }));
+      };
+      const shouldRecalc =
+        section === "employee_deductions" ||
+        (section === "settlement" &&
+          ["catch_up_withholding", "paid_full_gross_without_withholding"].includes(key));
+      return {
+        ...prev,
+        [lineId]: shouldRecalc && line ? applyLocalSettlementMath(nextDraft, line) : nextDraft,
+      };
+    });
   };
 
   const updateLineFlag = (lineId, key, value) => {
@@ -439,14 +466,18 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                       ? formatPayrollMoney(ln.tax_liability)
                       : `$${lineTaxTotal(draft).toFixed(2)}`
                     : `$${lineTaxTotal(draft).toFixed(2)}`;
+                  const priorBalance = num(
+                    draft.settlement?.prior_unpaid_taxes ?? ln.prior_tax_balance,
+                  );
+                  const catchUp = num(draft.settlement?.catch_up_withholding);
                   const taxWithheldDisplay = finalized
                     ? formatTaxWithheldDisplay(ln)
-                    : `$${num(draft.settlement?.amount_withheld).toFixed(2)}`;
+                    : totals.paidFullGross
+                      ? "$0.00"
+                      : `$${totals.withheld.toFixed(2)}`;
                   const netDisplay = finalized
                     ? formatNetPaidDisplay(ln)
-                    : draft.settlement?.paid_full_gross_without_withholding
-                      ? `$${totals.gross.toFixed(2)}`
-                      : `$${totals.net.toFixed(2)}`;
+                    : `$${totals.net.toFixed(2)}`;
 
                   return (
                     <Fragment key={ln.id}>
@@ -480,7 +511,14 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                             ) : null}
                           </Stack>
                         </TableCell>
-                        <TableCell align="right">{taxWithheldDisplay}</TableCell>
+                        <TableCell align="right">
+                          {priorBalance > 0 ? (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                              Prior: ${priorBalance.toFixed(2)}
+                            </Typography>
+                          ) : null}
+                          {taxWithheldDisplay}
+                        </TableCell>
                         <TableCell align="right">{netDisplay}</TableCell>
                         <TableCell>
                           {PAYMENT_METHODS.find((m) => m.value === method)?.label || method}
@@ -628,38 +666,36 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                   <TextField
                                     size="small"
                                     type="number"
-                                    label="Amount paid"
+                                    label="Catch-up withholding"
+                                    value={draft.settlement?.catch_up_withholding ?? ""}
+                                    onChange={(e) =>
+                                      updateDraft(ln.id, "settlement", "catch_up_withholding", e.target.value)
+                                    }
+                                    disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
+                                  />
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    label="Amount paid (net)"
                                     value={draft.settlement?.amount_paid ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "amount_paid", e.target.value)
-                                    }
+                                    InputProps={{ readOnly: true }}
                                   />
                                   <TextField
                                     size="small"
                                     type="number"
-                                    label="Withheld"
+                                    label="Estimated withholding (total)"
                                     value={draft.settlement?.amount_withheld ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "amount_withheld", e.target.value)
-                                    }
+                                    InputProps={{ readOnly: true }}
                                   />
                                   <TextField
                                     size="small"
                                     type="number"
-                                    label="Outstanding"
-                                    value={draft.settlement?.outstanding_balance ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "outstanding_balance", e.target.value)
-                                    }
-                                  />
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Prior unpaid taxes"
+                                    label="Prior tax balance"
                                     value={draft.settlement?.prior_unpaid_taxes ?? ""}
                                     onChange={(e) =>
                                       updateDraft(ln.id, "settlement", "prior_unpaid_taxes", e.target.value)
                                     }
+                                    helperText="Shown for reference — does not reduce pay unless catch-up entered"
                                   />
                                   <TextField
                                     size="small"

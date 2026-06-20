@@ -1,0 +1,51 @@
+"""Tests for catch-up withholding vs prior balance settlement math."""
+
+from backend.payroll_payout_details import apply_settlement_math, reconcile_tax_summary
+
+
+def _details(current_tax: float, prior: float = 0, catch_up: float = 0, paid_full: bool = False):
+    base = {
+        "employee_deductions": {
+            "fit": current_tax,
+            "ss": 0,
+            "medicare": 0,
+            "state": 0,
+            "local": 0,
+            "other1": 0,
+            "other2": 0,
+        },
+        "settlement": {
+            "prior_unpaid_taxes": prior,
+            "catch_up_withholding": catch_up,
+            "paid_full_gross_without_withholding": paid_full,
+        },
+    }
+    return reconcile_tax_summary(base)
+
+
+def test_paid_full_gross_shows_liability_not_withheld():
+    details = apply_settlement_math(_details(50.0, paid_full=True), 200.0)
+    settlement = details["settlement"]
+    assert settlement["amount_withheld"] == 0.0
+    assert settlement["amount_paid"] == 200.0
+    assert settlement["catch_up_withholding"] == 0.0
+    assert settlement["tax_balance_owed"] == 50.0
+
+
+def test_catch_up_default_zero_prior_visible_only():
+    details = apply_settlement_math(_details(30.0, prior=100.0, catch_up=0.0), 150.0)
+    settlement = details["settlement"]
+    assert settlement["prior_unpaid_taxes"] == 100.0
+    assert settlement["amount_withheld"] == 30.0
+    assert settlement["amount_paid"] == 120.0
+    assert settlement["tax_balance_owed"] == 0.0
+    assert details["tax_summary"]["remaining_balance"] == 100.0
+
+
+def test_catch_up_withholding_reduces_net_pay():
+    details = apply_settlement_math(_details(25.0, prior=80.0, catch_up=40.0), 200.0)
+    settlement = details["settlement"]
+    assert settlement["amount_withheld"] == 65.0
+    assert settlement["amount_paid"] == 135.0
+    assert settlement["catch_up_withholding"] == 40.0
+    assert details["tax_summary"]["remaining_balance"] == 40.0
