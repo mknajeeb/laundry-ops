@@ -252,6 +252,7 @@ def _empty_details() -> dict[str, Any]:
             "tax_catch_up_adjustment": 0.0,
         },
         "use_payment_receipt": False,
+        "show_tax_payment_section": True,
         "employee_note": "",
     }
 
@@ -275,6 +276,8 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
             base[section].update(raw[section])
     if "use_payment_receipt" in raw:
         base["use_payment_receipt"] = bool(raw.get("use_payment_receipt"))
+    if "show_tax_payment_section" in raw:
+        base["show_tax_payment_section"] = bool(raw.get("show_tax_payment_section"))
     if "employee_note" in raw:
         base["employee_note"] = str(raw.get("employee_note") or "").strip()
     for k in EMPLOYEE_DEDUCTION_KEYS:
@@ -1114,6 +1117,8 @@ def _merge_line_details(existing: dict, patch: dict, *, gross: float = 0) -> dic
         base["tax_summary"]["estimated"] = bool(patch["tax_summary"]["estimated"])
     if "use_payment_receipt" in patch:
         base["use_payment_receipt"] = bool(patch.get("use_payment_receipt"))
+    if "show_tax_payment_section" in patch:
+        base["show_tax_payment_section"] = bool(patch.get("show_tax_payment_section"))
     if "employee_note" in patch:
         base["employee_note"] = str(patch.get("employee_note") or "").strip()
     gross_f = float(_money(gross))
@@ -1690,7 +1695,9 @@ def _render_paystub_html(
 <p class="employee-meta"><strong>{worker}</strong><br>
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
         earnings_html = _employee_earnings_html(hours, rate, gross)
-        tax_balance_html = _employee_tax_balance_html(totals)
+        tax_balance_html = ""
+        if bool(details.get("show_tax_payment_section", True)):
+            tax_balance_html = _employee_tax_balance_html(totals)
         payment_html = _employee_payment_method_html(payment)
         cash_receipt_html = (
             _cash_receipt_section_html(line, payment, totals) if cash_receipt_separate else ""

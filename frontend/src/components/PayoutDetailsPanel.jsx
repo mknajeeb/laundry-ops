@@ -110,6 +110,8 @@ function emptyLineState(line, batch = null) {
     settlement: { ...(pd.settlement || {}) },
     tax_summary: { ...(pd.tax_summary || {}) },
     use_payment_receipt: Boolean(pd.use_payment_receipt),
+    show_tax_payment_section:
+      pd.show_tax_payment_section === undefined ? true : Boolean(pd.show_tax_payment_section),
     employee_note: pd.employee_note || "",
   };
 }
@@ -216,6 +218,7 @@ function payoutDetailsPayload(draft) {
     settlement: draft.settlement,
     tax_summary: draft.tax_summary,
     use_payment_receipt: draft.use_payment_receipt,
+    show_tax_payment_section: draft.show_tax_payment_section,
     employee_note: draft.employee_note || "",
   };
 }
@@ -295,6 +298,10 @@ function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
             </Typography>
             <Typography variant="body2">
               Prior tax balance: <strong>{formatDraftMoney(draft.settlement?.prior_unpaid_taxes)}</strong>
+            </Typography>
+            <Typography variant="body2">
+              Tax on paystub:{" "}
+              <strong>{draft.show_tax_payment_section ? "Shown" : "Hidden"}</strong>
             </Typography>
             {totals.paidFullGross ? (
               <Typography variant="body2" color="warning.main">
@@ -1090,6 +1097,31 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       }
                                       label="Paid full gross (no withholding)"
                                     />
+                                    <FormControlLabel
+                                      control={
+                                        <Checkbox
+                                          size="small"
+                                          checked={Boolean(draft.show_tax_payment_section)}
+                                          onChange={(e) =>
+                                            updateLineFlag(
+                                              ln.id,
+                                              "show_tax_payment_section",
+                                              e.target.checked,
+                                            )
+                                          }
+                                        />
+                                      }
+                                      label="Show tax balance on employee paystub"
+                                      sx={{ alignItems: "flex-start" }}
+                                    />
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      sx={{ display: "block", mt: -0.5, mb: 0.5 }}
+                                    >
+                                      Temporary during catch-up period — uncheck after ~5–6 weeks when
+                                      balances are cleared.
+                                    </Typography>
                                   </Stack>
                                   {!isReceiptMode ? (
                                     <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>

@@ -747,6 +747,56 @@ def test_paystub_html_available_for_cash_payment():
         assert "Direct Deposit" in dd_html
 
 
+def test_paystub_employee_tax_balance_hidden_when_checkbox_off():
+    conn = MagicMock()
+    batch = {
+        "id": 1,
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-14",
+        "payout_details_finalized_at": "2026-06-20",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "Worker",
+                "approved_hours": 10,
+                "rate": 20,
+                "gross_amount": 200,
+                "payout_details": {
+                    "employee_deductions": {"fit": 10},
+                    "show_tax_payment_section": False,
+                    "payment": {"method": "direct_deposit", "date": "2026-06-14"},
+                    "settlement": {
+                        "amount_paid": 190,
+                        "paid_full_gross_without_withholding": True,
+                        "tax_balance_owed": 10,
+                    },
+                    "tax_summary": {"tax_balance_owed": 10, "current_period_taxes": 10},
+                },
+                "payout_totals": {
+                    "gross_pay": 200,
+                    "total_employee_deductions": 10,
+                    "net_pay": 190,
+                    "amount_paid": 200,
+                    "tax_balance_owed": 10,
+                    "current_period_taxes": 10,
+                    "remaining_tax_balance": 10,
+                    "paid_full_gross_without_withholding": True,
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_paystub_html
+
+        html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
+        assert "Tax Balance" not in html
+        assert "Estimated tax balance" not in html
+
+
 def test_paystub_employee_tax_balance_catchup_flow():
     conn = MagicMock()
     batch = {
