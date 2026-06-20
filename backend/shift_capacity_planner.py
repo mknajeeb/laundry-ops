@@ -8,8 +8,9 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 StrategyName = Literal["continuous_washing", "dryer_push"]
-WashingStrategy = Literal["continuous_washing", "batch_washing", "hybrid_recommended"]
+WashingStrategy = Literal["batch_washing", "sort_while_drying"]
 WeighingHandledBy = Literal["dedicated_weigher", "sorter", "washer"]
+WeighingMode = Literal["upfront", "during_sort", "separate_lane"]
 TRANSFER_MIN = 5
 BATCH_SIZE_OPTIONS = (6, 8, 10, 12)
 MILESTONE_INTERVAL_MIN = 30
@@ -53,9 +54,10 @@ DEFAULTS: dict[str, Any] = {
     "weigher_count": None,
     "sorter_count": None,
     "weighing_handled_by": "dedicated_weigher",
+    "weighing_mode": "separate_lane",
     "transfer_min": TRANSFER_MIN,
     "dryer_push_wash_window_min": 45,
-    "washing_strategy": "hybrid_recommended",
+    "washing_strategy": "batch_washing",
     "batch_size": 8,
     "load_washer_min": 3,
     "unload_washer_min": 3,
@@ -132,20 +134,72 @@ def _non_negative_float(value: Any, name: str) -> float:
     return n
 
 
+WEIGHING_MODE_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "separate_lane": {
+        "label": "Separate weigh lane",
+        "description": (
+            "Dedicated weigher(s) on their own lane; weighed bags feed sorting "
+            "continuously. Sorter and weigher are different people."
+        ),
+        "who_options": ["dedicated_weigher"],
+    },
+    "during_sort": {
+        "label": "Weigh while sorting",
+        "description": (
+            "Sorter weighs each bag as part of sorting — same person, sort time "
+            "includes weigh time per bag."
+        ),
+        "who_options": ["sorter"],
+    },
+    "upfront": {
+        "label": "Weigh all at shift start",
+        "description": (
+            "All bags are weighed before any sorting begins. Washer can arrive "
+            "early to weigh everything, or a weigher/sorter can do upfront weigh."
+        ),
+        "who_options": ["dedicated_weigher", "sorter", "washer"],
+    },
+}
+
+
+STRATEGY_DEFINITIONS: dict[str, dict[str, str]] = {
+    "batch_washing": {
+        "label": "Batch Washing",
+        "description": (
+            "Sort a batch, then the washer person washes it, transfers to dryers, "
+            "and loads dryers before the sorter starts the next batch. Matches one "
+            "washer-person who cannot wash and load dryers at the same time."
+        ),
+    },
+    "sort_while_drying": {
+        "label": "Sort While Drying",
+        "description": (
+            "Sorter keeps sorting ahead while the washer person finishes wash → "
+            "transfer → dryer loading for the previous batch. Use when sorting capacity "
+            "can stay ahead without blocking dryer work."
+        ),
+    },
+}
+
+
 def _parse_washing_strategy(raw: Any) -> WashingStrategy:
     value = str(raw or DEFAULTS["washing_strategy"]).strip().lower()
     aliases = {
-        "continuous": "continuous_washing",
-        "continuous_washing": "continuous_washing",
         "batch": "batch_washing",
         "batch_washing": "batch_washing",
-        "hybrid": "hybrid_recommended",
-        "hybrid_recommended": "hybrid_recommended",
-        "recommended": "hybrid_recommended",
+        "sort_while_drying": "sort_while_drying",
+        "sort_during_dry": "sort_while_drying",
+        "sort_while_dry": "sort_while_drying",
+        # Legacy API values — continuous/hybrid were misleading for one washer-person ops
+        "continuous": "sort_while_drying",
+        "continuous_washing": "sort_while_drying",
+        "hybrid": "batch_washing",
+        "hybrid_recommended": "batch_washing",
+        "recommended": "batch_washing",
     }
     if value not in aliases:
         raise ValueError(
-            "washing_strategy must be one of: continuous_washing, batch_washing, hybrid_recommended"
+            "washing_strategy must be one of: batch_washing, sort_while_drying"
         )
     return aliases[value]  # type: ignore[return-value]
 
@@ -176,6 +230,46 @@ def _parse_weighing_handled_by(raw: Any) -> WeighingHandledBy:
             "weighing_handled_by must be one of: dedicated_weigher, sorter, washer"
         )
     return aliases[value]  # type: ignore[return-value]
+
+
+def _parse_weighing_mode(raw: Any, handled_by: WeighingHandledBy) -> WeighingMode:
+    if raw is not None and str(raw).strip():
+        value = str(raw).strip().lower()
+        aliases = {
+            "upfront": "upfront",
+            "upfront_all": "upfront",
+            "weigh_all": "upfront",
+            "during_sort": "during_sort",
+            "weigh_during_sort": "during_sort",
+            "while_sorting": "during_sort",
+            "separate_lane": "separate_lane",
+            "separate": "separate_lane",
+            "dedicated_lane": "separate_lane",
+        }
+        if value not in aliases:
+            raise ValueError(
+                "weighing_mode must be one of: upfront, during_sort, separate_lane"
+            )
+        return aliases[value]  # type: ignore[return-value]
+    if handled_by == "sorter":
+        return "during_sort"
+    if handled_by == "washer":
+        return "upfront"
+    return "separate_lane"
+
+
+def _normalize_weighing_config(
+    mode: WeighingMode, handled_by: WeighingHandledBy
+) -> tuple[WeighingMode, WeighingHandledBy]:
+    """Align mode and handler; sorter≠washer and mode constraints."""
+    if mode == "during_sort":
+        return mode, "sorter"
+    if mode == "separate_lane":
+        return mode, "dedicated_weigher"
+    allowed = WEIGHING_MODE_DEFINITIONS["upfront"]["who_options"]
+    if handled_by not in allowed:
+        return mode, "dedicated_weigher"
+    return mode, handled_by
 
 
 def build_uniform_bag_weights(bag_count: int, avg_lb: float) -> list[float]:
@@ -341,6 +435,7 @@ class PlannerInputs:
     weigher_count: int
     sorter_count: int
     weighing_handled_by: WeighingHandledBy
+    weighing_mode: WeighingMode
     transfer_min: int
     dryer_push_wash_window_min: int
     washing_strategy: WashingStrategy
@@ -358,17 +453,24 @@ class PlannerInputs:
 
     @property
     def effective_sort_min_per_bag(self) -> float:
-        if self.weighing_handled_by == "sorter":
+        if self.weighing_mode == "during_sort":
             return self.sort_min_per_bag + self.weigh_min_per_bag
         return self.sort_min_per_bag
 
     @property
     def uses_dedicated_weigher(self) -> bool:
-        return self.weighing_handled_by == "dedicated_weigher"
+        return self.weighing_mode == "separate_lane" or (
+            self.weighing_mode == "upfront"
+            and self.weighing_handled_by == "dedicated_weigher"
+        )
 
     @property
     def uses_washer_weighing(self) -> bool:
-        return self.weighing_handled_by == "washer"
+        return False
+
+    @property
+    def needs_weigher_staff(self) -> bool:
+        return self.uses_dedicated_weigher and self.weigher_count > 0
 
     def estimate_wash_loads(self) -> list[dict[str, Any]]:
         loads: list[dict[str, Any]] = []
@@ -533,6 +635,11 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
     transfer_min = _non_negative_int(raw.get("transfer_min"), "transfer_min")
     push_window = _positive_int(raw.get("dryer_push_wash_window_min"), "dryer_push_wash_window_min")
     weighing_handled_by = _parse_weighing_handled_by(raw.get("weighing_handled_by"))
+    weighing_mode_raw = raw.get("weighing_mode")
+    weighing_mode = _parse_weighing_mode(weighing_mode_raw, weighing_handled_by)
+    weighing_mode, weighing_handled_by = _normalize_weighing_config(
+        weighing_mode, weighing_handled_by
+    )
     washing_strategy = _parse_washing_strategy(raw.get("washing_strategy"))
     batch_size = _parse_batch_size(raw.get("batch_size"))
     load_washer_min = _non_negative_int(raw.get("load_washer_min"), "load_washer_min")
@@ -563,8 +670,15 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
     dryer_count = _positive_int(raw.get("dryer_count"), "dryer_count")
 
     window_min = target_min - start_min
-    weigher_default = max(1, math.ceil(bag_count * weigh_min / window_min)) if weighing_handled_by == "dedicated_weigher" else 0
-    sort_rate = sort_min + weigh_min if weighing_handled_by == "sorter" else sort_min
+    needs_weigher = weighing_mode == "separate_lane" or (
+        weighing_mode == "upfront" and weighing_handled_by == "dedicated_weigher"
+    )
+    weigher_default = (
+        max(1, math.ceil(bag_count * weigh_min / window_min)) if needs_weigher else 0
+    )
+    sort_rate = (
+        sort_min + weigh_min if weighing_mode == "during_sort" else sort_min
+    )
     sorter_default = max(1, math.ceil(bag_count * sort_rate / window_min))
 
     weigher_raw = raw.get("weigher_count")
@@ -580,7 +694,7 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
         else sorter_default
     )
 
-    if weighing_handled_by != "dedicated_weigher":
+    if not needs_weigher:
         weigher_count = 0
 
     return PlannerInputs(
@@ -605,6 +719,7 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
         weigher_count=weigher_count,
         sorter_count=sorter_count,
         weighing_handled_by=weighing_handled_by,
+        weighing_mode=weighing_mode,
         transfer_min=transfer_min,
         dryer_push_wash_window_min=push_window,
         washing_strategy=washing_strategy,
@@ -629,7 +744,7 @@ def _init_state(inp: PlannerInputs) -> SimState:
         washer_free_at=[inp.start_min] * inp.washer_count,
         dryer_free_at=[inp.start_min] * inp.dryer_count,
     )
-    if inp.uses_dedicated_weigher:
+    if inp.weighing_mode in ("separate_lane", "upfront"):
         state.weigh_queue = []
     else:
         state.sort_queue = list(inp.bag_weights)
@@ -692,7 +807,7 @@ def _snapshot(state: SimState, inp: PlannerInputs) -> dict[str, Any]:
     ready_fold = int(state.ready_for_fold + state.folded)
 
     weighed_backlog = len(state.incoming_bags) + len(state.weigh_queue)
-    if inp.weighing_handled_by == "washer":
+    if inp.weighing_mode == "upfront":
         weighed_backlog = max(0, inp.bag_count - state.weighed_count)
 
     backlogs = {
@@ -741,7 +856,7 @@ def _maybe_trigger_sorter_break(state: SimState, inp: PlannerInputs) -> None:
 
 
 def _step_weigh_sort(state: SimState, inp: PlannerInputs) -> None:
-    if inp.uses_dedicated_weigher:
+    if inp.weighing_mode == "separate_lane":
         if state.incoming_bags and inp.weigher_count > 0 and state.minute >= inp.start_min:
             state.weigh_remainder += inp.weigher_count / inp.weigh_min_per_bag
             while state.weigh_remainder >= 1 and state.incoming_bags:
@@ -750,12 +865,28 @@ def _step_weigh_sort(state: SimState, inp: PlannerInputs) -> None:
                 state.weighed_count += 1
                 state.weigh_remainder -= 1
 
-    if state.weigh_queue and inp.uses_dedicated_weigher:
-        while state.weigh_queue:
-            state.sort_queue.append(state.weigh_queue.pop(0))
+        if state.weigh_queue and inp.uses_dedicated_weigher:
+            while state.weigh_queue:
+                state.sort_queue.append(state.weigh_queue.pop(0))
+
+    elif inp.weighing_mode == "upfront":
+        if state.incoming_bags and state.minute >= inp.start_min:
+            rate = _upfront_weigh_rate(inp)
+            if rate > 0:
+                state.weigh_remainder += rate
+                while state.weigh_remainder >= 1 and state.incoming_bags:
+                    bag = state.incoming_bags.pop(0)
+                    state.sort_queue.append(bag)
+                    state.weighed_count += 1
+                    state.weigh_remainder -= 1
+
+    sort_allowed = True
+    if inp.weighing_mode == "upfront" and state.weighed_count < inp.bag_count:
+        sort_allowed = False
 
     if (
-        state.sort_queue
+        sort_allowed
+        and state.sort_queue
         and inp.sorter_count > 0
         and _sorter_can_work(state, inp)
     ):
@@ -767,7 +898,7 @@ def _step_weigh_sort(state: SimState, inp: PlannerInputs) -> None:
             state.sorted_count += 1
             state.sort_remainder -= 1
             state.sorter_bags_since_break += 1
-            if inp.weighing_handled_by == "sorter":
+            if inp.weighing_mode == "during_sort":
                 state.weighed_count += 1
             _maybe_trigger_sorter_break(state, inp)
             if state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until:
@@ -1220,10 +1351,14 @@ def _build_alerts(inp: PlannerInputs, milestones: dict[str, dict[str, Any]], fin
         if snap and snap["bottleneck"] in {"sorting", "weighing", "waiting_dryer"}:
             add(f"By {clock}: {snap['action_needed']}")
 
-    if inp.weighing_handled_by == "sorter":
+    if inp.weighing_mode == "during_sort":
         add("Weighing on sorters — sort capacity reduced by weigh time per bag")
-    elif inp.weighing_handled_by == "washer":
-        add("Weighing at washers — load starts delayed by weigh time per bag")
+    elif inp.weighing_mode == "upfront" and inp.weighing_handled_by == "washer":
+        add("Upfront weighing by washer person — sorting starts after all bags weighed")
+    elif inp.weighing_mode == "upfront":
+        add("Upfront weigh-all — sorting blocked until every bag is weighed")
+    elif inp.weighing_mode == "separate_lane":
+        add("Separate weigh lane — dedicated weigher feeds sorting continuously")
 
     for line in inp.split_distribution.get("summary_lines", []):
         add(line)
@@ -1523,10 +1658,28 @@ def _init_op_state(inp: PlannerInputs) -> OpSimState:
     )
     if inp.uses_dedicated_weigher:
         state.incoming_bags = list(inp.bag_weights)
+    elif inp.weighing_mode == "upfront":
+        state.incoming_bags = list(inp.bag_weights)
     else:
         state.sort_queue = [(i + 1, inp.bag_weights[i]) for i in range(inp.bag_count)]
         state.incoming_bags = []
     return state
+
+
+def _mark_order_weighed(order: OrderTrack, state: OpSimState, inp: PlannerInputs) -> None:
+    weigh_end = state.minute
+    weigh_start = max(inp.start_min, weigh_end - max(1, int(math.ceil(inp.weigh_min_per_bag))))
+    order.weigh_start = weigh_start
+    order.weigh_end = weigh_end
+    state.weighed_count += 1
+
+
+def _upfront_weigh_rate(inp: PlannerInputs) -> float:
+    if inp.weighing_handled_by == "dedicated_weigher":
+        return inp.weigher_count / inp.weigh_min_per_bag if inp.weigher_count > 0 else 0.0
+    if inp.weighing_handled_by == "sorter":
+        return inp.sorter_count / inp.weigh_min_per_bag if inp.sorter_count > 0 else 0.0
+    return 1.0 / inp.weigh_min_per_bag
 
 
 def _order_by_id(state: OpSimState, order_id: int) -> OrderTrack:
@@ -2554,11 +2707,10 @@ def run_operational_simulation(
     }
 
 
-def _pick_hybrid_batch_size(inp: PlannerInputs) -> tuple[int, dict[str, Any]]:
+def _pick_optimal_batch_size(inp: PlannerInputs) -> int:
+    """Pick batch size maximizing folded bags at target for batch washing."""
     best_size = inp.batch_size
-    best_result: dict[str, Any] | None = None
     best_score: tuple[int, int] = (-1, 999999)
-    comparisons: dict[str, Any] = {}
 
     for size in BATCH_SIZE_OPTIONS:
         result = run_operational_simulation(
@@ -2570,49 +2722,17 @@ def _pick_hybrid_batch_size(inp: PlannerInputs) -> tuple[int, dict[str, Any]]:
         first_ready = result["guidance"].get("switch_labor_to_folding")
         first_min = _parse_clock_minutes(first_ready, default="12:00 PM") if first_ready else 9999
         score = (folded, -first_min)
-        comparisons[str(size)] = {"folded": folded, "first_fold_ready": first_ready}
         if score > best_score:
             best_score = score
             best_size = size
-            best_result = result
 
-    cont = run_operational_simulation(inp, washing_strategy="continuous_washing")
-    cont_folded = cont["final"]["bags_folded"]
-    comparisons["continuous"] = {"folded": cont_folded}
-
-    if cont_folded > best_score[0]:
-        return inp.batch_size, cont
-
-    assert best_result is not None
-    return best_size, best_result
+    return best_size
 
 
 def optimize_operational_strategy(inp: PlannerInputs, operational: dict[str, Any]) -> dict[str, Any]:
-    """Rules-based optimizer: pick washing strategy + batch size maximizing target-time output."""
-    strategies = operational["strategies"]
+    """Rules-based optimizer: batch washing vs sort-while-drying across batch sizes."""
     staffing = compute_staffing(inp)
     target_label = _minutes_to_label(inp.target_min)
-
-    labels = {
-        "continuous_washing": "Continuous Washing",
-        "batch_washing": "Batch Washing",
-        "hybrid_recommended": "Hybrid Recommended",
-    }
-    reasons = {
-        "continuous_washing": "Keep washers fed continuously when sorting can keep pace all shift.",
-        "batch_washing": "Pause sorting between batches so the washer person clears transfers first.",
-        "hybrid_recommended": "Use an initial batch, then resume continuous sorting for higher throughput.",
-    }
-
-    candidates: list[tuple[str, int, dict[str, Any]]] = [
-        ("continuous_washing", inp.batch_size, strategies["continuous_washing"]),
-        ("batch_washing", strategies["batch_washing"].get("batch_size", inp.batch_size), strategies["batch_washing"]),
-        (
-            "hybrid_recommended",
-            operational["recommended_batch_size"],
-            strategies["hybrid_recommended"],
-        ),
-    ]
 
     def _target_folded(result: dict[str, Any]) -> int:
         ms = result.get("milestones", {})
@@ -2620,29 +2740,44 @@ def optimize_operational_strategy(inp: PlannerInputs, operational: dict[str, Any
             return int(ms[target_label].get("bags_folded", 0))
         return int(result["final"]["bags_folded"])
 
-    def _score(item: tuple[str, int, dict[str, Any]]) -> tuple[int, int, int, int]:
-        _, _, result = item
+    candidates: list[tuple[str, int, dict[str, Any]]] = []
+    comparisons: dict[str, Any] = {}
+    for size in BATCH_SIZE_OPTIONS:
+        for key in ("batch_washing", "sort_while_drying"):
+            result = run_operational_simulation(inp, washing_strategy=key, batch_size=size)  # type: ignore[arg-type]
+            candidates.append((key, size, result))
+            comparisons[f"{key}_{size}"] = {
+                "batch_size": size,
+                "bags_folded_at_target": _target_folded(result),
+                "bags_folded": result["final"]["bags_folded"],
+                "bags_ready": result["final"]["bags_ready_for_folding"],
+                "bottleneck": result.get("utilization_bottleneck"),
+                "first_fold_ready": result["guidance"].get("switch_labor_to_folding"),
+            }
+
+    def _score(item: tuple[str, int, dict[str, Any]]) -> tuple[int, int, int, int, int]:
+        key, _, result = item
         switch = result["guidance"].get("switch_labor_to_folding")
         switch_min = _parse_clock_minutes(switch, default="12:00 PM") if switch else 9999
+        prefer_batch = 1 if key == "batch_washing" else 0
         return (
             _target_folded(result),
             int(result["final"]["bags_folded"]),
             int(result["final"]["bags_ready_for_folding"]),
+            prefer_batch,
             -switch_min,
         )
 
-    comparisons: dict[str, Any] = {}
-    for key, batch_size, result in candidates:
-        comparisons[key] = {
-            "batch_size": batch_size,
-            "bags_folded_at_target": _target_folded(result),
-            "bags_folded": result["final"]["bags_folded"],
-            "bags_ready": result["final"]["bags_ready_for_folding"],
-            "bottleneck": result.get("utilization_bottleneck"),
-            "first_fold_ready": result["guidance"].get("switch_labor_to_folding"),
-        }
-
     best_key, best_batch, best_result = max(candidates, key=_score)
+    meta = STRATEGY_DEFINITIONS[best_key]
+    reason = meta["description"]
+    if best_key == "batch_washing":
+        reason = f"{meta['description']} Optimizer picked batch size {best_batch}."
+    else:
+        reason = (
+            f"{meta['description']} Optimizer picked batch size {best_batch} because sorting "
+            "can stay ahead while the washer person handles dryer loading."
+        )
     suggested_staff = {
         "weighers": max(staffing["weighers"], inp.weigher_count if inp.uses_dedicated_weigher else 0),
         "sorters": max(staffing["sorters"], inp.sorter_count),
@@ -2661,8 +2796,8 @@ def optimize_operational_strategy(inp: PlannerInputs, operational: dict[str, Any
     return {
         "washing_strategy": best_key,
         "batch_size": best_batch,
-        "label": labels[best_key],
-        "reason": reasons[best_key],
+        "label": meta["label"],
+        "reason": reason,
         "expected_bags_folded_at_target": _target_folded(best_result),
         "expected_bags_folded_total": best_result["final"]["bags_folded"],
         "expected_bags_ready": best_result["final"]["bags_ready_for_folding"],
@@ -2683,42 +2818,32 @@ def optimize_operational_strategy(inp: PlannerInputs, operational: dict[str, Any
 
 
 def build_operational_plan(inp: PlannerInputs) -> dict[str, Any]:
-    cont = run_operational_simulation(inp, washing_strategy="continuous_washing")
+    recommended_batch = _pick_optimal_batch_size(inp)
     batch = run_operational_simulation(
         inp,
         washing_strategy="batch_washing",
         batch_size=inp.batch_size,
     )
-
-    hybrid_size, hybrid_result = _pick_hybrid_batch_size(inp)
-    hybrid = run_operational_simulation(
+    sort_drying = run_operational_simulation(
         inp,
-        washing_strategy="hybrid_recommended",
-        batch_size=hybrid_size,
+        washing_strategy="sort_while_drying",
+        batch_size=inp.batch_size,
     )
-    hybrid["recommended_batch_size"] = hybrid_size
-    hybrid["guidance"]["recommended_first_batch_size"] = hybrid_size
 
     strategies = {
-        "continuous_washing": cont,
         "batch_washing": batch,
-        "hybrid_recommended": hybrid,
+        "sort_while_drying": sort_drying,
     }
 
     selected = inp.washing_strategy
-    if selected == "hybrid_recommended":
-        active = hybrid
-        recommended_batch = hybrid_size
-    elif selected == "batch_washing":
-        active = batch
-        recommended_batch = inp.batch_size
-    else:
-        active = cont
-        recommended_batch = hybrid_size
+    active = strategies[selected]
+    if selected == "batch_washing":
+        active["guidance"]["recommended_first_batch_size"] = recommended_batch
 
     return {
         "washing_strategy": selected,
         "recommended_batch_size": recommended_batch,
+        "strategy_definitions": STRATEGY_DEFINITIONS,
         "strategies": strategies,
         "active_strategy": active,
         "milestones": active.get("milestones", {}),

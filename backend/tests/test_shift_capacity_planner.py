@@ -233,9 +233,9 @@ class TestOperationalSimulation:
         result = simulate_shift_capacity(_default_payload())
         op = result["operational"]
         assert "strategies" in op
-        assert "continuous_washing" in op["strategies"]
         assert "batch_washing" in op["strategies"]
-        assert "hybrid_recommended" in op["strategies"]
+        assert "sort_while_drying" in op["strategies"]
+        assert "strategy_definitions" in op
         assert "recommended_batch_size" in op
         assert "next_actions" in op
         assert "order_timeline" in op
@@ -261,7 +261,7 @@ class TestOperationalSimulation:
         result = simulate_shift_capacity(
             _default_payload(bag_count=50, sorter_count=2, weigher_count=2, batch_size=8)
         )
-        guidance = result["operational"]["strategies"]["continuous_washing"]["guidance"]
+        guidance = result["operational"]["strategies"]["sort_while_drying"]["guidance"]
         assert "additional_bags_by_next_batch" in guidance
         assert "next_wash_batch_start" in guidance
         assert "bags_sorted_at_first_wash" in guidance
@@ -270,22 +270,19 @@ class TestOperationalSimulation:
         if guidance["next_wash_batch_start"]:
             assert guidance["bags_sorted_by_next_batch"] >= guidance["bags_sorted_at_first_wash"]
 
-    def test_continuous_vs_batch_differ(self):
+    def test_batch_vs_sort_while_drying_differ(self):
         payload = _default_payload(bag_count=24, batch_size=8, sorter_count=2, weigher_count=2)
         result = simulate_shift_capacity(payload)
-        cont = result["operational"]["strategies"]["continuous_washing"]
+        sort_drying = result["operational"]["strategies"]["sort_while_drying"]
         batch = result["operational"]["strategies"]["batch_washing"]
-        assert cont["guidance"]["sorting_continues_while_washing"] is True
+        assert sort_drying["guidance"]["sorting_continues_while_washing"] is True
         assert batch["guidance"]["sorting_continues_while_washing"] is False
-        assert cont["guidance"]["recommended_first_batch_size"] == 8
         assert batch["batch_size"] == 8
 
-    def test_hybrid_recommends_batch_size(self):
-        result = simulate_shift_capacity(_default_payload(washing_strategy="hybrid_recommended"))
+    def test_recommends_optimal_batch_size(self):
+        result = simulate_shift_capacity(_default_payload(washing_strategy="batch_washing"))
         op = result["operational"]
         assert op["recommended_batch_size"] in (6, 8, 10, 12)
-        hybrid = op["strategies"]["hybrid_recommended"]
-        assert hybrid["batch_size"] == op["recommended_batch_size"]
 
     def test_washer_person_busy_blocks_new_loads(self):
         payload = _default_payload(
@@ -306,7 +303,7 @@ class TestOperationalSimulation:
         )
         cont = run_operational_simulation(
             parse_planner_inputs(payload),
-            washing_strategy="continuous_washing",
+            washing_strategy="sort_while_drying",
         )
         tasks = cont["washer_person_timeline"]
         assert tasks
@@ -418,8 +415,10 @@ class TestWhatIfScenarios:
 
 
 class TestPlannerBugFixes:
-    def test_all_orders_get_dry_times_continuous(self):
-        result = simulate_shift_capacity(_default_payload(bag_count=50, orders_using_2_washers=40))
+    def test_all_orders_get_dry_times(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, orders_using_2_washers=40, washing_strategy="sort_while_drying")
+        )
         rows = result["operational"]["order_timeline"]
         assert len(rows) == 50
         assert all(r["sorted_time"] for r in rows)
@@ -520,9 +519,9 @@ class TestPlannerBugFixes:
         assert sorter["busy_minutes"] > 0
         assert washer_person["busy_minutes"] > 0
 
-    def test_continuous_mode_wash_waves(self):
+    def test_sort_while_drying_wash_waves(self):
         result = simulate_shift_capacity(
-            _default_payload(bag_count=50, washing_strategy="continuous_washing", batch_size=8)
+            _default_payload(bag_count=50, washing_strategy="sort_while_drying", batch_size=8)
         )
         op = result["operational"]["active_strategy"]
         rows = op["batch_milestone_rows"]
@@ -546,14 +545,16 @@ class TestPlannerBugFixes:
         assert "bags_folded" in snap
         assert "bottleneck" not in snap
 
-    def test_strategy_optimizer_present(self):
+    def test_legacy_washing_strategy_aliases(self):
+        batch = parse_planner_inputs({"washing_strategy": "hybrid_recommended"})
+        assert batch.washing_strategy == "batch_washing"
+        sort_drying = parse_planner_inputs({"washing_strategy": "continuous_washing"})
+        assert sort_drying.washing_strategy == "sort_while_drying"
+
+    def test_strategy_optimizer_prefers_batch_washing(self):
         result = simulate_shift_capacity(_default_payload())
         opt = result["operational"]["strategy_optimizer"]
-        assert opt["washing_strategy"] in (
-            "continuous_washing",
-            "batch_washing",
-            "hybrid_recommended",
-        )
+        assert opt["washing_strategy"] == "batch_washing"
         assert opt["batch_size"] in (6, 8, 10, 12)
         assert "apply_inputs" in opt
         assert "expected_bags_folded_at_target" in opt
@@ -566,6 +567,6 @@ class TestPlannerBugFixes:
 
     def test_load_dryer_completion_updates_order(self):
         inp = parse_planner_inputs(_default_payload(bag_count=8, orders_using_2_dryers=4))
-        cont = run_operational_simulation(inp, washing_strategy="continuous_washing")
+        cont = run_operational_simulation(inp, washing_strategy="sort_while_drying")
         assert any(r["dry_start"] for r in cont["order_timeline"])
         assert cont["dryer_timeline"]
