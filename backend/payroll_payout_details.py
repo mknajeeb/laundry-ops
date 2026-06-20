@@ -245,6 +245,7 @@ def _empty_details() -> dict[str, Any]:
             "prior_unpaid_taxes": 0.0,
             "prior_period_adjustment": 0.0,
             "catch_up_withholding": 0.0,
+            "withheld_from_payment": None,
             "paid_full_gross_without_withholding": False,
             "tax_balance_owed": 0.0,
         },
@@ -305,6 +306,12 @@ def parse_line_payout_details(line: dict) -> dict[str, Any]:
         base["settlement"]["paid_full_gross_without_withholding"] = bool(
             base["settlement"].get("paid_full_gross_without_withholding")
         )
+    if "withheld_from_payment" in base["settlement"]:
+        wfp = base["settlement"].get("withheld_from_payment")
+        if wfp is None or str(wfp).strip() == "":
+            base["settlement"]["withheld_from_payment"] = None
+        else:
+            base["settlement"]["withheld_from_payment"] = float(_money(wfp))
     if base["payment"].get("cash_amount") is not None:
         base["payment"]["cash_amount"] = float(_money(base["payment"].get("cash_amount")))
     for k in (
@@ -451,6 +458,18 @@ def apply_carryover_prior_tax_balance(
     return out
 
 
+def _withheld_for_current_period(
+    settlement: dict, current_period: float, *, paid_full_gross: bool
+) -> float:
+    """Current-period withholding taken from this pay (optional manual override)."""
+    if paid_full_gross:
+        return 0.0
+    raw = settlement.get("withheld_from_payment")
+    if raw is None or str(raw).strip() == "":
+        return round(current_period, 2)
+    return round(min(float(_money(raw)), round(current_period, 2)), 2)
+
+
 def apply_settlement_math(details: dict, gross: float) -> dict:
     """Derive withheld and net pay from current taxes + optional catch-up withholding."""
     details = reconcile_tax_summary(dict(details))
@@ -464,10 +483,14 @@ def apply_settlement_math(details: dict, gross: float) -> dict:
     if paid_full_gross:
         catch_up = 0.0
         settlement["catch_up_withholding"] = 0.0
+        settlement["withheld_from_payment"] = None
         withheld = 0.0
         paid = round(gross_f, 2)
     else:
-        withheld = round(current_period + catch_up, 2)
+        withheld_current = _withheld_for_current_period(
+            settlement, current_period, paid_full_gross=False
+        )
+        withheld = round(withheld_current + catch_up, 2)
         paid = round(max(0.0, gross_f - withheld), 2)
 
     settlement["amount_withheld"] = withheld
@@ -1169,6 +1192,11 @@ def _merge_line_details(existing: dict, patch: dict, *, gross: float = 0) -> dic
                 if key in base[section]:
                     if section == "settlement" and key == "paid_full_gross_without_withholding":
                         base[section][key] = bool(val)
+                    elif section == "settlement" and key == "withheld_from_payment":
+                        if val is None or str(val).strip() == "":
+                            base[section][key] = None
+                        else:
+                            base[section][key] = float(_money(val))
                     elif section == "tax_summary" and key == "estimated":
                         base[section][key] = bool(val)
                     elif section in ("employee_deductions", "employer_taxes", "settlement", "tax_summary"):

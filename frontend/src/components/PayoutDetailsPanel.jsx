@@ -120,6 +120,13 @@ function roundMoney(n) {
   return Math.round(num(n) * 100) / 100;
 }
 
+function withheldForCurrentPeriod(settlement, currentTax, paidFullGross) {
+  if (paidFullGross) return 0;
+  const raw = settlement?.withheld_from_payment;
+  if (raw === null || raw === undefined || raw === "") return currentTax;
+  return Math.min(num(raw), currentTax);
+}
+
 function computeLocalTotals(line, draft) {
   const gross = num(line.gross_amount || line.total_amount);
   const currentTax = DEDUCTION_FIELDS.reduce(
@@ -128,10 +135,24 @@ function computeLocalTotals(line, draft) {
   );
   const catchUp = num(draft.settlement?.catch_up_withholding);
   const paidFullGross = Boolean(draft.settlement?.paid_full_gross_without_withholding);
+  const withheldCurrent = withheldForCurrentPeriod(
+    draft.settlement,
+    currentTax,
+    paidFullGross,
+  );
   const er = ER_TAX_FIELDS.reduce((s, f) => s + num(draft.employer_taxes?.[f.key]), 0);
-  const withheld = paidFullGross ? 0 : currentTax + catchUp;
-  const net = paidFullGross ? gross : Math.max(0, gross - currentTax - catchUp);
-  return { gross, totalDed: currentTax, totalEr: er, net, withheld, catchUp, paidFullGross };
+  const withheld = paidFullGross ? 0 : roundMoney(withheldCurrent + catchUp);
+  const net = paidFullGross ? gross : Math.max(0, roundMoney(gross - withheld));
+  return {
+    gross,
+    totalDed: currentTax,
+    totalEr: er,
+    net,
+    withheld,
+    withheldCurrent,
+    catchUp,
+    paidFullGross,
+  };
 }
 
 function reconcileLocalTaxSummary(draft, totals) {
@@ -182,6 +203,7 @@ function applyLocalSettlementMath(draft, line) {
   const settlement = { ...(draft.settlement || {}) };
   if (totals.paidFullGross) {
     settlement.catch_up_withholding = 0;
+    settlement.withheld_from_payment = null;
     settlement.amount_withheld = 0;
     settlement.amount_paid = totals.gross;
   } else {
@@ -1039,12 +1061,29 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     <TextField
                                       size="small"
                                       type="number"
+                                      label="Withheld this period"
+                                      value={draft.settlement?.withheld_from_payment ?? ""}
+                                      onChange={(e) =>
+                                        updateDraft(
+                                          ln.id,
+                                          "settlement",
+                                          "withheld_from_payment",
+                                          e.target.value === "" ? null : e.target.value,
+                                        )
+                                      }
+                                      disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
+                                      helperText="Actual tax taken from this pay (blank = withhold full estimate)"
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
                                       label="Catch-up withholding"
                                       value={draft.settlement?.catch_up_withholding ?? ""}
                                       onChange={(e) =>
                                         updateDraft(ln.id, "settlement", "catch_up_withholding", e.target.value)
                                       }
                                       disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
+                                      helperText="Collect prior balance only — not this week's partial withholding"
                                     />
                                     <TextField
                                       size="small"
