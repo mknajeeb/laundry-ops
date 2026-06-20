@@ -698,6 +698,40 @@ def test_set_document_mode_blocks_after_finalize():
             assert "finalize" in str(e).lower()
 
 
+def test_paystub_preview_before_finalize():
+    conn = MagicMock()
+    batch = {
+        "id": 1,
+        "status": "approved_for_payment",
+        "pay_period_start": "2026-06-01",
+        "pay_period_end": "2026-06-07",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "user_id": 5,
+                "worker_name_snapshot": "Jane",
+                "gross_amount": 500,
+                "approved_hours": 10,
+                "rate": 50,
+                "payout_details_json": {
+                    "employee_deductions": {"fit": 20, "ss": 30, "medicare": 7},
+                    "payment": {"method": "cash"},
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_paystub_html
+
+        html = generate_paystub_html(conn, 1, 1, 10, preview=True)
+        assert "Jane" in html
+        assert "PREVIEW" in html
+
+
 def test_paystub_blocked_until_finalized():
     conn = MagicMock()
     with patch(

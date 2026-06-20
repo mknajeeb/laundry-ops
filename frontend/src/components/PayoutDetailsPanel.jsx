@@ -29,6 +29,7 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import PrintIcon from "@mui/icons-material/Print";
+import VisibilityIcon from "@mui/icons-material/Visibility";
 import SaveIcon from "@mui/icons-material/Save";
 import LockIcon from "@mui/icons-material/Lock";
 import { useAuth } from "../context/AuthContext";
@@ -39,6 +40,9 @@ import {
   getPayoutBatchDetails,
   getPayoutBatches,
   getPaystubHtml,
+  getBatchPaystubsHtml,
+  getPayRegisterHtml,
+  postPaystubPreviewHtml,
   putPayoutBatchDetails,
   setPayoutDocumentMode,
 } from "../api";
@@ -130,6 +134,15 @@ function applyLocalSettlementMath(draft, line) {
   return { ...draft, settlement };
 }
 
+async function previewHtmlDocument(fetchFn) {
+  const res = await fetchFn();
+  const win = window.open("", "_blank");
+  if (!win) return;
+  win.document.open();
+  win.document.write(res.data);
+  win.document.close();
+}
+
 async function printHtmlDocument(fetchFn) {
   const res = await fetchFn();
   const win = window.open("", "_blank");
@@ -138,6 +151,18 @@ async function printHtmlDocument(fetchFn) {
   win.document.write(res.data);
   win.document.close();
   win.onload = () => win.print();
+}
+
+function payoutDetailsPayload(draft) {
+  return {
+    employee_deductions: draft.employee_deductions,
+    employer_taxes: draft.employer_taxes,
+    payment: draft.payment,
+    settlement: draft.settlement,
+    tax_summary: draft.tax_summary,
+    use_payment_receipt: draft.use_payment_receipt,
+    employee_note: draft.employee_note || "",
+  };
 }
 
 function lineTaxTotal(draft) {
@@ -242,30 +267,31 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     setLineDrafts((prev) => ({ ...prev, [lineId]: { ...prev[lineId], [key]: value } }));
   };
 
-  const saveDetails = async () => {
-    if (!selectedId || !canEdit) return;
-    setError("");
-    setInfo("");
+  const saveDetails = async ({ silent = false } = {}) => {
+    if (!selectedId || !canEdit) return false;
+    if (!silent) {
+      setError("");
+      setInfo("");
+    }
     const lines = Object.values(lineDrafts).map((d) => ({
       line_id: d.line_id,
-      payout_details: {
-        employee_deductions: d.employee_deductions,
-        employer_taxes: d.employer_taxes,
-        payment: d.payment,
-        settlement: d.settlement,
-        tax_summary: d.tax_summary,
-        use_payment_receipt: d.use_payment_receipt,
-        employee_note: d.employee_note || "",
-      },
+      payout_details: payoutDetailsPayload(d),
     }));
     try {
       const res = await putPayoutBatchDetails(selectedId, { lines, batch_note: batchNote });
       setDetail(res.data);
       setBatchNote(res.data.batch_note || "");
-      setInfo("Saved.");
+      const drafts = {};
+      (res.data.lines || []).forEach((ln) => {
+        drafts[ln.id] = emptyLineState(ln);
+      });
+      setLineDrafts(drafts);
+      if (!silent) setInfo("Saved.");
       await loadBatches();
+      return true;
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Save failed");
+      return false;
     }
   };
 
@@ -312,12 +338,74 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
-  const printPaystub = async (lineId) => {
-    if (!selectedId) return;
+  const showPaystubActions = !isReceiptMode && Boolean(
+    detail?.payout_workflow?.paystub_preview_available || detail?.payout_workflow?.paystub_available,
+  );
+
+  const fetchPaystubHtml = (lineId, draft) => {
+    if (finalized) {
+      return () => getPaystubHtml(selectedId, lineId);
+    }
+    return () =>
+      postPaystubPreviewHtml(selectedId, lineId, {
+        payout_details: payoutDetailsPayload(draft),
+        batch_note: batchNote,
+      });
+  };
+
+  const previewPaystub = async (lineId) => {
+    if (!selectedId || !showPaystubActions) return;
+    const draft = lineDrafts[lineId];
+    if (!draft) return;
+    setError("");
     try {
-      await printHtmlDocument(() => getPaystubHtml(selectedId, lineId));
+      await previewHtmlDocument(fetchPaystubHtml(lineId, draft));
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Paystub preview failed");
+    }
+  };
+
+  const printPaystub = async (lineId) => {
+    if (!selectedId || !showPaystubActions) return;
+    const draft = lineDrafts[lineId];
+    if (!draft) return;
+    setError("");
+    try {
+      await printHtmlDocument(fetchPaystubHtml(lineId, draft));
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Paystub load failed");
+    }
+  };
+
+  const printAllPaystubs = async () => {
+    if (!selectedId || !showPaystubActions) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      await printHtmlDocument(() =>
+        getBatchPaystubsHtml(selectedId, { preview: !finalized }),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Print all paystubs failed");
+    }
+  };
+
+  const printPayRegister = async () => {
+    if (!selectedId) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      await printHtmlDocument(() =>
+        getPayRegisterHtml(selectedId, { preview: !finalized }),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Pay register failed");
     }
   };
 
@@ -369,14 +457,22 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         <>
           <PayrollBatchSummaryCard batch={detail} compact />
 
-          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
+          <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end" flexWrap="wrap">
+            {showPaystubActions ? (
+              <Button size="small" startIcon={<PrintIcon />} onClick={printAllPaystubs}>
+                Print All Paystubs
+              </Button>
+            ) : null}
+            <Button size="small" startIcon={<PrintIcon />} onClick={printPayRegister}>
+              Print Pay Register
+            </Button>
             {canEdit ? (
               <Button size="small" onClick={autoFillEstimates} disabled={finalized}>
                 Auto-fill minimum withholding
               </Button>
             ) : null}
             {canEdit ? (
-              <Button size="small" startIcon={<SaveIcon />} onClick={saveDetails}>
+              <Button size="small" startIcon={<SaveIcon />} onClick={() => saveDetails()}>
                 Save
               </Button>
             ) : null}
@@ -537,10 +633,19 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                           </Tooltip>
                         </TableCell>
                         <TableCell align="right">
-                          {finalized && doc.paystub_available ? (
-                            <IconButton size="small" onClick={() => printPaystub(ln.id)}>
-                              <PrintIcon fontSize="small" />
-                            </IconButton>
+                          {showPaystubActions ? (
+                            <Stack direction="row" justifyContent="flex-end" spacing={0.25}>
+                              <Tooltip title="Preview paystub">
+                                <IconButton size="small" onClick={() => previewPaystub(ln.id)}>
+                                  <VisibilityIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Print paystub">
+                                <IconButton size="small" onClick={() => printPaystub(ln.id)}>
+                                  <PrintIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </Stack>
                           ) : null}
                           {finalized && doc.receipt_available ? (
                             <Tooltip
@@ -749,6 +854,24 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       inputProps={{ style: { width: 64 } }}
                                     />
                                   ))}
+                                </Stack>
+                              ) : null}
+                              {showPaystubActions ? (
+                                <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+                                  <Button
+                                    size="small"
+                                    startIcon={<VisibilityIcon />}
+                                    onClick={() => previewPaystub(ln.id)}
+                                  >
+                                    Preview Paystub
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    startIcon={<PrintIcon />}
+                                    onClick={() => printPaystub(ln.id)}
+                                  >
+                                    Print Paystub
+                                  </Button>
                                 </Stack>
                               ) : null}
                             </Box>

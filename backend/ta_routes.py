@@ -6025,7 +6025,7 @@ def payroll_payout_paystub(batch_id: int, line_id: int):
     conn = get_db()
     try:
         from backend.payroll_payout_details import (
-            can_view_finalized_paystub,
+            can_view_paystub,
             generate_paystub_html,
             get_payout_batch_details,
         )
@@ -6035,11 +6035,12 @@ def payroll_payout_paystub(batch_id: int, line_id: int):
         batch = get_payout_batch_details(conn, oid, batch_id)
         if not batch:
             return jsonify({"error": "Not found"}), 404
-        if not can_view_finalized_paystub(conn, uid, batch):
+        preview = str(request.args.get("preview") or "").lower() in ("1", "true", "yes")
+        if not can_view_paystub(conn, uid, batch, preview=preview):
             return jsonify({"error": "Paystub not available"}), 403
         fmt = str(request.args.get("format") or "html").lower()
         try:
-            html = generate_paystub_html(conn, oid, batch_id, line_id)
+            html = generate_paystub_html(conn, oid, batch_id, line_id, preview=preview)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         if fmt == "json":
@@ -6051,6 +6052,118 @@ def payroll_payout_paystub(batch_id: int, line_id: int):
         return html, 200, {"Content-Type": "text/html; charset=utf-8"}
     except Exception as e:
         current_app.logger.exception("payroll_payout_paystub failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/paystub-preview/<int:line_id>",
+    methods=["POST"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_paystub_preview(batch_id: int, line_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_paystub,
+            get_payout_batch_details,
+            preview_paystub_html,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        if not can_view_paystub(conn, uid, batch, preview=True):
+            return jsonify({"error": "Paystub preview not available"}), 403
+        body = request.get_json(silent=True) or {}
+        try:
+            html = preview_paystub_html(
+                conn,
+                oid,
+                batch_id,
+                line_id,
+                body.get("payout_details") or {},
+                batch_note=body.get("batch_note"),
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_paystub_preview failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/paystubs",
+    methods=["GET"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_paystubs_batch(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_paystub,
+            generate_batch_paystubs_html,
+            get_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        preview = str(request.args.get("preview") or "").lower() in ("1", "true", "yes")
+        if not can_view_paystub(conn, uid, batch, preview=preview):
+            return jsonify({"error": "Paystubs not available"}), 403
+        try:
+            html = generate_batch_paystubs_html(conn, oid, batch_id, preview=preview)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_paystubs_batch failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route(
+    "/payroll/payout-batches/<int:batch_id>/pay-register",
+    methods=["GET"],
+)
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_payout_pay_register(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_view_paystub,
+            generate_pay_register_html,
+            get_payout_batch_details,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        batch = get_payout_batch_details(conn, oid, batch_id)
+        if not batch:
+            return jsonify({"error": "Not found"}), 404
+        preview = str(request.args.get("preview") or "").lower() in ("1", "true", "yes")
+        if not can_view_paystub(conn, uid, batch, preview=preview):
+            return jsonify({"error": "Pay register not available"}), 403
+        try:
+            html = generate_pay_register_html(conn, oid, batch_id, preview=preview)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_pay_register failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

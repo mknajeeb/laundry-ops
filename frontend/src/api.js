@@ -1270,8 +1270,30 @@ export const setPayoutDocumentMode = (batchId, documentMode) =>
 export const getPaystubUrl = (batchId, lineId) =>
   `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystub/${lineId}`;
 
-export const getPaystubHtml = (batchId, lineId) =>
-  axios.get(getPaystubUrl(batchId, lineId), { responseType: "text" });
+export const getPaystubHtml = (batchId, lineId, { preview = false } = {}) =>
+  axios.get(getPaystubUrl(batchId, lineId), {
+    params: preview ? { preview: 1 } : {},
+    responseType: "text",
+  });
+
+export const postPaystubPreviewHtml = (batchId, lineId, body) =>
+  axios.post(
+    `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystub-preview/${lineId}`,
+    body,
+    { responseType: "text" },
+  );
+
+export const getBatchPaystubsHtml = (batchId, { preview = false } = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/paystubs`, {
+    params: preview ? { preview: 1 } : {},
+    responseType: "text",
+  });
+
+export const getPayRegisterHtml = (batchId, { preview = false } = {}) =>
+  axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/pay-register`, {
+    params: preview ? { preview: 1 } : {},
+    responseType: "text",
+  });
 
 export const getPaymentReceiptUrl = (batchId, lineId) =>
   `${API_BASE}/api/ta/payroll/payout-batches/${batchId}/payment-receipt/${lineId}`;

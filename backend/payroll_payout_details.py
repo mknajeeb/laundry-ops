@@ -190,15 +190,30 @@ def can_edit_payout_details(conn, user_id: int) -> bool:
     )
 
 
-def can_view_finalized_paystub(conn, user_id: int, batch: dict) -> bool:
+def can_view_paystub(conn, user_id: int, batch: dict, *, preview: bool = False) -> bool:
     from backend.ta_routes import user_has_perm
 
-    if not batch.get("payout_details_finalized_at"):
+    if batch.get("payout_details_finalized_at"):
+        codes = user_role_codes(conn, user_id)
+        if codes & VIEW_FINALIZED_ROLES:
+            return True
+        return user_has_perm(conn, user_id, "users.view")
+    if not preview:
+        return False
+    if not batch_ready_for_payout_details(batch):
         return False
     codes = user_role_codes(conn, user_id)
     if codes & VIEW_FINALIZED_ROLES:
         return True
-    return user_has_perm(conn, user_id, "users.view")
+    return (
+        user_has_perm(conn, user_id, "ta.settings")
+        or user_has_perm(conn, user_id, "users.edit")
+        or user_has_perm(conn, user_id, "users.view")
+    )
+
+
+def can_view_finalized_paystub(conn, user_id: int, batch: dict) -> bool:
+    return can_view_paystub(conn, user_id, batch, preview=False)
 
 
 def _empty_details() -> dict[str, Any]:
@@ -522,10 +537,12 @@ def receipt_required_for_line(details: dict) -> bool:
     return is_cash_payment(details)
 
 
-def can_generate_paystub_for_line(batch: dict, details: dict) -> bool:
-    if not batch.get("payout_details_finalized_at"):
+def can_generate_paystub_for_line(batch: dict, details: dict, *, preview: bool = False) -> bool:
+    if line_uses_payment_receipt(batch, details):
         return False
-    return not line_uses_payment_receipt(batch, details)
+    if preview:
+        return batch_ready_for_payout_details(batch)
+    return bool(batch.get("payout_details_finalized_at"))
 
 
 def can_generate_receipt_for_line(batch: dict, details: dict) -> bool:
@@ -555,6 +572,9 @@ def line_document_state(batch: dict, line: dict, details: Optional[dict] = None)
             "receipt_available": can_generate_receipt_for_line(batch, details),
             "receipt_required": receipt_required_for_line(details),
             "paystub_available": can_generate_paystub_for_line(batch, details),
+            "paystub_preview_available": can_generate_paystub_for_line(
+                batch, details, preview=True
+            ),
             "use_payment_receipt": bool(details.get("use_payment_receipt")),
         }
     )
@@ -645,6 +665,7 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "document_mode": doc_mode,
             "can_set_document_mode": ready and not finalized,
             "paystub_available": bool(finalized) and doc_mode == "official_paystub",
+            "paystub_preview_available": ready and doc_mode == "official_paystub",
             "payment_receipt_available": bool(finalized) and doc_mode == "payment_receipt",
             "receipt_required_pending": receipt_required_pending,
             "can_edit_details": ready and not finalized,
@@ -1173,24 +1194,9 @@ def _paystub_notes_html(batch: dict, details: dict) -> str:
     return "\n".join(parts)
 
 
-def generate_paystub_html(
-    conn, organization_id: int, batch_id: int, line_id: int
-) -> str:
-    batch = get_payout_batch_details(conn, organization_id, batch_id)
-    if not batch:
-        raise ValueError("Batch not found")
-    if not batch.get("payout_details_finalized_at"):
-        raise ValueError("Paystub not available until payout details are finalized")
-    line = next(
-        (ln for ln in batch.get("lines") or [] if int(ln.get("id")) == int(line_id)),
-        None,
-    )
-    if not line:
-        raise ValueError("Line not found")
-    details = line.get("payout_details") or parse_line_payout_details(line)
-    if not can_generate_paystub_for_line(batch, details):
+def _render_paystub_html(batch: dict, line: dict, details: dict, totals: dict, *, preview: bool = False) -> str:
+    if not can_generate_paystub_for_line(batch, details, preview=preview):
         raise ValueError("Official paystub not available for this payment — use payment receipt")
-    totals = line.get("payout_totals") or compute_line_totals(line, details)
     er = details.get("employer_taxes") or {}
     payment = details.get("payment") or {}
     settlement = details.get("settlement") or {}
@@ -1232,13 +1238,23 @@ def generate_paystub_html(
         if tax_summary.get("estimated")
         else ""
     )
+    preview_banner = (
+        "<p class='preview-banner'><strong>PREVIEW</strong> — not finalized. Verify taxes and net pay before locking.</p>"
+        if preview
+        else ""
+    )
+    finalized_footer = (
+        f"<p class='meta' style='margin-top:24px'>Finalized {batch.get('payout_details_finalized_at')}</p>"
+        if batch.get("payout_details_finalized_at") and not preview
+        else ""
+    )
 
     notes_html = _paystub_notes_html(batch, details)
     from backend.veewash_branding import veewash_logo_img_html
 
     logo_html = veewash_logo_img_html(height_px=52)
 
-    html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Paystub — {line.get('worker_name_snapshot')}</title>
 <style>
   body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 24px; }}
@@ -1252,10 +1268,14 @@ def generate_paystub_html(
   .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; }}
   .brand-head {{ display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }}
   .internal {{ font-size: 0.85rem; color: #64748b; }}
+  .preview-banner {{ background: #fef3c7; color: #92400e; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; }}
   .notes p {{ white-space: pre-wrap; margin: 4px 0 12px; }}
+  .paystub-page {{ page-break-after: always; }}
+  .paystub-page:last-child {{ page-break-after: auto; }}
 </style></head><body>
-<div class="brand">
+<div class="brand paystub-page">
 <div class="brand-head">{logo_html}<h1 style="margin:0">VeeWash Official Paystub</h1></div>
+{preview_banner}
 <p class="meta"><strong>{line.get('worker_name_snapshot')}</strong><br>
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}<br>
 Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.get('rate') or 0):,.2f}/hr</p>
@@ -1299,10 +1319,199 @@ Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.ge
 <tr class="total"><td>Employer cost</td><td style='text-align:right'>${totals['employer_cost']:,.2f}</td></tr>
 </table>
 {f'<div class="notes">{notes_html}</div>' if notes_html else ''}
-<p class="meta" style="margin-top:24px">Finalized {batch.get('payout_details_finalized_at')}</p>
+{finalized_footer}
 </div>
 </body></html>"""
-    return html
+
+
+def generate_paystub_html(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    line_id: int,
+    *,
+    preview: bool = False,
+) -> str:
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not preview and not batch.get("payout_details_finalized_at"):
+        raise ValueError("Paystub not available until payout details are finalized")
+    line = next(
+        (ln for ln in batch.get("lines") or [] if int(ln.get("id")) == int(line_id)),
+        None,
+    )
+    if not line:
+        raise ValueError("Line not found")
+    details = line.get("payout_details") or parse_line_payout_details(line)
+    totals = line.get("payout_totals") or compute_line_totals(line, details)
+    return _render_paystub_html(batch, line, details, totals, preview=preview)
+
+
+def preview_paystub_html(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    line_id: int,
+    payout_details_patch: dict,
+    *,
+    batch_note: Optional[str] = None,
+) -> str:
+    """Render paystub from unsaved draft values (preview before finalize)."""
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch_ready_for_payout_details(batch):
+        raise ValueError("Batch must be approved for payment before previewing paystubs")
+    line = next(
+        (ln for ln in batch.get("lines") or [] if int(ln.get("id")) == int(line_id)),
+        None,
+    )
+    if not line:
+        raise ValueError("Line not found")
+    gross = float(_money(line.get("gross_amount") or line.get("total_amount") or 0))
+    existing = _parse_json_blob(line.get("payout_details_json"))
+    merged = _merge_line_details(existing, payout_details_patch or {}, gross=gross)
+    preview_batch = dict(batch)
+    if batch_note is not None:
+        preview_batch["batch_note"] = str(batch_note or "").strip() or None
+    preview_line = dict(line)
+    totals = compute_line_totals(preview_line, merged)
+    return _render_paystub_html(preview_batch, preview_line, merged, totals, preview=True)
+
+
+def generate_batch_paystubs_html(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    preview: bool = False,
+) -> str:
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not preview and not batch.get("payout_details_finalized_at"):
+        raise ValueError("Paystubs not available until payout details are finalized")
+    parts: list[str] = []
+    for line in batch.get("lines") or []:
+        details = line.get("payout_details") or parse_line_payout_details(line)
+        if not can_generate_paystub_for_line(batch, details, preview=preview):
+            continue
+        totals = line.get("payout_totals") or compute_line_totals(line, details)
+        parts.append(_render_paystub_html(batch, line, details, totals, preview=preview))
+    if not parts:
+        raise ValueError("No paystubs available for this batch")
+
+    bodies = []
+    for html in parts:
+        start = html.find("<div class=\"brand paystub-page\">")
+        end = html.rfind("</div>\n</body>")
+        if start >= 0 and end > start:
+            bodies.append(html[start:end])
+    from backend.veewash_branding import veewash_logo_img_html
+
+    combined = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Paystubs — {batch.get('batch_name')}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 24px; }}
+  h1 {{ color: #0097b2; font-size: 1.4rem; }}
+  h2 {{ color: #007a91; font-size: 1.05rem; margin-top: 18px; }}
+  .meta {{ color: #475569; margin-bottom: 16px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 12px 0; }}
+  th, td {{ padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }}
+  th {{ text-align: left; color: #007a91; }}
+  .total {{ font-weight: 700; }}
+  .brand {{ border-top: 3px solid #0097b2; padding-top: 12px; margin-bottom: 32px; }}
+  .brand-head {{ display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }}
+  .internal {{ font-size: 0.85rem; color: #64748b; }}
+  .preview-banner {{ background: #fef3c7; color: #92400e; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; }}
+  .notes p {{ white-space: pre-wrap; margin: 4px 0 12px; }}
+  .paystub-page {{ page-break-after: always; }}
+  .paystub-page:last-child {{ page-break-after: auto; }}
+</style></head><body>
+<h1>Batch {batch.get('batch_name')} — Paystubs</h1>
+<p class="meta">Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>
+{"".join(bodies)}
+</body></html>"""
+    return combined
+
+
+def generate_pay_register_html(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    preview: bool = False,
+) -> str:
+    batch = get_payout_batch_details(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not preview and not batch.get("payout_details_finalized_at"):
+        raise ValueError("Pay register not available until payout details are finalized")
+    if not batch_ready_for_payout_details(batch) and preview:
+        raise ValueError("Batch must be approved for payment before previewing pay register")
+
+    rows_html = []
+    sum_gross = sum_net = sum_wh = 0.0
+    for line in batch.get("lines") or []:
+        details = line.get("payout_details") or parse_line_payout_details(line)
+        totals = line.get("payout_totals") or compute_line_totals(line, details)
+        gross = float(totals["gross_pay"])
+        net = float(totals.get("net_paid_to_employee") or totals["amount_paid"])
+        withheld = float(totals.get("amount_withheld") or 0)
+        method = _payment_method_label((details.get("payment") or {}).get("method"))
+        sum_gross += gross
+        sum_net += net
+        sum_wh += withheld
+        rows_html.append(
+            f"<tr><td>{line.get('worker_name_snapshot')}</td>"
+            f"<td style='text-align:right'>${gross:,.2f}</td>"
+            f"<td style='text-align:right'>${withheld:,.2f}</td>"
+            f"<td style='text-align:right'>${net:,.2f}</td>"
+            f"<td>{method}</td></tr>"
+        )
+
+    preview_banner = (
+        "<p class='preview-banner'><strong>PREVIEW</strong> — not finalized.</p>"
+        if preview
+        else ""
+    )
+    from backend.veewash_branding import veewash_logo_img_html
+
+    logo_html = veewash_logo_img_html(height_px=48)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Pay Register — {batch.get('batch_name')}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; color: #0f172a; margin: 24px; }}
+  h1 {{ color: #0097b2; font-size: 1.35rem; }}
+  .meta {{ color: #475569; margin-bottom: 16px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 12px 0; }}
+  th, td {{ padding: 8px 10px; border-bottom: 1px solid #e2e8f0; }}
+  th {{ text-align: left; color: #007a91; background: #f8fafc; }}
+  .total {{ font-weight: 700; background: #f1f5f9; }}
+  .preview-banner {{ background: #fef3c7; color: #92400e; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; }}
+</style></head><body>
+{logo_html}
+<h1>Pay Register — {batch.get('batch_name')}</h1>
+{preview_banner}
+<p class="meta">Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>
+<table>
+<thead><tr>
+<th>Employee</th><th style="text-align:right">Gross</th><th style="text-align:right">Withheld</th>
+<th style="text-align:right">Net paid</th><th>Method</th>
+</tr></thead>
+<tbody>
+{"".join(rows_html)}
+<tr class="total">
+<td>Total</td>
+<td style="text-align:right">${sum_gross:,.2f}</td>
+<td style="text-align:right">${sum_wh:,.2f}</td>
+<td style="text-align:right">${sum_net:,.2f}</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+</body></html>"""
 
 
 def generate_payment_receipt_html(
