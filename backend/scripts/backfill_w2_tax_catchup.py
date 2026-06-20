@@ -126,6 +126,9 @@ def backfill(org_id: int, *, apply: bool = False) -> dict:
 
         patch.setdefault("settlement", {})
         patch.setdefault("payment", {})
+        pay_default = str(batch_row.get("pay_period_end") or batch_row.get("pay_period_start") or "").strip()
+        if pay_default and not str(patch["payment"].get("date") or "").strip():
+            patch["payment"]["date"] = pay_default
         if is_catchup:
             patch["settlement"].update(
                 {

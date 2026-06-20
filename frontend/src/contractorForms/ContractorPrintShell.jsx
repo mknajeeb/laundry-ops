@@ -68,9 +68,12 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
 }
 
 /** Wraps printable contractor content with branded header and print-safe layout. */
-export default function ContractorPrintShell({ prefill, documentTitle, children }) {
+export default function ContractorPrintShell({ prefill, documentTitle, children, compact = false }) {
+  const rootClass = compact
+    ? "contractor-print-root contractor-print-root--one-page"
+    : "contractor-print-root";
   return (
-    <div className="contractor-print-root">
+    <div className={rootClass}>
       <ContractorPrintLetterhead prefill={prefill} documentTitle={documentTitle} />
       <div className="cform-body">{children}</div>
     </div>

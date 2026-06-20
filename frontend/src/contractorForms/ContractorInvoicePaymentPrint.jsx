@@ -214,21 +214,19 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
         </div>
       ) : null}
 
-      <p className="cform-p" style={{ color: "#475569", marginBottom: "0.12in" }}>
+      <p className="cform-p cform-p--compact" style={{ color: "#475569", marginBottom: "0.08in" }}>
         <strong>Contractor type:</strong> {typeLabel(r.contractor_type)}
       </p>
 
       <h2 className="cform-section-title">Part 1 — Invoice / Work Summary</h2>
-      <p className="cform-p" style={{ fontSize: "9.5pt", color: "#64748b" }}>
+      <p className="cform-p cform-p--compact" style={{ fontSize: "9pt", color: "#64748b" }}>
         Work summary for the pay period. Signature is not required for this section.
       </p>
 
       <PrintTable rows={part1Rows} />
 
-      <h2 className="cform-section-title" style={{ marginTop: "0.28in" }}>
-        Part 2 — Payment Receipt
-      </h2>
-      <p className="cform-p" style={{ fontSize: "9.5pt" }}>
+      <h2 className="cform-section-title">Part 2 — Payment Receipt</h2>
+      <p className="cform-p cform-p--compact">
         Worker/Contractor confirms that the work listed above was completed and that payment
         listed below was received. This receipt confirms payment only and does not waive any legal
         rights. This form does not guarantee future work.
@@ -237,43 +235,43 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
       <PrintTable rows={part2Rows} />
 
       <div className="cform-sig-block">
-        <strong className="cform-sig-heading">Contractor / worker signature</strong>
-        <strong className="cform-sig-heading">Company signature</strong>
-
-        <div className="cform-sig-info">
-          {workerName ? (
-            <p>
-              <strong>Name:</strong> {workerName}
-            </p>
-          ) : (
-            <p className="cform-sig-info-placeholder">&nbsp;</p>
-          )}
+        <div className="cform-sig-col">
+          <strong className="cform-sig-heading">Contractor / worker signature</strong>
+          <div className="cform-sig-info">
+            {workerName ? (
+              <p>
+                <strong>Name:</strong> {workerName}
+              </p>
+            ) : (
+              <p className="cform-sig-info-placeholder">&nbsp;</p>
+            )}
+          </div>
+          <div className="cform-sig-line" />
+          <strong className="cform-sig-date-label">Date</strong>
+          <div className="cform-sig-line cform-sig-line--date" />
         </div>
-        <div className="cform-sig-info">
-          {supervisor.name ? (
-            <p>
-              <strong>Name:</strong> {supervisor.name}
-            </p>
-          ) : (
-            <p className="cform-sig-info-placeholder">&nbsp;</p>
-          )}
-          {supervisor.title ? (
-            <p>
-              <strong>Title:</strong> {supervisor.title}
-            </p>
-          ) : (
-            <p className="cform-sig-info-placeholder">&nbsp;</p>
-          )}
+        <div className="cform-sig-col">
+          <strong className="cform-sig-heading">Company signature</strong>
+          <div className="cform-sig-info">
+            {supervisor.name ? (
+              <p>
+                <strong>Name:</strong> {supervisor.name}
+              </p>
+            ) : (
+              <p className="cform-sig-info-placeholder">&nbsp;</p>
+            )}
+            {supervisor.title ? (
+              <p>
+                <strong>Title:</strong> {supervisor.title}
+              </p>
+            ) : (
+              <p className="cform-sig-info-placeholder">&nbsp;</p>
+            )}
+          </div>
+          <div className="cform-sig-line" />
+          <strong className="cform-sig-date-label">Date</strong>
+          <div className="cform-sig-line cform-sig-line--date" />
         </div>
-
-        <div className="cform-sig-line" />
-        <div className="cform-sig-line" />
-
-        <strong className="cform-sig-date-label">Date</strong>
-        <strong className="cform-sig-date-label">Date</strong>
-
-        <div className="cform-sig-line" />
-        <div className="cform-sig-line" />
       </div>
     </>
   );

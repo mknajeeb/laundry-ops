@@ -15,6 +15,7 @@ from backend.payroll_payout_details import (
     confirm_accountant_payment,
     enrich_line_settlement_fields,
     finalize_payout_details,
+    finalize_blockers,
     is_accountant_batch_list_view,
     line_document_state,
     line_uses_payment_receipt,
@@ -681,6 +682,28 @@ def test_paystub_html_available_for_cash_payment():
             dd_html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "Cash Receipt" not in dd_html
         assert "Reference" in dd_html
+
+
+def test_finalize_blockers_clear_when_pay_period_can_default_cash_date():
+    batch = {
+        "status": "approved_for_payment",
+        "worker_category": "w2",
+        "document_mode": "official_paystub",
+        "pay_period_start": "2026-05-11",
+        "pay_period_end": "2026-05-17",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "Alec",
+                "gross_amount": 119,
+                "payout_details": {
+                    "payment": {"method": "cash"},
+                    "settlement": {"amount_paid": 119},
+                },
+            }
+        ],
+    }
+    assert finalize_blockers(batch, batch["lines"]) == []
 
 
 def test_finalize_receipt_mode_requires_payment_fields():

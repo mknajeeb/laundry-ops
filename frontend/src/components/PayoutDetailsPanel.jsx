@@ -93,13 +93,18 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function emptyLineState(line) {
+function emptyLineState(line, batch = null) {
   const pd = line?.payout_details || {};
+  const defaultPayDate = batch?.pay_period_end || batch?.pay_period_start || "";
+  const payment = { ...(pd.payment || {}) };
+  if (!payment.date && defaultPayDate) {
+    payment.date = defaultPayDate;
+  }
   return {
     line_id: line.id,
     employee_deductions: { ...(pd.employee_deductions || {}) },
     employer_taxes: { ...(pd.employer_taxes || {}) },
-    payment: { ...(pd.payment || {}) },
+    payment,
     settlement: { ...(pd.settlement || {}) },
     tax_summary: { ...(pd.tax_summary || {}) },
     use_payment_receipt: Boolean(pd.use_payment_receipt),
@@ -219,7 +224,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       setBatchNote(batch.batch_note || "");
       const drafts = {};
       (batch.lines || []).forEach((ln) => {
-        drafts[ln.id] = emptyLineState(ln);
+        drafts[ln.id] = emptyLineState(ln, batch);
       });
       setLineDrafts(drafts);
     } catch (e) {
@@ -246,6 +251,8 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const documentMode =
     detail?.payout_workflow?.document_mode || detail?.document_mode || "official_paystub";
   const isReceiptMode = documentMode === "payment_receipt";
+  const canFinalize = detail?.payout_workflow?.can_finalize;
+  const finalizeBlockers = detail?.payout_workflow?.finalize_blockers || [];
   const canSetDocumentMode = detail?.payout_workflow?.can_set_document_mode && canEditDetails;
 
   const updateDraft = (lineId, section, key, value) => {
@@ -320,7 +327,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       setDetail(batch);
       const drafts = {};
       (batch.lines || []).forEach((ln) => {
-        drafts[ln.id] = emptyLineState(ln);
+        drafts[ln.id] = emptyLineState(ln, batch);
       });
       setLineDrafts(drafts);
       setInfo("Minimum estimated withholding applied — review and edit before finalizing.");
@@ -330,7 +337,10 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   };
 
   const doFinalize = async () => {
+    setError("");
     try {
+      const saved = await saveDetails({ silent: true });
+      if (!saved) return;
       const res = await finalizePayoutDetails(selectedId);
       setDetail(res.data);
       setFinalizeOpen(false);
@@ -536,6 +546,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                 startIcon={<LockIcon />}
                 variant="contained"
                 onClick={() => setFinalizeOpen(true)}
+                disabled={!canFinalize}
               >
                 Finalize
               </Button>
@@ -547,6 +558,12 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
               <InfoOutlinedIcon fontSize="small" color="action" sx={{ opacity: 0.5 }} />
             </Tooltip>
           </Stack>
+
+          {finalizeBlockers.length && !finalized ? (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              Before finalize: {finalizeBlockers.join("; ")}
+            </Alert>
+          ) : null}
 
           <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
             {ESTIMATE_DISCLAIMER}
@@ -763,6 +780,15 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       <option key={m.value} value={m.value}>{m.label}</option>
                                     ))}
                                   </TextField>
+                                  <TextField
+                                    size="small"
+                                    type="date"
+                                    label="Payment date"
+                                    value={draft.payment?.date || ""}
+                                    onChange={(e) => updateDraft(ln.id, "payment", "date", e.target.value)}
+                                    InputLabelProps={{ shrink: true }}
+                                    sx={{ minWidth: 150 }}
+                                  />
                                   <TextField
                                     size="small"
                                     label="Check #"

@@ -1132,7 +1132,7 @@ export default function ContractorManagementPanel() {
             className="contractor-print-area"
             sx={{ position: "absolute", left: -9999, top: 0, width: "7.5in", visibility: "hidden" }}
           >
-            <ContractorPrintShell prefill={printPrefill} documentTitle={printTitle}>
+            <ContractorPrintShell prefill={printPrefill} documentTitle={printTitle} compact={tab === 0}>
               {tab === 0 ? (
                 <ContractorInvoicePaymentPrint record={record} prefill={printPrefill} />
               ) : null}
@@ -1164,6 +1164,7 @@ export default function ContractorManagementPanel() {
               <ContractorPrintShell
                 prefill={savedPrintPayload.prefill}
                 documentTitle="Contractor Invoice & Payment Receipt"
+                compact
               >
                 <ContractorInvoicePaymentPrint
                   record={savedPrintPayload.record}

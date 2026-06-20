@@ -20,8 +20,8 @@ function waitForImages(doc) {
 }
 
 function printPageStyles(pageSize = "letter portrait") {
-  const margin = String(pageSize).toLowerCase().startsWith("a4") ? "12mm" : "0.5in";
-  const bodyPad = String(pageSize).toLowerCase().startsWith("a4") ? "0" : "0.25in";
+  const margin = String(pageSize).toLowerCase().startsWith("a4") ? "12mm" : "0.4in";
+  const bodyPad = String(pageSize).toLowerCase().startsWith("a4") ? "0" : "0.15in";
   return { margin, bodyPad };
 }
 

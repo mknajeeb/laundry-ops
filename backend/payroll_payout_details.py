@@ -537,6 +537,60 @@ def receipt_required_for_line(details: dict) -> bool:
     return is_cash_payment(details)
 
 
+def _default_payment_date(batch: dict) -> str:
+    return str(batch.get("pay_period_end") or batch.get("pay_period_start") or "").strip()
+
+
+def apply_payment_defaults(batch: dict, details: dict) -> dict:
+    """Fill missing payment date from pay period end when method is set or cash receipt required."""
+    out = dict(details)
+    payment = dict(out.get("payment") or {})
+    needs_date = receipt_required_for_line(out) or str(payment.get("method") or "").strip()
+    if needs_date and not str(payment.get("date") or "").strip():
+        default = _default_payment_date(batch)
+        if default:
+            payment["date"] = default
+    out["payment"] = payment
+    return out
+
+
+def finalize_blockers(batch: dict, lines: list[dict]) -> list[str]:
+    from backend.payroll_status_display import can_finalize_payout_details
+
+    if batch.get("payout_details_finalized_at"):
+        return ["Payout details already finalized"]
+    if not can_finalize_payout_details(batch):
+        cat = str(batch.get("worker_category") or "w2")
+        if cat == "w2" and str(batch.get("status") or "") not in (
+            "approved_for_payment",
+            "paid",
+            "closed",
+        ):
+            return ["W-2 batches must be approved for payment before finalize"]
+        return ["Batch is not ready to finalize payout details"]
+    mode = batch_document_mode(batch)
+    blockers: list[str] = []
+    for ln in lines:
+        details = ln.get("payout_details") or parse_line_payout_details(ln)
+        details = apply_payment_defaults(batch, details)
+        payment = details.get("payment") or {}
+        settlement = details.get("settlement") or {}
+        name = ln.get("worker_name_snapshot") or ln.get("id")
+        if mode == "payment_receipt":
+            if not payment.get("date"):
+                blockers.append(f"Payment date required for {name}")
+            if not payment.get("method"):
+                blockers.append(f"Payment method required for {name}")
+            if float(_money(settlement.get("amount_paid"))) <= 0:
+                blockers.append(f"Amount paid required for {name}")
+        if receipt_required_for_line(details):
+            if not payment.get("date"):
+                blockers.append(f"Payment date required for cash payment — {name}")
+            if float(_money(settlement.get("amount_paid"))) <= 0:
+                blockers.append(f"Amount paid required for cash payment — {name}")
+    return blockers
+
+
 def can_generate_paystub_for_line(batch: dict, details: dict, *, preview: bool = False) -> bool:
     if line_uses_payment_receipt(batch, details):
         return False
@@ -643,7 +697,9 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
     ready = batch_ready_for_payout_details(batch)
     lines = batch.get("lines") or []
     receipt_required_pending = False
+    finalize_blockers_list: list[str] = []
     if ready and not finalized:
+        finalize_blockers_list = finalize_blockers(batch, lines)
         for ln in lines:
             details = ln.get("payout_details") or parse_line_payout_details(ln)
             if receipt_required_for_line(details):
@@ -652,6 +708,14 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
                 if not settlement.get("amount_paid") or not payment.get("date"):
                     receipt_required_pending = True
                     break
+    from backend.payroll_status_display import can_finalize_payout_details
+
+    can_finalize = (
+        ready
+        and not finalized
+        and can_finalize_payout_details(batch)
+        and not finalize_blockers_list
+    )
     return json_safe(
         {
             "batch_status": st,
@@ -669,6 +733,8 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "payment_receipt_available": bool(finalized) and doc_mode == "payment_receipt",
             "receipt_required_pending": receipt_required_pending,
             "can_edit_details": ready and not finalized,
+            "can_finalize": can_finalize,
+            "finalize_blockers": finalize_blockers_list,
         }
     )
 
@@ -920,6 +986,41 @@ def _merge_line_details(existing: dict, patch: dict, *, gross: float = 0) -> dic
     return base
 
 
+def _persist_line_payment_defaults(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    batch: dict,
+    lines: list[dict],
+) -> int:
+    """Write default payment dates onto lines before finalize validation."""
+    c = conn.cursor()
+    updated = 0
+    for ln in lines:
+        details = ln.get("payout_details") or parse_line_payout_details(ln)
+        merged = apply_payment_defaults(batch, details)
+        if merged == details:
+            continue
+        gross = float(_money(ln.get("gross_amount") or ln.get("total_amount") or 0))
+        merged = reconcile_tax_summary(merged)
+        if gross > 0:
+            merged = apply_settlement_math(merged, gross)
+        c.execute(
+            """
+            UPDATE payout_batch_lines SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s
+            """,
+            (
+                json.dumps(merged),
+                int(ln["id"]),
+                int(batch_id),
+                int(organization_id),
+            ),
+        )
+        updated += 1
+    return updated
+
+
 def update_payout_batch_details(
     conn,
     organization_id: int,
@@ -981,6 +1082,7 @@ def update_payout_batch_details(
             item.get("payout_details") or item,
             gross=line_gross,
         )
+        merged = apply_payment_defaults(batch, merged)
         c.execute(
             """
             UPDATE payout_batch_lines SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
@@ -1082,34 +1184,9 @@ def set_batch_document_mode(
 
 
 def _validate_finalize_batch(batch: dict) -> None:
-    from backend.payroll_status_display import can_finalize_payout_details
-
-    if not can_finalize_payout_details(batch):
-        cat = str(batch.get("worker_category") or "w2")
-        if cat == "w2":
-            raise ValueError(
-                "W-2 batches require accountant review before paystubs can be finalized"
-            )
-        raise ValueError("Batch is not ready to finalize payout details")
-    mode = batch_document_mode(batch)
-    lines = batch.get("lines") or []
-    for ln in lines:
-        details = ln.get("payout_details") or parse_line_payout_details(ln)
-        payment = details.get("payment") or {}
-        settlement = details.get("settlement") or {}
-        name = ln.get("worker_name_snapshot") or ln.get("id")
-        if mode == "payment_receipt":
-            if not payment.get("date"):
-                raise ValueError(f"Payment date required for {name} in receipt mode")
-            if not payment.get("method"):
-                raise ValueError(f"Payment method required for {name} in receipt mode")
-            if float(_money(settlement.get("amount_paid"))) <= 0:
-                raise ValueError(f"Amount paid required for {name} in receipt mode")
-        if receipt_required_for_line(details):
-            if not payment.get("date"):
-                raise ValueError(f"Payment date required for cash payment — {name}")
-            if float(_money(settlement.get("amount_paid"))) <= 0:
-                raise ValueError(f"Amount paid required for cash payment — {name}")
+    blockers = finalize_blockers(batch, batch.get("lines") or [])
+    if blockers:
+        raise ValueError(blockers[0])
 
 
 def finalize_payout_details(
@@ -1123,6 +1200,15 @@ def finalize_payout_details(
         raise ValueError("Batch must be approved for payment before finalize")
     if batch.get("payout_details_finalized_at"):
         raise ValueError("Payout details already finalized")
+    enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
+    if _persist_line_payment_defaults(
+        conn,
+        organization_id,
+        batch_id,
+        enriched,
+        enriched.get("lines") or [],
+    ):
+        conn.commit()
     enriched = get_payout_batch_details(conn, organization_id, batch_id) or {}
     _validate_finalize_batch(enriched)
     events = _audit_append(batch, "payout_details_finalized", actor_id)
@@ -1196,10 +1282,12 @@ def _paystub_base_css() -> str:
   h1 { color: #0097b2; font-size: 1rem; margin: 0; }
   h2 { color: #007a91; font-size: 0.82rem; margin: 5px 0 2px; font-weight: 700; }
   .meta { color: #475569; margin: 2px 0 4px; font-size: 9px; }
-  table.compact { width: 100%; border-collapse: collapse; margin: 2px 0 4px; }
-  table.compact th, table.compact td { padding: 2px 5px; border-bottom: 1px solid #e2e8f0; }
+  table.compact { width: 100%; border-collapse: collapse; margin: 2px 0 4px; table-layout: fixed; }
+  table.compact th, table.compact td { padding: 3px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
   table.compact th { text-align: left; color: #007a91; font-size: 9px; font-weight: 600; }
-  table.compact td.amount { text-align: right; white-space: nowrap; }
+  table.compact td:first-child, table.compact th:first-child { width: 64%; }
+  table.compact td:last-child, table.compact th:last-child { width: 36%; text-align: right; }
+  table.compact td.amount, table.compact th.amount { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
   table.compact tr.total td { font-weight: 700; border-top: 1px solid #cbd5e1; }
   .paystub-sheet { page-break-after: always; max-height: 10.2in; overflow: hidden; }
   .paystub-sheet:last-child { page-break-after: auto; }
@@ -1237,7 +1325,7 @@ def _payment_detail_rows(payment: dict, totals: dict, *, cash_receipt_separate: 
         if amt is None or str(amt).strip() == "":
             amt = totals.get("net_paid_to_employee") or totals.get("amount_paid")
         rows.append(
-            f"<tr><td>Amount received</td><td>${float(_money(amt)):,.2f}</td></tr>"
+            f"<tr><td>Amount received</td><td class='amount'>${float(_money(amt)):,.2f}</td></tr>"
         )
     elif method_key == "check":
         chk = str(payment.get("check_number") or "").strip() or "—"
