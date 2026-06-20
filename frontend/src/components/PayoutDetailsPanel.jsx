@@ -26,6 +26,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import DownloadIcon from "@mui/icons-material/Download";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -64,6 +65,10 @@ import {
   hasTaxWithheldBreakdown,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import {
+  downloadHtmlFromFetch,
+  paystubDownloadFilename,
+} from "../payroll/paystubDownload";
 import { ESTIMATE_DISCLAIMER } from "../payroll/payrollTaxMessages";
 
 const DEDUCTION_FIELDS = [
@@ -161,6 +166,7 @@ function reconcileLocalTaxSummary(draft, totals) {
   const currentPeriod = totals.totalDed;
   const priorBalance = num(settlement.prior_unpaid_taxes);
   const priorAdj = num(settlement.prior_period_adjustment);
+  const effectivePrior = roundMoney(Math.max(0, priorBalance - priorAdj));
   let catchUp = totals.catchUp;
   const paidFullGross = totals.paidFullGross;
 
@@ -170,7 +176,7 @@ function reconcileLocalTaxSummary(draft, totals) {
   }
 
   const actualWithheld = totals.withheld;
-  const totalLiability = roundMoney(currentPeriod + priorBalance + priorAdj);
+  const totalLiability = roundMoney(currentPeriod + effectivePrior);
 
   let periodBalance;
   if (paidFullGross) {
@@ -606,6 +612,49 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const paystubFilenameForLine = (ln) =>
+    paystubDownloadFilename(
+      ln?.worker_name_snapshot,
+      detail?.pay_period_start,
+      detail?.pay_period_end,
+    );
+
+  const downloadPaystub = async (lineId) => {
+    if (!selectedId || !showPaystubActions) return;
+    const draft = lineDrafts[lineId];
+    const ln = (detail?.lines || []).find((row) => row.id === lineId);
+    if (!draft || !ln) return;
+    setError("");
+    try {
+      await downloadHtmlFromFetch(
+        fetchPaystubHtml(lineId, draft),
+        paystubFilenameForLine(ln),
+      );
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Paystub download failed");
+    }
+  };
+
+  const downloadAllPaystubs = async () => {
+    if (!selectedId || !showPaystubActions) return;
+    setError("");
+    try {
+      if (canEdit && !finalized) {
+        const ok = await saveDetails({ silent: true });
+        if (!ok) return;
+      }
+      const lines = (detail?.lines || []).filter((ln) => lineDrafts[ln.id]);
+      for (let i = 0; i < lines.length; i += 1) {
+        await downloadPaystub(lines[i].id);
+        if (i < lines.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+      }
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Download all paystubs failed");
+    }
+  };
+
   const previewAllPaystubs = async () => {
     if (!selectedId || !showPaystubActions) return;
     setError("");
@@ -733,6 +782,9 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                 </Button>
                 <Button size="small" startIcon={<PrintIcon />} onClick={printAllPaystubs}>
                   Print All Paystubs
+                </Button>
+                <Button size="small" startIcon={<DownloadIcon />} onClick={downloadAllPaystubs}>
+                  Download All Paystubs
                 </Button>
               </>
             ) : null}
@@ -935,6 +987,11 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                   <PrintIcon fontSize="small" />
                                 </IconButton>
                               </Tooltip>
+                              <Tooltip title="Download paystub">
+                                <IconButton size="small" onClick={() => downloadPaystub(ln.id)}>
+                                  <DownloadIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
                             </Stack>
                           ) : null}
                           {finalized && doc.receipt_available ? (
@@ -1117,6 +1174,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       onChange={(e) =>
                                         updateDraft(ln.id, "settlement", "prior_period_adjustment", e.target.value)
                                       }
+                                      helperText="Credits against prior tax balance (does not add new liability)"
                                     />
                                     <TextField
                                       size="small"
@@ -1124,7 +1182,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       label="Remaining estimated balance"
                                       value={draft.tax_summary?.remaining_balance ?? ""}
                                       InputProps={{ readOnly: true }}
-                                      helperText="Prior + this period liability minus all withholding collected"
+                                      helperText="This period + net prior balance minus withholding collected"
                                     />
                                     <TextField
                                       size="small"
@@ -1218,6 +1276,13 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     onClick={() => printPaystub(ln.id)}
                                   >
                                     Print Paystub
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    startIcon={<DownloadIcon />}
+                                    onClick={() => downloadPaystub(ln.id)}
+                                  >
+                                    Download Paystub
                                   </Button>
                                 </Stack>
                               ) : null}

@@ -62,6 +62,25 @@ def test_catch_up_excess_collection_floors_remaining_at_zero():
     assert tax_summary["remaining_balance"] == 0.0
 
 
+def test_prior_period_adjustment_offsets_prior_balance():
+    """Prior-period adj credits carryover prior — must not stack on top of prior_unpaid_taxes."""
+    details = apply_settlement_math(_details(16.90, prior=9.11), 221.0)
+    details["settlement"]["prior_period_adjustment"] = 9.11
+    details = apply_settlement_math(details, 221.0)
+    tax_summary = details["tax_summary"]
+    assert tax_summary["total_tax_liability"] == 16.90
+    assert tax_summary["remaining_balance"] == 0.0
+
+
+def test_prior_period_adjustment_partial_offset():
+    details = apply_settlement_math(_details(16.90, prior=9.11), 221.0)
+    details["settlement"]["prior_period_adjustment"] = 4.0
+    details = apply_settlement_math(details, 221.0)
+    tax_summary = details["tax_summary"]
+    assert tax_summary["total_tax_liability"] == 22.01
+    assert tax_summary["remaining_balance"] == 5.11
+
+
 def test_catch_up_withholding_reduces_net_pay():
     details = apply_settlement_math(_details(25.0, prior=80.0, catch_up=40.0), 200.0)
     settlement = details["settlement"]

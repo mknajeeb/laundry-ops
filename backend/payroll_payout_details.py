@@ -343,6 +343,11 @@ def sum_employer_taxes(details: dict) -> float:
     return float(sum(_money(er.get(k)) for k in EMPLOYER_TAX_KEYS))
 
 
+def _effective_prior_tax_balance(prior_balance: float, prior_adj: float) -> float:
+    """Prior-period adjustment credits against carryover prior balance (not added on top)."""
+    return round(max(0.0, float(prior_balance) - float(prior_adj)), 2)
+
+
 def reconcile_tax_summary(details: dict) -> dict:
     """Compute tax liability vs withheld amounts (catch-up is manager-entered only)."""
     ded = details.get("employee_deductions") or {}
@@ -352,6 +357,7 @@ def reconcile_tax_summary(details: dict) -> dict:
     current_period = float(sum(_money(ded.get(k)) for k in EMPLOYEE_DEDUCTION_KEYS))
     prior_balance = float(_money(settlement.get("prior_unpaid_taxes")))
     prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    effective_prior = _effective_prior_tax_balance(prior_balance, prior_adj)
     catch_up = float(_money(settlement.get("catch_up_withholding")))
     paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
     if paid_full_gross:
@@ -359,7 +365,7 @@ def reconcile_tax_summary(details: dict) -> dict:
         settlement["catch_up_withholding"] = 0.0
 
     actual_withheld = float(_money(settlement.get("amount_withheld")))
-    total_liability = round(current_period + prior_balance + prior_adj, 2)
+    total_liability = round(current_period + effective_prior, 2)
 
     if paid_full_gross:
         period_balance = round(current_period, 2)
@@ -1523,8 +1529,6 @@ def paystub_deduction_rows(details: dict) -> tuple[list[tuple[str, float]], floa
     for key, label in PAYSTUB_DEDUCTION_LINES:
         rows.append((label, float(_money(ded.get(key)))))
     rows.append(("Other Deduction", _other_deduction_amount(ded)))
-    prior_adj = float(_money(settlement.get("prior_period_adjustment")))
-    rows.append(("Prior Period Adjustment", prior_adj))
     total = round(sum(amt for _, amt in rows), 2)
     return rows, total
 
@@ -1880,6 +1884,7 @@ def _payment_detail_rows(payment: dict, totals: dict, *, cash_receipt_separate: 
 def _employee_tax_balance_html(totals: dict) -> str:
     """Compact tax balance block for employee paystub copy."""
     prior = float(totals.get("prior_tax_balance") or 0)
+    prior_adj = float(totals.get("prior_period_adjustment") or 0)
     catch_up = float(totals.get("catch_up_withholding") or 0)
     period_balance = float(totals.get("tax_balance_owed") or 0)
     current_period = float(totals.get("current_period_taxes") or 0)
@@ -1901,9 +1906,15 @@ def _employee_tax_balance_html(totals: dict) -> str:
         return ""
 
     if prior > 0 or catch_up > 0:
+        prior_adj_row = (
+            _paystub_money_row("Prior period adjustment", -prior_adj)
+            if prior_adj > 0
+            else ""
+        )
         rows_html = (
             _paystub_money_row("This period estimated tax", current_period)
             + _paystub_money_row("Prior tax balance", prior)
+            + prior_adj_row
             + _paystub_money_row("Total estimated liability", total_liability)
             + _paystub_money_row("Withheld this period", withheld_current)
             + _paystub_money_row("Catch-up collected", catch_up)
@@ -2153,6 +2164,7 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 <h2>Tax Balances (Audit)</h2>
 <table class="compact">
 {_paystub_money_row('Prior period tax balance', float(totals.get('prior_tax_balance') or 0))}
+{_paystub_money_row('Prior period adjustment', -float(totals.get('prior_period_adjustment') or 0)) if float(totals.get('prior_period_adjustment') or 0) > 0 else ''}
 {_paystub_money_row('Current period taxes', float(totals.get('current_period_taxes') or 0))}
 {_paystub_money_row('Total tax liability', float(totals.get('total_tax_liability') or 0))}
 {_paystub_money_row('Actual tax withheld', withheld)}
