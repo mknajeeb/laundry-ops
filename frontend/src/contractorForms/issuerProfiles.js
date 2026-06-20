@@ -27,7 +27,7 @@ export const ISSUER_PROFILES = {
   },
   washmate: {
     issued_by_entity: "washmate",
-    company_name: "Washmate Laundry Solutions",
+    company_name: "Washmate",
     company_address: "921 2nd Avenue, Franklin Square, NY 11010",
     company_phone: "",
     company_website: "",

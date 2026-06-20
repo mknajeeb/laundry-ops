@@ -1,5 +1,10 @@
 import { resolveIssuerEntity } from "./issuerProfiles";
 
+export function contractorLetterheadClassName(prefill) {
+  const isWashmate = resolveIssuerEntity(prefill?.issued_by_entity) === "washmate";
+  return isWashmate ? "cform-letterhead cform-letterhead--washmate" : "cform-letterhead";
+}
+
 export function contractorLogoClassName(prefill, mini = false) {
   const isWashmate = resolveIssuerEntity(prefill?.issued_by_entity) === "washmate";
   if (mini) {

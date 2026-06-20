@@ -1,6 +1,6 @@
 import ContractorPrintLogo from "./ContractorPrintLogo";
 import { companyContactMiniText, resolveCompanyContact } from "./companyContact";
-import { contractorLogoClassName } from "./contractorLetterhead";
+import { contractorLetterheadClassName, contractorLogoClassName } from "./contractorLetterhead";
 import { contractorLogoSrc, EMBEDDED_VEEWASH_LOGO } from "./contractorLogo";
 
 function escapeHtml(s) {
@@ -45,7 +45,7 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
   }
 
   return (
-    <header className="cform-letterhead">
+    <header className={contractorLetterheadClassName(prefill)}>
       <ContractorPrintLogo prefill={prefill} className={logoClass} />
       <div className="cform-letterhead-text">
         <div className="cform-company-name">{company}</div>
