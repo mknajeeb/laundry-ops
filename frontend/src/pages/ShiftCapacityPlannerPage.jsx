@@ -245,6 +245,101 @@ function StatusChip({ status }) {
   );
 }
 
+function formatDurationMin(minutes) {
+  if (minutes == null || Number.isNaN(Number(minutes))) return null;
+  const m = Math.round(Number(minutes));
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem ? `${h}h ${rem}m` : `${h}h`;
+}
+
+function BatchPipelineFlow({ row }) {
+  const washDur = formatDurationMin(row.wash_duration_min);
+  const dryDur = formatDurationMin(row.dry_duration_min);
+  const pipelineDur = formatDurationMin(row.time_to_ready_to_fold_min);
+  const washToDry = formatDurationMin(row.wash_to_dry_gap_min);
+  const dryToReady = formatDurationMin(row.dry_to_ready_gap_min);
+
+  const stages = [
+    {
+      key: "sort",
+      label: "Sorter",
+      sub: "sorted avail",
+      value: row.sorted_available_at_start ?? "—",
+      color: STAGE_COLORS.sorting,
+      time: null,
+    },
+    {
+      key: "wash",
+      label: "Washer",
+      sub: row.wash_start || "—",
+      value: washDur ? `${washDur} wash` : "—",
+      color: STAGE_COLORS.washing,
+      arrowLabel: washToDry,
+    },
+    {
+      key: "dry",
+      label: "Dryer",
+      sub: row.dry_start || "—",
+      value: dryDur ? `${dryDur} dry` : "—",
+      color: STAGE_COLORS.drying,
+      arrowLabel: dryToReady,
+    },
+    {
+      key: "ready",
+      label: "Ready",
+      sub: row.ready_to_fold_at || "—",
+      value: pipelineDur ? `${pipelineDur} total` : "—",
+      color: STAGE_COLORS.ready_to_fold,
+      time: null,
+    },
+  ];
+
+  return (
+    <Stack direction="row" alignItems="stretch" spacing={0.25} sx={{ minWidth: 340 }}>
+      {stages.map((stage, idx) => (
+        <Box key={stage.key} sx={{ display: "flex", alignItems: "stretch", flex: 1 }}>
+          <Box
+            sx={{
+              flex: "1 1 0",
+              minWidth: 72,
+              px: 0.5,
+              py: 0.5,
+              borderRadius: 1,
+              border: "1px solid",
+              borderColor: `${stage.color}55`,
+              bgcolor: `${stage.color}12`,
+            }}
+          >
+            <Typography variant="caption" fontWeight={800} display="block" sx={{ color: stage.color, fontSize: 10, lineHeight: 1.2 }}>
+              {stage.label}
+            </Typography>
+            <Typography variant="caption" display="block" sx={{ fontWeight: 700, fontSize: 11, lineHeight: 1.3 }}>
+              {stage.value}
+            </Typography>
+            <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 10 }}>
+              {stage.sub}
+            </Typography>
+          </Box>
+          {idx < stages.length - 1 ? (
+            <Stack alignItems="center" justifyContent="center" sx={{ px: 0.2, minWidth: 28 }}>
+              <Typography component="span" sx={{ color: "#cbd5e1", fontWeight: 700, fontSize: 12, lineHeight: 1 }}>
+                →
+              </Typography>
+              {stages[idx].arrowLabel ? (
+                <Typography variant="caption" sx={{ fontSize: 9, color: "#64748b", fontWeight: 600, whiteSpace: "nowrap" }}>
+                  {stages[idx].arrowLabel}
+                </Typography>
+              ) : null}
+            </Stack>
+          ) : null}
+        </Box>
+      ))}
+    </Stack>
+  );
+}
+
 function MilestoneTable({ milestoneRows, timeMilestoneRows, batchSize, washingStrategy }) {
   const batchRows = milestoneRows || [];
   const timeRows = timeMilestoneRows || [];
@@ -266,11 +361,10 @@ function MilestoneTable({ milestoneRows, timeMilestoneRows, batchSize, washingSt
             <Typography variant="subtitle2" fontWeight={800}>
               Batch milestones
             </Typography>
-            {waveNote ? (
-              <Typography variant="caption" color="text.secondary">
-                {waveNote}
-              </Typography>
-            ) : null}
+            <Typography variant="caption" color="text.secondary">
+              {waveNote ? `${waveNote} · ` : ""}
+              Sorter lane → washer/dryer lane → fold
+            </Typography>
           </Stack>
           <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
             <Table size="small" stickyHeader>
@@ -278,11 +372,18 @@ function MilestoneTable({ milestoneRows, timeMilestoneRows, batchSize, washingSt
                 <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
                   <TableCell sx={{ fontWeight: 700 }}>Batch</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Orders</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>Left to sort</TableCell>
-                  <TableCell sx={{ fontWeight: 700 }}>Wash</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }} title="Sorted bags waiting for washer at batch wash start">
+                    Sorted avail
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }} title="Bags ready to fold at batch wash start (carry-over)">
+                    Ready @ start
+                  </TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }} title="Bags not yet sorted when wash starts">
+                    Left to sort
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 700, minWidth: 360 }}>Washer/dryer pipeline</TableCell>
                   <TableCell sx={{ fontWeight: 700 }}>Batch end</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>Dryers loaded</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700 }}>Ready to fold</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>Folded</TableCell>
                 </TableRow>
               </TableHead>
@@ -291,14 +392,15 @@ function MilestoneTable({ milestoneRows, timeMilestoneRows, batchSize, washingSt
                   <TableRow key={`batch-${row.batch_number}`} hover>
                     <TableCell sx={{ fontWeight: 700 }}>#{row.batch_number}</TableCell>
                     <TableCell>{row.order_range}</TableCell>
-                    <TableCell align="right">{row.remaining_to_sort_before_wash ?? "—"}</TableCell>
-                    <TableCell>
-                      {row.wash_start && row.wash_end ? `${row.wash_start}–${row.wash_end}` : row.wash_start || "—"}
+                    <TableCell align="right">{row.sorted_available_at_start ?? "—"}</TableCell>
+                    <TableCell align="right">{row.ready_to_fold_at_start ?? 0}</TableCell>
+                    <TableCell align="right">{row.left_to_sort ?? row.remaining_to_sort_before_wash ?? "—"}</TableCell>
+                    <TableCell sx={{ py: 0.75 }}>
+                      <BatchPipelineFlow row={row} />
                     </TableCell>
-                    <TableCell>{row.batch_end || "—"}</TableCell>
+                    <TableCell>{row.batch_end_time || row.batch_end || "—"}</TableCell>
                     <TableCell align="right">{row.dryers_loaded ?? 0}</TableCell>
-                    <TableCell align="right">{row.bags_ready_to_fold ?? 0}</TableCell>
-                    <TableCell align="right">{row.bags_folded ?? 0}</TableCell>
+                    <TableCell align="right">{row.folded_at_end ?? row.bags_folded ?? 0}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

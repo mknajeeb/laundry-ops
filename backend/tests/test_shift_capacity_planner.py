@@ -453,12 +453,23 @@ class TestPlannerBugFixes:
         assert first["batch_number"] == 1
         assert first["order_range"] == "1–8"
         assert first["orders_in_batch"] == 8
+        assert "sorted_available_at_start" in first
+        assert "ready_to_fold_at_start" in first
+        assert "left_to_sort" in first
         assert "remaining_to_sort_before_wash" in first
+        assert first["left_to_sort"] == first["remaining_to_sort_before_wash"]
         assert "wash_start" in first
         assert "wash_end" in first
+        assert "wash_duration_min" in first
+        assert "dry_start" in first
+        assert "dry_duration_min" in first
+        assert "time_to_ready_to_fold_min" in first
         assert "batch_end" in first
+        assert "batch_end_time" in first
         assert "dryers_loaded" in first
+        assert "ready_to_fold_at_end" in first
         assert "bags_ready_to_fold" in first
+        assert "folded_at_end" in first
         assert "bags_folded" in first
         assert op["milestone_rows"] == batch_rows
         ms = op["milestones"]
@@ -473,7 +484,41 @@ class TestPlannerBugFixes:
         op = result["operational"]["active_strategy"]
         first = op["batch_milestone_rows"][0]
         assert first["sorted_in_batch_before_wash"] == 8
-        assert first["remaining_to_sort_before_wash"] == 42
+        assert first["sorted_available_at_start"] >= 1
+        assert first["ready_to_fold_at_start"] == 0
+        assert first["left_to_sort"] == 42
+
+    def test_batch_milestone_ready_to_fold_at_start_carryover(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, washing_strategy="batch_washing", batch_size=8)
+        )
+        rows = result["operational"]["active_strategy"]["batch_milestone_rows"]
+        assert len(rows) >= 2
+        assert rows[0]["ready_to_fold_at_start"] == 0
+        assert rows[1]["ready_to_fold_at_start"] >= rows[0]["ready_to_fold_at_end"]
+
+    def test_batch_milestone_pipeline_timing_positive(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, washing_strategy="batch_washing", batch_size=8)
+        )
+        first = result["operational"]["active_strategy"]["batch_milestone_rows"][0]
+        assert first["wash_duration_min"] > 0
+        assert first["dry_duration_min"] is not None
+        assert first["time_to_ready_to_fold_min"] is not None
+        assert first["time_to_ready_to_fold_min"] >= first["wash_duration_min"]
+
+    def test_sorter_and_washer_person_separate_utilization(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, washing_strategy="batch_washing", batch_size=8)
+        )
+        util = result["operational"]["active_strategy"]["resource_utilization"]
+        resources = {row["resource"] for row in util}
+        assert "sorter" in resources
+        assert "washer_person" in resources
+        sorter = next(r for r in util if r["resource"] == "sorter")
+        washer_person = next(r for r in util if r["resource"] == "washer_person")
+        assert sorter["busy_minutes"] > 0
+        assert washer_person["busy_minutes"] > 0
 
     def test_continuous_mode_wash_waves(self):
         result = simulate_shift_capacity(

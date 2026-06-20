@@ -2191,6 +2191,17 @@ def _count_sorted_at(state: OpSimState, minute: int) -> int:
     return sum(1 for o in state.orders if o.sort_end is not None and o.sort_end <= minute)
 
 
+def _count_sorted_available_at(state: OpSimState, minute: int) -> int:
+    """Bags finished sorting and waiting for washer pickup (sorter lane → washer lane handoff)."""
+    return sum(
+        1
+        for o in state.orders
+        if o.sort_end is not None
+        and o.sort_end <= minute
+        and (o.wash_start is None or o.wash_start > minute)
+    )
+
+
 def _count_ready_to_fold_at(state: OpSimState, minute: int) -> int:
     return sum(
         1
@@ -2211,6 +2222,53 @@ def _batch_dryers_loaded_at(state: OpSimState, order_ids: set[int], minute: int)
         for ld in state.loads
         if ld.order_id in order_ids and ld.dry_start is not None and ld.dry_start <= minute
     )
+
+
+def _batch_pipeline_timing(
+    batch_orders: list[OrderTrack],
+    wash_start_min: int,
+) -> dict[str, Any]:
+    """Wash → dry → ready-to-fold timing for a batch (washer/dryer lane, separate from sorter)."""
+    wash_ends = [o.wash_end for o in batch_orders if o.wash_end is not None]
+    dry_starts = [o.dry_start for o in batch_orders if o.dry_start is not None]
+    dry_ends = [o.dry_end for o in batch_orders if o.dry_end is not None]
+    ready_times = [o.ready_to_fold for o in batch_orders if o.ready_to_fold is not None]
+
+    wash_end_min = max(wash_ends) if wash_ends else wash_start_min
+    dry_start_min = min(dry_starts) if dry_starts else None
+    dry_end_min = max(dry_ends) if dry_ends else None
+    first_ready_min = min(ready_times) if ready_times else None
+    last_ready_min = max(ready_times) if ready_times else None
+
+    wash_duration_min = max(0, wash_end_min - wash_start_min)
+    dry_duration_min = (
+        max(0, dry_end_min - dry_start_min) if dry_start_min is not None and dry_end_min is not None else None
+    )
+    time_to_ready_to_fold_min = (
+        max(0, last_ready_min - wash_start_min) if last_ready_min is not None else None
+    )
+    wash_to_dry_gap_min = (
+        max(0, dry_start_min - wash_end_min) if dry_start_min is not None else None
+    )
+    dry_to_ready_gap_min = (
+        max(0, first_ready_min - dry_end_min)
+        if first_ready_min is not None and dry_end_min is not None
+        else None
+    )
+
+    return {
+        "wash_start_minute": wash_start_min,
+        "wash_end_minute": wash_end_min,
+        "wash_duration_min": wash_duration_min,
+        "dry_start_minute": dry_start_min,
+        "dry_end_minute": dry_end_min,
+        "dry_duration_min": dry_duration_min,
+        "first_ready_to_fold_minute": first_ready_min,
+        "last_ready_to_fold_minute": last_ready_min,
+        "time_to_ready_to_fold_min": time_to_ready_to_fold_min,
+        "wash_to_dry_gap_min": wash_to_dry_gap_min,
+        "dry_to_ready_gap_min": dry_to_ready_gap_min,
+    }
 
 
 def _batch_wave_dryers_complete_minute(
@@ -2291,11 +2349,17 @@ def _build_batch_milestone_rows(
         wash_end_min = max(wash_ends) if wash_ends else wash_start_min
 
         before_wash_min = max(inp.start_min, wash_start_min - 1)
+        at_wash_start_min = wash_start_min
         sorted_before_wash = _count_sorted_at(state, before_wash_min)
+        sorted_available_at_start = _count_sorted_available_at(state, at_wash_start_min)
+        ready_to_fold_at_start = _count_ready_to_fold_at(state, at_wash_start_min)
         batch_sorted_before_wash = sum(
             1 for o in batch_orders if o.sort_end is not None and o.sort_end <= before_wash_min
         )
-        remaining_to_sort = max(0, inp.bag_count - sorted_before_wash)
+        left_to_sort = max(0, inp.bag_count - sorted_before_wash)
+        remaining_to_sort = left_to_sort
+
+        pipeline = _batch_pipeline_timing(batch_orders, wash_start_min)
 
         batch_end_min = _batch_wave_dryers_complete_minute(state, inp, order_ids)
         if batch_end_min is None:
@@ -2317,6 +2381,10 @@ def _build_batch_milestone_rows(
         ready_at_end = _count_ready_to_fold_at(state, batch_end_min)
         folded_at_end = min(inp.bag_count, _count_folded_at(state, batch_end_min))
 
+        dry_start_min = pipeline["dry_start_minute"]
+        dry_end_min = pipeline["dry_end_minute"]
+        last_ready_min = pipeline["last_ready_to_fold_minute"]
+
         rows.append(
             {
                 "batch_number": wave,
@@ -2324,17 +2392,37 @@ def _build_batch_milestone_rows(
                 "orders_in_batch": len(order_ids),
                 "wave_size": wave_size,
                 "batch_mode": batch_mode,
+                # Batch start — sorter lane vs washer handoff
+                "sorted_available_at_start": sorted_available_at_start,
+                "ready_to_fold_at_start": ready_to_fold_at_start,
+                "left_to_sort": left_to_sort,
+                "remaining_to_sort_before_wash": remaining_to_sort,
+                "sorted_in_batch_before_wash": batch_sorted_before_wash,
+                "cumulative_sorted_before_wash": sorted_before_wash,
+                # Washer/dryer pipeline timing (separate staff from sorter)
                 "wash_start": _minutes_to_label(wash_start_min),
                 "wash_end": _minutes_to_label(wash_end_min),
                 "wash_start_minute": wash_start_min,
                 "wash_end_minute": wash_end_min,
+                "wash_duration_min": pipeline["wash_duration_min"],
+                "dry_start": _minutes_to_label(dry_start_min) if dry_start_min is not None else None,
+                "dry_end": _minutes_to_label(dry_end_min) if dry_end_min is not None else None,
+                "dry_start_minute": dry_start_min,
+                "dry_end_minute": dry_end_min,
+                "dry_duration_min": pipeline["dry_duration_min"],
+                "ready_to_fold_at": _minutes_to_label(last_ready_min) if last_ready_min is not None else None,
+                "ready_to_fold_minute": last_ready_min,
+                "time_to_ready_to_fold_min": pipeline["time_to_ready_to_fold_min"],
+                "wash_to_dry_gap_min": pipeline["wash_to_dry_gap_min"],
+                "dry_to_ready_gap_min": pipeline["dry_to_ready_gap_min"],
+                # Batch end
                 "batch_end": _minutes_to_label(batch_end_min),
                 "batch_end_minute": batch_end_min,
-                "remaining_to_sort_before_wash": remaining_to_sort,
-                "sorted_in_batch_before_wash": batch_sorted_before_wash,
-                "cumulative_sorted_before_wash": sorted_before_wash,
+                "batch_end_time": _minutes_to_label(batch_end_min),
                 "dryers_loaded": dryers_loaded,
+                "ready_to_fold_at_end": ready_at_end,
                 "bags_ready_to_fold": ready_at_end,
+                "folded_at_end": folded_at_end,
                 "bags_folded": folded_at_end,
                 "cumulative_ready_to_fold": ready_at_end + folded_at_end,
                 "cumulative_folded": folded_at_end,
