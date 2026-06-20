@@ -635,8 +635,13 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
     transfer_min = _non_negative_int(raw.get("transfer_min"), "transfer_min")
     push_window = _positive_int(raw.get("dryer_push_wash_window_min"), "dryer_push_wash_window_min")
     weighing_handled_by = _parse_weighing_handled_by(raw.get("weighing_handled_by"))
-    weighing_mode_raw = raw.get("weighing_mode")
-    weighing_mode = _parse_weighing_mode(weighing_mode_raw, weighing_handled_by)
+    weighing_mode_raw = user_raw.get("weighing_mode")
+    if weighing_mode_raw is None or (
+        isinstance(weighing_mode_raw, str) and not str(weighing_mode_raw).strip()
+    ):
+        weighing_mode = _parse_weighing_mode(None, weighing_handled_by)
+    else:
+        weighing_mode = _parse_weighing_mode(weighing_mode_raw, weighing_handled_by)
     weighing_mode, weighing_handled_by = _normalize_weighing_config(
         weighing_mode, weighing_handled_by
     )
@@ -1468,10 +1473,10 @@ def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]
 def compute_staffing(inp: PlannerInputs) -> dict[str, Any]:
     window = inp.target_min - inp.start_min
     fold_window = max(60, window // 2)
-    weigh_window = window if inp.uses_dedicated_weigher else 0
+    needs_weigher = inp.needs_weigher_staff
     suggested_weighers = (
         max(1, math.ceil(inp.bag_count * inp.weigh_min_per_bag / window))
-        if inp.uses_dedicated_weigher
+        if needs_weigher
         else 0
     )
     sort_rate = inp.effective_sort_min_per_bag
@@ -1736,30 +1741,50 @@ def _log_washer_person(
 
 
 def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bool) -> None:
-    if inp.uses_dedicated_weigher and state.incoming_bags and inp.weigher_count > 0 and state.minute >= inp.start_min:
-        state.weigh_remainder += inp.weigher_count / inp.weigh_min_per_bag
-        while state.weigh_remainder >= 1 and state.incoming_bags:
-            weight = state.incoming_bags.pop(0)
-            oid = state.next_bag_index
-            state.next_bag_index += 1
-            order = _order_by_id(state, oid)
-            sort_start = state.minute
-            weigh_end = state.minute
-            weigh_start = max(inp.start_min, weigh_end - max(1, int(math.ceil(inp.weigh_min_per_bag))))
-            order.weigh_start = weigh_start
-            order.weigh_end = weigh_end
-            order.sort_start = sort_start
-            state.weigh_queue.append((oid, weight))
-            state.weighed_count += 1
-            state.weigh_remainder -= 1
+    if inp.weighing_mode == "upfront" and state.weighed_count < inp.bag_count:
+        allow_sort = False
 
-    if state.weigh_queue and inp.uses_dedicated_weigher:
-        while state.weigh_queue:
-            oid, weight = state.weigh_queue.pop(0)
-            order = _order_by_id(state, oid)
-            if order.sort_start is None:
+    if inp.weighing_mode == "separate_lane":
+        if (
+            inp.weigher_count > 0
+            and state.incoming_bags
+            and state.minute >= inp.start_min
+        ):
+            state.weigh_remainder += inp.weigher_count / inp.weigh_min_per_bag
+            while state.weigh_remainder >= 1 and state.incoming_bags:
+                weight = state.incoming_bags.pop(0)
+                oid = state.next_bag_index
+                state.next_bag_index += 1
+                order = _order_by_id(state, oid)
                 order.sort_start = state.minute
-            state.sort_queue.append((oid, weight))
+                _mark_order_weighed(order, state, inp)
+                state.weigh_queue.append((oid, weight))
+                state.weigh_remainder -= 1
+
+        if state.weigh_queue:
+            while state.weigh_queue:
+                oid, weight = state.weigh_queue.pop(0)
+                order = _order_by_id(state, oid)
+                if order.sort_start is None:
+                    order.sort_start = state.minute
+                state.sort_queue.append((oid, weight))
+
+    elif inp.weighing_mode == "upfront":
+        if state.incoming_bags and state.minute >= inp.start_min:
+            washer_blocked = (
+                inp.weighing_handled_by == "washer" and state.washer_person_busy
+            )
+            rate = 0.0 if washer_blocked else _upfront_weigh_rate(inp)
+            if rate > 0:
+                state.weigh_remainder += rate
+                while state.weigh_remainder >= 1 and state.incoming_bags:
+                    weight = state.incoming_bags.pop(0)
+                    oid = state.next_bag_index
+                    state.next_bag_index += 1
+                    order = _order_by_id(state, oid)
+                    _mark_order_weighed(order, state, inp)
+                    state.sort_queue.append((oid, weight))
+                    state.weigh_remainder -= 1
 
     on_sorter_break = state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until
     if (
@@ -1777,15 +1802,15 @@ def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bo
             if order.sort_start is None:
                 order.sort_start = state.minute
             order.sort_end = state.minute
+            if inp.weighing_mode == "during_sort":
+                order.weigh_start = order.sort_start
+                order.weigh_end = order.sort_end
+                state.weighed_count += 1
             state.sorted_pool.append((oid, weight))
             state.sorted_count += 1
             state.sort_remainder -= 1
             state.batch_sorted += 1
             state.sorter_bags_since_break += 1
-            if inp.weighing_handled_by == "sorter":
-                order.weigh_start = order.sort_start
-                order.weigh_end = order.sort_end
-                state.weighed_count += 1
             if inp.sorter_break_after_bags > 0 and state.sorter_bags_since_break >= inp.sorter_break_after_bags:
                 state.sorter_on_break_until = state.minute + inp.sorter_break_duration_min
                 state.sorter_bags_since_break = 0
@@ -2779,7 +2804,7 @@ def optimize_operational_strategy(inp: PlannerInputs, operational: dict[str, Any
             "can stay ahead while the washer person handles dryer loading."
         )
     suggested_staff = {
-        "weighers": max(staffing["weighers"], inp.weigher_count if inp.uses_dedicated_weigher else 0),
+        "weighers": max(staffing["weighers"], inp.weigher_count if inp.needs_weigher_staff else 0),
         "sorters": max(staffing["sorters"], inp.sorter_count),
         "folders": max(staffing["folders"], inp.folder_count),
         "washers": inp.washer_count,

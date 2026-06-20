@@ -59,6 +59,8 @@ const DEFAULT_INPUTS = {
   weigher_count: "",
   sorter_count: "",
   weighing_handled_by: "dedicated_weigher",
+  weighing_mode: "separate_lane",
+  washer_early_start_min: 0,
   washing_strategy: "batch_washing",
   batch_size: 8,
   load_washer_min: 3,
@@ -82,6 +84,100 @@ const WASHING_STRATEGIES = [
       "Sorter keeps sorting while the washer person handles wash → transfer → dryer loading for the previous batch.",
   },
 ];
+
+const WEIGHING_MODES = [
+  {
+    value: "separate_lane",
+    label: "Separate weigh lane",
+    description: "Dedicated weigher(s) on their own lane; weighed bags feed sorting.",
+    who: ["dedicated_weigher"],
+  },
+  {
+    value: "during_sort",
+    label: "Weigh while sorting",
+    description: "Sorter weighs each bag as part of sorting (sort time includes weigh time).",
+    who: ["sorter"],
+  },
+  {
+    value: "upfront",
+    label: "Weigh all at shift start",
+    description: "All bags weighed before sorting begins. Washer can arrive early to weigh.",
+    who: ["dedicated_weigher", "sorter", "washer"],
+  },
+];
+
+const WEIGHING_HANDLED_BY_LABELS = {
+  dedicated_weigher: "Dedicated weigher",
+  sorter: "Sorter",
+  washer: "Washer person",
+};
+
+function WeighingModeSelect({ inputs, onChange, weighingDefinitions }) {
+  const mode =
+    WEIGHING_MODES.find((m) => m.value === inputs.weighing_mode) || WEIGHING_MODES[0];
+  const apiDef = weighingDefinitions?.[inputs.weighing_mode];
+  const whoOptions = apiDef?.who_options || mode.who;
+  const description = apiDef?.description || mode.description;
+
+  const onModeChange = (nextMode) => {
+    onChange("weighing_mode", nextMode);
+    const nextMeta = WEIGHING_MODES.find((m) => m.value === nextMode) || WEIGHING_MODES[0];
+    if (!nextMeta.who.includes(inputs.weighing_handled_by)) {
+      onChange("weighing_handled_by", nextMeta.who[0]);
+    }
+  };
+
+  return (
+    <Stack spacing={0.75}>
+      <FormControl size="small" fullWidth>
+        <InputLabel>Weighing mode</InputLabel>
+        <Select
+          label="Weighing mode"
+          value={inputs.weighing_mode}
+          onChange={(e) => onModeChange(e.target.value)}
+        >
+          {WEIGHING_MODES.map((m) => (
+            <MenuItem key={m.value} value={m.value}>{m.label}</MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+      <Typography variant="caption" color="text.secondary" display="block">
+        {description}
+      </Typography>
+      {whoOptions.length > 1 ? (
+        <FormControl size="small" fullWidth>
+          <InputLabel>Performed by</InputLabel>
+          <Select
+            label="Performed by"
+            value={inputs.weighing_handled_by}
+            onChange={(e) => onChange("weighing_handled_by", e.target.value)}
+          >
+            {whoOptions.map((who) => (
+              <MenuItem key={who} value={who}>
+                {WEIGHING_HANDLED_BY_LABELS[who] || who}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      ) : (
+        <Chip
+          size="small"
+          label={`Performed by: ${WEIGHING_HANDLED_BY_LABELS[whoOptions[0]] || whoOptions[0]}`}
+          sx={{ alignSelf: "flex-start", fontWeight: 600 }}
+        />
+      )}
+      {inputs.weighing_mode === "upfront" && inputs.weighing_handled_by === "washer" ? (
+        numField(
+          "washer_early_start_min",
+          "Washer early start (min before shift)",
+          inputs,
+          onChange,
+          { min: 0, helperText: "Washer can arrive early to weigh all bags before wash starts." }
+        )
+      ) : null}
+    </Stack>
+  );
+}
 
 const BATCH_SIZE_OPTIONS = [6, 8, 10, 12];
 const INPUT_TABS = ["Time & volume", "Split loads", "Staff & ops", "What-if"];
@@ -838,7 +934,7 @@ function WhatIfResultsPanel({ whatIf, utilizationBottleneck, operationalSummary 
   );
 }
 
-function InputPanel({ tab, inputs, onChange, previewTotals }) {
+function InputPanel({ tab, inputs, onChange, previewTotals, weighingDefinitions }) {
   if (tab === 0) {
     return (
       <Stack spacing={1.25}>
@@ -913,14 +1009,11 @@ function InputPanel({ tab, inputs, onChange, previewTotals }) {
   if (tab === 2) {
     return (
       <Stack spacing={1.25}>
-        <FormControl size="small" fullWidth>
-          <InputLabel>Weighing handled by</InputLabel>
-          <Select label="Weighing handled by" value={inputs.weighing_handled_by} onChange={(e) => onChange("weighing_handled_by", e.target.value)}>
-            <MenuItem value="dedicated_weigher">Dedicated weigher</MenuItem>
-            <MenuItem value="sorter">Sorter</MenuItem>
-            <MenuItem value="washer">Washer</MenuItem>
-          </Select>
-        </FormControl>
+        <WeighingModeSelect
+          inputs={inputs}
+          onChange={onChange}
+          weighingDefinitions={weighingDefinitions}
+        />
         <Grid container spacing={1}>
           <Grid item xs={4}>{numField("weigh_min_per_bag", "Weigh min", inputs, onChange, { min: 0.1, step: 0.1 })}</Grid>
           <Grid item xs={4}>{numField("sort_min_per_bag", "Sort min", inputs, onChange, { min: 0.1, step: 0.1 })}</Grid>
@@ -928,7 +1021,9 @@ function InputPanel({ tab, inputs, onChange, previewTotals }) {
         </Grid>
         <Grid container spacing={1}>
           <Grid item xs={4}>{numField("folder_count", "Folders", inputs, onChange, { min: 0 })}</Grid>
-          {inputs.weighing_handled_by === "dedicated_weigher" ? (
+          {inputs.weighing_mode === "separate_lane" || (
+            inputs.weighing_mode === "upfront" && inputs.weighing_handled_by === "dedicated_weigher"
+          ) ? (
             <Grid item xs={4}>
               <TextField label="Weighers (auto)" size="small" value={inputs.weigher_count} onChange={(e) => onChange("weigher_count", e.target.value)} fullWidth />
             </Grid>
@@ -971,7 +1066,15 @@ function InputPanel({ tab, inputs, onChange, previewTotals }) {
         Capacity tuning (re-run simulation)
       </Typography>
       <Grid container spacing={1}>
-        {WHATIF_TUNING_KEYS.filter((f) => !f.weigherOnly || inputs.weighing_handled_by === "dedicated_weigher").map((f) => (
+        {WHATIF_TUNING_KEYS.filter((f) => {
+          if (f.weigherOnly) {
+            return (
+              inputs.weighing_mode === "separate_lane"
+              || (inputs.weighing_mode === "upfront" && inputs.weighing_handled_by === "dedicated_weigher")
+            );
+          }
+          return true;
+        }).map((f) => (
           <Grid item xs={6} key={f.key}>
             {numField(f.key, f.label, inputs, onChange, { min: f.min, step: f.step })}
           </Grid>
@@ -1032,7 +1135,7 @@ export default function ShiftCapacityPlannerPage() {
       else body[k] = Number(body[k]);
     });
     const numericKeys = [
-      "bag_count", "avg_lbs_per_bag", "sorter_early_start_min", "sorter_break_after_bags",
+      "bag_count", "avg_lbs_per_bag", "sorter_early_start_min", "washer_early_start_min", "sorter_break_after_bags",
       "sorter_break_duration_min", "washer_break_after_bags", "washer_break_duration_min",
       "washer_count", "dryer_count", "wash_cycle_min", "dry_cycle_min",
       "weigh_min_per_bag", "sort_min_per_bag", "fold_min_per_bag", "folder_count",
@@ -1096,6 +1199,7 @@ export default function ShiftCapacityPlannerPage() {
   const opMilestoneRows = operational?.batch_milestone_rows || opData?.batch_milestone_rows || operational?.milestone_rows || opData?.milestone_rows;
   const strategyOptimizer = operational?.strategy_optimizer;
   const strategyDefinitions = operational?.strategy_definitions;
+  const weighingDefinitions = operational?.weighing_mode_definitions;
 
   const stickySummary = result ? (
     <Paper
@@ -1226,7 +1330,7 @@ export default function ShiftCapacityPlannerPage() {
                 </Tabs>
               </Box>
               <Box sx={{ px: 1.5, py: 1.25, overflow: "auto", flex: 1 }}>
-                <InputPanel tab={inputTab} inputs={inputs} onChange={onChange} previewTotals={previewTotals} />
+                <InputPanel tab={inputTab} inputs={inputs} onChange={onChange} previewTotals={previewTotals} weighingDefinitions={weighingDefinitions} />
               </Box>
               <Box sx={{ p: 1.5, borderTop: "1px solid", borderColor: "divider" }}>
                 <Button

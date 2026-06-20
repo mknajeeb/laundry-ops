@@ -154,7 +154,13 @@ class TestSplitLoadDistribution:
 
 class TestWeighingAssignment:
     def test_dedicated_weigher_uses_weighers(self):
-        result = simulate_shift_capacity(_default_payload(weighing_handled_by="dedicated_weigher"))
+        result = simulate_shift_capacity(
+            _default_payload(
+                weighing_mode="separate_lane",
+                weighing_handled_by="dedicated_weigher",
+            )
+        )
+        assert result["inputs"]["weighing_mode"] == "separate_lane"
         assert result["inputs"]["weighing_handled_by"] == "dedicated_weigher"
         assert result["inputs"]["weigher_count"] >= 1
         assert result["staffing"]["weighers"] >= 1
@@ -162,6 +168,7 @@ class TestWeighingAssignment:
     def test_sorter_weighing_reduces_sort_throughput(self):
         dedicated = simulate_shift_capacity(
             _default_payload(
+                weighing_mode="separate_lane",
                 weighing_handled_by="dedicated_weigher",
                 weigher_count=3,
                 sorter_count=3,
@@ -169,27 +176,53 @@ class TestWeighingAssignment:
         )
         sorter = simulate_shift_capacity(
             _default_payload(
+                weighing_mode="during_sort",
                 weighing_handled_by="sorter",
                 sorter_count=3,
             )
         )
         assert sorter["inputs"]["weigher_count"] == 0
+        assert sorter["inputs"]["weighing_mode"] == "during_sort"
         assert sorter["staffing"]["weighers"] == 0
         d_sorted = dedicated["strategies"]["continuous_washing"]["milestones"]["9:00 AM"]["bags_sorted"]
         s_sorted = sorter["strategies"]["continuous_washing"]["milestones"]["9:00 AM"]["bags_sorted"]
         assert s_sorted <= d_sorted
 
-    def test_washer_weighing_delays_first_wash(self):
+    def test_washer_upfront_weighing_delays_first_wash(self):
         dedicated = simulate_shift_capacity(
-            _default_payload(weighing_handled_by="dedicated_weigher", weigher_count=3, sorter_count=3)
+            _default_payload(
+                weighing_mode="separate_lane",
+                weighing_handled_by="dedicated_weigher",
+                weigher_count=3,
+                sorter_count=3,
+            )
         )
         washer = simulate_shift_capacity(
-            _default_payload(weighing_handled_by="washer", sorter_count=3)
+            _default_payload(
+                weighing_mode="upfront",
+                weighing_handled_by="washer",
+                sorter_count=3,
+            )
         )
         d_lane = dedicated["strategies"]["continuous_washing"]["washer_timeline"][0]["loads"][0]
         w_lane = washer["strategies"]["continuous_washing"]["washer_timeline"][0]["loads"][0]
-        assert w_lane["start"] >= d_lane["start"] or washer["inputs"]["weighing_handled_by"] == "washer"
+        assert w_lane["start"] >= d_lane["start"]
+        assert washer["inputs"]["weighing_mode"] == "upfront"
         assert any("washer" in a.lower() for a in washer["strategies"]["continuous_washing"]["alerts"])
+
+    def test_weighing_mode_definitions_in_operational(self):
+        result = simulate_shift_capacity(_default_payload())
+        op = result["operational"]
+        assert "weighing_mode_definitions" in op
+        assert "separate_lane" in op["weighing_mode_definitions"]
+        assert "during_sort" in op["weighing_mode_definitions"]
+        assert "upfront" in op["weighing_mode_definitions"]
+
+    def test_legacy_handled_by_infers_mode(self):
+        sorter = parse_planner_inputs({"weighing_handled_by": "sorter"})
+        assert sorter.weighing_mode == "during_sort"
+        washer = parse_planner_inputs({"weighing_handled_by": "washer"})
+        assert washer.weighing_mode == "upfront"
 
 
 class TestShiftCapacityPlannerInvalid:
@@ -208,6 +241,10 @@ class TestShiftCapacityPlannerInvalid:
     def test_invalid_weighing_handled_by(self):
         with pytest.raises(ValueError, match="weighing_handled_by"):
             parse_planner_inputs({"weighing_handled_by": "invalid"})
+
+    def test_invalid_weighing_mode(self):
+        with pytest.raises(ValueError, match="weighing_mode"):
+            parse_planner_inputs({"weighing_mode": "invalid"})
 
     def test_simulate_invalid_returns_via_route_logic(self):
         with pytest.raises(ValueError):
@@ -236,6 +273,7 @@ class TestOperationalSimulation:
         assert "batch_washing" in op["strategies"]
         assert "sort_while_drying" in op["strategies"]
         assert "strategy_definitions" in op
+        assert "weighing_mode_definitions" in op
         assert "recommended_batch_size" in op
         assert "next_actions" in op
         assert "order_timeline" in op
