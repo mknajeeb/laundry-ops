@@ -44,7 +44,7 @@ export const TAX_WITHHELD_BREAKDOWN_LABELS = [
   { key: "prior_tax_balance", label: "Prior period estimated balance" },
   { key: "total_tax_liability", label: "Total estimated withholding liability" },
   { key: "actual_tax_withheld", label: "Estimated withholding entered" },
-  { key: "tax_balance_owed", label: "Estimated withholding balance (period)" },
+  { key: "tax_balance_owed", label: "Estimated tax balance (period)" },
   { key: "remaining_balance", label: "Remaining estimated balance" },
   { key: "catch_up_withholding", label: "Catch-up withholding" },
   { key: "prior_period_adjustment", label: "Prior period adjustment" },

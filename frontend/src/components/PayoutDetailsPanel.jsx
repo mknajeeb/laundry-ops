@@ -291,7 +291,7 @@ function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
               Withheld: <strong>{formatDraftMoney(draft.settlement?.amount_withheld)}</strong>
             </Typography>
             <Typography variant="body2">
-              Tax balance owed: <strong>{formatDraftMoney(draft.settlement?.tax_balance_owed)}</strong>
+              Estimated tax balance: <strong>{formatDraftMoney(draft.settlement?.tax_balance_owed)}</strong>
             </Typography>
             <Typography variant="body2">
               Prior tax balance: <strong>{formatDraftMoney(draft.settlement?.prior_unpaid_taxes)}</strong>
@@ -1068,7 +1068,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     <TextField
                                       size="small"
                                       type="number"
-                                      label="Tax balance owed"
+                                      label="Estimated tax balance"
                                       value={draft.settlement?.tax_balance_owed ?? ""}
                                       InputProps={{ readOnly: true }}
                                       helperText="Updates when tax lines or paid-full-gross change"

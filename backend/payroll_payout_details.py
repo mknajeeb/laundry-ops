@@ -369,6 +369,78 @@ def reconcile_tax_summary(details: dict) -> dict:
     return details
 
 
+def fetch_carryover_prior_tax_balance(
+    conn,
+    organization_id: int,
+    user_id: int,
+    *,
+    exclude_batch_id: Optional[int] = None,
+) -> float:
+    """Remaining estimated tax balance from the employee's latest finalized payout line."""
+    c = conn.cursor(dictionary=True)
+    params: list[Any] = [int(organization_id), int(user_id)]
+    exclude_sql = ""
+    if exclude_batch_id is not None:
+        exclude_sql = "AND pb.id <> %s"
+        params.append(int(exclude_batch_id))
+    c.execute(
+        f"""
+        SELECT pbl.payout_details_json
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id = %s
+          AND pbl.user_id = %s
+          AND pb.payout_details_finalized_at IS NOT NULL
+          {exclude_sql}
+        ORDER BY pb.payout_details_finalized_at DESC, pbl.id DESC
+        LIMIT 1
+        """,
+        tuple(params),
+    )
+    row = c.fetchone()
+    if not row:
+        return 0.0
+    raw = _parse_json_blob(row.get("payout_details_json"))
+    tax_summary = raw.get("tax_summary") or {}
+    settlement = raw.get("settlement") or {}
+    remaining = float(tax_summary.get("remaining_balance") or 0)
+    if remaining > 0:
+        return round(remaining, 2)
+    return round(float(settlement.get("tax_balance_owed") or 0), 2)
+
+
+def apply_carryover_prior_tax_balance(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    line: dict,
+    details: dict,
+) -> dict:
+    """Default prior_unpaid_taxes from last finalized remaining balance when unset."""
+    settlement = dict(details.get("settlement") or {})
+    if float(_money(settlement.get("prior_unpaid_taxes"))) > 0:
+        return details
+    uid = line.get("user_id")
+    if not uid:
+        return details
+    carry = fetch_carryover_prior_tax_balance(
+        conn,
+        organization_id,
+        int(uid),
+        exclude_batch_id=int(batch_id),
+    )
+    if carry <= 0:
+        return details
+    settlement["prior_unpaid_taxes"] = carry
+    out = dict(details)
+    out["settlement"] = settlement
+    gross = float(_money(line.get("gross_amount") or line.get("total_amount") or 0))
+    out = reconcile_tax_summary(out)
+    if gross > 0:
+        out = apply_settlement_math(out, gross)
+    return out
+
+
 def apply_settlement_math(details: dict, gross: float) -> dict:
     """Derive withheld and net pay from current taxes + optional catch-up withholding."""
     details = reconcile_tax_summary(dict(details))
@@ -695,9 +767,26 @@ def _payment_method_label(method: str) -> str:
     return PAYMENT_METHOD_LABELS.get(key, method or "—")
 
 
-def enrich_line_with_payout_details(line: dict, batch: Optional[dict] = None) -> dict:
+def enrich_line_with_payout_details(
+    line: dict,
+    batch: Optional[dict] = None,
+    *,
+    conn: Optional[Any] = None,
+    organization_id: Optional[int] = None,
+    batch_id: Optional[int] = None,
+) -> dict:
     row = dict(line)
     details = parse_line_payout_details(row)
+    if (
+        conn is not None
+        and organization_id is not None
+        and batch_id is not None
+        and batch
+        and not batch.get("payout_details_finalized_at")
+    ):
+        details = apply_carryover_prior_tax_balance(
+            conn, int(organization_id), int(batch_id), row, details
+        )
     totals = compute_line_totals(row, details)
     row["payout_details"] = json_safe(details)
     row["payout_totals"] = json_safe(totals)
@@ -790,7 +879,15 @@ def enrich_batch_payout_details(conn, organization_id: int, batch: dict) -> dict
         if uid:
             meta = _user_display_meta(conn, int(uid))
             row["employee_id"] = meta["employee_id"]
-        lines.append(enrich_line_with_payout_details(row, batch))
+        lines.append(
+            enrich_line_with_payout_details(
+                row,
+                batch,
+                conn=conn,
+                organization_id=int(organization_id),
+                batch_id=int(batch.get("id") or 0),
+            )
+        )
     batch["lines"] = lines
     batch["payout_workflow"] = payout_workflow_state(batch)
     from backend.payroll_status_display import enrich_batch_payroll_display
@@ -1377,11 +1474,16 @@ def _paystub_base_css() -> str:
   .info-grid dt { color: #64748b; font-size: 9px; }
   .info-grid dd { margin: 0 0 2px; font-weight: 600; }
   .note-box { font-size: 8.5px; color: #64748b; margin: 3px 0; padding: 4px 6px; background: #f8fafc; border-radius: 3px; }
-  .cash-receipt { margin-top: 8px; padding: 8px; border: 1px dashed #94a3b8; border-radius: 3px; font-size: 9px; }
-  .cash-receipt h2 { margin: 0 0 4px; font-size: 0.8rem; }
-  .cash-receipt .row { margin: 3px 0; }
-  .sig-line { margin: 6px 0 2px; border-bottom: 1px solid #334155; min-height: 16px; }
-  .sig-label { font-size: 8px; color: #64748b; }
+  .cash-receipt { margin-top: 12px; padding: 12px 14px; border: 1px dashed #94a3b8; border-radius: 4px; font-size: 9px; }
+  .cash-receipt h2 { margin: 0 0 8px; font-size: 0.82rem; }
+  .cash-receipt .row { margin: 4px 0; }
+  .cash-receipt .ack { margin-top: 10px; font-size: 8.5px; color: #475569; }
+  .sig-field { margin-bottom: 20px; }
+  .sig-line { margin: 0; border-bottom: 1px solid #334155; }
+  .sig-line-large { min-height: 40px; }
+  .sig-line-date { min-height: 28px; max-width: 55%; }
+  .sig-label { font-size: 8px; color: #64748b; margin-top: 4px; }
+  .employee-meta { margin: 2px 0 6px; font-size: 9.5px; color: #334155; }
   .internal { font-size: 8.5px; color: #64748b; margin: 2px 0; }
   .notes p { white-space: pre-wrap; margin: 2px 0 4px; font-size: 9px; }
 """
@@ -1423,21 +1525,94 @@ def _payment_detail_rows(payment: dict, totals: dict, *, cash_receipt_separate: 
     return "\n".join(rows)
 
 
+def _employee_tax_balance_html(totals: dict) -> str:
+    """Compact tax balance block for employee paystub copy."""
+    prior = float(totals.get("prior_tax_balance") or 0)
+    catch_up = float(totals.get("catch_up_withholding") or 0)
+    remaining = float(totals.get("remaining_tax_balance") or 0)
+    period_balance = float(totals.get("tax_balance_owed") or 0)
+    current_period = float(totals.get("current_period_taxes") or 0)
+    withheld = float(totals.get("amount_withheld") or 0)
+    paid_full_gross = bool(totals.get("paid_full_gross_without_withholding"))
+
+    if prior > 0 or catch_up > 0:
+        rows_html = (
+            _paystub_money_row("Prior tax balance", prior)
+            + _paystub_money_row("Catch-up collected", catch_up)
+            + _paystub_money_row("Remaining balance", remaining, True)
+        )
+        return f"""
+<h2>Tax Balance</h2>
+<table class="compact">
+{rows_html}
+</table>"""
+
+    if current_period <= 0 or (period_balance <= 0 and remaining <= 0):
+        return ""
+    actually_withheld = (
+        0.0
+        if paid_full_gross
+        else round(min(current_period, max(0.0, withheld - catch_up)), 2)
+    )
+    balance = period_balance if period_balance > 0 else remaining
+    rows_html = (
+        _paystub_money_row("Estimated tax liability", current_period)
+        + _paystub_money_row("Actually withheld", actually_withheld)
+        + _paystub_money_row("Estimated tax balance", balance, True)
+    )
+    return f"""
+<h2>Tax Balance</h2>
+<table class="compact">
+{rows_html}
+</table>"""
+
+
+def _employee_earnings_html(hours: float, rate: float, gross: float) -> str:
+    return f"""
+<h2>Earnings</h2>
+<table class="compact">
+<tr><td>Hours worked</td><td class="amount">{hours:.2f}</td></tr>
+<tr><td>Hourly rate</td><td class="amount">${rate:,.2f}</td></tr>
+{_paystub_money_row("Gross pay", gross, True)}
+</table>"""
+
+
+def _employee_payment_method_html(payment: dict) -> str:
+    label = _payment_method_label(payment.get("method"))
+    return f"""
+<h2>Payment</h2>
+<table class="compact">
+<tr><td>Payment method</td><td>{label}</td></tr>
+</table>"""
+
+
 def _cash_receipt_section_html(line: dict, payment: dict, totals: dict) -> str:
     name = str(line.get("worker_name_snapshot") or "")
     amt = payment.get("cash_amount")
     if amt is None or str(amt).strip() == "":
         amt = totals.get("net_paid_to_employee") or totals.get("amount_paid")
     amt_str = f"${float(_money(amt)):,.2f}"
-    pay_date = str(payment.get("date") or "").strip() or "—"
     return f"""
 <div class="cash-receipt">
-<h2>Cash Receipt</h2>
+<h2>Cash Payment Acknowledgment</h2>
 <div class="row"><strong>Amount received:</strong> {amt_str}</div>
-<div class="row"><strong>Date paid:</strong> {pay_date}</div>
-<div class="row"><strong>Employee name:</strong> {name}</div>
-<div class="sig-line"></div><div class="sig-label">Employee signature</div>
-<p class="row" style="margin-top:6px;font-size:8.5px">I acknowledge receipt of the cash payment shown above.</p>
+<div class="sig-field">
+<div class="sig-line sig-line-large"></div>
+<div class="sig-label">Employee name</div>
+</div>
+<div class="sig-field">
+<div class="sig-line sig-line-large"></div>
+<div class="sig-label">Employee signature</div>
+</div>
+<div class="sig-field">
+<div class="sig-line sig-line-date"></div>
+<div class="sig-label">Date</div>
+</div>
+<div class="sig-field">
+<div class="sig-line sig-line-large"></div>
+<div class="sig-label">Manager / witness</div>
+</div>
+<p class="ack">I acknowledge receipt of the cash payment shown above.</p>
 </div>"""
 
 
@@ -1480,40 +1655,14 @@ def _render_paystub_html(
         else ""
     )
 
-    gross_paid_note = ""
-    tax_balance = float(totals.get("tax_balance_owed") or 0)
-    if paid_full_gross or (net_paid > net_pay and withheld < emp_tax_total * 0.5):
-        parts = [
-            "Amount paid exceeds net pay because taxes were not withheld from this payment."
-        ]
-        if tax_balance > 0:
-            parts.append(
-                f"Estimated tax balance for this period: ${tax_balance:,.2f} "
-                "(not collected with this payment)."
-            )
-        gross_paid_note = f"<p class='note-box'>{' '.join(parts)}</p>"
+    from backend.veewash_branding import veewash_logo_img_html
+
+    logo_html = veewash_logo_img_html(height_px=32)
 
     worker = line.get("worker_name_snapshot") or ""
     emp_id = line.get("employee_id") or ""
     hours = float(line.get("approved_hours") or 0)
     rate = float(line.get("rate") or 0)
-
-    employee_info_html = f"""
-<h2>Employee Information</h2>
-<dl class="info-grid">
-<dt>Employee name</dt><dd>{worker}</dd>
-{f'<dt>Employee ID</dt><dd>{emp_id}</dd>' if emp_id else ''}
-<dt>Pay period</dt><dd>{batch.get('pay_period_start')} – {batch.get('pay_period_end')}</dd>
-<dt>Hours worked</dt><dd>{hours:.2f}</dd>
-<dt>Hourly rate</dt><dd>${rate:,.2f}</dd>
-</dl>"""
-
-    earnings_html = f"""
-<h2>Earnings</h2>
-<table class="compact">
-<tr><th>Description</th><th class="amount">Amount</th></tr>
-{_paystub_money_row('Gross pay', gross, True)}
-</table>"""
 
     emp_ded_rows = []
     for key, label in PAYSTUB_DEDUCTION_LINES:
@@ -1532,16 +1681,85 @@ def _render_paystub_html(
 <table class="compact">
 {_paystub_money_row('Net pay (after taxes)', net_pay)}
 {_paystub_money_row('Amount paid to employee', net_paid, True)}
+</table>"""
+
+    cash_receipt_separate = is_employee and method_key == "cash"
+
+    if is_employee:
+        employee_meta = f"""
+<p class="employee-meta"><strong>{worker}</strong><br>
+Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
+        earnings_html = _employee_earnings_html(hours, rate, gross)
+        tax_balance_html = _employee_tax_balance_html(totals)
+        payment_html = _employee_payment_method_html(payment)
+        cash_receipt_html = (
+            _cash_receipt_section_html(line, payment, totals) if cash_receipt_separate else ""
+        )
+        notes_block = ""
+        employer_html = ""
+        employee_info_html = ""
+        gross_paid_note = ""
+        finalized_footer = ""
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title} — {worker}</title>
+<style>{_paystub_base_css()}</style></head><body>
+<div class="paystub-sheet">
+<div class="copy-badge">{copy_badge}</div>
+<div class="brand-head">{logo_html}<h1>{title}</h1></div>
+{preview_banner}
+{employee_meta}
+{earnings_html}
+{emp_tax_table}
+{net_pay_html}
+{tax_balance_html}
+{payment_html}
+{cash_receipt_html}
+</div>
+</body></html>"""
+
+    employee_info_html = f"""
+<h2>Employee Information</h2>
+<dl class="info-grid">
+<dt>Employee name</dt><dd>{worker}</dd>
+{f'<dt>Employee ID</dt><dd>{emp_id}</dd>' if emp_id else ''}
+<dt>Pay period</dt><dd>{batch.get('pay_period_start')} – {batch.get('pay_period_end')}</dd>
+<dt>Hours worked</dt><dd>{hours:.2f}</dd>
+<dt>Hourly rate</dt><dd>${rate:,.2f}</dd>
+</dl>"""
+
+    earnings_html = f"""
+<h2>Earnings</h2>
+<table class="compact">
+<tr><th>Description</th><th class="amount">Amount</th></tr>
+{_paystub_money_row('Gross pay', gross, True)}
+</table>"""
+
+    gross_paid_note = ""
+    tax_balance = float(totals.get("tax_balance_owed") or 0)
+    if paid_full_gross or (net_paid > net_pay and withheld < emp_tax_total * 0.5):
+        parts = [
+            "Amount paid exceeds net pay because taxes were not withheld from this payment."
+        ]
+        if tax_balance > 0:
+            parts.append(
+                f"Estimated tax balance for this period: ${tax_balance:,.2f} "
+                "(not collected with this payment)."
+            )
+        gross_paid_note = f"<p class='note-box'>{' '.join(parts)}</p>"
+
+    net_pay_html = f"""
+<h2>Net Pay</h2>
+<table class="compact">
+{_paystub_money_row('Net pay (after taxes)', net_pay)}
+{_paystub_money_row('Amount paid to employee', net_paid, True)}
 </table>
 {gross_paid_note}"""
 
-    if is_employee:
-        tax_balance_html = ""
-    else:
-        catch_up = float(totals.get("tax_catch_up_adjustment") or 0)
-        catch_up_html = ""
-        if catch_up > 0 or float(totals.get("prior_tax_balance") or 0) > 0:
-            catch_up_html = f"""
+    catch_up = float(totals.get("tax_catch_up_adjustment") or 0)
+    catch_up_html = ""
+    if catch_up > 0 or float(totals.get("prior_tax_balance") or 0) > 0:
+        catch_up_html = f"""
 <h2>Tax Catch-Up</h2>
 <table class="compact">
 {_paystub_money_row('Current period taxes', float(totals.get('current_period_taxes') or 0))}
@@ -1549,7 +1767,7 @@ def _render_paystub_html(
 {_paystub_money_row('Catch-up withholding', catch_up)}
 {_paystub_money_row('Total taxes collected', withheld)}
 </table>"""
-        tax_balance_html = f"""
+    tax_balance_html = f"""
 <h2>Tax Balances (Audit)</h2>
 <table class="compact">
 {_paystub_money_row('Prior period tax balance', float(totals.get('prior_tax_balance') or 0))}
@@ -1561,11 +1779,10 @@ def _render_paystub_html(
 </table>
 {catch_up_html}"""
 
-    cash_receipt_separate = is_employee and method_key == "cash"
     payment_html = f"""
 <h2>Payment Information</h2>
 <table class="compact">
-{_payment_detail_rows(payment, totals, cash_receipt_separate=cash_receipt_separate)}
+{_payment_detail_rows(payment, totals, cash_receipt_separate=False)}
 </table>"""
 
     employer_html = ""
@@ -1590,22 +1807,12 @@ def _render_paystub_html(
 {_paystub_money_row('Catch-up withholding', float(settlement.get('catch_up_withholding') or 0))}
 </table>"""
 
-    cash_receipt_html = ""
-    if cash_receipt_separate:
-        cash_receipt_html = _cash_receipt_section_html(line, payment, totals)
-
     notes_html = _paystub_notes_html(batch, details)
-    notes_block = f'<div class="notes">{notes_html}</div>' if notes_html and not is_employee else ""
-    if notes_html and is_employee and batch.get("batch_note"):
-        notes_block = f'<div class="notes"><h2>Paystub Note</h2><p>{batch.get("batch_note")}</p></div>'
+    notes_block = f'<div class="notes">{notes_html}</div>' if notes_html else ""
 
     finalized_footer = ""
     if batch.get("payout_details_finalized_at") and not preview:
         finalized_footer = f"<p class='meta'>Finalized {batch.get('payout_details_finalized_at')}</p>"
-
-    from backend.veewash_branding import veewash_logo_img_html
-
-    logo_html = veewash_logo_img_html(height_px=32)
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{title} — {worker}</title>
@@ -1623,7 +1830,6 @@ def _render_paystub_html(
 {payment_html}
 {employer_html}
 {notes_block}
-{cash_receipt_html}
 {finalized_footer}
 </div>
 </body></html>"""

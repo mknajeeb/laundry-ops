@@ -544,7 +544,8 @@ def test_paystub_html_zero_deductions():
 
         emp = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "EMPLOYEE COPY" in emp
-        assert "Employee Information" in emp
+        assert "Employee Information" not in emp
+        assert "Hours worked" in emp
         assert "Earnings" in emp
         assert "Gross pay" in emp
         assert "Employee Taxes" in emp
@@ -613,9 +614,11 @@ def test_paystub_note_includes_period_tax_balance_when_gross_paid():
         from backend.payroll_payout_details import generate_paystub_html
 
         html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
-        assert "taxes were not withheld" in html.lower()
+        assert "Estimated tax liability" in html
         assert "$13.32" in html
-        assert "not collected with this payment" in html.lower()
+        assert "Estimated tax balance" in html
+        assert "taxes were not withheld" not in html.lower()
+        assert "Finalized" not in html
 
 
 def test_paystub_html_shows_batch_and_employee_notes():
@@ -660,7 +663,7 @@ def test_paystub_html_shows_batch_and_employee_notes():
         from backend.payroll_payout_details import generate_paystub_html
 
         emp = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
-        assert "Payroll taxes were not withheld" in emp
+        assert "Payroll taxes were not withheld" not in emp
         assert "Employee requested payment in cash" not in emp
 
         er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
@@ -713,13 +716,18 @@ def test_paystub_html_available_for_cash_payment():
         assert "Employee Paystub" in html
         assert 'data:image/png;base64,' in html
         assert "Cash Worker" in html
-        assert "Cash Receipt" in html
+        assert "Cash Payment Acknowledgment" in html
         assert "acknowledge receipt of the cash payment shown above" in html
+        assert "Manager / witness" in html
+        assert "sig-line-large" in html
         assert "Employer Taxes" not in html
+        assert "Finalized" not in html
 
         er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
         assert "Cash Receipt" not in er
+        assert "Cash Payment Acknowledgment" not in er
         assert "Employer Taxes" in er
+        assert "Finalized" in er
 
         dd_batch = dict(batch)
         dd_batch["lines"] = [{
@@ -735,7 +743,88 @@ def test_paystub_html_available_for_cash_payment():
         ):
             dd_html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "Cash Receipt" not in dd_html
-        assert "Reference" in dd_html
+        assert "Reference" not in dd_html
+        assert "Direct Deposit" in dd_html
+
+
+def test_paystub_employee_tax_balance_catchup_flow():
+    conn = MagicMock()
+    batch = {
+        "id": 6,
+        "pay_period_start": "2026-06-15",
+        "pay_period_end": "2026-06-21",
+        "payout_details_finalized_at": "2026-06-22",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "worker_name_snapshot": "Worker",
+                "approved_hours": 10,
+                "rate": 20,
+                "gross_amount": 200,
+                "payout_details": {
+                    "employee_deductions": {"fit": 25},
+                    "payment": {"method": "direct_deposit", "date": "2026-06-21"},
+                    "settlement": {
+                        "amount_paid": 135,
+                        "amount_withheld": 65,
+                        "prior_unpaid_taxes": 80,
+                        "catch_up_withholding": 40,
+                    },
+                },
+                "payout_totals": {
+                    "gross_pay": 200,
+                    "total_employee_deductions": 25,
+                    "net_pay": 135,
+                    "amount_paid": 135,
+                    "amount_withheld": 65,
+                    "prior_tax_balance": 80,
+                    "catch_up_withholding": 40,
+                    "remaining_tax_balance": 40,
+                    "current_period_taxes": 25,
+                    "tax_balance_owed": 0,
+                },
+            }
+        ],
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value=batch,
+    ):
+        from backend.payroll_payout_details import generate_paystub_html
+
+        html = generate_paystub_html(conn, 1, 6, 10, copy_mode="employee")
+        assert "Prior tax balance" in html
+        assert "Catch-up collected" in html
+        assert "Remaining balance" in html
+        assert "$80.00" in html
+        assert "$40.00" in html
+
+
+def test_apply_carryover_prior_tax_balance_from_finalized_line():
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value = cursor
+    cursor.fetchone.return_value = {
+        "payout_details_json": {
+            "tax_summary": {"remaining_balance": 30.0},
+            "settlement": {"tax_balance_owed": 30.0},
+        }
+    }
+    from backend.payroll_payout_details import apply_carryover_prior_tax_balance, parse_line_payout_details
+
+    line = {"gross_amount": 200, "user_id": 5}
+    details = parse_line_payout_details(
+        {
+            "payout_details_json": {
+                "employee_deductions": {"fit": 20},
+                "settlement": {"prior_unpaid_taxes": 0, "catch_up_withholding": 10},
+            }
+        }
+    )
+    out = apply_carryover_prior_tax_balance(conn, 1, 99, line, details)
+    assert out["settlement"]["prior_unpaid_taxes"] == 30.0
+    assert out["tax_summary"]["remaining_balance"] == 20.0
 
 
 def test_unfinalize_clears_finalized_timestamp():
