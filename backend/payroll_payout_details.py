@@ -761,22 +761,7 @@ def build_estimated_payout_details_patch(
     pay_frequency: Optional[str] = None,
 ) -> dict[str, Any]:
     """Estimated employee/employer taxes for payout_details_json (accountant may override)."""
-    from backend.w2_payroll_tax_engine import calculate_w2_line_taxes, fetch_employee_tax_profile
-
-    profile = fetch_employee_tax_profile(
-        conn,
-        int(user_id),
-        organization_id,
-        worker_name=worker_name,
-    )
-    if pay_frequency:
-        profile = dict(profile)
-        profile["pay_frequency"] = pay_frequency
-        from backend.w2_payroll_tax_engine import PAY_PERIODS
-
-        pf = str(pay_frequency).strip().lower()
-        if pf in PAY_PERIODS:
-            profile["pay_periods_per_year"] = PAY_PERIODS[pf]
+    from backend.w2_payroll_tax_engine import calculate_w2_line_taxes
 
     calc = calculate_w2_line_taxes(
         conn,
@@ -785,6 +770,8 @@ def build_estimated_payout_details_patch(
         gross_pay=float(gross or 0),
         pay_period_start=pay_period_start,
         minimum_withholding=True,
+        worker_name_snapshot=worker_name or None,
+        pay_frequency=pay_frequency,
     )
     if calc.get("tax_calc_status") == "profile_incomplete":
         raise ValueError(calc.get("tax_calc_notes") or "Tax profile incomplete")
@@ -1203,35 +1190,33 @@ def _paystub_copy_mode(raw: Optional[str]) -> str:
 
 def _paystub_base_css() -> str:
     return """
-  @page { size: letter; margin: 0.45in; }
+  @page { size: letter; margin: 0.4in; }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 0; padding: 0; font-size: 10.5px; line-height: 1.3; }
-  h1 { color: #0097b2; font-size: 1.15rem; margin: 0; }
-  h2 { color: #007a91; font-size: 0.95rem; margin: 8px 0 4px; }
-  .meta { color: #475569; margin: 4px 0 8px; font-size: 10px; }
-  table.compact { width: 100%; border-collapse: collapse; margin: 4px 0; }
-  table.compact th, table.compact td { padding: 3px 6px; border-bottom: 1px solid #e2e8f0; }
-  table.compact th { text-align: left; color: #007a91; font-size: 10px; }
+  body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 0; padding: 0; font-size: 9.5px; line-height: 1.25; }
+  h1 { color: #0097b2; font-size: 1rem; margin: 0; }
+  h2 { color: #007a91; font-size: 0.82rem; margin: 5px 0 2px; font-weight: 700; }
+  .meta { color: #475569; margin: 2px 0 4px; font-size: 9px; }
+  table.compact { width: 100%; border-collapse: collapse; margin: 2px 0 4px; }
+  table.compact th, table.compact td { padding: 2px 5px; border-bottom: 1px solid #e2e8f0; }
+  table.compact th { text-align: left; color: #007a91; font-size: 9px; font-weight: 600; }
   table.compact td.amount { text-align: right; white-space: nowrap; }
-  .total td { font-weight: 700; }
-  .paystub-sheet { page-break-after: always; max-height: 10in; overflow: hidden; padding-bottom: 8px; }
+  table.compact tr.total td { font-weight: 700; border-top: 1px solid #cbd5e1; }
+  .paystub-sheet { page-break-after: always; max-height: 10.2in; overflow: hidden; }
   .paystub-sheet:last-child { page-break-after: auto; }
-  .brand-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; border-top: 3px solid #0097b2; padding-top: 8px; }
-  .copy-badge { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: #64748b; margin-bottom: 4px; }
-  .preview-banner { background: #fef3c7; color: #92400e; padding: 6px 10px; border-radius: 4px; margin-bottom: 8px; font-size: 10px; }
-  .pay-summary { background: #f0f9ff; border: 2px solid #0097b2; border-radius: 6px; padding: 10px 14px; margin: 10px 0; }
-  .pay-summary table { width: 100%; border-collapse: collapse; }
-  .pay-summary td { padding: 5px 4px; font-size: 12px; font-weight: 600; }
-  .pay-summary td.label { color: #334155; }
-  .pay-summary td.amount { text-align: right; color: #0097b2; font-size: 14px; }
-  .pay-summary tr.grand td { font-size: 15px; color: #007a91; border-top: 2px solid #0097b2; padding-top: 8px; }
-  .note-box { font-size: 9.5px; color: #64748b; margin: 6px 0; padding: 6px 8px; background: #f8fafc; border-radius: 4px; }
-  .cash-receipt { margin-top: 12px; padding: 10px; border: 1px dashed #94a3b8; border-radius: 4px; font-size: 10px; }
-  .cash-receipt h2 { margin-top: 0; font-size: 0.9rem; }
-  .sig-line { margin: 10px 0 6px; border-bottom: 1px solid #334155; min-height: 22px; }
-  .sig-label { font-size: 9px; color: #64748b; margin-top: 2px; }
-  .internal { font-size: 9px; color: #64748b; }
-  .notes p { white-space: pre-wrap; margin: 2px 0 6px; font-size: 10px; }
+  .brand-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; border-top: 2px solid #0097b2; padding-top: 5px; }
+  .copy-badge { font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em; color: #64748b; margin-bottom: 2px; }
+  .preview-banner { background: #fef3c7; color: #92400e; padding: 4px 8px; border-radius: 3px; margin-bottom: 4px; font-size: 9px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; margin: 4px 0 6px; font-size: 9.5px; }
+  .info-grid dt { color: #64748b; font-size: 9px; }
+  .info-grid dd { margin: 0 0 2px; font-weight: 600; }
+  .note-box { font-size: 8.5px; color: #64748b; margin: 3px 0; padding: 4px 6px; background: #f8fafc; border-radius: 3px; }
+  .cash-receipt { margin-top: 8px; padding: 8px; border: 1px dashed #94a3b8; border-radius: 3px; font-size: 9px; }
+  .cash-receipt h2 { margin: 0 0 4px; font-size: 0.8rem; }
+  .cash-receipt .row { margin: 3px 0; }
+  .sig-line { margin: 6px 0 2px; border-bottom: 1px solid #334155; min-height: 16px; }
+  .sig-label { font-size: 8px; color: #64748b; }
+  .internal { font-size: 8.5px; color: #64748b; margin: 2px 0; }
+  .notes p { white-space: pre-wrap; margin: 2px 0 4px; font-size: 9px; }
 """
 
 
@@ -1243,44 +1228,49 @@ def _paystub_money_row(label: str, amt: float, bold: bool = False) -> str:
     )
 
 
-def _payment_detail_rows(payment: dict, totals: dict) -> str:
+def _payment_detail_rows(payment: dict, totals: dict, *, cash_receipt_separate: bool = False) -> str:
     method_key = payment_method_key({"payment": payment})
     label = _payment_method_label(payment.get("method"))
-    rows = [f"<tr><td>Payment Method</td><td>{label}</td></tr>"]
-    if method_key == "cash":
+    rows = [f"<tr><td>Payment method</td><td>{label}</td></tr>"]
+    if method_key == "cash" and not cash_receipt_separate:
         amt = payment.get("cash_amount")
         if amt is None or str(amt).strip() == "":
             amt = totals.get("net_paid_to_employee") or totals.get("amount_paid")
         rows.append(
-            f"<tr><td>Amount Received</td><td>${float(_money(amt)):,.2f}</td></tr>"
+            f"<tr><td>Amount received</td><td>${float(_money(amt)):,.2f}</td></tr>"
         )
     elif method_key == "check":
-        chk = str(payment.get("check_number") or "").strip() or "__________"
-        rows.append(f"<tr><td>Check Number</td><td>{chk}</td></tr>")
+        chk = str(payment.get("check_number") or "").strip() or "—"
+        rows.append(f"<tr><td>Check number</td><td>{chk}</td></tr>")
     elif method_key in ("zelle", "direct_deposit"):
-        ref = str(payment.get("reference") or "").strip() or "__________"
+        ref = str(payment.get("reference") or "").strip() or "—"
         rows.append(f"<tr><td>Reference</td><td>{ref}</td></tr>")
     elif method_key == "other":
         ref = str(payment.get("reference") or "").strip()
         if ref:
             rows.append(f"<tr><td>Reference</td><td>{ref}</td></tr>")
-    pay_date = payment.get("date")
-    if pay_date:
-        rows.append(f"<tr><td>Pay Date</td><td>{pay_date}</td></tr>")
+    if method_key != "cash" or not cash_receipt_separate:
+        pay_date = payment.get("date")
+        if pay_date:
+            rows.append(f"<tr><td>Pay date</td><td>{pay_date}</td></tr>")
     return "\n".join(rows)
 
 
-def _cash_receipt_acknowledgement_html(line: dict, amount: float) -> str:
+def _cash_receipt_section_html(line: dict, payment: dict, totals: dict) -> str:
     name = str(line.get("worker_name_snapshot") or "")
+    amt = payment.get("cash_amount")
+    if amt is None or str(amt).strip() == "":
+        amt = totals.get("net_paid_to_employee") or totals.get("amount_paid")
+    amt_str = f"${float(_money(amt)):,.2f}"
+    pay_date = str(payment.get("date") or "").strip() or "—"
     return f"""
 <div class="cash-receipt">
-<h2>EMPLOYEE CASH RECEIPT ACKNOWLEDGEMENT</h2>
-<p>I acknowledge that I have received the cash payment shown on this paystub.</p>
-<p><strong>Amount Received:</strong> $__________</p>
-<p><strong>Employee Name:</strong> {name}</p>
-<div class="sig-line"></div><div class="sig-label">Employee Signature</div>
-<div class="sig-line"></div><div class="sig-label">Date</div>
-<div class="sig-line"></div><div class="sig-label">Manager/Witness</div>
+<h2>Cash Receipt</h2>
+<div class="row"><strong>Amount received:</strong> {amt_str}</div>
+<div class="row"><strong>Date paid:</strong> {pay_date}</div>
+<div class="row"><strong>Employee name:</strong> {name}</div>
+<div class="sig-line"></div><div class="sig-label">Employee signature</div>
+<p class="row" style="margin-top:6px;font-size:8.5px">I acknowledge receipt of the cash payment shown above.</p>
 </div>"""
 
 
@@ -1319,48 +1309,60 @@ def _render_paystub_html(
     title = "Employee Paystub" if is_employee else "Employer Payroll Record"
     estimated_note = (
         "<p class='internal'>Estimated withholding — verify with accountant before finalizing.</p>"
-        if tax_summary.get("estimated")
+        if tax_summary.get("estimated") and not is_employee
         else ""
     )
 
     gross_paid_note = ""
     if paid_full_gross or (net_paid > net_pay and withheld < emp_tax_total * 0.5):
         gross_paid_note = (
-            "<p class='note-box'>Actual paid exceeds net pay because taxes were not withheld from this payment.</p>"
+            "<p class='note-box'>Amount paid exceeds net pay because taxes were not withheld from this payment.</p>"
         )
 
-    summary_html = f"""
-<div class="pay-summary">
-<table>
-<tr><td class="label">GROSS PAY</td><td class="amount">${gross:,.2f}</td></tr>
-<tr><td class="label">EMPLOYEE TAXES</td><td class="amount">${emp_tax_total:,.2f}</td></tr>
-<tr><td class="label">NET PAY</td><td class="amount">${net_pay:,.2f}</td></tr>
-<tr class="grand"><td class="label">ACTUAL PAID</td><td class="amount">${net_paid:,.2f}</td></tr>
-</table>
-</div>
-{gross_paid_note}"""
+    worker = line.get("worker_name_snapshot") or ""
+    emp_id = line.get("employee_id") or ""
+    hours = float(line.get("approved_hours") or 0)
+    rate = float(line.get("rate") or 0)
 
-    emp_tax_table = ""
-    if not is_employee:
-        emp_ded_rows = []
-        for key, label in PAYSTUB_DEDUCTION_LINES:
-            val = float(_money((details.get("employee_deductions") or {}).get(key)))
-            emp_ded_rows.append(_paystub_money_row(label, val))
-        emp_tax_table = f"""
+    employee_info_html = f"""
+<h2>Employee Information</h2>
+<dl class="info-grid">
+<dt>Employee name</dt><dd>{worker}</dd>
+{f'<dt>Employee ID</dt><dd>{emp_id}</dd>' if emp_id else ''}
+<dt>Pay period</dt><dd>{batch.get('pay_period_start')} – {batch.get('pay_period_end')}</dd>
+<dt>Hours worked</dt><dd>{hours:.2f}</dd>
+<dt>Hourly rate</dt><dd>${rate:,.2f}</dd>
+</dl>"""
+
+    earnings_html = f"""
+<h2>Earnings</h2>
+<table class="compact">
+<tr><th>Description</th><th class="amount">Amount</th></tr>
+{_paystub_money_row('Gross pay', gross, True)}
+</table>"""
+
+    emp_ded_rows = []
+    for key, label in PAYSTUB_DEDUCTION_LINES:
+        val = float(_money((details.get("employee_deductions") or {}).get(key)))
+        emp_ded_rows.append(_paystub_money_row(label, val))
+    emp_tax_table = f"""
 <h2>Employee Taxes</h2>
 <table class="compact">
+<tr><th>Tax</th><th class="amount">Amount</th></tr>
 {"".join(emp_ded_rows)}
 {_paystub_money_row('Total employee taxes', emp_tax_total, True)}
 </table>"""
 
-    if is_employee:
-        tax_balance_html = f"""
-<h2>Tax Summary</h2>
+    net_pay_html = f"""
+<h2>Net Pay</h2>
 <table class="compact">
-{_paystub_money_row('Estimated Tax Liability', float(totals.get('current_period_taxes') or emp_tax_total))}
-{_paystub_money_row('Tax Withheld', withheld)}
-{_paystub_money_row('Estimated Tax Balance', float(totals.get('tax_balance_owed') or 0), True)}
-</table>"""
+{_paystub_money_row('Net pay (after taxes)', net_pay)}
+{_paystub_money_row('Amount paid to employee', net_paid, True)}
+</table>
+{gross_paid_note}"""
+
+    if is_employee:
+        tax_balance_html = ""
     else:
         catch_up = float(totals.get("tax_catch_up_adjustment") or 0)
         catch_up_html = ""
@@ -1385,10 +1387,11 @@ def _render_paystub_html(
 </table>
 {catch_up_html}"""
 
+    cash_receipt_separate = is_employee and method_key == "cash"
     payment_html = f"""
-<h2>Payment</h2>
+<h2>Payment Information</h2>
 <table class="compact">
-{_payment_detail_rows(payment, totals)}
+{_payment_detail_rows(payment, totals, cash_receipt_separate=cash_receipt_separate)}
 </table>"""
 
     employer_html = ""
@@ -1400,6 +1403,7 @@ def _render_paystub_html(
         employer_html = f"""
 <h2>Employer Taxes</h2>
 <table class="compact">
+<tr><th>Tax</th><th class="amount">Amount</th></tr>
 {er_rows}
 {_paystub_money_row('Total employer taxes', float(totals['total_employer_taxes']), True)}
 <tr class="total"><td>Employer cost</td><td class="amount">${totals['employer_cost']:,.2f}</td></tr>
@@ -1413,8 +1417,8 @@ def _render_paystub_html(
 </table>"""
 
     cash_receipt_html = ""
-    if is_employee and method_key == "cash":
-        cash_receipt_html = _cash_receipt_acknowledgement_html(line, net_paid)
+    if cash_receipt_separate:
+        cash_receipt_html = _cash_receipt_section_html(line, payment, totals)
 
     notes_html = _paystub_notes_html(batch, details)
     notes_block = f'<div class="notes">{notes_html}</div>' if notes_html and not is_employee else ""
@@ -1427,9 +1431,7 @@ def _render_paystub_html(
 
     from backend.veewash_branding import veewash_logo_img_html
 
-    logo_html = veewash_logo_img_html(height_px=40)
-    worker = line.get("worker_name_snapshot") or ""
-    emp_id = line.get("employee_id") or ""
+    logo_html = veewash_logo_img_html(height_px=32)
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{title} — {worker}</title>
@@ -1438,12 +1440,11 @@ def _render_paystub_html(
 <div class="copy-badge">{copy_badge}</div>
 <div class="brand-head">{logo_html}<h1>{title}</h1></div>
 {preview_banner}
-<p class="meta"><strong>{worker}</strong>{f' &nbsp;|&nbsp; ID {emp_id}' if emp_id else ''}<br>
-Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')} &nbsp;|&nbsp;
-Hours: {float(line.get('approved_hours') or 0):.2f} &nbsp; Rate: ${float(line.get('rate') or 0):,.2f}/hr</p>
-{estimated_note if not is_employee else ''}
-{summary_html}
+{estimated_note}
+{employee_info_html}
+{earnings_html}
 {emp_tax_table}
+{net_pay_html}
 {tax_balance_html}
 {payment_html}
 {employer_html}

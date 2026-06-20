@@ -325,6 +325,39 @@ def get_w2_ytd_deduction(
     return _d(row.get("ytd"))
 
 
+def resolve_withholding_profile(
+    conn,
+    organization_id: int,
+    user_id: int,
+    *,
+    profile: Optional[dict] = None,
+    worker_name_snapshot: Optional[str] = None,
+    pay_frequency: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+  Build the withholding profile used for tax calculation.
+  When profile is provided, merges pay_frequency without re-fetching HR data.
+  worker_name_snapshot drives name-based W-4 overrides (not DB display name alone).
+    """
+    if profile is not None:
+        resolved = dict(profile)
+    else:
+        resolved = fetch_employee_tax_profile(
+            conn,
+            user_id,
+            organization_id,
+            worker_name=worker_name_snapshot,
+        )
+    if pay_frequency:
+        pf = str(pay_frequency).strip().lower()
+        if pf in PAY_PERIODS:
+            resolved["pay_frequency"] = pf
+            resolved["pay_periods_per_year"] = PAY_PERIODS[pf]
+    if worker_name_snapshot and not profile:
+        resolved["worker_name"] = str(worker_name_snapshot).strip()
+    return resolved
+
+
 def calculate_w2_line_taxes(
     conn,
     organization_id: int,
@@ -334,12 +367,26 @@ def calculate_w2_line_taxes(
     pay_period_start: Optional[str] = None,
     tax_year: Optional[int] = None,
     minimum_withholding: bool = False,
+    profile: Optional[dict] = None,
+    worker_name_snapshot: Optional[str] = None,
+    pay_frequency: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Calculate estimated employee + employer taxes for one W-2 pay period line.
     Returns amounts as floats and metadata for persistence on payout_batch_lines.
+
+    Pass worker_name_snapshot and pay_frequency (batch-inferred weekly for 7-day
+    periods) so Pub 15-T annualization matches the payroll batch. Optional profile
+    avoids re-fetching when already built upstream.
     """
-    profile = fetch_employee_tax_profile(conn, user_id, organization_id)
+    profile = resolve_withholding_profile(
+        conn,
+        organization_id,
+        user_id,
+        profile=profile,
+        worker_name_snapshot=worker_name_snapshot,
+        pay_frequency=pay_frequency,
+    )
     gross = _d(gross_pay)
     notes: list[str] = [ESTIMATE_DISCLAIMER]
 

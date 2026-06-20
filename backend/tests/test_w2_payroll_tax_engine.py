@@ -23,6 +23,75 @@ def test_calculate_incomplete_profile():
     assert "filing_status" in out["tax_calc_notes"]
 
 
+def test_calculate_uses_weekly_frequency_override():
+    from backend.w2_payroll_tax_engine import resolve_withholding_profile
+
+    conn = MagicMock()
+    profile = {
+        "w4_complete": True,
+        "missing_fields": [],
+        "pay_frequency": "biweekly",
+        "pay_periods_per_year": 26,
+        "filing_status": "single_or_mfs",
+        "dependents_amount": Decimal("4000"),
+        "other_income": Decimal("0"),
+        "deductions": Decimal("0"),
+        "extra_withholding": Decimal("0"),
+        "exempt_federal": False,
+        "exempt_fica": False,
+        "exempt_state": False,
+        "exempt_city": False,
+        "pre_tax_deductions": Decimal("0"),
+        "post_tax_deductions": Decimal("0"),
+        "work_state": "NY",
+        "work_city": "Queens",
+        "nyc_resident": True,
+        "two_jobs_only": False,
+        "step2_multiple_jobs": "no",
+    }
+    weekly = resolve_withholding_profile(conn, 1, 99, profile=profile, pay_frequency="weekly")
+    assert weekly["pay_periods_per_year"] == 52
+
+    with patch("backend.w2_payroll_tax_engine.fetch_payroll_tax_settings") as mock_set:
+        mock_set.return_value = {
+            "tax_year": 2026,
+            "social_security_wage_base": 176100,
+            "employee_social_security_rate": 0.062,
+            "employee_medicare_rate": 0.0145,
+            "employer_social_security_rate": 0.062,
+            "employer_medicare_rate": 0.0145,
+            "additional_medicare_rate": 0.009,
+            "additional_medicare_threshold": 200000,
+            "futa_wage_base": 7000,
+            "futa_rate": 0.006,
+            "ny_suta_wage_base": 12500,
+            "ny_suta_rate": 0.03,
+            "ny_reemployment_service_fund_rate": 0,
+            "nyc_mctmt_enabled": False,
+            "workers_comp_rate": 0,
+        }
+        with patch("backend.w2_payroll_tax_engine.get_w2_ytd_gross", return_value=Decimal("0")):
+            with patch(
+                "backend.w2_payroll_tax_engine.get_org_quarterly_w2_gross",
+                return_value=Decimal("0"),
+            ):
+                biweekly_fit = calculate_w2_line_taxes(
+                    conn, 1, 99, gross_pay=119.0, minimum_withholding=True, profile=profile
+                )["federal_withholding_estimate"]
+                weekly_fit = calculate_w2_line_taxes(
+                    conn,
+                    1,
+                    99,
+                    gross_pay=119.0,
+                    minimum_withholding=True,
+                    profile=profile,
+                    pay_frequency="weekly",
+                )["federal_withholding_estimate"]
+    assert weekly_fit != biweekly_fit
+    assert weekly_fit == 4.21
+    assert biweekly_fit == 0.0
+
+
 def test_calculate_estimated_has_disclaimer():
     conn = MagicMock()
     profile = {

@@ -24,6 +24,21 @@ def test_profile_override_alec_dependents():
     assert float(profile["dependents_amount"]) == 4000.0
 
 
+def test_profile_override_alec_display_name_alias():
+    profile = apply_withholding_profile_defaults({}, "Alec W Coaxum")
+    assert float(profile["dependents_amount"]) == 4000.0
+
+
+def test_profile_override_tarannum_mithala_alias():
+    profile = apply_withholding_profile_defaults({}, "Tarannum Mithala")
+    assert is_married_filing(profile)
+
+
+def test_profile_override_tarannum_mithila_display_alias():
+    profile = apply_withholding_profile_defaults({}, "Mithila")
+    assert is_married_filing(profile)
+
+
 def test_profile_override_paola_multiple_jobs():
     profile = apply_withholding_profile_defaults({}, "Paola Almiron")
     assert profile["two_jobs_only"] is True

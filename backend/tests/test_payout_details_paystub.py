@@ -539,13 +539,22 @@ def test_paystub_html_zero_deductions():
 
         emp = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "EMPLOYEE COPY" in emp
-        assert "GROSS PAY" in emp
-        assert "EMPLOYEE TAXES" in emp
-        assert "ACTUAL PAID" in emp
+        assert "Employee Information" in emp
+        assert "Earnings" in emp
+        assert "Gross pay" in emp
+        assert "Employee Taxes" in emp
+        assert "Federal Income Tax" in emp
+        assert "Social Security" in emp
+        assert "Medicare" in emp
+        assert "NY State Tax" in emp
+        assert "NYC Local Tax" in emp
+        assert "Total employee taxes" in emp
+        assert "Net Pay" in emp
+        assert "Amount paid to employee" in emp
         assert "$800.00" in emp
-        assert "Federal Income Tax" not in emp
+        assert "pay-summary" not in emp
+        assert "ACTUAL PAID" not in emp
         assert "Employer Taxes" not in emp
-        assert "Estimated Tax Liability" in emp
 
         er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
         assert "EMPLOYER COPY" in er
@@ -649,13 +658,29 @@ def test_paystub_html_available_for_cash_payment():
         assert "Employee Paystub" in html
         assert 'data:image/png;base64,' in html
         assert "Cash Worker" in html
-        assert "EMPLOYEE CASH RECEIPT" in html
-        assert "Amount Received" in html
+        assert "Cash Receipt" in html
+        assert "acknowledge receipt of the cash payment shown above" in html
         assert "Employer Taxes" not in html
 
         er = generate_paystub_html(conn, 1, 1, 10, copy_mode="employer")
-        assert "EMPLOYEE CASH RECEIPT" not in er
+        assert "Cash Receipt" not in er
         assert "Employer Taxes" in er
+
+        dd_batch = dict(batch)
+        dd_batch["lines"] = [{
+            **batch["lines"][0],
+            "payout_details": {
+                **batch["lines"][0]["payout_details"],
+                "payment": {"method": "direct_deposit", "date": "2026-06-15", "reference": "ACH123"},
+            },
+        }]
+        with patch(
+            "backend.payroll_payout_details.get_payout_batch_details",
+            return_value=dd_batch,
+        ):
+            dd_html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
+        assert "Cash Receipt" not in dd_html
+        assert "Reference" in dd_html
 
 
 def test_finalize_receipt_mode_requires_payment_fields():

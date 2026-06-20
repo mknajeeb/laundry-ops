@@ -34,6 +34,18 @@ _NAME_OVERRIDES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Map payroll snapshot / display variants to canonical override keys.
+_NAME_ALIASES: dict[str, str] = {
+    "alec w coaxum": "alec coaxum",
+    "tarannum mithala": "tarannum mithila",
+    "mithila": "tarannum mithila",
+}
+
+
+def _canonical_override_name(worker_name: Optional[str]) -> str:
+    key = normalize_worker_name(worker_name or "")
+    return _NAME_ALIASES.get(key, key)
+
 
 def normalize_worker_name(name: str) -> str:
     return " ".join(str(name or "").strip().lower().split())
@@ -49,7 +61,7 @@ def apply_withholding_profile_defaults(
         if out.get(key) is None or out.get(key) == "":
             out[key] = val
 
-    override = _NAME_OVERRIDES.get(normalize_worker_name(worker_name or ""))
+    override = _NAME_OVERRIDES.get(_canonical_override_name(worker_name))
     if override:
         out.update(override)
 
