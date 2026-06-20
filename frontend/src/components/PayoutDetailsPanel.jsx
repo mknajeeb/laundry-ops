@@ -184,6 +184,12 @@ function computeLocalTotals(line, draft) {
   };
 }
 
+function priorStillOwed(priorBalance, effectivePrior, priorAdj, priorCollected) {
+  if (priorAdj > 0) return roundMoney(effectivePrior);
+  if (priorCollected > 0) return roundMoney(Math.max(0, priorBalance - priorCollected));
+  return roundMoney(effectivePrior);
+}
+
 function reconcileLocalTaxSummary(draft, totals) {
   const settlement = { ...(draft.settlement || {}) };
   const taxSummary = { ...(draft.tax_summary || {}) };
@@ -211,9 +217,13 @@ function reconcileLocalTaxSummary(draft, totals) {
     periodBalance = roundMoney(currentPeriod - withheldForCurrent);
   }
 
-  const remaining = paidFullGross
-    ? totalLiability
-    : roundMoney(Math.max(0, totalLiability - actualWithheld));
+  const priorStill = priorStillOwed(
+    priorBalance,
+    effectivePrior,
+    priorAdj,
+    priorCollected,
+  );
+  const remaining = roundMoney(priorStill + periodBalance);
 
   settlement.tax_balance_owed = periodBalance;
   taxSummary.current_period_taxes = currentPeriod;
@@ -1205,7 +1215,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       label="Remaining estimated balance"
                                       value={draft.tax_summary?.remaining_balance ?? ""}
                                       InputProps={{ readOnly: true }}
-                                      helperText="This period + net prior balance minus withholding collected"
+                                      helperText="Net prior balance plus this period unpaid tax"
                                     />
                                     <TextField
                                       size="small"

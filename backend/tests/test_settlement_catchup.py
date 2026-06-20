@@ -81,7 +81,7 @@ def test_prior_period_adjustment_partial_offset():
     assert tax_summary["total_tax_liability"] == 22.01
     assert settlement["amount_withheld"] == 4.0
     assert settlement["amount_paid"] == 217.0
-    assert tax_summary["remaining_balance"] == 18.01
+    assert tax_summary["remaining_balance"] == 22.01
 
 
 def test_prior_period_adjustment_partial_collection_reduces_net():
@@ -94,7 +94,18 @@ def test_prior_period_adjustment_partial_collection_reduces_net():
     assert settlement["amount_withheld"] == 17.0
     assert settlement["amount_paid"] == 221.0
     assert settlement["tax_balance_owed"] == 18.21
-    assert tax_summary["remaining_balance"] == 2.42
+    assert tax_summary["remaining_balance"] == 19.42
+
+
+def test_paola_two_week_carryforward_remaining_balance():
+    """Last week paid full gross; this week collect 17 toward prior, current tax unpaid."""
+    details = apply_settlement_math(_details(18.21, prior=18.21), 238.0)
+    details["settlement"]["prior_period_adjustment"] = 17.0
+    details = apply_settlement_math(details, 238.0)
+    tax_summary = details["tax_summary"]
+    assert tax_summary["prior_tax_balance"] == 18.21
+    assert tax_summary["tax_balance_owed"] == 18.21
+    assert tax_summary["remaining_balance"] == 19.42
 
 
 def test_catch_up_withholding_reduces_net_pay():

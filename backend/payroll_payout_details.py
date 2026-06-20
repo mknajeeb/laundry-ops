@@ -363,6 +363,20 @@ def _prior_collected_from_pay(settlement: dict) -> float:
     return 0.0
 
 
+def _prior_still_owed(
+    prior_balance: float,
+    effective_prior: float,
+    prior_adj: float,
+    prior_collected: float,
+) -> float:
+    """Outstanding prior portion after adj. credit and/or catch-up collection."""
+    if prior_adj > 0:
+        return round(effective_prior, 2)
+    if prior_collected > 0:
+        return round(max(0.0, prior_balance - prior_collected), 2)
+    return round(effective_prior, 2)
+
+
 def reconcile_tax_summary(details: dict) -> dict:
     """Compute tax liability vs withheld amounts (catch-up is manager-entered only)."""
     ded = details.get("employee_deductions") or {}
@@ -383,14 +397,20 @@ def reconcile_tax_summary(details: dict) -> dict:
 
     if paid_full_gross:
         period_balance = round(current_period, 2)
-        remaining = round(total_liability, 2)
+        prior_still = _prior_still_owed(
+            prior_balance, effective_prior, prior_adj, prior_collected
+        )
+        remaining = round(prior_still + period_balance, 2)
     else:
         withheld_for_current = round(
             min(current_period, max(0.0, actual_withheld - prior_collected)),
             2,
         )
         period_balance = round(current_period - withheld_for_current, 2)
-        remaining = round(max(0.0, total_liability - actual_withheld), 2)
+        prior_still = _prior_still_owed(
+            prior_balance, effective_prior, prior_adj, prior_collected
+        )
+        remaining = round(prior_still + period_balance, 2)
     settlement["tax_balance_owed"] = period_balance
 
     tax_summary.update(
