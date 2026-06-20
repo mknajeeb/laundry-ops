@@ -5256,15 +5256,20 @@ def contractors_payment_ytd(user_id):
         conn.close()
 
 
-@ta_bp.route("/contractors/payment-records", methods=["POST"])
+@ta_bp.route("/contractors/payment-records", methods=["GET", "POST"])
 @require_auth
 @require_any_perm("users.edit", "ta.settings")
-def contractors_create_payment_record():
-    """Save invoice/payment receipt (user_id optional for manual temp/one-time)."""
+def contractors_payment_records():
+    """List manual payment records (GET) or save invoice/receipt without profile (POST)."""
     conn = get_db()
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "Contractor management requires unified payroll"}), 503
+        oid = _tenant_id()
+        if request.method == "GET":
+            from backend.contractor_management import list_manual_payment_summaries
+
+            return jsonify({"items": list_manual_payment_summaries(conn, oid)})
         body = request.get_json(silent=True) or {}
         if not isinstance(body, dict):
             return jsonify({"error": "JSON body must be an object"}), 400
@@ -5277,7 +5282,6 @@ def contractors_create_payment_record():
             uid = None
             if not (body.get("worker_name") or body.get("worker_name_snapshot")):
                 return jsonify({"error": "worker_name required when no profile selected"}), 400
-        oid = _tenant_id()
         from backend.contractor_management import create_payment_summary
 
         row = create_payment_summary(
@@ -5289,22 +5293,35 @@ def contractors_create_payment_record():
         conn.close()
 
 
-@ta_bp.route("/contractors/payment-records/<int:record_id>", methods=["DELETE"])
+@ta_bp.route("/contractors/payment-records/<int:record_id>", methods=["PATCH", "DELETE"])
 @require_auth
 @require_any_perm("users.edit", "ta.settings")
-def contractors_delete_payment_record(record_id: int):
-    """Remove a saved contractor invoice/payment receipt."""
+def contractors_payment_record_mutate(record_id: int):
+    """Update or remove a saved contractor invoice/payment receipt."""
     conn = get_db()
     try:
         if not payroll_profiles_active(conn):
             return jsonify({"error": "Contractor management requires unified payroll"}), 503
         oid = _tenant_id()
-        from backend.contractor_management import delete_payment_summary
+        if request.method == "DELETE":
+            from backend.contractor_management import delete_payment_summary
 
-        if not delete_payment_summary(conn, oid, int(record_id)):
+            if not delete_payment_summary(conn, oid, int(record_id)):
+                return jsonify({"error": "Payment record not found"}), 404
+            conn.commit()
+            return jsonify({"ok": True, "id": int(record_id)})
+        body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return jsonify({"error": "JSON body must be an object"}), 400
+        from backend.contractor_management import update_payment_summary
+
+        row = update_payment_summary(
+            conn, oid, int(record_id), body, updated_by=int(g.ta_user["id"])
+        )
+        if not row:
             return jsonify({"error": "Payment record not found"}), 404
         conn.commit()
-        return jsonify({"ok": True, "id": int(record_id)})
+        return jsonify(row)
     finally:
         conn.close()
 
@@ -5712,6 +5729,7 @@ def payroll_payout_batch_detail(batch_id):
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400
         if body.get("action") in (
+            "approve_hours",
             "hours_reviewed",
             "send_to_accountant",
             "process_batch",
@@ -5755,11 +5773,9 @@ def payroll_payout_batch_detail(batch_id):
             line = update_payout_batch_line(conn, oid, batch_id, int(lid), body)
             return jsonify(line)
         if body.get("status"):
-            row = update_payout_batch_status(
-                conn, oid, batch_id, body["status"], actor_id=int(g.ta_user["id"])
-            )
-            conn.commit()
-            return jsonify(row)
+            return jsonify(
+                {"error": "Manual status changes are disabled. Use workflow actions."}
+            ), 400
         return jsonify({"error": "Unsupported patch"}), 400
     except ValueError as e:
         return jsonify({"error": str(e)}), 400

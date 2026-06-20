@@ -25,7 +25,7 @@ export function miniHeadHtml(prefill) {
 
 export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false }) {
   const company = prefill?.company_name || "VeeWash";
-  const { address, phone, website, websiteLabel } = resolveCompanyContact(prefill);
+  const { address, phone, website, websiteLabel, showWebsite } = resolveCompanyContact(prefill);
 
   if (mini) {
     return (
@@ -44,10 +44,15 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
         <div className="cform-company-name">{company}</div>
         <div className="cform-company-address">{address}</div>
         <div className="cform-company-contact">
-          {phone} ·{" "}
-          <a href={website} className="cform-company-website">
-            {websiteLabel}
-          </a>
+          {phone}
+          {showWebsite ? (
+            <>
+              {" · "}
+              <a href={website} className="cform-company-website">
+                {websiteLabel}
+              </a>
+            </>
+          ) : null}
         </div>
         {documentTitle ? <h1 className="cform-document-title">{documentTitle}</h1> : null}
       </div>

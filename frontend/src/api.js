@@ -1078,6 +1078,12 @@ export const postContractorPaymentSummary = (userId, body) =>
 export const postContractorPaymentRecord = (body) =>
   axios.post(`${API_BASE}/api/ta/contractors/payment-records`, body);
 
+export const getContractorManualPaymentRecords = () =>
+  axios.get(`${API_BASE}/api/ta/contractors/payment-records`);
+
+export const patchContractorPaymentRecord = (recordId, body) =>
+  axios.patch(`${API_BASE}/api/ta/contractors/payment-records/${recordId}`, body);
+
 export const deleteContractorPaymentRecord = (recordId) =>
   axios.delete(`${API_BASE}/api/ta/contractors/payment-records/${recordId}`);
 

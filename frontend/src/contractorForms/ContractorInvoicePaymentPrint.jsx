@@ -197,9 +197,23 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
     pickText(r.company_supervisor_title, prefill?.company_supervisor_title),
   );
   const workerName = pickText(r.worker_name, prefill?.full_name);
+  const issueFromName = pickText(r.issue_from_name);
+  const issueFromAddress = pickText(r.issue_from_address);
 
   return (
     <>
+      {issueFromName || issueFromAddress ? (
+        <div className="cform-p" style={{ marginBottom: "0.12in" }}>
+          <strong>Issue from</strong>
+          {issueFromName ? (
+            <p style={{ margin: "0.04in 0 0" }}>{issueFromName}</p>
+          ) : null}
+          {issueFromAddress ? (
+            <p style={{ margin: "0.04in 0 0", whiteSpace: "pre-line" }}>{issueFromAddress}</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <p className="cform-p" style={{ color: "#475569", marginBottom: "0.12in" }}>
         <strong>Contractor type:</strong> {typeLabel(r.contractor_type)}
       </p>
@@ -294,6 +308,9 @@ export function emptyPaymentRecord(prefill = {}, contractorType = "regular") {
     print_include_payment_reference: true,
     company_supervisor_name: prefill?.company_supervisor_name || "",
     company_supervisor_title: prefill?.company_supervisor_title || "",
+    issued_by_entity: "veewash",
+    issue_from_name: "",
+    issue_from_address: "",
     notes: "",
     source_type: "manual",
     status: "paid",

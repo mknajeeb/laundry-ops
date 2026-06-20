@@ -529,6 +529,169 @@ def delete_payment_summary(
     return c.rowcount > 0
 
 
+def list_manual_payment_summaries(conn, organization_id: int, *, limit: int = 50) -> list[dict]:
+    ensure_contractor_payment_summaries_table(conn.cursor())
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT *
+        FROM contractor_payment_summaries
+        WHERE organization_id = %s AND user_id IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT %s
+        """,
+        (int(organization_id), int(limit)),
+    )
+    rows = c.fetchall() or []
+    for r in rows:
+        snap = _json_load(r.get("form_snapshot_json"))
+        if isinstance(snap, dict):
+            r["form_snapshot_json"] = snap
+    return [json_safe(r) for r in rows]
+
+
+def get_payment_summary(conn, organization_id: int, summary_id: int) -> Optional[dict]:
+    ensure_contractor_payment_summaries_table(conn.cursor())
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT *
+        FROM contractor_payment_summaries
+        WHERE id = %s AND organization_id = %s
+        LIMIT 1
+        """,
+        (int(summary_id), int(organization_id)),
+    )
+    row = c.fetchone()
+    if not row:
+        return None
+    snap = _json_load(row.get("form_snapshot_json"))
+    if isinstance(snap, dict):
+        row["form_snapshot_json"] = snap
+    return json_safe(row)
+
+
+def update_payment_summary(
+    conn,
+    organization_id: int,
+    summary_id: int,
+    body: dict,
+    *,
+    updated_by: Optional[int] = None,
+) -> Optional[dict]:
+    existing = get_payment_summary(conn, organization_id, summary_id)
+    if not existing:
+        return None
+    hours = body.get("approved_hours") or body.get("approved_service_hours") or existing.get(
+        "approved_service_hours"
+    )
+    adj = (
+        body.get("adjustment_amount")
+        if body.get("adjustment_amount") is not None
+        else body.get("adjustments")
+        if body.get("adjustments") is not None
+        else existing.get("adjustments")
+    )
+    hs = body.get("health_safety_credit_hours")
+    if hs is None:
+        hs = existing.get("health_safety_credit_hours") or 0
+    ctype = str(body.get("contractor_type") or existing.get("contractor_type") or "regular").strip()
+    if ctype not in ("regular", "temp", "one_time"):
+        ctype = "regular"
+    if ctype in ("temp", "one_time"):
+        hs = 0
+    amounts = compute_payment_summary_amounts(
+        hours,
+        body.get("service_rate") or existing.get("service_rate"),
+        hs,
+        adj,
+    )
+    total_due = body.get("total_amount_due")
+    if total_due is None:
+        total_due = existing.get("total_amount_due") or amounts["total_payment"]
+    amount_paid = body.get("amount_paid")
+    if amount_paid is None:
+        amount_paid = existing.get("amount_paid") or total_due
+    snapshot = body.get("form_snapshot_json")
+    if not isinstance(snapshot, dict):
+        snapshot = existing.get("form_snapshot_json") or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    pay_date = body.get("payment_date") or existing.get("payment_date") or date.today().isoformat()
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE contractor_payment_summaries SET
+          contractor_type=%s,
+          worker_name_snapshot=%s,
+          worker_phone_snapshot=%s,
+          worker_email_snapshot=%s,
+          work_performed=%s,
+          pay_period_start=%s,
+          pay_period_end=%s,
+          invoice_date=%s,
+          payment_date=%s,
+          approved_service_hours=%s,
+          service_rate=%s,
+          health_safety_credit_hours=%s,
+          adjustments=%s,
+          service_amount=%s,
+          health_safety_credit_amount=%s,
+          total_payment=%s,
+          total_amount_due=%s,
+          amount_paid=%s,
+          payment_method=%s,
+          payment_reference=%s,
+          notes=%s,
+          form_snapshot_json=%s,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
+            ctype,
+            (body.get("worker_name") or body.get("worker_name_snapshot") or existing.get("worker_name_snapshot") or "")[
+                :255
+            ]
+            or None,
+            (body.get("worker_phone") or body.get("worker_phone_snapshot") or existing.get("worker_phone_snapshot") or "")[
+                :64
+            ]
+            or None,
+            (body.get("worker_email") or body.get("worker_email_snapshot") or existing.get("worker_email_snapshot") or "")[
+                :255
+            ]
+            or None,
+            body.get("work_performed") or existing.get("work_performed"),
+            body.get("work_period_start")
+            or body.get("pay_period_start")
+            or existing.get("pay_period_start"),
+            body.get("work_period_end")
+            or body.get("pay_period_end")
+            or existing.get("pay_period_end"),
+            body.get("invoice_date") or existing.get("invoice_date") or date.today().isoformat(),
+            pay_date[:10] if pay_date else None,
+            float(_money(hours)),
+            float(_money(body.get("service_rate") or existing.get("service_rate"))),
+            float(_money(hs)),
+            float(_money(adj)),
+            amounts["service_amount"],
+            amounts["health_safety_credit_amount"],
+            float(_money(total_due)),
+            float(_money(total_due)),
+            float(_money(amount_paid)),
+            (body.get("payment_method") or existing.get("payment_method") or "")[:64] or None,
+            (body.get("payment_reference") or existing.get("payment_reference") or "")[:255] or None,
+            body.get("notes") if body.get("notes") is not None else existing.get("notes"),
+            json.dumps(snapshot),
+            int(summary_id),
+            int(organization_id),
+        ),
+    )
+    if c.rowcount <= 0:
+        return None
+    return get_payment_summary(conn, organization_id, summary_id)
+
+
 CONTRACTOR_FORM_CATALOG = [
     {
         "id": "invoice_payment_receipt",

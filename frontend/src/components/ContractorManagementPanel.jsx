@@ -23,13 +23,17 @@ import {
 import PrintIcon from "@mui/icons-material/Print";
 import SaveIcon from "@mui/icons-material/Save";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import DownloadIcon from "@mui/icons-material/Download";
 import {
   computeContractorPayment,
   deleteContractorPaymentRecord,
+  getContractorManualPaymentRecords,
   getContractorPaymentSummaries,
   getContractorPaymentYtd,
   getContractorPrefill,
   getContractors,
+  patchContractorPaymentRecord,
   postContractorPaymentRecord,
   postContractorPaymentSummary,
 } from "../api";
@@ -46,7 +50,9 @@ import ContractorInvoicePaymentPrint, {
 } from "../contractorForms/ContractorInvoicePaymentPrint";
 import ContractorPrintPreviewDialog from "../contractorForms/ContractorPrintPreviewDialog";
 import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
-import { openPrintWindow } from "../contractorForms/contractorPrint";
+import { openPrintWindow, downloadPrintDocument, downloadPrintDocumentPdf } from "../contractorForms/contractorPrint";
+import { savedPaymentRowToRecord } from "../contractorForms/contractorPaymentRecordUtils";
+import { buildIssuerPrintPrefill, ISSUER_ENTITIES } from "../contractorForms/issuerProfiles";
 import { CONTRACTOR_FORMS, findContractorForm } from "../contractorForms/formCatalog";
 import { emptyFormValues } from "../contractorForms/formFieldSchemas";
 import { buildMultiSectionPrintHtml } from "../contractorForms/prefillMarkdown";
@@ -73,6 +79,8 @@ export default function ContractorManagementPanel() {
   const { t } = useI18n();
   const { user: authUser } = useAuth();
   const printRef = useRef(null);
+  const savedPrintRef = useRef(null);
+  const pendingSavedPrintRef = useRef(null);
   const sections = useMemo(() => parsePacketSections(packetMarkdown), []);
 
   const [contractors, setContractors] = useState([]);
@@ -89,6 +97,13 @@ export default function ContractorManagementPanel() {
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const [ytdPrior, setYtdPrior] = useState(0);
   const [record, setRecord] = useState(() => emptyPaymentRecord({}, "regular"));
+  const [editingRecordId, setEditingRecordId] = useState(null);
+  const [savedPrintPayload, setSavedPrintPayload] = useState(null);
+
+  const printPrefill = useMemo(
+    () => buildIssuerPrintPrefill(prefill, record),
+    [prefill, record],
+  );
 
   const formGridSx = {
     display: "grid",
@@ -186,16 +201,45 @@ export default function ContractorManagementPanel() {
     if (selected?.manual) {
       setPrefill(null);
       setYtdPrior(0);
-      setSavedRecords([]);
+      setEditingRecordId(null);
       setRecord(emptyPaymentRecord({}, "one_time"));
+      getContractorManualPaymentRecords()
+        .then((res) => setSavedRecords(res.data?.items || []))
+        .catch(() => setSavedRecords([]));
       return;
     }
     if (selected?.user_id) loadContractor(selected.user_id);
     else {
       setPrefill(null);
+      setEditingRecordId(null);
       setRecord(emptyPaymentRecord({}, "regular"));
     }
   }, [selected?.user_id, selected?.manual, loadContractor]);
+
+  useEffect(() => {
+    if (!savedPrintPayload || !pendingSavedPrintRef.current) return;
+    const mode = pendingSavedPrintRef.current;
+    pendingSavedPrintRef.current = null;
+    requestAnimationFrame(() => {
+      const el = savedPrintRef.current;
+      if (!el) return;
+      const title = "Contractor Invoice & Payment Receipt";
+      const id = savedPrintPayload.recordId || "record";
+      if (mode === "pdf") {
+        downloadPrintDocumentPdf(el, {
+          filename: `contractor-payment-${id}.pdf`,
+          title,
+        });
+      } else if (mode === "html") {
+        downloadPrintDocument(el, {
+          filename: `contractor-payment-${id}.html`,
+          title,
+        });
+      } else {
+        openPrintWindow(el);
+      }
+    });
+  }, [savedPrintPayload]);
 
   const mergeRecalc = (r, next, amounts) => {
     const total = amounts.total_amount_due ?? 0;
@@ -346,47 +390,92 @@ export default function ContractorManagementPanel() {
     setPrintPreviewOpen(true);
   };
 
+  const buildPaymentBody = () => ({
+    ...record,
+    work_performed: formatWorkPerformedForSave(record),
+    user_id: selected?.manual ? null : selected?.user_id,
+    approved_service_hours: Number(record.approved_hours) || 0,
+    approved_hours: Number(record.approved_hours) || 0,
+    adjustments: Number(record.adjustment_amount) || 0,
+    adjustment_amount: Number(record.adjustment_amount) || 0,
+    health_safety_credit_hours: isRegular ? Number(record.health_safety_credit_hours) || 0 : 0,
+    service_rate: Number(record.service_rate) || 0,
+    total_amount_due: Number(record.total_amount_due) || 0,
+    amount_paid: Number(record.amount_paid) || 0,
+    total_payment: Number(record.amount_paid) || Number(record.total_amount_due) || 0,
+    pay_period_start: record.work_period_start,
+    pay_period_end: record.work_period_end,
+    source_type: "manual",
+    status: "paid",
+    form_snapshot_json: { ...(prefill || {}), ...record },
+  });
+
   const savePaymentRecord = async () => {
     setSaving(true);
     setError("");
     try {
-      const body = {
-        ...record,
-        work_performed: formatWorkPerformedForSave(record),
-        user_id: selected?.manual ? null : selected?.user_id,
-        approved_service_hours: Number(record.approved_hours) || 0,
-        approved_hours: Number(record.approved_hours) || 0,
-        adjustments: Number(record.adjustment_amount) || 0,
-        adjustment_amount: Number(record.adjustment_amount) || 0,
-        health_safety_credit_hours: isRegular
-          ? Number(record.health_safety_credit_hours) || 0
-          : 0,
-        service_rate: Number(record.service_rate) || 0,
-        total_amount_due: Number(record.total_amount_due) || 0,
-        amount_paid: Number(record.amount_paid) || 0,
-        total_payment: Number(record.amount_paid) || Number(record.total_amount_due) || 0,
-        pay_period_start: record.work_period_start,
-        pay_period_end: record.work_period_end,
-        source_type: "manual",
-        status: "paid",
-        form_snapshot_json: { ...(prefill || {}), ...record },
-      };
+      const body = buildPaymentBody();
       let res;
-      if (selected?.user_id && !selected?.manual) {
+      if (editingRecordId) {
+        res = await patchContractorPaymentRecord(editingRecordId, body);
+        setSavedRecords((prev) =>
+          prev.map((s) => (s.id === editingRecordId ? res.data : s)),
+        );
+        setEditingRecordId(null);
+      } else if (selected?.user_id && !selected?.manual) {
         res = await postContractorPaymentSummary(selected.user_id, body);
+        setSavedRecords((prev) => [res.data, ...prev]);
+        const newPrior =
+          (Number(record.total_paid_ytd_prior) || 0) + (Number(record.amount_paid) || 0);
+        setYtdPrior(newPrior);
+        setRecord((r) => ({ ...r, total_paid_ytd_prior: String(newPrior) }));
       } else {
         res = await postContractorPaymentRecord(body);
+        setSavedRecords((prev) => [res.data, ...prev]);
       }
-      setSavedRecords((prev) => [res.data, ...prev]);
-      const newPrior =
-        (Number(record.total_paid_ytd_prior) || 0) + (Number(record.amount_paid) || 0);
-      setYtdPrior(newPrior);
-      setRecord((r) => ({ ...r, total_paid_ytd_prior: String(newPrior) }));
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Save failed");
     } finally {
       setSaving(false);
     }
+  };
+
+  const loadRecordForEdit = (summary) => {
+    const rec = savedPaymentRowToRecord(summary, prefill);
+    setRecord(rec);
+    setEditingRecordId(summary.id);
+    setError("");
+  };
+
+  const cancelRecordEdit = () => {
+    setEditingRecordId(null);
+    if (selected?.manual) {
+      setRecord(emptyPaymentRecord({}, record.contractor_type || "one_time"));
+    } else if (prefill) {
+      const supervisor = splitSupervisorFields(prefill.company_supervisor_name);
+      setRecord({
+        ...emptyPaymentRecord(prefill, contractorType),
+        contractor_type: contractorType,
+        worker_name: prefill.full_name || "",
+        worker_phone: prefill.phone || "",
+        worker_email: prefill.email || "",
+        service_rate: prefill.rate_per_hour != null ? String(prefill.rate_per_hour) : "",
+        payment_method: prefill.payment_method || "",
+        company_supervisor_name: supervisor.company_supervisor_name,
+        company_supervisor_title: supervisor.company_supervisor_title,
+        total_paid_ytd_prior: String(ytdPrior),
+      });
+    }
+  };
+
+  const queueSavedRecordOutput = (summary, mode) => {
+    const rec = savedPaymentRowToRecord(summary, prefill);
+    pendingSavedPrintRef.current = mode;
+    setSavedPrintPayload({
+      record: rec,
+      prefill: buildIssuerPrintPrefill(prefill, rec),
+      recordId: summary.id,
+    });
   };
 
   const refreshYtd = useCallback(async (userId) => {
@@ -418,6 +507,9 @@ export default function ContractorManagementPanel() {
     try {
       await deleteContractorPaymentRecord(id);
       setSavedRecords((prev) => prev.filter((s) => s.id !== id));
+      if (editingRecordId === id) {
+        cancelRecordEdit();
+      }
       if (selected?.user_id && !selected?.manual) {
         await refreshYtd(selected.user_id);
       } else {
@@ -550,6 +642,56 @@ export default function ContractorManagementPanel() {
                   />
                 </RadioGroup>
               </FormControl>
+
+              <Typography variant="subtitle2" sx={{ mt: 2, mb: 0.5 }}>
+                Issued by
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                Company name, logo, and address on the printed invoice / payment receipt.
+              </Typography>
+              <FormControl sx={{ mb: 2 }}>
+                <RadioGroup
+                  row
+                  value={record.issued_by_entity || "veewash"}
+                  onChange={(e) => onRecordField("issued_by_entity", e.target.value)}
+                >
+                  {ISSUER_ENTITIES.map((ent) => (
+                    <FormControlLabel
+                      key={ent.key}
+                      value={ent.key}
+                      control={<Radio size="small" />}
+                      label={ent.label}
+                    />
+                  ))}
+                </RadioGroup>
+              </FormControl>
+
+              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+                Issue from
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                Contractor or business this payment is issued from (shown on the document).
+              </Typography>
+              <Box sx={{ ...formGridSx, mb: 2 }}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Issue from name"
+                  placeholder="Contractor or business name"
+                  value={record.issue_from_name || ""}
+                  onChange={(e) => onRecordField("issue_from_name", e.target.value)}
+                />
+                <TextField
+                  fullWidth
+                  size="small"
+                  multiline
+                  minRows={2}
+                  label="Issue from address"
+                  placeholder="Street, city, state, ZIP"
+                  value={record.issue_from_address || ""}
+                  onChange={(e) => onRecordField("issue_from_address", e.target.value)}
+                />
+              </Box>
 
               <Typography variant="subtitle2" color="primary" sx={{ mt: 1 }}>
                 Part 1 — Invoice / Work Summary (no signature required)
@@ -799,8 +941,17 @@ export default function ContractorManagementPanel() {
                   disabled={saving}
                   onClick={savePaymentRecord}
                 >
-                  {saving ? t("common.saving") : "Save payment record"}
+                  {saving
+                    ? t("common.saving")
+                    : editingRecordId
+                      ? "Update payment record"
+                      : "Save payment record"}
                 </Button>
+                {editingRecordId ? (
+                  <Button variant="text" onClick={cancelRecordEdit}>
+                    Cancel edit
+                  </Button>
+                ) : null}
                 <Button variant="outlined" startIcon={<PrintIcon />} onClick={openPreview}>
                   {t("contractor.printPreview")}
                 </Button>
@@ -811,21 +962,46 @@ export default function ContractorManagementPanel() {
               {savedRecords.length ? (
                 <Box sx={{ mt: 2 }}>
                   <Typography variant="subtitle2">Recent payment records</Typography>
-                  {savedRecords.slice(0, 8).map((s) => (
+                  {savedRecords.slice(0, 12).map((s) => (
                     <Stack
                       key={s.id}
                       direction="row"
                       alignItems="center"
-                      justifyContent="space-between"
-                      spacing={1}
-                      sx={{ py: 0.25 }}
+                      spacing={0.5}
+                      sx={{ py: 0.35 }}
                     >
-                      <Typography variant="body2" color="text.secondary" sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography
+                        variant="body2"
+                        color="text.secondary"
+                        sx={{ flex: 1, minWidth: 0 }}
+                      >
                         #{s.id}{" "}
                         {s.pay_period_start || s.work_period_start || "?"} –{" "}
                         {s.pay_period_end || s.work_period_end || "?"} · $
                         {Number(s.amount_paid ?? s.total_payment ?? 0).toFixed(2)}
+                        {editingRecordId === s.id ? " · editing" : ""}
                       </Typography>
+                      <IconButton
+                        size="small"
+                        aria-label={`Edit payment record ${s.id}`}
+                        onClick={() => loadRecordForEdit(s)}
+                      >
+                        <EditOutlinedIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton
+                        size="small"
+                        aria-label={`Print payment record ${s.id}`}
+                        onClick={() => queueSavedRecordOutput(s, "print")}
+                      >
+                        <PrintIcon fontSize="small" />
+                      </IconButton>
+                      <IconButton
+                        size="small"
+                        aria-label={`Download payment record ${s.id}`}
+                        onClick={() => queueSavedRecordOutput(s, "pdf")}
+                      >
+                        <DownloadIcon fontSize="small" />
+                      </IconButton>
                       <IconButton
                         size="small"
                         color="error"
@@ -956,9 +1132,9 @@ export default function ContractorManagementPanel() {
             className="contractor-print-area"
             sx={{ position: "absolute", left: -9999, top: 0, width: "7.5in", visibility: "hidden" }}
           >
-            <ContractorPrintShell prefill={prefill || { company_name: "VeeWash" }} documentTitle={printTitle}>
+            <ContractorPrintShell prefill={printPrefill} documentTitle={printTitle}>
               {tab === 0 ? (
-                <ContractorInvoicePaymentPrint record={record} prefill={prefill} />
+                <ContractorInvoicePaymentPrint record={record} prefill={printPrefill} />
               ) : null}
               {tab === 2 && activeFormId === "engagement_verification_letter" ? (
                 <ContractorEngagementLetterPrint
@@ -979,6 +1155,23 @@ export default function ContractorManagementPanel() {
               ) : null}
             </ContractorPrintShell>
           </Box>
+          {savedPrintPayload ? (
+            <Box
+              ref={savedPrintRef}
+              className="contractor-print-area"
+              sx={{ position: "absolute", left: -9999, top: 0, width: "7.5in", visibility: "hidden" }}
+            >
+              <ContractorPrintShell
+                prefill={savedPrintPayload.prefill}
+                documentTitle="Contractor Invoice & Payment Receipt"
+              >
+                <ContractorInvoicePaymentPrint
+                  record={savedPrintPayload.record}
+                  prefill={savedPrintPayload.prefill}
+                />
+              </ContractorPrintShell>
+            </Box>
+          ) : null}
         </>
       ) : (
         <Alert severity="info">{t("contractor.pickContractor")}</Alert>
