@@ -505,6 +505,7 @@ def test_paystub_html_zero_deductions():
         "lines": [
             {
                 "id": 10,
+                "user_id": 5,
                 "worker_name_snapshot": "New Hire",
                 "approved_hours": 40,
                 "rate": 20,
@@ -539,13 +540,35 @@ def test_paystub_html_zero_deductions():
     with patch(
         "backend.payroll_payout_details.get_payout_batch_details",
         return_value=batch,
+    ), patch(
+        "backend.payroll_payout_details._organization_print_branding",
+        return_value={
+            "company_name": "VeeWash",
+            "logo_html": "<img />",
+            "address_line": "123 Main St",
+            "contact_line": "phone",
+        },
+    ), patch(
+        "backend.payroll_payout_details.fetch_finalized_paystub_ytd",
+        return_value={
+            "gross_pay": 400.0,
+            "fit": 0.0,
+            "ss": 0.0,
+            "medicare": 0.0,
+            "state": 0.0,
+            "local": 0.0,
+            "total_employee_deductions": 0.0,
+            "net_pay": 400.0,
+            "amount_paid": 400.0,
+        },
     ):
         from backend.payroll_payout_details import generate_paystub_html
 
         emp = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "EMPLOYEE COPY" in emp
-        assert "Employee Information" not in emp
         assert "Hours worked" in emp
+        assert "YTD" in emp
+        assert "$1,200.00" in emp or "$800.00" in emp
         assert "Earnings" in emp
         assert "Gross pay" in emp
         assert "Employee Taxes" in emp
@@ -709,12 +732,23 @@ def test_paystub_html_available_for_cash_payment():
     with patch(
         "backend.payroll_payout_details.get_payout_batch_details",
         return_value=batch,
+    ), patch(
+        "backend.payroll_payout_details._organization_print_branding",
+        return_value={
+            "company_name": "VeeWash",
+            "logo_html": "<img src='data:image/png;base64,abc' />",
+            "address_line": "123 Main St",
+            "contact_line": "(212) 555-0100 • www.veewash.com",
+        },
     ):
         from backend.payroll_payout_details import generate_paystub_html
 
         html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "Employee Paystub" in html
         assert 'data:image/png;base64,' in html
+        assert "VeeWash" in html
+        assert "YTD" in html
+        assert "col-ytd" in html
         assert "Cash Worker" in html
         assert "Cash Payment Acknowledgment" in html
         assert "acknowledge receipt of the cash payment shown above" in html

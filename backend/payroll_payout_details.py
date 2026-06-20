@@ -38,6 +38,13 @@ PAYMENT_METHODS = ("direct_deposit", "check", "cash", "zelle", "other")
 DOCUMENT_MODES = ("payment_receipt", "official_paystub")
 DEFAULT_DOCUMENT_MODE = "official_paystub"
 
+PAYSTUB_LOGO_HEIGHT_PX = 40
+
+ORG_WEBSITE_BY_SLUG = {
+    "veewash": "www.veewash.com",
+    "washpro": "www.washpro.com",
+}
+
 PAYMENT_METHOD_LABELS = {
     "direct_deposit": "Direct Deposit",
     "check": "Check",
@@ -727,21 +734,71 @@ def _user_display_meta(conn, user_id: Optional[int]) -> dict[str, str]:
     return {"display_name": name, "employee_id": emp_id}
 
 
+def _format_organization_address(row: dict) -> list[str]:
+    lines: list[str] = []
+    street = str(row.get("employer_street") or row.get("address") or "").strip()
+    apt = str(row.get("employer_apt") or "").strip()
+    if street:
+        lines.append(f"{street}, {apt}" if apt else street)
+    city = str(row.get("employer_city") or "").strip()
+    state = str(row.get("employer_state") or "").strip()
+    zip_code = str(row.get("employer_zip") or "").strip()
+    locality = ", ".join(p for p in [city, state] if p)
+    if zip_code:
+        locality = f"{locality} {zip_code}".strip()
+    if locality:
+        lines.append(locality)
+    if not lines and row.get("address"):
+        lines.append(str(row.get("address") or "").strip())
+    return lines
+
+
+def _format_us_phone_display(raw: str) -> str:
+    digits = "".join(ch for ch in str(raw or "") if ch.isdigit())
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"({digits[1:4]}) {digits[4:7]}-{digits[7:]}"
+    return str(raw or "").strip()
+
+
+def _organization_website(row: dict) -> str:
+    slug = str(row.get("slug") or "").lower()
+    if slug in ORG_WEBSITE_BY_SLUG:
+        return ORG_WEBSITE_BY_SLUG[slug]
+    email = str(row.get("email") or "").strip()
+    if "@" in email:
+        domain = email.split("@", 1)[1].strip().lower()
+        if domain and "." in domain:
+            return domain
+    return ""
+
+
 def _organization_print_branding(conn, organization_id: int, *, logo_height_px: int = 52) -> dict[str, str]:
-    """Company name + logo HTML for payroll print documents (tenant-aware)."""
+    """Company name, logo, and compact contact lines for payroll print documents."""
     from backend.org_branding_urls import rewrite_org_logo_url_for_client
 
     c = conn.cursor(dictionary=True)
-    if table_has_column(c, "organizations", "logo_url"):
-        c.execute(
-            "SELECT slug, display_name, logo_url FROM organizations WHERE id=%s LIMIT 1",
-            (int(organization_id),),
-        )
-    else:
-        c.execute(
-            "SELECT slug, display_name FROM organizations WHERE id=%s LIMIT 1",
-            (int(organization_id),),
-        )
+    base_cols = ["slug", "display_name"]
+    optional_cols = [
+        "logo_url",
+        "address",
+        "phone",
+        "email",
+        "employer_street",
+        "employer_apt",
+        "employer_city",
+        "employer_state",
+        "employer_zip",
+    ]
+    cols = list(base_cols)
+    for col in optional_cols:
+        if table_has_column(c, "organizations", col):
+            cols.append(col)
+    c.execute(
+        f"SELECT {', '.join(cols)} FROM organizations WHERE id=%s LIMIT 1",
+        (int(organization_id),),
+    )
     row = c.fetchone() or {}
     slug = str(row.get("slug") or "").lower()
     company_name = str(row.get("display_name") or "").strip()
@@ -762,7 +819,23 @@ def _organization_print_branding(conn, organization_id: int, *, logo_height_px: 
 
         logo_html = veewash_logo_img_html(height_px=logo_height_px)
 
-    return {"company_name": company_name, "logo_html": logo_html}
+    address_lines = _format_organization_address(row)
+    phone = _format_us_phone_display(str(row.get("phone") or ""))
+    website = _organization_website(row)
+    contact_bits = []
+    if phone:
+        contact_bits.append(phone)
+    if website:
+        contact_bits.append(website)
+    contact_line = " • ".join(contact_bits)
+
+    return {
+        "company_name": company_name,
+        "logo_html": logo_html,
+        "address_line": address_lines[0] if address_lines else "",
+        "address_line2": address_lines[1] if len(address_lines) > 1 else "",
+        "contact_line": contact_line,
+    }
 
 
 def _payment_method_label(method: str) -> str:
@@ -1472,18 +1545,25 @@ def _paystub_base_css() -> str:
   table.compact tr.total td { font-weight: 700; border-top: 1px solid #cbd5e1; }
   .paystub-sheet { page-break-after: always; max-height: 10.2in; overflow: hidden; }
   .paystub-sheet:last-child { page-break-after: auto; }
-  .brand-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; border-top: 2px solid #0097b2; padding-top: 5px; }
   .copy-badge { font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em; color: #64748b; margin-bottom: 2px; }
   .preview-banner { background: #fef3c7; color: #92400e; padding: 4px 8px; border-radius: 3px; margin-bottom: 4px; font-size: 9px; }
   .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; margin: 4px 0 6px; font-size: 9.5px; }
   .info-grid dt { color: #64748b; font-size: 9px; }
   .info-grid dd { margin: 0 0 2px; font-weight: 600; }
   .note-box { font-size: 8.5px; color: #64748b; margin: 3px 0; padding: 4px 6px; background: #f8fafc; border-radius: 3px; }
-  .cash-receipt { margin-top: 12px; padding: 12px 14px; border: 1px dashed #94a3b8; border-radius: 4px; font-size: 9px; }
-  .cash-receipt h2 { margin: 0 0 8px; font-size: 0.82rem; }
+  .brand-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 3px; border-top: 2px solid #0097b2; padding-top: 5px; }
+  .brand-text { flex: 1; min-width: 0; }
+  .company-name { font-size: 0.95rem; font-weight: 700; color: #0f172a; line-height: 1.2; }
+  .brand-contact { font-size: 8.5px; color: #475569; margin: 1px 0 0; line-height: 1.3; }
+  .doc-title { color: #0097b2; font-size: 0.88rem; margin: 4px 0 2px; font-weight: 700; }
+  table.compact.ytd th.col-current, table.compact.ytd td.col-current { width: 18%; text-align: right; }
+  table.compact.ytd th.col-ytd, table.compact.ytd td.col-ytd { width: 18%; text-align: right; }
+  table.compact.ytd td:first-child, table.compact.ytd th:first-child { width: 64%; }
+  .cash-receipt { margin-top: 8px; padding: 10px 12px; border: 1px dashed #94a3b8; border-radius: 4px; font-size: 9px; }
+  .cash-receipt h2 { margin: 0 0 6px; font-size: 0.8rem; }
   .cash-receipt .row { margin: 4px 0; }
-  .cash-receipt .ack { margin-top: 10px; font-size: 8.5px; color: #475569; }
-  .sig-field { margin-bottom: 20px; }
+  .cash-receipt .ack { margin-top: 8px; font-size: 8.5px; color: #475569; }
+  .sig-field { margin-bottom: 14px; }
   .sig-line { margin: 0; border-bottom: 1px solid #334155; }
   .sig-line-large { min-height: 40px; }
   .sig-line-date { min-height: 28px; max-width: 55%; }
@@ -1500,6 +1580,218 @@ def _paystub_money_row(label: str, amt: float, bold: bool = False) -> str:
         f"<tr{cls}><td>{label}</td>"
         f"<td class='amount'>${amt:,.2f}</td></tr>"
     )
+
+
+def _paystub_ytd_money_row(
+    label: str, current: float, ytd: float, *, bold: bool = False
+) -> str:
+    cls = " class='total'" if bold else ""
+    return (
+        f"<tr{cls}><td>{label}</td>"
+        f"<td class='col-current amount'>${current:,.2f}</td>"
+        f"<td class='col-ytd amount'>${ytd:,.2f}</td></tr>"
+    )
+
+
+def _paystub_ytd_table_head() -> str:
+    return (
+        "<tr><th>Description</th>"
+        "<th class='col-current amount'>Current</th>"
+        "<th class='col-ytd amount'>YTD</th></tr>"
+    )
+
+
+def _empty_paystub_ytd() -> dict[str, float]:
+    return {
+        "gross_pay": 0.0,
+        "fit": 0.0,
+        "ss": 0.0,
+        "medicare": 0.0,
+        "state": 0.0,
+        "local": 0.0,
+        "total_employee_deductions": 0.0,
+        "net_pay": 0.0,
+        "amount_paid": 0.0,
+    }
+
+
+def _line_paystub_ytd_components(line: dict, details: dict, totals: dict) -> dict[str, float]:
+    ded = details.get("employee_deductions") or {}
+    return {
+        "gross_pay": float(totals.get("gross_pay") or 0),
+        "fit": float(_money(ded.get("fit"))),
+        "ss": float(_money(ded.get("ss"))),
+        "medicare": float(_money(ded.get("medicare"))),
+        "state": float(_money(ded.get("state"))),
+        "local": float(_money(ded.get("local"))),
+        "total_employee_deductions": float(totals.get("total_employee_deductions") or 0),
+        "net_pay": float(totals.get("net_pay") or 0),
+        "amount_paid": float(
+            totals.get("net_paid_to_employee") or totals.get("amount_paid") or 0
+        ),
+    }
+
+
+def _add_paystub_ytd(accum: dict[str, float], components: dict[str, float]) -> dict[str, float]:
+    out = dict(accum)
+    for key in out:
+        out[key] = round(out[key] + float(components.get(key) or 0), 2)
+    return out
+
+
+def _paystub_year_from_batch(batch: dict, line: dict, payment: dict) -> int:
+    for raw in (
+        payment.get("date"),
+        line.get("payment_date"),
+        batch.get("pay_period_end"),
+        batch.get("pay_period_start"),
+    ):
+        if raw:
+            try:
+                return int(str(raw)[:4])
+            except (TypeError, ValueError):
+                continue
+    return datetime.utcnow().year
+
+
+def fetch_finalized_paystub_ytd(
+    conn,
+    organization_id: int,
+    user_id: int,
+    year: int,
+    *,
+    exclude_line_id: Optional[int] = None,
+) -> dict[str, float]:
+    """Sum paystub YTD components from finalized payout lines in the calendar year."""
+    c = conn.cursor(dictionary=True)
+    params: list[Any] = [int(organization_id), int(user_id), int(year)]
+    exclude_sql = ""
+    if exclude_line_id is not None:
+        exclude_sql = "AND pbl.id <> %s"
+        params.append(int(exclude_line_id))
+    c.execute(
+        f"""
+        SELECT pbl.gross_amount, pbl.total_amount, pbl.payout_details_json
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id = %s
+          AND pbl.user_id = %s
+          AND pb.payout_details_finalized_at IS NOT NULL
+          AND YEAR(COALESCE(pbl.payment_date, pb.pay_period_end)) = %s
+          {exclude_sql}
+        """,
+        tuple(params),
+    )
+    ytd = _empty_paystub_ytd()
+    for row in c.fetchall() or []:
+        ln = {
+            "gross_amount": row.get("gross_amount"),
+            "total_amount": row.get("total_amount"),
+            "payout_details_json": row.get("payout_details_json"),
+        }
+        details = parse_line_payout_details(ln)
+        totals = compute_line_totals(ln, details)
+        ytd = _add_paystub_ytd(ytd, _line_paystub_ytd_components(ln, details, totals))
+    return ytd
+
+
+def compute_paystub_ytd(
+    conn,
+    organization_id: int,
+    batch: dict,
+    line: dict,
+    details: dict,
+    totals: dict,
+) -> dict[str, float]:
+    payment = details.get("payment") or {}
+    year = _paystub_year_from_batch(batch, line, payment)
+    uid = line.get("user_id")
+    if not uid or not conn:
+        return _add_paystub_ytd(
+            _empty_paystub_ytd(),
+            _line_paystub_ytd_components(line, details, totals),
+        )
+    ytd = fetch_finalized_paystub_ytd(
+        conn,
+        int(organization_id),
+        int(uid),
+        year,
+        exclude_line_id=int(line.get("id") or 0) or None,
+    )
+    return _add_paystub_ytd(
+        ytd,
+        _line_paystub_ytd_components(line, details, totals),
+    )
+
+
+def _paystub_brand_head_html(branding: dict[str, str], doc_title: str) -> str:
+    address_bits = []
+    if branding.get("address_line"):
+        address_bits.append(str(branding["address_line"]))
+    if branding.get("address_line2"):
+        address_bits.append(str(branding["address_line2"]))
+    address_html = ""
+    if address_bits:
+        address_html = f"<div class='brand-contact'>{' • '.join(address_bits)}</div>"
+    contact_html = ""
+    if branding.get("contact_line"):
+        contact_html = f"<div class='brand-contact'>{branding['contact_line']}</div>"
+    return f"""
+<div class="brand-head">
+{branding.get("logo_html") or ""}
+<div class="brand-text">
+<div class="company-name">{branding.get("company_name") or ""}</div>
+{address_html}
+{contact_html}
+</div>
+</div>
+<h1 class="doc-title">{doc_title}</h1>"""
+
+
+def _employee_earnings_ytd_html(
+    hours: float, rate: float, gross: float, ytd: dict[str, float]
+) -> str:
+    return f"""
+<h2>Earnings</h2>
+<table class="compact ytd">
+{_paystub_ytd_table_head()}
+<tr><td>Hours worked</td><td class="col-current amount">{hours:.2f}</td><td class="col-ytd amount">—</td></tr>
+<tr><td>Hourly rate</td><td class="col-current amount">${rate:,.2f}</td><td class="col-ytd amount">—</td></tr>
+{_paystub_ytd_money_row("Gross pay", gross, ytd["gross_pay"], bold=True)}
+</table>"""
+
+
+def _employee_taxes_ytd_html(details: dict, totals: dict, ytd: dict[str, float]) -> str:
+    rows = []
+    for key, label in PAYSTUB_DEDUCTION_LINES:
+        current = float(_money((details.get("employee_deductions") or {}).get(key)))
+        rows.append(_paystub_ytd_money_row(label, current, ytd.get(key, 0.0)))
+    rows.append(
+        _paystub_ytd_money_row(
+            "Total employee taxes",
+            float(totals.get("total_employee_deductions") or 0),
+            ytd["total_employee_deductions"],
+            bold=True,
+        )
+    )
+    return f"""
+<h2>Employee Taxes</h2>
+<table class="compact ytd">
+{_paystub_ytd_table_head()}
+{"".join(rows)}
+</table>"""
+
+
+def _employee_net_pay_ytd_html(
+    net_pay: float, net_paid: float, ytd: dict[str, float]
+) -> str:
+    return f"""
+<h2>Net Pay</h2>
+<table class="compact ytd">
+{_paystub_ytd_table_head()}
+{_paystub_ytd_money_row("Net pay (after taxes)", net_pay, ytd["net_pay"])}
+{_paystub_ytd_money_row("Amount paid to employee", net_paid, ytd["amount_paid"], bold=True)}
+</table>"""
 
 
 def _payment_detail_rows(payment: dict, totals: dict, *, cash_receipt_separate: bool = False) -> str:
@@ -1629,6 +1921,8 @@ def _render_paystub_html(
     *,
     preview: bool = False,
     copy_mode: str = "employee",
+    conn: Optional[Any] = None,
+    organization_id: Optional[int] = None,
 ) -> str:
     if not can_generate_paystub_for_line(batch, details, preview=preview):
         raise ValueError("Official paystub not available for this payment — use payment receipt")
@@ -1639,7 +1933,6 @@ def _render_paystub_html(
     settlement = details.get("settlement") or {}
     tax_summary = details.get("tax_summary") or {}
     method_key = payment_method_key(details)
-    method_label = _payment_method_label(payment.get("method"))
     gross = float(totals["gross_pay"])
     net_pay = float(totals["net_pay"])
     net_paid = float(totals.get("net_paid_to_employee") or totals["amount_paid"])
@@ -1660,14 +1953,66 @@ def _render_paystub_html(
         else ""
     )
 
-    from backend.veewash_branding import veewash_logo_img_html
-
-    logo_html = veewash_logo_img_html(height_px=32)
+    org_id = organization_id or batch.get("organization_id")
+    branding = (
+        _organization_print_branding(conn, int(org_id), logo_height_px=PAYSTUB_LOGO_HEIGHT_PX)
+        if conn is not None and org_id
+        else {
+            "company_name": "",
+            "logo_html": "",
+            "address_line": "",
+            "address_line2": "",
+            "contact_line": "",
+        }
+    )
+    brand_head_html = _paystub_brand_head_html(branding, title)
 
     worker = line.get("worker_name_snapshot") or ""
     emp_id = line.get("employee_id") or ""
     hours = float(line.get("approved_hours") or 0)
     rate = float(line.get("rate") or 0)
+
+    cash_receipt_separate = is_employee and method_key == "cash"
+
+    if is_employee:
+        ytd = (
+            compute_paystub_ytd(conn, int(org_id), batch, line, details, totals)
+            if conn is not None and org_id
+            else _add_paystub_ytd(
+                _empty_paystub_ytd(),
+                _line_paystub_ytd_components(line, details, totals),
+            )
+        )
+        employee_meta = f"""
+<p class="employee-meta"><strong>{worker}</strong><br>
+Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
+        earnings_html = _employee_earnings_ytd_html(hours, rate, gross, ytd)
+        emp_tax_table = _employee_taxes_ytd_html(details, totals, ytd)
+        net_pay_html = _employee_net_pay_ytd_html(net_pay, net_paid, ytd)
+        tax_balance_html = ""
+        if bool(details.get("show_tax_payment_section", True)):
+            tax_balance_html = _employee_tax_balance_html(totals)
+        payment_html = _employee_payment_method_html(payment)
+        cash_receipt_html = (
+            _cash_receipt_section_html(line, payment, totals) if cash_receipt_separate else ""
+        )
+
+        return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title} — {worker}</title>
+<style>{_paystub_base_css()}</style></head><body>
+<div class="paystub-sheet">
+<div class="copy-badge">{copy_badge}</div>
+{brand_head_html}
+{preview_banner}
+{employee_meta}
+{earnings_html}
+{emp_tax_table}
+{net_pay_html}
+{tax_balance_html}
+{payment_html}
+{cash_receipt_html}
+</div>
+</body></html>"""
 
     emp_ded_rows = []
     for key, label in PAYSTUB_DEDUCTION_LINES:
@@ -1687,43 +2032,6 @@ def _render_paystub_html(
 {_paystub_money_row('Net pay (after taxes)', net_pay)}
 {_paystub_money_row('Amount paid to employee', net_paid, True)}
 </table>"""
-
-    cash_receipt_separate = is_employee and method_key == "cash"
-
-    if is_employee:
-        employee_meta = f"""
-<p class="employee-meta"><strong>{worker}</strong><br>
-Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
-        earnings_html = _employee_earnings_html(hours, rate, gross)
-        tax_balance_html = ""
-        if bool(details.get("show_tax_payment_section", True)):
-            tax_balance_html = _employee_tax_balance_html(totals)
-        payment_html = _employee_payment_method_html(payment)
-        cash_receipt_html = (
-            _cash_receipt_section_html(line, payment, totals) if cash_receipt_separate else ""
-        )
-        notes_block = ""
-        employer_html = ""
-        employee_info_html = ""
-        gross_paid_note = ""
-        finalized_footer = ""
-
-        return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{title} — {worker}</title>
-<style>{_paystub_base_css()}</style></head><body>
-<div class="paystub-sheet">
-<div class="copy-badge">{copy_badge}</div>
-<div class="brand-head">{logo_html}<h1>{title}</h1></div>
-{preview_banner}
-{employee_meta}
-{earnings_html}
-{emp_tax_table}
-{net_pay_html}
-{tax_balance_html}
-{payment_html}
-{cash_receipt_html}
-</div>
-</body></html>"""
 
     employee_info_html = f"""
 <h2>Employee Information</h2>
@@ -1826,7 +2134,7 @@ Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p
 <style>{_paystub_base_css()}</style></head><body>
 <div class="paystub-sheet">
 <div class="copy-badge">{copy_badge}</div>
-<div class="brand-head">{logo_html}<h1>{title}</h1></div>
+{brand_head_html}
 {preview_banner}
 {estimated_note}
 {employee_info_html}
@@ -1892,7 +2200,14 @@ def generate_paystub_html(
     details = line.get("payout_details") or parse_line_payout_details(line)
     totals = line.get("payout_totals") or compute_line_totals(line, details)
     return _render_paystub_html(
-        batch, line, details, totals, preview=preview, copy_mode=copy_mode
+        batch,
+        line,
+        details,
+        totals,
+        preview=preview,
+        copy_mode=copy_mode,
+        conn=conn,
+        organization_id=int(organization_id),
     )
 
 
@@ -1933,6 +2248,8 @@ def preview_paystub_html(
         totals,
         preview=True,
         copy_mode=copy_mode,
+        conn=conn,
+        organization_id=int(organization_id),
     )
 
 
@@ -1956,7 +2273,14 @@ def generate_batch_paystubs_html(
             continue
         totals = line.get("payout_totals") or compute_line_totals(line, details)
         html = _render_paystub_html(
-            batch, line, details, totals, preview=preview, copy_mode=copy_mode
+            batch,
+            line,
+            details,
+            totals,
+            preview=preview,
+            copy_mode=copy_mode,
+            conn=conn,
+            organization_id=int(organization_id),
         )
         sheets.append(_extract_paystub_sheet(html))
     if not sheets:
