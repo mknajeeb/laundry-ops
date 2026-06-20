@@ -270,36 +270,189 @@ function MilestoneTable({ milestones }) {
   );
 }
 
-function OrderTimelineTable({ rows }) {
+const PIPELINE_STAGES = [
+  { key: "sort", label: "Sort", color: STAGE_COLORS.sorting, timeKey: "sorted_time", detailKey: null },
+  { key: "wash", label: "Wash", color: STAGE_COLORS.washing, startKey: "wash_start", endKey: "wash_end", detailKey: "washer" },
+  { key: "dry", label: "Dry", color: STAGE_COLORS.drying, startKey: "dry_start", endKey: "dry_end", detailKey: "dryer" },
+  { key: "ready", label: "Ready", color: STAGE_COLORS.ready_to_fold, timeKey: "ready_fold", detailKey: null },
+];
+
+function stageTimeLabel(row, stage) {
+  if (stage.startKey && row[stage.startKey]) {
+    const end = row[stage.endKey];
+    return end ? `${row[stage.startKey]}–${end}` : row[stage.startKey];
+  }
+  return row[stage.timeKey] || null;
+}
+
+function stageComplete(row, stage) {
+  if (stage.startKey) return Boolean(row[stage.startKey]);
+  return Boolean(row[stage.timeKey]);
+}
+
+function PipelineStageCell({ row, stage, compact }) {
+  const done = stageComplete(row, stage);
+  const time = stageTimeLabel(row, stage);
+  const detail = stage.detailKey ? row[stage.detailKey] : null;
+  return (
+    <Box
+      sx={{
+        flex: "1 1 0",
+        minWidth: compact ? 72 : 88,
+        px: 0.5,
+        py: 0.5,
+        borderRadius: 1,
+        border: "1px solid",
+        borderColor: done ? `${stage.color}55` : "#e2e8f0",
+        bgcolor: done ? `${stage.color}12` : "#f8fafc",
+        opacity: done ? 1 : 0.72,
+      }}
+    >
+      <Typography variant="caption" fontWeight={800} display="block" sx={{ color: stage.color, lineHeight: 1.2, fontSize: 10 }}>
+        {stage.label}
+      </Typography>
+      <Typography variant="caption" display="block" sx={{ fontWeight: done ? 600 : 400, color: done ? "#0f172a" : "#94a3b8", lineHeight: 1.3, fontSize: 11 }}>
+        {time || "—"}
+      </Typography>
+      {detail ? (
+        <Typography variant="caption" display="block" color="text.secondary" sx={{ fontSize: 10 }}>
+          {detail}
+        </Typography>
+      ) : null}
+    </Box>
+  );
+}
+
+function OrderPipelineRow({ row, compact }) {
+  return (
+    <Stack direction="row" alignItems="stretch" spacing={0.25} sx={{ minWidth: compact ? 320 : 380 }}>
+      {PIPELINE_STAGES.map((stage, idx) => (
+        <Box key={stage.key} sx={{ display: "flex", alignItems: "stretch", flex: 1 }}>
+          <PipelineStageCell row={row} stage={stage} compact={compact} />
+          {idx < PIPELINE_STAGES.length - 1 ? (
+            <Typography
+              component="span"
+              sx={{ alignSelf: "center", color: "#cbd5e1", fontWeight: 700, px: 0.15, fontSize: 12, userSelect: "none" }}
+            >
+              →
+            </Typography>
+          ) : null}
+        </Box>
+      ))}
+    </Stack>
+  );
+}
+
+function BagAvailabilityForecast({ guidance }) {
+  if (!guidance?.next_wash_batch_start && guidance?.additional_bags_by_next_batch == null) return null;
+  const additional = guidance.additional_bags_by_next_batch;
+  const atFirst = guidance.bags_sorted_at_first_wash ?? guidance.bags_sorted_before_first_wash;
+  const byNext = guidance.bags_sorted_by_next_batch;
+  const batchSize = guidance.forecast_batch_size ?? guidance.recommended_first_batch_size;
+  return (
+    <Paper
+      elevation={0}
+      sx={{
+        p: 1.25,
+        mb: 1,
+        borderRadius: 2,
+        border: "1px solid",
+        borderColor: VEEWASH_DASHBOARD.tealBorder,
+        bgcolor: VEEWASH_DASHBOARD.tealLight,
+      }}
+    >
+      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+        Bag availability forecast
+      </Typography>
+      <Stack direction="row" flexWrap="wrap" gap={0.75} alignItems="center">
+        <Chip
+          size="small"
+          label={`${atFirst ?? "—"} sorted at 1st wash`}
+          sx={{ fontWeight: 600 }}
+        />
+        <Typography variant="body2" color="text.secondary">→</Typography>
+        <Chip
+          size="small"
+          color={additional > 0 ? "success" : "default"}
+          label={
+            additional != null
+              ? `+${additional} more by next batch (${byNext ?? "—"} total)`
+              : "Next batch timing unavailable"
+          }
+          sx={{ fontWeight: 700 }}
+        />
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`Next batch wash ${guidance.next_wash_batch_start || "—"} · size ${batchSize}`}
+        />
+      </Stack>
+      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+        Counts bags that finish sorting before the next batch wash start (order {batchSize + 1}), beyond what was ready at first wash.
+      </Typography>
+    </Paper>
+  );
+}
+
+function OrderTimelineTable({ rows, guidance }) {
   if (!rows?.length) return null;
   const preview = rows.slice(0, 25);
   return (
-    <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder, maxHeight: 420 }}>
-      <Table size="small" stickyHeader>
-        <TableHead>
-          <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
-            <TableCell sx={{ fontWeight: 700 }}>#</TableCell>
-            <TableCell>Sorted</TableCell>
-            <TableCell>Washer</TableCell>
-            <TableCell>Wash</TableCell>
-            <TableCell>Dryer</TableCell>
-            <TableCell>Dry</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {preview.map((row) => (
-            <TableRow key={row.order} hover>
-              <TableCell sx={{ fontWeight: 700 }}>{row.order}</TableCell>
-              <TableCell>{row.sorted_time || "—"}</TableCell>
-              <TableCell>{row.washer || "—"}</TableCell>
-              <TableCell>{row.wash_start ? `${row.wash_start}–${row.wash_end}` : "—"}</TableCell>
-              <TableCell>{row.dryer || "—"}</TableCell>
-              <TableCell>{row.dry_start ? `${row.dry_start}–${row.dry_end}` : "—"}</TableCell>
+    <Stack spacing={1}>
+      <BagAvailabilityForecast guidance={guidance} />
+      <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ px: 0.25 }}>
+        {PIPELINE_STAGES.map((stage) => (
+          <Chip
+            key={stage.key}
+            size="small"
+            label={stage.label}
+            sx={{ bgcolor: `${stage.color}18`, color: stage.color, fontWeight: 700, height: 22, fontSize: 11 }}
+          />
+        ))}
+        <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center", ml: 0.5 }}>
+          Sort → Wash → Dry → Ready to fold
+        </Typography>
+      </Stack>
+      <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder, maxHeight: 480 }}>
+        <Table size="small" stickyHeader>
+          <TableHead>
+            <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
+              <TableCell sx={{ fontWeight: 700, width: 48 }}>#</TableCell>
+              <TableCell sx={{ fontWeight: 700, minWidth: 400 }}>Pipeline</TableCell>
+              <TableCell sx={{ fontWeight: 700, display: { xs: "none", md: "table-cell" } }}>Sorted</TableCell>
+              <TableCell sx={{ fontWeight: 700, display: { xs: "none", lg: "table-cell" } }}>Washer</TableCell>
+              <TableCell sx={{ fontWeight: 700, display: { xs: "none", lg: "table-cell" } }}>Wash</TableCell>
+              <TableCell sx={{ fontWeight: 700, display: { xs: "none", xl: "table-cell" } }}>Dryer</TableCell>
+              <TableCell sx={{ fontWeight: 700, display: { xs: "none", xl: "table-cell" } }}>Ready</TableCell>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </TableContainer>
+          </TableHead>
+          <TableBody>
+            {preview.map((row) => (
+              <TableRow key={row.order} hover>
+                <TableCell sx={{ fontWeight: 700, verticalAlign: "top" }}>{row.order}</TableCell>
+                <TableCell sx={{ py: 0.75, verticalAlign: "top" }}>
+                  <OrderPipelineRow row={row} />
+                </TableCell>
+                <TableCell sx={{ display: { xs: "none", md: "table-cell" }, verticalAlign: "top" }}>{row.sorted_time || "—"}</TableCell>
+                <TableCell sx={{ display: { xs: "none", lg: "table-cell" }, verticalAlign: "top" }}>{row.washer || "—"}</TableCell>
+                <TableCell sx={{ display: { xs: "none", lg: "table-cell" }, verticalAlign: "top" }}>
+                  {row.wash_start ? `${row.wash_start}–${row.wash_end}` : "—"}
+                </TableCell>
+                <TableCell sx={{ display: { xs: "none", xl: "table-cell" }, verticalAlign: "top" }}>
+                  {row.dryer || (row.dry_start ? `${row.dry_start}–${row.dry_end}` : "—")}
+                </TableCell>
+                <TableCell sx={{ display: { xs: "none", xl: "table-cell" }, verticalAlign: "top" }}>{row.ready_fold || "—"}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {rows.length > preview.length ? (
+        <Typography variant="caption" color="text.secondary">
+          Showing first {preview.length} of {rows.length} orders
+        </Typography>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -633,6 +786,12 @@ export default function ShiftCapacityPlannerPage() {
         <TopCard label="Orders" value={inputsMeta.bag_count ?? bagCount} sub={`${previewTotals.washerLoads} wash · ${previewTotals.dryerLoads} dry loads`} variant="total" />
         <TopCard label="Strategy" value={result.recommendation?.label?.split(" ")[0] || "—"} sub={result.recommendation?.main_bottleneck || "—"} variant="info" />
         <TopCard label="1st wash" value={opGuidance.first_wash_batch_start || "—"} sub={`Fold switch ${opGuidance.switch_labor_to_folding || "—"}`} variant="pending" />
+        <TopCard
+          label="+bags next batch"
+          value={opGuidance.additional_bags_by_next_batch != null ? `+${opGuidance.additional_bags_by_next_batch}` : "—"}
+          sub={opGuidance.next_wash_batch_start ? `@ ${opGuidance.next_wash_batch_start}` : `${opGuidance.bags_sorted_at_first_wash ?? "—"} at 1st wash`}
+          variant="info"
+        />
         <TopCard label="Folded @ target" value={legacyData?.final?.bags_folded ?? "—"} sub={`/${inputsMeta.bag_count}`} variant="completed" />
         <TopCard label="Batch" value={operational?.recommended_batch_size ?? "—"} sub={inputs.washing_strategy.replace(/_/g, " ")} variant="snapshot" />
       </Stack>
@@ -667,7 +826,12 @@ export default function ShiftCapacityPlannerPage() {
           </Stack>
         );
       case 2:
-        return <OrderTimelineTable rows={opData?.order_timeline || operational?.order_timeline} />;
+        return (
+          <OrderTimelineTable
+            rows={opData?.order_timeline || operational?.order_timeline}
+            guidance={opGuidance}
+          />
+        );
       case 3:
         return <TimelineLanes washerTimeline={opData?.washer_timeline || operational?.washer_timeline} dryerTimeline={[]} compact />;
       case 4:

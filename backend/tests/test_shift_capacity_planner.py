@@ -255,6 +255,19 @@ class TestOperationalSimulation:
         ):
             assert key in row
 
+    def test_bag_availability_forecast_in_guidance(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, sorter_count=2, weigher_count=2, batch_size=8)
+        )
+        guidance = result["operational"]["strategies"]["continuous_washing"]["guidance"]
+        assert "additional_bags_by_next_batch" in guidance
+        assert "next_wash_batch_start" in guidance
+        assert "bags_sorted_at_first_wash" in guidance
+        assert guidance["bags_sorted_at_first_wash"] >= 1
+        assert guidance["additional_bags_by_next_batch"] >= 0
+        if guidance["next_wash_batch_start"]:
+            assert guidance["bags_sorted_by_next_batch"] >= guidance["bags_sorted_at_first_wash"]
+
     def test_continuous_vs_batch_differ(self):
         payload = _default_payload(bag_count=24, batch_size=8, sorter_count=2, weigher_count=2)
         result = simulate_shift_capacity(payload)

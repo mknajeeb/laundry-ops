@@ -1619,7 +1619,7 @@ def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bo
                 state.sorter_on_break_until = state.minute + inp.sorter_break_duration_min
                 state.sorter_bags_since_break = 0
                 break
-            if state.batch_sorted >= state.batch_target:
+            if not state.sorting_continues and state.batch_sorted >= state.batch_target:
                 state.sorting_paused = True
                 break
 
@@ -2022,13 +2022,51 @@ def _build_op_bottleneck_alerts(state: OpSimState, inp: PlannerInputs) -> list[s
     return alerts[:6]
 
 
+def _build_bag_availability_forecast(state: OpSimState) -> dict[str, Any]:
+    """Sorted-bag count delta between first wash start and the next batch wash start."""
+    first_wash = state.first_wash_start
+    batch_size = state.batch_target
+    if first_wash is None or batch_size <= 0:
+        return {}
+
+    bags_at_first = sum(
+        1 for o in state.orders if o.sort_end is not None and o.sort_end <= first_wash
+    )
+
+    next_batch_wash: int | None = None
+    if batch_size < len(state.orders):
+        next_order = state.orders[batch_size]
+        next_batch_wash = next_order.wash_start
+
+    if next_batch_wash is None:
+        wash_starts = sorted({ld.wash_start for ld in state.loads if ld.wash_start is not None})
+        if len(wash_starts) > batch_size:
+            next_batch_wash = wash_starts[batch_size]
+
+    bags_by_next: int | None = None
+    additional: int | None = None
+    if next_batch_wash is not None:
+        bags_by_next = sum(
+            1 for o in state.orders if o.sort_end is not None and o.sort_end <= next_batch_wash
+        )
+        additional = max(0, bags_by_next - bags_at_first)
+
+    return {
+        "next_wash_batch_start": _minutes_to_label(next_batch_wash) if next_batch_wash else None,
+        "bags_sorted_at_first_wash": bags_at_first,
+        "bags_sorted_by_next_batch": bags_by_next,
+        "additional_bags_by_next_batch": additional,
+        "forecast_batch_size": batch_size,
+    }
+
+
 def _build_op_guidance(state: OpSimState, inp: PlannerInputs, *, batch_mode: bool) -> dict[str, Any]:
     bags_before_first = 0
     if state.first_wash_start is not None:
         bags_before_first = sum(
             1 for o in state.orders if o.sort_end is not None and o.sort_end <= state.first_wash_start
         )
-    return {
+    guidance = {
         "recommended_first_batch_size": state.batch_target,
         "first_wash_batch_start": _minutes_to_label(state.first_wash_start)
         if state.first_wash_start
@@ -2043,6 +2081,8 @@ def _build_op_guidance(state: OpSimState, inp: PlannerInputs, *, batch_mode: boo
         if state.switch_to_folding_min
         else None,
     }
+    guidance.update(_build_bag_availability_forecast(state))
+    return guidance
 
 
 def run_operational_simulation(
