@@ -12,7 +12,23 @@ WashingStrategy = Literal["continuous_washing", "batch_washing", "hybrid_recomme
 WeighingHandledBy = Literal["dedicated_weigher", "sorter", "washer"]
 TRANSFER_MIN = 5
 BATCH_SIZE_OPTIONS = (6, 8, 10, 12)
-MILESTONE_CLOCKS = ("8:00 AM", "9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM")
+MILESTONE_INTERVAL_MIN = 30
+
+
+def _milestone_minutes(start_min: int, target_min: int, *, interval: int = MILESTONE_INTERVAL_MIN) -> list[int]:
+    """Clock times for milestone snapshots: start, every *interval* minutes, then target."""
+    if target_min < start_min:
+        return [start_min]
+    times = [start_min]
+    t = ((start_min + interval - 1) // interval) * interval
+    if t <= start_min:
+        t = start_min + interval
+    while t < target_min:
+        times.append(t)
+        t += interval
+    if times[-1] != target_min:
+        times.append(target_min)
+    return times
 
 DEFAULTS: dict[str, Any] = {
     "start_time": "7:00 AM",
@@ -1226,7 +1242,9 @@ def _build_alerts(inp: PlannerInputs, milestones: dict[str, dict[str, Any]], fin
 def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]:
     state = _init_state(inp)
     util = UtilizationTracker(inp)
-    milestone_mins = {_parse_clock_minutes(c, default=c): c for c in MILESTONE_CLOCKS}
+    milestone_mins = {
+        t: _minutes_to_label(t) for t in _milestone_minutes(inp.start_min, inp.target_min)
+    }
     milestones: dict[str, dict[str, Any]] = {}
     max_minute = inp.start_min + (inp.target_min - inp.start_min) + inp.wash_cycle_min + inp.dry_cycle_min + 240
     first_ready_min: int | None = None
@@ -1698,17 +1716,14 @@ def _complete_washer_person_task(state: OpSimState, inp: PlannerInputs) -> None:
             for part in range(1, dryer_count + 1):
                 state.pending_washer_tasks.append(("load_dryer", load.load_id, order_id, part))
         state.washer_pauses_for_moves = True
-    elif task == "load_dryer":
-        load_id = state.washer_person_task_load_id
-        load = next((ld for ld in state.loads if ld.load_id == load_id), None) if load_id else None
-        if load:
-            load.dryer_loaded_end = state.washer_person_task_end
-            for oid in load.bag_ids:
-                order = _order_by_id(state, oid)
-                order.dryer_id = load.dryer_id
-                order.dryer_load_id = load.load_id
-                order.dry_start = load.dry_start
-                order.dry_end = load.dry_end
+    elif task == "load_dryer" and load:
+        load.dryer_loaded_end = state.washer_person_task_end
+        for oid in load.bag_ids:
+            order = _order_by_id(state, oid)
+            order.dryer_id = load.dryer_id
+            order.dryer_load_id = load.load_id
+            order.dry_start = load.dry_start
+            order.dry_end = load.dry_end
         _maybe_trigger_washer_break(state, inp)
 
 
@@ -1902,10 +1917,15 @@ def _maybe_advance_batch(state: OpSimState, inp: PlannerInputs, *, batch_mode: b
         return
     batch_bag_max = state.batch_number * state.batch_target
     batch_bag_min = batch_bag_max - state.batch_target + 1
-    batch_loads = [ld for ld in state.loads if any(batch_bag_min <= oid <= batch_bag_max for oid in ld.bag_ids)]
-    if not batch_loads:
+    batch_order_ids = range(batch_bag_min, batch_bag_max + 1)
+    wash_loads = [
+        ld
+        for ld in state.loads
+        if ld.order_id in batch_order_ids and ld.dryer_split_part is None
+    ]
+    if not wash_loads:
         return
-    all_transferred = all(ld.dry_start is not None for ld in batch_loads)
+    all_transferred = all(ld.transfer_end is not None for ld in wash_loads)
     if not all_transferred:
         return
     if state.finished_wash_queue or state.pending_washer_tasks or state.washer_person_busy:
@@ -1923,9 +1943,62 @@ def _maybe_advance_batch(state: OpSimState, inp: PlannerInputs, *, batch_mode: b
     )
 
 
-def _build_order_timeline(state: OpSimState) -> list[dict[str, Any]]:
+def _operational_max_minute(inp: PlannerInputs) -> int:
+    """Run long enough to schedule and finish wash/dry for all split loads."""
+    per_wash = (
+        inp.load_washer_min
+        + inp.wash_cycle_min
+        + inp.unload_washer_min
+        + inp.washer_transfer_min
+        + inp.load_dryer_min
+        + inp.dry_cycle_min
+    )
+    wash_horizon = inp.start_min + (
+        inp.total_wash_loads * per_wash // max(1, inp.washer_count)
+    )
+    return max(inp.target_min + inp.dry_cycle_min + 120, wash_horizon + 240)
+
+
+def _operational_pipeline_done(state: OpSimState, inp: PlannerInputs) -> bool:
+    if state.sorted_count < inp.bag_count:
+        return False
+    if state.next_wash_cycle_idx < inp.total_wash_loads:
+        return False
+    if state.finished_wash_queue or state.pending_washer_tasks or state.washer_person_busy:
+        return False
+    pending_dry = any(ld.dry_start is None and ld.wash_end <= state.minute for ld in state.loads)
+    return not pending_dry
+
+
+def _build_order_timeline(state: OpSimState, inp: PlannerInputs) -> list[dict[str, Any]]:
+    loads_by_order: dict[int, list[OpLoad]] = {}
+    for ld in state.loads:
+        loads_by_order.setdefault(ld.order_id, []).append(ld)
+
     rows: list[dict[str, Any]] = []
     for order in state.orders:
+        order_loads = loads_by_order.get(order.order_id, [])
+        wash_loads = sorted(
+            [ld for ld in order_loads if ld.dryer_split_part is None],
+            key=lambda ld: (ld.wash_start or 0, ld.load_id),
+        )
+        dry_loads = sorted(
+            [ld for ld in order_loads if ld.dry_start is not None],
+            key=lambda ld: (ld.dry_start or 0, ld.load_id),
+        )
+        washers = [f"W{ld.washer_id}" for ld in wash_loads]
+        dryers = [f"D{ld.dryer_id}" for ld in dry_loads if ld.dryer_id]
+        wash_segments = [
+            f"{_minutes_to_label(ld.wash_start)}–{_minutes_to_label(ld.wash_end)}"
+            for ld in wash_loads
+            if ld.wash_start is not None and ld.wash_end is not None
+        ]
+        dry_segments = [
+            f"{_minutes_to_label(ld.dry_start)}–{_minutes_to_label(ld.dry_end)}"
+            for ld in dry_loads
+            if ld.dry_start is not None and ld.dry_end is not None
+        ]
+        bottleneck = _order_bottleneck_stage(order, state.minute, inp)
         rows.append(
             {
                 "order": order.order_id,
@@ -1935,21 +2008,50 @@ def _build_order_timeline(state: OpSimState) -> list[dict[str, Any]]:
                 "sort_start": _minutes_to_label(order.sort_start) if order.sort_start else None,
                 "sort_end": _minutes_to_label(order.sort_end) if order.sort_end else None,
                 "sorted_time": _minutes_to_label(order.sort_end) if order.sort_end else None,
-                "washer": f"W{order.washer_id}" if order.washer_id else None,
+                "washer": " + ".join(washers) if washers else None,
+                "washers": washers,
                 "washer_load": order.washer_load_id,
-                "wash_start": _minutes_to_label(order.wash_start) if order.wash_start else None,
-                "wash_end": _minutes_to_label(order.wash_end) if order.wash_end else None,
-                "dryer": f"D{order.dryer_id}" if order.dryer_id else None,
+                "wash_start": wash_segments[0].split("–")[0] if wash_segments else None,
+                "wash_end": wash_segments[-1].split("–")[-1] if wash_segments else None,
+                "wash_segments": wash_segments,
+                "dryer": " + ".join(dryers) if dryers else None,
+                "dryers": dryers,
                 "dryer_load": order.dryer_load_id,
-                "dry_start": _minutes_to_label(order.dry_start) if order.dry_start else None,
-                "dry_end": _minutes_to_label(order.dry_end) if order.dry_end else None,
+                "dry_start": dry_segments[0].split("–")[0] if dry_segments else None,
+                "dry_end": dry_segments[-1].split("–")[-1] if dry_segments else None,
+                "dry_segments": dry_segments,
                 "ready_fold": _minutes_to_label(order.ready_to_fold) if order.ready_to_fold else None,
                 "fold_start": _minutes_to_label(order.fold_start) if order.fold_start else None,
                 "fold_end": _minutes_to_label(order.fold_end) if order.fold_end else None,
                 "completed": _minutes_to_label(order.completed) if order.completed else None,
+                "bottleneck": bottleneck,
             }
         )
     return rows
+
+
+def _order_bottleneck_stage(order: OrderTrack, minute: int, inp: PlannerInputs) -> str:
+    if order.completed is not None and order.completed <= minute:
+        return "none"
+    if order.fold_start is not None and order.fold_end is None:
+        return "folding"
+    if order.ready_to_fold is not None and order.ready_to_fold <= minute and order.fold_end is None:
+        return "folding"
+    if order.dry_start is not None and (order.dry_end is None or minute < order.dry_end):
+        return "drying"
+    if order.wait_before_dryer_end is not None and order.dry_start is None:
+        return "waiting_dryer"
+    if order.wash_start is not None and (order.wash_end is None or minute < order.wash_end):
+        return "washing"
+    if order.sort_end is None and order.sort_start is not None:
+        return "sorting"
+    if order.sort_end is None:
+        return "sorting"
+    if order.wash_start is None:
+        return "washing"
+    if order.dry_start is None:
+        return "waiting_dryer"
+    return "none"
 
 
 def _build_op_washer_timeline(loads: list[OpLoad], inp: PlannerInputs) -> list[dict[str, Any]]:
@@ -2085,6 +2187,198 @@ def _build_op_guidance(state: OpSimState, inp: PlannerInputs, *, batch_mode: boo
     return guidance
 
 
+def _count_sorted_at(state: OpSimState, minute: int) -> int:
+    return sum(1 for o in state.orders if o.sort_end is not None and o.sort_end <= minute)
+
+
+def _count_ready_to_fold_at(state: OpSimState, minute: int) -> int:
+    return sum(
+        1
+        for o in state.orders
+        if o.ready_to_fold is not None
+        and o.ready_to_fold <= minute
+        and (o.fold_end is None or o.fold_end > minute)
+    )
+
+
+def _count_folded_at(state: OpSimState, minute: int) -> int:
+    return sum(1 for o in state.orders if o.fold_end is not None and o.fold_end <= minute)
+
+
+def _batch_dryers_loaded_at(state: OpSimState, order_ids: set[int], minute: int) -> int:
+    return sum(
+        1
+        for ld in state.loads
+        if ld.order_id in order_ids and ld.dry_start is not None and ld.dry_start <= minute
+    )
+
+
+def _batch_wave_dryers_complete_minute(
+    state: OpSimState, inp: PlannerInputs, order_ids: set[int]
+) -> int | None:
+    end_min = 0
+    for oid in order_ids:
+        expected = inp.order_dryer_loads[oid - 1]
+        dry_loads = [
+            ld
+            for ld in state.loads
+            if ld.order_id == oid and ld.dry_start is not None
+        ]
+        if len(dry_loads) < expected:
+            return None
+        end_min = max(end_min, max(ld.dry_start for ld in dry_loads))
+    return end_min
+
+
+def _batch_order_groups(
+    state: OpSimState,
+    inp: PlannerInputs,
+    *,
+    wave_size: int,
+    batch_mode: bool,
+) -> list[tuple[int, set[int]]]:
+    """Return (wave_number, order_ids) groups for milestone rows."""
+    wave_size = max(1, wave_size)
+    if batch_mode:
+        total_waves = math.ceil(inp.bag_count / wave_size)
+        return [
+            (
+                wave,
+                set(range((wave - 1) * wave_size + 1, min(wave * wave_size, inp.bag_count) + 1)),
+            )
+            for wave in range(1, total_waves + 1)
+        ]
+
+    order_wash_starts = [
+        (order.wash_start, order.order_id)
+        for order in state.orders
+        if order.wash_start is not None
+    ]
+    order_wash_starts.sort(key=lambda item: (item[0], item[1]))
+    groups: list[tuple[int, set[int]]] = []
+    for idx in range(0, len(order_wash_starts), wave_size):
+        chunk = order_wash_starts[idx : idx + wave_size]
+        groups.append((len(groups) + 1, {oid for _, oid in chunk}))
+    return groups
+
+
+def _build_batch_milestone_rows(
+    state: OpSimState,
+    inp: PlannerInputs,
+    *,
+    wave_size: int,
+    batch_mode: bool,
+) -> list[dict[str, Any]]:
+    """Operational milestones keyed to wash batches (explicit batch mode) or wash waves (continuous)."""
+    wave_size = max(1, wave_size)
+    rows: list[dict[str, Any]] = []
+
+    for wave, order_ids in _batch_order_groups(
+        state, inp, wave_size=wave_size, batch_mode=batch_mode
+    ):
+        if not order_ids:
+            continue
+        order_min = min(order_ids)
+        order_max = max(order_ids)
+        batch_orders = [state.orders[oid - 1] for oid in sorted(order_ids)]
+
+        wash_starts = [o.wash_start for o in batch_orders if o.wash_start is not None]
+        if not wash_starts:
+            continue
+
+        wash_start_min = min(wash_starts)
+        wash_ends = [o.wash_end for o in batch_orders if o.wash_end is not None]
+        wash_end_min = max(wash_ends) if wash_ends else wash_start_min
+
+        before_wash_min = max(inp.start_min, wash_start_min - 1)
+        sorted_before_wash = _count_sorted_at(state, before_wash_min)
+        batch_sorted_before_wash = sum(
+            1 for o in batch_orders if o.sort_end is not None and o.sort_end <= before_wash_min
+        )
+        remaining_to_sort = max(0, inp.bag_count - sorted_before_wash)
+
+        batch_end_min = _batch_wave_dryers_complete_minute(state, inp, order_ids)
+        if batch_end_min is None:
+            transfer_ends = [
+                ld.transfer_end
+                for ld in state.loads
+                if ld.order_id in order_ids
+                and ld.dryer_split_part is None
+                and ld.transfer_end is not None
+            ]
+            if transfer_ends and len(transfer_ends) >= sum(
+                1 for oid in order_ids if inp.order_washer_loads[oid - 1] > 0
+            ):
+                batch_end_min = max(transfer_ends)
+            else:
+                batch_end_min = wash_end_min
+
+        dryers_loaded = _batch_dryers_loaded_at(state, order_ids, batch_end_min)
+        ready_at_end = _count_ready_to_fold_at(state, batch_end_min)
+        folded_at_end = min(inp.bag_count, _count_folded_at(state, batch_end_min))
+
+        rows.append(
+            {
+                "batch_number": wave,
+                "order_range": f"{order_min}–{order_max}",
+                "orders_in_batch": len(order_ids),
+                "wave_size": wave_size,
+                "batch_mode": batch_mode,
+                "wash_start": _minutes_to_label(wash_start_min),
+                "wash_end": _minutes_to_label(wash_end_min),
+                "wash_start_minute": wash_start_min,
+                "wash_end_minute": wash_end_min,
+                "batch_end": _minutes_to_label(batch_end_min),
+                "batch_end_minute": batch_end_min,
+                "remaining_to_sort_before_wash": remaining_to_sort,
+                "sorted_in_batch_before_wash": batch_sorted_before_wash,
+                "cumulative_sorted_before_wash": sorted_before_wash,
+                "dryers_loaded": dryers_loaded,
+                "bags_ready_to_fold": ready_at_end,
+                "bags_folded": folded_at_end,
+                "cumulative_ready_to_fold": ready_at_end + folded_at_end,
+                "cumulative_folded": folded_at_end,
+            }
+        )
+
+    return rows
+
+
+def _op_milestone_snapshot(state: OpSimState, inp: PlannerInputs) -> dict[str, Any]:
+    minute = state.minute
+    in_wash = sum(
+        1
+        for ld in state.loads
+        if ld.dryer_split_part is None
+        and ld.wash_start is not None
+        and ld.wash_end is not None
+        and ld.wash_start <= minute < ld.wash_end
+    )
+    in_dry = sum(
+        1
+        for ld in state.loads
+        if ld.dry_start is not None
+        and ld.dry_end is not None
+        and ld.dry_start <= minute < ld.dry_end
+    )
+    ready_to_fold = sum(
+        1
+        for o in state.orders
+        if o.ready_to_fold is not None
+        and o.ready_to_fold <= minute
+        and (o.fold_end is None or o.fold_end > minute)
+    )
+    folded = min(inp.bag_count, int(state.folded))
+    return {
+        "clock": _minutes_to_label(minute),
+        "minute_offset": minute - inp.start_min,
+        "bags_in_washer": in_wash,
+        "bags_in_dryer": in_dry,
+        "bags_ready_to_fold": ready_to_fold,
+        "bags_folded": folded,
+    }
+
+
 def run_operational_simulation(
     inp: PlannerInputs,
     *,
@@ -2097,8 +2391,10 @@ def run_operational_simulation(
     state.batch_target = effective_batch
     state.sorting_continues = not batch_mode
     util = UtilizationTracker(inp)
+    milestone_times = set(_milestone_minutes(inp.start_min, inp.target_min))
+    milestones: dict[str, dict[str, Any]] = {}
 
-    max_minute = inp.start_min + (inp.target_min - inp.start_min) + inp.wash_cycle_min + inp.dry_cycle_min + 360
+    max_minute = _operational_max_minute(inp)
 
     for t in range(inp.start_min, max_minute + 1):
         state.minute = t
@@ -2113,16 +2409,40 @@ def run_operational_simulation(
         _maybe_advance_batch(state, inp, batch_mode=batch_mode)
         util.tick_operational(state, inp)
 
-        if state.folded >= inp.bag_count and t >= inp.target_min:
+        if t in milestone_times:
+            milestones[_minutes_to_label(t)] = _op_milestone_snapshot(state, inp)
+
+        if t >= inp.target_min and state.folded >= inp.bag_count:
+            break
+        if t >= max_minute:
+            break
+        if t >= inp.target_min + 180 and _operational_pipeline_done(state, inp):
             break
 
     guidance = _build_op_guidance(state, inp, batch_mode=batch_mode)
+    batch_milestone_rows = _build_batch_milestone_rows(
+        state,
+        inp,
+        wave_size=effective_batch,
+        batch_mode=batch_mode,
+    )
+    time_milestone_rows = [
+        {"time": clock, **milestones[clock]}
+        for clock in sorted(
+            milestones.keys(),
+            key=lambda c: _parse_clock_minutes(c, default="12:00 PM"),
+        )
+    ]
     return {
         "washing_strategy": washing_strategy,
         "batch_size": effective_batch,
         "guidance": guidance,
+        "milestones": milestones,
+        "batch_milestone_rows": batch_milestone_rows,
+        "time_milestone_rows": time_milestone_rows,
+        "milestone_rows": batch_milestone_rows,
         "next_actions": sorted(state.next_actions, key=lambda a: a["start_minute"]),
-        "order_timeline": _build_order_timeline(state),
+        "order_timeline": _build_order_timeline(state, inp),
         "washer_timeline": _build_op_washer_timeline(state.loads, inp),
         "dryer_timeline": _build_op_dryer_timeline(state.loads, inp),
         "washer_person_timeline": state.washer_person_log,
@@ -2179,6 +2499,101 @@ def _pick_hybrid_batch_size(inp: PlannerInputs) -> tuple[int, dict[str, Any]]:
     return best_size, best_result
 
 
+def optimize_operational_strategy(inp: PlannerInputs, operational: dict[str, Any]) -> dict[str, Any]:
+    """Rules-based optimizer: pick washing strategy + batch size maximizing target-time output."""
+    strategies = operational["strategies"]
+    staffing = compute_staffing(inp)
+    target_label = _minutes_to_label(inp.target_min)
+
+    labels = {
+        "continuous_washing": "Continuous Washing",
+        "batch_washing": "Batch Washing",
+        "hybrid_recommended": "Hybrid Recommended",
+    }
+    reasons = {
+        "continuous_washing": "Keep washers fed continuously when sorting can keep pace all shift.",
+        "batch_washing": "Pause sorting between batches so the washer person clears transfers first.",
+        "hybrid_recommended": "Use an initial batch, then resume continuous sorting for higher throughput.",
+    }
+
+    candidates: list[tuple[str, int, dict[str, Any]]] = [
+        ("continuous_washing", inp.batch_size, strategies["continuous_washing"]),
+        ("batch_washing", strategies["batch_washing"].get("batch_size", inp.batch_size), strategies["batch_washing"]),
+        (
+            "hybrid_recommended",
+            operational["recommended_batch_size"],
+            strategies["hybrid_recommended"],
+        ),
+    ]
+
+    def _target_folded(result: dict[str, Any]) -> int:
+        ms = result.get("milestones", {})
+        if target_label in ms:
+            return int(ms[target_label].get("bags_folded", 0))
+        return int(result["final"]["bags_folded"])
+
+    def _score(item: tuple[str, int, dict[str, Any]]) -> tuple[int, int, int, int]:
+        _, _, result = item
+        switch = result["guidance"].get("switch_labor_to_folding")
+        switch_min = _parse_clock_minutes(switch, default="12:00 PM") if switch else 9999
+        return (
+            _target_folded(result),
+            int(result["final"]["bags_folded"]),
+            int(result["final"]["bags_ready_for_folding"]),
+            -switch_min,
+        )
+
+    comparisons: dict[str, Any] = {}
+    for key, batch_size, result in candidates:
+        comparisons[key] = {
+            "batch_size": batch_size,
+            "bags_folded_at_target": _target_folded(result),
+            "bags_folded": result["final"]["bags_folded"],
+            "bags_ready": result["final"]["bags_ready_for_folding"],
+            "bottleneck": result.get("utilization_bottleneck"),
+            "first_fold_ready": result["guidance"].get("switch_labor_to_folding"),
+        }
+
+    best_key, best_batch, best_result = max(candidates, key=_score)
+    suggested_staff = {
+        "weighers": max(staffing["weighers"], inp.weigher_count if inp.uses_dedicated_weigher else 0),
+        "sorters": max(staffing["sorters"], inp.sorter_count),
+        "folders": max(staffing["folders"], inp.folder_count),
+        "washers": inp.washer_count,
+        "dryers": inp.dryer_count,
+    }
+    bn = best_result.get("utilization_bottleneck") or "none"
+    if bn == "folding" and suggested_staff["folders"] < staffing["folders"] + 1:
+        suggested_staff["folders"] = staffing["folders"] + 1
+    if bn.startswith("washer") and inp.washer_count < staffing.get("wash_dry_helpers", 0) + inp.washer_count:
+        suggested_staff["washers"] = inp.washer_count + 1
+    if bn.startswith("dryer") and inp.dryer_count < staffing.get("wash_dry_helpers", 0) + inp.dryer_count:
+        suggested_staff["dryers"] = inp.dryer_count + 1
+
+    return {
+        "washing_strategy": best_key,
+        "batch_size": best_batch,
+        "label": labels[best_key],
+        "reason": reasons[best_key],
+        "expected_bags_folded_at_target": _target_folded(best_result),
+        "expected_bags_folded_total": best_result["final"]["bags_folded"],
+        "expected_bags_ready": best_result["final"]["bags_ready_for_folding"],
+        "main_bottleneck": bn,
+        "first_fold_ready": best_result["guidance"].get("switch_labor_to_folding"),
+        "suggested_staff": suggested_staff,
+        "comparisons": comparisons,
+        "apply_inputs": {
+            "washing_strategy": best_key,
+            "batch_size": best_batch,
+            "folder_count": suggested_staff["folders"],
+            "sorter_count": suggested_staff["sorters"],
+            "weigher_count": suggested_staff["weighers"] if inp.uses_dedicated_weigher else None,
+            "washer_count": suggested_staff["washers"],
+            "dryer_count": suggested_staff["dryers"],
+        },
+    }
+
+
 def build_operational_plan(inp: PlannerInputs) -> dict[str, Any]:
     cont = run_operational_simulation(inp, washing_strategy="continuous_washing")
     batch = run_operational_simulation(
@@ -2218,6 +2633,10 @@ def build_operational_plan(inp: PlannerInputs) -> dict[str, Any]:
         "recommended_batch_size": recommended_batch,
         "strategies": strategies,
         "active_strategy": active,
+        "milestones": active.get("milestones", {}),
+        "milestone_rows": active.get("milestone_rows", []),
+        "batch_milestone_rows": active.get("batch_milestone_rows", []),
+        "time_milestone_rows": active.get("time_milestone_rows", []),
         "guidance": active["guidance"],
         "next_actions": active["next_actions"],
         "order_timeline": active["order_timeline"],
@@ -2228,6 +2647,13 @@ def build_operational_plan(inp: PlannerInputs) -> dict[str, Any]:
         "resource_utilization": active.get("resource_utilization", []),
         "utilization_bottleneck": active.get("utilization_bottleneck"),
         "summary": active["summary"],
+        "strategy_optimizer": optimize_operational_strategy(
+            inp,
+            {
+                "strategies": strategies,
+                "recommended_batch_size": recommended_batch,
+            },
+        ),
     }
 
 

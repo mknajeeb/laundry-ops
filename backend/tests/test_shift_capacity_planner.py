@@ -1,5 +1,7 @@
 """Tests for shift capacity planner simulator."""
 
+import math
+
 import pytest
 
 from backend.shift_capacity_planner import (
@@ -413,3 +415,112 @@ class TestWhatIfScenarios:
     def test_no_whatif_when_defaults(self):
         result = simulate_shift_capacity(_default_payload())
         assert result["what_if"] is None
+
+
+class TestPlannerBugFixes:
+    def test_all_orders_get_dry_times_continuous(self):
+        result = simulate_shift_capacity(_default_payload(bag_count=50, orders_using_2_washers=40))
+        rows = result["operational"]["order_timeline"]
+        assert len(rows) == 50
+        assert all(r["sorted_time"] for r in rows)
+        assert all(r["dry_start"] for r in rows), "every order should have dryer pipeline times"
+        assert all(r["wash_start"] for r in rows)
+
+    def test_multi_machine_display_on_split_orders(self):
+        result = simulate_shift_capacity(_default_payload(bag_count=50, orders_using_2_washers=40))
+        row = result["operational"]["order_timeline"][0]
+        assert " + " in (row["washer"] or "")
+        assert len(row["washers"]) >= 2
+        assert len(row["wash_segments"]) >= 2
+        assert len(row["dryers"]) >= 1
+
+    def test_batch_mode_sorts_all_orders(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, washing_strategy="batch_washing", batch_size=8)
+        )
+        rows = result["operational"]["order_timeline"]
+        assert sum(1 for r in rows if r["sorted_time"]) == 50
+        assert sum(1 for r in rows if r["wash_start"]) > 8
+
+    def test_operational_batch_milestones(self):
+        result = simulate_shift_capacity(
+            _default_payload(washing_strategy="batch_washing", batch_size=8)
+        )
+        op = result["operational"]["active_strategy"]
+        batch_rows = op["batch_milestone_rows"]
+        assert len(batch_rows) >= 1
+        first = batch_rows[0]
+        assert first["batch_number"] == 1
+        assert first["order_range"] == "1–8"
+        assert first["orders_in_batch"] == 8
+        assert "remaining_to_sort_before_wash" in first
+        assert "wash_start" in first
+        assert "wash_end" in first
+        assert "batch_end" in first
+        assert "dryers_loaded" in first
+        assert "bags_ready_to_fold" in first
+        assert "bags_folded" in first
+        assert op["milestone_rows"] == batch_rows
+        ms = op["milestones"]
+        assert "7:00 AM" in ms
+        assert "12:00 PM" in ms
+        assert "bags_in_washer" in ms["12:00 PM"]
+
+    def test_batch_mode_milestone_first_batch_sorted(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, washing_strategy="batch_washing", batch_size=8)
+        )
+        op = result["operational"]["active_strategy"]
+        first = op["batch_milestone_rows"][0]
+        assert first["sorted_in_batch_before_wash"] == 8
+        assert first["remaining_to_sort_before_wash"] == 42
+
+    def test_continuous_mode_wash_waves(self):
+        result = simulate_shift_capacity(
+            _default_payload(bag_count=50, washing_strategy="continuous_washing", batch_size=8)
+        )
+        op = result["operational"]["active_strategy"]
+        rows = op["batch_milestone_rows"]
+        assert len(rows) == math.ceil(50 / 8)
+        assert rows[0]["batch_mode"] is False
+        assert rows[0]["orders_in_batch"] == 8
+        assert rows[1]["orders_in_batch"] == 8
+
+    def test_operational_time_milestones_30_min_buckets(self):
+        result = simulate_shift_capacity(_default_payload())
+        op = result["operational"]["active_strategy"]
+        time_rows = op["time_milestone_rows"]
+        clocks = {row["time"] for row in time_rows}
+        assert "7:00 AM" in clocks
+        assert "7:30 AM" in clocks
+        assert "12:00 PM" in clocks
+        snap = next(row for row in time_rows if row["time"] == "12:00 PM")
+        assert "bags_in_washer" in snap
+        assert "bags_in_dryer" in snap
+        assert "bags_ready_to_fold" in snap
+        assert "bags_folded" in snap
+        assert "bottleneck" not in snap
+
+    def test_strategy_optimizer_present(self):
+        result = simulate_shift_capacity(_default_payload())
+        opt = result["operational"]["strategy_optimizer"]
+        assert opt["washing_strategy"] in (
+            "continuous_washing",
+            "batch_washing",
+            "hybrid_recommended",
+        )
+        assert opt["batch_size"] in (6, 8, 10, 12)
+        assert "apply_inputs" in opt
+        assert "expected_bags_folded_at_target" in opt
+        assert "comparisons" in opt
+
+    def test_order_timeline_bottleneck_field(self):
+        result = simulate_shift_capacity(_default_payload(bag_count=20))
+        row = result["operational"]["order_timeline"][0]
+        assert "bottleneck" in row
+
+    def test_load_dryer_completion_updates_order(self):
+        inp = parse_planner_inputs(_default_payload(bag_count=8, orders_using_2_dryers=4))
+        cont = run_operational_simulation(inp, washing_strategy="continuous_washing")
+        assert any(r["dry_start"] for r in cont["order_timeline"])
+        assert cont["dryer_timeline"]

@@ -75,9 +75,17 @@ const WASHING_STRATEGIES = [
 ];
 
 const BATCH_SIZE_OPTIONS = [6, 8, 10, 12];
-const MILESTONE_ORDER = ["8:00 AM", "9:00 AM", "10:00 AM", "11:00 AM", "12:00 PM"];
 const INPUT_TABS = ["Time & volume", "Split loads", "Staff & ops", "What-if"];
 const RESULT_TABS = ["Strategy", "Milestones", "Orders", "Washer lanes", "Dryer lanes", "Utilization"];
+
+const WHATIF_TUNING_KEYS = [
+  { key: "folder_count", label: "Folders", min: 1, step: 1 },
+  { key: "sorter_count", label: "Sorters", min: 1, step: 1 },
+  { key: "weigher_count", label: "Weighers", min: 1, step: 1, weigherOnly: true },
+  { key: "washer_count", label: "Washers", min: 1, step: 1 },
+  { key: "dryer_count", label: "Dryers", min: 1, step: 1 },
+  { key: "batch_size", label: "Batch size", min: 6, step: 2, batchOnly: true },
+];
 
 const STAGE_COLORS = {
   weighing: "#2563eb",
@@ -237,36 +245,100 @@ function StatusChip({ status }) {
   );
 }
 
-function MilestoneTable({ milestones }) {
-  const rows = MILESTONE_ORDER.filter((c) => milestones?.[c]).map((c) => ({ time: c, ...milestones[c] }));
-  if (!rows.length) return null;
+function MilestoneTable({ milestoneRows, timeMilestoneRows, batchSize, washingStrategy }) {
+  const batchRows = milestoneRows || [];
+  const timeRows = timeMilestoneRows || [];
+  if (!batchRows.length && !timeRows.length) return null;
+
+  const strategyLabel = (washingStrategy || "").replace(/_/g, " ");
+  const waveNote =
+    washingStrategy === "continuous_washing"
+      ? `Wash waves of ${batchSize ?? "—"} orders (continuous sorting)`
+      : washingStrategy === "batch_washing"
+        ? `Sort-pause batches of ${batchSize ?? "—"} orders`
+        : null;
+
   return (
-    <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
-      <Table size="small" stickyHeader>
-        <TableHead>
-          <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
-            <TableCell sx={{ fontWeight: 700 }}>Time</TableCell>
-            <TableCell align="right">Sorted</TableCell>
-            <TableCell align="right">In wash</TableCell>
-            <TableCell align="right">In dry</TableCell>
-            <TableCell align="right">Folded</TableCell>
-            <TableCell>Bottleneck</TableCell>
-          </TableRow>
-        </TableHead>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={row.time} hover>
-              <TableCell sx={{ fontWeight: 700 }}>{row.time}</TableCell>
-              <TableCell align="right">{row.bags_sorted}</TableCell>
-              <TableCell align="right">{row.bags_in_washer}</TableCell>
-              <TableCell align="right">{row.bags_in_dryer}</TableCell>
-              <TableCell align="right">{row.bags_folded}</TableCell>
-              <TableCell><BottleneckChip stage={row.bottleneck} /></TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </TableContainer>
+    <Stack spacing={2}>
+      {batchRows.length ? (
+        <Box>
+          <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 0.75 }}>
+            <Typography variant="subtitle2" fontWeight={800}>
+              Batch milestones
+            </Typography>
+            {waveNote ? (
+              <Typography variant="caption" color="text.secondary">
+                {waveNote}
+              </Typography>
+            ) : null}
+          </Stack>
+          <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlueLight }}>
+                  <TableCell sx={{ fontWeight: 700 }}>Batch</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Orders</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>Left to sort</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Wash</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Batch end</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>Dryers loaded</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>Ready to fold</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700 }}>Folded</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {batchRows.map((row) => (
+                  <TableRow key={`batch-${row.batch_number}`} hover>
+                    <TableCell sx={{ fontWeight: 700 }}>#{row.batch_number}</TableCell>
+                    <TableCell>{row.order_range}</TableCell>
+                    <TableCell align="right">{row.remaining_to_sort_before_wash ?? "—"}</TableCell>
+                    <TableCell>
+                      {row.wash_start && row.wash_end ? `${row.wash_start}–${row.wash_end}` : row.wash_start || "—"}
+                    </TableCell>
+                    <TableCell>{row.batch_end || "—"}</TableCell>
+                    <TableCell align="right">{row.dryers_loaded ?? 0}</TableCell>
+                    <TableCell align="right">{row.bags_ready_to_fold ?? 0}</TableCell>
+                    <TableCell align="right">{row.bags_folded ?? 0}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Box>
+      ) : null}
+
+      {timeRows.length ? (
+        <Box>
+          <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+            Time snapshots (30 min)
+          </Typography>
+          <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: "#e2e8f0" }}>
+            <Table size="small">
+              <TableHead>
+                <TableRow sx={{ bgcolor: "#f8fafc" }}>
+                  <TableCell sx={{ fontWeight: 700 }}>Time</TableCell>
+                  <TableCell align="right">In wash</TableCell>
+                  <TableCell align="right">In dry</TableCell>
+                  <TableCell align="right">Ready to fold</TableCell>
+                  <TableCell align="right">Folding done</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {timeRows.map((row) => (
+                  <TableRow key={row.time} hover>
+                    <TableCell sx={{ fontWeight: 600 }}>{row.time}</TableCell>
+                    <TableCell align="right">{row.bags_in_washer ?? 0}</TableCell>
+                    <TableCell align="right">{row.bags_in_dryer ?? 0}</TableCell>
+                    <TableCell align="right">{row.bags_ready_to_fold ?? 0}</TableCell>
+                    <TableCell align="right">{row.bags_folded ?? 0}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Box>
+      ) : null}
+    </Stack>
   );
 }
 
@@ -278,6 +350,12 @@ const PIPELINE_STAGES = [
 ];
 
 function stageTimeLabel(row, stage) {
+  if (stage.key === "wash" && row.wash_segments?.length) {
+    return row.wash_segments.join(" · ");
+  }
+  if (stage.key === "dry" && row.dry_segments?.length) {
+    return row.dry_segments.join(" · ");
+  }
   if (stage.startKey && row[stage.startKey]) {
     const end = row[stage.endKey];
     return end ? `${row[stage.startKey]}–${end}` : row[stage.startKey];
@@ -285,7 +363,15 @@ function stageTimeLabel(row, stage) {
   return row[stage.timeKey] || null;
 }
 
+function stageDetail(row, stage) {
+  if (stage.key === "wash") return row.washers?.length ? row.washers.join(" + ") : row.washer;
+  if (stage.key === "dry") return row.dryers?.length ? row.dryers.join(" + ") : row.dryer;
+  return stage.detailKey ? row[stage.detailKey] : null;
+}
+
 function stageComplete(row, stage) {
+  if (stage.key === "wash") return Boolean(row.wash_segments?.length || row[stage.startKey]);
+  if (stage.key === "dry") return Boolean(row.dry_segments?.length || row[stage.startKey]);
   if (stage.startKey) return Boolean(row[stage.startKey]);
   return Boolean(row[stage.timeKey]);
 }
@@ -293,7 +379,7 @@ function stageComplete(row, stage) {
 function PipelineStageCell({ row, stage, compact }) {
   const done = stageComplete(row, stage);
   const time = stageTimeLabel(row, stage);
-  const detail = stage.detailKey ? row[stage.detailKey] : null;
+  const detail = stageDetail(row, stage);
   return (
     <Box
       sx={{
@@ -394,12 +480,43 @@ function BagAvailabilityForecast({ guidance }) {
   );
 }
 
-function OrderTimelineTable({ rows, guidance }) {
+function OrderTimelineTable({ rows, guidance, bottleneckSummary, bottleneckAlerts }) {
   if (!rows?.length) return null;
-  const preview = rows.slice(0, 25);
+  const bottleneckOrders = rows.filter((r) => r.bottleneck && r.bottleneck !== "none");
   return (
     <Stack spacing={1}>
       <BagAvailabilityForecast guidance={guidance} />
+      {(bottleneckSummary || bottleneckAlerts?.length) ? (
+        <Paper
+          elevation={0}
+          sx={{
+            p: 1.25,
+            borderRadius: 2,
+            border: "1px solid",
+            borderColor: "#fecaca",
+            bgcolor: "#fef2f2",
+          }}
+        >
+          <Stack direction="row" flexWrap="wrap" gap={0.75} alignItems="center">
+            <Typography variant="subtitle2" fontWeight={800} color="error.dark">
+              Bottleneck
+            </Typography>
+            {bottleneckSummary ? <BottleneckChip stage={bottleneckSummary} /> : null}
+            {bottleneckOrders.length ? (
+              <Chip
+                size="small"
+                variant="outlined"
+                label={`${bottleneckOrders.length} orders waiting on ${bottleneckSummary || "capacity"}`}
+              />
+            ) : null}
+          </Stack>
+          {(bottleneckAlerts || []).slice(0, 3).map((msg) => (
+            <Typography key={msg} variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+              {msg}
+            </Typography>
+          ))}
+        </Paper>
+      ) : null}
       <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ px: 0.25 }}>
         {PIPELINE_STAGES.map((stage) => (
           <Chip
@@ -424,10 +541,11 @@ function OrderTimelineTable({ rows, guidance }) {
               <TableCell sx={{ fontWeight: 700, display: { xs: "none", lg: "table-cell" } }}>Wash</TableCell>
               <TableCell sx={{ fontWeight: 700, display: { xs: "none", xl: "table-cell" } }}>Dryer</TableCell>
               <TableCell sx={{ fontWeight: 700, display: { xs: "none", xl: "table-cell" } }}>Ready</TableCell>
+              <TableCell sx={{ fontWeight: 700, display: { xs: "none", lg: "table-cell" } }}>Status</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {preview.map((row) => (
+            {rows.map((row) => (
               <TableRow key={row.order} hover>
                 <TableCell sx={{ fontWeight: 700, verticalAlign: "top" }}>{row.order}</TableCell>
                 <TableCell sx={{ py: 0.75, verticalAlign: "top" }}>
@@ -436,22 +554,27 @@ function OrderTimelineTable({ rows, guidance }) {
                 <TableCell sx={{ display: { xs: "none", md: "table-cell" }, verticalAlign: "top" }}>{row.sorted_time || "—"}</TableCell>
                 <TableCell sx={{ display: { xs: "none", lg: "table-cell" }, verticalAlign: "top" }}>{row.washer || "—"}</TableCell>
                 <TableCell sx={{ display: { xs: "none", lg: "table-cell" }, verticalAlign: "top" }}>
-                  {row.wash_start ? `${row.wash_start}–${row.wash_end}` : "—"}
+                  {row.wash_segments?.length ? row.wash_segments.join(" · ") : row.wash_start ? `${row.wash_start}–${row.wash_end}` : "—"}
                 </TableCell>
                 <TableCell sx={{ display: { xs: "none", xl: "table-cell" }, verticalAlign: "top" }}>
-                  {row.dryer || (row.dry_start ? `${row.dry_start}–${row.dry_end}` : "—")}
+                  {row.dry_segments?.length ? row.dry_segments.join(" · ") : row.dryer || (row.dry_start ? `${row.dry_start}–${row.dry_end}` : "—")}
                 </TableCell>
                 <TableCell sx={{ display: { xs: "none", xl: "table-cell" }, verticalAlign: "top" }}>{row.ready_fold || "—"}</TableCell>
+                <TableCell sx={{ display: { xs: "none", lg: "table-cell" }, verticalAlign: "top" }}>
+                  {row.bottleneck && row.bottleneck !== "none" ? (
+                    <BottleneckChip stage={row.bottleneck} />
+                  ) : (
+                    <Typography variant="caption" color="text.secondary">—</Typography>
+                  )}
+                </TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </TableContainer>
-      {rows.length > preview.length ? (
-        <Typography variant="caption" color="text.secondary">
-          Showing first {preview.length} of {rows.length} orders
-        </Typography>
-      ) : null}
+      <Typography variant="caption" color="text.secondary">
+        {rows.length} orders · multi-machine orders show W1 + W2 / D1 + D2
+      </Typography>
     </Stack>
   );
 }
@@ -498,14 +621,42 @@ function TimelineLanes({ washerTimeline, dryerTimeline, compact }) {
   );
 }
 
-function StrategyPanel({ recommendation, staffing, operational, opGuidance, inputsMeta }) {
-  if (!recommendation) return null;
-  const staff = recommendation.suggested_staff || {};
+function StrategyPanel({ recommendation, staffing, operational, opGuidance, inputsMeta, strategyOptimizer, onApplyOptimizer }) {
+  const optimizer = strategyOptimizer || operational?.strategy_optimizer;
+  const staff = recommendation?.suggested_staff || optimizer?.suggested_staff || {};
   return (
     <Stack spacing={1.5}>
+      {optimizer ? (
+        <Paper elevation={0} sx={{ p: 1.5, borderRadius: 2, border: "2px solid", borderColor: "#16a34a55", bgcolor: "#f0fdf4" }}>
+          <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1}>
+            <Box>
+              <Typography variant="subtitle1" fontWeight={800} gutterBottom>
+                Optimizer: {optimizer.label}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block">
+                {optimizer.reason}
+              </Typography>
+            </Box>
+            {onApplyOptimizer ? (
+              <Button size="small" variant="contained" onClick={() => onApplyOptimizer(optimizer.apply_inputs)} sx={{ fontWeight: 700 }}>
+                Apply recommended
+              </Button>
+            ) : null}
+          </Stack>
+          <Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
+            <Chip size="small" label={`Strategy ${optimizer.washing_strategy?.replace(/_/g, " ")}`} />
+            <Chip size="small" label={`Batch ${optimizer.batch_size}`} />
+            <Chip size="small" label={`${optimizer.expected_bags_folded_at_target} folded @ target`} color="success" />
+            <Chip size="small" label={`Folders ${staff.folders ?? "—"}`} />
+            <Chip size="small" label={`Sorters ${staff.sorters ?? "—"}`} />
+            <BottleneckChip stage={optimizer.main_bottleneck} />
+          </Stack>
+        </Paper>
+      ) : null}
+      {recommendation ? (
       <Paper elevation={0} sx={{ p: 1.5, borderRadius: 2, border: "2px solid", borderColor: VEEWASH_DASHBOARD.tealBorder, bgcolor: VEEWASH_DASHBOARD.tealLight }}>
         <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-          Recommended: {recommendation.label}
+          Legacy sim: {recommendation.label}
         </Typography>
         <Stack direction="row" flexWrap="wrap" gap={0.5}>
           <Chip size="small" label={`Start ${recommendation.start_time}`} />
@@ -519,6 +670,7 @@ function StrategyPanel({ recommendation, staffing, operational, opGuidance, inpu
           {recommendation.reason}
         </Typography>
       </Paper>
+      ) : null}
       <Paper elevation={0} sx={{ p: 1.5, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
         <Typography variant="subtitle2" fontWeight={800} gutterBottom>
           Batch guidance · size {operational?.recommended_batch_size ?? "—"}
@@ -531,6 +683,47 @@ function StrategyPanel({ recommendation, staffing, operational, opGuidance, inpu
         </Stack>
       </Paper>
     </Stack>
+  );
+}
+
+function WhatIfResultsPanel({ whatIf, utilizationBottleneck, operationalSummary }) {
+  if (!whatIf && !utilizationBottleneck) return null;
+  const cmp = whatIf?.comparison;
+  const delta = cmp?.delta?.bags_folded ?? 0;
+  const baseBn = cmp?.baseline?.utilization_bottleneck || cmp?.baseline?.bottleneck;
+  const scenBn = cmp?.scenario?.utilization_bottleneck || cmp?.scenario?.bottleneck || utilizationBottleneck;
+  const resolved = baseBn && scenBn && baseBn !== scenBn;
+  return (
+    <Paper elevation={0} sx={{ p: 1.25, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder, borderRadius: 2 }}>
+      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+        What-if impact
+      </Typography>
+      {whatIf ? (
+        <Stack spacing={0.75}>
+          <Stack direction="row" flexWrap="wrap" gap={0.5} alignItems="center">
+            <Chip size="small" color={delta > 0 ? "success" : delta < 0 ? "warning" : "default"} label={`Δ folded @ target: ${delta >= 0 ? "+" : ""}${delta}`} />
+            {cmp?.delta?.switch_to_folding ? (
+              <Chip size="small" variant="outlined" label={`1st fold ${cmp.delta.switch_to_folding}`} />
+            ) : null}
+          </Stack>
+          <Stack direction="row" flexWrap="wrap" gap={0.5} alignItems="center">
+            <Typography variant="caption" color="text.secondary">Bottleneck:</Typography>
+            {baseBn ? <BottleneckChip stage={baseBn} /> : null}
+            <Typography variant="caption">→</Typography>
+            <BottleneckChip stage={scenBn || "none"} />
+            {resolved ? <Chip size="small" color="success" label="shifted" /> : null}
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            Baseline {cmp?.baseline?.bags_folded ?? "—"} folded → scenario {cmp?.scenario?.bags_folded ?? operationalSummary?.bags_folded ?? "—"}
+          </Typography>
+        </Stack>
+      ) : (
+        <Stack direction="row" gap={0.5} alignItems="center">
+          <Typography variant="caption" color="text.secondary">Current bottleneck:</Typography>
+          <BottleneckChip stage={utilizationBottleneck} />
+        </Stack>
+      )}
+    </Paper>
   );
 }
 
@@ -667,6 +860,30 @@ function InputPanel({ tab, inputs, onChange, previewTotals }) {
   }
   return (
     <Stack spacing={1.25}>
+      <Alert severity="info" sx={{ py: 0.25, "& .MuiAlert-message": { fontSize: 12 } }}>
+        Adjust staff, machines, or batch size and click Run to see bottleneck impact. Break/early-start fields below compare against a no-break baseline when set.
+      </Alert>
+      <Typography variant="caption" fontWeight={700} color="text.secondary">
+        Capacity tuning (re-run simulation)
+      </Typography>
+      <Grid container spacing={1}>
+        {WHATIF_TUNING_KEYS.filter((f) => !f.weigherOnly || inputs.weighing_handled_by === "dedicated_weigher").map((f) => (
+          <Grid item xs={6} key={f.key}>
+            {numField(f.key, f.label, inputs, onChange, { min: f.min, step: f.step })}
+          </Grid>
+        ))}
+      </Grid>
+      <FormControl size="small" fullWidth>
+        <InputLabel>Washing strategy</InputLabel>
+        <Select label="Washing strategy" value={inputs.washing_strategy} onChange={(e) => onChange("washing_strategy", e.target.value)}>
+          {WASHING_STRATEGIES.map((s) => (
+            <MenuItem key={s.value} value={s.value}>{s.label}</MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+      <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ pt: 0.5 }}>
+        Breaks & early start (auto what-if vs baseline)
+      </Typography>
       {numField("sorter_early_start_min", "Sorter early start (min)", inputs, onChange, { min: 0 })}
       {numField("sorter_break_after_bags", "Sorter break after bags", inputs, onChange, { min: 0 })}
       {numField("sorter_break_duration_min", "Sorter break (min)", inputs, onChange, { min: 0 })}
@@ -757,6 +974,18 @@ export default function ShiftCapacityPlannerPage() {
     runSim();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const applyOptimizer = useCallback((applyInputs) => {
+    if (!applyInputs) return;
+    setInputs((prev) => {
+      const next = { ...prev };
+      Object.entries(applyInputs).forEach(([key, value]) => {
+        if (value == null) return;
+        next[key] = value;
+      });
+      return next;
+    });
+  }, []);
+
   const staffing = result?.staffing;
   const operational = result?.operational;
   const opData = operational?.active_strategy || operational?.strategies?.[inputs.washing_strategy];
@@ -766,6 +995,10 @@ export default function ShiftCapacityPlannerPage() {
   const inputsMeta = result?.inputs || {};
   const splitDist = inputsMeta.split_distribution;
   const resourceUtil = opData?.resource_utilization || result?.resource_utilization || [];
+  const utilizationBottleneck = operational?.utilization_bottleneck || opData?.utilization_bottleneck;
+  const opMilestoneRows = operational?.batch_milestone_rows || opData?.batch_milestone_rows || operational?.milestone_rows || opData?.milestone_rows;
+  const opTimeMilestoneRows = operational?.time_milestone_rows || opData?.time_milestone_rows;
+  const strategyOptimizer = operational?.strategy_optimizer;
 
   const stickySummary = result ? (
     <Paper
@@ -784,7 +1017,7 @@ export default function ShiftCapacityPlannerPage() {
     >
       <Stack direction="row" flexWrap="wrap" gap={1}>
         <TopCard label="Orders" value={inputsMeta.bag_count ?? bagCount} sub={`${previewTotals.washerLoads} wash · ${previewTotals.dryerLoads} dry loads`} variant="total" />
-        <TopCard label="Strategy" value={result.recommendation?.label?.split(" ")[0] || "—"} sub={result.recommendation?.main_bottleneck || "—"} variant="info" />
+        <TopCard label="Bottleneck" value={utilizationBottleneck?.replace(/_/g, " ") || "—"} sub={strategyOptimizer?.label || inputs.washing_strategy.replace(/_/g, " ")} variant="info" />
         <TopCard label="1st wash" value={opGuidance.first_wash_batch_start || "—"} sub={`Fold switch ${opGuidance.switch_labor_to_folding || "—"}`} variant="pending" />
         <TopCard
           label="+bags next batch"
@@ -792,7 +1025,7 @@ export default function ShiftCapacityPlannerPage() {
           sub={opGuidance.next_wash_batch_start ? `@ ${opGuidance.next_wash_batch_start}` : `${opGuidance.bags_sorted_at_first_wash ?? "—"} at 1st wash`}
           variant="info"
         />
-        <TopCard label="Folded @ target" value={legacyData?.final?.bags_folded ?? "—"} sub={`/${inputsMeta.bag_count}`} variant="completed" />
+        <TopCard label="Folded @ target" value={opData?.milestones?.[inputsMeta.target_time]?.bags_folded ?? opData?.final?.bags_folded ?? legacyData?.final?.bags_folded ?? "—"} sub={`/${inputsMeta.bag_count}`} variant="completed" />
         <TopCard label="Batch" value={operational?.recommended_batch_size ?? "—"} sub={inputs.washing_strategy.replace(/_/g, " ")} variant="snapshot" />
       </Stack>
     </Paper>
@@ -803,26 +1036,35 @@ export default function ShiftCapacityPlannerPage() {
     switch (resultTab) {
       case 0:
         return (
-          <StrategyPanel
-            recommendation={result.recommendation}
-            staffing={staffing}
-            operational={operational}
-            opGuidance={opGuidance}
-            inputsMeta={inputsMeta}
-          />
+          <Stack spacing={1.5}>
+            <StrategyPanel
+              recommendation={result.recommendation}
+              staffing={staffing}
+              operational={operational}
+              opGuidance={opGuidance}
+              inputsMeta={inputsMeta}
+              strategyOptimizer={strategyOptimizer}
+              onApplyOptimizer={applyOptimizer}
+            />
+            <WhatIfResultsPanel
+              whatIf={result.what_if}
+              utilizationBottleneck={utilizationBottleneck}
+              operationalSummary={operational?.summary}
+            />
+          </Stack>
         );
       case 1:
         return (
           <Stack spacing={1}>
-            <MilestoneTable milestones={legacyData?.milestones} />
-            {(legacyData?.alerts || []).slice(0, 3).map((msg, i) => (
-              <Alert key={i} severity="info" sx={{ py: 0.25 }}>{msg}</Alert>
+            <MilestoneTable
+              milestoneRows={opMilestoneRows}
+              timeMilestoneRows={opTimeMilestoneRows}
+              batchSize={opData?.batch_size ?? operational?.recommended_batch_size ?? inputs.batch_size}
+              washingStrategy={opData?.washing_strategy ?? inputs.washing_strategy}
+            />
+            {(opData?.bottleneck_alerts || []).slice(0, 3).map((msg) => (
+              <Alert key={msg} severity="info" sx={{ py: 0.25 }}>{msg}</Alert>
             ))}
-            {result.what_if ? (
-              <Alert severity="warning" sx={{ py: 0.25 }}>
-                What-if Δ folded: {result.what_if.comparison?.delta?.bags_folded ?? 0}
-              </Alert>
-            ) : null}
           </Stack>
         );
       case 2:
@@ -830,6 +1072,8 @@ export default function ShiftCapacityPlannerPage() {
           <OrderTimelineTable
             rows={opData?.order_timeline || operational?.order_timeline}
             guidance={opGuidance}
+            bottleneckSummary={utilizationBottleneck}
+            bottleneckAlerts={opData?.bottleneck_alerts || operational?.bottleneck_alerts}
           />
         );
       case 3:
