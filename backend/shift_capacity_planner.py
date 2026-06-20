@@ -166,9 +166,9 @@ STRATEGY_DEFINITIONS: dict[str, dict[str, str]] = {
     "batch_washing": {
         "label": "Batch Washing",
         "description": (
-            "Sort a batch, then the washer person washes it, transfers to dryers, "
-            "and loads dryers before the sorter starts the next batch. Matches one "
-            "washer-person who cannot wash and load dryers at the same time."
+            "Sorter keeps weighing/sorting ahead while the washer person works in "
+            "batches: wash a group, transfer to dryers, load dryers, then start the "
+            "next wash batch. Matches separate sorter and washer-person roles."
         ),
     },
     "sort_while_drying": {
@@ -1740,6 +1740,20 @@ def _log_washer_person(
     )
 
 
+def _current_batch_order_range(state: OpSimState) -> tuple[int, int]:
+    batch_min = (state.batch_number - 1) * state.batch_target + 1
+    batch_max = min(state.batch_number * state.batch_target, len(state.orders))
+    return batch_min, batch_max
+
+
+def _current_batch_orders_sorted(state: OpSimState) -> bool:
+    batch_min, batch_max = _current_batch_order_range(state)
+    for oid in range(batch_min, batch_max + 1):
+        if state.orders[oid - 1].sort_end is None:
+            return False
+    return True
+
+
 def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bool) -> None:
     if inp.weighing_mode == "upfront" and state.weighed_count < inp.bag_count:
         allow_sort = False
@@ -1814,9 +1828,6 @@ def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bo
             if inp.sorter_break_after_bags > 0 and state.sorter_bags_since_break >= inp.sorter_break_after_bags:
                 state.sorter_on_break_until = state.minute + inp.sorter_break_duration_min
                 state.sorter_bags_since_break = 0
-                break
-            if not state.sorting_continues and state.batch_sorted >= state.batch_target:
-                state.sorting_paused = True
                 break
 
 
@@ -1977,9 +1988,7 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
         return
 
     # Priority 3: load washers from sorted pool
-    if batch_mode and state.sorting_paused and state.batch_sorted < state.batch_target:
-        return
-    if batch_mode and not state.sorting_paused and state.batch_sorted < state.batch_target:
+    if batch_mode and not _current_batch_orders_sorted(state):
         return
 
     while _washer_person_idle(state, inp) and state.next_wash_cycle_idx < inp.total_wash_loads:
@@ -2091,7 +2100,7 @@ def _step_op_fold(state: OpSimState, inp: PlannerInputs) -> None:
 
 
 def _maybe_advance_batch(state: OpSimState, inp: PlannerInputs, *, batch_mode: bool) -> None:
-    if not batch_mode or not state.sorting_paused:
+    if not batch_mode:
         return
     batch_bag_max = state.batch_number * state.batch_target
     batch_bag_min = batch_bag_max - state.batch_target + 1
@@ -2108,7 +2117,6 @@ def _maybe_advance_batch(state: OpSimState, inp: PlannerInputs, *, batch_mode: b
         return
     if state.finished_wash_queue or state.pending_washer_tasks or state.washer_person_busy:
         return
-    state.sorting_paused = False
     state.batch_sorted = 0
     state.batch_number += 1
     state.batch_wash_started = False
@@ -2116,8 +2124,8 @@ def _maybe_advance_batch(state: OpSimState, inp: PlannerInputs, *, batch_mode: b
         state,
         state.minute,
         state.minute + 5,
-        f"Resume sorting · batch {state.batch_number}",
-        category="sort",
+        f"Start wash batch {state.batch_number}",
+        category="wash",
     )
 
 
@@ -2292,8 +2300,6 @@ def _build_op_bottleneck_alerts(state: OpSimState, inp: PlannerInputs) -> list[s
         alerts.append(f"{len(state.pending_washer_tasks)} dryer load(s) queued for washer person")
     if len(state.sorted_pool) > inp.washer_count * 2 and state.washer_person_busy:
         alerts.append("Sorted backlog — washer person busy with transfers")
-    if state.sorting_paused and state.batch_sorted >= state.batch_target:
-        alerts.append(f"Batch {state.batch_number}: sorting paused at {state.batch_target} bags")
     waiting_dry = sum(
         1 for ld in state.loads if ld.dry_start is None and ld.wash_end <= state.minute
     )
@@ -2355,7 +2361,7 @@ def _build_op_guidance(state: OpSimState, inp: PlannerInputs, *, batch_mode: boo
         if state.first_unload_return
         else None,
         "bags_sorted_before_first_wash": bags_before_first,
-        "sorting_continues_while_washing": state.sorting_continues and not batch_mode,
+        "sorting_continues_while_washing": True,
         "washer_pauses_for_dryer_moves": state.washer_pauses_for_moves,
         "switch_labor_to_folding": _minutes_to_label(state.switch_to_folding_min)
         if state.switch_to_folding_min
@@ -2681,7 +2687,6 @@ def run_operational_simulation(
     effective_batch = batch_size if batch_size is not None else inp.batch_size
     state = _init_op_state(inp)
     state.batch_target = effective_batch
-    state.sorting_continues = not batch_mode
     util = UtilizationTracker(inp)
     milestone_times = set(_milestone_minutes(inp.start_min, inp.target_min))
     milestones: dict[str, dict[str, Any]] = {}
@@ -2691,8 +2696,7 @@ def run_operational_simulation(
     for t in range(inp.start_min, max_minute + 1):
         state.minute = t
         _complete_washer_person_task(state, inp)
-        allow_sort = not batch_mode or not state.sorting_paused or state.batch_sorted < state.batch_target
-        _step_op_weigh_sort(state, inp, allow_sort=allow_sort)
+        _step_op_weigh_sort(state, inp, allow_sort=True)
         _release_finished_wash(state)
         _schedule_washer_person(state, inp, batch_mode=batch_mode)
         _complete_washer_person_task(state, inp)

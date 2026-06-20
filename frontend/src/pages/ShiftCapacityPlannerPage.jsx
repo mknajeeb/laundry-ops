@@ -492,8 +492,8 @@ function MilestoneTable({ milestoneRows, batchSize, washingStrategy, strategyDef
   const strategyLabel = meta.label || (washingStrategy || "").replace(/_/g, " ");
   const waveNote =
     washingStrategy === "sort_while_drying"
-      ? `Sort while drying · batches of ${batchSize ?? "—"} orders`
-      : `Batch washing · ${batchSize ?? "—"} orders per batch (sorter pauses while washer person handles dryers)`;
+      ? `Sort while drying · batches of ${batchSize ?? "—"} orders (washer pipelines next wash while dryers run)`
+      : `Batch washing · ${batchSize ?? "—"} orders per wash batch (sorter keeps sorting ahead)`;
 
   return (
     <Stack spacing={1.5}>

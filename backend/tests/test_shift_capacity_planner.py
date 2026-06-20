@@ -323,8 +323,30 @@ class TestOperationalSimulation:
         sort_drying = result["operational"]["strategies"]["sort_while_drying"]
         batch = result["operational"]["strategies"]["batch_washing"]
         assert sort_drying["guidance"]["sorting_continues_while_washing"] is True
-        assert batch["guidance"]["sorting_continues_while_washing"] is False
+        assert batch["guidance"]["sorting_continues_while_washing"] is True
+        assert batch["batch_milestone_rows"][0]["batch_mode"] is True
+        assert sort_drying["batch_milestone_rows"][0]["batch_mode"] is False
         assert batch["batch_size"] == 8
+
+    def test_batch_washing_sorter_does_not_pause(self):
+        result = simulate_shift_capacity(
+            _default_payload(
+                bag_count=50,
+                washing_strategy="batch_washing",
+                batch_size=8,
+                sorter_count=2,
+                weigher_count=2,
+            )
+        )
+        rows = result["operational"]["order_timeline"]
+        from backend.shift_capacity_planner import _parse_clock_minutes
+
+        t8 = _parse_clock_minutes(rows[7]["sorted_time"], default="7:00 AM")
+        t9 = _parse_clock_minutes(rows[8]["sorted_time"], default="7:00 AM")
+        assert t9 - t8 < 30, f"sorter paused: order 9 sorted {t9 - t8} min after order 8"
+        alerts = result["operational"].get("bottleneck_alerts") or []
+        assert not any("sorting paused" in a.lower() for a in alerts)
+        assert result["operational"]["guidance"]["sorting_continues_while_washing"] is True
 
     def test_recommends_optimal_batch_size(self):
         result = simulate_shift_capacity(_default_payload(washing_strategy="batch_washing"))
@@ -532,7 +554,7 @@ class TestPlannerBugFixes:
         assert first["sorted_in_batch_before_wash"] == 8
         assert first["sorted_available_at_start"] >= 1
         assert first["ready_to_fold_at_start"] == 0
-        assert first["left_to_sort"] == 42
+        assert first["left_to_sort"] <= 42
 
     def test_batch_milestone_ready_to_fold_at_start_carryover(self):
         result = simulate_shift_capacity(
