@@ -476,6 +476,9 @@ def test_payment_receipt_html_content():
             "display_name": f"User {uid}",
             "employee_id": "E-100",
         },
+    ), patch(
+        "backend.payroll_payout_details._organization_print_branding",
+        return_value={"company_name": "VeeWash", "logo_html": "<img src='data:image/png;base64,abc' />"},
     ):
         from backend.payroll_payout_details import generate_payment_receipt_html
 
@@ -483,7 +486,7 @@ def test_payment_receipt_html_content():
         assert "Cash Payment Receipt" in html
         assert 'data:image/png;base64,' in html
         assert "Jane Doe" in html
-        assert "WashPro Inc." in html
+        assert "VeeWash" in html
         assert "acknowledge receipt" in html
         assert "Net cash received" in html
         assert "Employee tax deductions" not in html

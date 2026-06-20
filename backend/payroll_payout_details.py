@@ -652,6 +652,44 @@ def _user_display_meta(conn, user_id: Optional[int]) -> dict[str, str]:
     return {"display_name": name, "employee_id": emp_id}
 
 
+def _organization_print_branding(conn, organization_id: int, *, logo_height_px: int = 52) -> dict[str, str]:
+    """Company name + logo HTML for payroll print documents (tenant-aware)."""
+    from backend.org_branding_urls import rewrite_org_logo_url_for_client
+
+    c = conn.cursor(dictionary=True)
+    if table_has_column(c, "organizations", "logo_url"):
+        c.execute(
+            "SELECT slug, display_name, logo_url FROM organizations WHERE id=%s LIMIT 1",
+            (int(organization_id),),
+        )
+    else:
+        c.execute(
+            "SELECT slug, display_name FROM organizations WHERE id=%s LIMIT 1",
+            (int(organization_id),),
+        )
+    row = c.fetchone() or {}
+    slug = str(row.get("slug") or "").lower()
+    company_name = str(row.get("display_name") or "").strip()
+    if not company_name:
+        company_name = {
+            "veewash": "VeeWash",
+            "washpro": "WashPro Inc.",
+        }.get(slug, "Payroll")
+
+    logo_url = rewrite_org_logo_url_for_client(row.get("logo_url"))
+    if logo_url:
+        logo_html = (
+            f'<img src="{logo_url}" alt="{company_name}" '
+            f'style="height:{logo_height_px}px;width:auto;object-fit:contain;display:block;" />'
+        )
+    else:
+        from backend.veewash_branding import veewash_logo_img_html
+
+        logo_html = veewash_logo_img_html(height_px=logo_height_px)
+
+    return {"company_name": company_name, "logo_html": logo_html}
+
+
 def _payment_method_label(method: str) -> str:
     key = str(method or "").strip().lower()
     return PAYMENT_METHOD_LABELS.get(key, method or "—")
@@ -1821,10 +1859,9 @@ def generate_payment_receipt_html(
     prepared = _user_display_meta(conn, batch.get("payout_details_finalized_by"))
     confirmed = _user_display_meta(conn, batch.get("accountant_payment_confirmed_by"))
     notes = str(payment.get("notes") or payment.get("reference") or "").strip() or "—"
-    from backend.veewash_branding import veewash_logo_img_html
-
-    logo_html = veewash_logo_img_html(height_px=52)
-    company_name = "WashPro Inc."
+    branding = _organization_print_branding(conn, organization_id, logo_height_px=52)
+    logo_html = branding["logo_html"]
+    company_name = branding["company_name"]
 
     gross = float(totals["gross_pay"])
     taxes_withheld = float(totals.get("amount_withheld") or 0)
