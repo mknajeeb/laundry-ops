@@ -7,6 +7,7 @@ from backend.shift_capacity_planner import (
     build_bag_weight_list,
     pack_load_from_pool,
     parse_planner_inputs,
+    run_operational_simulation,
     simulate_shift_capacity,
 )
 
@@ -218,3 +219,103 @@ class TestShiftCapacityPlannerCustomStaff:
         assert result["inputs"]["weigher_count"] == 2
         assert result["inputs"]["sorter_count"] == 2
         assert result["inputs"]["folder_count"] == 5
+
+
+class TestOperationalSimulation:
+    def test_operational_block_in_response(self):
+        result = simulate_shift_capacity(_default_payload())
+        op = result["operational"]
+        assert "strategies" in op
+        assert "continuous_washing" in op["strategies"]
+        assert "batch_washing" in op["strategies"]
+        assert "hybrid_recommended" in op["strategies"]
+        assert "recommended_batch_size" in op
+        assert "next_actions" in op
+        assert "order_timeline" in op
+        assert "guidance" in op
+
+    def test_order_timeline_fields(self):
+        result = simulate_shift_capacity(_default_payload(bag_count=12, sorter_count=2, weigher_count=2))
+        row = result["operational"]["order_timeline"][0]
+        for key in (
+            "order",
+            "sorted_time",
+            "washer",
+            "wash_start",
+            "wash_end",
+            "dryer",
+            "dry_start",
+            "dry_end",
+            "ready_fold",
+        ):
+            assert key in row
+
+    def test_continuous_vs_batch_differ(self):
+        payload = _default_payload(bag_count=24, batch_size=8, sorter_count=2, weigher_count=2)
+        result = simulate_shift_capacity(payload)
+        cont = result["operational"]["strategies"]["continuous_washing"]
+        batch = result["operational"]["strategies"]["batch_washing"]
+        assert cont["guidance"]["sorting_continues_while_washing"] is True
+        assert batch["guidance"]["sorting_continues_while_washing"] is False
+        assert cont["guidance"]["recommended_first_batch_size"] == 8
+        assert batch["batch_size"] == 8
+
+    def test_hybrid_recommends_batch_size(self):
+        result = simulate_shift_capacity(_default_payload(washing_strategy="hybrid_recommended"))
+        op = result["operational"]
+        assert op["recommended_batch_size"] in (6, 8, 10, 12)
+        hybrid = op["strategies"]["hybrid_recommended"]
+        assert hybrid["batch_size"] == op["recommended_batch_size"]
+
+    def test_washer_person_busy_blocks_new_loads(self):
+        payload = _default_payload(
+            bag_count=16,
+            washer_count=1,
+            dryer_count=1,
+            batch_size=8,
+            load_washer_min=5,
+            unload_washer_min=5,
+            washer_transfer_min=10,
+            load_dryer_min=5,
+            wash_cycle_min=20,
+            dry_cycle_min=20,
+            sorter_count=2,
+            weigher_count=2,
+        )
+        cont = run_operational_simulation(
+            parse_planner_inputs(payload),
+            washing_strategy="continuous_washing",
+        )
+        tasks = cont["washer_person_timeline"]
+        assert tasks
+        task_types = {t["task"] for t in tasks}
+        assert "load_washer" in task_types
+        assert "unload_transfer" in task_types
+        assert cont["guidance"]["washer_pauses_for_dryer_moves"] is True
+
+    def test_next_actions_timeline(self):
+        result = simulate_shift_capacity(_default_payload(bag_count=16, batch_size=8))
+        actions = result["operational"]["next_actions"]
+        assert actions
+        block = actions[0]
+        assert "start" in block
+        assert "end" in block
+        assert "action" in block
+
+    def test_guidance_explicit_outputs(self):
+        result = simulate_shift_capacity(_default_payload())
+        guidance = result["operational"]["guidance"]
+        for key in (
+            "recommended_first_batch_size",
+            "first_wash_batch_start",
+            "washer_return_to_unload",
+            "bags_sorted_before_first_wash",
+            "sorting_continues_while_washing",
+            "washer_pauses_for_dryer_moves",
+            "switch_labor_to_folding",
+        ):
+            assert key in guidance
+
+    def test_invalid_washing_strategy(self):
+        with pytest.raises(ValueError, match="washing_strategy"):
+            parse_planner_inputs({"washing_strategy": "invalid"})
