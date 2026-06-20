@@ -35,6 +35,13 @@
   display: block;
 }
 
+.cform-logo-washmate {
+  width: 1.35in;
+  height: 1.35in;
+  min-width: 1.35in;
+  background: transparent;
+}
+
 .cform-letterhead-text {
   flex: 1;
   min-width: 0;
@@ -97,6 +104,13 @@
   min-width: 0.45in;
   object-fit: contain;
   display: block;
+}
+
+.cform-logo-mini-washmate {
+  width: 0.58in;
+  height: 0.58in;
+  min-width: 0.58in;
+  background: transparent;
 }
 
 .cform-mini-company {

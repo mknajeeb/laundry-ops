@@ -29,7 +29,7 @@ export const ISSUER_PROFILES = {
     issued_by_entity: "washmate",
     company_name: "Washmate Laundry Solutions",
     company_address: "921 2nd Avenue, Franklin Square, NY 11010",
-    company_phone: VEEWASH_PHONE,
+    company_phone: "",
     company_website: "",
     company_website_label: "",
     organization_logo_url: WASHMATE_LOGO_URL,
@@ -45,11 +45,18 @@ export function resolveIssuerEntity(entity) {
 export function buildIssuerPrintPrefill(prefill, record) {
   const entity = resolveIssuerEntity(record?.issued_by_entity || prefill?.issued_by_entity);
   const profile = ISSUER_PROFILES[entity];
-  return {
+  const merged = {
     ...(prefill || {}),
     ...profile,
     issued_by_entity: entity,
     issue_from_name: record?.issue_from_name || "",
     issue_from_address: record?.issue_from_address || "",
   };
+  if (entity === "washmate") {
+    merged.company_phone = "";
+    merged.company_website = "";
+    merged.company_website_label = "";
+    merged.organization_logo_url = WASHMATE_LOGO_URL;
+  }
+  return merged;
 }

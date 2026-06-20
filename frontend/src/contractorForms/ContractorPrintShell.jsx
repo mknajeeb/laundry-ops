@@ -1,6 +1,7 @@
 import ContractorPrintLogo from "./ContractorPrintLogo";
 import { companyContactMiniText, resolveCompanyContact } from "./companyContact";
-import { EMBEDDED_VEEWASH_LOGO } from "./contractorLogo";
+import { contractorLogoClassName } from "./contractorLetterhead";
+import { contractorLogoSrc, EMBEDDED_VEEWASH_LOGO } from "./contractorLogo";
 
 function escapeHtml(s) {
   return String(s)
@@ -11,49 +12,55 @@ function escapeHtml(s) {
 
 /** Repeat header on continuation pages when printing multi-section packets. */
 export function miniHeadHtml(prefill) {
-  const logoSrc = EMBEDDED_VEEWASH_LOGO;
+  const logoSrc = contractorLogoSrc(prefill);
+  const logoClass = contractorLogoClassName(prefill, true);
   const company = escapeHtml(prefill?.company_name || "VeeWash");
   const contact = escapeHtml(companyContactMiniText(prefill));
+  const contactHtml = contact
+    ? `<span class="cform-mini-contact">${contact}</span>`
+    : "";
   return (
     `<div class="cform-mini-head">` +
-    `<img src="${logoSrc}" alt="" class="cform-logo-mini" onerror="this.onerror=null;this.src='${EMBEDDED_VEEWASH_LOGO}'" />` +
+    `<img src="${logoSrc}" alt="" class="${logoClass}" onerror="this.onerror=null;this.src='${EMBEDDED_VEEWASH_LOGO}'" />` +
     `<span class="cform-mini-company">${company}</span>` +
-    `<span class="cform-mini-contact">${contact}</span>` +
+    contactHtml +
     `</div>`
   );
 }
 
 export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false }) {
   const company = prefill?.company_name || "VeeWash";
-  const { address, phone, website, websiteLabel, showWebsite } = resolveCompanyContact(prefill);
+  const { address, phone, website, websiteLabel, showWebsite, showPhone } = resolveCompanyContact(prefill);
+  const logoClass = contractorLogoClassName(prefill, mini);
+  const miniContact = companyContactMiniText(prefill);
 
   if (mini) {
     return (
       <div className="cform-mini-head">
-        <ContractorPrintLogo prefill={prefill} className="cform-logo-mini" />
+        <ContractorPrintLogo prefill={prefill} className={logoClass} />
         <span className="cform-mini-company">{company}</span>
-        <span className="cform-mini-contact">{companyContactMiniText(prefill)}</span>
+        {miniContact ? <span className="cform-mini-contact">{miniContact}</span> : null}
       </div>
     );
   }
 
   return (
     <header className="cform-letterhead">
-      <ContractorPrintLogo prefill={prefill} className="cform-logo" />
+      <ContractorPrintLogo prefill={prefill} className={logoClass} />
       <div className="cform-letterhead-text">
         <div className="cform-company-name">{company}</div>
         <div className="cform-company-address">{address}</div>
-        <div className="cform-company-contact">
-          {phone}
-          {showWebsite ? (
-            <>
-              {" · "}
+        {showPhone || showWebsite ? (
+          <div className="cform-company-contact">
+            {showPhone ? phone : null}
+            {showPhone && showWebsite ? " · " : null}
+            {showWebsite ? (
               <a href={website} className="cform-company-website">
                 {websiteLabel}
               </a>
-            </>
-          ) : null}
-        </div>
+            ) : null}
+          </div>
+        ) : null}
         {documentTitle ? <h1 className="cform-document-title">{documentTitle}</h1> : null}
       </div>
     </header>
