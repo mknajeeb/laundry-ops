@@ -390,9 +390,17 @@ function BatchPipelineFlow({ row }) {
 
   const stages = [
     {
+      key: "weigh",
+      label: "Weigh",
+      sub: row.weigh_complete_at || "—",
+      value: row.bags_weighed_before_wash ?? "—",
+      color: STAGE_COLORS.weighing,
+      time: null,
+    },
+    {
       key: "sort",
-      label: "Sorter",
-      sub: "sorted avail",
+      label: "Sorted",
+      sub: "avail @ wash",
       value: row.sorted_available_at_start ?? "—",
       color: STAGE_COLORS.sorting,
       time: null,
@@ -419,12 +427,20 @@ function BatchPipelineFlow({ row }) {
       sub: row.ready_to_fold_at || "—",
       value: pipelineDur ? `${pipelineDur} total` : "—",
       color: STAGE_COLORS.ready_to_fold,
+      arrowLabel: dryToReady,
+    },
+    {
+      key: "fold",
+      label: "Fold",
+      sub: row.fold_complete_at || row.batch_end_time || "—",
+      value: row.folded_at_end ?? "—",
+      color: STAGE_COLORS.folding,
       time: null,
     },
   ];
 
   return (
-    <Stack direction="row" alignItems="stretch" spacing={0.25} sx={{ minWidth: 340 }}>
+    <Stack direction="row" alignItems="stretch" spacing={0.25} sx={{ minWidth: 480 }}>
       {stages.map((stage, idx) => (
         <Box key={stage.key} sx={{ display: "flex", alignItems: "stretch", flex: 1 }}>
           <Box
@@ -493,7 +509,7 @@ function MilestoneTable({ milestoneRows, batchSize, washingStrategy, strategyDef
             Batch flow
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            Sorter lane at batch start → washer/dryer pipeline → folded at batch end
+            Weigh → sorted → wash → dry → ready → fold
           </Typography>
         </Stack>
         <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
@@ -536,10 +552,12 @@ function MilestoneTable({ milestoneRows, batchSize, washingStrategy, strategyDef
 }
 
 const PIPELINE_STAGES = [
+  { key: "weigh", label: "Weigh", color: STAGE_COLORS.weighing, timeKey: "weigh_end", detailKey: null },
   { key: "sort", label: "Sort", color: STAGE_COLORS.sorting, timeKey: "sorted_time", detailKey: null },
   { key: "wash", label: "Wash", color: STAGE_COLORS.washing, startKey: "wash_start", endKey: "wash_end", detailKey: "washer" },
   { key: "dry", label: "Dry", color: STAGE_COLORS.drying, startKey: "dry_start", endKey: "dry_end", detailKey: "dryer" },
   { key: "ready", label: "Ready", color: STAGE_COLORS.ready_to_fold, timeKey: "ready_fold", detailKey: null },
+  { key: "fold", label: "Fold", color: STAGE_COLORS.folding, timeKey: "fold_end", detailKey: null },
 ];
 
 function stageTimeLabel(row, stage) {
@@ -563,6 +581,8 @@ function stageDetail(row, stage) {
 }
 
 function stageComplete(row, stage) {
+  if (stage.key === "weigh") return Boolean(row.weigh_end || row.weigh_start);
+  if (stage.key === "fold") return Boolean(row.fold_end);
   if (stage.key === "wash") return Boolean(row.wash_segments?.length || row[stage.startKey]);
   if (stage.key === "dry") return Boolean(row.dry_segments?.length || row[stage.startKey]);
   if (stage.startKey) return Boolean(row[stage.startKey]);
@@ -720,7 +740,7 @@ function OrderTimelineTable({ rows, guidance, bottleneckSummary, bottleneckAlert
           />
         ))}
         <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center", ml: 0.5 }}>
-          Sort → Wash → Dry → Ready to fold
+          Weigh → Sort → Wash → Dry → Ready → Fold
         </Typography>
       </Stack>
       <TableContainer component={Paper} elevation={0} sx={{ border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder, maxHeight: 480 }}>
@@ -818,8 +838,24 @@ function StrategyPanel({ recommendation, staffing, operational, opGuidance, inpu
   const optimizer = strategyOptimizer || operational?.strategy_optimizer;
   const staff = optimizer?.suggested_staff || recommendation?.suggested_staff || {};
   const strategyDefs = operational?.strategy_definitions;
+  const weighingDefs = operational?.weighing_mode_definitions;
+  const weighingMode = operational?.weighing_mode || inputsMeta.weighing_mode;
+  const weighingHandledBy = operational?.weighing_handled_by || inputsMeta.weighing_handled_by;
+  const weighingLabel = WEIGHING_MODES.find((m) => m.value === weighingMode)?.label || weighingMode?.replace(/_/g, " ");
+  const weighingDesc = weighingDefs?.[weighingMode]?.description;
   return (
     <Stack spacing={1.5}>
+      <Paper elevation={0} sx={{ p: 1.25, border: "1px solid", borderColor: "#e2e8f0", bgcolor: "#f8fafc" }}>
+        <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+          Weighing · {weighingLabel}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+          {weighingDesc || "Sorter and washer are different people; weighing mode controls when and who weighs."}
+        </Typography>
+        {weighingMode === "upfront" ? (
+          <Chip size="small" label={`Performed by ${(weighingHandledBy || "").replace(/_/g, " ")}`} />
+        ) : null}
+      </Paper>
       {optimizer ? (
         <Paper elevation={0} sx={{ p: 1.5, borderRadius: 2, border: "2px solid", borderColor: "#16a34a55", bgcolor: "#f0fdf4" }}>
           <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={1}>
@@ -1199,6 +1235,8 @@ export default function ShiftCapacityPlannerPage() {
   const opMilestoneRows = operational?.batch_milestone_rows || opData?.batch_milestone_rows || operational?.milestone_rows || opData?.milestone_rows;
   const strategyOptimizer = operational?.strategy_optimizer;
   const strategyDefinitions = operational?.strategy_definitions;
+  const weighingModeLabel = WEIGHING_MODES.find((m) => m.value === (inputsMeta.weighing_mode || inputs.weighing_mode))?.label
+    || inputs.weighing_mode.replace(/_/g, " ");
   const weighingDefinitions = operational?.weighing_mode_definitions;
 
   const stickySummary = result ? (
@@ -1218,7 +1256,7 @@ export default function ShiftCapacityPlannerPage() {
     >
       <Stack direction="row" flexWrap="wrap" gap={1}>
         <TopCard label="Orders" value={inputsMeta.bag_count ?? bagCount} sub={`${previewTotals.washerLoads} wash · ${previewTotals.dryerLoads} dry loads`} variant="total" />
-        <TopCard label="Strategy" value={strategyLabel} sub={`Batch size ${inputs.batch_size}`} variant="snapshot" />
+        <TopCard label="Strategy" value={strategyLabel} sub={`Batch ${inputs.batch_size} · ${weighingModeLabel}`} variant="snapshot" />
         <TopCard label="Bottleneck" value={utilizationBottleneck?.replace(/_/g, " ") || "—"} sub={`1st wash ${opGuidance.first_wash_batch_start || "—"}`} variant="info" />
         <TopCard label="Folded @ target" value={opData?.milestones?.[inputsMeta.target_time]?.bags_folded ?? opData?.final?.bags_folded ?? "—"} sub={`/${inputsMeta.bag_count}`} variant="completed" />
       </Stack>
