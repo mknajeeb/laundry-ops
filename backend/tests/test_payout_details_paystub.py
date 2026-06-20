@@ -902,7 +902,9 @@ def test_paystub_employee_tax_balance_catchup_flow():
         from backend.payroll_payout_details import generate_paystub_html
 
         html = generate_paystub_html(conn, 1, 6, 10, copy_mode="employee")
+        assert "This period estimated tax" in html
         assert "Prior tax balance" in html
+        assert "Total estimated liability" in html
         assert "Catch-up collected" in html
         assert "Remaining balance" in html
         assert "$80.00" in html

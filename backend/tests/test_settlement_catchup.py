@@ -42,6 +42,15 @@ def test_catch_up_default_zero_prior_visible_only():
     assert details["tax_summary"]["remaining_balance"] == 100.0
 
 
+def test_catch_up_excess_collection_floors_remaining_at_zero():
+    """Catch-up + current withholding can exceed prior; remaining balance must not go negative."""
+    details = apply_settlement_math(_details(16.90, prior=9.11, catch_up=17.0), 221.0)
+    tax_summary = details["tax_summary"]
+    assert tax_summary["total_tax_liability"] == 26.01
+    assert tax_summary["current_period_taxes"] == 16.90
+    assert tax_summary["remaining_balance"] == 0.0
+
+
 def test_catch_up_withholding_reduces_net_pay():
     details = apply_settlement_math(_details(25.0, prior=80.0, catch_up=40.0), 200.0)
     settlement = details["settlement"]

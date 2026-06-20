@@ -161,7 +161,9 @@ function reconcileLocalTaxSummary(draft, totals) {
     periodBalance = roundMoney(currentPeriod - withheldForCurrent);
   }
 
-  const remaining = roundMoney(priorBalance + periodBalance + priorAdj - catchUp);
+  const remaining = paidFullGross
+    ? totalLiability
+    : roundMoney(Math.max(0, totalLiability - actualWithheld));
 
   settlement.tax_balance_owed = periodBalance;
   taxSummary.current_period_taxes = currentPeriod;
@@ -294,7 +296,12 @@ function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
               Withheld: <strong>{formatDraftMoney(draft.settlement?.amount_withheld)}</strong>
             </Typography>
             <Typography variant="body2">
-              Estimated tax balance: <strong>{formatDraftMoney(draft.settlement?.tax_balance_owed)}</strong>
+              Estimated tax balance:{" "}
+              <strong>{formatDraftMoney(draft.tax_summary?.remaining_balance)}</strong>
+            </Typography>
+            <Typography variant="body2">
+              Total estimated liability:{" "}
+              <strong>{formatDraftMoney(draft.tax_summary?.total_tax_liability)}</strong>
             </Typography>
             <Typography variant="body2">
               Prior tax balance: <strong>{formatDraftMoney(draft.settlement?.prior_unpaid_taxes)}</strong>
@@ -1075,10 +1082,18 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     <TextField
                                       size="small"
                                       type="number"
-                                      label="Estimated tax balance"
+                                      label="Remaining estimated balance"
+                                      value={draft.tax_summary?.remaining_balance ?? ""}
+                                      InputProps={{ readOnly: true }}
+                                      helperText="Prior + this period liability minus all withholding collected"
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="This period unpaid"
                                       value={draft.settlement?.tax_balance_owed ?? ""}
                                       InputProps={{ readOnly: true }}
-                                      helperText="Updates when tax lines or paid-full-gross change"
+                                      helperText="Current-period portion not withheld from pay"
                                     />
                                     <FormControlLabel
                                       control={

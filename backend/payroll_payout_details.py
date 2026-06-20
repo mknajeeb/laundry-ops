@@ -356,11 +356,11 @@ def reconcile_tax_summary(details: dict) -> dict:
 
     if paid_full_gross:
         period_balance = round(current_period, 2)
+        remaining = round(total_liability, 2)
     else:
         withheld_for_current = round(min(current_period, max(0.0, actual_withheld - catch_up)), 2)
         period_balance = round(current_period - withheld_for_current, 2)
-
-    remaining = round(prior_balance + period_balance + prior_adj - catch_up, 2)
+        remaining = round(max(0.0, total_liability - actual_withheld), 2)
     settlement["tax_balance_owed"] = period_balance
 
     tax_summary.update(
@@ -1853,15 +1853,31 @@ def _employee_tax_balance_html(totals: dict) -> str:
     """Compact tax balance block for employee paystub copy."""
     prior = float(totals.get("prior_tax_balance") or 0)
     catch_up = float(totals.get("catch_up_withholding") or 0)
-    remaining = float(totals.get("remaining_tax_balance") or 0)
     period_balance = float(totals.get("tax_balance_owed") or 0)
     current_period = float(totals.get("current_period_taxes") or 0)
     withheld = float(totals.get("amount_withheld") or 0)
+    total_liability = float(totals.get("total_tax_liability") or 0)
     paid_full_gross = bool(totals.get("paid_full_gross_without_withholding"))
+
+    remaining = float(totals.get("remaining_tax_balance") or 0)
+    if remaining < 0:
+        remaining = round(max(0.0, total_liability - withheld), 2)
+
+    withheld_current = (
+        0.0
+        if paid_full_gross
+        else round(min(current_period, max(0.0, withheld - catch_up)), 2)
+    )
+
+    if current_period <= 0 and prior <= 0 and catch_up <= 0 and remaining <= 0:
+        return ""
 
     if prior > 0 or catch_up > 0:
         rows_html = (
-            _paystub_money_row("Prior tax balance", prior)
+            _paystub_money_row("This period estimated tax", current_period)
+            + _paystub_money_row("Prior tax balance", prior)
+            + _paystub_money_row("Total estimated liability", total_liability)
+            + _paystub_money_row("Withheld this period", withheld_current)
             + _paystub_money_row("Catch-up collected", catch_up)
             + _paystub_money_row("Remaining balance", remaining, True)
         )
@@ -1871,14 +1887,10 @@ def _employee_tax_balance_html(totals: dict) -> str:
 {rows_html}
 </table>"""
 
-    if current_period <= 0 or (period_balance <= 0 and remaining <= 0):
+    if period_balance <= 0 and remaining <= 0:
         return ""
-    actually_withheld = (
-        0.0
-        if paid_full_gross
-        else round(min(current_period, max(0.0, withheld - catch_up)), 2)
-    )
     balance = period_balance if period_balance > 0 else remaining
+    actually_withheld = withheld_current
     rows_html = (
         _paystub_money_row("Estimated tax liability", current_period)
         + _paystub_money_row("Actually withheld", actually_withheld)
