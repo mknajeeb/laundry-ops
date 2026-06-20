@@ -627,6 +627,63 @@ class TestSelectedDayPopulation:
         )
         assert status == AV_STATUS_COMPLETED
 
+    def test_presence_carry_in_does_not_readd_completed_before_midnight(self):
+        from unittest.mock import patch
+
+        selected = date(2026, 6, 19)
+        presence_carry = [
+            {
+                "bag_id": "DONECARRY",
+                "portal_status": "at_vendor",
+                "customer_name": "Done Carry",
+                "estimated_delivery_date": date(2026, 6, 21),
+                "service_type": "WF",
+                "active": 0,
+            },
+            {
+                "bag_id": "OPENCARRY",
+                "portal_status": "at_vendor",
+                "customer_name": "Open Carry",
+                "estimated_delivery_date": date(2026, 6, 21),
+                "service_type": "WF",
+                "active": 1,
+            },
+        ]
+        with patch(
+            "backend.rinse_at_vendor_module.table_exists",
+            return_value=True,
+        ), patch(
+            "backend.rinse_at_vendor_module._load_active_at_vendor_presence_by_bag",
+            return_value={"OPENCARRY": {"bag_id": "OPENCARRY", "portal_yet_to_process": True}},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_sent_to_vendor_bag_id_sets_for_et_day",
+            return_value=({"DONECARRY", "OPENCARRY"}, set()),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_carry_in_open_at_midnight_bag_ids",
+            return_value=({"OPENCARRY"}, ["DONECARRY"], {}),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_presence_carry_in_candidates",
+            return_value=presence_carry,
+        ), patch(
+            "backend.rinse_at_vendor_module._filter_cross_org_contaminated_bags",
+            side_effect=lambda _c, _o, ids: (set(ids), []),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_registry_service_types",
+            return_value={"OPENCARRY": "WF"},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_delivery_meta",
+            return_value={},
+        ):
+            population, meta = _load_selected_day_at_vendor_population(
+                object(), 3, selected_date_et=selected
+            )
+
+        bag_ids = {p["bag_id"] for p in population}
+        assert "OPENCARRY" in bag_ids
+        assert "DONECARRY" not in bag_ids
+        assert meta["bags_completed_before_midnight_excluded"] == ["DONECARRY"]
+        assert meta["carry_in_open_at_midnight_count"] == 1
+
     def test_resend_same_day_resets_completion_anchor(self):
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 8, 4, 0)),

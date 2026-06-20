@@ -1346,8 +1346,13 @@ def _load_selected_day_at_vendor_population(
             )
         )
 
+    excluded_before_midnight_ids = set(excluded_completed_before_midnight)
     for bid, pres in presence_carry_by_bag.items():
-        if bid in carry_in_ids or bid in new_sent_scan_ids:
+        if (
+            bid in carry_in_ids
+            or bid in new_sent_scan_ids
+            or bid in excluded_before_midnight_ids
+        ):
             continue
         carry_in_ids.add(bid)
 
