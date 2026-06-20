@@ -136,13 +136,19 @@ export default function PayrollManagementPage() {
         goToTab("documents");
         return;
       }
-      if (action === "approve_hours" || action === "mark_paid") {
+      if (action === "await_accountant") return;
+      if (action === "approve_hours" || action === "mark_paid" || action === "send_to_accountant") {
         if (!batch?.id) return;
         setPrimaryLoading(true);
         try {
           await patchPayoutBatch(batch.id, { action });
           refreshBatches();
-          if (action === "approve_hours") {
+          const cat = batch.worker_category || batch.payroll_display?.worker_category;
+          const skipsAccountant =
+            batch.payroll_display?.skips_accountant_review ||
+            cat === "temp" ||
+            cat === "contractor_1099";
+          if (action === "approve_hours" && skipsAccountant) {
             setDetailsBatchId(batch.id);
             goToTab("payout_details", batch.id);
           } else {

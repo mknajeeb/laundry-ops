@@ -1,5 +1,16 @@
 # Payroll UX — pre-deploy screenshot checklist
 
+## Deploy commits (do not cherry-pick partially)
+
+Payroll workflow UX and contractor payment records landed as **two commits** on the same branch. Both are required for correct payroll payout API behavior.
+
+| Commit | Summary |
+|--------|---------|
+| `fc96584` | Redesign payroll manager workflow (payroll backend/frontend, tests, QA screenshots) |
+| `af19558` | Enhance contractor payment records |
+
+**Important:** `af19558` also contains shared `backend/ta_routes.py` updates needed by payroll payout route behavior, because contractor and payroll route changes were in the same file. Do not cherry-pick only `fc96584` and expect payroll payout routes to be fully current — include `af19558` (or an equivalent that contains the same `ta_routes.py` payroll payout changes, e.g. `approve_hours` and related payout routes).
+
 Capture these after signing in as **manager** (ADMIN/OPS) and **accountant** (ACCOUNTANT role).
 
 ## Manager role

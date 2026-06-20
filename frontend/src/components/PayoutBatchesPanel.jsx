@@ -178,7 +178,7 @@ const BatchWorkerTable = memo(function BatchWorkerTable({
             <TableCell width={36} />
             <TableCell>Worker</TableCell>
             <TableCell align="right">Gross</TableCell>
-            <TableCell align="right">Tax</TableCell>
+            <TableCell align="right">Est. withholding</TableCell>
             <TableCell align="right">Net</TableCell>
             <TableCell align="right">Paid</TableCell>
             <TableCell align="right">Outstanding</TableCell>
@@ -487,7 +487,7 @@ export default function PayoutBatchesPanel({
       const labels = {
         approve_hours: "Hours approved — ready for payroll.",
         hours_reviewed: "Hours approved.",
-        send_to_accountant: "Ready for payroll.",
+        send_to_accountant: "Released for accountant review.",
         mark_paid: "Payroll marked paid.",
         mark_line_paid: "Worker marked paid.",
         mark_line_unpaid: "Worker marked unpaid.",
@@ -513,6 +513,7 @@ export default function PayoutBatchesPanel({
 
   const handlePrimaryAction = async (actionKey) => {
     if (!selectedId && actionKey !== "enter_details" && actionKey !== "view_documents") return;
+    if (actionKey === "await_accountant") return;
     if (actionKey === "enter_details") {
       onNavigateTab?.("payout_details", selectedId);
       return;
@@ -524,7 +525,7 @@ export default function PayoutBatchesPanel({
     setActionLoading(true);
     try {
       await runWorkflowAction(actionKey);
-      if (actionKey === "approve_hours") onNavigateTab?.("payout_details", selectedId);
+      if (actionKey === "enter_details") onNavigateTab?.("payout_details", selectedId);
     } finally {
       setActionLoading(false);
     }

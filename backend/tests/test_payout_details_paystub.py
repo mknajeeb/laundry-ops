@@ -479,11 +479,12 @@ def test_payment_receipt_html_content():
         from backend.payroll_payout_details import generate_payment_receipt_html
 
         html = generate_payment_receipt_html(conn, 1, 1, 10)
-        assert "Payment Receipt" in html
+        assert "Cash Payment Receipt" in html
         assert 'data:image/png;base64,' in html
         assert "Jane Doe" in html
-        assert "E-100" in html
-        assert "not a wage statement" in html
+        assert "WashPro Inc." in html
+        assert "acknowledge receipt" in html
+        assert "Net cash received" in html
         assert "Employee tax deductions" not in html
         assert "FIT" not in html
 
@@ -537,16 +538,15 @@ def test_paystub_html_zero_deductions():
         from backend.payroll_payout_details import generate_paystub_html
 
         html = generate_paystub_html(conn, 1, 1, 10)
-        assert "Federal Income Tax (FIT)" in html
+        assert "Federal Income Tax" in html
         assert "Social Security" in html
         assert "Medicare" in html
-        assert "State Tax" in html
-        assert "Local Tax" in html
-        assert "Other Deduction" in html
-        assert "Prior Period Adjustment" in html
-        assert "Total Deductions" in html
+        assert "NY State Tax" in html
+        assert "NYC Local Tax" in html
+        assert "Total employee taxes" in html
+        assert "Tax Balances" in html
         assert "$0.00" in html
-        assert "Net pay" in html
+        assert "Net paid to employee" in html
         assert "$800.00" in html
 
 
@@ -641,13 +641,15 @@ def test_paystub_html_available_for_cash_payment():
         assert "VeeWash Official Paystub" in html
         assert 'data:image/png;base64,' in html
         assert "Cash Worker" in html
-        assert "Employee Deductions" in html
+        assert "Employee Taxes" in html
 
 
 def test_finalize_receipt_mode_requires_payment_fields():
     conn = MagicMock()
     enriched = {
         "document_mode": "payment_receipt",
+        "worker_category": "w2",
+        "status": "approved_for_payment",
         "lines": [
             {
                 "worker_name_snapshot": "Jane",
@@ -736,7 +738,9 @@ def test_compute_tax_withheld_breakdown_includes_all_components():
     assert breakdown["local_tax"] == 5.0
     assert breakdown["other_deduction"] == 5.0
     assert breakdown["prior_period_adjustment"] == 15.0
-    assert breakdown["total_tax_withheld"] == 205.0
+    assert breakdown["total_employee_taxes"] == 190.0
+    assert breakdown["actual_tax_withheld"] == 0.0
+    assert breakdown["total_tax_withheld"] == 0.0
 
 
 def test_enrich_line_settlement_fields_pending_before_finalize():
@@ -763,7 +767,8 @@ def test_enrich_line_settlement_fields_after_finalize():
     row = enrich_line_settlement_fields(line, batch)
     assert row["payout_details_finalized"] is True
     assert row["net_paid"] == 870.0
-    assert row["tax_withheld"] == 130.0
+    assert row["tax_withheld"] == 0.0
+    assert row["tax_liability"] == 130.0
     assert row["payment_date"] == "2026-06-01"
     assert row["payment_method_label"] == "Direct Deposit"
 

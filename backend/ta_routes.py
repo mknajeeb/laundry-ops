@@ -5877,6 +5877,43 @@ def payroll_payout_confirm_payment(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/estimate-taxes", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_estimate_taxes(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            estimate_payout_batch_taxes,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        line_ids = body.get("line_ids")
+        if line_ids is not None and not isinstance(line_ids, list):
+            return jsonify({"error": "line_ids must be an array when provided"}), 400
+        try:
+            row = estimate_payout_batch_taxes(
+                conn,
+                oid,
+                batch_id,
+                actor_id=uid,
+                line_ids=line_ids,
+            )
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_estimate_taxes failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>/finalize-details", methods=["POST"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")

@@ -131,9 +131,16 @@ def test_available_actions_use_display_status():
     from backend.payroll_workflow import _available_batch_actions
 
     assert "approve_hours" in _available_batch_actions({"status": "draft"})
+    assert "send_to_accountant" in _available_batch_actions(
+        {"status": "hours_reviewed", "worker_category": "w2"}
+    )
+    assert "send_to_accountant" not in _available_batch_actions(
+        {"status": "hours_reviewed", "worker_category": "temp"}
+    )
     assert "mark_paid" in _available_batch_actions(
         {
             "status": "approved_for_payment",
+            "worker_category": "w2",
             "payout_details_finalized_at": "2026-01-01",
         }
     )

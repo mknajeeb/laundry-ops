@@ -31,11 +31,11 @@ export default function TaxWithheldBreakdownDialog({ open, onClose, line, worker
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth>
-      <DialogTitle>Tax withheld{workerName ? ` — ${workerName}` : ""}</DialogTitle>
+      <DialogTitle>Estimated withholding{workerName ? ` — ${workerName}` : ""}</DialogTitle>
       <DialogContent>
         {!finalized || !hasDetails ? (
           <Typography variant="body2" color="text.secondary">
-            No tax withholding recorded for this payout.
+            No estimated withholding recorded for this payout.
           </Typography>
         ) : (
           <Table size="small">
@@ -48,7 +48,7 @@ export default function TaxWithheldBreakdownDialog({ open, onClose, line, worker
               ))}
               {!breakdown?.total_tax_withheld && displayTotal !== "$0.00" ? (
                 <TableRow>
-                  <TableCell sx={{ fontWeight: 700 }}>Total Tax Withheld</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>Total estimated withholding</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700 }}>
                     {displayTotal}
                   </TableCell>

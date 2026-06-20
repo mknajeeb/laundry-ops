@@ -96,7 +96,7 @@ export default function PayrollBatchSummaryCard({
             <Button
               variant="contained"
               size="small"
-              disabled={primaryLoading}
+              disabled={primaryLoading || Boolean(action.disabled)}
               onClick={() => onPrimaryAction(action.action, batch)}
             >
               {action.label}

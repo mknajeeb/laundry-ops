@@ -622,7 +622,11 @@ def build_payroll_readiness(
             "label": "Paid/unpaid tracking available",
             "ok": True,
             "applicable": True,
-            "detail": "Mark paid/unpaid after send to accountant",
+            "detail": (
+                "Mark paid after paystubs are finalized"
+                if is_w2
+                else "Mark paid after payment details are finalized"
+            ),
         },
     ]
 
@@ -839,9 +843,14 @@ def _available_batch_actions(batch: dict) -> list[str]:
     from backend.payroll_status_display import compute_display_status
 
     ds = compute_display_status(batch)
+    cat = str(batch.get("worker_category") or "w2")
+    st = str(batch.get("status") or "")
     actions: list[str] = []
     if ds == "draft":
         actions.append("approve_hours")
+    elif ds == "ready_for_payroll":
+        if cat == "w2" and st == "hours_reviewed":
+            actions.append("send_to_accountant")
     elif ds == "ready_to_pay":
         actions.append("mark_paid")
         actions.append("mark_line_paid")
@@ -989,20 +998,18 @@ def apply_batch_workflow_action(
         if not batch:
             raise ValueError("Batch not found")
         batch = enrich_payout_batch(conn, organization_id, batch)
-        validate_batch_for_workflow(batch, "send_to_accountant")
+        validate_batch_for_workflow(batch, "hours_reviewed")
         c.execute(
             """
-            UPDATE payout_batches SET status='sent_to_accountant',
-            sent_to_accountant_at=COALESCE(sent_to_accountant_at, NOW()),
-            approved_by=COALESCE(approved_by, %s), updated_at=CURRENT_TIMESTAMP
-            WHERE id=%s AND organization_id=%s
+            UPDATE payout_batches SET status='hours_reviewed', approved_by=COALESCE(approved_by, %s),
+            updated_at=CURRENT_TIMESTAMP WHERE id=%s AND organization_id=%s
             """,
             (actor_id, int(batch_id), int(organization_id)),
         )
         c.execute(
             """
             UPDATE payout_batch_lines SET payment_status='approved_unpaid', line_status='approved'
-            WHERE batch_id=%s AND organization_id=%s AND payment_status IN ('pending', 'approved_unpaid')
+            WHERE batch_id=%s AND organization_id=%s AND payment_status='pending'
             """,
             (int(batch_id), int(organization_id)),
         )
@@ -1023,6 +1030,10 @@ def apply_batch_workflow_action(
             (int(batch_id), int(organization_id)),
         )
     elif action == "send_to_accountant":
+        if str(batch.get("worker_category")) != "w2":
+            raise ValueError("Only W-2 batches use accountant review")
+        if str(batch.get("status") or "") != "hours_reviewed":
+            raise ValueError("Approve hours before sending to accountant")
         validate_batch_for_workflow(batch, action)
         c.execute(
             """

@@ -2,8 +2,8 @@
 Estimated W-2 payroll tax calculator for internal reporting only.
 
 NOT official payroll filing software. All outputs labeled as estimates.
-Federal: simplified annualized percentage method from W-4 inputs.
-NY/NYC: simplified effective-rate estimates — verify with accountant.
+Federal: IRS Pub 15-T percentage method (2026 tables).
+NY/NYC: NYS-50-T-NYS / NYS-50-T-NYC Method II (2026 tables).
 """
 
 from __future__ import annotations
@@ -13,6 +13,13 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Optional
 
+from backend.employee_withholding_profile import (
+    apply_withholding_profile_defaults,
+    is_married_filing,
+    step2_checkbox_checked,
+)
+from backend.ny_nyc_withholding_2026 import nyc_withholding_nys50, ny_state_withholding_nys50
+from backend.pub_15t_withholding import federal_withholding_pub_15t
 from backend.payroll_tax_messages import ESTIMATE_DISCLAIMER
 from backend.payroll_tax_settings import fetch_payroll_tax_settings
 from backend.payroll_identity import fetch_payroll_profile_row
@@ -95,7 +102,19 @@ def _read_compliance(work_json: Any) -> dict:
     return {**comp, **pt, "_work_json": work_json}
 
 
-def fetch_employee_tax_profile(conn, user_id: int, organization_id: int) -> dict[str, Any]:
+def _worker_display_name(conn, user_id: int) -> str:
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        "SELECT display_name, username FROM users WHERE id=%s LIMIT 1",
+        (int(user_id),),
+    )
+    row = c.fetchone() or {}
+    return str(row.get("display_name") or row.get("username") or "").strip()
+
+
+def fetch_employee_tax_profile(
+    conn, user_id: int, organization_id: int, *, worker_name: Optional[str] = None
+) -> dict[str, Any]:
     """Merge W-4, payroll_tax, pay rate, and address into one profile for validation/calc."""
     from backend.hr_compliance import ensure_hr_extended_profiles_table
     from backend.payroll_workflow import resolve_worker_hourly_rate
@@ -144,17 +163,9 @@ def fetch_employee_tax_profile(conn, user_id: int, organization_id: int) -> dict
     missing: list[str] = []
     if not str(filing_status).strip():
         missing.append("filing_status (W-4 Step 1c)")
-    if not rate_info.get("hourly_rate") or float(rate_info["hourly_rate"]) <= 0:
-        missing.append("pay_rate (Attendance Setup or employee profile)")
-    if not work_state:
-        missing.append("work_state (payroll tax profile)")
-    if work_state == "NY" and not work_city:
-        missing.append("work_city (NYC/NY local withholding)")
-    if comp.get("dependents_amount") is None and comp.get("step3a_amount") is None:
-        # allow zero but field should be present — soft requirement
-        pass
 
-    return {
+    name = worker_name or _worker_display_name(conn, user_id)
+    profile = {
         "user_id": int(user_id),
         "filing_status": str(filing_status).strip(),
         "pay_frequency": pay_frequency,
@@ -185,7 +196,29 @@ def fetch_employee_tax_profile(conn, user_id: int, organization_id: int) -> dict
         "w4_complete": len(missing) == 0,
         "missing_fields": missing,
         "ssn_on_file": bool(comp.get("ssn_last4") or comp.get("tax_id_last4")),
+        "step2_multiple_jobs": comp.get("step2_multiple_jobs") or comp.get("step2MultipleJobs"),
+        "two_jobs_only": bool(comp.get("two_jobs_only") or comp.get("twoJobsOnly")),
+        "w4_qualifying_children_under_17_count": comp.get("w4_qualifying_children_under_17_count"),
+        "w4_other_dependents_count": comp.get("w4_other_dependents_count"),
+        "withholding_exemptions": comp.get("withholding_exemptions"),
+        "worker_name": name,
     }
+    profile = apply_withholding_profile_defaults(profile, name)
+    missing = list(missing)
+    if not str(profile.get("filing_status") or "").strip():
+        if "filing_status (W-4 Step 1c)" not in missing:
+            missing.append("filing_status (W-4 Step 1c)")
+    else:
+        missing = [m for m in missing if "filing_status" not in m]
+    if not rate_info.get("hourly_rate") or float(rate_info["hourly_rate"]) <= 0:
+        missing.append("pay_rate (Attendance Setup or employee profile)")
+    if not profile.get("work_state"):
+        missing.append("work_state (payroll tax profile)")
+    if profile.get("work_state") == "NY" and not profile.get("work_city"):
+        missing.append("work_city (NYC/NY local withholding)")
+    profile["missing_fields"] = missing
+    profile["w4_complete"] = len(missing) == 0
+    return profile
 
 
 def get_w2_ytd_gross(conn, organization_id: int, user_id: int, year: int) -> Decimal:
@@ -301,13 +334,16 @@ def calculate_w2_line_taxes(
     Calculate estimated employee + employer taxes for one W-2 pay period line.
     Returns amounts as floats and metadata for persistence on payout_batch_lines.
     """
-    settings = fetch_payroll_tax_settings(conn, organization_id)
-    year = int(tax_year or settings.get("tax_year") or 2026)
     profile = fetch_employee_tax_profile(conn, user_id, organization_id)
     gross = _d(gross_pay)
     notes: list[str] = [ESTIMATE_DISCLAIMER]
 
-    if not profile.get("w4_complete"):
+    blocking = [
+        m
+        for m in (profile.get("missing_fields") or [])
+        if "pay_rate" not in m
+    ]
+    if blocking:
         return {
             "gross_pay": _money_json(gross),
             "tax_calc_status": "profile_incomplete",
@@ -316,6 +352,8 @@ def calculate_w2_line_taxes(
             "disclaimer": ESTIMATE_DISCLAIMER,
         }
 
+    settings = fetch_payroll_tax_settings(conn, organization_id)
+    year = int(tax_year or settings.get("tax_year") or 2026)
     periods = int(profile["pay_periods_per_year"])
     ytd_gross = get_w2_ytd_gross(conn, organization_id, user_id, year)
     pre_tax = _d(profile.get("pre_tax_deductions"))
@@ -339,48 +377,54 @@ def calculate_w2_line_taxes(
         over = min(taxable_gross, ytd_after - max(ytd_gross, addl_threshold))
         addl_medicare = over * addl_medicare_rate
 
-    # --- Federal income tax (annualized estimate) ---
+    # --- Federal income tax (IRS Pub 15-T percentage method) ---
     federal = Decimal("0")
     if not profile.get("exempt_federal"):
-        annual_wages = taxable_gross * periods
-        annual_wages += _d(profile.get("other_income")) * periods / periods  # step4a is annual
-        filing = profile.get("filing_status") or "single_or_mfs"
-        if filing in ("mfj_or_qss", "married_joint", "married"):
-            brackets = _FED_BRACKETS_MFJ
-            std = _d(settings["federal_standard_deduction_mfj"])
-        elif filing in ("hoh", "head_of_household"):
-            brackets = _FED_BRACKETS_SINGLE  # simplified — HOH uses own deduction
-            std = _d(settings["federal_standard_deduction_hoh"])
-        else:
-            brackets = _FED_BRACKETS_SINGLE
-            std = _d(settings["federal_standard_deduction_single"])
-
-        annual_taxable = annual_wages - std - _d(profile.get("deductions")) - _d(profile.get("dependents_amount"))
-        annual_taxable = max(Decimal("0"), annual_taxable)
-        annual_fed = _annual_tax_from_brackets(annual_taxable, brackets)
-        federal = annual_fed / periods + _d(profile.get("extra_withholding"))
-        notes.append("Federal: simplified 2026 annualized bracket estimate (not full IRS Pub 15-T tables).")
+        federal = _d(
+            federal_withholding_pub_15t(
+                taxable_gross,
+                periods_per_year=periods,
+                filing_status=str(profile.get("filing_status") or "single_or_mfs"),
+                dependents_amount_annual=_d(profile.get("dependents_amount")),
+                other_income_annual=_d(profile.get("other_income")),
+                deductions_annual=_d(profile.get("deductions")),
+                extra_withholding_per_period=_d(profile.get("extra_withholding")),
+                step2_checkbox=step2_checkbox_checked(profile),
+            )
+        )
+        notes.append("Federal: IRS Pub 15-T percentage method (2026 tables) — estimate.")
     else:
         notes.append("Federal: exempt per W-4.")
 
-    # --- NY state estimate ---
+    # --- NY state (NYS-50-T-NYS Method II) ---
     ny_state = Decimal("0")
     if profile.get("work_state") == "NY" and not profile.get("exempt_state"):
-        ny_rate = _d(settings["ny_withholding_estimate_rate"])
-        ny_state = taxable_gross * ny_rate
-        notes.append("NY state: simplified effective-rate estimate — not full NY wage tables.")
+        ny_state = _d(
+            ny_state_withholding_nys50(
+                taxable_gross,
+                pay_frequency=str(profile.get("pay_frequency") or "weekly"),
+                married=is_married_filing(profile),
+                withholding_exemptions=int(profile.get("withholding_exemptions") or 0),
+            )
+        )
+        notes.append("NY state: NYS-50-T-NYS Method II (2026 tables) — estimate.")
 
-    # --- NYC estimate ---
+    # --- NYC (NYS-50-T-NYC Method II, NYC residents) ---
     nyc = Decimal("0")
-    work_in_nyc = "new york" in str(profile.get("work_city") or "").lower() or str(profile.get("work_city") or "").upper() == "NYC"
-    if work_in_nyc and profile.get("work_state") == "NY" and not profile.get("exempt_city"):
-        if profile.get("nyc_resident"):
-            nyc_rate = _d(settings["nyc_resident_estimate_rate"])
-            notes.append("NYC: resident simplified rate estimate.")
-        else:
-            nyc_rate = _d(settings["nyc_nonresident_estimate_rate"])
-            notes.append("NYC: non-resident simplified rate estimate.")
-        nyc = taxable_gross * nyc_rate
+    if (
+        profile.get("nyc_resident")
+        and profile.get("work_state") == "NY"
+        and not profile.get("exempt_city")
+    ):
+        nyc = _d(
+            nyc_withholding_nys50(
+                taxable_gross,
+                pay_frequency=str(profile.get("pay_frequency") or "weekly"),
+                married=is_married_filing(profile),
+                withholding_exemptions=int(profile.get("withholding_exemptions") or 0),
+            )
+        )
+        notes.append("NYC: NYS-50-T-NYC Method II (2026 tables) — estimate.")
 
     total_employee = federal + ny_state + nyc + ss_employee + medicare_employee + addl_medicare + _d(
         profile.get("post_tax_deductions")
@@ -434,6 +478,7 @@ def calculate_w2_line_taxes(
     ny_reemployment = suta_wages * _d(settings.get("ny_reemployment_service_fund_rate") or 0)
 
     mctmt = Decimal("0")
+    work_in_nyc = bool(profile.get("nyc_resident"))
     if settings.get("nyc_mctmt_enabled") and work_in_nyc:
         yr, qtr = _quarter_from_date_str(pay_period_start)
         qtd_before = get_org_quarterly_w2_gross(conn, organization_id, year=yr, quarter=qtr)

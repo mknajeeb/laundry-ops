@@ -9,6 +9,8 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
+  Checkbox,
   IconButton,
   Menu,
   MenuItem,
@@ -32,6 +34,7 @@ import LockIcon from "@mui/icons-material/Lock";
 import { useAuth } from "../context/AuthContext";
 import {
   finalizePayoutDetails,
+  estimatePayoutTaxes,
   getPaymentReceiptHtml,
   getPayoutBatchDetails,
   getPayoutBatches,
@@ -53,6 +56,7 @@ import {
   hasTaxWithheldBreakdown,
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
+import { ESTIMATE_DISCLAIMER } from "../payroll/payrollTaxMessages";
 
 const DEDUCTION_FIELDS = [
   { key: "fit", label: "FIT" },
@@ -91,6 +95,7 @@ function emptyLineState(line) {
     employer_taxes: { ...(pd.employer_taxes || {}) },
     payment: { ...(pd.payment || {}) },
     settlement: { ...(pd.settlement || {}) },
+    tax_summary: { ...(pd.tax_summary || {}) },
     use_payment_receipt: Boolean(pd.use_payment_receipt),
     employee_note: pd.employee_note || "",
   };
@@ -221,6 +226,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         employer_taxes: d.employer_taxes,
         payment: d.payment,
         settlement: d.settlement,
+        tax_summary: d.tax_summary,
         use_payment_receipt: d.use_payment_receipt,
         employee_note: d.employee_note || "",
       },
@@ -248,8 +254,26 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const autoFillEstimates = async () => {
+    if (!selectedId || !canEdit) return;
+    setError("");
+    setInfo("");
+    try {
+      const res = await estimatePayoutTaxes(selectedId);
+      const batch = res.data;
+      setDetail(batch);
+      const drafts = {};
+      (batch.lines || []).forEach((ln) => {
+        drafts[ln.id] = emptyLineState(ln);
+      });
+      setLineDrafts(drafts);
+      setInfo("Estimated withholding applied — review and edit before finalizing.");
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Auto-fill failed");
+    }
+  };
+
   const doFinalize = async () => {
-    if (!selectedId) return;
     try {
       const res = await finalizePayoutDetails(selectedId);
       setDetail(res.data);
@@ -320,6 +344,11 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
 
           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end">
             {canEdit ? (
+              <Button size="small" onClick={autoFillEstimates} disabled={finalized}>
+                Auto-fill estimated withholding
+              </Button>
+            ) : null}
+            {canEdit ? (
               <Button size="small" startIcon={<SaveIcon />} onClick={saveDetails}>
                 Save
               </Button>
@@ -337,10 +366,14 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
             <IconButton size="small" onClick={(e) => setMoreAnchor(e.currentTarget)}>
               <MoreVertIcon fontSize="small" />
             </IconButton>
-            <Tooltip title="Enter deductions per employee. Finalize to lock and enable paystubs.">
+            <Tooltip title="Enter estimated withholding and payment details per employee. Edit before finalize.">
               <InfoOutlinedIcon fontSize="small" color="action" sx={{ opacity: 0.5 }} />
             </Tooltip>
           </Stack>
+
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            {ESTIMATE_DISCLAIMER}
+          </Typography>
 
           <Menu anchorEl={moreAnchor} open={Boolean(moreAnchor)} onClose={() => setMoreAnchor(null)}>
             {canSetDocumentMode ? (
@@ -384,8 +417,9 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   <TableCell width={32} />
                   <TableCell>Employee</TableCell>
                   <TableCell align="right">Gross</TableCell>
-                  <TableCell align="right">Tax</TableCell>
-                  <TableCell align="right">Net</TableCell>
+                  <TableCell align="right">Est. withholding liability</TableCell>
+                  <TableCell align="right">Estimated withholding</TableCell>
+                  <TableCell align="right">Net paid</TableCell>
                   <TableCell>Method</TableCell>
                   <TableCell align="right">Paid</TableCell>
                   <TableCell align="right" width={72} />
@@ -400,12 +434,19 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   const isOpen = expanded[ln.id];
                   const linePaid = ln.payment_status === "paid";
                   const outstanding = totals.net - (linePaid ? totals.net : 0);
-                  const taxDisplay = finalized
-                    ? formatTaxWithheldDisplay(ln)
+                  const taxLiability = finalized
+                    ? ln.tax_liability != null
+                      ? formatPayrollMoney(ln.tax_liability)
+                      : `$${lineTaxTotal(draft).toFixed(2)}`
                     : `$${lineTaxTotal(draft).toFixed(2)}`;
+                  const taxWithheldDisplay = finalized
+                    ? formatTaxWithheldDisplay(ln)
+                    : `$${num(draft.settlement?.amount_withheld).toFixed(2)}`;
                   const netDisplay = finalized
                     ? formatNetPaidDisplay(ln)
-                    : `$${totals.net.toFixed(2)}`;
+                    : draft.settlement?.paid_full_gross_without_withholding
+                      ? `$${totals.gross.toFixed(2)}`
+                      : `$${totals.net.toFixed(2)}`;
 
                   return (
                     <Fragment key={ln.id}>
@@ -420,7 +461,26 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                         </TableCell>
                         <TableCell>{ln.worker_name_snapshot}</TableCell>
                         <TableCell align="right">${totals.gross.toFixed(2)}</TableCell>
-                        <TableCell align="right">{taxDisplay}</TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" alignItems="center" justifyContent="flex-end" gap={0.25}>
+                            <span>{taxLiability}</span>
+                            {finalized && hasTaxWithheldBreakdown(ln) ? (
+                              <IconButton
+                                size="small"
+                                onClick={() =>
+                                  setTaxDialog({
+                                    open: true,
+                                    line: ln,
+                                    workerName: ln.worker_name_snapshot,
+                                  })
+                                }
+                              >
+                                <InfoOutlinedIcon fontSize="small" />
+                              </IconButton>
+                            ) : null}
+                          </Stack>
+                        </TableCell>
+                        <TableCell align="right">{taxWithheldDisplay}</TableCell>
                         <TableCell align="right">{netDisplay}</TableCell>
                         <TableCell>
                           {PAYMENT_METHODS.find((m) => m.value === method)?.label || method}
@@ -445,32 +505,43 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                             </IconButton>
                           ) : null}
                           {finalized && doc.receipt_available ? (
-                            <IconButton size="small" onClick={() => printReceipt(ln.id)}>
-                              <PrintIcon fontSize="small" />
-                            </IconButton>
+                            <Tooltip
+                              title={
+                                method === "cash" ? "Generate cash receipt" : "Print payment receipt"
+                              }
+                            >
+                              <IconButton size="small" onClick={() => printReceipt(ln.id)}>
+                                <PrintIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                           ) : null}
                         </TableCell>
                       </TableRow>
                       <TableRow key={`${ln.id}-exp`}>
-                        <TableCell colSpan={8} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
+                        <TableCell colSpan={9} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
                           <Collapse in={isOpen}>
                             <Box sx={{ py: 1, pl: 1 }}>
                               {!isReceiptMode && canEdit ? (
-                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
-                                  {DEDUCTION_FIELDS.map((f) => (
-                                    <TextField
-                                      key={f.key}
-                                      size="small"
-                                      label={f.label}
-                                      type="number"
-                                      value={draft.employee_deductions?.[f.key] ?? ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
-                                      }
-                                      inputProps={{ style: { width: 64 } }}
-                                    />
-                                  ))}
-                                </Stack>
+                                <>
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                                    Estimated withholding (editable before finalize)
+                                  </Typography>
+                                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
+                                    {DEDUCTION_FIELDS.map((f) => (
+                                      <TextField
+                                        key={f.key}
+                                        size="small"
+                                        label={f.label}
+                                        type="number"
+                                        value={draft.employee_deductions?.[f.key] ?? ""}
+                                        onChange={(e) =>
+                                          updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
+                                        }
+                                        inputProps={{ style: { width: 64 } }}
+                                      />
+                                    ))}
+                                  </Stack>
+                                </>
                               ) : null}
                               {canEdit ? (
                                 <Stack direction="row" flexWrap="wrap" gap={1}>
@@ -516,6 +587,39 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     label="Employee note"
                                     value={draft.employee_note || ""}
                                     onChange={(e) => updateLineFlag(ln.id, "employee_note", e.target.value)}
+                                  />
+                                </Stack>
+                              ) : null}
+                              {method === "cash" && canEdit ? (
+                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    label="Cash amount"
+                                    value={draft.payment?.cash_amount ?? ""}
+                                    onChange={(e) => updateDraft(ln.id, "payment", "cash_amount", e.target.value)}
+                                  />
+                                  <TextField
+                                    size="small"
+                                    label="Paid by"
+                                    value={draft.payment?.paid_by || ""}
+                                    onChange={(e) => updateDraft(ln.id, "payment", "paid_by", e.target.value)}
+                                  />
+                                  <TextField
+                                    size="small"
+                                    label="Receipt number"
+                                    value={draft.payment?.receipt_number || ""}
+                                    onChange={(e) =>
+                                      updateDraft(ln.id, "payment", "receipt_number", e.target.value)
+                                    }
+                                  />
+                                  <TextField
+                                    size="small"
+                                    label="Employee signature"
+                                    value={draft.payment?.employee_signature || ""}
+                                    onChange={(e) =>
+                                      updateDraft(ln.id, "payment", "employee_signature", e.target.value)
+                                    }
                                   />
                                 </Stack>
                               ) : null}
@@ -565,6 +669,32 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                     onChange={(e) =>
                                       updateDraft(ln.id, "settlement", "prior_period_adjustment", e.target.value)
                                     }
+                                  />
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    label="Tax balance owed"
+                                    value={draft.settlement?.tax_balance_owed ?? ""}
+                                    onChange={(e) =>
+                                      updateDraft(ln.id, "settlement", "tax_balance_owed", e.target.value)
+                                    }
+                                  />
+                                  <FormControlLabel
+                                    control={
+                                      <Checkbox
+                                        size="small"
+                                        checked={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
+                                        onChange={(e) =>
+                                          updateDraft(
+                                            ln.id,
+                                            "settlement",
+                                            "paid_full_gross_without_withholding",
+                                            e.target.checked,
+                                          )
+                                        }
+                                      />
+                                    }
+                                    label="Paid full gross (no withholding)"
                                   />
                                 </Stack>
                               ) : null}

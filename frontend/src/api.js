@@ -1259,6 +1259,9 @@ export const confirmPayoutPayment = (batchId) =>
 export const finalizePayoutDetails = (batchId) =>
   axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/finalize-details`);
 
+export const estimatePayoutTaxes = (batchId, body = {}) =>
+  axios.post(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/estimate-taxes`, body);
+
 export const setPayoutDocumentMode = (batchId, documentMode) =>
   axios.put(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/document-mode`, {
     document_mode: documentMode,

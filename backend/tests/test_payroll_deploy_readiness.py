@@ -75,10 +75,22 @@ def test_display_status_lifecycle_draft_to_paid():
 
 
 def test_payout_details_unlock_after_hours_approved():
-    assert batch_ready_for_payout_details({"status": "hours_reviewed"})
-    assert batch_ready_for_payout_details({"status": "sent_to_accountant"})
-    assert batch_ready_for_payout_details({"status": "approved_for_payment"})
-    assert not batch_ready_for_payout_details({"status": "draft"})
+    assert batch_ready_for_payout_details(
+        {"status": "hours_reviewed", "worker_category": "temp"}
+    )
+    assert batch_ready_for_payout_details(
+        {"status": "hours_reviewed", "worker_category": "contractor_1099"}
+    )
+    assert not batch_ready_for_payout_details(
+        {"status": "hours_reviewed", "worker_category": "w2"}
+    )
+    assert not batch_ready_for_payout_details(
+        {"status": "sent_to_accountant", "worker_category": "w2"}
+    )
+    assert batch_ready_for_payout_details(
+        {"status": "approved_for_payment", "worker_category": "w2"}
+    )
+    assert not batch_ready_for_payout_details({"status": "draft", "worker_category": "w2"})
 
 
 def test_finalize_net_pay_from_deductions():

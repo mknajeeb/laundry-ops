@@ -47,5 +47,14 @@ export function formatPayrollMoney(val) {
 
 export function batchVisibleForDetails(batch) {
   const st = displayStatus(batch);
-  return st !== "draft";
+  if (st === "draft") return false;
+  const cat = batch?.worker_category || batch?.payroll_display?.worker_category;
+  const internal = batch?.status;
+  if (
+    cat === "w2" &&
+    ["hours_reviewed", "sent_to_accountant", "accountant_reviewed"].includes(internal)
+  ) {
+    return false;
+  }
+  return true;
 }
