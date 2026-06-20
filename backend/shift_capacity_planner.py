@@ -1,10 +1,10 @@
-"""Shift Capacity Planner — discrete-time shift simulator with bag-mix load sizing."""
+"""Shift Capacity Planner — discrete-time shift simulator with split-load distribution."""
 
 from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 StrategyName = Literal["continuous_washing", "dryer_push"]
@@ -19,12 +19,13 @@ DEFAULTS: dict[str, Any] = {
     "target_time": "12:00 PM",
     "bag_count": 50,
     "avg_lbs_per_bag": 20,
-    "small_bag_pct": 40,
-    "medium_bag_pct": 40,
-    "large_bag_pct": 20,
-    "small_bag_lb": 20,
-    "medium_bag_lb": 30,
-    "large_bag_lb": 50,
+    "single_bag_load_pct": 20,
+    "two_bag_split_pct": 40,
+    "sorter_early_start_min": 0,
+    "sorter_break_after_bags": 0,
+    "sorter_break_duration_min": 0,
+    "washer_break_after_bags": 0,
+    "washer_break_duration_min": 0,
     "washer_count": 4,
     "dryer_count": 4,
     "washer_capacity_lb": 50,
@@ -163,34 +164,88 @@ def _parse_weighing_handled_by(raw: Any) -> WeighingHandledBy:
     return aliases[value]  # type: ignore[return-value]
 
 
-def build_bag_weight_list(
+def build_uniform_bag_weights(bag_count: int, avg_lb: float) -> list[float]:
+    return [avg_lb] * bag_count
+
+
+def compute_split_load_distribution(
     bag_count: int,
     *,
-    small_pct: float,
-    medium_pct: float,
-    large_pct: float,
-    small_lb: float,
-    medium_lb: float,
-    large_lb: float,
-) -> list[float]:
-    total_pct = small_pct + medium_pct + large_pct
-    if total_pct <= 0:
-        raise ValueError("bag size mix percentages must sum to a positive value")
-    small_pct /= total_pct
-    medium_pct /= total_pct
-    large_pct /= total_pct
+    single_pct: float,
+    two_split_pct: float,
+) -> dict[str, int]:
+    if single_pct < 0 or two_split_pct < 0:
+        raise ValueError("split load percentages must be >= 0")
+    if single_pct + two_split_pct > 100.0001:
+        raise ValueError("single_bag_load_pct + two_bag_split_pct must be <= 100")
 
-    small_n = int(round(bag_count * small_pct))
-    medium_n = int(round(bag_count * medium_pct))
-    large_n = bag_count - small_n - medium_n
-    if large_n < 0:
-        large_n = 0
-        medium_n = bag_count - small_n
+    single_bags = int(round(bag_count * single_pct / 100.0))
+    two_split_bags = int(round(bag_count * two_split_pct / 100.0))
+    if two_split_bags % 2 == 1:
+        two_split_bags = max(0, two_split_bags - 1)
+    if single_bags + two_split_bags > bag_count:
+        two_split_bags = max(0, two_split_bags - (single_bags + two_split_bags - bag_count))
+    multi_bags = max(0, bag_count - single_bags - two_split_bags)
 
-    weights = [small_lb] * small_n + [medium_lb] * medium_n + [large_lb] * large_n
-    while len(weights) < bag_count:
-        weights.append(medium_lb)
-    return weights[:bag_count]
+    return {
+        "single_bag_orders": single_bags,
+        "two_bag_split_orders": two_split_bags,
+        "multi_bag_orders": multi_bags,
+        "single_loads": single_bags,
+        "two_bag_split_loads": two_split_bags // 2,
+        "multi_bag_loads": 0,  # filled by build_wash_load_plan
+    }
+
+
+def build_wash_load_plan(
+    bag_count: int,
+    *,
+    single_pct: float,
+    two_split_pct: float,
+    avg_lb: float,
+    washer_capacity_lb: float,
+) -> list[int]:
+    dist = compute_split_load_distribution(
+        bag_count, single_pct=single_pct, two_split_pct=two_split_pct
+    )
+    plan: list[int] = [1] * dist["single_loads"] + [2] * dist["two_bag_split_loads"]
+    multi_bags = dist["multi_bag_orders"]
+    bags_per_multi = max(1, int(washer_capacity_lb // avg_lb))
+    while multi_bags > 0:
+        take = min(multi_bags, bags_per_multi)
+        plan.append(take)
+        multi_bags -= take
+    dist["multi_bag_loads"] = len(plan) - dist["single_loads"] - dist["two_bag_split_loads"]
+    return plan
+
+
+def split_distribution_summary(
+    bag_count: int,
+    *,
+    single_pct: float,
+    two_split_pct: float,
+    avg_lb: float,
+    washer_capacity_lb: float,
+) -> dict[str, Any]:
+    dist = compute_split_load_distribution(
+        bag_count, single_pct=single_pct, two_split_pct=two_split_pct
+    )
+    plan = build_wash_load_plan(
+        bag_count,
+        single_pct=single_pct,
+        two_split_pct=two_split_pct,
+        avg_lb=avg_lb,
+        washer_capacity_lb=washer_capacity_lb,
+    )
+    dist["multi_bag_loads"] = len(plan) - dist["single_loads"] - dist["two_bag_split_loads"]
+    dist["total_wash_loads"] = len(plan)
+    dist["load_plan_preview"] = plan[:12]
+    dist["summary_lines"] = [
+        f"{dist['single_bag_orders']} of {bag_count} → single-bag loads ({dist['single_loads']} loads)",
+        f"{dist['two_bag_split_orders']} of {bag_count} → 2-bag split loads ({dist['two_bag_split_loads']} loads)",
+        f"{dist['multi_bag_orders']} of {bag_count} → capacity-packed loads ({dist['multi_bag_loads']} loads)",
+    ]
+    return dist
 
 
 def pack_load_from_pool(pool: list[float], capacity_lb: float) -> tuple[list[float], list[float]]:
@@ -224,12 +279,10 @@ class PlannerInputs:
     bag_count: int
     avg_lbs_per_bag: float
     bag_weights: list[float]
-    small_bag_pct: float
-    medium_bag_pct: float
-    large_bag_pct: float
-    small_bag_lb: float
-    medium_bag_lb: float
-    large_bag_lb: float
+    wash_load_plan: list[int]
+    single_bag_load_pct: float
+    two_bag_split_pct: float
+    split_distribution: dict[str, Any]
     washer_count: int
     dryer_count: int
     washer_capacity_lb: float
@@ -252,6 +305,11 @@ class PlannerInputs:
     load_dryer_min: int
     unload_dryer_min: int
     washer_transfer_min: int
+    sorter_early_start_min: int = 0
+    sorter_break_after_bags: int = 0
+    sorter_break_duration_min: int = 0
+    washer_break_after_bags: int = 0
+    washer_break_duration_min: int = 0
 
     @property
     def effective_sort_min_per_bag(self) -> float:
@@ -268,20 +326,23 @@ class PlannerInputs:
         return self.weighing_handled_by == "washer"
 
     def estimate_wash_loads(self) -> list[dict[str, Any]]:
-        pool = list(self.bag_weights)
         loads: list[dict[str, Any]] = []
         bag_idx = 1
-        while pool:
-            chunk, pool = pack_load_from_pool(pool, self.washer_capacity_lb)
+        for bags in self.wash_load_plan:
             loads.append(
                 {
-                    "bags": len(chunk),
-                    "pounds": round(sum(chunk), 1),
+                    "bags": bags,
+                    "pounds": round(bags * self.avg_lbs_per_bag, 1),
                     "bag_start": bag_idx,
-                    "bag_end": bag_idx + len(chunk) - 1,
+                    "bag_end": bag_idx + bags - 1,
+                    "load_type": (
+                        "single" if bags == 1
+                        else "two_bag_split" if bags == 2
+                        else "capacity_packed"
+                    ),
                 }
             )
-            bag_idx += len(chunk)
+            bag_idx += bags
         return loads
 
     @property
@@ -332,6 +393,9 @@ class SimState:
     weigh_remainder: float = 0.0
     sort_remainder: float = 0.0
     fold_remainder: float = 0.0
+    load_plan_queue: list[int] = field(default_factory=list)
+    sorter_bags_since_break: int = 0
+    sorter_on_break_until: int | None = None
 
 
 def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
@@ -343,26 +407,25 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
 
     bag_count = _positive_int(raw.get("bag_count"), "bag_count")
     avg_lbs = _positive_float(raw.get("avg_lbs_per_bag"), "avg_lbs_per_bag")
-    small_pct = _non_negative_float(raw.get("small_bag_pct"), "small_bag_pct")
-    medium_pct = _non_negative_float(raw.get("medium_bag_pct"), "medium_bag_pct")
-    large_pct = _non_negative_float(raw.get("large_bag_pct"), "large_bag_pct")
-    small_lb = _positive_float(raw.get("small_bag_lb"), "small_bag_lb")
-    medium_lb = _positive_float(raw.get("medium_bag_lb"), "medium_bag_lb")
-    large_lb = _positive_float(raw.get("large_bag_lb"), "large_bag_lb")
+    single_pct = _non_negative_float(raw.get("single_bag_load_pct"), "single_bag_load_pct")
+    two_split_pct = _non_negative_float(raw.get("two_bag_split_pct"), "two_bag_split_pct")
 
-    bag_weights = build_bag_weight_list(
-        bag_count,
-        small_pct=small_pct,
-        medium_pct=medium_pct,
-        large_pct=large_pct,
-        small_lb=small_lb,
-        medium_lb=medium_lb,
-        large_lb=large_lb,
-    )
-
-    washer_count = _positive_int(raw.get("washer_count"), "washer_count")
-    dryer_count = _positive_int(raw.get("dryer_count"), "dryer_count")
     washer_cap = _positive_float(raw.get("washer_capacity_lb"), "washer_capacity_lb")
+    split_dist = split_distribution_summary(
+        bag_count,
+        single_pct=single_pct,
+        two_split_pct=two_split_pct,
+        avg_lb=avg_lbs,
+        washer_capacity_lb=washer_cap,
+    )
+    wash_load_plan = build_wash_load_plan(
+        bag_count,
+        single_pct=single_pct,
+        two_split_pct=two_split_pct,
+        avg_lb=avg_lbs,
+        washer_capacity_lb=washer_cap,
+    )
+    bag_weights = build_uniform_bag_weights(bag_count, avg_lbs)
     dryer_cap = _positive_float(raw.get("dryer_capacity_lb"), "dryer_capacity_lb")
     wash_cycle = _positive_int(raw.get("wash_cycle_min"), "wash_cycle_min")
     dry_cycle = _positive_int(raw.get("dry_cycle_min"), "dry_cycle_min")
@@ -383,6 +446,24 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
         raw.get("washer_transfer_min") or raw.get("transfer_min"),
         "washer_transfer_min",
     )
+    sorter_early_start_min = _non_negative_int(
+        raw.get("sorter_early_start_min"), "sorter_early_start_min"
+    )
+    sorter_break_after_bags = _non_negative_int(
+        raw.get("sorter_break_after_bags"), "sorter_break_after_bags"
+    )
+    sorter_break_duration_min = _non_negative_int(
+        raw.get("sorter_break_duration_min"), "sorter_break_duration_min"
+    )
+    washer_break_after_bags = _non_negative_int(
+        raw.get("washer_break_after_bags"), "washer_break_after_bags"
+    )
+    washer_break_duration_min = _non_negative_int(
+        raw.get("washer_break_duration_min"), "washer_break_duration_min"
+    )
+
+    washer_count = _positive_int(raw.get("washer_count"), "washer_count")
+    dryer_count = _positive_int(raw.get("dryer_count"), "dryer_count")
 
     window_min = target_min - start_min
     weigher_default = max(1, math.ceil(bag_count * weigh_min / window_min)) if weighing_handled_by == "dedicated_weigher" else 0
@@ -411,12 +492,10 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
         bag_count=bag_count,
         avg_lbs_per_bag=avg_lbs,
         bag_weights=bag_weights,
-        small_bag_pct=small_pct,
-        medium_bag_pct=medium_pct,
-        large_bag_pct=large_pct,
-        small_bag_lb=small_lb,
-        medium_bag_lb=medium_lb,
-        large_bag_lb=large_lb,
+        wash_load_plan=wash_load_plan,
+        single_bag_load_pct=single_pct,
+        two_bag_split_pct=two_split_pct,
+        split_distribution=split_dist,
         washer_count=washer_count,
         dryer_count=dryer_count,
         washer_capacity_lb=washer_cap,
@@ -439,6 +518,11 @@ def parse_planner_inputs(data: dict[str, Any] | None) -> PlannerInputs:
         load_dryer_min=load_dryer_min,
         unload_dryer_min=unload_dryer_min,
         washer_transfer_min=washer_transfer_min,
+        sorter_early_start_min=sorter_early_start_min,
+        sorter_break_after_bags=sorter_break_after_bags,
+        sorter_break_duration_min=sorter_break_duration_min,
+        washer_break_after_bags=washer_break_after_bags,
+        washer_break_duration_min=washer_break_duration_min,
     )
 
 
@@ -448,6 +532,7 @@ def _init_state(inp: PlannerInputs) -> SimState:
         incoming_bags=list(inp.bag_weights),
         washer_free_at=[inp.start_min] * inp.washer_count,
         dryer_free_at=[inp.start_min] * inp.dryer_count,
+        load_plan_queue=list(inp.wash_load_plan),
     )
     if inp.uses_dedicated_weigher:
         state.weigh_queue = []
@@ -543,9 +628,26 @@ def _snapshot(state: SimState, inp: PlannerInputs) -> dict[str, Any]:
     }
 
 
+def _sorter_can_work(state: SimState, inp: PlannerInputs) -> bool:
+    if state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until:
+        return False
+    earliest = inp.start_min - inp.sorter_early_start_min
+    return state.minute >= earliest
+
+
+def _maybe_trigger_sorter_break(state: SimState, inp: PlannerInputs) -> None:
+    if (
+        inp.sorter_break_after_bags > 0
+        and inp.sorter_break_duration_min > 0
+        and state.sorter_bags_since_break >= inp.sorter_break_after_bags
+    ):
+        state.sorter_on_break_until = state.minute + inp.sorter_break_duration_min
+        state.sorter_bags_since_break = 0
+
+
 def _step_weigh_sort(state: SimState, inp: PlannerInputs) -> None:
     if inp.uses_dedicated_weigher:
-        if state.incoming_bags and inp.weigher_count > 0:
+        if state.incoming_bags and inp.weigher_count > 0 and state.minute >= inp.start_min:
             state.weigh_remainder += inp.weigher_count / inp.weigh_min_per_bag
             while state.weigh_remainder >= 1 and state.incoming_bags:
                 bag = state.incoming_bags.pop(0)
@@ -557,7 +659,11 @@ def _step_weigh_sort(state: SimState, inp: PlannerInputs) -> None:
         while state.weigh_queue:
             state.sort_queue.append(state.weigh_queue.pop(0))
 
-    if state.sort_queue and inp.sorter_count > 0:
+    if (
+        state.sort_queue
+        and inp.sorter_count > 0
+        and _sorter_can_work(state, inp)
+    ):
         state.sort_remainder += inp.sorter_count / inp.effective_sort_min_per_bag
         while state.sort_remainder >= 1 and state.sort_queue:
             bag = state.sort_queue.pop(0)
@@ -565,8 +671,12 @@ def _step_weigh_sort(state: SimState, inp: PlannerInputs) -> None:
             state.next_bag_index += 1
             state.sorted_count += 1
             state.sort_remainder -= 1
+            state.sorter_bags_since_break += 1
             if inp.weighing_handled_by == "sorter":
                 state.weighed_count += 1
+            _maybe_trigger_sorter_break(state, inp)
+            if state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until:
+                break
 
 
 def _can_start_wash(state: SimState, inp: PlannerInputs, strategy: StrategyName) -> bool:
@@ -585,6 +695,23 @@ def _washer_prep_minutes(inp: PlannerInputs, bag_count: int) -> int:
     return max(1, int(math.ceil(bag_count * inp.weigh_min_per_bag)))
 
 
+def _take_planned_load(state: SimState, inp: PlannerInputs) -> list[tuple[int, float]] | None:
+    if not state.load_plan_queue or not state.sorted_pool:
+        return None
+    need = state.load_plan_queue[0]
+    if len(state.sorted_pool) < need:
+        if state.sorted_count < inp.bag_count:
+            return None
+        need = len(state.sorted_pool)
+    if need <= 0:
+        state.load_plan_queue.pop(0)
+        return None
+    chunk = state.sorted_pool[:need]
+    state.sorted_pool = state.sorted_pool[need:]
+    state.load_plan_queue.pop(0)
+    return chunk
+
+
 def _start_wash_loads(state: SimState, inp: PlannerInputs, strategy: StrategyName) -> None:
     if not _can_start_wash(state, inp, strategy):
         if strategy == "dryer_push":
@@ -597,16 +724,16 @@ def _start_wash_loads(state: SimState, inp: PlannerInputs, strategy: StrategyNam
     estimated_total = inp.total_wash_loads
 
     while loads_started < estimated_total and state.sorted_pool:
-        weights = [w for _, w in state.sorted_pool]
-        chunk_weights, remainder_weights = pack_load_from_pool(weights, inp.washer_capacity_lb)
-        if not chunk_weights:
+        chunk_entries = _take_planned_load(state, inp)
+        if not chunk_entries:
             break
+        chunk_weights = [w for _, w in chunk_entries]
         chunk_len = len(chunk_weights)
-        chunk_entries = state.sorted_pool[:chunk_len]
-        remainder_entries = state.sorted_pool[chunk_len:]
         slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
         free_at = state.washer_free_at[slot_idx]
         if free_at > state.minute:
+            state.sorted_pool = chunk_entries + state.sorted_pool
+            state.load_plan_queue.insert(0, chunk_len)
             break
         prep = _washer_prep_minutes(inp, chunk_len)
         start = max(state.minute, free_at) + prep
@@ -626,7 +753,6 @@ def _start_wash_loads(state: SimState, inp: PlannerInputs, strategy: StrategyNam
         state.next_load_id += 1
         state.loads.append(load)
         state.waiting_dryer.append(load)
-        state.sorted_pool = remainder_entries
         state.washer_free_at[slot_idx] = end
         if inp.uses_washer_weighing:
             state.weighed_count += chunk_len
@@ -636,6 +762,7 @@ def _start_wash_loads(state: SimState, inp: PlannerInputs, strategy: StrategyNam
         state.sorted_count >= inp.bag_count
         and state.sorted_pool
         and _can_start_wash(state, inp, strategy)
+        and not state.load_plan_queue
     ):
         slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
         free_at = state.washer_free_at[slot_idx]
@@ -782,6 +909,153 @@ def _build_dryer_timeline(loads: list[WashLoad], inp: PlannerInputs) -> list[dic
     ]
 
 
+@dataclass
+class ResourceSlot:
+    busy_minutes: int = 0
+    total_minutes: int = 0
+
+    @property
+    def idle_minutes(self) -> int:
+        return max(0, self.total_minutes - self.busy_minutes)
+
+    @property
+    def utilization_pct(self) -> float:
+        if self.total_minutes <= 0:
+            return 0.0
+        return round(100.0 * self.busy_minutes / self.total_minutes, 1)
+
+
+class UtilizationTracker:
+    def __init__(self, inp: PlannerInputs) -> None:
+        self.slots: dict[str, ResourceSlot] = {}
+        if inp.uses_dedicated_weigher and inp.weigher_count > 0:
+            self.slots["weigher"] = ResourceSlot()
+        if inp.sorter_count > 0:
+            self.slots["sorter"] = ResourceSlot()
+        self.slots["washer_person"] = ResourceSlot()
+        if inp.folder_count > 0:
+            self.slots["folders"] = ResourceSlot()
+        for i in range(1, inp.washer_count + 1):
+            self.slots[f"washer_{i}"] = ResourceSlot()
+        for i in range(1, inp.dryer_count + 1):
+            self.slots[f"dryer_{i}"] = ResourceSlot()
+
+    def tick_legacy(self, state: SimState, inp: PlannerInputs) -> None:
+        for slot in self.slots.values():
+            slot.total_minutes += 1
+        if inp.uses_dedicated_weigher and "weigher" in self.slots:
+            if state.incoming_bags and state.minute >= inp.start_min:
+                self.slots["weigher"].busy_minutes += 1
+        if "sorter" in self.slots and _sorter_can_work(state, inp):
+            if state.sort_queue or (
+                inp.uses_dedicated_weigher and state.weigh_queue
+            ) or (not inp.uses_dedicated_weigher and state.sort_queue):
+                if state.sort_queue:
+                    self.slots["sorter"].busy_minutes += 1
+                elif state.sorter_on_break_until is None or state.minute >= state.sorter_on_break_until:
+                    if state.sort_queue or (
+                        inp.weighing_handled_by != "dedicated_weigher" and state.incoming_bags
+                    ):
+                        pass
+        if "sorter" in self.slots:
+            on_break = state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until
+            sorting_active = state.sort_queue and _sorter_can_work(state, inp) and not on_break
+            if sorting_active and state.sort_remainder > 0:
+                self.slots["sorter"].busy_minutes += 1
+        for i, free_at in enumerate(state.washer_free_at, start=1):
+            key = f"washer_{i}"
+            if key in self.slots:
+                for ld in state.loads:
+                    if ld.washer_id == i and ld.wash_start <= state.minute < ld.wash_end:
+                        self.slots[key].busy_minutes += 1
+                        break
+        for i, free_at in enumerate(state.dryer_free_at, start=1):
+            key = f"dryer_{i}"
+            if key in self.slots:
+                for ld in state.loads:
+                    if (
+                        ld.dryer_id == i
+                        and ld.dry_start is not None
+                        and ld.dry_end is not None
+                        and ld.dry_start <= state.minute < ld.dry_end
+                    ):
+                        self.slots[key].busy_minutes += 1
+                        break
+        if state.ready_for_fold > 0 and inp.folder_count > 0 and "folders" in self.slots:
+            self.slots["folders"].busy_minutes += 1
+
+    def tick_operational(self, state: OpSimState, inp: PlannerInputs) -> None:
+        for slot in self.slots.values():
+            slot.total_minutes += 1
+        if inp.uses_dedicated_weigher and "weigher" in self.slots:
+            if state.incoming_bags and state.minute >= inp.start_min:
+                self.slots["weigher"].busy_minutes += 1
+        if "sorter" in self.slots:
+            on_break = state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until
+            if state.sort_queue and _sorter_can_work_op(state, inp) and not on_break:
+                self.slots["sorter"].busy_minutes += 1
+        if state.washer_person_busy:
+            self.slots["washer_person"].busy_minutes += 1
+        for ld in state.loads:
+            key = f"washer_{ld.washer_id}"
+            if key in self.slots and ld.wash_start <= state.minute < ld.wash_end:
+                self.slots[key].busy_minutes += 1
+            if ld.dryer_id is not None and ld.dry_start is not None and ld.dry_end is not None:
+                dkey = f"dryer_{ld.dryer_id}"
+                if dkey in self.slots and ld.dry_start <= state.minute < ld.dry_end:
+                    self.slots[dkey].busy_minutes += 1
+        if state.ready_for_fold > 0 and inp.folder_count > 0 and "folders" in self.slots:
+            self.slots["folders"].busy_minutes += 1
+
+    def to_list(self) -> list[dict[str, Any]]:
+        rows = []
+        for name, slot in self.slots.items():
+            idle_pct = round(100.0 - slot.utilization_pct, 1)
+            rows.append(
+                {
+                    "resource": name,
+                    "busy_minutes": slot.busy_minutes,
+                    "idle_minutes": slot.idle_minutes,
+                    "total_minutes": slot.total_minutes,
+                    "utilization_pct": slot.utilization_pct,
+                    "idle_pct": idle_pct,
+                    "is_bottleneck": slot.utilization_pct >= 85,
+                    "has_excess_idle": idle_pct >= 40 and slot.total_minutes >= 30,
+                }
+            )
+        rows.sort(key=lambda r: (-r["utilization_pct"], r["resource"]))
+        return rows
+
+    def primary_bottleneck(self) -> str | None:
+        busy = [r for r in self.to_list() if r["is_bottleneck"]]
+        return busy[0]["resource"] if busy else None
+
+
+def _sorter_can_work_op(state: OpSimState, inp: PlannerInputs) -> bool:
+    if state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until:
+        return False
+    earliest = inp.start_min - inp.sorter_early_start_min
+    return state.minute >= earliest
+
+
+def _maybe_trigger_washer_break(state: OpSimState, inp: PlannerInputs) -> None:
+    if (
+        inp.washer_break_after_bags > 0
+        and inp.washer_break_duration_min > 0
+        and state.washer_bags_since_break >= inp.washer_break_after_bags
+        and not state.washer_person_busy
+    ):
+        state.washer_on_break_until = state.minute + inp.washer_break_duration_min
+        state.washer_bags_since_break = 0
+        state.washer_person_free_at = state.washer_on_break_until
+
+
+def _washer_person_available(state: OpSimState, inp: PlannerInputs) -> bool:
+    if state.washer_on_break_until is not None and state.minute < state.washer_on_break_until:
+        return False
+    return not state.washer_person_busy and state.minute >= state.washer_person_free_at
+
+
 def _build_alerts(inp: PlannerInputs, milestones: dict[str, dict[str, Any]], final: dict[str, Any]) -> list[str]:
     alerts: list[str] = []
     seen: set[str] = set()
@@ -809,6 +1083,9 @@ def _build_alerts(inp: PlannerInputs, milestones: dict[str, dict[str, Any]], fin
     elif inp.weighing_handled_by == "washer":
         add("Weighing at washers — load starts delayed by weigh time per bag")
 
+    for line in inp.split_distribution.get("summary_lines", []):
+        add(line)
+
     loads = inp.estimate_wash_loads()
     if loads:
         sample = loads[0]
@@ -822,6 +1099,7 @@ def _build_alerts(inp: PlannerInputs, milestones: dict[str, dict[str, Any]], fin
 
 def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]:
     state = _init_state(inp)
+    util = UtilizationTracker(inp)
     milestone_mins = {_parse_clock_minutes(c, default=c): c for c in MILESTONE_CLOCKS}
     milestones: dict[str, dict[str, Any]] = {}
     max_minute = inp.start_min + (inp.target_min - inp.start_min) + inp.wash_cycle_min + inp.dry_cycle_min + 240
@@ -838,6 +1116,7 @@ def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]
         _release_to_dryers(state, inp)
         _release_to_fold(state, inp)
         _step_fold(state, inp)
+        util.tick_legacy(state, inp)
 
         washed_bags = sum(ld.bags for ld in state.loads if ld.wash_end <= t)
         dried_bags = sum(ld.bags for ld in state.loads if ld.dry_end is not None and ld.dry_end <= t)
@@ -893,6 +1172,8 @@ def run_simulation(inp: PlannerInputs, strategy: StrategyName) -> dict[str, Any]
         },
         "washer_timeline": _build_washer_timeline(state.loads, inp),
         "dryer_timeline": _build_dryer_timeline(state.loads, inp),
+        "resource_utilization": util.to_list(),
+        "utilization_bottleneck": util.primary_bottleneck(),
         "alerts": _build_alerts(inp, milestones, final),
     }
 
@@ -1055,6 +1336,11 @@ class OpSimState:
     switch_to_folding_min: int | None = None
     sorting_continues: bool = True
     washer_pauses_for_moves: bool = False
+    load_plan_queue: list[int] = field(default_factory=list)
+    sorter_bags_since_break: int = 0
+    sorter_on_break_until: int | None = None
+    washer_bags_since_break: int = 0
+    washer_on_break_until: int | None = None
 
 
 def _init_op_state(inp: PlannerInputs) -> OpSimState:
@@ -1073,6 +1359,7 @@ def _init_op_state(inp: PlannerInputs) -> OpSimState:
         dryer_free_at=[inp.start_min] * inp.dryer_count,
         washer_person_free_at=inp.start_min,
         batch_target=inp.batch_size,
+        load_plan_queue=list(inp.wash_load_plan),
     )
     if inp.uses_dedicated_weigher:
         state.incoming_bags = list(inp.bag_weights)
@@ -1136,7 +1423,7 @@ def _log_washer_person(
 
 
 def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bool) -> None:
-    if inp.uses_dedicated_weigher and state.incoming_bags and inp.weigher_count > 0:
+    if inp.uses_dedicated_weigher and state.incoming_bags and inp.weigher_count > 0 and state.minute >= inp.start_min:
         state.weigh_remainder += inp.weigher_count / inp.weigh_min_per_bag
         while state.weigh_remainder >= 1 and state.incoming_bags:
             weight = state.incoming_bags.pop(0)
@@ -1161,7 +1448,15 @@ def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bo
                 order.sort_start = state.minute
             state.sort_queue.append((oid, weight))
 
-    if allow_sort and state.sort_queue and inp.sorter_count > 0 and not state.sorting_paused:
+    on_sorter_break = state.sorter_on_break_until is not None and state.minute < state.sorter_on_break_until
+    if (
+        allow_sort
+        and state.sort_queue
+        and inp.sorter_count > 0
+        and not state.sorting_paused
+        and _sorter_can_work_op(state, inp)
+        and not on_sorter_break
+    ):
         state.sort_remainder += inp.sorter_count / inp.effective_sort_min_per_bag
         while state.sort_remainder >= 1 and state.sort_queue:
             oid, weight = state.sort_queue.pop(0)
@@ -1173,17 +1468,22 @@ def _step_op_weigh_sort(state: OpSimState, inp: PlannerInputs, *, allow_sort: bo
             state.sorted_count += 1
             state.sort_remainder -= 1
             state.batch_sorted += 1
+            state.sorter_bags_since_break += 1
             if inp.weighing_handled_by == "sorter":
                 order.weigh_start = order.sort_start
                 order.weigh_end = order.sort_end
                 state.weighed_count += 1
+            if inp.sorter_break_after_bags > 0 and state.sorter_bags_since_break >= inp.sorter_break_after_bags:
+                state.sorter_on_break_until = state.minute + inp.sorter_break_duration_min
+                state.sorter_bags_since_break = 0
+                break
             if state.batch_sorted >= state.batch_target:
                 state.sorting_paused = True
                 break
 
 
-def _washer_person_idle(state: OpSimState) -> bool:
-    return not state.washer_person_busy and state.minute >= state.washer_person_free_at
+def _washer_person_idle(state: OpSimState, inp: PlannerInputs) -> bool:
+    return _washer_person_available(state, inp)
 
 
 def _start_washer_person_task(
@@ -1257,6 +1557,7 @@ def _complete_washer_person_task(state: OpSimState, inp: PlannerInputs) -> None:
             order.dryer_load_id = load.load_id
             order.dry_start = load.dry_start
             order.dry_end = load.dry_end
+        _maybe_trigger_washer_break(state, inp)
 
 
 def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode: bool) -> None:
@@ -1264,7 +1565,7 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
         return
 
     # Priority 1: load dryers for transferred loads
-    while _washer_person_idle(state) and state.pending_washer_tasks:
+    while _washer_person_idle(state, inp) and state.pending_washer_tasks:
         task_name, load_id = state.pending_washer_tasks.pop(0)
         if task_name != "load_dryer":
             state.pending_washer_tasks.insert(0, (task_name, load_id))
@@ -1301,7 +1602,7 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
     # Priority 2: unload finished wash loads
     ready = [ld for ld in state.finished_wash_queue if ld.wash_end <= state.minute]
     ready.sort(key=lambda ld: ld.wash_end)
-    if _washer_person_idle(state) and ready:
+    if _washer_person_idle(state, inp) and ready:
         load = ready.pop(0)
         state.finished_wash_queue.remove(load)
         _start_washer_person_task(
@@ -1320,15 +1621,25 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
     if batch_mode and not state.sorting_paused and state.batch_sorted < state.batch_target:
         return
 
-    while _washer_person_idle(state) and state.sorted_pool:
+    while _washer_person_idle(state, inp) and state.sorted_pool:
         if batch_mode and state.batch_wash_started and state.finished_wash_queue:
             return
-        weights = [w for _, w in state.sorted_pool]
-        chunk_weights, _ = pack_load_from_pool(weights, inp.washer_capacity_lb)
-        if not chunk_weights:
+        chunk_entries: list[tuple[int, float]] | None = None
+        if state.load_plan_queue:
+            need = state.load_plan_queue[0]
+            if len(state.sorted_pool) >= need:
+                chunk_entries = state.sorted_pool[:need]
+                state.sorted_pool = state.sorted_pool[need:]
+                state.load_plan_queue.pop(0)
+            elif state.sorted_count >= inp.bag_count:
+                need = len(state.sorted_pool)
+                chunk_entries = list(state.sorted_pool)
+                state.sorted_pool = []
+                state.load_plan_queue.pop(0)
+        if chunk_entries is None:
             break
+        chunk_weights = [w for _, w in chunk_entries]
         chunk_len = len(chunk_weights)
-        chunk_entries = state.sorted_pool[:chunk_len]
         slot_idx = min(range(len(state.washer_free_at)), key=lambda i: state.washer_free_at[i])
         washer_free = state.washer_free_at[slot_idx]
         if washer_free > state.minute and not batch_mode:
@@ -1348,9 +1659,9 @@ def _schedule_washer_person(state: OpSimState, inp: PlannerInputs, *, batch_mode
         )
         state.next_load_id += 1
         state.loads.append(load)
-        state.sorted_pool = state.sorted_pool[chunk_len:]
         state.washer_free_at[slot_idx] = wash_end
         state.batch_wash_started = True
+        state.washer_bags_since_break += chunk_len
         if inp.uses_washer_weighing:
             state.weighed_count += chunk_len
         _start_washer_person_task(
@@ -1574,6 +1885,7 @@ def run_operational_simulation(
     state = _init_op_state(inp)
     state.batch_target = effective_batch
     state.sorting_continues = not batch_mode
+    util = UtilizationTracker(inp)
 
     max_minute = inp.start_min + (inp.target_min - inp.start_min) + inp.wash_cycle_min + inp.dry_cycle_min + 360
 
@@ -1588,6 +1900,7 @@ def run_operational_simulation(
         _release_ready_fold(state, inp)
         _step_op_fold(state, inp)
         _maybe_advance_batch(state, inp, batch_mode=batch_mode)
+        util.tick_operational(state, inp)
 
         if state.folded >= inp.bag_count and t >= inp.target_min:
             break
@@ -1603,6 +1916,8 @@ def run_operational_simulation(
         "dryer_timeline": _build_op_dryer_timeline(state.loads, inp),
         "washer_person_timeline": state.washer_person_log,
         "bottleneck_alerts": _build_op_bottleneck_alerts(state, inp),
+        "resource_utilization": util.to_list(),
+        "utilization_bottleneck": util.primary_bottleneck(),
         "summary": {
             "bags_sorted": state.sorted_count,
             "bags_folded": int(state.folded),
@@ -1699,8 +2014,70 @@ def build_operational_plan(inp: PlannerInputs) -> dict[str, Any]:
         "dryer_timeline": active["dryer_timeline"],
         "washer_person_timeline": active["washer_person_timeline"],
         "bottleneck_alerts": active["bottleneck_alerts"],
+        "resource_utilization": active.get("resource_utilization", []),
+        "utilization_bottleneck": active.get("utilization_bottleneck"),
         "summary": active["summary"],
     }
+
+
+def _has_whatif_scenario(inp: PlannerInputs) -> bool:
+    return (
+        inp.sorter_early_start_min > 0
+        or inp.sorter_break_after_bags > 0
+        or inp.washer_break_after_bags > 0
+    )
+
+
+def _build_whatif_comparison(
+    baseline_op: dict[str, Any],
+    scenario_op: dict[str, Any],
+    baseline_rec: dict[str, Any],
+    scenario_rec: dict[str, Any],
+) -> dict[str, Any]:
+    b_sum = baseline_op.get("summary", {})
+    s_sum = scenario_op.get("summary", {})
+    b_folded = int(b_sum.get("bags_folded", baseline_op.get("final", {}).get("bags_folded", 0)))
+    s_folded = int(s_sum.get("bags_folded", scenario_op.get("final", {}).get("bags_folded", 0)))
+    return {
+        "baseline": {
+            "bags_folded": b_folded,
+            "first_wash_start": b_sum.get("first_wash_start"),
+            "switch_to_folding": b_sum.get("switch_to_folding"),
+            "bottleneck": baseline_rec.get("main_bottleneck"),
+            "utilization_bottleneck": baseline_op.get("utilization_bottleneck"),
+        },
+        "scenario": {
+            "bags_folded": s_folded,
+            "first_wash_start": s_sum.get("first_wash_start"),
+            "switch_to_folding": s_sum.get("switch_to_folding"),
+            "bottleneck": scenario_rec.get("main_bottleneck"),
+            "utilization_bottleneck": scenario_op.get("utilization_bottleneck"),
+        },
+        "delta": {
+            "bags_folded": s_folded - b_folded,
+            "first_wash_start": _delta_time_label(
+                b_sum.get("first_wash_start"), s_sum.get("first_wash_start")
+            ),
+            "switch_to_folding": _delta_time_label(
+                b_sum.get("switch_to_folding"), s_sum.get("switch_to_folding")
+            ),
+        },
+    }
+
+
+def _delta_time_label(baseline: str | None, scenario: str | None) -> str | None:
+    if not baseline or not scenario:
+        return None
+    try:
+        b = _parse_clock_minutes(baseline, default="12:00 PM")
+        s = _parse_clock_minutes(scenario, default="12:00 PM")
+        diff = s - b
+        if diff == 0:
+            return "0 min"
+        sign = "+" if diff > 0 else ""
+        return f"{sign}{diff} min"
+    except ValueError:
+        return None
 
 
 def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
@@ -1713,18 +2090,55 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
     recommendation = recommend_strategy(strategies, inp, staffing)
     recommended_key = recommendation["recommended"]
     operational = build_operational_plan(inp)
+
+    what_if: dict[str, Any] | None = None
+    if _has_whatif_scenario(inp):
+        baseline_inp = replace(
+            inp,
+            sorter_early_start_min=0,
+            sorter_break_after_bags=0,
+            sorter_break_duration_min=0,
+            washer_break_after_bags=0,
+            washer_break_duration_min=0,
+        )
+        baseline_strategies = {
+            "continuous_washing": run_simulation(baseline_inp, "continuous_washing"),
+            "dryer_push": run_simulation(baseline_inp, "dryer_push"),
+        }
+        baseline_rec = recommend_strategy(baseline_strategies, baseline_inp, compute_staffing(baseline_inp))
+        baseline_op = build_operational_plan(baseline_inp)
+        what_if = {
+            "enabled": True,
+            "params": {
+                "sorter_early_start_min": inp.sorter_early_start_min,
+                "sorter_break_after_bags": inp.sorter_break_after_bags,
+                "sorter_break_duration_min": inp.sorter_break_duration_min,
+                "washer_break_after_bags": inp.washer_break_after_bags,
+                "washer_break_duration_min": inp.washer_break_duration_min,
+            },
+            "comparison": _build_whatif_comparison(
+                baseline_op["active_strategy"],
+                operational["active_strategy"],
+                baseline_rec,
+                recommendation,
+            ),
+            "baseline_operational_summary": baseline_op["summary"],
+        }
+
     return {
         "inputs": {
             "start_time": _minutes_to_label(inp.start_min),
             "target_time": _minutes_to_label(inp.target_min),
             "bag_count": inp.bag_count,
             "avg_lbs_per_bag": inp.avg_lbs_per_bag,
-            "small_bag_pct": inp.small_bag_pct,
-            "medium_bag_pct": inp.medium_bag_pct,
-            "large_bag_pct": inp.large_bag_pct,
-            "small_bag_lb": inp.small_bag_lb,
-            "medium_bag_lb": inp.medium_bag_lb,
-            "large_bag_lb": inp.large_bag_lb,
+            "single_bag_load_pct": inp.single_bag_load_pct,
+            "two_bag_split_pct": inp.two_bag_split_pct,
+            "split_distribution": inp.split_distribution,
+            "sorter_early_start_min": inp.sorter_early_start_min,
+            "sorter_break_after_bags": inp.sorter_break_after_bags,
+            "sorter_break_duration_min": inp.sorter_break_duration_min,
+            "washer_break_after_bags": inp.washer_break_after_bags,
+            "washer_break_duration_min": inp.washer_break_duration_min,
             "washer_count": inp.washer_count,
             "dryer_count": inp.dryer_count,
             "washer_capacity_lb": inp.washer_capacity_lb,
@@ -1754,4 +2168,7 @@ def simulate_shift_capacity(data: dict[str, Any] | None) -> dict[str, Any]:
         "recommendation": recommendation,
         "active_strategy": strategies[recommended_key],
         "operational": operational,
+        "resource_utilization": operational.get("resource_utilization", []),
+        "utilization_bottleneck": operational.get("utilization_bottleneck"),
+        "what_if": what_if,
     }

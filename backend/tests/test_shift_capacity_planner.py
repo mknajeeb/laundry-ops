@@ -4,11 +4,14 @@ import pytest
 
 from backend.shift_capacity_planner import (
     DEFAULTS,
-    build_bag_weight_list,
+    build_uniform_bag_weights,
+    build_wash_load_plan,
+    compute_split_load_distribution,
     pack_load_from_pool,
     parse_planner_inputs,
     run_operational_simulation,
     simulate_shift_capacity,
+    split_distribution_summary,
 )
 
 
@@ -98,20 +101,43 @@ class TestShiftCapacityPlannerDefaults:
         assert isinstance(strategy["alerts"], list)
 
 
-class TestBagMixLoadSizing:
-    def test_build_bag_weight_list_distribution(self):
-        weights = build_bag_weight_list(
-            10,
-            small_pct=50,
-            medium_pct=30,
-            large_pct=20,
-            small_lb=20,
-            medium_lb=30,
-            large_lb=50,
-        )
+class TestSplitLoadDistribution:
+    def test_uniform_bag_weights(self):
+        weights = build_uniform_bag_weights(10, 20)
         assert len(weights) == 10
-        assert sum(1 for w in weights if w == 20) >= 4
-        assert sum(1 for w in weights if w == 50) >= 1
+        assert all(w == 20 for w in weights)
+
+    def test_split_distribution_counts(self):
+        dist = compute_split_load_distribution(50, single_pct=20, two_split_pct=40)
+        assert dist["single_bag_orders"] == 10
+        assert dist["two_bag_split_orders"] == 20
+        assert dist["multi_bag_orders"] == 20
+        assert dist["two_bag_split_loads"] == 10
+
+    def test_build_wash_load_plan_types(self):
+        plan = build_wash_load_plan(
+            50, single_pct=20, two_split_pct=40, avg_lb=20, washer_capacity_lb=50
+        )
+        assert sum(plan) == 50
+        assert plan.count(1) == 10
+        assert len([x for x in plan if x == 2]) >= 10
+
+    def test_higher_split_pct_more_two_bag_loads(self):
+        low = simulate_shift_capacity(
+            _default_payload(single_bag_load_pct=40, two_bag_split_pct=10)
+        )
+        high = simulate_shift_capacity(
+            _default_payload(single_bag_load_pct=10, two_bag_split_pct=60)
+        )
+        low_two = low["inputs"]["split_distribution"]["two_bag_split_loads"]
+        high_two = high["inputs"]["split_distribution"]["two_bag_split_loads"]
+        assert high_two > low_two
+
+    def test_split_summary_lines_in_response(self):
+        result = simulate_shift_capacity(_default_payload())
+        lines = result["inputs"]["split_distribution"]["summary_lines"]
+        assert len(lines) == 3
+        assert "50" in lines[0]
 
     def test_pack_load_respects_capacity(self):
         pool = [20, 20, 30, 50]
@@ -119,34 +145,6 @@ class TestBagMixLoadSizing:
         assert sum(chunk) <= 50
         assert len(chunk) >= 1
         assert len(chunk) + len(rem) == len(pool)
-
-    def test_heavy_bag_mix_fewer_bags_per_load(self):
-        uniform = simulate_shift_capacity(
-            _default_payload(small_bag_pct=100, medium_bag_pct=0, large_bag_pct=0, small_bag_lb=20)
-        )
-        heavy = simulate_shift_capacity(
-            _default_payload(small_bag_pct=0, medium_bag_pct=0, large_bag_pct=100, large_bag_lb=50)
-        )
-        assert uniform["inputs"]["avg_bags_per_wash_load"] > heavy["inputs"]["avg_bags_per_wash_load"]
-        assert uniform["inputs"]["total_wash_loads"] < heavy["inputs"]["total_wash_loads"]
-
-    def test_mixed_load_plan_not_fixed_two_bags(self):
-        result = simulate_shift_capacity(
-            _default_payload(
-                bag_count=50,
-                small_bag_pct=60,
-                medium_bag_pct=30,
-                large_bag_pct=10,
-                small_bag_lb=20,
-                medium_bag_lb=30,
-                large_bag_lb=50,
-                washer_capacity_lb=50,
-            )
-        )
-        plan = result["inputs"]["estimated_load_plan"]
-        bag_counts = {row["bags"] for row in plan}
-        assert len(bag_counts) >= 1
-        assert result["inputs"]["avg_bags_per_wash_load"] != 2 or max(bag_counts) != min(bag_counts)
 
 
 class TestWeighingAssignment:
@@ -319,3 +317,75 @@ class TestOperationalSimulation:
     def test_invalid_washing_strategy(self):
         with pytest.raises(ValueError, match="washing_strategy"):
             parse_planner_inputs({"washing_strategy": "invalid"})
+
+    def test_invalid_split_pct_sum(self):
+        with pytest.raises(ValueError, match="must be <= 100"):
+            parse_planner_inputs({"single_bag_load_pct": 60, "two_bag_split_pct": 50})
+
+
+class TestResourceUtilization:
+    def test_utilization_in_operational_response(self):
+        result = simulate_shift_capacity(_default_payload())
+        util = result["resource_utilization"]
+        assert isinstance(util, list)
+        assert len(util) >= 1
+        row = util[0]
+        assert "resource" in row
+        assert "busy_minutes" in row
+        assert "idle_minutes" in row
+        assert "utilization_pct" in row
+        assert "is_bottleneck" in row
+
+    def test_utilization_in_legacy_strategy(self):
+        result = simulate_shift_capacity(_default_payload())
+        util = result["strategies"]["continuous_washing"]["resource_utilization"]
+        resources = {r["resource"] for r in util}
+        assert "washer_1" in resources
+
+
+class TestWhatIfScenarios:
+    def test_sorter_early_start_improves_sorting(self):
+        baseline = simulate_shift_capacity(
+            _default_payload(weighing_handled_by="sorter", sorter_count=1, bag_count=30)
+        )
+        early = simulate_shift_capacity(
+            _default_payload(
+                weighing_handled_by="sorter",
+                sorter_count=1,
+                bag_count=30,
+                sorter_early_start_min=30,
+            )
+        )
+        assert early["what_if"] is not None
+        assert early["what_if"]["params"]["sorter_early_start_min"] == 30
+        b_sorted = early["what_if"]["comparison"]["baseline"]["bags_folded"]
+        s_sorted = early["what_if"]["comparison"]["scenario"]["bags_folded"]
+        assert s_sorted >= b_sorted
+
+    def test_sorter_break_reduces_throughput(self):
+        baseline = simulate_shift_capacity(_default_payload(bag_count=40, sorter_count=2))
+        with_break = simulate_shift_capacity(
+            _default_payload(
+                bag_count=40,
+                sorter_count=2,
+                sorter_break_after_bags=10,
+                sorter_break_duration_min=15,
+            )
+        )
+        assert with_break["what_if"] is not None
+        assert with_break["what_if"]["comparison"]["delta"]["bags_folded"] <= 0
+
+    def test_washer_break_in_whatif(self):
+        result = simulate_shift_capacity(
+            _default_payload(
+                bag_count=24,
+                washer_break_after_bags=6,
+                washer_break_duration_min=10,
+            )
+        )
+        assert result["what_if"] is not None
+        assert result["what_if"]["params"]["washer_break_after_bags"] == 6
+
+    def test_no_whatif_when_defaults(self):
+        result = simulate_shift_capacity(_default_payload())
+        assert result["what_if"] is None

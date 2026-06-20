@@ -6,9 +6,11 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Collapse,
   FormControl,
   Grid,
   InputLabel,
+  LinearProgress,
   MenuItem,
   Paper,
   Select,
@@ -24,6 +26,8 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import { simulateShiftCapacity } from "../api";
 import { useI18n } from "../i18n/I18nContext";
@@ -35,12 +39,13 @@ const DEFAULT_INPUTS = {
   target_time: "12:00 PM",
   bag_count: 50,
   avg_lbs_per_bag: 20,
-  small_bag_pct: 40,
-  medium_bag_pct: 40,
-  large_bag_pct: 20,
-  small_bag_lb: 20,
-  medium_bag_lb: 30,
-  large_bag_lb: 50,
+  single_bag_load_pct: 20,
+  two_bag_split_pct: 40,
+  sorter_early_start_min: 0,
+  sorter_break_after_bags: 0,
+  sorter_break_duration_min: 0,
+  washer_break_after_bags: 0,
+  washer_break_duration_min: 0,
   washer_count: 4,
   dryer_count: 4,
   washer_capacity_lb: 50,
@@ -121,6 +126,104 @@ function TopCard({ label, value, sub, variant = "total" }) {
           {sub}
         </Typography>
       ) : null}
+    </Paper>
+  );
+}
+
+function ResourceUtilizationPanel({ utilization }) {
+  if (!utilization?.length) return null;
+  return (
+    <Paper elevation={0} sx={{ p: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}>
+      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+        Resource utilization
+      </Typography>
+      <Stack spacing={1}>
+        {utilization.map((row) => (
+          <Box key={row.resource}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.25 }}>
+              <Typography variant="caption" fontWeight={700} sx={{ textTransform: "capitalize" }}>
+                {row.resource.replace(/_/g, " ")}
+                {row.is_bottleneck ? (
+                  <Chip size="small" label="bottleneck" color="error" sx={{ ml: 0.5, height: 18, fontSize: 10 }} />
+                ) : null}
+                {row.has_excess_idle ? (
+                  <Chip size="small" label="idle" color="info" sx={{ ml: 0.5, height: 18, fontSize: 10 }} />
+                ) : null}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {row.utilization_pct}% busy · {row.idle_minutes}m idle
+              </Typography>
+            </Stack>
+            <LinearProgress
+              variant="determinate"
+              value={row.utilization_pct}
+              sx={{
+                height: 8,
+                borderRadius: 1,
+                bgcolor: "#e2e8f0",
+                "& .MuiLinearProgress-bar": {
+                  bgcolor: row.is_bottleneck ? "#dc2626" : row.has_excess_idle ? "#94a3b8" : "#0891b2",
+                },
+              }}
+            />
+          </Box>
+        ))}
+      </Stack>
+    </Paper>
+  );
+}
+
+function SplitDistributionCard({ splitDist, bagCount }) {
+  if (!splitDist) return null;
+  return (
+    <Paper
+      elevation={0}
+      sx={{ p: 2, borderRadius: 2, border: "1px solid", borderColor: VEEWASH_DASHBOARD.primaryBlueBorder }}
+    >
+      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+        Load split distribution ({bagCount} orders)
+      </Typography>
+      <Stack spacing={0.5}>
+        {(splitDist.summary_lines || []).map((line) => (
+          <Typography key={line} variant="body2">
+            {line}
+          </Typography>
+        ))}
+      </Stack>
+      <Stack direction="row" flexWrap="wrap" gap={0.75} sx={{ mt: 1 }}>
+        <Chip size="small" label={`${splitDist.total_wash_loads} wash loads`} />
+        <Chip size="small" label={`${splitDist.single_loads} single`} />
+        <Chip size="small" label={`${splitDist.two_bag_split_loads} × 2-bag split`} />
+        <Chip size="small" label={`${splitDist.multi_bag_loads} capacity-packed`} />
+      </Stack>
+    </Paper>
+  );
+}
+
+function WhatIfComparison({ whatIf }) {
+  if (!whatIf?.comparison) return null;
+  const { baseline, scenario, delta } = whatIf.comparison;
+  return (
+    <Paper elevation={0} sx={{ p: 2, border: "2px solid", borderColor: "#f59e0b", bgcolor: "#fffbeb" }}>
+      <Typography variant="subtitle2" fontWeight={800} gutterBottom>
+        What-if vs baseline
+      </Typography>
+      <Grid container spacing={1.5}>
+        <Grid item xs={12} sm={4}>
+          <TopCard label="Baseline folded" value={baseline.bags_folded} sub={`Bottleneck: ${baseline.bottleneck || "—"}`} variant="snapshot" />
+        </Grid>
+        <Grid item xs={12} sm={4}>
+          <TopCard label="Scenario folded" value={scenario.bags_folded} sub={`Bottleneck: ${scenario.bottleneck || "—"}`} variant="pending" />
+        </Grid>
+        <Grid item xs={12} sm={4}>
+          <TopCard
+            label="Delta"
+            value={delta.bags_folded >= 0 ? `+${delta.bags_folded}` : delta.bags_folded}
+            sub={[delta.first_wash_start, delta.switch_to_folding].filter(Boolean).join(" · ") || "—"}
+            variant={delta.bags_folded >= 0 ? "completed" : "total"}
+          />
+        </Grid>
+      </Grid>
     </Paper>
   );
 }
@@ -453,6 +556,7 @@ export default function ShiftCapacityPlannerPage() {
   const [error, setError] = useState("");
   const [tab, setTab] = useState(0);
   const [legacyTab, setLegacyTab] = useState(0);
+  const [whatIfOpen, setWhatIfOpen] = useState(false);
 
   const onChange = useCallback((key, value) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
@@ -467,12 +571,13 @@ export default function ShiftCapacityPlannerPage() {
     [
       "bag_count",
       "avg_lbs_per_bag",
-      "small_bag_pct",
-      "medium_bag_pct",
-      "large_bag_pct",
-      "small_bag_lb",
-      "medium_bag_lb",
-      "large_bag_lb",
+      "single_bag_load_pct",
+      "two_bag_split_pct",
+      "sorter_early_start_min",
+      "sorter_break_after_bags",
+      "sorter_break_duration_min",
+      "washer_break_after_bags",
+      "washer_break_duration_min",
       "washer_count",
       "dryer_count",
       "washer_capacity_lb",
@@ -523,6 +628,8 @@ export default function ShiftCapacityPlannerPage() {
   const legacyData = result?.strategies?.[legacyStrategy];
   const legacySummary = legacyData?.summary || {};
   const inputsMeta = result?.inputs || {};
+  const splitDist = inputsMeta.split_distribution;
+  const resourceUtil = opData?.resource_utilization || result?.resource_utilization || [];
 
   return (
     <Box sx={{ bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100vh", pb: 4 }}>
@@ -560,15 +667,15 @@ export default function ShiftCapacityPlannerPage() {
                 <TextField label="Start time" size="small" value={inputs.start_time} onChange={(e) => onChange("start_time", e.target.value)} fullWidth />
                 <TextField label="Target time" size="small" value={inputs.target_time} onChange={(e) => onChange("target_time", e.target.value)} fullWidth />
                 {numField("bag_count", "Bag count", inputs, onChange, { min: 1 })}
+                {numField("avg_lbs_per_bag", "Avg lb/bag", inputs, onChange, { min: 1 })}
                 <Typography variant="caption" fontWeight={700} color="text.secondary">
-                  Bag size mix (%)
+                  Load split %
                 </Typography>
-                {numField("small_bag_pct", "Small %", inputs, onChange, { min: 0 })}
-                {numField("medium_bag_pct", "Medium %", inputs, onChange, { min: 0 })}
-                {numField("large_bag_pct", "Large %", inputs, onChange, { min: 0 })}
-                {numField("small_bag_lb", "Small lb", inputs, onChange, { min: 1 })}
-                {numField("medium_bag_lb", "Medium lb", inputs, onChange, { min: 1 })}
-                {numField("large_bag_lb", "Large lb", inputs, onChange, { min: 1 })}
+                {numField("single_bag_load_pct", "Single-bag load %", inputs, onChange, { min: 0, max: 100 })}
+                {numField("two_bag_split_pct", "2-bag split load %", inputs, onChange, { min: 0, max: 100 })}
+                <Typography variant="caption" color="text.secondary">
+                  Remainder → capacity-packed loads
+                </Typography>
                 <FormControl size="small" fullWidth>
                   <InputLabel>Weighing handled by</InputLabel>
                   <Select
@@ -627,6 +734,23 @@ export default function ShiftCapacityPlannerPage() {
                 {numField("washer_transfer_min", "Transfer/load (min)", inputs, onChange, { min: 0 })}
                 {numField("load_dryer_min", "Load dryer (min)", inputs, onChange, { min: 0 })}
                 {numField("unload_dryer_min", "Unload dryer (min)", inputs, onChange, { min: 0 })}
+                <Button
+                  size="small"
+                  onClick={() => setWhatIfOpen((v) => !v)}
+                  endIcon={whatIfOpen ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                  sx={{ justifyContent: "space-between", fontWeight: 700, textTransform: "none" }}
+                >
+                  What-if scenarios
+                </Button>
+                <Collapse in={whatIfOpen}>
+                  <Stack spacing={1.25}>
+                    {numField("sorter_early_start_min", "Sorter early start (min)", inputs, onChange, { min: 0 })}
+                    {numField("sorter_break_after_bags", "Sorter break after bags", inputs, onChange, { min: 0 })}
+                    {numField("sorter_break_duration_min", "Sorter break (min)", inputs, onChange, { min: 0 })}
+                    {numField("washer_break_after_bags", "Washer break after bags", inputs, onChange, { min: 0 })}
+                    {numField("washer_break_duration_min", "Washer break (min)", inputs, onChange, { min: 0 })}
+                  </Stack>
+                </Collapse>
                 <Button variant="contained" startIcon={loading ? <CircularProgress size={18} color="inherit" /> : <PlayArrowIcon />} onClick={runSim} disabled={loading} sx={{ bgcolor: VEEWASH_DASHBOARD.primaryBlue, fontWeight: 700 }}>
                   {t("shiftCapacityPlanner.run")}
                 </Button>
@@ -639,6 +763,9 @@ export default function ShiftCapacityPlannerPage() {
 
             {result ? (
               <Stack spacing={2}>
+                <SplitDistributionCard splitDist={splitDist} bagCount={inputsMeta.bag_count} />
+                <WhatIfComparison whatIf={result.what_if} />
+
                 <OperationalBatchCard operational={operational} />
 
                 <Stack direction="row" flexWrap="wrap" gap={1}>
@@ -662,6 +789,8 @@ export default function ShiftCapacityPlannerPage() {
                     {msg}
                   </Alert>
                 ))}
+
+                <ResourceUtilizationPanel utilization={resourceUtil} />
 
                 <Typography variant="subtitle2" fontWeight={800}>
                   Order timeline
