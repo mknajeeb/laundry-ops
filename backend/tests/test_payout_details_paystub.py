@@ -781,6 +781,30 @@ def test_paystub_html_available_for_cash_payment():
         assert "Direct Deposit" in dd_html
 
 
+def test_paystub_ytd_only_prior_pay_periods_in_year():
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value = cursor
+    cursor.fetchall.return_value = []
+
+    from backend.payroll_payout_details import fetch_finalized_paystub_ytd
+
+    ytd = fetch_finalized_paystub_ytd(
+        conn,
+        3,
+        42,
+        2026,
+        "2026-05-17",
+        current_batch_id=5,
+        exclude_line_id=100,
+    )
+    assert ytd["gross_pay"] == 0.0
+    sql = cursor.execute.call_args[0][0]
+    assert "worker_category = 'w2'" in sql
+    assert "pay_period_end <" in sql
+    assert "YEAR(pb.pay_period_end)" in sql
+
+
 def test_paystub_employee_tax_balance_hidden_when_checkbox_off():
     conn = MagicMock()
     batch = {

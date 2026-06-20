@@ -776,8 +776,6 @@ def _organization_website(row: dict) -> str:
 
 def _organization_print_branding(conn, organization_id: int, *, logo_height_px: int = 52) -> dict[str, str]:
     """Company name, logo, and compact contact lines for payroll print documents."""
-    from backend.org_branding_urls import rewrite_org_logo_url_for_client
-
     c = conn.cursor(dictionary=True)
     base_cols = ["slug", "display_name"]
     optional_cols = [
@@ -808,33 +806,28 @@ def _organization_print_branding(conn, organization_id: int, *, logo_height_px: 
             "washpro": "WashPro Inc.",
         }.get(slug, "Payroll")
 
-    logo_url = rewrite_org_logo_url_for_client(row.get("logo_url"))
-    if logo_url:
-        logo_html = (
-            f'<img src="{logo_url}" alt="{company_name}" '
-            f'style="height:{logo_height_px}px;width:auto;object-fit:contain;display:block;" />'
-        )
-    else:
-        from backend.veewash_branding import veewash_logo_img_html
+    logo_url_raw = row.get("logo_url")
+    from backend.org_logo_embed import organization_logo_img_html
 
-        logo_html = veewash_logo_img_html(height_px=logo_height_px)
+    logo_html = organization_logo_img_html(
+        int(organization_id),
+        logo_url_raw,
+        company_name,
+        height_px=logo_height_px,
+    )
 
     address_lines = _format_organization_address(row)
     phone = _format_us_phone_display(str(row.get("phone") or ""))
     website = _organization_website(row)
-    contact_bits = []
-    if phone:
-        contact_bits.append(phone)
-    if website:
-        contact_bits.append(website)
-    contact_line = " • ".join(contact_bits)
 
     return {
         "company_name": company_name,
         "logo_html": logo_html,
         "address_line": address_lines[0] if address_lines else "",
         "address_line2": address_lines[1] if len(address_lines) > 1 else "",
-        "contact_line": contact_line,
+        "phone_display": phone,
+        "website": website,
+        "contact_line": " • ".join(p for p in [phone, website] if p),
     }
 
 
@@ -1551,11 +1544,15 @@ def _paystub_base_css() -> str:
   .info-grid dt { color: #64748b; font-size: 9px; }
   .info-grid dd { margin: 0 0 2px; font-weight: 600; }
   .note-box { font-size: 8.5px; color: #64748b; margin: 3px 0; padding: 4px 6px; background: #f8fafc; border-radius: 3px; }
-  .brand-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 3px; border-top: 2px solid #0097b2; padding-top: 5px; }
+  .brand-head { display: flex; align-items: center; gap: 14px; margin-bottom: 2px; padding: 8px 10px 7px; border-top: 3px solid #0097b2; background: linear-gradient(180deg, #f0fdfa 0%, #ffffff 70%); border-radius: 0 0 8px 8px; }
+  .brand-logo-wrap { flex-shrink: 0; padding: 2px 0; }
+  .paystub-logo { height: 44px; width: auto; object-fit: contain; display: block; }
   .brand-text { flex: 1; min-width: 0; }
-  .company-name { font-size: 0.95rem; font-weight: 700; color: #0f172a; line-height: 1.2; }
-  .brand-contact { font-size: 8.5px; color: #475569; margin: 1px 0 0; line-height: 1.3; }
-  .doc-title { color: #0097b2; font-size: 0.88rem; margin: 4px 0 2px; font-weight: 700; }
+  .company-name { font-size: 1.02rem; font-weight: 700; color: #0f766e; line-height: 1.2; letter-spacing: -0.01em; }
+  .brand-contact-line { font-size: 8.5px; color: #64748b; margin: 1px 0 0; line-height: 1.35; }
+  .brand-contact-line .sep { color: #94a3b8; margin: 0 5px; }
+  .doc-title-row { margin: 5px 0 3px; padding-bottom: 3px; border-bottom: 1px solid #e2e8f0; }
+  .doc-title { color: #0097b2; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
   table.compact.ytd th.col-current, table.compact.ytd td.col-current { width: 18%; text-align: right; }
   table.compact.ytd th.col-ytd, table.compact.ytd td.col-ytd { width: 18%; text-align: right; }
   table.compact.ytd td:first-child, table.compact.ytd th:first-child { width: 64%; }
@@ -1641,10 +1638,10 @@ def _add_paystub_ytd(accum: dict[str, float], components: dict[str, float]) -> d
 
 def _paystub_year_from_batch(batch: dict, line: dict, payment: dict) -> int:
     for raw in (
-        payment.get("date"),
-        line.get("payment_date"),
         batch.get("pay_period_end"),
         batch.get("pay_period_start"),
+        payment.get("date"),
+        line.get("payment_date"),
     ):
         if raw:
             try:
@@ -1659,12 +1656,23 @@ def fetch_finalized_paystub_ytd(
     organization_id: int,
     user_id: int,
     year: int,
+    pay_period_end: str,
     *,
+    current_batch_id: Optional[int] = None,
     exclude_line_id: Optional[int] = None,
 ) -> dict[str, float]:
-    """Sum paystub YTD components from finalized payout lines in the calendar year."""
+    """Sum YTD from prior finalized pay periods in the same calendar year (pay-period based)."""
     c = conn.cursor(dictionary=True)
-    params: list[Any] = [int(organization_id), int(user_id), int(year)]
+    period_end = str(pay_period_end or "")[:10]
+    batch_id = int(current_batch_id or 0)
+    params: list[Any] = [
+        int(organization_id),
+        int(user_id),
+        int(year),
+        period_end,
+        period_end,
+        batch_id,
+    ]
     exclude_sql = ""
     if exclude_line_id is not None:
         exclude_sql = "AND pbl.id <> %s"
@@ -1676,9 +1684,15 @@ def fetch_finalized_paystub_ytd(
         JOIN payout_batches pb ON pb.id = pbl.batch_id
         WHERE pb.organization_id = %s
           AND pbl.user_id = %s
+          AND pb.worker_category = 'w2'
           AND pb.payout_details_finalized_at IS NOT NULL
-          AND YEAR(COALESCE(pbl.payment_date, pb.pay_period_end)) = %s
+          AND YEAR(pb.pay_period_end) = %s
+          AND (
+            pb.pay_period_end < %s
+            OR (pb.pay_period_end = %s AND pb.id < %s)
+          )
           {exclude_sql}
+        ORDER BY pb.pay_period_end, pb.id, pbl.id
         """,
         tuple(params),
     )
@@ -1716,6 +1730,8 @@ def compute_paystub_ytd(
         int(organization_id),
         int(uid),
         year,
+        str(batch.get("pay_period_end") or "")[:10],
+        current_batch_id=int(batch.get("id") or 0),
         exclude_line_id=int(line.get("id") or 0) or None,
     )
     return _add_paystub_ytd(
@@ -1725,27 +1741,38 @@ def compute_paystub_ytd(
 
 
 def _paystub_brand_head_html(branding: dict[str, str], doc_title: str) -> str:
-    address_bits = []
+    address_parts = []
     if branding.get("address_line"):
-        address_bits.append(str(branding["address_line"]))
+        address_parts.append(str(branding["address_line"]))
     if branding.get("address_line2"):
-        address_bits.append(str(branding["address_line2"]))
+        address_parts.append(str(branding["address_line2"]))
     address_html = ""
-    if address_bits:
-        address_html = f"<div class='brand-contact'>{' • '.join(address_bits)}</div>"
+    if address_parts:
+        address_html = f"<div class='brand-contact-line'>{' • '.join(address_parts)}</div>"
+
+    contact_bits = []
+    if branding.get("phone_display"):
+        contact_bits.append(f"<span>{branding['phone_display']}</span>")
+    if branding.get("website"):
+        contact_bits.append(f"<span>{branding['website']}</span>")
     contact_html = ""
-    if branding.get("contact_line"):
-        contact_html = f"<div class='brand-contact'>{branding['contact_line']}</div>"
+    if contact_bits:
+        contact_html = (
+            "<div class='brand-contact-line'>"
+            + "<span class='sep'>•</span>".join(contact_bits)
+            + "</div>"
+        )
+
     return f"""
 <div class="brand-head">
-{branding.get("logo_html") or ""}
+<div class="brand-logo-wrap">{branding.get("logo_html") or ""}</div>
 <div class="brand-text">
 <div class="company-name">{branding.get("company_name") or ""}</div>
 {address_html}
 {contact_html}
 </div>
 </div>
-<h1 class="doc-title">{doc_title}</h1>"""
+<div class="doc-title-row"><span class="doc-title">{doc_title}</span></div>"""
 
 
 def _employee_earnings_ytd_html(
