@@ -222,6 +222,112 @@ function lineTaxTotal(draft) {
   return DEDUCTION_FIELDS.reduce((s, f) => s + num(draft.employee_deductions?.[f.key]), 0);
 }
 
+function formatDraftMoney(v) {
+  return `$${num(v).toFixed(2)}`;
+}
+
+function LineDetailsReadonly({ draft, ln, totals, isReceiptMode }) {
+  const method =
+    PAYMENT_METHODS.find((m) => m.value === draft.payment?.method)?.label ||
+    draft.payment?.method ||
+    "—";
+
+  return (
+    <Stack spacing={1.25}>
+      {!isReceiptMode ? (
+        <Box>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+            Employee taxes (estimated)
+          </Typography>
+          <Stack direction="row" flexWrap="wrap" gap={2}>
+            {DEDUCTION_FIELDS.map((f) => (
+              <Typography key={f.key} variant="body2">
+                {f.label}: <strong>{formatDraftMoney(draft.employee_deductions?.[f.key])}</strong>
+              </Typography>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+      <Box>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+          Payment
+        </Typography>
+        <Stack direction="row" flexWrap="wrap" gap={2}>
+          <Typography variant="body2">
+            Method: <strong>{method}</strong>
+          </Typography>
+          <Typography variant="body2">
+            Date: <strong>{draft.payment?.date || "—"}</strong>
+          </Typography>
+          {draft.payment?.check_number ? (
+            <Typography variant="body2">
+              Check #: <strong>{draft.payment.check_number}</strong>
+            </Typography>
+          ) : null}
+          {draft.payment?.reference ? (
+            <Typography variant="body2">
+              Reference: <strong>{draft.payment.reference}</strong>
+            </Typography>
+          ) : null}
+          {draft.payment?.method === "cash" && draft.payment?.cash_amount != null ? (
+            <Typography variant="body2">
+              Cash amount: <strong>{formatDraftMoney(draft.payment.cash_amount)}</strong>
+            </Typography>
+          ) : null}
+        </Stack>
+      </Box>
+      {!isReceiptMode ? (
+        <Box>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+            Settlement
+          </Typography>
+          <Stack direction="row" flexWrap="wrap" gap={2}>
+            <Typography variant="body2">
+              Amount paid: <strong>{formatDraftMoney(draft.settlement?.amount_paid ?? totals.net)}</strong>
+            </Typography>
+            <Typography variant="body2">
+              Withheld: <strong>{formatDraftMoney(draft.settlement?.amount_withheld)}</strong>
+            </Typography>
+            <Typography variant="body2">
+              Tax balance owed: <strong>{formatDraftMoney(draft.settlement?.tax_balance_owed)}</strong>
+            </Typography>
+            <Typography variant="body2">
+              Prior tax balance: <strong>{formatDraftMoney(draft.settlement?.prior_unpaid_taxes)}</strong>
+            </Typography>
+            {totals.paidFullGross ? (
+              <Typography variant="body2" color="warning.main">
+                Paid full gross (no withholding)
+              </Typography>
+            ) : null}
+          </Stack>
+        </Box>
+      ) : null}
+      {!isReceiptMode ? (
+        <Box>
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+            Employer taxes
+          </Typography>
+          <Stack direction="row" flexWrap="wrap" gap={2}>
+            {ER_TAX_FIELDS.map((f) => (
+              <Typography key={f.key} variant="body2">
+                {f.label}: <strong>{formatDraftMoney(draft.employer_taxes?.[f.key])}</strong>
+              </Typography>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
+      {draft.employee_note ? (
+        <Typography variant="body2">
+          Employee note: <strong>{draft.employee_note}</strong>
+        </Typography>
+      ) : null}
+      {ln.payment_status === "paid" ? (
+        <Typography variant="caption" color="success.main">Line marked paid</Typography>
+      ) : null}
+    </Stack>
+  );
+}
+
 export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const { hasPerm, user } = useAuth();
   const rolesUpper = useMemo(() => {
@@ -780,206 +886,205 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                         <TableCell colSpan={9} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
                           <Collapse in={isOpen}>
                             <Box sx={{ py: 1, pl: 1 }}>
-                              {!isReceiptMode && canEdit ? (
+                              {canEdit ? (
                                 <>
-                                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-                                    Estimated withholding (editable before finalize)
-                                  </Typography>
-                                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
-                                    {DEDUCTION_FIELDS.map((f) => (
-                                      <TextField
-                                        key={f.key}
-                                        size="small"
-                                        label={f.label}
-                                        type="number"
-                                        value={draft.employee_deductions?.[f.key] ?? ""}
-                                        onChange={(e) =>
-                                          updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
-                                        }
-                                        inputProps={{ style: { width: 64 } }}
-                                      />
-                                    ))}
-                                  </Stack>
-                                </>
-                              ) : null}
-                              {canEdit ? (
-                                <Stack direction="row" flexWrap="wrap" gap={1}>
-                                  <TextField
-                                    size="small"
-                                    type="date"
-                                    label="Pay date"
-                                    InputLabelProps={{ shrink: true }}
-                                    value={draft.payment?.date || ""}
-                                    onChange={(e) => updateDraft(ln.id, "payment", "date", e.target.value)}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    select
-                                    label="Method"
-                                    value={method}
-                                    onChange={(e) => updateDraft(ln.id, "payment", "method", e.target.value)}
-                                    SelectProps={{ native: true }}
-                                    sx={{ minWidth: 120 }}
-                                  >
-                                    {PAYMENT_METHODS.map((m) => (
-                                      <option key={m.value} value={m.value}>{m.label}</option>
-                                    ))}
-                                  </TextField>
-                                  <TextField
-                                    size="small"
-                                    type="date"
-                                    label="Payment date"
-                                    value={draft.payment?.date || ""}
-                                    onChange={(e) => updateDraft(ln.id, "payment", "date", e.target.value)}
-                                    InputLabelProps={{ shrink: true }}
-                                    sx={{ minWidth: 150 }}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    label="Check #"
-                                    value={draft.payment?.check_number || ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "payment", "check_number", e.target.value)
-                                    }
-                                  />
-                                  <TextField
-                                    size="small"
-                                    label="Reference"
-                                    value={draft.payment?.reference || ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "payment", "reference", e.target.value)
-                                    }
-                                  />
-                                  <TextField
-                                    size="small"
-                                    label="Employee note"
-                                    value={draft.employee_note || ""}
-                                    onChange={(e) => updateLineFlag(ln.id, "employee_note", e.target.value)}
-                                  />
-                                </Stack>
-                              ) : null}
-                              {method === "cash" && canEdit ? (
-                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Cash amount"
-                                    value={draft.payment?.cash_amount ?? ""}
-                                    onChange={(e) => updateDraft(ln.id, "payment", "cash_amount", e.target.value)}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    label="Paid by"
-                                    value={draft.payment?.paid_by || ""}
-                                    onChange={(e) => updateDraft(ln.id, "payment", "paid_by", e.target.value)}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    label="Receipt number"
-                                    value={draft.payment?.receipt_number || ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "payment", "receipt_number", e.target.value)
-                                    }
-                                  />
-                                  <TextField
-                                    size="small"
-                                    label="Employee signature"
-                                    value={draft.payment?.employee_signature || ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "payment", "employee_signature", e.target.value)
-                                    }
-                                  />
-                                </Stack>
-                              ) : null}
-                              {canEdit ? (
-                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Catch-up withholding"
-                                    value={draft.settlement?.catch_up_withholding ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "catch_up_withholding", e.target.value)
-                                    }
-                                    disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Amount paid (net)"
-                                    value={draft.settlement?.amount_paid ?? ""}
-                                    InputProps={{ readOnly: true }}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Estimated withholding (total)"
-                                    value={draft.settlement?.amount_withheld ?? ""}
-                                    InputProps={{ readOnly: true }}
-                                  />
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Prior tax balance"
-                                    value={draft.settlement?.prior_unpaid_taxes ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "prior_unpaid_taxes", e.target.value)
-                                    }
-                                    helperText="Shown for reference — does not reduce pay unless catch-up entered"
-                                  />
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Prior-period adj."
-                                    value={draft.settlement?.prior_period_adjustment ?? ""}
-                                    onChange={(e) =>
-                                      updateDraft(ln.id, "settlement", "prior_period_adjustment", e.target.value)
-                                    }
-                                  />
-                                  <TextField
-                                    size="small"
-                                    type="number"
-                                    label="Tax balance owed"
-                                    value={draft.settlement?.tax_balance_owed ?? ""}
-                                    InputProps={{ readOnly: true }}
-                                    helperText="Updates when tax lines or paid-full-gross change"
-                                  />
-                                  <FormControlLabel
-                                    control={
-                                      <Checkbox
-                                        size="small"
-                                        checked={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
-                                        onChange={(e) =>
-                                          updateDraft(
-                                            ln.id,
-                                            "settlement",
-                                            "paid_full_gross_without_withholding",
-                                            e.target.checked,
-                                          )
-                                        }
-                                      />
-                                    }
-                                    label="Paid full gross (no withholding)"
-                                  />
-                                </Stack>
-                              ) : null}
-                              {!isReceiptMode && canEdit ? (
-                                <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                                  {ER_TAX_FIELDS.map((f) => (
+                                  {!isReceiptMode ? (
+                                    <>
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
+                                        Estimated withholding (editable before finalize)
+                                      </Typography>
+                                      <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
+                                        {DEDUCTION_FIELDS.map((f) => (
+                                          <TextField
+                                            key={f.key}
+                                            size="small"
+                                            label={f.label}
+                                            type="number"
+                                            value={draft.employee_deductions?.[f.key] ?? ""}
+                                            onChange={(e) =>
+                                              updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
+                                            }
+                                            inputProps={{ style: { width: 64 } }}
+                                          />
+                                        ))}
+                                      </Stack>
+                                    </>
+                                  ) : null}
+                                  <Stack direction="row" flexWrap="wrap" gap={1}>
                                     <TextField
-                                      key={f.key}
                                       size="small"
-                                      label={f.label}
-                                      type="number"
-                                      value={draft.employer_taxes?.[f.key] ?? ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "employer_taxes", f.key, e.target.value)
-                                      }
-                                      inputProps={{ style: { width: 64 } }}
+                                      select
+                                      label="Method"
+                                      value={method}
+                                      onChange={(e) => updateDraft(ln.id, "payment", "method", e.target.value)}
+                                      SelectProps={{ native: true }}
+                                      sx={{ minWidth: 120 }}
+                                    >
+                                      {PAYMENT_METHODS.map((m) => (
+                                        <option key={m.value} value={m.value}>{m.label}</option>
+                                      ))}
+                                    </TextField>
+                                    <TextField
+                                      size="small"
+                                      type="date"
+                                      label="Payment date"
+                                      value={draft.payment?.date || ""}
+                                      onChange={(e) => updateDraft(ln.id, "payment", "date", e.target.value)}
+                                      InputLabelProps={{ shrink: true }}
+                                      sx={{ minWidth: 150 }}
                                     />
-                                  ))}
-                                </Stack>
-                              ) : null}
+                                    <TextField
+                                      size="small"
+                                      label="Check #"
+                                      value={draft.payment?.check_number || ""}
+                                      onChange={(e) =>
+                                        updateDraft(ln.id, "payment", "check_number", e.target.value)
+                                      }
+                                    />
+                                    <TextField
+                                      size="small"
+                                      label="Reference"
+                                      value={draft.payment?.reference || ""}
+                                      onChange={(e) =>
+                                        updateDraft(ln.id, "payment", "reference", e.target.value)
+                                      }
+                                    />
+                                    <TextField
+                                      size="small"
+                                      label="Employee note"
+                                      value={draft.employee_note || ""}
+                                      onChange={(e) => updateLineFlag(ln.id, "employee_note", e.target.value)}
+                                    />
+                                  </Stack>
+                                  {method === "cash" ? (
+                                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
+                                      <TextField
+                                        size="small"
+                                        type="number"
+                                        label="Cash amount"
+                                        value={draft.payment?.cash_amount ?? ""}
+                                        onChange={(e) => updateDraft(ln.id, "payment", "cash_amount", e.target.value)}
+                                      />
+                                      <TextField
+                                        size="small"
+                                        label="Paid by"
+                                        value={draft.payment?.paid_by || ""}
+                                        onChange={(e) => updateDraft(ln.id, "payment", "paid_by", e.target.value)}
+                                      />
+                                      <TextField
+                                        size="small"
+                                        label="Receipt number"
+                                        value={draft.payment?.receipt_number || ""}
+                                        onChange={(e) =>
+                                          updateDraft(ln.id, "payment", "receipt_number", e.target.value)
+                                        }
+                                      />
+                                      <TextField
+                                        size="small"
+                                        label="Employee signature"
+                                        value={draft.payment?.employee_signature || ""}
+                                        onChange={(e) =>
+                                          updateDraft(ln.id, "payment", "employee_signature", e.target.value)
+                                        }
+                                      />
+                                    </Stack>
+                                  ) : null}
+                                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="Catch-up withholding"
+                                      value={draft.settlement?.catch_up_withholding ?? ""}
+                                      onChange={(e) =>
+                                        updateDraft(ln.id, "settlement", "catch_up_withholding", e.target.value)
+                                      }
+                                      disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="Amount paid (net)"
+                                      value={draft.settlement?.amount_paid ?? ""}
+                                      InputProps={{ readOnly: true }}
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="Estimated withholding (total)"
+                                      value={draft.settlement?.amount_withheld ?? ""}
+                                      InputProps={{ readOnly: true }}
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="Prior tax balance"
+                                      value={draft.settlement?.prior_unpaid_taxes ?? ""}
+                                      onChange={(e) =>
+                                        updateDraft(ln.id, "settlement", "prior_unpaid_taxes", e.target.value)
+                                      }
+                                      helperText="Shown for reference — does not reduce pay unless catch-up entered"
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="Prior-period adj."
+                                      value={draft.settlement?.prior_period_adjustment ?? ""}
+                                      onChange={(e) =>
+                                        updateDraft(ln.id, "settlement", "prior_period_adjustment", e.target.value)
+                                      }
+                                    />
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      label="Tax balance owed"
+                                      value={draft.settlement?.tax_balance_owed ?? ""}
+                                      InputProps={{ readOnly: true }}
+                                      helperText="Updates when tax lines or paid-full-gross change"
+                                    />
+                                    <FormControlLabel
+                                      control={
+                                        <Checkbox
+                                          size="small"
+                                          checked={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
+                                          onChange={(e) =>
+                                            updateDraft(
+                                              ln.id,
+                                              "settlement",
+                                              "paid_full_gross_without_withholding",
+                                              e.target.checked,
+                                            )
+                                          }
+                                        />
+                                      }
+                                      label="Paid full gross (no withholding)"
+                                    />
+                                  </Stack>
+                                  {!isReceiptMode ? (
+                                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
+                                      {ER_TAX_FIELDS.map((f) => (
+                                        <TextField
+                                          key={f.key}
+                                          size="small"
+                                          label={f.label}
+                                          type="number"
+                                          value={draft.employer_taxes?.[f.key] ?? ""}
+                                          onChange={(e) =>
+                                            updateDraft(ln.id, "employer_taxes", f.key, e.target.value)
+                                          }
+                                          inputProps={{ style: { width: 64 } }}
+                                        />
+                                      ))}
+                                    </Stack>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <LineDetailsReadonly
+                                  draft={draft}
+                                  ln={ln}
+                                  totals={totals}
+                                  isReceiptMode={isReceiptMode}
+                                />
+                              )}
                               {showPaystubActions ? (
                                 <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
                                   <Button
