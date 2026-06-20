@@ -5941,6 +5941,33 @@ def payroll_payout_finalize_details(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/unfinalize-details", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_unfinalize_details(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            unfinalize_payout_details,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        try:
+            row = unfinalize_payout_details(conn, oid, batch_id, actor_id=uid)
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_unfinalize_details failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>/document-mode", methods=["PUT"])
 @require_auth
 @require_any_perm("ta.settings", "users.edit")

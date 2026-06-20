@@ -33,9 +33,11 @@ import PrintIcon from "@mui/icons-material/Print";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SaveIcon from "@mui/icons-material/Save";
 import LockIcon from "@mui/icons-material/Lock";
+import LockOpenIcon from "@mui/icons-material/LockOpen";
 import { useAuth } from "../context/AuthContext";
 import {
   finalizePayoutDetails,
+  unfinalizePayoutDetails,
   estimatePayoutTaxes,
   getPaymentReceiptHtml,
   getPayoutBatchDetails,
@@ -351,6 +353,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [unfinalizeOpen, setUnfinalizeOpen] = useState(false);
   const [moreAnchor, setMoreAnchor] = useState(null);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
   const [paystubCopyMode, setPaystubCopyMode] = useState("employee");
@@ -404,6 +407,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     detail?.payout_workflow?.document_mode || detail?.document_mode || "official_paystub";
   const isReceiptMode = documentMode === "payment_receipt";
   const canFinalize = detail?.payout_workflow?.can_finalize;
+  const canUnfinalize = detail?.payout_workflow?.can_unfinalize && canEditDetails;
   const finalizeBlockers = detail?.payout_workflow?.finalize_blockers || [];
   const canSetDocumentMode = detail?.payout_workflow?.can_set_document_mode && canEditDetails;
 
@@ -499,6 +503,24 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Finalize failed");
+    }
+  };
+
+  const doUnfinalize = async () => {
+    setError("");
+    try {
+      const res = await unfinalizePayoutDetails(selectedId);
+      setDetail(res.data);
+      setUnfinalizeOpen(false);
+      setInfo("Reopened for editing — remember to finalize again after changes.");
+      const drafts = {};
+      (res.data.lines || []).forEach((ln) => {
+        drafts[ln.id] = emptyLineState(ln, res.data);
+      });
+      setLineDrafts(drafts);
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Unfinalize failed");
     }
   };
 
@@ -700,6 +722,16 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                 disabled={!canFinalize}
               >
                 Finalize
+              </Button>
+            ) : null}
+            {canUnfinalize ? (
+              <Button
+                size="small"
+                startIcon={<LockOpenIcon />}
+                color="warning"
+                onClick={() => setUnfinalizeOpen(true)}
+              >
+                Unfinalize
               </Button>
             ) : null}
             <IconButton size="small" onClick={(e) => setMoreAnchor(e.currentTarget)}>
@@ -1122,6 +1154,19 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         line={taxDialog.line}
         workerName={taxDialog.workerName}
       />
+
+      <Dialog open={unfinalizeOpen} onClose={() => setUnfinalizeOpen(false)}>
+        <DialogTitle>Reopen payroll details?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            Unlocks tax and payment fields for editing. Official paystubs and receipts are hidden until you finalize again.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setUnfinalizeOpen(false)}>Cancel</Button>
+          <Button onClick={doUnfinalize} color="warning" variant="contained">Unfinalize</Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={finalizeOpen} onClose={() => setFinalizeOpen(false)}>
         <DialogTitle>Finalize payroll details?</DialogTitle>

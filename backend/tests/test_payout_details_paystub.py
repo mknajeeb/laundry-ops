@@ -16,6 +16,7 @@ from backend.payroll_payout_details import (
     enrich_line_settlement_fields,
     finalize_payout_details,
     finalize_blockers,
+    unfinalize_payout_details,
     is_accountant_batch_list_view,
     line_document_state,
     line_uses_payment_receipt,
@@ -735,6 +736,31 @@ def test_paystub_html_available_for_cash_payment():
             dd_html = generate_paystub_html(conn, 1, 1, 10, copy_mode="employee")
         assert "Cash Receipt" not in dd_html
         assert "Reference" in dd_html
+
+
+def test_unfinalize_clears_finalized_timestamp():
+    conn = MagicMock()
+    finalized_batch = {
+        "id": 1,
+        "status": "paid",
+        "worker_category": "w2",
+        "payout_details_finalized_at": "2026-06-20",
+        "payout_details_audit_json": None,
+    }
+    with patch(
+        "backend.payroll_payout_details.get_payout_batch",
+        return_value=finalized_batch,
+    ), patch(
+        "backend.payroll_payout_details.ensure_payout_details_columns",
+    ), patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        side_effect=[
+            finalized_batch,
+            {"id": 1, "payout_details_finalized_at": None},
+        ],
+    ):
+        unfinalize_payout_details(conn, 1, 1, actor_id=9)
+        conn.commit.assert_called()
 
 
 def test_finalize_blockers_clear_when_pay_period_can_default_cash_date():

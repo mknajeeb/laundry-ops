@@ -754,6 +754,7 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
         and can_finalize_payout_details(batch)
         and not finalize_blockers_list
     )
+    can_unfinalize = can_unfinalize_payout_details(batch)
     return json_safe(
         {
             "batch_status": st,
@@ -772,6 +773,7 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
             "receipt_required_pending": receipt_required_pending,
             "can_edit_details": ready and not finalized,
             "can_finalize": can_finalize,
+            "can_unfinalize": can_unfinalize,
             "finalize_blockers": finalize_blockers_list,
         }
     )
@@ -1262,6 +1264,45 @@ def finalize_payout_details(
         """,
         (
             int(actor_id),
+            json.dumps({"events": events}),
+            int(batch_id),
+            int(organization_id),
+        ),
+    )
+    conn.commit()
+    return get_payout_batch_details(conn, organization_id, batch_id) or {}
+
+
+def can_unfinalize_payout_details(batch: dict) -> bool:
+    """Allow reopening finalized payout details for corrections (same readiness as edit)."""
+    if not batch.get("payout_details_finalized_at"):
+        return False
+    return batch_ready_for_payout_details(batch)
+
+
+def unfinalize_payout_details(
+    conn, organization_id: int, batch_id: int, *, actor_id: int
+) -> dict:
+    ensure_payout_details_columns(conn.cursor())
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch.get("payout_details_finalized_at"):
+        raise ValueError("Payout details are not finalized")
+    if not can_unfinalize_payout_details(batch):
+        raise ValueError("Batch is not in a state that allows reopening payout details")
+    events = _audit_append(batch, "payout_details_unfinalized", actor_id)
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE payout_batches SET
+          payout_details_finalized_at=NULL,
+          payout_details_finalized_by=NULL,
+          payout_details_audit_json=%s,
+          updated_at=CURRENT_TIMESTAMP
+        WHERE id=%s AND organization_id=%s
+        """,
+        (
             json.dumps({"events": events}),
             int(batch_id),
             int(organization_id),
