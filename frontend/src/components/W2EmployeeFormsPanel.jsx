@@ -27,12 +27,12 @@ import ContractorPrintShell from "../contractorForms/ContractorPrintShell";
 import { openPrintWindow } from "../contractorForms/contractorPrint";
 import { parsePacketSections } from "../contractorForms/parsePacket";
 import "../contractorForms/contractorPrint.css";
-import packetMarkdown from "./veewash_w2_workforce_forms.md?raw";
-import { editorFormIdFor, findW2Form, W2_FORMS } from "./formCatalog";
-import { emptyFormValues } from "./formFieldSchemas";
-import { buildW2MultiSectionPrintHtml } from "./prefillMarkdown";
-import { buildW2PrefillFromHrProfile } from "./w2Prefill";
-import W2FormEditor from "./W2FormEditor";
+import packetMarkdown from "../w2Forms/veewash_w2_workforce_forms.md?raw";
+import { editorFormIdFor, findW2Form, W2_FORMS } from "../w2Forms/formCatalog";
+import { emptyFormValues } from "../w2Forms/formFieldSchemas";
+import { buildW2MultiSectionPrintHtml } from "../w2Forms/prefillMarkdown";
+import { buildW2PrefillFromHrProfile } from "../w2Forms/w2Prefill";
+import W2FormEditor from "../w2Forms/W2FormEditor";
 
 function MarkdownFormPrint({ html }) {
   return <div dangerouslySetInnerHTML={{ __html: html }} />;
