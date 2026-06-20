@@ -77,8 +77,24 @@ def test_prior_period_adjustment_partial_offset():
     details["settlement"]["prior_period_adjustment"] = 4.0
     details = apply_settlement_math(details, 221.0)
     tax_summary = details["tax_summary"]
+    settlement = details["settlement"]
     assert tax_summary["total_tax_liability"] == 22.01
-    assert tax_summary["remaining_balance"] == 5.11
+    assert settlement["amount_withheld"] == 4.0
+    assert settlement["amount_paid"] == 217.0
+    assert tax_summary["remaining_balance"] == 18.01
+
+
+def test_prior_period_adjustment_partial_collection_reduces_net():
+    """Partial prior-period adj. is collected from pay; current period not auto-withheld."""
+    details = apply_settlement_math(_details(18.21, prior=18.21), 238.0)
+    details["settlement"]["prior_period_adjustment"] = 17.0
+    details = apply_settlement_math(details, 238.0)
+    settlement = details["settlement"]
+    tax_summary = details["tax_summary"]
+    assert settlement["amount_withheld"] == 17.0
+    assert settlement["amount_paid"] == 221.0
+    assert settlement["tax_balance_owed"] == 18.21
+    assert tax_summary["remaining_balance"] == 2.42
 
 
 def test_catch_up_withholding_reduces_net_pay():

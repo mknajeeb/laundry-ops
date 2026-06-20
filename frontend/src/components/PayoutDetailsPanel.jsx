@@ -125,11 +125,33 @@ function roundMoney(n) {
   return Math.round(num(n) * 100) / 100;
 }
 
+function effectivePriorTaxBalance(priorBalance, priorAdj) {
+  return roundMoney(Math.max(0, priorBalance - priorAdj));
+}
+
+function priorCollectedFromPay(settlement) {
+  const catchUp = num(settlement?.catch_up_withholding);
+  if (catchUp > 0) return roundMoney(catchUp);
+  const priorBalance = num(settlement?.prior_unpaid_taxes);
+  const priorAdj = num(settlement?.prior_period_adjustment);
+  if (priorAdj <= 0) return 0;
+  const effectivePrior = effectivePriorTaxBalance(priorBalance, priorAdj);
+  if (effectivePrior > 0) return roundMoney(priorAdj);
+  return 0;
+}
+
 function withheldForCurrentPeriod(settlement, currentTax, paidFullGross) {
   if (paidFullGross) return 0;
   const raw = settlement?.withheld_from_payment;
-  if (raw === null || raw === undefined || raw === "") return currentTax;
-  return Math.min(num(raw), currentTax);
+  if (raw !== null && raw !== undefined && raw !== "") {
+    return Math.min(num(raw), currentTax);
+  }
+  const priorBalance = num(settlement?.prior_unpaid_taxes);
+  const priorAdj = num(settlement?.prior_period_adjustment);
+  if (priorAdj > 0 && effectivePriorTaxBalance(priorBalance, priorAdj) > 0) {
+    return 0;
+  }
+  return currentTax;
 }
 
 function computeLocalTotals(line, draft) {
@@ -139,6 +161,7 @@ function computeLocalTotals(line, draft) {
     0,
   );
   const catchUp = num(draft.settlement?.catch_up_withholding);
+  const priorCollected = priorCollectedFromPay(draft.settlement);
   const paidFullGross = Boolean(draft.settlement?.paid_full_gross_without_withholding);
   const withheldCurrent = withheldForCurrentPeriod(
     draft.settlement,
@@ -146,7 +169,7 @@ function computeLocalTotals(line, draft) {
     paidFullGross,
   );
   const er = ER_TAX_FIELDS.reduce((s, f) => s + num(draft.employer_taxes?.[f.key]), 0);
-  const withheld = paidFullGross ? 0 : roundMoney(withheldCurrent + catchUp);
+  const withheld = paidFullGross ? 0 : roundMoney(withheldCurrent + priorCollected);
   const net = paidFullGross ? gross : Math.max(0, roundMoney(gross - withheld));
   return {
     gross,
@@ -156,6 +179,7 @@ function computeLocalTotals(line, draft) {
     withheld,
     withheldCurrent,
     catchUp,
+    priorCollected,
     paidFullGross,
   };
 }
@@ -166,12 +190,11 @@ function reconcileLocalTaxSummary(draft, totals) {
   const currentPeriod = totals.totalDed;
   const priorBalance = num(settlement.prior_unpaid_taxes);
   const priorAdj = num(settlement.prior_period_adjustment);
-  const effectivePrior = roundMoney(Math.max(0, priorBalance - priorAdj));
-  let catchUp = totals.catchUp;
+  const effectivePrior = effectivePriorTaxBalance(priorBalance, priorAdj);
+  const priorCollected = totals.priorCollected;
   const paidFullGross = totals.paidFullGross;
 
   if (paidFullGross) {
-    catchUp = 0;
     settlement.catch_up_withholding = 0;
   }
 
@@ -183,7 +206,7 @@ function reconcileLocalTaxSummary(draft, totals) {
     periodBalance = roundMoney(currentPeriod);
   } else {
     const withheldForCurrent = roundMoney(
-      Math.min(currentPeriod, Math.max(0, actualWithheld - catchUp)),
+      Math.min(currentPeriod, Math.max(0, actualWithheld - priorCollected)),
     );
     periodBalance = roundMoney(currentPeriod - withheldForCurrent);
   }
@@ -199,7 +222,7 @@ function reconcileLocalTaxSummary(draft, totals) {
   taxSummary.actual_tax_withheld = actualWithheld;
   taxSummary.tax_balance_owed = periodBalance;
   taxSummary.remaining_balance = remaining;
-  taxSummary.tax_catch_up_adjustment = catchUp;
+  taxSummary.tax_catch_up_adjustment = priorCollected;
 
   return { ...draft, settlement, tax_summary: taxSummary };
 }
@@ -1174,7 +1197,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                       onChange={(e) =>
                                         updateDraft(ln.id, "settlement", "prior_period_adjustment", e.target.value)
                                       }
-                                      helperText="Credits against prior tax balance (does not add new liability)"
+                                      helperText="Credits prior balance; partial amount is withheld from this pay"
                                     />
                                     <TextField
                                       size="small"

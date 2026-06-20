@@ -348,6 +348,21 @@ def _effective_prior_tax_balance(prior_balance: float, prior_adj: float) -> floa
     return round(max(0.0, float(prior_balance) - float(prior_adj)), 2)
 
 
+def _prior_collected_from_pay(settlement: dict) -> float:
+    """Prior balance collected from this paycheck (catch-up field or partial prior-period adj.)."""
+    catch_up = float(_money(settlement.get("catch_up_withholding")))
+    if catch_up > 0:
+        return round(catch_up, 2)
+    prior_balance = float(_money(settlement.get("prior_unpaid_taxes")))
+    prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    if prior_adj <= 0:
+        return 0.0
+    effective_prior = _effective_prior_tax_balance(prior_balance, prior_adj)
+    if effective_prior > 0:
+        return round(prior_adj, 2)
+    return 0.0
+
+
 def reconcile_tax_summary(details: dict) -> dict:
     """Compute tax liability vs withheld amounts (catch-up is manager-entered only)."""
     ded = details.get("employee_deductions") or {}
@@ -358,10 +373,9 @@ def reconcile_tax_summary(details: dict) -> dict:
     prior_balance = float(_money(settlement.get("prior_unpaid_taxes")))
     prior_adj = float(_money(settlement.get("prior_period_adjustment")))
     effective_prior = _effective_prior_tax_balance(prior_balance, prior_adj)
-    catch_up = float(_money(settlement.get("catch_up_withholding")))
+    prior_collected = _prior_collected_from_pay(settlement)
     paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
     if paid_full_gross:
-        catch_up = 0.0
         settlement["catch_up_withholding"] = 0.0
 
     actual_withheld = float(_money(settlement.get("amount_withheld")))
@@ -371,7 +385,10 @@ def reconcile_tax_summary(details: dict) -> dict:
         period_balance = round(current_period, 2)
         remaining = round(total_liability, 2)
     else:
-        withheld_for_current = round(min(current_period, max(0.0, actual_withheld - catch_up)), 2)
+        withheld_for_current = round(
+            min(current_period, max(0.0, actual_withheld - prior_collected)),
+            2,
+        )
         period_balance = round(current_period - withheld_for_current, 2)
         remaining = round(max(0.0, total_liability - actual_withheld), 2)
     settlement["tax_balance_owed"] = period_balance
@@ -384,7 +401,7 @@ def reconcile_tax_summary(details: dict) -> dict:
             "actual_tax_withheld": actual_withheld,
             "tax_balance_owed": period_balance,
             "remaining_balance": remaining,
-            "tax_catch_up_adjustment": catch_up,
+            "tax_catch_up_adjustment": prior_collected,
         }
     )
     details["settlement"] = settlement
@@ -471,9 +488,13 @@ def _withheld_for_current_period(
     if paid_full_gross:
         return 0.0
     raw = settlement.get("withheld_from_payment")
-    if raw is None or str(raw).strip() == "":
-        return round(current_period, 2)
-    return round(min(float(_money(raw)), round(current_period, 2)), 2)
+    if raw is not None and str(raw).strip() != "":
+        return round(min(float(_money(raw)), round(current_period, 2)), 2)
+    prior_balance = float(_money(settlement.get("prior_unpaid_taxes")))
+    prior_adj = float(_money(settlement.get("prior_period_adjustment")))
+    if prior_adj > 0 and _effective_prior_tax_balance(prior_balance, prior_adj) > 0:
+        return 0.0
+    return round(current_period, 2)
 
 
 def apply_settlement_math(details: dict, gross: float) -> dict:
@@ -484,19 +505,18 @@ def apply_settlement_math(details: dict, gross: float) -> dict:
     gross_f = float(_money(gross))
     current_period = float(tax_summary.get("current_period_taxes") or 0)
     paid_full_gross = bool(settlement.get("paid_full_gross_without_withholding"))
-    catch_up = float(_money(settlement.get("catch_up_withholding")))
 
     if paid_full_gross:
-        catch_up = 0.0
         settlement["catch_up_withholding"] = 0.0
         settlement["withheld_from_payment"] = None
         withheld = 0.0
         paid = round(gross_f, 2)
     else:
+        prior_collected = _prior_collected_from_pay(settlement)
         withheld_current = _withheld_for_current_period(
             settlement, current_period, paid_full_gross=False
         )
-        withheld = round(withheld_current + catch_up, 2)
+        withheld = round(withheld_current + prior_collected, 2)
         paid = round(max(0.0, gross_f - withheld), 2)
 
     settlement["amount_withheld"] = withheld
