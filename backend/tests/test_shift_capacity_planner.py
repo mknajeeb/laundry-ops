@@ -224,6 +224,15 @@ class TestWeighingAssignment:
         washer = parse_planner_inputs({"weighing_handled_by": "washer"})
         assert washer.weighing_mode == "upfront"
 
+    def test_batch_milestones_include_weigh_and_fold(self):
+        result = simulate_shift_capacity(
+            _default_payload(washing_strategy="batch_washing", batch_size=8)
+        )
+        first = result["operational"]["active_strategy"]["batch_milestone_rows"][0]
+        assert "weigh_complete_at" in first
+        assert "bags_weighed_before_wash" in first
+        assert "fold_complete_at" in first
+
 
 class TestShiftCapacityPlannerInvalid:
     def test_invalid_bag_count(self):

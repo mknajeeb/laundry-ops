@@ -2538,6 +2538,15 @@ def _build_batch_milestone_rows(
         remaining_to_sort = left_to_sort
 
         pipeline = _batch_pipeline_timing(batch_orders, wash_start_min)
+        weigh_starts = [o.weigh_start for o in batch_orders if o.weigh_start is not None]
+        weigh_ends = [o.weigh_end for o in batch_orders if o.weigh_end is not None]
+        first_weigh_min = min(weigh_starts) if weigh_starts else None
+        last_weigh_min = max(weigh_ends) if weigh_ends else None
+        bags_weighed_before_wash = sum(
+            1
+            for o in batch_orders
+            if o.weigh_end is not None and o.weigh_end <= before_wash_min
+        )
 
         batch_end_min = _batch_wave_dryers_complete_minute(state, inp, order_ids)
         if batch_end_min is None:
@@ -2562,6 +2571,9 @@ def _build_batch_milestone_rows(
         dry_start_min = pipeline["dry_start_minute"]
         dry_end_min = pipeline["dry_end_minute"]
         last_ready_min = pipeline["last_ready_to_fold_minute"]
+        fold_ends = [o.fold_end for o in batch_orders if o.fold_end is not None]
+        eligible_folds = [fo for fo in fold_ends if fo <= batch_end_min]
+        last_fold_min = max(eligible_folds) if eligible_folds else None
 
         rows.append(
             {
@@ -2570,6 +2582,16 @@ def _build_batch_milestone_rows(
                 "orders_in_batch": len(order_ids),
                 "wave_size": wave_size,
                 "batch_mode": batch_mode,
+                # Weigh → sort handoff
+                "weigh_start_at": _minutes_to_label(first_weigh_min)
+                if first_weigh_min is not None
+                else None,
+                "weigh_complete_at": _minutes_to_label(last_weigh_min)
+                if last_weigh_min is not None
+                else None,
+                "weigh_start_minute": first_weigh_min,
+                "weigh_complete_minute": last_weigh_min,
+                "bags_weighed_before_wash": bags_weighed_before_wash,
                 # Batch start — sorter lane vs washer handoff
                 "sorted_available_at_start": sorted_available_at_start,
                 "ready_to_fold_at_start": ready_to_fold_at_start,
@@ -2602,6 +2624,10 @@ def _build_batch_milestone_rows(
                 "bags_ready_to_fold": ready_at_end,
                 "folded_at_end": folded_at_end,
                 "bags_folded": folded_at_end,
+                "fold_complete_at": _minutes_to_label(last_fold_min)
+                if last_fold_min is not None
+                else None,
+                "fold_complete_minute": last_fold_min,
                 "cumulative_ready_to_fold": ready_at_end + folded_at_end,
                 "cumulative_folded": folded_at_end,
             }
