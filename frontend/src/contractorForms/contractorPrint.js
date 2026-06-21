@@ -98,15 +98,67 @@ function loadPrintDocumentIframe(html) {
         reject(new Error("Print iframe failed to load"));
         return;
       }
-      waitForImages(doc).then(() => resolve({ iframe, doc }));
+      waitForImages(doc).then(() => resolve({ iframe, doc, win: iframe.contentWindow }));
     };
     iframe.onerror = () => {
       iframe.remove();
       reject(new Error("Print iframe failed to load"));
     };
     document.body.appendChild(iframe);
-    iframe.srcdoc = html;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    iframe.src = url;
+    iframe.dataset.blobUrl = url;
   });
+}
+
+/** Standalone document in a new window — avoids parent app CSS breaking html2canvas. */
+function loadIsolatedHtmlWindow(html) {
+  return new Promise((resolve, reject) => {
+    const win = window.open("", "_blank", "noopener,noreferrer,width=920,height=1100");
+    if (!win) {
+      reject(new Error("Pop-up blocked — allow pop-ups for this site to download PDF"));
+      return;
+    }
+    try {
+      win.moveTo(-10000, 0);
+      win.resizeTo(920, 1100);
+    } catch {
+      /* ignore */
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    waitForImages(win.document).then(() => {
+      setTimeout(() => resolve({ win, doc: win.document }), 200);
+    });
+  });
+}
+
+async function loadHtmlForPdfCapture(html) {
+  try {
+    return await loadIsolatedHtmlWindow(html);
+  } catch {
+    const loaded = await loadPrintDocumentIframe(html);
+    return { win: loaded.win, doc: loaded.doc, iframe: loaded.iframe };
+  }
+}
+
+function cleanupPdfCaptureSession(session) {
+  if (!session) return;
+  if (session.iframe) {
+    const url = session.iframe.dataset?.blobUrl;
+    session.iframe.remove();
+    if (url) URL.revokeObjectURL(url);
+    return;
+  }
+  if (session.win) {
+    try {
+      session.win.close();
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 function pdfFormatFromPageSize(pageSize) {
@@ -122,7 +174,6 @@ function sanitizeDocumentForPdfCapture(doc) {
   doc.querySelectorAll("style").forEach((node) => {
     node.textContent = node.textContent
       .replace(/@page\s*\{[^}]*\}/gi, "")
-      .replace(/@media[^{]*\{[^}]*\}/gi, "")
       .replace(/linear-gradient\([^;)]+\)/gi, "#f0fdfa")
       .replace(/font-variant-numeric\s*:[^;]+;?/gi, "")
       .replace(/object-fit\s*:[^;]+;?/gi, "")
@@ -133,65 +184,70 @@ function sanitizeDocumentForPdfCapture(doc) {
     el.style.background = "#f0fdfa";
   });
   doc.querySelectorAll("img.paystub-logo, img.vw-logo, img[class*='logo']").forEach((img) => {
-    img.style.objectFit = "initial";
     img.style.height = img.style.height || "44px";
     img.style.width = "auto";
     img.style.display = "block";
   });
 }
 
-async function captureBodyToCanvas(body, { pageSize = "letter portrait" } = {}) {
-  const doc = body?.ownerDocument;
+async function captureElementToCanvas(element, { pageSize = "letter portrait", win } = {}) {
+  const doc = element?.ownerDocument;
   if (doc) sanitizeDocumentForPdfCapture(doc);
 
   const [{ default: html2canvas }] = await Promise.all([import("html2canvas")]);
 
-  return html2canvas(body, {
+  return html2canvas(element, {
     scale: 2,
     backgroundColor: "#ffffff",
     logging: false,
     useCORS: true,
     allowTaint: true,
     foreignObjectRendering: false,
+    windowWidth: win?.innerWidth || doc?.documentElement?.scrollWidth || 816,
+    windowHeight: win?.innerHeight || doc?.documentElement?.scrollHeight || 1056,
     onclone: (clonedDoc) => sanitizeDocumentForPdfCapture(clonedDoc),
   });
 }
 
-async function renderBodyToPdf(body, { pageSize = "letter portrait" } = {}) {
+function pdfCaptureTargets(doc) {
+  const sheets = Array.from(doc.querySelectorAll(".paystub-sheet"));
+  return sheets.length ? sheets : [doc.body];
+}
+
+async function renderBodyToPdf(body, { pageSize = "letter portrait", win } = {}) {
   const [{ default: jsPDF }] = await Promise.all([import("jspdf")]);
 
-  let canvas;
-  try {
-    canvas = await captureBodyToCanvas(body, { pageSize });
-  } catch (firstErr) {
-    const doc = body?.ownerDocument;
-    if (doc) {
-      doc.querySelectorAll("style").forEach((node) => node.remove());
-    }
-    try {
-      canvas = await captureBodyToCanvas(body, { pageSize });
-    } catch {
-      throw firstErr;
-    }
-  }
-
+  const doc = body?.ownerDocument;
+  const targets = doc ? pdfCaptureTargets(doc) : [body];
   const { format, orientation } = pdfFormatFromPageSize(pageSize);
   const pdf = new jsPDF({ orientation, unit: "in", format });
   const pageW = pdf.internal.pageSize.getWidth();
   const pageH = pdf.internal.pageSize.getHeight();
-  const imgData = canvas.toDataURL("image/jpeg", 0.95);
-  const imgW = pageW;
-  const imgH = (canvas.height * imgW) / canvas.width;
-  let heightLeft = imgH;
-  let position = 0;
 
-  pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
-  heightLeft -= pageH;
-  while (heightLeft > 0) {
-    position -= pageH;
-    pdf.addPage();
-    pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
-    heightLeft -= pageH;
+  for (let i = 0; i < targets.length; i += 1) {
+    let canvas;
+    try {
+      canvas = await captureElementToCanvas(targets[i], { pageSize, win });
+    } catch (firstErr) {
+      if (doc) {
+        doc.querySelectorAll("style").forEach((node) => node.remove());
+      }
+      try {
+        canvas = await captureElementToCanvas(targets[i], { pageSize, win });
+      } catch {
+        throw firstErr;
+      }
+    }
+    const imgData = canvas.toDataURL("image/jpeg", 0.92);
+    let drawW = pageW;
+    let drawH = (canvas.height * drawW) / canvas.width;
+    if (drawH > pageH) {
+      drawH = pageH;
+      drawW = (canvas.width * drawH) / canvas.height;
+    }
+    const x = (pageW - drawW) / 2;
+    if (i > 0) pdf.addPage();
+    pdf.addImage(imgData, "JPEG", x, 0, drawW, drawH);
   }
   return pdf;
 }
@@ -214,15 +270,17 @@ export async function downloadHtmlDocumentPdf(
   const docHtml = absolutizePrintAssetUrls(html);
   if (!docHtml) return false;
 
-  let iframe;
+  let session;
   try {
-    const loaded = await loadPrintDocumentIframe(docHtml);
-    iframe = loaded.iframe;
-    const pdf = await renderBodyToPdf(loaded.doc.body, { pageSize });
+    session = await loadHtmlForPdfCapture(docHtml);
+    const pdf = await renderBodyToPdf(session.doc.body, {
+      pageSize,
+      win: session.win,
+    });
     pdf.save(filename);
     return true;
   } finally {
-    iframe?.remove();
+    cleanupPdfCaptureSession(session);
   }
 }
 
