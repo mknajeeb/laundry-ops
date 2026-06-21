@@ -51,6 +51,7 @@ def test_accountant_only_sees_accountant_tab_logic():
     assert 'isAccountantRole = rolesUpper.includes("ACCOUNTANT")' in page
     assert "canContractors = hasPerm(\"users.edit\")" in page
     assert 'key: "accountant_payroll"' in page
+    assert 'key: "accountant_documents"' in page
     assert "readOnlyAccountant" in page
 
 

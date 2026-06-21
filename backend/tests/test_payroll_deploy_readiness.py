@@ -21,6 +21,8 @@ MOUNTED_PAYROLL_UI = [
     "frontend/src/components/PayoutBatchesPanel.jsx",
     "frontend/src/components/PayoutDetailsPanel.jsx",
     "frontend/src/components/AccountantPayrollPanel.jsx",
+    "frontend/src/components/AccountantReportsPanel.jsx",
+    "frontend/src/components/AccountantW2DocumentsPanel.jsx",
     "frontend/src/payroll/payrollBatchStatus.js",
     "frontend/src/payroll/payPeriodOptions.js",
     "frontend/src/components/PayPeriodSelect.jsx",
@@ -37,9 +39,7 @@ FORBIDDEN_UI_LABELS = [
 ]
 
 LEGACY_PANEL_IMPORTS = [
-    "AccountantReportsPanel",
     "AccountantPaymentQueuePanel",
-    "AccountantW2PayrollPanel",
 ]
 
 
@@ -47,8 +47,20 @@ def _read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
-def test_old_accountant_panels_not_imported_in_active_routes():
-    app_src = _read("frontend/src/App.jsx")
+def test_accountant_reports_mounted_for_admin_payroll():
+    mgmt = _read("frontend/src/pages/PayrollManagementPage.jsx")
+    assert "AccountantReportsPanel" in mgmt
+    assert 'key: "accountant_reports"' in mgmt
+    assert 'key: "accountant_documents"' in mgmt
+    section_block = mgmt.split("const sections = useMemo")[1].split("}, [")[0]
+    admin_block = section_block.split("if (readOnlyAccountant)")[1].split("return out;")[1]
+    batches_idx = admin_block.index('key: "batches"')
+    accountant_idx = admin_block.index('key: "accountant_payroll"')
+    details_idx = admin_block.index('key: "payout_details"')
+    assert batches_idx < accountant_idx < details_idx
+
+
+def test_legacy_accountant_queue_not_imported():
     mgmt = _read("frontend/src/pages/PayrollManagementPage.jsx")
     for name in LEGACY_PANEL_IMPORTS:
         assert name not in mgmt, f"{name} still imported in PayrollManagementPage"

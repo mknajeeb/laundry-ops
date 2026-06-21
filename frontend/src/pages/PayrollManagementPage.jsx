@@ -11,6 +11,8 @@ import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import { getPayoutBatches, patchPayoutBatch } from "../api";
 import AccountantPayrollPanel from "../components/AccountantPayrollPanel";
+import AccountantReportsPanel from "../components/AccountantReportsPanel";
+import AccountantW2DocumentsPanel from "../components/AccountantW2DocumentsPanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import W2EmployeeFormsPanel from "../components/W2EmployeeFormsPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
@@ -51,19 +53,21 @@ export default function PayrollManagementPage() {
     const out = [];
     if (readOnlyAccountant) {
       out.push({ key: "accountant_payroll", label: "Accountant Payroll" });
+      out.push({ key: "accountant_documents", label: "Documents" });
       return out;
     }
     if (canTime) out.push({ key: "time", label: "Time Records" });
     if (canPayout) out.push({ key: "batches", label: "Payout Batches" });
+    if (canPayout || (isAccountantRole && canAccountant)) {
+      out.push({ key: "accountant_payroll", label: "Accountant Payroll" });
+    }
     if (canPayoutDetails) out.push({ key: "payout_details", label: "Payment & Details" });
     if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canContractors) out.push({ key: "w2forms", label: t("payroll.tabW2Forms") });
     if (canPayout) out.push({ key: "payments", label: "Worker Payments" });
     if (canPayout) out.push({ key: "taxsettings", label: "Tax Settings" });
-    if (isAccountantRole && canAccountant) {
-      out.push({ key: "accountant_payroll", label: "Accountant Payroll" });
-    }
+    if (canAccountant) out.push({ key: "accountant_reports", label: "Accountant Reports" });
     return out;
   }, [
     canTime,
@@ -78,6 +82,7 @@ export default function PayrollManagementPage() {
 
   const [tab, setTab] = useState(0);
   const [detailsBatchId, setDetailsBatchId] = useState(null);
+  const [reportsSubTab, setReportsSubTab] = useState(0);
   const [primaryLoading, setPrimaryLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
 
@@ -133,9 +138,12 @@ export default function PayrollManagementPage() {
       if (action === "view_documents") {
         if (batch?.id) {
           setDetailsBatchId(batch.id);
-          goToTab("payout_details");
+        }
+        if (readOnlyAccountant) {
+          goToTab("accountant_documents");
         } else {
-          goToTab("accountant_payroll");
+          setReportsSubTab(1);
+          goToTab("accountant_reports");
         }
         return;
       }
@@ -164,7 +172,7 @@ export default function PayrollManagementPage() {
         }
       }
     },
-    [goToTab, refreshBatches],
+    [goToTab, refreshBatches, readOnlyAccountant],
   );
 
   if (authLoading) {
@@ -257,6 +265,10 @@ export default function PayrollManagementPage() {
           <PayoutDetailsPanel initialBatchId={detailsBatchId} />
         ) : null}
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
+        {active?.key === "accountant_documents" ? <AccountantW2DocumentsPanel /> : null}
+        {active?.key === "accountant_reports" ? (
+          <AccountantReportsPanel initialSubTab={reportsSubTab} />
+        ) : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}
         {active?.key === "payments" ? <PayrollWorkerPaymentsPanel /> : null}

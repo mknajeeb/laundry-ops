@@ -1,10 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Stack, Tab, Tabs } from "@mui/material";
 import AccountantW2DocumentsPanel from "../components/AccountantW2DocumentsPanel";
 import AccountantW2PayrollPanel from "../components/AccountantW2PayrollPanel";
 
-export default function AccountantReportsPanel() {
-  const [subTab, setSubTab] = useState(0);
+export default function AccountantReportsPanel({ initialSubTab = 0 }) {
+  const [subTab, setSubTab] = useState(initialSubTab);
+
+  useEffect(() => {
+    setSubTab(initialSubTab);
+  }, [initialSubTab]);
 
   return (
     <Stack spacing={2} sx={{ width: "100%", minWidth: 0 }}>
