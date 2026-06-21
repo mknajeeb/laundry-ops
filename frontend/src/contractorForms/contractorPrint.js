@@ -85,54 +85,49 @@ export function downloadPrintDocument(
   return true;
 }
 
-function loadPrintDocumentIframe(html) {
+const PDF_CAPTURE_ROOT_CLASS = "paystub-pdf-capture-root";
+
+function loadHtmlForPdfCapture(html) {
   return new Promise((resolve, reject) => {
-    const iframe = document.createElement("iframe");
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.setAttribute("tabindex", "-1");
-    iframe.style.cssText =
-      "position:fixed;left:0;top:0;width:816px;height:200px;border:0;opacity:0;pointer-events:none;z-index:-1;";
-    iframe.onload = () => {
-      const doc = iframe.contentDocument;
-      if (!doc?.body) {
-        cleanupPdfCaptureSession({ iframe });
-        reject(new Error("Print iframe failed to load"));
-        return;
-      }
-      waitForImages(doc).then(() => {
-        const height = Math.max(
-          doc.body.scrollHeight,
-          doc.documentElement?.scrollHeight || 0,
-          1056,
-        );
-        iframe.style.height = `${height}px`;
-        setTimeout(
-          () => resolve({ iframe, doc, win: iframe.contentWindow }),
-          150,
-        );
+    try {
+      const container = document.createElement("div");
+      container.className = PDF_CAPTURE_ROOT_CLASS;
+      container.setAttribute("aria-hidden", "true");
+      container.style.cssText =
+        "position:fixed;left:0;top:0;width:816px;opacity:0;pointer-events:none;z-index:-1;overflow:hidden;background:#fff;";
+
+      const parsed = new DOMParser().parseFromString(html, "text/html");
+      parsed.querySelectorAll("style").forEach((styleEl) => {
+        container.appendChild(styleEl.cloneNode(true));
       });
-    };
-    iframe.onerror = () => {
-      cleanupPdfCaptureSession({ iframe });
-      reject(new Error("Print iframe failed to load"));
-    };
-    document.body.appendChild(iframe);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    iframe.src = url;
-    iframe.dataset.blobUrl = url;
+      Array.from(parsed.body.childNodes).forEach((node) => {
+        container.appendChild(node.cloneNode(true));
+      });
+
+      document.body.appendChild(container);
+      waitForImages(container).then(() => {
+        setTimeout(() => resolve({ container, doc: document, win: window }), 150);
+      });
+    } catch (err) {
+      reject(err);
+    }
   });
 }
 
-async function loadHtmlForPdfCapture(html) {
-  return loadPrintDocumentIframe(html);
+function cleanupPdfCaptureSession(session) {
+  if (session?.container) {
+    session.container.remove();
+  }
 }
 
-function cleanupPdfCaptureSession(session) {
-  if (!session?.iframe) return;
-  const url = session.iframe.dataset?.blobUrl;
-  session.iframe.remove();
-  if (url) URL.revokeObjectURL(url);
+function stripNonCaptureStylesFromClone(clonedDoc) {
+  if (!clonedDoc) return;
+  clonedDoc.querySelectorAll("style, link[rel='stylesheet']").forEach((node) => {
+    if (!node.closest(`.${PDF_CAPTURE_ROOT_CLASS}`)) {
+      node.remove();
+    }
+  });
+  sanitizeDocumentForPdfCapture(clonedDoc);
 }
 
 function pdfFormatFromPageSize(pageSize) {
@@ -165,8 +160,12 @@ function sanitizeDocumentForPdfCapture(doc) {
 }
 
 async function captureElementToCanvas(element, { pageSize = "letter portrait", win } = {}) {
-  const doc = element?.ownerDocument;
-  if (doc) sanitizeDocumentForPdfCapture(doc);
+  const captureRoot =
+    element?.closest(`.${PDF_CAPTURE_ROOT_CLASS}`) ||
+    (element?.classList?.contains(PDF_CAPTURE_ROOT_CLASS) ? element : null);
+  if (captureRoot) {
+    sanitizePaystubStyles(captureRoot);
+  }
 
   const [{ default: html2canvas }] = await Promise.all([import("html2canvas")]);
   const w = Math.max(Math.ceil(element.scrollWidth || 0), 816);
@@ -183,20 +182,20 @@ async function captureElementToCanvas(element, { pageSize = "letter portrait", w
     height: h,
     windowWidth: win?.innerWidth || w,
     windowHeight: win?.innerHeight || h,
-    onclone: (clonedDoc) => sanitizeDocumentForPdfCapture(clonedDoc),
+    onclone: (clonedDoc) => stripNonCaptureStylesFromClone(clonedDoc),
   });
 }
 
-function pdfCaptureTargets(doc) {
-  const sheets = Array.from(doc.querySelectorAll(".paystub-sheet"));
-  return sheets.length ? sheets : [doc.body];
+function pdfCaptureTargets(root) {
+  const sheets = Array.from(root.querySelectorAll(".paystub-sheet"));
+  return sheets.length ? sheets : [root];
 }
 
-async function renderBodyToPdf(body, { pageSize = "letter portrait", win } = {}) {
+async function renderBodyToPdf(root, { pageSize = "letter portrait", win } = {}) {
   const [{ default: jsPDF }] = await Promise.all([import("jspdf")]);
 
-  const doc = body?.ownerDocument;
-  const targets = doc ? pdfCaptureTargets(doc) : [body];
+  const doc = root?.ownerDocument;
+  const targets = root ? pdfCaptureTargets(root) : [root];
   const { format, orientation } = pdfFormatFromPageSize(pageSize);
   const pdf = new jsPDF({ orientation, unit: "in", format });
   const pageW = pdf.internal.pageSize.getWidth();
@@ -207,8 +206,8 @@ async function renderBodyToPdf(body, { pageSize = "letter portrait", win } = {})
     try {
       canvas = await captureElementToCanvas(targets[i], { pageSize, win });
     } catch (firstErr) {
-      if (doc) {
-        doc.querySelectorAll("style").forEach((node) => node.remove());
+      if (root) {
+        root.querySelectorAll("style").forEach((node) => node.remove());
       }
       try {
         canvas = await captureElementToCanvas(targets[i], { pageSize, win });
@@ -251,7 +250,7 @@ export async function downloadHtmlDocumentPdf(
   let session;
   try {
     session = await loadHtmlForPdfCapture(docHtml);
-    const pdf = await renderBodyToPdf(session.doc.body, {
+    const pdf = await renderBodyToPdf(session.container, {
       pageSize,
       win: session.win,
     });
