@@ -122,8 +122,15 @@ def test_resolve_worker_hourly_rate_prefers_payroll_schedule():
 
 def test_accountant_batch_processing_status_pending_and_processed():
     assert accountant_batch_processing_status({"status": "sent_to_accountant"}) == "PENDING"
-    assert accountant_batch_processing_status({"status": "accountant_reviewed"}) == "PROCESSED"
-    assert accountant_batch_processing_status({"status": "approved_for_payment"}) == "PROCESSED"
+    assert accountant_batch_processing_status({"status": "accountant_reviewed"}) == "PAYMENT_INITIATED"
+    assert (
+        accountant_batch_processing_status(
+            {"status": "approved_for_payment", "accountant_payment_confirmed_at": "2026-06-20"}
+        )
+        == "PAYMENT_INITIATED"
+    )
+    assert accountant_batch_processing_status({"status": "approved_for_payment"}) == "PENDING"
+    assert accountant_batch_processing_status({"status": "paid"}) == "PAID"
     assert accountant_batch_processing_status({"status": "draft"}) is None
 
 

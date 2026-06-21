@@ -1085,7 +1085,9 @@ def payout_workflow_state(batch: dict) -> dict[str, Any]:
     return json_safe(
         {
             "batch_status": st,
-            "awaiting_accountant_confirmation": ready and not confirmed,
+            "awaiting_accountant_confirmation": (
+                st == "approved_for_payment" and not confirmed and bool(finalized)
+            ),
             "accountant_payment_confirmed": bool(confirmed),
             "accountant_payment_confirmed_at": batch.get("accountant_payment_confirmed_at"),
             "accountant_payment_confirmed_by": batch.get("accountant_payment_confirmed_by"),

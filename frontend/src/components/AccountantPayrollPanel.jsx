@@ -28,6 +28,7 @@ import {
   putPayoutBatchDetails,
 } from "../api";
 import {
+  accountantPeriodStatusColor,
   accountantPeriodStatusLabel,
   pickDefaultAccountantBatch,
 } from "../payroll/accountantBatchPick";
@@ -177,9 +178,9 @@ export default function AccountantPayrollPanel() {
     !detail.payout_workflow?.payout_details_finalized;
 
   const showPaymentInitiated =
-    detail?.payout_workflow?.awaiting_accountant_confirmation &&
+    detail?.status === "approved_for_payment" &&
     detail?.payout_workflow?.payout_details_finalized &&
-    !detail?.payout_workflow?.accountant_payment_confirmed;
+    detail?.payout_workflow?.awaiting_accountant_confirmation;
 
   const submitPayroll = async () => {
     if (!detail?.id) return;
@@ -261,11 +262,7 @@ export default function AccountantPayrollPanel() {
             For Accountant
           </Typography>
           {periodStatus ? (
-            <Chip
-              size="small"
-              label={periodStatus}
-              color={periodStatus === "PROCESSED" ? "success" : "warning"}
-            />
+            <Chip size="small" label={periodStatus} color={accountantPeriodStatusColor(periodBatch || detail)} />
           ) : null}
         </Stack>
         {batches.length ? (

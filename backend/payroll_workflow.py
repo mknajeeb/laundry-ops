@@ -70,14 +70,21 @@ ACCOUNTANT_PROCESSED_STATUSES = frozenset(
     }
 )
 
+ACCOUNTANT_PAID_STATUSES = frozenset({"paid", "closed"})
+
 
 def accountant_batch_processing_status(batch: dict) -> Optional[str]:
-    """Accountant W-2 panel: PENDING before review, PROCESSED after."""
+    """Accountant W-2 panel: Pending → Payment initiated → Paid."""
     st = str(batch.get("status") or "")
+    confirmed = bool(batch.get("accountant_payment_confirmed_at"))
     if st == "sent_to_accountant":
         return "PENDING"
-    if st in ACCOUNTANT_PROCESSED_STATUSES:
-        return "PROCESSED"
+    if st == "approved_for_payment":
+        return "PAYMENT_INITIATED" if confirmed else "PENDING"
+    if st == "accountant_reviewed":
+        return "PAYMENT_INITIATED"
+    if st in ACCOUNTANT_PAID_STATUSES:
+        return "PAID"
     return None
 
 

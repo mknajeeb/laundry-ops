@@ -146,9 +146,16 @@ def test_settlement_scenario_c_prior_unpaid_catchup():
 def test_payout_workflow_state_transitions():
     batch = {"status": "approved_for_payment"}
     wf = payout_workflow_state(batch)
-    assert wf["awaiting_accountant_confirmation"] is True
+    assert wf["awaiting_accountant_confirmation"] is False
     assert wf["can_edit_details"] is True
     assert wf["paystub_available"] is False
+
+    batch_pending_confirm = {
+        "status": "approved_for_payment",
+        "payout_details_finalized_at": "2026-06-20",
+    }
+    wf_pending = payout_workflow_state(batch_pending_confirm)
+    assert wf_pending["awaiting_accountant_confirmation"] is True
 
     batch2 = {
         "status": "approved_for_payment",
@@ -179,6 +186,10 @@ def test_payout_workflow_state_transitions():
     wf4 = payout_workflow_state(batch4)
     assert wf4["paystub_available"] is False
     assert wf4["payment_receipt_available"] is True
+
+    batch5 = {"status": "paid", "payout_details_finalized_at": "2026-06-20"}
+    wf5 = payout_workflow_state(batch5)
+    assert wf5["awaiting_accountant_confirmation"] is False
 
 
 def test_can_confirm_accountant_payment_role():
