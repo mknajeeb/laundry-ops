@@ -54,7 +54,7 @@ function WorkflowStep({ active, done, label, description }) {
           flexShrink: 0,
           bgcolor: done ? "success.main" : active ? VEEWASH_BRAND.primary : "action.hover",
           color: done || active ? "common.white" : "text.secondary",
-          fontSize: 0.75rem,
+          fontSize: "0.75rem",
           fontWeight: 700,
         }}
       >
