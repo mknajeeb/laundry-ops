@@ -981,7 +981,8 @@ def test_refresh_carryover_prior_tax_balances_replaces_stale_prior():
     batch_cursor = MagicMock()
     updater = MagicMock()
     batch_conn = MagicMock()
-    batch_conn.cursor.side_effect = [batch_cursor, updater]
+    batch_conn.cursor.return_value = batch_cursor
+    batch_cursor.execute = updater.execute
 
     with patch(
         "backend.payroll_payout_details.ensure_payout_details_columns",
@@ -1022,7 +1023,7 @@ def test_refresh_carryover_prior_tax_balances_replaces_stale_prior():
     line = out["prior_balance_refresh"]["lines"][0]
     assert line["prior_before"] == 161.02
     assert line["prior_after"] == 65.15
-    updater.execute.assert_called()
+    assert updater.execute.call_count >= 2
     batch_conn.commit.assert_called_once()
 
 
