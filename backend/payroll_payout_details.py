@@ -1979,10 +1979,15 @@ def _employee_earnings_html(hours: float, rate: float, gross: float) -> str:
 
 def _employee_payment_method_html(payment: dict) -> str:
     label = _payment_method_label(payment.get("method"))
+    pay_date = payment.get("date")
+    date_row = (
+        f"<tr><td>Payment date</td><td>{pay_date}</td></tr>" if pay_date else ""
+    )
     return f"""
 <h2>Payment</h2>
 <table class="compact">
 <tr><td>Payment method</td><td>{label}</td></tr>
+{date_row}
 </table>"""
 
 

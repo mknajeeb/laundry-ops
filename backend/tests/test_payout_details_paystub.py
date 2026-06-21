@@ -937,6 +937,18 @@ def test_paystub_employee_tax_balance_prior_adj_collection_labels():
     assert "$19.42" in html
 
 
+def test_employee_paystub_payment_section_shows_date():
+    from backend.payroll_payout_details import _employee_payment_method_html
+
+    html = _employee_payment_method_html(
+        {"method": "zelle", "date": "2026-05-30"},
+    )
+    assert "Payment method" in html
+    assert "Zelle" in html
+    assert "Payment date" in html
+    assert "2026-05-30" in html
+
+
 def test_apply_carryover_prior_tax_balance_from_finalized_line():
     conn = MagicMock()
     cursor = MagicMock()
