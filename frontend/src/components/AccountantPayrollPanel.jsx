@@ -3,6 +3,7 @@ import {
   Alert,
   Box,
   Button,
+  Chip,
   Collapse,
   IconButton,
   Paper,
@@ -19,23 +20,27 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import PayPeriodSelect from "./PayPeriodSelect";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import {
+  confirmPayoutPayment,
   finalizePayoutDetails,
   getPayoutBatchDetails,
   getPayoutBatches,
   processPayoutBatch,
   putPayoutBatchDetails,
 } from "../api";
+import {
+  accountantPeriodStatusLabel,
+  pickDefaultAccountantBatch,
+} from "../payroll/accountantBatchPick";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
-import { defaultPayPeriodRange } from "../payroll/payPeriodDefaults";
-import { displayStatusLabel } from "../payroll/payrollBatchStatus";
 
-const DEDUCTION_FIELDS = [
+const MAIN_DEDUCTION_FIELDS = [
   { key: "fit", label: "FIT" },
   { key: "ss", label: "SS" },
   { key: "medicare", label: "Medicare" },
   { key: "state", label: "State" },
-  { key: "local", label: "Local" },
 ];
+
+const ALL_DEDUCTION_KEYS = [...MAIN_DEDUCTION_FIELDS.map((f) => f.key), "local"];
 
 function num(v) {
   const n = Number(v);
@@ -55,7 +60,7 @@ function emptyLineState(line) {
 }
 
 function lineTaxTotal(draft) {
-  return DEDUCTION_FIELDS.reduce((s, f) => s + num(draft.employee_deductions?.[f.key]), 0);
+  return ALL_DEDUCTION_KEYS.reduce((s, key) => s + num(draft.employee_deductions?.[key]), 0);
 }
 
 function lineGross(ln) {
@@ -76,12 +81,6 @@ export default function AccountantPayrollPanel() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const autoPickedRef = useRef(false);
-
-  useEffect(() => {
-    const r = defaultPayPeriodRange(0);
-    setPeriodStart(r.start);
-    setPeriodEnd(r.end);
-  }, []);
 
   const loadBatches = useCallback(async () => {
     try {
@@ -136,8 +135,7 @@ export default function AccountantPayrollPanel() {
 
   useEffect(() => {
     if (!batches.length || autoPickedRef.current) return;
-    const pending = batches.find((b) => b.status === "sent_to_accountant");
-    const pick = pending || batches.find((b) => b.payroll_display?.display_status === "ready_for_payroll");
+    const pick = pickDefaultAccountantBatch(batches);
     if (pick) {
       setPeriodStart(normPayPeriodYmd(pick.pay_period_start));
       setPeriodEnd(normPayPeriodYmd(pick.pay_period_end));
@@ -171,10 +169,17 @@ export default function AccountantPayrollPanel() {
     return { gross, tax, net, count: lines.length };
   }, [detail, lineDrafts]);
 
+  const periodStatus = accountantPeriodStatusLabel(periodBatch || detail);
   const canSubmit =
     detail &&
     (detail.can_process_as_accountant ||
-      detail.payroll_display?.display_status === "ready_for_payroll");
+      detail.payroll_display?.display_status === "ready_for_payroll") &&
+    !detail.payout_workflow?.payout_details_finalized;
+
+  const showPaymentInitiated =
+    detail?.payout_workflow?.awaiting_accountant_confirmation &&
+    detail?.payout_workflow?.payout_details_finalized &&
+    !detail?.payout_workflow?.accountant_payment_confirmed;
 
   const submitPayroll = async () => {
     if (!detail?.id) return;
@@ -205,8 +210,26 @@ export default function AccountantPayrollPanel() {
       setDetail(batch);
       setInfo("Payroll submitted — ready to pay.");
       await loadBatches();
+      await loadDetail(batch.id);
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Submit failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const markPaymentInitiated = async () => {
+    if (!detail?.id) return;
+    setSubmitting(true);
+    setError("");
+    setInfo("");
+    try {
+      const res = await confirmPayoutPayment(detail.id);
+      setDetail(res.data);
+      setInfo("Payment initiated — recorded for this pay period.");
+      await loadBatches();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not record payment");
     } finally {
       setSubmitting(false);
     }
@@ -215,16 +238,36 @@ export default function AccountantPayrollPanel() {
   return (
     <Stack spacing={1.5}>
       {error ? (
-        <Alert severity="error" onClose={() => setError("")}>{error}</Alert>
+        <Alert severity="error" onClose={() => setError("")}>
+          {error}
+        </Alert>
       ) : null}
       {info ? (
-        <Alert severity="success" onClose={() => setInfo("")}>{info}</Alert>
+        <Alert severity="success" onClose={() => setInfo("")}>
+          {info}
+        </Alert>
       ) : null}
 
       <Paper variant="outlined" sx={{ p: 1.5 }}>
-        <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>
-          Accountant Payroll
-        </Typography>
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          flexWrap="wrap"
+          gap={1}
+          sx={{ mb: 1 }}
+        >
+          <Typography variant="subtitle1" fontWeight={700}>
+            For Accountant
+          </Typography>
+          {periodStatus ? (
+            <Chip
+              size="small"
+              label={periodStatus}
+              color={periodStatus === "PROCESSED" ? "success" : "warning"}
+            />
+          ) : null}
+        </Stack>
         {batches.length ? (
           <PayPeriodSelect
             weekStartsOn={weekStartsOn}
@@ -233,7 +276,7 @@ export default function AccountantPayrollPanel() {
             end={periodEnd}
             expanded={periodExpanded}
             onExpandedChange={setPeriodExpanded}
-            batchStatusLabel={(b) => displayStatusLabel(b)}
+            batchStatusLabel={accountantPeriodStatusLabel}
             batchOnly
             onChange={({ start, end }) => {
               setPeriodStart(start);
@@ -260,10 +303,11 @@ export default function AccountantPayrollPanel() {
                     <TableCell width={32} />
                     <TableCell>Employee</TableCell>
                     <TableCell align="right">Gross</TableCell>
-                    <TableCell align="right">FIT</TableCell>
-                    <TableCell align="right">SS</TableCell>
-                    <TableCell align="right">Medicare</TableCell>
-                    <TableCell align="right">State</TableCell>
+                    {MAIN_DEDUCTION_FIELDS.map((f) => (
+                      <TableCell key={f.key} align="right">
+                        {f.label}
+                      </TableCell>
+                    ))}
                     <TableCell align="right">Total tax</TableCell>
                     <TableCell align="right">Net</TableCell>
                   </TableRow>
@@ -274,12 +318,15 @@ export default function AccountantPayrollPanel() {
                     const gross = lineGross(ln);
                     const tax = lineTaxTotal(draft);
                     const isOpen = expanded[ln.id];
-                    const editable = canSubmit && !detail.payout_workflow?.payout_details_finalized;
+                    const editable = canSubmit;
                     return (
                       <Fragment key={ln.id}>
                         <TableRow sx={{ "& td": { py: 0.5 } }}>
                           <TableCell>
-                            <IconButton size="small" onClick={() => setExpanded((p) => ({ ...p, [ln.id]: !p[ln.id] }))}>
+                            <IconButton
+                              size="small"
+                              onClick={() => setExpanded((p) => ({ ...p, [ln.id]: !p[ln.id] }))}
+                            >
                               <ExpandMoreIcon
                                 fontSize="small"
                                 sx={{ transform: isOpen ? "rotate(180deg)" : "none" }}
@@ -288,7 +335,7 @@ export default function AccountantPayrollPanel() {
                           </TableCell>
                           <TableCell>{ln.worker_name_snapshot}</TableCell>
                           <TableCell align="right">${gross.toFixed(2)}</TableCell>
-                          {DEDUCTION_FIELDS.map((f) => (
+                          {MAIN_DEDUCTION_FIELDS.map((f) => (
                             <TableCell key={f.key} align="right">
                               {editable ? (
                                 <TextField
@@ -311,7 +358,18 @@ export default function AccountantPayrollPanel() {
                         <TableRow key={`${ln.id}-n`}>
                           <TableCell colSpan={9} sx={{ py: 0 }}>
                             <Collapse in={isOpen}>
-                              <Box sx={{ py: 1, pl: 2 }}>
+                              <Box sx={{ py: 1, pl: 2, display: "flex", gap: 2, flexWrap: "wrap" }}>
+                                <TextField
+                                  size="small"
+                                  type="number"
+                                  label="Local tax"
+                                  value={draft.employee_deductions?.local ?? ""}
+                                  disabled={!editable}
+                                  onChange={(e) =>
+                                    updateDraft(ln.id, "employee_deductions", "local", e.target.value)
+                                  }
+                                  sx={{ width: 120 }}
+                                />
                                 <TextField
                                   size="small"
                                   label="Employee note"
@@ -323,6 +381,7 @@ export default function AccountantPayrollPanel() {
                                       [ln.id]: { ...prev[ln.id], employee_note: e.target.value },
                                     }))
                                   }
+                                  sx={{ minWidth: 220, flex: 1 }}
                                 />
                               </Box>
                             </Collapse>
@@ -333,8 +392,8 @@ export default function AccountantPayrollPanel() {
                   })}
                   {(detail.lines || []).length > 0 ? (
                     <TableRow>
-                      <TableCell sx={{ fontWeight: 700 }}>Totals</TableCell>
                       <TableCell />
+                      <TableCell sx={{ fontWeight: 700 }}>Totals</TableCell>
                       <TableCell align="right" sx={{ fontWeight: 700 }}>
                         ${totals.gross.toFixed(2)}
                       </TableCell>
@@ -351,11 +410,23 @@ export default function AccountantPayrollPanel() {
               </Table>
             </Paper>
           )}
-          {canSubmit && !detail.payout_workflow?.payout_details_finalized ? (
-            <Button variant="contained" disabled={submitting} onClick={submitPayroll}>
-              Submit payroll
-            </Button>
-          ) : null}
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            {canSubmit ? (
+              <Button variant="contained" disabled={submitting} onClick={submitPayroll}>
+                Submit payroll
+              </Button>
+            ) : null}
+            {showPaymentInitiated ? (
+              <Button
+                variant="contained"
+                color="success"
+                disabled={submitting}
+                onClick={markPaymentInitiated}
+              >
+                Payment initiated
+              </Button>
+            ) : null}
+          </Stack>
         </>
       ) : null}
     </Stack>

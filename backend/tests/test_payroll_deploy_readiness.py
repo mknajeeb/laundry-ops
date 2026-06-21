@@ -21,8 +21,8 @@ MOUNTED_PAYROLL_UI = [
     "frontend/src/components/PayoutBatchesPanel.jsx",
     "frontend/src/components/PayoutDetailsPanel.jsx",
     "frontend/src/components/AccountantPayrollPanel.jsx",
-    "frontend/src/components/AccountantReportsPanel.jsx",
     "frontend/src/components/AccountantW2DocumentsPanel.jsx",
+    "frontend/src/components/AccountantEmployeePaystubsPanel.jsx",
     "frontend/src/payroll/payrollBatchStatus.js",
     "frontend/src/payroll/payPeriodOptions.js",
     "frontend/src/components/PayPeriodSelect.jsx",
@@ -49,15 +49,20 @@ def _read(rel: str) -> str:
 
 def test_accountant_reports_mounted_for_admin_payroll():
     mgmt = _read("frontend/src/pages/PayrollManagementPage.jsx")
-    assert "AccountantReportsPanel" in mgmt
-    assert 'key: "accountant_reports"' in mgmt
-    assert 'key: "accountant_documents"' not in mgmt
-    section_block = mgmt.split("const sections = useMemo")[1].split("}, [")[0]
-    admin_block = section_block.split("if (readOnlyAccountant)")[1].split("return out;")[1]
+    assert "AccountantW2DocumentsPanel" in mgmt
+    assert "AccountantEmployeePaystubsPanel" in mgmt
+    assert 'key: "accountant_documents"' in mgmt
+    assert 'key: "accountant_employee"' in mgmt
+    assert 'label: "For Accountant"' in mgmt
+    section_block = mgmt.split("const accountantTabs = useMemo")[1].split("const sections = useMemo")[0]
+    assert section_block.index('label: "For Accountant"') < section_block.index('label: "Documents"')
+    assert section_block.index('label: "Documents"') < section_block.index('label: "By Employee"')
+    admin_block = mgmt.split("const sections = useMemo")[1].split("}, [")[0]
+    admin_block = admin_block.split("if (readOnlyAccountant) return")[1]
     batches_idx = admin_block.index('key: "batches"')
-    accountant_idx = admin_block.index('key: "accountant_payroll"')
+    accountant_tabs_idx = admin_block.index("out.push(...accountantTabs)")
     details_idx = admin_block.index('key: "payout_details"')
-    assert batches_idx < accountant_idx < details_idx
+    assert batches_idx < accountant_tabs_idx < details_idx
 
 
 def test_legacy_accountant_queue_not_imported():
