@@ -975,6 +975,57 @@ def test_apply_carryover_prior_tax_balance_from_finalized_line():
     assert out["tax_summary"]["remaining_balance"] == 20.0
 
 
+def test_refresh_carryover_prior_tax_balances_replaces_stale_prior():
+    from backend.payroll_payout_details import refresh_carryover_prior_tax_balances
+
+    batch_cursor = MagicMock()
+    updater = MagicMock()
+    batch_conn = MagicMock()
+    batch_conn.cursor.side_effect = [batch_cursor, updater]
+
+    with patch(
+        "backend.payroll_payout_details.ensure_payout_details_columns",
+    ), patch(
+        "backend.payroll_payout_details.get_payout_batch",
+        return_value={
+            "id": 23,
+            "status": "approved_for_payment",
+            "payout_details_finalized_at": None,
+            "payout_details_audit_json": None,
+        },
+    ), patch(
+        "backend.payroll_payout_details.batch_ready_for_payout_details",
+        return_value=True,
+    ), patch(
+        "backend.payroll_payout_details.fetch_carryover_prior_tax_balance",
+        return_value=65.15,
+    ), patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        return_value={"id": 23, "lines": [], "prior_balance_refresh": {"updated": 1}},
+    ):
+        batch_cursor.fetchall.return_value = [
+            {
+                "id": 100,
+                "user_id": 22,
+                "worker_name_snapshot": "Alec Coaxum",
+                "gross_amount": 120.19,
+                "total_amount": 120.19,
+                "payout_details_json": {
+                    "employee_deductions": {"fit": 4.33, "ss": 7.45, "medicare": 1.74},
+                    "settlement": {"prior_unpaid_taxes": 161.02},
+                },
+            }
+        ]
+        out = refresh_carryover_prior_tax_balances(batch_conn, 3, 23, actor_id=1)
+
+    assert out["prior_balance_refresh"]["updated"] == 1
+    line = out["prior_balance_refresh"]["lines"][0]
+    assert line["prior_before"] == 161.02
+    assert line["prior_after"] == 65.15
+    updater.execute.assert_called()
+    batch_conn.commit.assert_called_once()
+
+
 def test_unfinalize_clears_finalized_timestamp():
     conn = MagicMock()
     finalized_batch = {

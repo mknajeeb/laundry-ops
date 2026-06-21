@@ -498,6 +498,110 @@ def apply_carryover_prior_tax_balance(
     return out
 
 
+def refresh_carryover_prior_tax_balances(
+    conn,
+    organization_id: int,
+    batch_id: int,
+    *,
+    actor_id: int,
+    line_ids: Optional[list[int]] = None,
+) -> dict:
+    """Replace stale prior_unpaid_taxes with each worker's latest finalized remaining balance."""
+    ensure_payout_details_columns(conn.cursor())
+    batch = get_payout_batch(conn, organization_id, batch_id)
+    if not batch:
+        raise ValueError("Batch not found")
+    if not batch_ready_for_payout_details(batch):
+        raise ValueError("Batch must be approved for payment before refreshing prior balances")
+    if batch.get("payout_details_finalized_at"):
+        raise ValueError("Payout details are finalized — prior balances are locked")
+
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        """
+        SELECT id, user_id, worker_name_snapshot, gross_amount, total_amount, payout_details_json
+        FROM payout_batch_lines
+        WHERE batch_id=%s AND organization_id=%s
+        """,
+        (int(batch_id), int(organization_id)),
+    )
+    rows = c.fetchall() or []
+    want = {int(x) for x in (line_ids or [])} if line_ids else None
+    updater = conn.cursor()
+    refreshed: list[dict[str, Any]] = []
+    updated = 0
+
+    for row in rows:
+        lid = int(row["id"])
+        if want is not None and lid not in want:
+            continue
+        uid = row.get("user_id")
+        if not uid:
+            continue
+        carry = fetch_carryover_prior_tax_balance(
+            conn,
+            int(organization_id),
+            int(uid),
+            exclude_batch_id=int(batch_id),
+        )
+        details = parse_line_payout_details(row)
+        settlement = dict(details.get("settlement") or {})
+        old_prior = round(float(_money(settlement.get("prior_unpaid_taxes"))), 2)
+        new_prior = round(float(carry), 2)
+        if old_prior == new_prior:
+            continue
+        settlement["prior_unpaid_taxes"] = new_prior
+        details["settlement"] = settlement
+        gross = float(_money(row.get("gross_amount") or row.get("total_amount") or 0))
+        details = reconcile_tax_summary(details)
+        if gross > 0:
+            details = apply_settlement_math(details, gross)
+        updater.execute(
+            """
+            UPDATE payout_batch_lines SET payout_details_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND batch_id=%s AND organization_id=%s
+            """,
+            (
+                json.dumps(details),
+                lid,
+                int(batch_id),
+                int(organization_id),
+            ),
+        )
+        refreshed.append(
+            {
+                "line_id": lid,
+                "worker_name": str(row.get("worker_name_snapshot") or ""),
+                "prior_before": old_prior,
+                "prior_after": new_prior,
+            }
+        )
+        updated += 1
+
+    if updated:
+        events = _audit_append(
+            batch,
+            "prior_balances_refreshed",
+            actor_id,
+            f"{updated} line(s)",
+        )
+        updater.execute(
+            """
+            UPDATE payout_batches SET payout_details_audit_json=%s, updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND organization_id=%s
+            """,
+            (json.dumps({"events": events}), int(batch_id), int(organization_id)),
+        )
+        conn.commit()
+
+    out = get_payout_batch_details(conn, organization_id, batch_id) or {}
+    out["prior_balance_refresh"] = {
+        "updated": updated,
+        "lines": refreshed,
+    }
+    return out
+
+
 def _withheld_for_current_period(
     settlement: dict, current_period: float, *, paid_full_gross: bool
 ) -> float:

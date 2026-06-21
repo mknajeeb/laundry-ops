@@ -5850,6 +5850,41 @@ def payroll_payout_batch_details(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/payout-batches/<int:batch_id>/refresh-prior-balances", methods=["POST"])
+@require_auth
+@require_any_perm("ta.settings", "users.edit")
+def payroll_payout_refresh_prior_balances(batch_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            can_edit_payout_details,
+            refresh_carryover_prior_tax_balances,
+        )
+
+        uid = int(g.ta_user["id"])
+        if not can_edit_payout_details(conn, uid):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = _tenant_id()
+        body = request.get_json(silent=True) or {}
+        line_ids = body.get("line_ids")
+        try:
+            row = refresh_carryover_prior_tax_balances(
+                conn,
+                oid,
+                batch_id,
+                actor_id=uid,
+                line_ids=line_ids if isinstance(line_ids, list) else None,
+            )
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_payout_refresh_prior_balances failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/payout-batches/<int:batch_id>/confirm-payment", methods=["POST"])
 @require_auth
 @require_any_perm("users.view")

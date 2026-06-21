@@ -48,6 +48,7 @@ import {
   getEmployerPayrollPacketHtml,
   getPayRegisterHtml,
   postPaystubPreviewHtml,
+  postRefreshPriorBalances,
   putPayoutBatchDetails,
   setPayoutDocumentMode,
 } from "../api";
@@ -562,6 +563,31 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     }
   };
 
+  const refreshPriorBalances = async () => {
+    if (!selectedId || !canEdit || finalized) return;
+    setError("");
+    setInfo("");
+    try {
+      const res = await postRefreshPriorBalances(selectedId);
+      const batch = res.data;
+      setDetail(batch);
+      const drafts = {};
+      (batch.lines || []).forEach((ln) => {
+        drafts[ln.id] = emptyLineState(ln, batch);
+      });
+      setLineDrafts(drafts);
+      const refresh = batch.prior_balance_refresh || {};
+      const count = Number(refresh.updated || 0);
+      if (count > 0) {
+        setInfo(`Prior tax balances refreshed for ${count} employee(s) from last finalized pay.`);
+      } else {
+        setInfo("Prior tax balances already match last finalized pay — no changes.");
+      }
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Refresh prior balances failed");
+    }
+  };
+
   const doFinalize = async () => {
     setError("");
     try {
@@ -823,6 +849,11 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
             {canEdit ? (
               <Button size="small" onClick={autoFillEstimates} disabled={finalized}>
                 Auto-fill minimum withholding
+              </Button>
+            ) : null}
+            {canEdit ? (
+              <Button size="small" onClick={refreshPriorBalances} disabled={finalized}>
+                Refresh prior balances
               </Button>
             ) : null}
             {canEdit ? (
