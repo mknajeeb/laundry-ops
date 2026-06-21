@@ -89,19 +89,31 @@ function loadPrintDocumentIframe(html) {
   return new Promise((resolve, reject) => {
     const iframe = document.createElement("iframe");
     iframe.setAttribute("aria-hidden", "true");
+    iframe.setAttribute("tabindex", "-1");
     iframe.style.cssText =
-      "position:fixed;left:-10000px;top:0;width:8.5in;height:11in;border:0;visibility:hidden;";
+      "position:fixed;left:0;top:0;width:816px;height:200px;border:0;opacity:0;pointer-events:none;z-index:-1;";
     iframe.onload = () => {
       const doc = iframe.contentDocument;
       if (!doc?.body) {
-        iframe.remove();
+        cleanupPdfCaptureSession({ iframe });
         reject(new Error("Print iframe failed to load"));
         return;
       }
-      waitForImages(doc).then(() => resolve({ iframe, doc, win: iframe.contentWindow }));
+      waitForImages(doc).then(() => {
+        const height = Math.max(
+          doc.body.scrollHeight,
+          doc.documentElement?.scrollHeight || 0,
+          1056,
+        );
+        iframe.style.height = `${height}px`;
+        setTimeout(
+          () => resolve({ iframe, doc, win: iframe.contentWindow }),
+          150,
+        );
+      });
     };
     iframe.onerror = () => {
-      iframe.remove();
+      cleanupPdfCaptureSession({ iframe });
       reject(new Error("Print iframe failed to load"));
     };
     document.body.appendChild(iframe);
@@ -112,53 +124,15 @@ function loadPrintDocumentIframe(html) {
   });
 }
 
-/** Standalone document in a new window — avoids parent app CSS breaking html2canvas. */
-function loadIsolatedHtmlWindow(html) {
-  return new Promise((resolve, reject) => {
-    const win = window.open("", "_blank", "noopener,noreferrer,width=920,height=1100");
-    if (!win) {
-      reject(new Error("Pop-up blocked — allow pop-ups for this site to download PDF"));
-      return;
-    }
-    try {
-      win.moveTo(-10000, 0);
-      win.resizeTo(920, 1100);
-    } catch {
-      /* ignore */
-    }
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-    waitForImages(win.document).then(() => {
-      setTimeout(() => resolve({ win, doc: win.document }), 200);
-    });
-  });
-}
-
 async function loadHtmlForPdfCapture(html) {
-  try {
-    return await loadIsolatedHtmlWindow(html);
-  } catch {
-    const loaded = await loadPrintDocumentIframe(html);
-    return { win: loaded.win, doc: loaded.doc, iframe: loaded.iframe };
-  }
+  return loadPrintDocumentIframe(html);
 }
 
 function cleanupPdfCaptureSession(session) {
-  if (!session) return;
-  if (session.iframe) {
-    const url = session.iframe.dataset?.blobUrl;
-    session.iframe.remove();
-    if (url) URL.revokeObjectURL(url);
-    return;
-  }
-  if (session.win) {
-    try {
-      session.win.close();
-    } catch {
-      /* ignore */
-    }
-  }
+  if (!session?.iframe) return;
+  const url = session.iframe.dataset?.blobUrl;
+  session.iframe.remove();
+  if (url) URL.revokeObjectURL(url);
 }
 
 function pdfFormatFromPageSize(pageSize) {
@@ -195,6 +169,8 @@ async function captureElementToCanvas(element, { pageSize = "letter portrait", w
   if (doc) sanitizeDocumentForPdfCapture(doc);
 
   const [{ default: html2canvas }] = await Promise.all([import("html2canvas")]);
+  const w = Math.max(Math.ceil(element.scrollWidth || 0), 816);
+  const h = Math.max(Math.ceil(element.scrollHeight || 0), 200);
 
   return html2canvas(element, {
     scale: 2,
@@ -203,8 +179,10 @@ async function captureElementToCanvas(element, { pageSize = "letter portrait", w
     useCORS: true,
     allowTaint: true,
     foreignObjectRendering: false,
-    windowWidth: win?.innerWidth || doc?.documentElement?.scrollWidth || 816,
-    windowHeight: win?.innerHeight || doc?.documentElement?.scrollHeight || 1056,
+    width: w,
+    height: h,
+    windowWidth: win?.innerWidth || w,
+    windowHeight: win?.innerHeight || h,
     onclone: (clonedDoc) => sanitizeDocumentForPdfCapture(clonedDoc),
   });
 }
