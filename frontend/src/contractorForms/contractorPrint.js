@@ -127,7 +127,10 @@ function stripNonCaptureStylesFromClone(clonedDoc) {
       node.remove();
     }
   });
-  sanitizeDocumentForPdfCapture(clonedDoc);
+  const captureRoot = clonedDoc.querySelector(`.${PDF_CAPTURE_ROOT_CLASS}`);
+  if (captureRoot) {
+    sanitizePaystubStyles(captureRoot);
+  }
 }
 
 function pdfFormatFromPageSize(pageSize) {
@@ -138,9 +141,9 @@ function pdfFormatFromPageSize(pageSize) {
 }
 
 /** html2canvas chokes on @page, gradients, and some modern CSS — strip before capture. */
-function sanitizeDocumentForPdfCapture(doc) {
-  if (!doc) return;
-  doc.querySelectorAll("style").forEach((node) => {
+function sanitizePaystubStyles(root) {
+  if (!root) return;
+  root.querySelectorAll("style").forEach((node) => {
     node.textContent = node.textContent
       .replace(/@page\s*\{[^}]*\}/gi, "")
       .replace(/linear-gradient\([^;)]+\)/gi, "#f0fdfa")
@@ -149,10 +152,10 @@ function sanitizeDocumentForPdfCapture(doc) {
       .replace(/-webkit-print-color-adjust\s*:[^;]+;?/gi, "")
       .replace(/print-color-adjust\s*:[^;]+;?/gi, "");
   });
-  doc.querySelectorAll(".brand-head").forEach((el) => {
+  root.querySelectorAll(".brand-head").forEach((el) => {
     el.style.background = "#f0fdfa";
   });
-  doc.querySelectorAll("img.paystub-logo, img.vw-logo, img[class*='logo']").forEach((img) => {
+  root.querySelectorAll("img.paystub-logo, img.vw-logo, img[class*='logo']").forEach((img) => {
     img.style.height = img.style.height || "44px";
     img.style.width = "auto";
     img.style.display = "block";
