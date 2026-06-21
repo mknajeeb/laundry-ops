@@ -84,8 +84,8 @@ def organization_logo_img_html(
             )
     if data_uri:
         return (
-            f'<img src="{data_uri}" alt="{company_name}" class="{css_class}" '
-            f'style="height:{height_px}px;width:auto;object-fit:contain;display:block;" />'
+        f'<img src="{data_uri}" alt="{company_name}" class="{css_class}" '
+        f'style="height: {height_px}px; width: auto; display: block;" />'
         )
     from backend.veewash_branding import veewash_logo_img_html
 

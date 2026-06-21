@@ -116,18 +116,64 @@ function pdfFormatFromPageSize(pageSize) {
   return { format: "letter", orientation: "portrait" };
 }
 
-async function renderBodyToPdf(body, { pageSize = "letter portrait" } = {}) {
-  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
-    import("html2canvas"),
-    import("jspdf"),
-  ]);
+/** html2canvas chokes on @page, gradients, and some modern CSS — strip before capture. */
+function sanitizeDocumentForPdfCapture(doc) {
+  if (!doc) return;
+  doc.querySelectorAll("style").forEach((node) => {
+    node.textContent = node.textContent
+      .replace(/@page\s*\{[^}]*\}/gi, "")
+      .replace(/@media[^{]*\{[^}]*\}/gi, "")
+      .replace(/linear-gradient\([^;)]+\)/gi, "#f0fdfa")
+      .replace(/font-variant-numeric\s*:[^;]+;?/gi, "")
+      .replace(/object-fit\s*:[^;]+;?/gi, "")
+      .replace(/-webkit-print-color-adjust\s*:[^;]+;?/gi, "")
+      .replace(/print-color-adjust\s*:[^;]+;?/gi, "");
+  });
+  doc.querySelectorAll(".brand-head").forEach((el) => {
+    el.style.background = "#f0fdfa";
+  });
+  doc.querySelectorAll("img.paystub-logo, img.vw-logo, img[class*='logo']").forEach((img) => {
+    img.style.objectFit = "initial";
+    img.style.height = img.style.height || "44px";
+    img.style.width = "auto";
+    img.style.display = "block";
+  });
+}
 
-  const canvas = await html2canvas(body, {
+async function captureBodyToCanvas(body, { pageSize = "letter portrait" } = {}) {
+  const doc = body?.ownerDocument;
+  if (doc) sanitizeDocumentForPdfCapture(doc);
+
+  const [{ default: html2canvas }] = await Promise.all([import("html2canvas")]);
+
+  return html2canvas(body, {
     scale: 2,
     backgroundColor: "#ffffff",
     logging: false,
     useCORS: true,
+    allowTaint: true,
+    foreignObjectRendering: false,
+    onclone: (clonedDoc) => sanitizeDocumentForPdfCapture(clonedDoc),
   });
+}
+
+async function renderBodyToPdf(body, { pageSize = "letter portrait" } = {}) {
+  const [{ default: jsPDF }] = await Promise.all([import("jspdf")]);
+
+  let canvas;
+  try {
+    canvas = await captureBodyToCanvas(body, { pageSize });
+  } catch (firstErr) {
+    const doc = body?.ownerDocument;
+    if (doc) {
+      doc.querySelectorAll("style").forEach((node) => node.remove());
+    }
+    try {
+      canvas = await captureBodyToCanvas(body, { pageSize });
+    } catch {
+      throw firstErr;
+    }
+  }
 
   const { format, orientation } = pdfFormatFromPageSize(pageSize);
   const pdf = new jsPDF({ orientation, unit: "in", format });

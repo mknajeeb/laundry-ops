@@ -1695,7 +1695,6 @@ def _paystub_copy_mode(raw: Optional[str]) -> str:
 
 def _paystub_base_css() -> str:
     return """
-  @page { size: letter; margin: 0.4in; }
   * { box-sizing: border-box; }
   body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 0; padding: 0; font-size: 9.5px; line-height: 1.25; }
   h1 { color: #0097b2; font-size: 1rem; margin: 0; }
@@ -1706,7 +1705,7 @@ def _paystub_base_css() -> str:
   table.compact th { text-align: left; color: #007a91; font-size: 9px; font-weight: 600; }
   table.compact td:first-child, table.compact th:first-child { width: 64%; }
   table.compact td:last-child, table.compact th:last-child { width: 36%; text-align: right; }
-  table.compact td.amount, table.compact th.amount { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.compact td.amount, table.compact th.amount { text-align: right; white-space: nowrap; }
   table.compact tr.total td { font-weight: 700; border-top: 1px solid #cbd5e1; }
   .paystub-sheet { page-break-after: always; max-height: 10.2in; overflow: hidden; }
   .paystub-sheet:last-child { page-break-after: auto; }
@@ -1716,11 +1715,11 @@ def _paystub_base_css() -> str:
   .info-grid dt { color: #64748b; font-size: 9px; }
   .info-grid dd { margin: 0 0 2px; font-weight: 600; }
   .note-box { font-size: 8.5px; color: #64748b; margin: 3px 0; padding: 4px 6px; background: #f8fafc; border-radius: 3px; }
-  .brand-head { display: flex; align-items: center; gap: 14px; margin-bottom: 2px; padding: 8px 10px 7px; border-top: 3px solid #0097b2; background: linear-gradient(180deg, #f0fdfa 0%, #ffffff 70%); border-radius: 0 0 8px 8px; }
-  .brand-logo-wrap { flex-shrink: 0; padding: 2px 0; }
-  .paystub-logo { height: 44px; width: auto; object-fit: contain; display: block; }
+  .brand-head { display: flex; align-items: center; margin-bottom: 2px; padding: 8px 10px 7px; border-top: 3px solid #0097b2; background: #f0fdfa; border-radius: 0 0 8px 8px; }
+  .brand-logo-wrap { flex-shrink: 0; padding: 2px 0; margin-right: 14px; }
+  .paystub-logo { height: 44px; width: auto; display: block; }
   .brand-text { flex: 1; min-width: 0; }
-  .company-name { font-size: 1.02rem; font-weight: 700; color: #0f766e; line-height: 1.2; letter-spacing: -0.01em; }
+  .company-name { font-size: 1.02rem; font-weight: 700; color: #0f766e; line-height: 1.2; }
   .brand-contact-line { font-size: 8.5px; color: #64748b; margin: 1px 0 0; line-height: 1.35; }
   .brand-contact-line .sep { color: #94a3b8; margin: 0 5px; }
   .doc-title-row { margin: 5px 0 3px; padding-bottom: 3px; border-bottom: 1px solid #e2e8f0; }

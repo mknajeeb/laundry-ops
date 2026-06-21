@@ -23,5 +23,5 @@ def veewash_logo_data_uri() -> str:
 def veewash_logo_img_html(*, height_px: int = 48, css_class: str = "vw-logo") -> str:
     return (
         f'<img src="{veewash_logo_data_uri()}" alt="VeeWash" class="{css_class}" '
-        f'style="height:{height_px}px;width:auto;object-fit:contain;display:block;" />'
+        f'style="height: {height_px}px; width: auto; display: block;" />'
     )
