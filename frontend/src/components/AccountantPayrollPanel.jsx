@@ -1,11 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
   Button,
   Chip,
-  Collapse,
-  IconButton,
   Paper,
   Stack,
   Table,
@@ -13,19 +11,17 @@ import {
   TableCell,
   TableHead,
   TableRow,
-  TextField,
   Typography,
 } from "@mui/material";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty";
 import PayPeriodSelect from "./PayPeriodSelect";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import {
   confirmPayoutPayment,
-  finalizePayoutDetails,
   getPayoutBatchDetails,
   getPayoutBatches,
   processPayoutBatch,
-  putPayoutBatchDetails,
 } from "../api";
 import {
   accountantPeriodStatusColor,
@@ -33,39 +29,47 @@ import {
   pickDefaultAccountantBatch,
 } from "../payroll/accountantBatchPick";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
-
-const MAIN_DEDUCTION_FIELDS = [
-  { key: "fit", label: "FIT" },
-  { key: "ss", label: "SS" },
-  { key: "medicare", label: "Medicare" },
-  { key: "state", label: "State" },
-];
-
-const ALL_DEDUCTION_KEYS = [...MAIN_DEDUCTION_FIELDS.map((f) => f.key), "local"];
+import { VEEWASH_BRAND } from "../theme/veewashBrand";
 
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 
-function emptyLineState(line) {
-  const pd = line?.payout_details || {};
-  return {
-    line_id: line.id,
-    employee_deductions: { ...(pd.employee_deductions || {}) },
-    employer_taxes: { ...(pd.employer_taxes || {}) },
-    payment: { ...(pd.payment || {}) },
-    settlement: { ...(pd.settlement || {}) },
-    employee_note: pd.employee_note || "",
-  };
-}
-
-function lineTaxTotal(draft) {
-  return ALL_DEDUCTION_KEYS.reduce((s, key) => s + num(draft.employee_deductions?.[key]), 0);
-}
-
 function lineGross(ln) {
   return num(ln.gross_amount || ln.total_amount || ln.gross_wages);
+}
+
+function WorkflowStep({ active, done, label, description }) {
+  return (
+    <Stack direction="row" spacing={1.5} alignItems="flex-start">
+      <Box
+        sx={{
+          width: 28,
+          height: 28,
+          borderRadius: "50%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          bgcolor: done ? "success.main" : active ? VEEWASH_BRAND.primary : "action.hover",
+          color: done || active ? "common.white" : "text.secondary",
+          fontSize: 0.75rem,
+          fontWeight: 700,
+        }}
+      >
+        {done ? <CheckCircleOutlineIcon sx={{ fontSize: 18 }} /> : active ? "●" : "○"}
+      </Box>
+      <Box>
+        <Typography variant="body2" fontWeight={active || done ? 600 : 400}>
+          {label}
+        </Typography>
+        {description ? (
+          <Typography variant="caption" color="text.secondary">{description}</Typography>
+        ) : null}
+      </Box>
+    </Stack>
+  );
 }
 
 export default function AccountantPayrollPanel() {
@@ -75,8 +79,6 @@ export default function AccountantPayrollPanel() {
   const [periodExpanded, setPeriodExpanded] = useState(false);
   const [batches, setBatches] = useState([]);
   const [detail, setDetail] = useState(null);
-  const [lineDrafts, setLineDrafts] = useState({});
-  const [expanded, setExpanded] = useState({});
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
@@ -115,13 +117,7 @@ export default function AccountantPayrollPanel() {
     setError("");
     try {
       const res = await getPayoutBatchDetails(batchId);
-      const batch = res.data;
-      setDetail(batch);
-      const drafts = {};
-      (batch.lines || []).forEach((ln) => {
-        drafts[ln.id] = emptyLineState(ln);
-      });
-      setLineDrafts(drafts);
+      setDetail(res.data);
     } catch (e) {
       setError(e.response?.data?.error || "Load failed");
       setDetail(null);
@@ -144,76 +140,37 @@ export default function AccountantPayrollPanel() {
     autoPickedRef.current = true;
   }, [batches]);
 
-  const updateDraft = (lineId, section, key, value) => {
-    setLineDrafts((prev) => ({
-      ...prev,
-      [lineId]: {
-        ...prev[lineId],
-        [section]: { ...prev[lineId][section], [key]: value },
-      },
-    }));
-  };
-
   const totals = useMemo(() => {
     const lines = detail?.lines || [];
     let gross = 0;
-    let tax = 0;
-    let net = 0;
-    for (const ln of lines) {
-      const draft = lineDrafts[ln.id] || emptyLineState(ln);
-      const g = lineGross(ln);
-      const t = lineTaxTotal(draft);
-      gross += g;
-      tax += t;
-      net += g - t;
-    }
-    return { gross, tax, net, count: lines.length };
-  }, [detail, lineDrafts]);
+    for (const ln of lines) gross += lineGross(ln);
+    return { gross, count: lines.length };
+  }, [detail]);
 
   const periodStatus = accountantPeriodStatusLabel(periodBatch || detail);
-  const canSubmit =
-    detail &&
-    (detail.can_process_as_accountant ||
-      detail.payroll_display?.display_status === "ready_for_payroll") &&
-    !detail.payout_workflow?.payout_details_finalized;
+  const status = String(detail?.status || "");
+  const workflow = detail?.payout_workflow || {};
+  const accountantConfirmed = workflow.accountant_payment_confirmed;
+  const finalized = workflow.payout_details_finalized;
 
-  const showPaymentInitiated =
-    detail?.status === "approved_for_payment" &&
-    detail?.payout_workflow?.payout_details_finalized &&
-    detail?.payout_workflow?.awaiting_accountant_confirmation;
+  const canConfirmProcessed = detail?.can_process_as_accountant && status === "sent_to_accountant";
+  const awaitingPaymentConfirm =
+    status === "approved_for_payment" && finalized && workflow.awaiting_accountant_confirmation;
+  const financePending = status === "approved_for_payment" && !finalized;
 
-  const submitPayroll = async () => {
+  const confirmPayrollProcessed = async () => {
     if (!detail?.id) return;
     setSubmitting(true);
     setError("");
     setInfo("");
     try {
-      const lines = Object.values(lineDrafts).map((d) => ({
-        line_id: d.line_id,
-        payout_details: {
-          employee_deductions: d.employee_deductions,
-          employer_taxes: d.employer_taxes,
-          payment: d.payment,
-          settlement: d.settlement,
-          employee_note: d.employee_note || "",
-        },
-      }));
-      await putPayoutBatchDetails(detail.id, { lines });
-      let batch = detail;
-      if (batch.can_process_as_accountant) {
-        const proc = await processPayoutBatch(batch.id);
-        batch = proc.data;
-      }
-      if (!batch.payout_workflow?.payout_details_finalized) {
-        const fin = await finalizePayoutDetails(batch.id);
-        batch = fin.data;
-      }
-      setDetail(batch);
-      setInfo("Payroll submitted — ready to pay.");
+      const res = await processPayoutBatch(detail.id);
+      setDetail(res.data);
+      setInfo("Payroll processed — finance admin can now enter tax details and finalize.");
       await loadBatches();
-      await loadDetail(batch.id);
+      await loadDetail(res.data.id);
     } catch (e) {
-      setError(e.response?.data?.error || e.message || "Submit failed");
+      setError(e.response?.data?.error || e.message || "Could not confirm payroll");
     } finally {
       setSubmitting(false);
     }
@@ -227,7 +184,7 @@ export default function AccountantPayrollPanel() {
     try {
       const res = await confirmPayoutPayment(detail.id);
       setDetail(res.data);
-      setInfo("Payment initiated — recorded for this pay period.");
+      setInfo("Payment confirmed — recorded for this pay period.");
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Could not record payment");
@@ -237,34 +194,45 @@ export default function AccountantPayrollPanel() {
   };
 
   return (
-    <Stack spacing={1.5}>
+    <Stack spacing={2}>
       {error ? (
-        <Alert severity="error" onClose={() => setError("")}>
-          {error}
-        </Alert>
+        <Alert severity="error" onClose={() => setError("")}>{error}</Alert>
       ) : null}
       {info ? (
-        <Alert severity="success" onClose={() => setInfo("")}>
-          {info}
-        </Alert>
+        <Alert severity="success" onClose={() => setInfo("")}>{info}</Alert>
       ) : null}
 
-      <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Paper
+        variant="outlined"
+        sx={{
+          p: 2,
+          borderTop: `3px solid ${VEEWASH_BRAND.primary}`,
+          bgcolor: "background.paper",
+        }}
+      >
         <Stack
           direction="row"
           justifyContent="space-between"
           alignItems="center"
           flexWrap="wrap"
           gap={1}
-          sx={{ mb: 1 }}
+          sx={{ mb: 1.5 }}
         >
-          <Typography variant="subtitle1" fontWeight={700}>
+          <Typography variant="h6" sx={{ color: VEEWASH_BRAND.primaryDark, fontWeight: 700 }}>
             For Accountant
           </Typography>
           {periodStatus ? (
-            <Chip size="small" label={periodStatus} color={accountantPeriodStatusColor(periodBatch || detail)} />
+            <Chip
+              size="small"
+              label={periodStatus}
+              color={accountantPeriodStatusColor(periodBatch || detail)}
+            />
           ) : null}
         </Stack>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          Confirm when payroll has been processed externally. Tax details and paystubs are entered
+          by finance admin on the Finalize Payroll tab.
+        </Typography>
         {batches.length ? (
           <PayPeriodSelect
             weekStartsOn={weekStartsOn}
@@ -290,138 +258,113 @@ export default function AccountantPayrollPanel() {
       {detail ? (
         <>
           <PayrollBatchSummaryCard batch={detail} compact />
-          {loading ? (
-            <Typography color="text.secondary">Loading…</Typography>
-          ) : (
-            <Paper variant="outlined">
+
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>
+              Workflow
+            </Typography>
+            <Stack spacing={1.5}>
+              <WorkflowStep
+                active={canConfirmProcessed}
+                done={status !== "sent_to_accountant" && status !== "hours_reviewed"}
+                label="Confirm payroll processed"
+                description="You run payroll in your external system — no tax entry here."
+              />
+              <WorkflowStep
+                active={financePending}
+                done={finalized}
+                label="Finance admin enters taxes & finalizes"
+                description="Federal, state, and payment details on Finalize Payroll tab."
+              />
+              <WorkflowStep
+                active={awaitingPaymentConfirm}
+                done={accountantConfirmed}
+                label="Confirm payment initiated"
+                description="After finance finalizes, confirm employees were paid."
+              />
+            </Stack>
+          </Paper>
+
+          <Paper variant="outlined">
+            <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
+              <Typography variant="subtitle2" fontWeight={700}>
+                Employees in this batch
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {totals.count} employee{totals.count === 1 ? "" : "s"} · Gross ${totals.gross.toFixed(2)}
+              </Typography>
+            </Box>
+            {loading ? (
+              <Box sx={{ p: 2 }}>
+                <Typography color="text.secondary">Loading…</Typography>
+              </Box>
+            ) : (
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell width={32} />
                     <TableCell>Employee</TableCell>
                     <TableCell align="right">Gross</TableCell>
-                    {MAIN_DEDUCTION_FIELDS.map((f) => (
-                      <TableCell key={f.key} align="right">
-                        {f.label}
-                      </TableCell>
-                    ))}
-                    <TableCell align="right">Total tax</TableCell>
-                    <TableCell align="right">Net</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(detail.lines || []).map((ln) => {
-                    const draft = lineDrafts[ln.id] || emptyLineState(ln);
-                    const gross = lineGross(ln);
-                    const tax = lineTaxTotal(draft);
-                    const isOpen = expanded[ln.id];
-                    const editable = canSubmit;
-                    return (
-                      <Fragment key={ln.id}>
-                        <TableRow sx={{ "& td": { py: 0.5 } }}>
-                          <TableCell>
-                            <IconButton
-                              size="small"
-                              onClick={() => setExpanded((p) => ({ ...p, [ln.id]: !p[ln.id] }))}
-                            >
-                              <ExpandMoreIcon
-                                fontSize="small"
-                                sx={{ transform: isOpen ? "rotate(180deg)" : "none" }}
-                              />
-                            </IconButton>
-                          </TableCell>
-                          <TableCell>{ln.worker_name_snapshot}</TableCell>
-                          <TableCell align="right">${gross.toFixed(2)}</TableCell>
-                          {MAIN_DEDUCTION_FIELDS.map((f) => (
-                            <TableCell key={f.key} align="right">
-                              {editable ? (
-                                <TextField
-                                  size="small"
-                                  type="number"
-                                  value={draft.employee_deductions?.[f.key] ?? ""}
-                                  onChange={(e) =>
-                                    updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
-                                  }
-                                  inputProps={{ style: { width: 56, textAlign: "right" } }}
-                                />
-                              ) : (
-                                `$${num(draft.employee_deductions?.[f.key]).toFixed(2)}`
-                              )}
-                            </TableCell>
-                          ))}
-                          <TableCell align="right">${tax.toFixed(2)}</TableCell>
-                          <TableCell align="right">${(gross - tax).toFixed(2)}</TableCell>
-                        </TableRow>
-                        <TableRow key={`${ln.id}-n`}>
-                          <TableCell colSpan={9} sx={{ py: 0 }}>
-                            <Collapse in={isOpen}>
-                              <Box sx={{ py: 1, pl: 2, display: "flex", gap: 2, flexWrap: "wrap" }}>
-                                <TextField
-                                  size="small"
-                                  type="number"
-                                  label="Local tax"
-                                  value={draft.employee_deductions?.local ?? ""}
-                                  disabled={!editable}
-                                  onChange={(e) =>
-                                    updateDraft(ln.id, "employee_deductions", "local", e.target.value)
-                                  }
-                                  sx={{ width: 120 }}
-                                />
-                                <TextField
-                                  size="small"
-                                  label="Employee note"
-                                  value={draft.employee_note || ""}
-                                  disabled={!editable}
-                                  onChange={(e) =>
-                                    setLineDrafts((prev) => ({
-                                      ...prev,
-                                      [ln.id]: { ...prev[ln.id], employee_note: e.target.value },
-                                    }))
-                                  }
-                                  sx={{ minWidth: 220, flex: 1 }}
-                                />
-                              </Box>
-                            </Collapse>
-                          </TableCell>
-                        </TableRow>
-                      </Fragment>
-                    );
-                  })}
-                  {(detail.lines || []).length > 0 ? (
+                  {(detail.lines || []).map((ln) => (
+                    <TableRow key={ln.id}>
+                      <TableCell>{ln.worker_name_snapshot}</TableCell>
+                      <TableCell align="right">${lineGross(ln).toFixed(2)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {(detail.lines || []).length === 0 ? (
                     <TableRow>
-                      <TableCell />
-                      <TableCell sx={{ fontWeight: 700 }}>Totals</TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700 }}>
-                        ${totals.gross.toFixed(2)}
-                      </TableCell>
-                      <TableCell colSpan={4} />
-                      <TableCell align="right" sx={{ fontWeight: 700 }}>
-                        ${totals.tax.toFixed(2)}
-                      </TableCell>
-                      <TableCell align="right" sx={{ fontWeight: 700 }}>
-                        ${totals.net.toFixed(2)}
+                      <TableCell colSpan={2}>
+                        <Typography variant="body2" color="text.secondary">No employees</Typography>
                       </TableCell>
                     </TableRow>
                   ) : null}
                 </TableBody>
               </Table>
-            </Paper>
-          )}
+            )}
+          </Paper>
+
           <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            {canSubmit ? (
-              <Button variant="contained" disabled={submitting} onClick={submitPayroll}>
-                Submit payroll
+            {canConfirmProcessed ? (
+              <Button
+                variant="contained"
+                size="large"
+                disabled={submitting}
+                onClick={confirmPayrollProcessed}
+                startIcon={<CheckCircleOutlineIcon />}
+                sx={{ bgcolor: VEEWASH_BRAND.primary, px: 3 }}
+              >
+                Confirm payroll processed
               </Button>
             ) : null}
-            {showPaymentInitiated ? (
+            {awaitingPaymentConfirm ? (
               <Button
                 variant="contained"
                 color="success"
+                size="large"
                 disabled={submitting}
                 onClick={markPaymentInitiated}
+                startIcon={<CheckCircleOutlineIcon />}
               >
-                Payment initiated
+                Confirm payment initiated
               </Button>
+            ) : null}
+            {financePending ? (
+              <Chip
+                icon={<HourglassEmptyIcon />}
+                label="Awaiting finance admin — enter taxes on Finalize Payroll"
+                color="info"
+                variant="outlined"
+              />
+            ) : null}
+            {accountantConfirmed && finalized ? (
+              <Chip
+                icon={<CheckCircleOutlineIcon />}
+                label="Payment confirmed for this period"
+                color="success"
+                variant="outlined"
+              />
             ) : null}
           </Stack>
         </>

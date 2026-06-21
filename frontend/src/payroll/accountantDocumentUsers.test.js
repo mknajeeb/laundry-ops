@@ -44,9 +44,10 @@ describe("accountantDocumentUsers", () => {
     expect(isW2EmployeeForDocuments(w2Worker)).toBe(true);
   });
 
-  it("filters users by category", () => {
+  it("returns only W-2 payroll workers (no system user category)", () => {
     const users = [alliance, veewashAdmin, w2Worker];
     expect(filterAccountantDocumentUsers(users, "w2")).toEqual([w2Worker]);
-    expect(filterAccountantDocumentUsers(users, "system_users")).toEqual([alliance, veewashAdmin]);
+    expect(filterAccountantDocumentUsers(users, "system_users")).toEqual([]);
+    expect(filterAccountantDocumentUsers(users, "contractor_1099")).toEqual([]);
   });
 });

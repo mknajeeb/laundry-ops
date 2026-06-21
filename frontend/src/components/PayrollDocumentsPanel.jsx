@@ -36,14 +36,21 @@ import {
   WORKER_CATEGORY_OPTIONS,
 } from "../payroll/payrollDocumentChecklists";
 
-export default function PayrollDocumentsPanel() {
-  const [category, setCategory] = useState("w2");
+export default function PayrollDocumentsPanel({ category: categoryProp, workerLabel: workerLabelProp }) {
+  const [category, setCategory] = useState(categoryProp || "w2");
   const [selected, setSelected] = useState(null);
   const [records, setRecords] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [error, setError] = useState("");
 
   const checklist = checklistForWorkerCategory(category);
+  const lockedCategory = Boolean(categoryProp);
+  const workerFieldLabel =
+    workerLabelProp ||
+    (category === "contractor_1099" ? "1099 contractor" : category === "temp" ? "Temp worker" : "W-2 employee");
+  useEffect(() => {
+    if (categoryProp) setCategory(categoryProp);
+  }, [categoryProp]);
 
   const loadWorkers = useCallback(async () => {
     try {
@@ -132,35 +139,43 @@ export default function PayrollDocumentsPanel() {
         </Alert>
       ) : null}
       <Paper sx={{ p: 2 }}>
-        <Typography variant="h6" sx={{ mb: 1 }}>
-          Documents
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Grouped by worker category. Upload signed copies (paste file URL). Old C-document
-          compliance is not used here.
-        </Typography>
+        {!lockedCategory ? (
+          <>
+            <Typography variant="h6" sx={{ mb: 1 }}>
+              Documents
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Grouped by worker category. Upload signed copies (paste file URL). Old C-document
+              compliance is not used here.
+            </Typography>
+          </>
+        ) : null}
         <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-          <FormControl size="small" sx={{ minWidth: 200 }}>
-            <InputLabel>Worker category</InputLabel>
-            <Select
-              label="Worker category"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            >
-              {WORKER_CATEGORY_OPTIONS.filter((o) => o.value !== "all").map((o) => (
-                <MenuItem key={o.value} value={o.value}>
-                  {o.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
+          {!lockedCategory ? (
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <InputLabel>Worker category</InputLabel>
+              <Select
+                label="Worker category"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+              >
+                {WORKER_CATEGORY_OPTIONS.filter((o) => o.value !== "all").map((o) => (
+                  <MenuItem key={o.value} value={o.value}>
+                    {o.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          ) : null}
           <Autocomplete
             sx={{ minWidth: 280, flex: 1 }}
             options={workers}
             value={selected}
             onChange={(_, v) => setSelected(v)}
             getOptionLabel={(o) => o?.label || ""}
-            renderInput={(params) => <TextField {...params} label="Select worker" size="small" />}
+            renderInput={(params) => (
+              <TextField {...params} label={`Select ${workerFieldLabel}`} size="small" />
+            )}
           />
         </Stack>
       </Paper>

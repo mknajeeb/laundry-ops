@@ -28,8 +28,10 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import DownloadIcon from "@mui/icons-material/Download";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import PrintIcon from "@mui/icons-material/Print";
@@ -57,6 +59,8 @@ import {
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
 import EmployeePaystubArchivePanel from "./EmployeePaystubArchivePanel";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
+import FinancePayrollFinalizeRow from "./FinancePayrollFinalizeRow";
+import { VEEWASH_BRAND } from "../theme/veewashBrand";
 import {
   batchVisibleForDetails,
   displayStatusColor,
@@ -438,6 +442,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [panelTab, setPanelTab] = useState("batch");
   const [archiveInitialUserId, setArchiveInitialUserId] = useState("");
   const [archiveInitialWorkerName, setArchiveInitialWorkerName] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState({});
 
   const loadBatches = useCallback(async () => {
     try {
@@ -605,7 +610,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       const res = await finalizePayoutDetails(selectedId);
       setDetail(res.data);
       setFinalizeOpen(false);
-      setInfo("Finalized — ready to pay.");
+      setInfo("Finalized — batch closed and ready to pay.");
       await loadBatches();
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Finalize failed");
@@ -875,6 +880,39 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         <>
           <PayrollBatchSummaryCard batch={detail} compact />
 
+          {detail.worker_category === "w2" ? (
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 1.5,
+                borderLeft: `4px solid ${VEEWASH_BRAND.primary}`,
+                bgcolor: finalized ? "rgba(46, 125, 50, 0.08)" : "rgba(2, 136, 209, 0.08)",
+              }}
+            >
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                {finalized ? (
+                  <CheckCircleOutlineIcon color="success" fontSize="small" />
+                ) : (
+                  <HourglassEmptyIcon color="info" fontSize="small" />
+                )}
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>
+                    {finalized
+                      ? "Batch finalized — ready to pay or mark paid"
+                      : detail.status === "sent_to_accountant"
+                        ? "Awaiting accountant to confirm payroll processed"
+                        : "Enter taxes from accountant payroll run, then finalize"}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {finalized
+                      ? "Accountant can confirm payment after employees are paid."
+                      : "Record Federal (FIT) and State taxes for each employee, payment method and date, then click Finalize & close batch."}
+                  </Typography>
+                </Box>
+              </Stack>
+            </Paper>
+          ) : null}
+
           <Stack direction="row" spacing={0.5} alignItems="center" justifyContent="flex-end" flexWrap="wrap">
             {showPaystubActions ? (
               <>
@@ -924,7 +962,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                 onClick={() => setFinalizeOpen(true)}
                 disabled={!canFinalize}
               >
-                Finalize
+                Finalize & close batch
               </Button>
             ) : null}
             {canUnfinalize ? (
@@ -940,7 +978,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
             <IconButton size="small" onClick={(e) => setMoreAnchor(e.currentTarget)}>
               <MoreVertIcon fontSize="small" />
             </IconButton>
-            <Tooltip title="Enter estimated withholding and payment details per employee. Edit before finalize.">
+            <Tooltip title="Finance admin: enter taxes withheld by accountant, payment details, then finalize.">
               <InfoOutlinedIcon fontSize="small" color="action" sx={{ opacity: 0.5 }} />
             </Tooltip>
           </Stack>
@@ -997,8 +1035,9 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   <TableCell width={32} />
                   <TableCell>Employee</TableCell>
                   <TableCell align="right">Gross</TableCell>
-                  <TableCell align="right">Est. withholding liability</TableCell>
-                  <TableCell align="right">Estimated withholding</TableCell>
+                  <TableCell align="right">Federal</TableCell>
+                  <TableCell align="right">State</TableCell>
+                  <TableCell align="right">Total tax</TableCell>
                   <TableCell align="right">Net paid</TableCell>
                   <TableCell>Method</TableCell>
                   <TableCell align="right">Paid</TableCell>
@@ -1014,15 +1053,6 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   const isOpen = expanded[ln.id];
                   const linePaid = ln.payment_status === "paid";
                   const outstanding = totals.net - (linePaid ? totals.net : 0);
-                  const taxLiability = finalized
-                    ? ln.tax_liability != null
-                      ? formatPayrollMoney(ln.tax_liability)
-                      : `$${lineTaxTotal(draft).toFixed(2)}`
-                    : `$${lineTaxTotal(draft).toFixed(2)}`;
-                  const priorBalance = num(
-                    draft.settlement?.prior_unpaid_taxes ?? ln.prior_tax_balance,
-                  );
-                  const catchUp = num(draft.settlement?.catch_up_withholding);
                   const taxWithheldDisplay = finalized
                     ? formatTaxWithheldDisplay(ln)
                     : totals.paidFullGross
@@ -1046,8 +1076,16 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                         <TableCell>{ln.worker_name_snapshot}</TableCell>
                         <TableCell align="right">${totals.gross.toFixed(2)}</TableCell>
                         <TableCell align="right">
+                          ${num(draft.employee_deductions?.fit).toFixed(2)}
+                        </TableCell>
+                        <TableCell align="right">
+                          ${num(draft.employee_deductions?.state).toFixed(2)}
+                        </TableCell>
+                        <TableCell align="right">
                           <Stack direction="row" alignItems="center" justifyContent="flex-end" gap={0.25}>
-                            <span>{taxLiability}</span>
+                            <span>
+                              {finalized ? taxWithheldDisplay : `$${lineTaxTotal(draft).toFixed(2)}`}
+                            </span>
                             {finalized && hasTaxWithheldBreakdown(ln) ? (
                               <IconButton
                                 size="small"
@@ -1063,14 +1101,6 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                               </IconButton>
                             ) : null}
                           </Stack>
-                        </TableCell>
-                        <TableCell align="right">
-                          {priorBalance > 0 ? (
-                            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                              Prior: ${priorBalance.toFixed(2)}
-                            </Typography>
-                          ) : null}
-                          {taxWithheldDisplay}
                         </TableCell>
                         <TableCell align="right">{netDisplay}</TableCell>
                         <TableCell>
@@ -1123,251 +1153,23 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                         </TableCell>
                       </TableRow>
                       <TableRow key={`${ln.id}-exp`}>
-                        <TableCell colSpan={9} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
+                        <TableCell colSpan={10} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
                           <Collapse in={isOpen}>
-                            <Box sx={{ py: 1, pl: 1 }}>
+                            <Box sx={{ py: 1.5, pl: 1 }}>
                               {canEdit ? (
-                                <>
-                                  {!isReceiptMode ? (
-                                    <>
-                                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>
-                                        Estimated withholding (editable before finalize)
-                                      </Typography>
-                                      <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mb: 1 }}>
-                                        {DEDUCTION_FIELDS.map((f) => (
-                                          <TextField
-                                            key={f.key}
-                                            size="small"
-                                            label={f.label}
-                                            type="number"
-                                            value={draft.employee_deductions?.[f.key] ?? ""}
-                                            onChange={(e) =>
-                                              updateDraft(ln.id, "employee_deductions", f.key, e.target.value)
-                                            }
-                                            inputProps={{ style: { width: 64 } }}
-                                          />
-                                        ))}
-                                      </Stack>
-                                    </>
-                                  ) : null}
-                                  <Stack direction="row" flexWrap="wrap" gap={1}>
-                                    <TextField
-                                      size="small"
-                                      select
-                                      label="Method"
-                                      value={method}
-                                      onChange={(e) => updateDraft(ln.id, "payment", "method", e.target.value)}
-                                      SelectProps={{ native: true }}
-                                      sx={{ minWidth: 120 }}
-                                    >
-                                      {PAYMENT_METHODS.map((m) => (
-                                        <option key={m.value} value={m.value}>{m.label}</option>
-                                      ))}
-                                    </TextField>
-                                    <TextField
-                                      size="small"
-                                      type="date"
-                                      label="Payment date"
-                                      value={draft.payment?.date || ""}
-                                      onChange={(e) => updateDraft(ln.id, "payment", "date", e.target.value)}
-                                      InputLabelProps={{ shrink: true }}
-                                      sx={{ minWidth: 150 }}
-                                    />
-                                    <TextField
-                                      size="small"
-                                      label="Check #"
-                                      value={draft.payment?.check_number || ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "payment", "check_number", e.target.value)
-                                      }
-                                    />
-                                    <TextField
-                                      size="small"
-                                      label="Reference"
-                                      value={draft.payment?.reference || ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "payment", "reference", e.target.value)
-                                      }
-                                    />
-                                    <TextField
-                                      size="small"
-                                      label="Employee note"
-                                      value={draft.employee_note || ""}
-                                      onChange={(e) => updateLineFlag(ln.id, "employee_note", e.target.value)}
-                                    />
-                                  </Stack>
-                                  {method === "cash" ? (
-                                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                                      <TextField
-                                        size="small"
-                                        type="number"
-                                        label="Cash amount"
-                                        value={draft.payment?.cash_amount ?? ""}
-                                        onChange={(e) => updateDraft(ln.id, "payment", "cash_amount", e.target.value)}
-                                      />
-                                      <TextField
-                                        size="small"
-                                        label="Paid by"
-                                        value={draft.payment?.paid_by || ""}
-                                        onChange={(e) => updateDraft(ln.id, "payment", "paid_by", e.target.value)}
-                                      />
-                                      <TextField
-                                        size="small"
-                                        label="Receipt number"
-                                        value={draft.payment?.receipt_number || ""}
-                                        onChange={(e) =>
-                                          updateDraft(ln.id, "payment", "receipt_number", e.target.value)
-                                        }
-                                      />
-                                      <TextField
-                                        size="small"
-                                        label="Employee signature"
-                                        value={draft.payment?.employee_signature || ""}
-                                        onChange={(e) =>
-                                          updateDraft(ln.id, "payment", "employee_signature", e.target.value)
-                                        }
-                                      />
-                                    </Stack>
-                                  ) : null}
-                                  <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Withheld this period"
-                                      value={draft.settlement?.withheld_from_payment ?? ""}
-                                      onChange={(e) =>
-                                        updateDraft(
-                                          ln.id,
-                                          "settlement",
-                                          "withheld_from_payment",
-                                          e.target.value === "" ? null : e.target.value,
-                                        )
-                                      }
-                                      disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
-                                      helperText="Actual tax taken from this pay (blank = withhold full estimate)"
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Catch-up withholding"
-                                      value={draft.settlement?.catch_up_withholding ?? ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "settlement", "catch_up_withholding", e.target.value)
-                                      }
-                                      disabled={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
-                                      helperText="Collect prior balance only — not this week's partial withholding"
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Amount paid (net)"
-                                      value={draft.settlement?.amount_paid ?? ""}
-                                      InputProps={{ readOnly: true }}
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Estimated withholding (total)"
-                                      value={draft.settlement?.amount_withheld ?? ""}
-                                      InputProps={{ readOnly: true }}
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Prior tax balance"
-                                      value={draft.settlement?.prior_unpaid_taxes ?? ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "settlement", "prior_unpaid_taxes", e.target.value)
-                                      }
-                                      helperText="Shown for reference — does not reduce pay unless catch-up entered"
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Prior-period adj."
-                                      value={draft.settlement?.prior_period_adjustment ?? ""}
-                                      onChange={(e) =>
-                                        updateDraft(ln.id, "settlement", "prior_period_adjustment", e.target.value)
-                                      }
-                                      helperText="Credits prior balance; partial amount is withheld from this pay"
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="Remaining estimated balance"
-                                      value={draft.tax_summary?.remaining_balance ?? ""}
-                                      InputProps={{ readOnly: true }}
-                                      helperText="Net prior balance plus this period unpaid tax"
-                                    />
-                                    <TextField
-                                      size="small"
-                                      type="number"
-                                      label="This period unpaid"
-                                      value={draft.settlement?.tax_balance_owed ?? ""}
-                                      InputProps={{ readOnly: true }}
-                                      helperText="Current-period portion not withheld from pay"
-                                    />
-                                    <FormControlLabel
-                                      control={
-                                        <Checkbox
-                                          size="small"
-                                          checked={Boolean(draft.settlement?.paid_full_gross_without_withholding)}
-                                          onChange={(e) =>
-                                            updateDraft(
-                                              ln.id,
-                                              "settlement",
-                                              "paid_full_gross_without_withholding",
-                                              e.target.checked,
-                                            )
-                                          }
-                                        />
-                                      }
-                                      label="Paid full gross (no withholding)"
-                                    />
-                                    <FormControlLabel
-                                      control={
-                                        <Checkbox
-                                          size="small"
-                                          checked={Boolean(draft.show_tax_payment_section)}
-                                          onChange={(e) =>
-                                            updateLineFlag(
-                                              ln.id,
-                                              "show_tax_payment_section",
-                                              e.target.checked,
-                                            )
-                                          }
-                                        />
-                                      }
-                                      label="Show tax balance on employee paystub"
-                                      sx={{ alignItems: "flex-start" }}
-                                    />
-                                    <Typography
-                                      variant="caption"
-                                      color="text.secondary"
-                                      sx={{ display: "block", mt: -0.5, mb: 0.5 }}
-                                    >
-                                      Temporary during catch-up period — uncheck after ~5–6 weeks when
-                                      balances are cleared.
-                                    </Typography>
-                                  </Stack>
-                                  {!isReceiptMode ? (
-                                    <Stack direction="row" flexWrap="wrap" gap={1} sx={{ mt: 1 }}>
-                                      {ER_TAX_FIELDS.map((f) => (
-                                        <TextField
-                                          key={f.key}
-                                          size="small"
-                                          label={f.label}
-                                          type="number"
-                                          value={draft.employer_taxes?.[f.key] ?? ""}
-                                          onChange={(e) =>
-                                            updateDraft(ln.id, "employer_taxes", f.key, e.target.value)
-                                          }
-                                          inputProps={{ style: { width: 64 } }}
-                                        />
-                                      ))}
-                                    </Stack>
-                                  ) : null}
-                                </>
+                                <FinancePayrollFinalizeRow
+                                  ln={ln}
+                                  draft={draft}
+                                  totals={totals}
+                                  method={method}
+                                  isReceiptMode={isReceiptMode}
+                                  advancedOpen={Boolean(advancedOpen[ln.id])}
+                                  onToggleAdvanced={() =>
+                                    setAdvancedOpen((prev) => ({ ...prev, [ln.id]: !prev[ln.id] }))
+                                  }
+                                  onUpdateDraft={updateDraft}
+                                  onUpdateLineFlag={updateLineFlag}
+                                />
                               ) : (
                                 <LineDetailsReadonly
                                   draft={draft}
@@ -1452,15 +1254,16 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
       </Dialog>
 
       <Dialog open={finalizeOpen} onClose={() => setFinalizeOpen(false)}>
-        <DialogTitle>Finalize payroll details?</DialogTitle>
+        <DialogTitle>Finalize & close this payroll batch?</DialogTitle>
         <DialogContent>
           <Typography variant="body2">
-            Locks tax edits and marks payroll ready to pay.
+            Locks tax and payment fields, generates official paystubs, and marks the batch ready to pay.
+            The accountant can then confirm when payment has been initiated.
           </Typography>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setFinalizeOpen(false)}>Cancel</Button>
-          <Button onClick={doFinalize} variant="contained">Finalize</Button>
+          <Button onClick={doFinalize} variant="contained">Finalize & close batch</Button>
         </DialogActions>
       </Dialog>
     </Stack>

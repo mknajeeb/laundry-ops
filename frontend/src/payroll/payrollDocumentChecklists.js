@@ -43,3 +43,8 @@ export const WORKER_CATEGORY_OPTIONS = [
   { value: "contractor_1099", label: "1099 Contractor" },
   { value: "temp", label: "Temp / One-Time" },
 ];
+
+/** Payroll Documents tab — payroll workers only (no system login accounts). */
+export const PAYROLL_DOCUMENT_CATEGORY_OPTIONS = WORKER_CATEGORY_OPTIONS.filter(
+  (o) => o.value !== "all",
+);

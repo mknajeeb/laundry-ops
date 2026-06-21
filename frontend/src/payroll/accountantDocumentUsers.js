@@ -1,9 +1,11 @@
-/** Accountant Documents panel — W-2 employees vs platform/system login accounts. */
+/** Payroll Documents — worker lists by category (W-2 employees on payroll, not platform login accounts). */
 
-export const ACCOUNTANT_DOC_CATEGORY_OPTIONS = [
-  { value: "w2", label: "W-2 Employees" },
-  { value: "system_users", label: "System Users" },
-];
+import { PAYROLL_DOCUMENT_CATEGORY_OPTIONS } from "./payrollDocumentChecklists";
+
+/** Accountant Documents tab: W-2 only for now (expand later). */
+export const ACCOUNTANT_DOC_CATEGORY_OPTIONS = PAYROLL_DOCUMENT_CATEGORY_OPTIONS.filter(
+  (o) => o.value === "w2",
+);
 
 /** Normalized display names for non-payroll system accounts (Alliance, VeeWash admin). */
 export const SYSTEM_USER_KNOWN_DISPLAY_NAMES = new Set([
@@ -72,7 +74,7 @@ export function isW2EmployeeForDocuments(user) {
 
 export function filterAccountantDocumentUsers(users, category) {
   const list = users || [];
-  if (category === "system_users") return list.filter(isAccountantSystemUser);
+  if (category !== "w2") return [];
   return list.filter(isW2EmployeeForDocuments);
 }
 

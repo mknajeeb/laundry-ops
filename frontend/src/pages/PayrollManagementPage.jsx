@@ -12,6 +12,7 @@ import { useI18n } from "../i18n/I18nContext";
 import { getPayoutBatches, patchPayoutBatch } from "../api";
 import AccountantPayrollPanel from "../components/AccountantPayrollPanel";
 import AccountantW2DocumentsPanel from "../components/AccountantW2DocumentsPanel";
+import PayrollWorkerDocumentsPanel from "../components/PayrollWorkerDocumentsPanel";
 import AccountantEmployeePaystubsPanel from "../components/AccountantEmployeePaystubsPanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import W2EmployeeFormsPanel from "../components/W2EmployeeFormsPanel";
@@ -66,7 +67,9 @@ export default function PayrollManagementPage() {
     if (canPayout || (isAccountantRole && canAccountant)) {
       out.push(...accountantTabs);
     }
-    if (canPayoutDetails) out.push({ key: "payout_details", label: "Payment & Details" });
+    if (canPayoutDetails) {
+      out.push({ key: "payout_details", label: canPayout ? "Finalize Payroll" : "Payment & Details" });
+    }
     if (canTime) out.push({ key: "schedule", label: "Scheduling" });
     if (canContractors) out.push({ key: "contractors", label: t("payroll.tabContractors") });
     if (canContractors) out.push({ key: "w2forms", label: t("payroll.tabW2Forms") });
@@ -264,7 +267,13 @@ export default function PayrollManagementPage() {
           <PayoutDetailsPanel initialBatchId={detailsBatchId} />
         ) : null}
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
-        {active?.key === "accountant_documents" ? <AccountantW2DocumentsPanel /> : null}
+        {active?.key === "accountant_documents" ? (
+          readOnlyAccountant ? (
+            <AccountantW2DocumentsPanel />
+          ) : (
+            <PayrollWorkerDocumentsPanel />
+          )
+        ) : null}
         {active?.key === "accountant_employee" ? <AccountantEmployeePaystubsPanel /> : null}
         {active?.key === "contractors" ? <ContractorManagementPanel /> : null}
         {active?.key === "w2forms" ? <W2EmployeeFormsPanel /> : null}

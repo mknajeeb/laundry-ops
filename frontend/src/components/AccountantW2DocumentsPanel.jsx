@@ -49,7 +49,6 @@ import {
   resolvePrimaryDocRecord,
 } from "../payroll/accountantW2DocCatalog";
 import {
-  ACCOUNTANT_DOC_CATEGORY_OPTIONS,
   filterAccountantDocumentUsers,
   mapAccountantDocumentUserOption,
 } from "../payroll/accountantDocumentUsers";
@@ -125,7 +124,7 @@ async function downloadUploaded(userId, rec, label) {
   return { ok: true };
 }
 
-export default function AccountantW2DocumentsPanel() {
+export default function AccountantW2DocumentsPanel({ embedded = false }) {
   const { hasPerm } = useAuth();
   const canUpload = hasPerm("users.edit") || hasPerm("ta.settings");
   const printRef = useRef(null);
@@ -263,8 +262,7 @@ export default function AccountantW2DocumentsPanel() {
       : selectedBatchId
         ? employeeModeBatchWorkers
         : workers;
-  const workerLabel =
-    category === "system_users" ? "System user" : "W-2 employee";
+  const workerLabel = "W-2 employee";
 
   const handleViewModeChange = (mode) => {
     setViewMode(mode);
@@ -380,21 +378,33 @@ export default function AccountantW2DocumentsPanel() {
         sx={{
           p: 2.5,
           borderRadius: 2,
-          background: VEEWASH_BRAND.gradient,
-          color: "#fff",
-          boxShadow: VEEWASH_BRAND.shadow,
+          ...(embedded
+            ? { border: `1px solid ${VEEWASH_BRAND.border}` }
+            : {
+                background: VEEWASH_BRAND.gradient,
+                color: "#fff",
+                boxShadow: VEEWASH_BRAND.shadow,
+              }),
         }}
       >
-        <Typography variant="overline" sx={{ opacity: 0.9, letterSpacing: 1.2, fontWeight: 700 }}>
-          Accountant · W-2
-        </Typography>
-        <Typography variant="h6" sx={{ fontWeight: 800, mb: 0.5 }}>
-          Employee Documents
-        </Typography>
-        <Typography variant="body2" sx={{ opacity: 0.92, maxWidth: 640 }}>
-          Print direct deposit from VeeWash. Upload signed copies for the other items. Accountants can
-          view and print; admins can upload and manage files.
-        </Typography>
+        {!embedded ? (
+          <>
+            <Typography variant="overline" sx={{ opacity: 0.9, letterSpacing: 1.2, fontWeight: 700 }}>
+              Accountant · W-2
+            </Typography>
+            <Typography variant="h6" sx={{ fontWeight: 800, mb: 0.5 }}>
+              Employee Documents
+            </Typography>
+            <Typography variant="body2" sx={{ opacity: 0.92, maxWidth: 640 }}>
+              Print direct deposit from VeeWash. Upload signed copies for the other items. Accountants can
+              view and print; admins can upload and manage files.
+            </Typography>
+          </>
+        ) : (
+          <Typography variant="subtitle1" fontWeight={700}>
+            W-2 employee documents
+          </Typography>
+        )}
       </Paper>
 
       <AccountantScopeFilters
@@ -407,9 +417,6 @@ export default function AccountantW2DocumentsPanel() {
         selectedWorker={selected}
         onWorkerChange={setSelected}
         workerLabel={workerLabel}
-        category={category}
-        onCategoryChange={setCategory}
-        categoryOptions={ACCOUNTANT_DOC_CATEGORY_OPTIONS}
         weekStartsOn={0}
         periodStart={periodStart}
         periodEnd={periodEnd}
@@ -583,7 +590,7 @@ export default function AccountantW2DocumentsPanel() {
         <Alert severity="info">Select a batch, then choose an employee to manage documents.</Alert>
       ) : (
         <Alert severity="info">
-          Select a {category === "system_users" ? "system user" : "W-2 employee"} to manage documents.
+          Select a W-2 employee to manage documents.
         </Alert>
       )}
 
