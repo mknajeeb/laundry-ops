@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Chip,
@@ -9,12 +8,8 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
   IconButton,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
   Table,
   TableBody,
@@ -22,7 +17,6 @@ import {
   TableContainer,
   TableHead,
   TableRow,
-  TextField,
   Tooltip,
   Typography,
   alpha,
@@ -34,6 +28,8 @@ import UploadIcon from "@mui/icons-material/Upload";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import {
   deleteTaUserDocument,
+  getPayoutBatchDetails,
+  getPayoutBatches,
   getTaHrEmployerSettings,
   getTaUserDocumentFile,
   getTaUserDocuments,
@@ -61,6 +57,8 @@ import DirectDepositFormPrint, {
   buildDirectDepositPrefill,
 } from "../payroll/DirectDepositFormPrint";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
+import AccountantScopeFilters from "./AccountantScopeFilters";
+import { accountantPeriodStatusLabel } from "../payroll/accountantBatchPick";
 
 async function fetchDocumentBlob(userId, record, { download = false } = {}) {
   if (!userId || !record?.id) {
@@ -133,6 +131,13 @@ export default function AccountantW2DocumentsPanel() {
   const printRef = useRef(null);
 
   const [category, setCategory] = useState("w2");
+  const [viewMode, setViewMode] = useState("employee");
+  const [batches, setBatches] = useState([]);
+  const [selectedBatchId, setSelectedBatchId] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [batchWorkers, setBatchWorkers] = useState([]);
+  const [employeeModeBatchWorkers, setEmployeeModeBatchWorkers] = useState([]);
   const [workers, setWorkers] = useState([]);
   const [selected, setSelected] = useState(null);
   const [records, setRecords] = useState([]);
@@ -143,6 +148,15 @@ export default function AccountantW2DocumentsPanel() {
   const [uploadFile, setUploadFile] = useState(null);
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
   const uploadInputRef = useRef(null);
+
+  const loadBatches = useCallback(async () => {
+    try {
+      const res = await getPayoutBatches({ worker_category: "w2" });
+      setBatches(res.data?.items || []);
+    } catch {
+      setBatches([]);
+    }
+  }, []);
 
   const loadWorkers = useCallback(async () => {
     try {
@@ -184,9 +198,81 @@ export default function AccountantW2DocumentsPanel() {
   }, []);
 
   useEffect(() => {
+    loadBatches();
     loadWorkers();
+  }, [loadBatches, loadWorkers]);
+
+  useEffect(() => {
+    if (viewMode === "batch") {
+      if (!selectedBatchId) {
+        setBatchWorkers([]);
+        return;
+      }
+      let cancelled = false;
+      getPayoutBatchDetails(Number(selectedBatchId))
+        .then((res) => {
+          if (cancelled) return;
+          const seen = new Set();
+          const list = [];
+          for (const ln of res.data?.lines || []) {
+            const uid = ln.user_id;
+            if (!uid || seen.has(uid)) continue;
+            seen.add(uid);
+            list.push({
+              id: uid,
+              label: ln.worker_name_snapshot || `User #${uid}`,
+            });
+          }
+          list.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+          setBatchWorkers(list);
+        })
+        .catch(() => {
+          if (!cancelled) setBatchWorkers([]);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (!selectedBatchId) {
+      setEmployeeModeBatchWorkers([]);
+      return;
+    }
+    let cancelled = false;
+    getPayoutBatchDetails(Number(selectedBatchId))
+      .then((res) => {
+        if (cancelled) return;
+        const ids = new Set((res.data?.lines || []).map((ln) => ln.user_id).filter(Boolean));
+        setEmployeeModeBatchWorkers(workers.filter((w) => ids.has(w.id)));
+      })
+      .catch(() => {
+        if (!cancelled) setEmployeeModeBatchWorkers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, selectedBatchId, workers]);
+
+  useEffect(() => {
     setSelected(null);
-  }, [loadWorkers]);
+  }, [category, viewMode, selectedBatchId]);
+
+  const workerOptions =
+    viewMode === "batch"
+      ? batchWorkers
+      : selectedBatchId
+        ? employeeModeBatchWorkers
+        : workers;
+  const workerLabel =
+    category === "system_users" ? "System user" : "W-2 employee";
+
+  const handleViewModeChange = (mode) => {
+    setViewMode(mode);
+    setSelected(null);
+    if (mode === "employee") {
+      setSelectedBatchId("");
+    }
+  };
 
   useEffect(() => {
     loadEmployee(selected?.id);
@@ -305,55 +391,35 @@ export default function AccountantW2DocumentsPanel() {
         <Typography variant="h6" sx={{ fontWeight: 800, mb: 0.5 }}>
           Employee Documents
         </Typography>
-        <Typography variant="body2" sx={{ opacity: 0.92, mb: 2, maxWidth: 640 }}>
+        <Typography variant="body2" sx={{ opacity: 0.92, maxWidth: 640 }}>
           Print direct deposit from VeeWash. Upload signed copies for the other items. Accountants can
           view and print; admins can upload and manage files.
         </Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "flex-start" }}>
-          <FormControl
-            size="small"
-            sx={{
-              minWidth: 200,
-              bgcolor: "rgba(255,255,255,0.98)",
-              borderRadius: 1,
-            }}
-          >
-            <InputLabel id="accountant-doc-category-label">Category</InputLabel>
-            <Select
-              labelId="accountant-doc-category-label"
-              label="Category"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            >
-              {ACCOUNTANT_DOC_CATEGORY_OPTIONS.map((o) => (
-                <MenuItem key={o.value} value={o.value}>
-                  {o.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Autocomplete
-            sx={{ flex: 1, maxWidth: 420 }}
-            options={workers}
-            value={selected}
-            onChange={(_, v) => setSelected(v)}
-            getOptionLabel={(o) => o?.label || ""}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label={category === "system_users" ? "System user" : "W-2 employee"}
-                size="small"
-                placeholder="Search by name"
-                sx={{
-                  bgcolor: "rgba(255,255,255,0.98)",
-                  borderRadius: 1,
-                  "& .MuiOutlinedInput-root": { borderRadius: 1 },
-                }}
-              />
-            )}
-          />
-        </Stack>
       </Paper>
+
+      <AccountantScopeFilters
+        viewMode={viewMode}
+        onViewModeChange={handleViewModeChange}
+        batches={batches}
+        selectedBatchId={selectedBatchId}
+        onBatchChange={setSelectedBatchId}
+        workers={workerOptions}
+        selectedWorker={selected}
+        onWorkerChange={setSelected}
+        workerLabel={workerLabel}
+        category={category}
+        onCategoryChange={setCategory}
+        categoryOptions={ACCOUNTANT_DOC_CATEGORY_OPTIONS}
+        weekStartsOn={0}
+        periodStart={periodStart}
+        periodEnd={periodEnd}
+        onPeriodChange={({ start, end, batchId }) => {
+          setPeriodStart(start || "");
+          setPeriodEnd(end || "");
+          if (batchId) setSelectedBatchId(String(batchId));
+        }}
+        batchStatusLabel={accountantPeriodStatusLabel}
+      />
 
       {selected ? (
         <TableContainer
@@ -513,10 +579,11 @@ export default function AccountantW2DocumentsPanel() {
             </TableBody>
           </Table>
         </TableContainer>
+      ) : viewMode === "batch" && !selectedBatchId ? (
+        <Alert severity="info">Select a batch, then choose an employee to manage documents.</Alert>
       ) : (
         <Alert severity="info">
-          Select a {category === "system_users" ? "system user" : "W-2 employee"} to manage
-          documents.
+          Select a {category === "system_users" ? "system user" : "W-2 employee"} to manage documents.
         </Alert>
       )}
 

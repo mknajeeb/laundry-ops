@@ -1696,37 +1696,48 @@ def _paystub_copy_mode(raw: Optional[str]) -> str:
 def _paystub_base_css() -> str:
     return """
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 0; padding: 0; font-size: 9.5px; line-height: 1.25; }
+  body { font-family: system-ui, -apple-system, sans-serif; color: #0f172a; margin: 0; padding: 20px 24px; font-size: 9.5px; line-height: 1.35; background: #f1f5f9; }
   h1 { color: #0097b2; font-size: 1rem; margin: 0; }
-  h2 { color: #007a91; font-size: 0.82rem; margin: 5px 0 2px; font-weight: 700; }
-  .meta { color: #475569; margin: 2px 0 4px; font-size: 9px; }
-  table.compact { width: 100%; border-collapse: collapse; margin: 2px 0 4px; table-layout: fixed; }
-  table.compact th, table.compact td { padding: 3px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  h2 { color: #007a91; font-size: 0.82rem; margin: 8px 0 4px; font-weight: 700; }
+  .meta { color: #475569; margin: 4px 0 8px; font-size: 9px; }
+  table.compact { width: 100%; border-collapse: collapse; margin: 4px 0 8px; table-layout: fixed; }
+  table.compact th, table.compact td { padding: 6px 12px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
   table.compact th { text-align: left; color: #007a91; font-size: 9px; font-weight: 600; }
-  table.compact td:first-child, table.compact th:first-child { width: 64%; }
-  table.compact td:last-child, table.compact th:last-child { width: 36%; text-align: right; }
+  table.compact td:first-child, table.compact th:first-child { width: 58%; padding-left: 12px; }
+  table.compact td:last-child, table.compact th:last-child { width: 42%; text-align: right; padding-right: 12px; }
   table.compact td.amount, table.compact th.amount { text-align: right; white-space: nowrap; }
   table.compact tr.total td { font-weight: 700; border-top: 1px solid #cbd5e1; }
-  .paystub-sheet { page-break-after: always; max-height: 10.2in; overflow: hidden; }
-  .paystub-sheet:last-child { page-break-after: auto; }
-  .copy-badge { font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em; color: #64748b; margin-bottom: 2px; }
-  .preview-banner { background: #fef3c7; color: #92400e; padding: 4px 8px; border-radius: 3px; margin-bottom: 4px; font-size: 9px; }
-  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; margin: 4px 0 6px; font-size: 9.5px; }
+  .paystub-sheet {
+    page-break-after: always;
+    max-height: 10.2in;
+    overflow: hidden;
+    padding: 28px 32px;
+    margin: 0 auto 18px;
+    max-width: 7.5in;
+    background: #fff;
+    border-radius: 12px;
+    border: 1px solid #e2e8f0;
+    box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08);
+  }
+  .paystub-sheet:last-child { page-break-after: auto; margin-bottom: 0; }
+  .copy-badge { font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em; color: #64748b; margin-bottom: 6px; }
+  .preview-banner { background: #fef3c7; color: #92400e; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px; font-size: 9px; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin: 6px 0 10px; font-size: 9.5px; }
   .info-grid dt { color: #64748b; font-size: 9px; }
-  .info-grid dd { margin: 0 0 2px; font-weight: 600; }
-  .note-box { font-size: 8.5px; color: #64748b; margin: 3px 0; padding: 4px 6px; background: #f8fafc; border-radius: 3px; }
-  .brand-head { display: flex; align-items: center; margin-bottom: 2px; padding: 8px 10px 7px; border-top: 3px solid #0097b2; background: #f0fdfa; border-radius: 0 0 8px 8px; }
+  .info-grid dd { margin: 0 0 4px; font-weight: 600; }
+  .note-box { font-size: 8.5px; color: #64748b; margin: 6px 0; padding: 8px 10px; background: #f8fafc; border-radius: 6px; }
+  .brand-head { display: flex; align-items: center; margin-bottom: 8px; padding: 10px 14px; border-top: 3px solid #0097b2; background: #f0fdfa; border-radius: 8px; }
   .brand-logo-wrap { flex-shrink: 0; padding: 2px 0; margin-right: 14px; }
   .paystub-logo { height: 44px; width: auto; display: block; }
   .brand-text { flex: 1; min-width: 0; }
   .company-name { font-size: 1.02rem; font-weight: 700; color: #0f766e; line-height: 1.2; }
   .brand-contact-line { font-size: 8.5px; color: #64748b; margin: 1px 0 0; line-height: 1.35; }
   .brand-contact-line .sep { color: #94a3b8; margin: 0 5px; }
-  .doc-title-row { margin: 5px 0 3px; padding-bottom: 3px; border-bottom: 1px solid #e2e8f0; }
+  .doc-title-row { margin: 8px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #e2e8f0; }
   .doc-title { color: #0097b2; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
-  table.compact.ytd th.col-current, table.compact.ytd td.col-current { width: 18%; text-align: right; }
-  table.compact.ytd th.col-ytd, table.compact.ytd td.col-ytd { width: 18%; text-align: right; }
-  table.compact.ytd td:first-child, table.compact.ytd th:first-child { width: 64%; }
+  table.compact.ytd th.col-current, table.compact.ytd td.col-current { width: 18%; text-align: right; padding-right: 8px; }
+  table.compact.ytd th.col-ytd, table.compact.ytd td.col-ytd { width: 18%; text-align: right; padding-right: 4px; }
+  table.compact.ytd td:first-child, table.compact.ytd th:first-child { width: 64%; padding-left: 12px; }
   .cash-receipt { margin-top: 8px; padding: 10px 12px; border: 1px dashed #94a3b8; border-radius: 4px; font-size: 9px; }
   .cash-receipt h2 { margin: 0 0 6px; font-size: 0.8rem; }
   .cash-receipt .row { margin: 4px 0; }
@@ -1736,7 +1747,7 @@ def _paystub_base_css() -> str:
   .sig-line-large { min-height: 40px; }
   .sig-line-date { min-height: 28px; max-width: 55%; }
   .sig-label { font-size: 8px; color: #64748b; margin-top: 4px; }
-  .employee-meta { margin: 2px 0 6px; font-size: 9.5px; color: #334155; }
+  .employee-meta { margin: 4px 0 10px; font-size: 9.5px; color: #334155; }
   .internal { font-size: 8.5px; color: #64748b; margin: 2px 0; }
   .notes p { white-space: pre-wrap; margin: 2px 0 4px; font-size: 9px; }
   .employee-paystub-group { margin-top: 8px; }

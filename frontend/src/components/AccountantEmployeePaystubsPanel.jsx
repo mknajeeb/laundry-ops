@@ -3,12 +3,8 @@ import {
   Alert,
   Box,
   Button,
-  FormControl,
   IconButton,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Stack,
   Table,
   TableBody,
@@ -27,6 +23,7 @@ import {
   getPayoutBatchDetails,
   getPayoutBatches,
   getPaystubHtml,
+  getTaUsers,
 } from "../api";
 import {
   formatNetPaidDisplay,
@@ -38,6 +35,12 @@ import {
   paystubBatchDownloadFilename,
   paystubDownloadFilename,
 } from "../payroll/paystubDownload";
+import {
+  filterAccountantDocumentUsers,
+  mapAccountantDocumentUserOption,
+} from "../payroll/accountantDocumentUsers";
+import { accountantPeriodStatusLabel } from "../payroll/accountantBatchPick";
+import AccountantScopeFilters from "./AccountantScopeFilters";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
 
 const RANGE_OPTIONS = [
@@ -94,39 +97,90 @@ function paystubReady(ln) {
   return isPayoutDetailsFinalized(ln) && ln.paystub_available !== false;
 }
 
+function filterBatchesByRange(batches, range) {
+  const year = new Date().getFullYear();
+  let list = [...batches];
+  if (range === "this_year") {
+    list = list.filter((b) => String(b.pay_period_end || "").slice(0, 4) === String(year));
+  } else if (range === "last_year") {
+    list = list.filter((b) => String(b.pay_period_end || "").slice(0, 4) === String(year - 1));
+  } else if (range === "last_5") {
+    list = list.slice(0, 5);
+  } else if (range === "last_10") {
+    list = list.slice(0, 10);
+  }
+  return list;
+}
+
 export default function AccountantEmployeePaystubsPanel() {
+  const [viewMode, setViewMode] = useState("employee");
   const [range, setRange] = useState("this_year");
+  const [batches, setBatches] = useState([]);
+  const [workers, setWorkers] = useState([]);
+  const [selectedWorker, setSelectedWorker] = useState(null);
+  const [selectedBatchId, setSelectedBatchId] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
   const [rows, setRows] = useState([]);
+  const [batchWorkers, setBatchWorkers] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
   const [busyKey, setBusyKey] = useState("");
 
+  useEffect(() => {
+    getPayoutBatches({ worker_category: "w2" })
+      .then((res) => {
+        const list = (res.data?.items || []).filter((b) => ACCOUNTANT_BATCH_STATUSES.has(b.status));
+        list.sort((a, b) =>
+          String(b.pay_period_end || "").localeCompare(String(a.pay_period_end || "")),
+        );
+        setBatches(list);
+      })
+      .catch(() => setBatches([]));
+    getTaUsers()
+      .then((res) => {
+        const list = filterAccountantDocumentUsers(res.data?.users || res.data || [], "w2").map(
+          mapAccountantDocumentUserOption,
+        );
+        setWorkers(list);
+      })
+      .catch(() => setWorkers([]));
+  }, []);
+
   const loadRows = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await getPayoutBatches({ worker_category: "w2" });
-      let batches = (res.data?.items || []).filter((b) => ACCOUNTANT_BATCH_STATUSES.has(b.status));
-      batches.sort((a, b) =>
-        String(b.pay_period_end || "").localeCompare(String(a.pay_period_end || "")),
-      );
+      if (viewMode === "batch") {
+        if (!selectedBatchId) {
+          setRows([]);
+          return;
+        }
+        const res = await getPayoutBatchDetails(Number(selectedBatchId));
+        const batch = res.data;
+        let lines = (batch?.lines || []).map((ln) => ({
+          ...ln,
+          batch_id: batch.id,
+          batch_name: batch.batch_name,
+          pay_period_start: batch.pay_period_start,
+          pay_period_end: batch.pay_period_end,
+          paystub_available: Boolean(batch.payout_workflow?.paystub_available),
+        }));
+        if (selectedWorker?.id) {
+          lines = lines.filter((ln) => Number(ln.user_id) === Number(selectedWorker.id));
+        }
+        setRows(lines);
+        return;
+      }
 
-      const year = new Date().getFullYear();
-      if (range === "this_year") {
-        batches = batches.filter((b) => String(b.pay_period_end || "").slice(0, 4) === String(year));
-      } else if (range === "last_year") {
-        batches = batches.filter(
-          (b) => String(b.pay_period_end || "").slice(0, 4) === String(year - 1),
-        );
-      } else if (range === "last_5") {
-        batches = batches.slice(0, 5);
-      } else if (range === "last_10") {
-        batches = batches.slice(0, 10);
+      let scopedBatches = filterBatchesByRange(batches, range);
+      if (selectedBatchId) {
+        scopedBatches = scopedBatches.filter((b) => String(b.id) === String(selectedBatchId));
       }
 
       const details = await Promise.all(
-        batches.map(async (b) => {
+        scopedBatches.map(async (b) => {
           try {
             const r = await getPayoutBatchDetails(b.id);
             return r.data;
@@ -139,6 +193,7 @@ export default function AccountantEmployeePaystubsPanel() {
       const out = [];
       for (const batch of details.filter(Boolean)) {
         for (const ln of batch.lines || []) {
+          if (selectedWorker?.id && Number(ln.user_id) !== Number(selectedWorker.id)) continue;
           out.push({
             ...ln,
             batch_id: batch.id,
@@ -161,21 +216,49 @@ export default function AccountantEmployeePaystubsPanel() {
     } finally {
       setLoading(false);
     }
-  }, [range]);
+  }, [viewMode, range, batches, selectedBatchId, selectedWorker]);
+
+  useEffect(() => {
+    if (viewMode !== "batch" || !selectedBatchId) {
+      setBatchWorkers([]);
+      return;
+    }
+    let cancelled = false;
+    getPayoutBatchDetails(Number(selectedBatchId))
+      .then((res) => {
+        if (cancelled) return;
+        const seen = new Set();
+        const list = [];
+        for (const ln of res.data?.lines || []) {
+          const uid = ln.user_id;
+          if (!uid || seen.has(uid)) continue;
+          seen.add(uid);
+          list.push({
+            id: uid,
+            label: ln.worker_name_snapshot || `User #${uid}`,
+          });
+        }
+        list.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+        setBatchWorkers(list);
+      })
+      .catch(() => {
+        if (!cancelled) setBatchWorkers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, selectedBatchId]);
 
   useEffect(() => {
     loadRows();
   }, [loadRows]);
 
-  const paystubRows = useMemo(() => rows.filter((ln) => paystubReady(ln)), [rows]);
+  const visibleRows = useMemo(() => {
+    if (viewMode === "employee" && !selectedWorker) return [];
+    return rows;
+  }, [viewMode, selectedWorker, rows]);
 
-  const batchIdsWithPaystubs = useMemo(() => {
-    const ids = new Set();
-    for (const ln of paystubRows) {
-      if (ln.batch_id) ids.add(ln.batch_id);
-    }
-    return [...ids];
-  }, [paystubRows]);
+  const paystubRows = useMemo(() => visibleRows.filter((ln) => paystubReady(ln)), [visibleRows]);
 
   const runPaystubAction = async (key, fn) => {
     setBusyKey(key);
@@ -208,12 +291,16 @@ export default function AccountantEmployeePaystubsPanel() {
     );
 
   const downloadAllVisible = async () => {
-    if (!batchIdsWithPaystubs.length) return;
+    const batchIds =
+      viewMode === "batch" && selectedBatchId
+        ? [Number(selectedBatchId)]
+        : [...new Set(paystubRows.map((ln) => ln.batch_id).filter(Boolean))];
+    if (!batchIds.length) return;
     setBusyKey("all");
     setError("");
     try {
-      for (const batchId of batchIdsWithPaystubs) {
-        const sample = paystubRows.find((ln) => ln.batch_id === batchId);
+      for (const batchId of batchIds) {
+        const sample = paystubRows.find((ln) => ln.batch_id === batchId) || rows.find((ln) => ln.batch_id === batchId);
         if (!sample) continue;
         await downloadPdfFromFetch(
           () => getBatchPaystubsHtml(batchId),
@@ -228,6 +315,14 @@ export default function AccountantEmployeePaystubsPanel() {
       setError(e.response?.data?.error || e.message || "Download all paystubs failed");
     } finally {
       setBusyKey("");
+    }
+  };
+
+  const handleViewModeChange = (mode) => {
+    setViewMode(mode);
+    setSelectedWorker(null);
+    if (mode === "employee") {
+      setSelectedBatchId("");
     }
   };
 
@@ -251,62 +346,82 @@ export default function AccountantEmployeePaystubsPanel() {
               By Employee
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Paystub history across pay periods — view, print, or download.
+              Paystub history — filter by employee or batch, then view, print, or download.
             </Typography>
           </Box>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            <FormControl size="small" sx={{ minWidth: 180 }}>
-              <InputLabel>Pay periods</InputLabel>
-              <Select
-                label="Pay periods"
-                value={range}
-                onChange={(e) => setRange(e.target.value)}
-              >
-                {RANGE_OPTIONS.map((o) => (
-                  <MenuItem key={o.value} value={o.value}>
-                    {o.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<DownloadIcon />}
-              disabled={!paystubRows.length || busyKey === "all"}
-              onClick={downloadAllVisible}
-            >
-              Download all paystubs
-            </Button>
-          </Stack>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            disabled={!paystubRows.length || busyKey === "all"}
+            onClick={downloadAllVisible}
+          >
+            Download all paystubs
+          </Button>
         </Stack>
       </Paper>
 
-      <Paper variant="outlined">
+      <AccountantScopeFilters
+        viewMode={viewMode}
+        onViewModeChange={handleViewModeChange}
+        batches={batches}
+        selectedBatchId={selectedBatchId}
+        onBatchChange={setSelectedBatchId}
+        workers={viewMode === "batch" ? batchWorkers : workers}
+        selectedWorker={selectedWorker}
+        onWorkerChange={setSelectedWorker}
+        workerLabel="Employee"
+        range={range}
+        onRangeChange={setRange}
+        rangeOptions={RANGE_OPTIONS}
+        weekStartsOn={0}
+        periodStart={periodStart}
+        periodEnd={periodEnd}
+        onPeriodChange={({ start, end, batchId }) => {
+          setPeriodStart(start || "");
+          setPeriodEnd(end || "");
+          if (batchId) setSelectedBatchId(String(batchId));
+        }}
+        batchStatusLabel={accountantPeriodStatusLabel}
+      />
+
+      <Paper variant="outlined" sx={{ overflow: "hidden" }}>
         {loading ? (
           <Typography sx={{ p: 2 }} color="text.secondary">
             Loading…
           </Typography>
+        ) : viewMode === "employee" && !selectedWorker ? (
+          <Typography sx={{ p: 2 }} color="text.secondary">
+            Select an employee to see paystub history.
+          </Typography>
+        ) : viewMode === "batch" && !selectedBatchId ? (
+          <Typography sx={{ p: 2 }} color="text.secondary">
+            Select a batch to see employee paystubs for that pay period.
+          </Typography>
         ) : (
-          <TableContainer>
-            <Table size="small">
+          <TableContainer sx={{ px: 1, pb: 1 }}>
+            <Table size="small" sx={{ minWidth: 640 }}>
               <TableHead>
                 <TableRow>
-                  <TableCell>Employee</TableCell>
+                  {viewMode === "batch" ? <TableCell>Employee</TableCell> : null}
                   <TableCell>Pay period</TableCell>
                   <TableCell align="right">Gross</TableCell>
                   <TableCell align="right">Tax withheld</TableCell>
                   <TableCell align="right">Net paid</TableCell>
-                  <TableCell align="right">Paystub</TableCell>
+                  <TableCell align="right" sx={{ pr: 2, minWidth: 120 }}>
+                    Paystub
+                  </TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {rows.map((ln) => {
+                {visibleRows.map((ln) => {
                   const key = `${ln.batch_id}-${ln.id}`;
                   const ready = paystubReady(ln);
                   return (
                     <TableRow key={key} hover>
-                      <TableCell>{ln.worker_name_snapshot}</TableCell>
+                      {viewMode === "batch" ? (
+                        <TableCell>{ln.worker_name_snapshot}</TableCell>
+                      ) : null}
                       <TableCell>
                         {ln.pay_period_start} – {ln.pay_period_end}
                       </TableCell>
@@ -328,7 +443,7 @@ export default function AccountantEmployeePaystubsPanel() {
                         </Button>
                       </TableCell>
                       <TableCell align="right">{formatNetPaidDisplay(ln)}</TableCell>
-                      <TableCell align="right">
+                      <TableCell align="right" sx={{ pr: 1 }}>
                         {ready ? (
                           <Stack direction="row" spacing={0.25} justifyContent="flex-end">
                             <Tooltip title="View">
@@ -368,11 +483,11 @@ export default function AccountantEmployeePaystubsPanel() {
                     </TableRow>
                   );
                 })}
-                {!rows.length ? (
+                {!visibleRows.length ? (
                   <TableRow>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={viewMode === "batch" ? 6 : 5}>
                       <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
-                        No employee payout records in this range.
+                        No paystub records match these filters.
                       </Typography>
                     </TableCell>
                   </TableRow>
