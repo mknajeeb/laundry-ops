@@ -67,9 +67,27 @@ def test_prior_period_adjustment_offsets_prior_balance():
     details = apply_settlement_math(_details(16.90, prior=9.11), 221.0)
     details["settlement"]["prior_period_adjustment"] = 9.11
     details = apply_settlement_math(details, 221.0)
+    settlement = details["settlement"]
     tax_summary = details["tax_summary"]
     assert tax_summary["total_tax_liability"] == 16.90
-    assert tax_summary["remaining_balance"] == 0.0
+    assert settlement["amount_withheld"] == 9.11
+    assert settlement["amount_paid"] == 211.89
+    assert settlement["tax_balance_owed"] == 16.90
+    assert tax_summary["remaining_balance"] == 16.90
+
+
+def test_prior_period_adjustment_plus_partial_current_withholding():
+    """Collect full prior via adj. and partial current via withheld_from_payment."""
+    details = apply_settlement_math(_details(16.90, prior=9.11), 221.0)
+    details["settlement"]["prior_period_adjustment"] = 9.11
+    details["settlement"]["withheld_from_payment"] = 7.8
+    details = apply_settlement_math(details, 221.0)
+    settlement = details["settlement"]
+    tax_summary = details["tax_summary"]
+    assert settlement["amount_withheld"] == 16.91
+    assert settlement["amount_paid"] == 204.09
+    assert settlement["tax_balance_owed"] == 9.1
+    assert tax_summary["remaining_balance"] == 9.1
 
 
 def test_prior_period_adjustment_partial_offset():

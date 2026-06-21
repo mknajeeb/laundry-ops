@@ -357,10 +357,7 @@ def _prior_collected_from_pay(settlement: dict) -> float:
     prior_adj = float(_money(settlement.get("prior_period_adjustment")))
     if prior_adj <= 0:
         return 0.0
-    effective_prior = _effective_prior_tax_balance(prior_balance, prior_adj)
-    if effective_prior > 0:
-        return round(prior_adj, 2)
-    return 0.0
+    return round(min(prior_adj, prior_balance), 2)
 
 
 def _prior_still_owed(
@@ -510,9 +507,8 @@ def _withheld_for_current_period(
     raw = settlement.get("withheld_from_payment")
     if raw is not None and str(raw).strip() != "":
         return round(min(float(_money(raw)), round(current_period, 2)), 2)
-    prior_balance = float(_money(settlement.get("prior_unpaid_taxes")))
     prior_adj = float(_money(settlement.get("prior_period_adjustment")))
-    if prior_adj > 0 and _effective_prior_tax_balance(prior_balance, prior_adj) > 0:
+    if prior_adj > 0:
         return 0.0
     return round(current_period, 2)
 

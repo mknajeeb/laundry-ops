@@ -135,9 +135,7 @@ function priorCollectedFromPay(settlement) {
   const priorBalance = num(settlement?.prior_unpaid_taxes);
   const priorAdj = num(settlement?.prior_period_adjustment);
   if (priorAdj <= 0) return 0;
-  const effectivePrior = effectivePriorTaxBalance(priorBalance, priorAdj);
-  if (effectivePrior > 0) return roundMoney(priorAdj);
-  return 0;
+  return roundMoney(Math.min(priorAdj, priorBalance));
 }
 
 function withheldForCurrentPeriod(settlement, currentTax, paidFullGross) {
@@ -146,9 +144,7 @@ function withheldForCurrentPeriod(settlement, currentTax, paidFullGross) {
   if (raw !== null && raw !== undefined && raw !== "") {
     return Math.min(num(raw), currentTax);
   }
-  const priorBalance = num(settlement?.prior_unpaid_taxes);
-  const priorAdj = num(settlement?.prior_period_adjustment);
-  if (priorAdj > 0 && effectivePriorTaxBalance(priorBalance, priorAdj) > 0) {
+  if (num(settlement?.prior_period_adjustment) > 0) {
     return 0;
   }
   return currentTax;
