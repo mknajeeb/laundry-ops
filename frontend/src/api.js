@@ -1301,6 +1301,15 @@ export const getBatchPaystubsHtml = (batchId, { preview = false, copy = "employe
     responseType: "text",
   });
 
+export const getPaystubArchiveMeta = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/paystub-archive/meta`, { params });
+
+export const getEmployeePaystubArchiveHtml = (params) =>
+  axios.get(`${API_BASE}/api/ta/payroll/paystub-archive`, {
+    params,
+    responseType: "text",
+  });
+
 export const getEmployerPayrollPacketHtml = (batchId, { preview = false } = {}) =>
   axios.get(`${API_BASE}/api/ta/payroll/payout-batches/${batchId}/employer-packet`, {
     params: preview ? { preview: 1 } : {},

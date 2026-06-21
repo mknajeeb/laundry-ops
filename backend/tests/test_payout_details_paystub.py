@@ -579,7 +579,7 @@ def test_paystub_html_zero_deductions():
         assert "NYC Local Tax" in emp
         assert "Total employee taxes" in emp
         assert "Net Pay" in emp
-        assert "Amount paid to employee" in emp
+        assert "Amount paid to employee" not in emp
         assert "$800.00" in emp
         assert "pay-summary" not in emp
         assert "ACTUAL PAID" not in emp
@@ -937,6 +937,23 @@ def test_paystub_employee_tax_balance_prior_adj_collection_labels():
     assert "$19.42" in html
 
 
+def test_employee_paystub_prior_collection_shows_single_net_pay():
+    """When prior balance is collected from pay, employee copy shows one net = amount paid."""
+    from backend.payroll_payout_details import _employee_net_pay_ytd_html
+
+    html = _employee_net_pay_ytd_html(
+        111.0,
+        45.85,
+        {"net_pay": 1000.0, "amount_paid": 900.0},
+        gross=120.19,
+        withheld=74.34,
+    )
+    assert "Net pay (after taxes)" not in html
+    assert "Amount paid to employee" not in html
+    assert "$45.85" in html
+    assert "$111.00" not in html
+
+
 def test_employee_paystub_payment_section_shows_date():
     from backend.payroll_payout_details import _employee_payment_method_html
 
@@ -1175,6 +1192,146 @@ def test_paystub_blocked_until_finalized():
             assert False, "expected ValueError"
         except ValueError as e:
             assert "finalized" in str(e).lower()
+
+
+def test_employee_paystub_archive_groups_by_employee():
+    conn = MagicMock()
+    batch_a = {
+        "id": 1,
+        "batch_name": "W2-2026-002",
+        "pay_period_start": "2026-05-18",
+        "pay_period_end": "2026-05-24",
+        "payout_details_finalized_at": "2026-05-30",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 10,
+                "user_id": 5,
+                "worker_name_snapshot": "Alec Coaxum",
+                "approved_hours": 7,
+                "rate": 17,
+                "gross_amount": 119,
+                "payout_details": {
+                    "employee_deductions": {"fit": 0, "ss": 7.38, "medicare": 1.73},
+                    "payment": {"method": "zelle", "date": "2026-05-30"},
+                    "settlement": {"amount_paid": 119, "amount_withheld": 0},
+                },
+                "payout_totals": {
+                    "gross_pay": 119,
+                    "total_employee_deductions": 9.11,
+                    "net_pay": 109.89,
+                    "amount_paid": 119,
+                    "amount_withheld": 0,
+                },
+            },
+            {
+                "id": 11,
+                "user_id": 6,
+                "worker_name_snapshot": "Paola Almiron",
+                "approved_hours": 8,
+                "rate": 18,
+                "gross_amount": 144,
+                "payout_details": {
+                    "employee_deductions": {"fit": 0, "ss": 8.93, "medicare": 2.09},
+                    "payment": {"method": "zelle", "date": "2026-05-30"},
+                    "settlement": {"amount_paid": 144, "amount_withheld": 0},
+                },
+                "payout_totals": {
+                    "gross_pay": 144,
+                    "total_employee_deductions": 11.02,
+                    "net_pay": 132.98,
+                    "amount_paid": 144,
+                    "amount_withheld": 0,
+                },
+            },
+        ],
+    }
+    batch_b = {
+        "id": 2,
+        "batch_name": "W2-2026-003",
+        "pay_period_start": "2026-05-25",
+        "pay_period_end": "2026-05-31",
+        "payout_details_finalized_at": "2026-06-06",
+        "document_mode": "official_paystub",
+        "lines": [
+            {
+                "id": 20,
+                "user_id": 5,
+                "worker_name_snapshot": "Alec Coaxum",
+                "approved_hours": 13,
+                "rate": 17,
+                "gross_amount": 221,
+                "payout_details": {
+                    "employee_deductions": {"fit": 0, "ss": 13.7, "medicare": 3.2},
+                    "payment": {"method": "zelle", "date": "2026-06-06"},
+                    "settlement": {"amount_paid": 204, "amount_withheld": 17},
+                },
+                "payout_totals": {
+                    "gross_pay": 221,
+                    "total_employee_deductions": 16.9,
+                    "net_pay": 204,
+                    "amount_paid": 204,
+                    "amount_withheld": 17,
+                },
+            },
+        ],
+    }
+
+    def fake_fetch(conn, org_id, **kwargs):
+        return [
+            {
+                "id": 1,
+                "batch_name": "W2-2026-002",
+                "pay_period_start": "2026-05-18",
+                "pay_period_end": "2026-05-24",
+                "worker_category": "w2",
+            },
+            {
+                "id": 2,
+                "batch_name": "W2-2026-003",
+                "pay_period_start": "2026-05-25",
+                "pay_period_end": "2026-05-31",
+                "worker_category": "w2",
+            },
+        ]
+
+    def fake_details(conn, org_id, batch_id):
+        return batch_a if int(batch_id) == 1 else batch_b
+
+    with patch(
+        "backend.payroll_payout_details.fetch_finalized_archive_batches",
+        side_effect=fake_fetch,
+    ), patch(
+        "backend.payroll_payout_details.get_payout_batch_details",
+        side_effect=fake_details,
+    ), patch(
+        "backend.payroll_payout_details.can_view_paystub",
+        return_value=True,
+    ), patch(
+        "backend.payroll_payout_details._organization_print_branding",
+        return_value={
+            "company_name": "VeeWash",
+            "logo_html": "",
+            "address_line": "",
+            "contact_line": "",
+        },
+    ):
+        from backend.payroll_payout_details import generate_employee_paystub_archive_html
+
+        html = generate_employee_paystub_archive_html(
+            conn, 1, 99, worker_category="w2", copy_mode="employee"
+        )
+        assert "Employee Paystub Archive" in html
+        assert "employee-paystub-group" in html
+        assert html.count("Alec Coaxum") >= 2
+        assert "Paola Almiron" in html
+        assert "2026-05-18" in html or "2026-05-24" in html
+
+        single = generate_employee_paystub_archive_html(
+            conn, 1, 99, worker_category="w2", user_id=5, copy_mode="employee"
+        )
+        assert "Alec Coaxum — Paystub Archive" in single
+        assert "Paola Almiron" not in single
 
 
 def test_employer_payroll_packet_combines_records():

@@ -116,6 +116,40 @@ function pdfFormatFromPageSize(pageSize) {
   return { format: "letter", orientation: "portrait" };
 }
 
+async function renderBodyToPdf(body, { pageSize = "letter portrait" } = {}) {
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+    import("html2canvas"),
+    import("jspdf"),
+  ]);
+
+  const canvas = await html2canvas(body, {
+    scale: 2,
+    backgroundColor: "#ffffff",
+    logging: false,
+    useCORS: true,
+  });
+
+  const { format, orientation } = pdfFormatFromPageSize(pageSize);
+  const pdf = new jsPDF({ orientation, unit: "in", format });
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const imgData = canvas.toDataURL("image/jpeg", 0.95);
+  const imgW = pageW;
+  const imgH = (canvas.height * imgW) / canvas.width;
+  let heightLeft = imgH;
+  let position = 0;
+
+  pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
+  heightLeft -= pageH;
+  while (heightLeft > 0) {
+    position -= pageH;
+    pdf.addPage();
+    pdf.addImage(imgData, "JPEG", 0, position, imgW, imgH);
+    heightLeft -= pageH;
+  }
+  return pdf;
+}
+
 /** Download print-ready PDF (does not open the print dialog). */
 export async function downloadPrintDocumentPdf(
   rootEl,
@@ -123,38 +157,22 @@ export async function downloadPrintDocumentPdf(
 ) {
   const html = buildPrintDocumentHtml(rootEl, { pageSize, title });
   if (!html) return false;
+  return downloadHtmlDocumentPdf(html, { pageSize, filename });
+}
+
+/** Download a full HTML document string as PDF (e.g. server-generated paystubs). */
+export async function downloadHtmlDocumentPdf(
+  html,
+  { pageSize = "letter portrait", filename = "document.pdf" } = {},
+) {
+  const docHtml = absolutizePrintAssetUrls(html);
+  if (!docHtml) return false;
 
   let iframe;
   try {
-    const loaded = await loadPrintDocumentIframe(html);
+    const loaded = await loadPrintDocumentIframe(docHtml);
     iframe = loaded.iframe;
-    const body = loaded.doc.body;
-
-    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
-      import("html2canvas"),
-      import("jspdf"),
-    ]);
-
-    const canvas = await html2canvas(body, {
-      scale: 2,
-      backgroundColor: "#ffffff",
-      logging: false,
-      useCORS: true,
-    });
-
-    const { format, orientation } = pdfFormatFromPageSize(pageSize);
-    const pdf = new jsPDF({ orientation, unit: "in", format });
-    const pageW = pdf.internal.pageSize.getWidth();
-    const pageH = pdf.internal.pageSize.getHeight();
-    const imgData = canvas.toDataURL("image/jpeg", 0.95);
-    const imgProps = pdf.getImageProperties(imgData);
-    const imgW = pageW;
-    const imgH = (imgProps.height * imgW) / imgProps.width;
-    const y = imgH <= pageH ? 0 : 0;
-    const drawH = imgH <= pageH ? imgH : pageH;
-    const drawW = imgH <= pageH ? imgW : (imgProps.width * drawH) / imgProps.height;
-    const x = imgH <= pageH ? 0 : (pageW - drawW) / 2;
-    pdf.addImage(imgData, "JPEG", x, y, drawW, drawH);
+    const pdf = await renderBodyToPdf(loaded.doc.body, { pageSize });
     pdf.save(filename);
     return true;
   } finally {

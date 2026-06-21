@@ -17,6 +17,8 @@ import {
   Paper,
   Select,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -53,6 +55,7 @@ import {
   setPayoutDocumentMode,
 } from "../api";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
+import EmployeePaystubArchivePanel from "./EmployeePaystubArchivePanel";
 import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
 import {
   batchVisibleForDetails,
@@ -67,9 +70,12 @@ import {
   isPayoutDetailsFinalized,
 } from "../payroll/payoutSettlementDisplay";
 import {
-  downloadHtmlFromFetch,
+  downloadPdfFromFetch,
+  paystubBatchDownloadFilename,
   paystubDownloadFilename,
 } from "../payroll/paystubDownload";
+import { downloadEmployeeRecentPaystubsPdf } from "../payroll/downloadEmployeePaystubArchive";
+import { DEFAULT_RECENT_PAYSTUB_BATCHES } from "../payroll/paystubArchive";
 import { ESTIMATE_DISCLAIMER } from "../payroll/payrollTaxMessages";
 
 const DEDUCTION_FIELDS = [
@@ -429,6 +435,9 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
   const [moreAnchor, setMoreAnchor] = useState(null);
   const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
   const [paystubCopyMode, setPaystubCopyMode] = useState("employee");
+  const [panelTab, setPanelTab] = useState("batch");
+  const [archiveInitialUserId, setArchiveInitialUserId] = useState("");
+  const [archiveInitialWorkerName, setArchiveInitialWorkerName] = useState("");
 
   const loadBatches = useCallback(async () => {
     try {
@@ -681,13 +690,39 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
     if (!draft || !ln) return;
     setError("");
     try {
-      await downloadHtmlFromFetch(
+      await downloadPdfFromFetch(
         fetchPaystubHtml(lineId, draft),
         paystubFilenameForLine(ln),
       );
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Paystub download failed");
     }
+  };
+
+  const downloadEmployeeRecentPaystubs = async (ln) => {
+    if (!ln?.user_id) {
+      setError("Employee ID missing — use Employee paystub archive tab");
+      return;
+    }
+    setError("");
+    try {
+      await downloadEmployeeRecentPaystubsPdf({
+        userId: ln.user_id,
+        workerName: ln.worker_name_snapshot,
+        workerCategory: detail?.worker_category,
+        copy: paystubCopyMode,
+        recentCount: DEFAULT_RECENT_PAYSTUB_BATCHES,
+      });
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Recent paystub download failed");
+    }
+  };
+
+  const openArchiveForEmployee = (ln) => {
+    if (!ln?.user_id) return;
+    setArchiveInitialUserId(String(ln.user_id));
+    setArchiveInitialWorkerName(ln.worker_name_snapshot || "");
+    setPanelTab("archive");
   };
 
   const downloadAllPaystubs = async () => {
@@ -698,13 +733,16 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         const ok = await saveDetails({ silent: true });
         if (!ok) return;
       }
-      const lines = (detail?.lines || []).filter((ln) => lineDrafts[ln.id]);
-      for (let i = 0; i < lines.length; i += 1) {
-        await downloadPaystub(lines[i].id);
-        if (i < lines.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 350));
-        }
-      }
+      const copy = paystubCopyMode;
+      const filename = paystubBatchDownloadFilename(
+        detail?.batch_name,
+        detail?.pay_period_start,
+        detail?.pay_period_end,
+      );
+      await downloadPdfFromFetch(
+        () => getBatchPaystubsHtml(selectedId, { preview: !finalized, copy }),
+        filename,
+      );
     } catch (e) {
       setError(e.response?.data?.error || e.message || "Download all paystubs failed");
     }
@@ -794,7 +832,24 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         <Alert severity="success" onClose={() => setInfo("")}>{info}</Alert>
       ) : null}
 
-      {batches.length > 1 ? (
+      <Tabs
+        value={panelTab}
+        onChange={(_, value) => setPanelTab(value)}
+        sx={{ borderBottom: 1, borderColor: "divider", minHeight: 36 }}
+      >
+        <Tab value="batch" label="Batch details" sx={{ minHeight: 36, py: 0.5 }} />
+        <Tab value="archive" label="Employee paystub archive" sx={{ minHeight: 36, py: 0.5 }} />
+      </Tabs>
+
+      {panelTab === "archive" ? (
+        <EmployeePaystubArchivePanel
+          onError={setError}
+          initialUserId={archiveInitialUserId}
+          initialWorkerName={archiveInitialWorkerName}
+        />
+      ) : null}
+
+      {panelTab === "batch" && batches.length > 1 ? (
         <Stack direction="row" flexWrap="wrap" gap={0.5}>
           {batches.map((b) => (
             <Chip
@@ -810,13 +865,13 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
         </Stack>
       ) : null}
 
-      {!batches.length ? (
+      {panelTab === "batch" && !batches.length ? (
         <Typography variant="body2" color="text.secondary">
           Approve hours on a payout batch to enter payroll details.
         </Typography>
       ) : null}
 
-      {detail ? (
+      {panelTab === "batch" && detail ? (
         <>
           <PayrollBatchSummaryCard batch={detail} compact />
 
@@ -839,7 +894,7 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                   Print All Paystubs
                 </Button>
                 <Button size="small" startIcon={<DownloadIcon />} onClick={downloadAllPaystubs}>
-                  Download All Paystubs
+                  Download batch PDF
                 </Button>
               </>
             ) : null}
@@ -1344,6 +1399,23 @@ export default function PayoutDetailsPanel({ initialBatchId = null } = {}) {
                                   >
                                     Download Paystub
                                   </Button>
+                                  {ln.user_id ? (
+                                    <Button
+                                      size="small"
+                                      startIcon={<DownloadIcon />}
+                                      onClick={() => downloadEmployeeRecentPaystubs(ln)}
+                                    >
+                                      Download last {DEFAULT_RECENT_PAYSTUB_BATCHES} paystubs
+                                    </Button>
+                                  ) : null}
+                                  {ln.user_id ? (
+                                    <Button
+                                      size="small"
+                                      onClick={() => openArchiveForEmployee(ln)}
+                                    >
+                                      Archive tab…
+                                    </Button>
+                                  ) : null}
                                 </Stack>
                               ) : null}
                             </Box>

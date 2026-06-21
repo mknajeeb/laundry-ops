@@ -1740,6 +1740,12 @@ def _paystub_base_css() -> str:
   .employee-meta { margin: 2px 0 6px; font-size: 9.5px; color: #334155; }
   .internal { font-size: 8.5px; color: #64748b; margin: 2px 0; }
   .notes p { white-space: pre-wrap; margin: 2px 0 4px; font-size: 9px; }
+  .employee-paystub-group { margin-top: 8px; }
+  .employee-paystub-group .employee-name {
+    font-size: 1.05rem; margin: 14px 0 8px; color: #0f766e;
+    border-bottom: 2px solid #0097b2; padding-bottom: 4px;
+  }
+  .archive-intro { color: #475569; font-size: 9px; margin: 4px 0 10px; }
 """
 
 
@@ -1982,14 +1988,21 @@ def _employee_taxes_ytd_html(details: dict, totals: dict, ytd: dict[str, float])
 
 
 def _employee_net_pay_ytd_html(
-    net_pay: float, net_paid: float, ytd: dict[str, float]
+    net_pay: float, net_paid: float, ytd: dict[str, float], *, gross: float = 0, withheld: float = 0
 ) -> str:
+    """Employee copy: one net line = cash actually paid (gross minus all withholding)."""
+    net_paid_f = float(net_paid)
+    net_pay_f = float(net_pay)
+    ytd_net = float(ytd.get("amount_paid") or 0)
+    if abs(net_paid_f - net_pay_f) > 0.01:
+        ytd_net = float(ytd.get("amount_paid") or 0)
+    else:
+        ytd_net = float(ytd.get("net_pay") or ytd.get("amount_paid") or 0)
     return f"""
 <h2>Net Pay</h2>
 <table class="compact ytd">
 {_paystub_ytd_table_head()}
-{_paystub_ytd_money_row("Net pay (after taxes)", net_pay, ytd["net_pay"])}
-{_paystub_ytd_money_row("Amount paid to employee", net_paid, ytd["amount_paid"], bold=True)}
+{_paystub_ytd_money_row("Net pay", net_paid_f, ytd_net, bold=True)}
 </table>"""
 
 
@@ -2196,7 +2209,9 @@ def _render_paystub_html(
 Pay period: {batch.get('pay_period_start')} – {batch.get('pay_period_end')}</p>"""
         earnings_html = _employee_earnings_ytd_html(hours, rate, gross, ytd)
         emp_tax_table = _employee_taxes_ytd_html(details, totals, ytd)
-        net_pay_html = _employee_net_pay_ytd_html(net_pay, net_paid, ytd)
+        net_pay_html = _employee_net_pay_ytd_html(
+            net_pay, net_paid, ytd, gross=gross, withheld=withheld
+        )
         tax_balance_html = ""
         if bool(details.get("show_tax_payment_section", True)):
             tax_balance_html = _employee_tax_balance_html(totals)
@@ -2501,6 +2516,248 @@ def generate_batch_paystubs_html(
         else f"Batch {batch.get('batch_name')} — Employer Records"
     )
     return _combine_paystub_documents(batch, sheets, title=title)
+
+
+def _parse_archive_batch_ids(raw: Optional[str]) -> Optional[list[int]]:
+    if raw is None or str(raw).strip() == "":
+        return None
+    ids: list[int] = []
+    for part in str(raw).replace(" ", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.append(int(part))
+    return ids or None
+
+
+def _archive_batch_filters_sql(
+    *,
+    worker_category: Optional[str] = None,
+    pay_period_start: Optional[str] = None,
+    pay_period_end: Optional[str] = None,
+    batch_ids: Optional[list[int]] = None,
+) -> tuple[str, list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if worker_category and worker_category != "all":
+        clauses.append("pb.worker_category = %s")
+        params.append(str(worker_category))
+    if pay_period_start:
+        clauses.append("pb.pay_period_end >= %s")
+        params.append(str(pay_period_start))
+    if pay_period_end:
+        clauses.append("pb.pay_period_start <= %s")
+        params.append(str(pay_period_end))
+    if batch_ids:
+        placeholders = ",".join(["%s"] * len(batch_ids))
+        clauses.append(f"pb.id IN ({placeholders})")
+        params.extend([int(x) for x in batch_ids])
+    clauses.append(
+        "(pb.document_mode IS NULL OR pb.document_mode = '' OR pb.document_mode = 'official_paystub')"
+    )
+    sql = " AND ".join(clauses)
+    return sql, params
+
+
+def fetch_finalized_archive_batches(
+    conn,
+    organization_id: int,
+    *,
+    worker_category: Optional[str] = None,
+    pay_period_start: Optional[str] = None,
+    pay_period_end: Optional[str] = None,
+    batch_ids: Optional[list[int]] = None,
+) -> list[dict]:
+    """Finalized payout batches eligible for paystub archive (official paystub mode)."""
+    ensure_payout_details_columns(conn.cursor())
+    extra_sql, extra_params = _archive_batch_filters_sql(
+        worker_category=worker_category,
+        pay_period_start=pay_period_start,
+        pay_period_end=pay_period_end,
+        batch_ids=batch_ids,
+    )
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        f"""
+        SELECT pb.id, pb.batch_name, pb.pay_period_start, pb.pay_period_end, pb.worker_category
+        FROM payout_batches pb
+        WHERE pb.organization_id = %s
+          AND pb.payout_details_finalized_at IS NOT NULL
+          AND {extra_sql}
+        ORDER BY pb.pay_period_start ASC, pb.id ASC
+        """,
+        tuple([int(organization_id)] + extra_params),
+    )
+    return [json_safe(r) for r in c.fetchall() or []]
+
+
+def list_paystub_archive_employees(
+    conn,
+    organization_id: int,
+    *,
+    worker_category: Optional[str] = None,
+    pay_period_start: Optional[str] = None,
+    pay_period_end: Optional[str] = None,
+    batch_ids: Optional[list[int]] = None,
+) -> list[dict]:
+    extra_sql, extra_params = _archive_batch_filters_sql(
+        worker_category=worker_category,
+        pay_period_start=pay_period_start,
+        pay_period_end=pay_period_end,
+        batch_ids=batch_ids,
+    )
+    c = conn.cursor(dictionary=True)
+    c.execute(
+        f"""
+        SELECT DISTINCT pbl.user_id, pbl.worker_name_snapshot AS worker_name
+        FROM payout_batch_lines pbl
+        JOIN payout_batches pb ON pb.id = pbl.batch_id
+        WHERE pb.organization_id = %s
+          AND pb.payout_details_finalized_at IS NOT NULL
+          AND pbl.user_id IS NOT NULL
+          AND {extra_sql}
+        ORDER BY pbl.worker_name_snapshot ASC, pbl.user_id ASC
+        """,
+        tuple([int(organization_id)] + extra_params),
+    )
+    return [
+        {
+            "user_id": int(r["user_id"]),
+            "worker_name": str(r.get("worker_name") or ""),
+        }
+        for r in c.fetchall() or []
+        if r.get("user_id")
+    ]
+
+
+def generate_employee_paystub_archive_html(
+    conn,
+    organization_id: int,
+    viewing_user_id: int,
+    *,
+    worker_category: Optional[str] = None,
+    pay_period_start: Optional[str] = None,
+    pay_period_end: Optional[str] = None,
+    user_id: Optional[int] = None,
+    batch_ids: Optional[list[int]] = None,
+    copy_mode: str = "employee",
+) -> str:
+    """All paystubs grouped by employee, spanning multiple finalized pay periods."""
+    batches = fetch_finalized_archive_batches(
+        conn,
+        organization_id,
+        worker_category=worker_category,
+        pay_period_start=pay_period_start,
+        pay_period_end=pay_period_end,
+        batch_ids=batch_ids,
+    )
+    if not batches:
+        raise ValueError("No finalized payout batches match filters")
+
+    entries: list[dict[str, Any]] = []
+    for batch_row in batches:
+        batch_id = int(batch_row["id"])
+        batch = get_payout_batch_details(conn, organization_id, batch_id)
+        if not batch:
+            continue
+        if not can_view_paystub(conn, viewing_user_id, batch, preview=False):
+            continue
+        for line in batch.get("lines") or []:
+            line_uid = line.get("user_id")
+            if user_id is not None and int(line_uid or 0) != int(user_id):
+                continue
+            details = line.get("payout_details") or parse_line_payout_details(line)
+            if not can_generate_paystub_for_line(batch, details):
+                continue
+            totals = line.get("payout_totals") or compute_line_totals(line, details)
+            html = _render_paystub_html(
+                batch,
+                line,
+                details,
+                totals,
+                preview=False,
+                copy_mode=copy_mode,
+                conn=conn,
+                organization_id=int(organization_id),
+            )
+            sheet = _extract_paystub_sheet(html)
+            worker_name = str(line.get("worker_name_snapshot") or "Employee")
+            entries.append(
+                {
+                    "user_id": int(line_uid or 0),
+                    "worker_name": worker_name,
+                    "pay_period_start": str(batch.get("pay_period_start") or ""),
+                    "batch_id": batch_id,
+                    "sheet": sheet,
+                }
+            )
+
+    if not entries:
+        raise ValueError("No paystubs available for archive filters")
+
+    entries.sort(
+        key=lambda e: (
+            e["worker_name"].lower(),
+            e["user_id"],
+            e["pay_period_start"],
+            e["batch_id"],
+        )
+    )
+
+    from itertools import groupby
+
+    groups: list[tuple[int, list[dict[str, Any]]]] = []
+    for uid, group in groupby(entries, key=lambda e: e["user_id"]):
+        groups.append((uid, list(group)))
+
+    sections: list[str] = []
+    for _uid, group_entries in groups:
+        name = group_entries[0]["worker_name"]
+        sheets = "".join(e["sheet"] for e in group_entries)
+        sections.append(
+            f"<div class='employee-paystub-group'>"
+            f"<h2 class='employee-name'>{name}</h2>"
+            f"{sheets}</div>"
+        )
+
+    copy = _paystub_copy_mode(copy_mode)
+    title = (
+        "Employee Paystub Archive"
+        if copy == "employee"
+        else "Employer Payroll Record Archive"
+    )
+    period_bits = [
+        str(pay_period_start or "").strip(),
+        str(pay_period_end or "").strip(),
+    ]
+    period_label = ""
+    if period_bits[0] and period_bits[1]:
+        period_label = f"Pay periods {period_bits[0]} – {period_bits[1]}"
+    elif period_bits[0]:
+        period_label = f"From {period_bits[0]}"
+    elif period_bits[1]:
+        period_label = f"Through {period_bits[1]}"
+    else:
+        starts = [str(b.get("pay_period_start") or "") for b in batches]
+        ends = [str(b.get("pay_period_end") or "") for b in batches]
+        if starts and ends:
+            period_label = f"Pay periods {min(starts)} – {max(ends)}"
+
+    employee_count = len(groups)
+    paystub_count = len(entries)
+    intro = (
+        f"<p class='archive-intro'>{period_label} · "
+        f"{employee_count} employee(s) · {paystub_count} paystub(s)</p>"
+    )
+    if user_id is not None and groups:
+        title = f"{groups[0][1][0]['worker_name']} — Paystub Archive"
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title}</title>
+<style>{_paystub_base_css()}</style></head><body>
+<h1>{title}</h1>
+{intro}
+{"".join(sections)}
+</body></html>"""
 
 
 def generate_employer_payroll_packet_html(

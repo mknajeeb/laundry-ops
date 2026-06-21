@@ -6276,6 +6276,96 @@ def payroll_payout_pay_register(batch_id: int):
         conn.close()
 
 
+@ta_bp.route("/payroll/paystub-archive/meta", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_paystub_archive_meta():
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            _parse_archive_batch_ids,
+            fetch_finalized_archive_batches,
+            list_paystub_archive_employees,
+        )
+
+        oid = _tenant_id()
+        worker_category = str(request.args.get("worker_category") or "all").strip()
+        pay_period_start = (request.args.get("pay_period_start") or "").strip() or None
+        pay_period_end = (request.args.get("pay_period_end") or "").strip() or None
+        batch_ids = _parse_archive_batch_ids(request.args.get("batch_ids"))
+        batches = fetch_finalized_archive_batches(
+            conn,
+            oid,
+            worker_category=worker_category,
+            pay_period_start=pay_period_start,
+            pay_period_end=pay_period_end,
+            batch_ids=batch_ids,
+        )
+        employees = list_paystub_archive_employees(
+            conn,
+            oid,
+            worker_category=worker_category,
+            pay_period_start=pay_period_start,
+            pay_period_end=pay_period_end,
+            batch_ids=batch_ids,
+        )
+        return jsonify(
+            {
+                "batches": batches,
+                "employees": employees,
+                "batch_count": len(batches),
+                "employee_count": len(employees),
+            }
+        )
+    except Exception as e:
+        current_app.logger.exception("payroll_paystub_archive_meta failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/paystub-archive", methods=["GET"])
+@require_auth
+@require_any_perm("ta.settings", "users.view", "users.edit")
+def payroll_paystub_archive_html():
+    conn = get_db()
+    try:
+        from backend.payroll_payout_details import (
+            _parse_archive_batch_ids,
+            generate_employee_paystub_archive_html,
+        )
+
+        oid = _tenant_id()
+        uid = int(g.ta_user["id"])
+        worker_category = str(request.args.get("worker_category") or "all").strip()
+        pay_period_start = (request.args.get("pay_period_start") or "").strip() or None
+        pay_period_end = (request.args.get("pay_period_end") or "").strip() or None
+        batch_ids = _parse_archive_batch_ids(request.args.get("batch_ids"))
+        user_id_raw = (request.args.get("user_id") or "").strip()
+        user_id = int(user_id_raw) if user_id_raw.isdigit() else None
+        copy_mode = str(request.args.get("copy") or "employee")
+        try:
+            html = generate_employee_paystub_archive_html(
+                conn,
+                oid,
+                uid,
+                worker_category=worker_category,
+                pay_period_start=pay_period_start,
+                pay_period_end=pay_period_end,
+                user_id=user_id,
+                batch_ids=batch_ids,
+                copy_mode=copy_mode,
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+    except Exception as e:
+        current_app.logger.exception("payroll_paystub_archive_html failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/payroll/accountant/ytd", methods=["GET"])
 @require_auth
 @require_any_perm("ta.settings", "users.view", "users.edit")
