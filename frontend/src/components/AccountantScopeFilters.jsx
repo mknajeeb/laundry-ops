@@ -11,13 +11,14 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import PayPeriodSelect from "./PayPeriodSelect";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
 
-export function formatAccountantBatchLabel(batch) {
+export function formatAccountantBatchLabel(batch, batchStatusLabel) {
   if (!batch) return "";
   const name = batch.batch_name || `W2-${batch.id}`;
-  return `${batch.pay_period_start} – ${batch.pay_period_end} · ${name}`;
+  const status = batchStatusLabel?.(batch);
+  const period = `${batch.pay_period_start} – ${batch.pay_period_end}`;
+  return status ? `${period} · ${name} · ${status}` : `${period} · ${name}`;
 }
 
 /**
@@ -113,15 +114,15 @@ export default function AccountantScopeFilters({
               </MenuItem>
               {batches.map((b) => (
                 <MenuItem key={b.id} value={String(b.id)}>
-                  {formatAccountantBatchLabel(b)}
+                  {formatAccountantBatchLabel(b, batchStatusLabel)}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
         </Stack>
       ) : (
-        <Stack spacing={1.5}>
-          <FormControl size="small" sx={{ minWidth: 320, maxWidth: 520 }}>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "flex-start" }}>
+          <FormControl size="small" sx={{ minWidth: 320, flex: 1, maxWidth: 520 }}>
             <InputLabel id="accountant-batch-select">Batch</InputLabel>
             <Select
               labelId="accountant-batch-select"
@@ -134,37 +135,14 @@ export default function AccountantScopeFilters({
               </MenuItem>
               {batches.map((b) => (
                 <MenuItem key={b.id} value={String(b.id)}>
-                  {formatAccountantBatchLabel(b)}
+                  {formatAccountantBatchLabel(b, batchStatusLabel)}
                 </MenuItem>
               ))}
             </Select>
           </FormControl>
-          {onPeriodChange ? (
-            <PayPeriodSelect
-              weekStartsOn={weekStartsOn}
-              batches={batches}
-              start={periodStart}
-              end={periodEnd}
-              batchStatusLabel={batchStatusLabel}
-              batchOnly
-              onChange={({ start, end, batchId }) => {
-                onPeriodChange({ start, end, batchId });
-                if (batchId) onBatchChange(String(batchId));
-              }}
-            />
-          ) : null}
-          {selectedBatch ? (
-            <Typography variant="caption" color="text.secondary">
-              {formatAccountantBatchLabel(selectedBatch)}
-            </Typography>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              Choose a pay period batch to view employees and paystubs.
-            </Typography>
-          )}
           {selectedBatch && workers.length ? (
             <Autocomplete
-              sx={{ maxWidth: 420 }}
+              sx={{ flex: 1, minWidth: 220, maxWidth: 420 }}
               options={workers}
               value={selectedWorker}
               onChange={(_, v) => onWorkerChange(v)}
@@ -181,6 +159,11 @@ export default function AccountantScopeFilters({
           ) : null}
         </Stack>
       )}
+      {viewMode === "batch" && !selectedBatch ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
+          Choose a batch to view employees and paystubs.
+        </Typography>
+      ) : null}
     </Paper>
   );
 }
