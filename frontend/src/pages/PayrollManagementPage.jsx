@@ -12,7 +12,6 @@ import { useI18n } from "../i18n/I18nContext";
 import { getPayoutBatches, patchPayoutBatch } from "../api";
 import AccountantPayrollPanel from "../components/AccountantPayrollPanel";
 import AccountantReportsPanel from "../components/AccountantReportsPanel";
-import AccountantW2DocumentsPanel from "../components/AccountantW2DocumentsPanel";
 import ContractorManagementPanel from "../components/ContractorManagementPanel";
 import W2EmployeeFormsPanel from "../components/W2EmployeeFormsPanel";
 import PayoutBatchesPanel from "../components/PayoutBatchesPanel";
@@ -53,7 +52,7 @@ export default function PayrollManagementPage() {
     const out = [];
     if (readOnlyAccountant) {
       out.push({ key: "accountant_payroll", label: "Accountant Payroll" });
-      out.push({ key: "accountant_documents", label: "Documents" });
+      out.push({ key: "accountant_reports", label: "Accountant Reports" });
       return out;
     }
     if (canTime) out.push({ key: "time", label: "Time Records" });
@@ -139,12 +138,8 @@ export default function PayrollManagementPage() {
         if (batch?.id) {
           setDetailsBatchId(batch.id);
         }
-        if (readOnlyAccountant) {
-          goToTab("accountant_documents");
-        } else {
-          setReportsSubTab(1);
-          goToTab("accountant_reports");
-        }
+        setReportsSubTab(1);
+        goToTab("accountant_reports");
         return;
       }
       if (action === "await_accountant") return;
@@ -172,7 +167,7 @@ export default function PayrollManagementPage() {
         }
       }
     },
-    [goToTab, refreshBatches, readOnlyAccountant],
+    [goToTab, refreshBatches],
   );
 
   if (authLoading) {
@@ -265,7 +260,6 @@ export default function PayrollManagementPage() {
           <PayoutDetailsPanel initialBatchId={detailsBatchId} />
         ) : null}
         {active?.key === "accountant_payroll" ? <AccountantPayrollPanel /> : null}
-        {active?.key === "accountant_documents" ? <AccountantW2DocumentsPanel /> : null}
         {active?.key === "accountant_reports" ? (
           <AccountantReportsPanel initialSubTab={reportsSubTab} />
         ) : null}

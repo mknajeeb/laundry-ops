@@ -51,7 +51,7 @@ def test_accountant_reports_mounted_for_admin_payroll():
     mgmt = _read("frontend/src/pages/PayrollManagementPage.jsx")
     assert "AccountantReportsPanel" in mgmt
     assert 'key: "accountant_reports"' in mgmt
-    assert 'key: "accountant_documents"' in mgmt
+    assert 'key: "accountant_documents"' not in mgmt
     section_block = mgmt.split("const sections = useMemo")[1].split("}, [")[0]
     admin_block = section_block.split("if (readOnlyAccountant)")[1].split("return out;")[1]
     batches_idx = admin_block.index('key: "batches"')
