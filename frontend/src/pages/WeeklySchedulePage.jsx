@@ -54,6 +54,7 @@ import {
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import { exportWeeklyScheduleCsv } from "../components/weeklySchedule/weeklyScheduleExport";
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
+import { openWeeklySchedulePrintWindow } from "../components/weeklySchedule/weeklySchedulePrint";
 import "../components/weeklySchedule/weeklySchedulePrint.css";
 import {
   computeFilteredDaySummaries,
@@ -229,7 +230,9 @@ export default function WeeklySchedulePage() {
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [employerTab, setEmployerTab] = useState(EMPLOYER_TAB.VEEWASH);
-  const printRef = useRef(null);
+  const printContentRef = useRef(null);
+  const stickyHeaderRef = useRef(null);
+  const [stickyHeaderHeight, setStickyHeaderHeight] = useState(52);
 
   const display = data?.display || {};
   const canEdit = display.can_edit_schedule !== false;
@@ -456,7 +459,9 @@ export default function WeeklySchedulePage() {
   };
 
   const handlePrint = () => {
-    window.print();
+    if (printContentRef.current) {
+      openWeeklySchedulePrintWindow(printContentRef.current);
+    }
   };
 
   const handleExport = () => {
@@ -468,6 +473,19 @@ export default function WeeklySchedulePage() {
       showRoleLabels,
     });
   };
+
+  const showToolbarChips =
+    (excludedCount > 0 && canManageExclusions) || costAllowed;
+
+  useEffect(() => {
+    const el = stickyHeaderRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const measure = () => setStickyHeaderHeight(el.offsetHeight || 52);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hideEmployerTabs, showToolbarChips, employerTab, loading]);
 
   const cellProps = {
     entriesByCell,
@@ -487,205 +505,210 @@ export default function WeeklySchedulePage() {
   };
 
   return (
-    <Box className="weekly-schedule-print-root" sx={{ p: { xs: 1.5, md: 2.5 }, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%" }}>
+    <Box className="weekly-schedule-print-root" sx={{ p: { xs: 1, md: 1.5 }, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%" }}>
       <Paper
-        ref={printRef}
         className="weekly-schedule-print-area"
         elevation={0}
         sx={{
           borderRadius: 3,
-          overflow: "hidden",
+          overflow: "visible",
           border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
           boxShadow: "0 8px 30px rgba(15, 23, 42, 0.06)",
         }}
       >
         <Box
-          className="no-print"
+          ref={stickyHeaderRef}
+          className="no-print weekly-schedule-sticky-header"
           sx={{
-            px: { xs: 2, md: 2.5 },
-            py: 2,
-            background: `linear-gradient(135deg, ${VEEWASH_DASHBOARD.primaryBlue} 0%, ${VEEWASH_DASHBOARD.tealDark} 100%)`,
-            color: "#fff",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 1.5,
-            flexWrap: "wrap",
+            position: "sticky",
+            top: 0,
+            zIndex: 30,
+            bgcolor: "#fff",
+            borderBottom: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+            borderRadius: "12px 12px 0 0",
+            boxShadow: "0 1px 0 rgba(15, 23, 42, 0.04)",
           }}
         >
-          <Box>
-            <Typography variant="h5" fontWeight={800} sx={{ letterSpacing: "-0.02em" }}>
-              Weekly Schedule
-            </Typography>
-            <Typography variant="body2" sx={{ opacity: 0.92, mt: 0.25 }} className="no-print">
-              Plan labor by day — drag shifts, assign Wash · Sort · Fold roles
-            </Typography>
-          </Box>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap className="no-print">
-            <Stack
-              direction="row"
-              spacing={0.5}
-              alignItems="center"
-              sx={{
-                bgcolor: "rgba(255,255,255,0.14)",
-                borderRadius: 999,
-                px: 0.5,
-                py: 0.25,
-              }}
-            >
-              <IconButton
-                size="small"
-                onClick={() => changeWeek(-1)}
-                disabled={!canGoToPreviousWeek}
-                sx={{ color: "#fff", opacity: canGoToPreviousWeek ? 1 : 0.45 }}
-              >
-                <ChevronLeftIcon />
-              </IconButton>
+          <Box
+            sx={{
+              px: { xs: 1.5, md: 2 },
+              py: { xs: 0.85, md: 1 },
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 1,
+              flexWrap: "wrap",
+            }}
+          >
+            <Stack direction="row" spacing={1.25} alignItems="baseline" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
               <Typography
-                variant="subtitle2"
-                sx={{ minWidth: { xs: 180, md: 220 }, textAlign: "center", fontWeight: 700 }}
+                variant="subtitle1"
+                fontWeight={800}
+                sx={{ letterSpacing: "-0.02em", color: VEEWASH_DASHBOARD.primaryBlueDark, lineHeight: 1.2 }}
               >
-                {formatWeekRange(weekStart)}
+                Weekly Schedule
               </Typography>
-              <IconButton size="small" onClick={() => changeWeek(1)} sx={{ color: "#fff" }}>
-                <ChevronRightIcon />
-              </IconButton>
+              {hideEmployerTabs ? (
+                <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 600, lineHeight: 1.2 }}>
+                  {EMPLOYER_TAB_LABELS[employerTab]}
+                </Typography>
+              ) : null}
             </Stack>
-            {canEdit ? (
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Stack
+                direction="row"
+                spacing={0.25}
+                alignItems="center"
+                sx={{
+                  border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+                  borderRadius: 999,
+                  bgcolor: VEEWASH_DASHBOARD.primaryBlueLight,
+                  px: 0.25,
+                  py: 0.125,
+                }}
+              >
+                <IconButton
+                  size="small"
+                  onClick={() => changeWeek(-1)}
+                  disabled={!canGoToPreviousWeek}
+                  sx={{
+                    color: VEEWASH_DASHBOARD.primaryBlueDark,
+                    opacity: canGoToPreviousWeek ? 1 : 0.4,
+                  }}
+                >
+                  <ChevronLeftIcon fontSize="small" />
+                </IconButton>
+                <Typography
+                  variant="body2"
+                  sx={{
+                    minWidth: { xs: 160, md: 200 },
+                    textAlign: "center",
+                    fontWeight: 700,
+                    color: VEEWASH_DASHBOARD.primaryBlueDark,
+                    fontSize: "0.8125rem",
+                  }}
+                >
+                  {formatWeekRange(weekStart)}
+                </Typography>
+                <IconButton
+                  size="small"
+                  onClick={() => changeWeek(1)}
+                  sx={{ color: VEEWASH_DASHBOARD.primaryBlueDark }}
+                >
+                  <ChevronRightIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+              {canEdit ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  component={RouterLink}
+                  to="/performance/user-mapping"
+                  sx={{ fontWeight: 700, py: 0.35 }}
+                >
+                  User mapping
+                </Button>
+              ) : null}
               <Button
                 size="small"
                 variant="outlined"
-                component={RouterLink}
-                to="/performance/user-mapping"
+                startIcon={<FileDownloadOutlinedIcon />}
+                onClick={handleExport}
+                disabled={!visibleEmployees.length}
+                sx={{ fontWeight: 700, py: 0.35 }}
+              >
+                Export Excel
+              </Button>
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<PrintIcon />}
+                onClick={handlePrint}
+                disabled={!visibleEmployees.length}
                 sx={{
                   fontWeight: 700,
-                  color: "#fff",
-                  borderColor: "rgba(255,255,255,0.45)",
-                  "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
+                  py: 0.35,
+                  bgcolor: VEEWASH_DASHBOARD.primaryBlue,
+                  "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
                 }}
               >
-                User mapping
+                Print
               </Button>
-            ) : null}
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<FileDownloadOutlinedIcon />}
-              onClick={handleExport}
-              disabled={!visibleEmployees.length}
-              sx={{
-                fontWeight: 700,
-                color: "#fff",
-                borderColor: "rgba(255,255,255,0.45)",
-                "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
-              }}
-            >
-              Export Excel
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<PrintIcon />}
-              onClick={handlePrint}
-              disabled={!visibleEmployees.length}
-              sx={{
-                fontWeight: 700,
-                color: "#fff",
-                borderColor: "rgba(255,255,255,0.45)",
-                "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
-              }}
-            >
-              Print
-            </Button>
-          </Stack>
-        </Box>
-
-        <Box className="weekly-schedule-print-header" sx={{ px: 2, pt: 1.5, pb: 0.5, bgcolor: "#fff" }}>
-          <Typography variant="h6" fontWeight={800}>
-            Weekly Schedule — {EMPLOYER_TAB_LABELS[employerTab]}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 600 }}>
-            {formatWeekRange(weekStart)}
-          </Typography>
-        </Box>
-
-        {!hideEmployerTabs ? (
-          <Box sx={{ px: 2, pt: 1.5, pb: 0, bgcolor: "#fff", borderBottom: "1px solid #e8eef2" }} className="no-print">
-            <Tabs
-              value={employerTab}
-              onChange={(_, value) => setEmployerTab(value)}
-              sx={{
-                minHeight: 40,
-                "& .MuiTab-root": {
-                  minHeight: 40,
-                  py: 0.75,
-                  fontWeight: 700,
-                  fontSize: "0.8125rem",
-                  textTransform: "none",
-                },
-              }}
-            >
-              <Tab
-                value={EMPLOYER_TAB.VEEWASH}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH).length})`}
-              />
-              <Tab
-                value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
-              />
-              <Tab
-                value={EMPLOYER_TAB.COMBINED}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.COMBINED]} (${(data?.employees || []).length})`}
-              />
-            </Tabs>
+            </Stack>
           </Box>
-        ) : null}
 
-        <Box
-          className="no-print"
-          sx={{
-            px: 2,
-            py: 1.25,
-            bgcolor: "#fff",
-            borderBottom: "1px solid #e8eef2",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 1,
-            flexWrap: "wrap",
-          }}
-        >
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-            {excludedCount > 0 && canManageExclusions ? (
-              <Chip
-                icon={<PersonOffOutlinedIcon />}
-                label={showExcluded ? `Showing excluded (${excludedCount})` : `Show excluded (${excludedCount})`}
-                onClick={() => setShowExcluded((v) => !v)}
-                color={showExcluded ? "warning" : "default"}
-                variant={showExcluded ? "filled" : "outlined"}
-                sx={{ fontWeight: 700 }}
-              />
-            ) : null}
-            {costAllowed ? (
-              <Chip
-                icon={<AttachMoneyOutlinedIcon />}
-                label={showCost ? "Hide cost" : "Show cost"}
-                onClick={handleCostToggle}
-                disabled={costSaving}
-                variant={showCost ? "filled" : "outlined"}
-                color={showCost ? "primary" : "default"}
-                sx={{ fontWeight: 700 }}
-              />
-            ) : null}
-          </Stack>
-          {!display.is_privileged && display.org_settings ? (
-            <Typography variant="caption" color="text.secondary">
-              Shared view — some details hidden per org settings
-            </Typography>
+          {!hideEmployerTabs ? (
+            <Box sx={{ px: 2, pt: 0, pb: 0, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}` }}>
+              <Tabs
+                value={employerTab}
+                onChange={(_, value) => setEmployerTab(value)}
+                sx={{
+                  minHeight: 36,
+                  "& .MuiTab-root": {
+                    minHeight: 36,
+                    py: 0.5,
+                    fontWeight: 700,
+                    fontSize: "0.8125rem",
+                    textTransform: "none",
+                  },
+                }}
+              >
+                <Tab
+                  value={EMPLOYER_TAB.VEEWASH}
+                  label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH).length})`}
+                />
+                <Tab
+                  value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
+                  label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
+                />
+                <Tab
+                  value={EMPLOYER_TAB.COMBINED}
+                  label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.COMBINED]} (${(data?.employees || []).length})`}
+                />
+              </Tabs>
+            </Box>
+          ) : null}
+
+          {showToolbarChips ? (
+            <Box
+              sx={{
+                px: 2,
+                py: 0.75,
+                borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+                display: "flex",
+                alignItems: "center",
+                gap: 1,
+                flexWrap: "wrap",
+              }}
+            >
+              {excludedCount > 0 && canManageExclusions ? (
+                <Chip
+                  icon={<PersonOffOutlinedIcon />}
+                  label={showExcluded ? `Showing excluded (${excludedCount})` : `Show excluded (${excludedCount})`}
+                  onClick={() => setShowExcluded((v) => !v)}
+                  color={showExcluded ? "warning" : "default"}
+                  variant={showExcluded ? "filled" : "outlined"}
+                  size="small"
+                  sx={{ fontWeight: 700 }}
+                />
+              ) : null}
+              {costAllowed ? (
+                <Chip
+                  icon={<AttachMoneyOutlinedIcon />}
+                  label={showCost ? "Hide cost" : "Show cost"}
+                  onClick={handleCostToggle}
+                  disabled={costSaving}
+                  variant={showCost ? "filled" : "outlined"}
+                  color={showCost ? "primary" : "default"}
+                  size="small"
+                  sx={{ fontWeight: 700 }}
+                />
+              ) : null}
+            </Box>
           ) : null}
         </Box>
 
-        <Box sx={{ p: 2 }}>
+        <Box sx={{ p: { xs: 1.5, md: 2 } }}>
           {excludedCount > 0 && !showExcluded && canManageExclusions ? (
             <Alert
               severity="info"
@@ -797,7 +820,8 @@ export default function WeeklySchedulePage() {
                         borderBottom: "1px solid #e2e8f0",
                         position: "sticky",
                         left: 0,
-                        zIndex: 2,
+                        top: stickyHeaderHeight,
+                        zIndex: 4,
                         display: "flex",
                         alignItems: "flex-end",
                       }}
@@ -818,6 +842,9 @@ export default function WeeklySchedulePage() {
                           bgcolor: "#f8fafc",
                           borderBottom: "1px solid #e2e8f0",
                           borderLeft: "1px solid #e2e8f0",
+                          position: "sticky",
+                          top: stickyHeaderHeight,
+                          zIndex: 3,
                         }}
                       >
                         <WeeklyScheduleDayHeader
@@ -865,18 +892,38 @@ export default function WeeklySchedulePage() {
                 </Box>
               )}
 
-              <Box className="weekly-schedule-print-table-wrap">
-                <WeeklySchedulePrintTable
-                  employees={visibleEmployees}
-                  entries={data?.entries}
-                  dayLabels={DAY_LABELS}
-                  showRoleLabels={showRoleLabels}
-                />
-              </Box>
             </>
           )}
         </Box>
       </Paper>
+
+      {!loading && data ? (
+        <Box
+          ref={printContentRef}
+          className="weekly-schedule-print-document"
+          aria-hidden
+          sx={{
+            position: "absolute",
+            left: -10000,
+            top: 0,
+            width: "11in",
+            pointerEvents: "none",
+          }}
+        >
+          <div className="weekly-schedule-print-doc-header">
+            <div className="weekly-schedule-print-doc-title">
+              Weekly Schedule — {EMPLOYER_TAB_LABELS[employerTab]}
+            </div>
+            <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
+          </div>
+          <WeeklySchedulePrintTable
+            employees={visibleEmployees}
+            entries={data?.entries}
+            dayLabels={DAY_LABELS}
+            showRoleLabels={showRoleLabels}
+          />
+        </Box>
+      ) : null}
 
       <WeeklyScheduleEntryDialog
         open={dialogOpen && canEdit}

@@ -9,7 +9,10 @@ import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 import { isRinseScheduleOnlyUser } from "../utils/platformAccess";
 import TenantLogo from "./TenantLogo";
 
-function CompactLanguageToggle({ locale, setLocale }) {
+import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
+
+function CompactLanguageToggle({ locale, setLocale, tone = "dark" }) {
+  const isLight = tone === "light";
   return (
     <Stack direction="row" spacing={0.5} alignItems="center">
       {["en", "es"].map((code) => {
@@ -30,12 +33,24 @@ function CompactLanguageToggle({ locale, setLocale }) {
               textTransform: "uppercase",
               boxShadow: "none",
               ...(selected
-                ? { bgcolor: "#0f172a", color: "#fff", "&:hover": { bgcolor: "#1e293b" } }
-                : {
-                    bgcolor: "transparent",
-                    color: "#64748b",
-                    "&:hover": { bgcolor: "#f1f5f9", color: "#334155" },
-                  }),
+                ? isLight
+                  ? {
+                      bgcolor: VEEWASH_DASHBOARD.primaryBlue,
+                      color: "#fff",
+                      "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
+                    }
+                  : { bgcolor: "#f8fafc", color: "#0f172a", "&:hover": { bgcolor: "#e2e8f0" } }
+                : isLight
+                  ? {
+                      bgcolor: "transparent",
+                      color: "#64748b",
+                      "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueLight, color: "#334155" },
+                    }
+                  : {
+                      bgcolor: "transparent",
+                      color: "#94a3b8",
+                      "&:hover": { bgcolor: "rgba(255,255,255,0.06)", color: "#e2e8f0" },
+                    }),
             }}
           >
             {code}
@@ -55,8 +70,8 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
         minHeight: "100vh",
         height: "100%",
         maxHeight: "100vh",
-        bgcolor: "#ffffff",
-        borderRight: "1px solid #e2e8f0",
+        bgcolor: VEEWASH_DASHBOARD.pageBackground,
+        borderRight: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
@@ -65,21 +80,22 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
       <Box
         sx={{
           px: 2,
-          py: 2.25,
-          borderBottom: "1px solid #e2e8f0",
+          py: 1.75,
+          borderBottom: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          gap: 1,
+          gap: 0.75,
           flexShrink: 0,
+          bgcolor: "#fff",
         }}
       >
-        <TenantLogo logoUrl={user?.organization_logo_url} size={52} />
+        <TenantLogo logoUrl={user?.organization_logo_url} size={48} />
         <Typography
           sx={{
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: 800,
-            color: "#0f172a",
+            color: VEEWASH_DASHBOARD.primaryBlueDark,
             letterSpacing: "-0.02em",
             textAlign: "center",
           }}
@@ -89,8 +105,8 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
         </Typography>
       </Box>
 
-      <Box sx={{ flex: 1, px: 1.5, py: 2, minHeight: 0 }}>
-        <Stack spacing={0.75}>
+      <Box sx={{ flex: 1, px: 1.25, py: 1.5, minHeight: 0 }}>
+        <Stack spacing={0.5}>
           {navItems.map((item) => (
             <NavLink
               key={item.to}
@@ -98,12 +114,14 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
               style={({ isActive }) => ({
                 display: "block",
                 textDecoration: "none",
-                padding: "11px 14px",
-                borderRadius: "10px",
-                color: isActive ? "#ffffff" : "#334155",
-                background: isActive ? "#0f766e" : "#f8fafc",
-                border: isActive ? "1px solid #0f766e" : "1px solid #e2e8f0",
-                fontSize: 14,
+                padding: "10px 12px",
+                borderRadius: "8px",
+                color: isActive ? "#ffffff" : VEEWASH_DASHBOARD.primaryBlueDark,
+                background: isActive ? VEEWASH_DASHBOARD.primaryBlue : "#fff",
+                border: isActive
+                  ? `1px solid ${VEEWASH_DASHBOARD.primaryBlue}`
+                  : `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+                fontSize: 13,
                 fontWeight: isActive ? 700 : 600,
               })}
             >
@@ -115,23 +133,27 @@ function RinseClientSidebar({ user, onLogout, locale, setLocale, t, navItems }) 
 
       <Box
         sx={{
-          px: 1.5,
-          py: 1.25,
-          borderTop: "1px solid #e2e8f0",
+          px: 1.25,
+          py: 1,
+          borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           gap: 1,
           flexShrink: 0,
+          bgcolor: "#fff",
         }}
       >
-        <CompactLanguageToggle locale={locale} setLocale={setLocale} />
+        <CompactLanguageToggle locale={locale} setLocale={setLocale} tone="light" />
         <Tooltip title={t("nav.logout")}>
           <IconButton
             size="small"
             onClick={onLogout}
             aria-label={t("nav.logout")}
-            sx={{ color: "#64748b", "&:hover": { color: "#0f172a", bgcolor: "#f1f5f9" } }}
+            sx={{
+              color: "#64748b",
+              "&:hover": { color: VEEWASH_DASHBOARD.primaryBlueDark, bgcolor: VEEWASH_DASHBOARD.primaryBlueLight },
+            }}
           >
             <LogoutOutlinedIcon fontSize="small" />
           </IconButton>
@@ -302,7 +324,7 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
             gap: 1,
           }}
         >
-          <CompactLanguageToggle locale={locale} setLocale={setLocale} />
+          <CompactLanguageToggle locale={locale} setLocale={setLocale} tone="dark" />
           <Button
             size="small"
             variant="text"

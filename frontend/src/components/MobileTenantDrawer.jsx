@@ -1,6 +1,7 @@
 import { Box, Button, Divider, Drawer, List, ListItemButton, ListItemText, Typography } from "@mui/material";
 import LogoutOutlinedIcon from "@mui/icons-material/LogoutOutlined";
 import { CompactLanguageToggle, SidebarHeader } from "./Sidebar";
+import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useI18n } from "../i18n/I18nContext";
 import { useAuth } from "../context/AuthContext";
@@ -37,15 +38,15 @@ export default function MobileTenantDrawer({
 
   if (rinseOnly) {
     return (
-      <Drawer anchor="left" open={open} onClose={onClose} PaperProps={{ sx: { bgcolor: "#fff" } }}>
+      <Drawer anchor="left" open={open} onClose={onClose} PaperProps={{ sx: { bgcolor: VEEWASH_DASHBOARD.pageBackground } }}>
         <Box sx={{ width: 280, minHeight: "100%", display: "flex", flexDirection: "column" }}>
-          <Box sx={{ px: 2, py: 2.5, borderBottom: "1px solid #e2e8f0", textAlign: "center" }}>
+          <Box sx={{ px: 2, py: 2, borderBottom: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`, textAlign: "center", bgcolor: "#fff" }}>
             <TenantLogo logoUrl={user?.organization_logo_url} size={48} />
-            <Typography sx={{ mt: 1, fontWeight: 800, color: "#0f172a" }}>
+            <Typography sx={{ mt: 1, fontWeight: 800, color: VEEWASH_DASHBOARD.primaryBlueDark }}>
               {user?.organization_name || t("common.appName")}
             </Typography>
           </Box>
-          <List dense disablePadding sx={{ flex: 1, px: 1.5, py: 2 }}>
+          <List dense disablePadding sx={{ flex: 1, px: 1.5, py: 1.5 }}>
             {navItems.map((item) => (
               <ListItemButton
                 key={item.to}
@@ -54,7 +55,13 @@ export default function MobileTenantDrawer({
                 sx={{
                   borderRadius: 2,
                   mb: 0.5,
-                  "&.Mui-selected": { bgcolor: "#0f766e", color: "#fff", "&:hover": { bgcolor: "#0d5f59" } },
+                  border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
+                  "&.Mui-selected": {
+                    bgcolor: VEEWASH_DASHBOARD.primaryBlue,
+                    color: "#fff",
+                    borderColor: VEEWASH_DASHBOARD.primaryBlue,
+                    "&:hover": { bgcolor: VEEWASH_DASHBOARD.primaryBlueDark },
+                  },
                 }}
               >
                 <ListItemText primary={t(item.labelKey)} primaryTypographyProps={{ fontWeight: 600 }} />
@@ -65,13 +72,14 @@ export default function MobileTenantDrawer({
             sx={{
               px: 1.5,
               py: 1.5,
-              borderTop: "1px solid #e2e8f0",
+              borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
+              bgcolor: "#fff",
             }}
           >
-            <CompactLanguageToggle locale={locale} setLocale={setLocale} />
+            <CompactLanguageToggle locale={locale} setLocale={setLocale} tone="light" />
             <Button size="small" startIcon={<LogoutOutlinedIcon />} onClick={handleLogout} sx={{ color: "#64748b" }}>
               {t("nav.logout")}
             </Button>

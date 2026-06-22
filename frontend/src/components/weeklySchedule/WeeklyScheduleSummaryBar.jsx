@@ -61,9 +61,9 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost }) {
     <Box
       className="weekly-schedule-print-summary"
       sx={{
-        mb: 2,
-        px: { xs: 1.5, md: 2 },
-        py: 1.25,
+        mb: 1.5,
+        px: { xs: 1.25, md: 1.5 },
+        py: 1,
         borderRadius: 2,
         bgcolor: "#fff",
         border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,

@@ -453,12 +453,15 @@
   .contractor-print-area,
   .contractor-print-area *,
   .contractor-print-area--active,
-  .contractor-print-area--active * {
+  .contractor-print-area--active *,
+  .weekly-schedule-print-document--active,
+  .weekly-schedule-print-document--active * {
     visibility: visible !important;
   }
 
   .contractor-print-area,
-  .contractor-print-area--active {
+  .contractor-print-area--active,
+  .weekly-schedule-print-document--active {
     display: block !important;
     position: absolute !important;
     left: 0 !important;

@@ -1,0 +1,101 @@
+.weekly-schedule-print-doc-header {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #cbd5e1;
+}
+
+.weekly-schedule-print-doc-title {
+  font-size: 14pt;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.25;
+}
+
+.weekly-schedule-print-doc-subtitle {
+  font-size: 10pt;
+  font-weight: 600;
+  color: #475569;
+  margin-top: 4px;
+}
+
+.weekly-schedule-print-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 9pt;
+  color: #0f172a;
+}
+
+.weekly-schedule-print-table thead {
+  display: table-header-group;
+}
+
+.weekly-schedule-print-table tbody {
+  display: table-row-group;
+}
+
+.weekly-schedule-print-table tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.weekly-schedule-print-table th,
+.weekly-schedule-print-table td {
+  border: 1px solid #cbd5e1;
+  vertical-align: top;
+  padding: 4px 5px;
+  text-align: left;
+}
+
+.weekly-schedule-print-table th {
+  background: #f1f5f9;
+  font-weight: 700;
+  font-size: 8.5pt;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.weekly-schedule-print-th-employee {
+  width: 14%;
+}
+
+.weekly-schedule-print-th-day {
+  width: 12.28%;
+}
+
+.weekly-schedule-print-employee-name {
+  font-weight: 700;
+  font-size: 9pt;
+  line-height: 1.25;
+}
+
+.weekly-schedule-print-employee-meta {
+  font-size: 8pt;
+  color: #475569;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+
+.weekly-schedule-print-shift-line {
+  font-size: 8.5pt;
+  line-height: 1.35;
+  margin-bottom: 2px;
+}
+
+.weekly-schedule-print-shift-line:last-child {
+  margin-bottom: 0;
+}
+
+@media print {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #fff !important;
+  }
+
+  body,
+  body * {
+    visibility: visible !important;
+  }
+}
