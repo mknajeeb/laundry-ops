@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -27,6 +27,7 @@ import {
 import { useI18n } from "../i18n/I18nContext";
 import TenantLogo from "../components/TenantLogo";
 import { applyAppIconFromOrganizationLogo } from "../utils/appIcon";
+import { tenantDefaultRoute } from "../utils/platformAccess";
 function sanitizeSlug(raw) {
   if (!raw) return "";
   try {
@@ -41,6 +42,7 @@ function sanitizeSlug(raw) {
 
 function LoginPage({ onLoggedIn }) {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const { orgSlug: orgSlugParam } = useParams();
   const slugFromRoute = useMemo(() => sanitizeSlug(orgSlugParam), [orgSlugParam]);
   const [username, setUsername] = useState("");
@@ -197,6 +199,7 @@ function LoginPage({ onLoggedIn }) {
       }
       setAuthSession(payload);
       onLoggedIn?.(payload.user);
+      navigate(tenantDefaultRoute(payload.user), { replace: true });
     } catch (e) {
       console.error(e);
       const data = e?.response?.data;

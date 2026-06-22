@@ -1155,7 +1155,18 @@ TENANT_MODULE_KEYS = frozenset(
 )
 
 TENANT_PORTAL_ROLES = frozenset(
-    ("ADMIN", "OPS", "FRONT_DESK", "OPERATIONS", "SUPERVISOR", "PAYROLL_ADMIN", "FINANCE", "ACCOUNTANT", "RINSE")
+    (
+        "ADMIN",
+        "OPS",
+        "FRONT_DESK",
+        "OPERATIONS",
+        "SUPERVISOR",
+        "PAYROLL_ADMIN",
+        "FINANCE",
+        "ACCOUNTANT",
+        "CHECKOUT",
+        "RINSE",
+    )
 )
 
 
@@ -5234,6 +5245,11 @@ def auth_login():
         }
         if has_u_org and user.get("organization_id") is not None:
             payload_user["organization_id"] = int(user["organization_id"])
+            rs = {str(r).upper() for r in roles}
+            if rs & TENANT_PORTAL_ROLES:
+                payload_user["tenant_modules"] = load_tenant_modules_map(
+                    cursor, int(user["organization_id"])
+                )
             if user.get("organization_slug"):
                 payload_user["organization_slug"] = user["organization_slug"]
             if user.get("organization_name"):

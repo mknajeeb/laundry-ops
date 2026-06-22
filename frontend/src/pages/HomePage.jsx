@@ -9,11 +9,12 @@ import {
   Checklist,
   PointOfSale,
 } from "@mui/icons-material";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 import { getTaSessionCurrent } from "../api";
 import { useI18n } from "../i18n/I18nContext";
+import { isRinseScheduleOnlyUser } from "../utils/platformAccess";
 import TenantLogo from "../components/TenantLogo";
 
 const SECTION_CARD = {
@@ -200,6 +201,10 @@ function HomePage({ user }) {
 
   const visibleRinse = rinseTiles.filter((t) => can(t.path));
   const visibleEmployee = employeeTiles.filter((t) => can(t.path));
+
+  if (isRinseScheduleOnlyUser(user)) {
+    return <Navigate to="/performance/weekly-schedule" replace />;
+  }
 
   return (
     <Box sx={{ minHeight: "100%", bgcolor: "#ffffff", p: { xs: 1.2, sm: 2 } }}>

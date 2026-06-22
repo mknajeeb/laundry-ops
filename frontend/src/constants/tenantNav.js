@@ -139,7 +139,7 @@ export function tenantNavItemVisible(user, item, payrollNavVisible = true, hasPe
   }
   if (isRinseScheduleOnlyUser(user)) {
     if (item.to !== "/performance/weekly-schedule") return false;
-    return isTenantModuleEnabled(user, item.moduleKey || "scoreboard");
+    return true;
   }
   if (item.to === "/payroll" && payrollNavVisible === false) return false;
   if (item.skipModuleCheck) return hasPlatformAdminRole(user);
