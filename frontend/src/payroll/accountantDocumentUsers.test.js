@@ -46,6 +46,19 @@ describe("accountantDocumentUsers", () => {
     expect(isW2EmployeeForDocuments(w2Worker)).toBe(true);
   });
 
+  it("excludes Rinse portal logins from W-2 document employee list", () => {
+    const rinseViewer = {
+      id: 39,
+      first_name: "Jordan",
+      last_name: "Allen",
+      hr_form_lanes: ["employee_w2"],
+      role_codes: "RINSE",
+    };
+    expect(isAccountantSystemUser(rinseViewer)).toBe(true);
+    expect(isW2EmployeeForDocuments(rinseViewer)).toBe(false);
+    expect(filterAccountantDocumentUsers([rinseViewer, w2Worker], "w2")).toEqual([w2Worker]);
+  });
+
   it("returns only W-2 payroll workers (no system user category)", () => {
     const users = [alliance, veewashAdmin, w2Worker];
     expect(filterAccountantDocumentUsers(users, "w2")).toEqual([w2Worker]);

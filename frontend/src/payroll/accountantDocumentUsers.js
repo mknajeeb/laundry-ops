@@ -49,9 +49,20 @@ function matchesKnownSystemUser(user) {
   return Number.isFinite(uid) && SYSTEM_USER_KNOWN_IDS.has(uid);
 }
 
-/** Platform / accountant login accounts — not W-2 payroll workers for document filing. */
+const SYSTEM_ROLE_CODES = new Set(["ACCOUNTANT", "ADMIN", "PLATFORM_ADMIN", "SUPER_ADMIN"]);
+const PORTAL_SYSTEM_ONLY_ROLES = new Set(["RINSE"]);
+
+export function isPortalSystemOnlyUser(user) {
+  const roles = userRoleCodes(user);
+  if (!roles.length) return false;
+  if (roles.some((r) => !PORTAL_SYSTEM_ONLY_ROLES.has(r))) return false;
+  return roles.some((r) => PORTAL_SYSTEM_ONLY_ROLES.has(r));
+}
+
+/** Platform / accountant / partner portal login accounts — not W-2 payroll workers for document filing. */
 export function isAccountantSystemUser(user) {
   if (!user) return false;
+  if (isPortalSystemOnlyUser(user)) return true;
   if (matchesKnownSystemUser(user)) return true;
 
   const roles = userRoleCodes(user);

@@ -17,6 +17,10 @@ def infer_user_form_lanes(conn, user_id: int) -> list[str]:
     Avoid treating "Washmate 1099"–style rows as both W-2 and 1099. With no assignment
     rows, default to W-2 only (safest single packet); set a category for contractors.
     """
+    from backend.portal_system_users import is_portal_system_user
+
+    if is_portal_system_user(conn, int(user_id)):
+        return []
     c = conn.cursor(dictionary=True)
     try:
         c.execute(

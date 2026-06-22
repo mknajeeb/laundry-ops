@@ -75,6 +75,20 @@ def assign_role(cursor, user_id: int, role_id: int) -> None:
     )
 
 
+def strip_payroll_worker_rows(cursor, user_id: int) -> None:
+    """Portal system logins must not appear as W-2 employees or schedule workers."""
+    uid = int(user_id)
+    cursor.execute("DELETE FROM payroll_profiles WHERE user_id = %s", (uid,))
+    cursor.execute(
+        "DELETE FROM payroll_worker_profiles WHERE user_id = %s",
+        (uid,),
+    )
+    cursor.execute(
+        "DELETE FROM user_employment_categories WHERE user_id = %s",
+        (uid,),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create Rinse schedule viewer user")
     parser.add_argument("--dry-run", action="store_true")
@@ -137,6 +151,7 @@ def main() -> int:
             action = "created"
 
         assign_role(cursor, user_id, role_id)
+        strip_payroll_worker_rows(cursor, user_id)
         conn.commit()
 
         print(

@@ -351,6 +351,10 @@ def ensure_payroll_profile_for_user_id(conn, washpro_user_id: int):
     Ensure a payroll_profiles row exists for this Washpro users.id (unified payroll).
     Used when a login was created or migrated without a profile row — GET/PUT user and HR would otherwise 404.
     """
+    from backend.portal_system_users import is_portal_system_user
+
+    if is_portal_system_user(conn, int(washpro_user_id)):
+        return None
     existing = fetch_payroll_profile_row(conn, int(washpro_user_id))
     if existing:
         return existing

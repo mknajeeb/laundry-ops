@@ -2165,6 +2165,10 @@ def users_list():
             out = []
             for row in c.fetchall():
                 uid = int(row["user_id"])
+                from backend.portal_system_users import is_portal_system_user
+
+                if is_portal_system_user(conn, uid):
+                    continue
                 r = fetch_payroll_profile_row(conn, uid)
                 if not r:
                     continue
