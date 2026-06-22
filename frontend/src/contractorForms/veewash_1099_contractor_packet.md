@@ -155,56 +155,35 @@ Contractor must follow Company safety, hygiene, customer-property, equipment-use
 
 ### A. Required Service Performance Standards
 
-Contractor understands that the Company’s laundry service depends on speed, accuracy, safety, and customer-property protection. Contractor must meet the following minimum service standards unless the Company approves a different standard in writing for a specific assignment.
+Contractor understands that the Company’s laundry service depends on speed, accuracy, safety, and customer-property protection. Contractor must meet **operational standards established and communicated by management** for accepted assignments.
 
-#### 1. Folding Speed Standard
+**Numeric targets** (throughput, timing, quality percentages) are set in **company systems** and supervisor communication — not as fixed numbers in this packet. Management may revise targets without a new signature.
 
-Contractor is expected to fold at a minimum speed of approximately:
+Contractor acknowledges that **operational targets, productivity standards, quality standards, and performance metrics** may be **established, revised, and communicated by management from time to time**. **Changing a numeric target does not require a new signed document.**
 
-**2.5 bags per hour, based on 50 lb bags**, while maintaining proper quality, separation, and customer-property care.
+#### 1. Quality and customer-property care
 
-This standard may be reviewed based on bag size, item type, order complexity, quality issues, training period, and actual operating conditions.
+Speed expectations do not allow careless handling, mixed orders, damaged garments, unsafe work, inaccurate weights, ignored labels, or poor customer-property care. Contractor must balance pace with accuracy, safety, hygiene, and quality.
 
-#### 2. Washing / Drying / Sorting / Transfer Speed Standards
+#### 2. Initial review period
 
-Contractor is expected to complete routine laundry handling tasks efficiently, including:
+The first **two weeks** of services may be treated as an initial review period. During this period, the Company evaluates reliability, quality, attendance/availability, clock accuracy, customer-property handling, safety, and ability to follow service standards.
 
-- Sorting
-- Loading washer
-- Transferring from washer to dryer
-- Loading dryer
-- Unloading dryer
-- Moving bags/carts to the correct area
+If the Company is not satisfied during the initial review period, the Company may **stop offering assignments** or **end the engagement** without additional warnings. Contractor will be paid for approved services actually completed.
 
-Each routine handling step should generally take **not more than approximately 2 minutes**, unless the order is unusually large, heavy, delicate, damaged, mislabeled, mixed, wet, hazardous, or otherwise requires additional care.
+#### 3. Service issues after review period
 
-#### 3. Weighing Standard
+After the initial review period, service issues are communicated by **email** (company templates) and logged in the internal HR Timeline. Contractor is not required to sign separate warning acknowledgement forms.
 
-Contractor is expected to weigh each bag/order efficiently and accurately. Each bag weighing step should generally take **not more than approximately 30 seconds per bag**, unless there is a label issue, order issue, machine issue, customer-property issue, or other reasonable delay.
+Continued service issues may result in **cessation of assignments** or **end of engagement** at management discretion.
 
-#### 4. Quality Still Comes First
+#### 4. Immediate stop of assignments for serious issues
 
-Speed standards do not allow careless handling, mixed orders, damaged garments, unsafe work, inaccurate weights, ignored labels, or poor customer-property care. Contractor must balance speed with accuracy, safety, hygiene, and quality.
+The Company may immediately cancel an assignment, remove Contractor from the premises, **stop offering assignments**, or **end the engagement** for serious issues, including theft, threats, violence, intoxication, unsafe conduct, customer-property damage/loss, confidentiality breach, falsified records, failure to report injury/incident, unauthorized persons on premises, or conduct that may harm the Company, customers, workers, equipment, property, or reputation.
 
-#### 5. Two-Week Review / Probation Period
+#### 5. Independent contractor relationship
 
-The first **two weeks** of services are treated as a review/probation period. During this period, the Company will evaluate Contractor’s reliability, speed, quality, attendance/availability, clock record accuracy, customer-property handling, safety, and ability to follow service standards.
-
-If the Company is not satisfied during the two-week review/probation period, the Company may stop offering assignments or terminate this Agreement without additional warnings. Contractor will be paid for approved services actually completed.
-
-#### 6. Warnings After Review Period
-
-After the initial two-week review/probation period, the Company may issue written warnings/notices for performance, reliability, safety, quality, customer-property, clock-record, conduct, or premises-rule issues.
-
-Generally, after **two written warnings/notices**, the Company may stop offering future assignments or terminate this Agreement. However, the Company is not required to issue two warnings for serious issues.
-
-#### 7. Immediate Termination / Removal for Serious Issues
-
-The Company may immediately cancel an assignment, remove Contractor from the premises, stop offering assignments, or terminate this Agreement for serious issues, including theft, threats, violence, intoxication, unsafe conduct, customer-property damage/loss, confidentiality breach, falsified records, failure to report injury/incident, unauthorized persons on premises, or conduct that may harm the Company, customers, workers, equipment, property, or reputation.
-
-#### 8. No Employee Discipline System
-
-Warnings/notices are for documentation, service quality, safety, insurance, and business-record purposes only. Because Contractor is not an employee, the Company is not required to follow an employee progressive discipline process. Warnings/notices do not create employment status, employee handbook rights, or guaranteed future work.
+Because Contractor is not an employee, the Company does not use an employee progressive discipline form system. Email notices and internal records document service issues; they do not create employment status, employee handbook rights, or guaranteed future work.
 
 ### B. Use of Company Raw Materials, Supplies, and Equipment
 

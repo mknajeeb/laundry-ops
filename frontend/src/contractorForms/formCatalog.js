@@ -1,4 +1,4 @@
-/** Printable contractor form catalog (content from veewash_1099_contractor_packet.md). */
+/** Printable contractor form catalog — discipline via HR Timeline; onboarding/service docs only. */
 
 export const CONTRACTOR_FORMS = [
   {
@@ -11,26 +11,6 @@ export const CONTRACTOR_FORMS = [
     id: "rate_confirmation",
     title: "Contractor Rate / Payment Confirmation",
     sections: ["3"],
-  },
-  {
-    id: "written_warning",
-    title: "Written Warning / Notice",
-    sections: ["13"],
-  },
-  {
-    id: "probation_review",
-    title: "Two-Week Probation Review",
-    sections: ["14"],
-  },
-  {
-    id: "final_warning",
-    title: "Final Warning / Last Opportunity Notice",
-    sections: ["15"],
-  },
-  {
-    id: "termination_notice",
-    title: "Termination / Non-Offer of Future Assignments Notice",
-    sections: ["16"],
   },
   {
     id: "incident_report",
@@ -53,6 +33,14 @@ export const CONTRACTOR_FORMS = [
     sections: [],
     letterOnly: true,
   },
+];
+
+/** Archived — use HR Timeline + email templates instead. */
+export const ARCHIVED_CONTRACTOR_FORMS = [
+  { id: "written_warning", title: "Written Warning / Notice (archived)" },
+  { id: "probation_review", title: "Two-Week Probation Review (archived)" },
+  { id: "final_warning", title: "Final Warning (archived)" },
+  { id: "termination_notice", title: "Termination Notice (archived)" },
 ];
 
 export function findContractorForm(id) {

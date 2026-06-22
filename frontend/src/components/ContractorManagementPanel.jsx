@@ -89,7 +89,7 @@ export default function ContractorManagementPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState(0);
-  const [activeFormId, setActiveFormId] = useState("written_warning");
+  const [activeFormId, setActiveFormId] = useState("first_time_packet");
   const [formFieldValues, setFormFieldValues] = useState({});
   const [savedRecords, setSavedRecords] = useState([]);
   const [saving, setSaving] = useState(false);

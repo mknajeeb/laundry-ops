@@ -1,10 +1,11 @@
-/** Document checklists by worker category (replaces old C-documents). */
+/** Document checklists by worker category (signed docs only — discipline via HR Timeline). */
 
 export const W2_EMPLOYEE_DOCS = [
   { code: "w2_wage_notice", name: "Employee wage notice / LS form" },
   { code: "w2_w4", name: "W-4, if collected" },
   { code: "w2_i9", name: "I-9, if collected" },
   { code: "w2_handbook", name: "Employee handbook acknowledgment" },
+  { code: "w2_performance_addendum", name: "Performance Standards Addendum" },
   { code: "w2_sick_leave", name: "Sick leave policy acknowledgment" },
   { code: "w2_paystub", name: "Paystub / pay statements" },
   { code: "w2_incident", name: "Incident reports, if any" },
@@ -12,13 +13,12 @@ export const W2_EMPLOYEE_DOCS = [
 
 export const CONTRACTOR_1099_DOCS = [
   { code: "contractor_w9", name: "W-9", required: true },
+  { code: "contractor_ic_agreement", name: "Independent Contractor Agreement" },
+  { code: "contractor_service_guide", name: "Contractor Service Standards Guide" },
+  { code: "contractor_performance_addendum", name: "Performance Standards Addendum" },
   { code: "contractor_first_time_packet", name: "First-Time Contractor Packet" },
   { code: "contractor_rate_confirmation", name: "Contractor Rate / Payment Confirmation" },
   { code: "contractor_invoice_payment", name: "Contractor Invoice & Payment Receipts" },
-  { code: "contractor_written_warning", name: "Written Warning / Notice, if any" },
-  { code: "contractor_probation_review", name: "Two-Week Probation Review, if any" },
-  { code: "contractor_final_warning", name: "Final Warning, if any" },
-  { code: "contractor_termination_notice", name: "Termination / Non-Offer Notice, if any" },
   { code: "contractor_incident_report", name: "Incident / Injury Report, if any" },
   { code: "contractor_clock_payment_correction", name: "Clock / Payment Correction Request, if any" },
   { code: "contractor_property_return", name: "Property / Access Return Checklist, if any" },

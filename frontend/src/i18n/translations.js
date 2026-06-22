@@ -1062,7 +1062,7 @@ export const TRANSLATIONS = {
     "payroll.tabW2Forms": "W-2 forms & letters",
     "w2.formsTitle": "W-2 forms & letters",
     "w2.panelIntro":
-      "Generate printable W-2 employee letters (handbook acknowledgment, corrective action, separation checklist) and download the bilingual workforce pack. For statutory PDFs (I-9, W-4, NY LS forms), use the employee HR forms workspace.",
+      "Generate printable W-2 signed acknowledgments (handbook, timekeeping) and download the bilingual workforce pack. Discipline uses HR Timeline + email templates — not printable warning forms. For statutory PDFs (I-9, W-4, NY LS), use the employee HR forms workspace.",
     "w2.selectTitle": "Select W-2 employee",
     "w2.selectLabel": "Employee",
     "w2.selectHint": "Choose a payroll profile tagged as W-2",

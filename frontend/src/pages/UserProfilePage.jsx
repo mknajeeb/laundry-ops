@@ -65,6 +65,7 @@ import {
   coalesceWorkJsonFromHr,
   emergencyContactsJsonLooksLikeWorkJsonSpill,
 } from "../utils/mailingMerge";
+import HrTimelinePanel from "../components/hr/HrTimelinePanel";
 import { useAuth } from "../context/AuthContext";
 import { useI18n } from "../i18n/I18nContext";
 import {
@@ -272,7 +273,7 @@ function parseTaAddressBlob(blob) {
   return { line1, city, state, zip };
 }
 
-const WORKSPACE_TAB_FLOW = ["summary", "basic", "payroll", "scheduling", "compliance", "emergency", "notes", "documents"];
+const WORKSPACE_TAB_FLOW = ["summary", "basic", "payroll", "scheduling", "compliance", "emergency", "notes", "hr_timeline", "documents"];
 
 const ONBOARD_STEP_INDEX = {
   basic: 0,
@@ -280,6 +281,7 @@ const ONBOARD_STEP_INDEX = {
   compliance: 2,
   emergency: 3,
   notes: 4,
+  hr_timeline: 4,
   documents: 5,
 };
 
@@ -608,7 +610,7 @@ export default function UserProfilePage({ user: sessionUser }) {
           ? ["category"]
           : tab === "compliance" || tab === "emergency"
             ? ["category", "payrollCore"]
-            : tab === "notes" || tab === "documents"
+            : tab === "notes" || tab === "hr_timeline" || tab === "documents"
               ? ["category", "payrollCore", "emergency"]
               : [];
       if (req.includes("category") && !hasCategory) return true;
@@ -1405,6 +1407,7 @@ export default function UserProfilePage({ user: sessionUser }) {
               ["compliance", t("workspace.tabComplianceData")],
               ["emergency", t("workspace.tabEmergency")],
               ["notes", t("workspace.tabNotes")],
+              ["hr_timeline", "HR Timeline"],
               ["documents", t("workspace.tabDocumentsEvidence")],
             ]
           ).map(([val, label]) => {
@@ -2846,6 +2849,23 @@ export default function UserProfilePage({ user: sessionUser }) {
               placeholder={t("profile.hrNotesPlaceholder")}
             />
             </ProfileSection>
+          </Paper>
+        ) : null}
+
+        {!platformMode && workspaceTab === "hr_timeline" && (canTaView || canEditPayrollRecords) && (hasPayroll || canTaAdd) ? (
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <HrTimelinePanel
+              userId={uid}
+              workerName={`${firstName} ${lastName}`.trim()}
+              workerEmail={email}
+              workerLane={
+                employmentCategoryUsesPayrollTaxId(cats, catRows[0]?.employment_category_id)
+                  ? "contractor_1099"
+                  : "employee_w2"
+              }
+              managerName={authBootstrapUser?.name || authBootstrapUser?.email || ""}
+              canEdit={canEditPayrollRecords}
+            />
           </Paper>
         ) : null}
 

@@ -1,4 +1,4 @@
-/** W-2 employee letter templates (VF forms from workforce pack). */
+/** W-2 employee letter templates — signed handbook/addendum only; discipline via HR Timeline. */
 
 export const W2_FORMS = [
   {
@@ -14,26 +14,26 @@ export const W2_FORMS = [
     description: "Pay method, time clock, and pay record review acknowledgment.",
   },
   {
-    id: "corrective_action",
-    title: "VF-07 — Corrective action / written warning",
-    sections: ["7"],
-    description: "Document performance, attendance, safety, or conduct issues.",
-    editorFormId: "written_warning",
-  },
-  {
-    id: "separation_checklist",
-    title: "VF-08 — Separation / termination checklist",
-    sections: ["8"],
-    description: "Property return, access removal, and final pay checklist.",
-    editorFormId: "separation_checklist",
-  },
-  {
     id: "workforce_pack",
     title: "Full workforce forms pack (DOCX/PDF)",
     downloadOnly: true,
     catalogFormId: "internal_veewash_workforce_pack",
     locale: "bilingual",
     description: "Download the complete bilingual VF pack template from HR assets.",
+  },
+];
+
+/** Archived — use HR Timeline + email templates instead. */
+export const ARCHIVED_W2_FORMS = [
+  {
+    id: "corrective_action",
+    title: "VF-07 — Corrective action / written warning (archived)",
+    archived: true,
+  },
+  {
+    id: "separation_checklist",
+    title: "VF-08 — Separation checklist (archived)",
+    archived: true,
   },
 ];
 
