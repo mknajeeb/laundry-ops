@@ -156,3 +156,10 @@ def test_available_actions_use_display_status():
 def test_can_process_batch_as_accountant_only_when_sent():
     assert can_process_batch_as_accountant({"status": "sent_to_accountant"}) is True
     assert can_process_batch_as_accountant({"status": "accountant_reviewed"}) is False
+
+
+def test_revert_to_draft_action_registered():
+    from backend.payroll_workflow import BATCH_ACTIONS, REVERT_TO_DRAFT_STATUSES
+
+    assert "revert_to_draft" in BATCH_ACTIONS
+    assert "sent_to_accountant" in REVERT_TO_DRAFT_STATUSES

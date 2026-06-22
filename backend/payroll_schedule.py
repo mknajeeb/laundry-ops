@@ -753,8 +753,11 @@ def get_worker_by_user_id(conn, organization_id: int, user_id: int) -> dict[str,
 
 
 def get_scheduling_profile_bundle(conn, organization_id: int, user_id: int) -> dict[str, Any]:
+    from backend.payroll_employer_affiliation import employer_affiliation_from_flags
+
     oid = int(organization_id)
     worker = get_worker_by_user_id(conn, oid, user_id)
+    worker["employer_affiliation"] = employer_affiliation_from_flags(worker)
     settings = get_org_schedule_settings(conn, oid)
     c = _cursor(conn)
     gf_active = _where_active(c, "geofences")
@@ -780,8 +783,16 @@ def get_scheduling_profile_bundle(conn, organization_id: int, user_id: int) -> d
 
 
 def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict) -> dict[str, Any]:
+    from backend.payroll_employer_affiliation import flags_from_employer_affiliation, normalize_employer_affiliation
+
     oid = int(organization_id)
     uid = int(user_id)
+    body = dict(body or {})
+    if "employer_affiliation" in body:
+        aff = normalize_employer_affiliation(body.get("employer_affiliation"))
+        if not aff:
+            raise ValueError("employer_affiliation must be rinse_exclusive, veewash, or both")
+        body.update(flags_from_employer_affiliation(aff))
     prof = ensure_worker_profile(conn, oid, uid)
     wpid = int(prof["id"])
     c = _cursor(conn)

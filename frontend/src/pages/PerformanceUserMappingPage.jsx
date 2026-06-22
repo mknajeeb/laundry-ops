@@ -25,10 +25,11 @@ export default function PerformanceUserMappingPage() {
     <Box sx={{ p: { xs: 2, md: 3 }, maxWidth: 1200, mx: "auto" }}>
       <Typography variant="h4" fontWeight={800} gutterBottom>User Mapping &amp; Excluded Users</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Map Rinse scan operators to clock/payroll users. Excluded users are hidden from leaderboard and TV scoring but remain in audit records.
+        Map Rinse scan operators to clock/payroll users, set each worker&apos;s employer (Rinse · VeeWash · Both) on
+        their scheduling profile, and manage excluded users for leaderboard / TV scoring.
       </Typography>
       <SettingsNav />
-      <FoldingMaintenancePanel sections={["user_mapping", "excluded_users"]} />
+      <FoldingMaintenancePanel sections={["employer_affiliation", "user_mapping", "excluded_users"]} />
     </Box>
   );
 }

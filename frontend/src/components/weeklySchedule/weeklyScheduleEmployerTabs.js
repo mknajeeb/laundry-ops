@@ -1,4 +1,6 @@
-/** Employer tab filtering — Rinse Exclusive vs VeeWash staff (frontend-only, no schedule mutation). */
+/** Employer tab filtering — Rinse Exclusive vs VeeWash staff (from worker profile flags). */
+
+import { EMPLOYER_AFFILIATION, employerAffiliationFromFlags } from "../../payroll/employerAffiliation";
 
 export const EMPLOYER_TAB = {
   VEEWASH: "veewash",
@@ -12,22 +14,21 @@ export const EMPLOYER_TAB_LABELS = {
   [EMPLOYER_TAB.COMBINED]: "Combined",
 };
 
-function streamFlag(value) {
-  return value !== false && value !== 0;
-}
-
-/** Rinse-only staff: flagged for Rinse stream but not Drop Off or Both. */
+/** @deprecated use employerAffiliationFromFlags */
 export function isRinseExclusiveEmployee(employee) {
-  const rinse = streamFlag(employee?.can_work_rinse);
-  const dropOff = streamFlag(employee?.can_work_drop_off);
-  const both = streamFlag(employee?.can_work_both);
-  return rinse && !dropOff && !both;
+  return employerAffiliationFromFlags(employee) === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
 }
 
 export function matchesEmployerTab(employee, tab) {
   if (tab === EMPLOYER_TAB.COMBINED) return true;
-  if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) return isRinseExclusiveEmployee(employee);
-  return !isRinseExclusiveEmployee(employee);
+  const affiliation = employerAffiliationFromFlags(employee);
+  if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) {
+    return affiliation === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE || affiliation === EMPLOYER_AFFILIATION.BOTH;
+  }
+  if (tab === EMPLOYER_TAB.VEEWASH) {
+    return affiliation === EMPLOYER_AFFILIATION.VEEWASH || affiliation === EMPLOYER_AFFILIATION.BOTH;
+  }
+  return true;
 }
 
 export function filterEmployeesByEmployerTab(employees, tab) {

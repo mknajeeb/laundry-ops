@@ -25,6 +25,7 @@ import {
 import FoldingExceptionRulesPanel from "./FoldingExceptionRulesPanel";
 import FoldingUserMappingPanel from "./FoldingUserMappingPanel";
 import ProcessingSettingsPanel from "./ProcessingSettingsPanel";
+import EmployerAffiliationMappingPanel from "../weeklySchedule/EmployerAffiliationMappingPanel";
 
 export default function FoldingMaintenancePanel({ onChanged, sections }) {
   const show = (name) => !sections || sections.includes(name);
@@ -85,6 +86,7 @@ export default function FoldingMaintenancePanel({ onChanged, sections }) {
     <>
       {show("exception_rules") ? <FoldingExceptionRulesPanel onRecomputeApplied={onChanged} /> : null}
       {show("processing_settings") ? <ProcessingSettingsPanel /> : null}
+      {show("employer_affiliation") ? <EmployerAffiliationMappingPanel /> : null}
       {show("user_mapping") ? <FoldingUserMappingPanel /> : null}
     {show("excluded_users") ? (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>

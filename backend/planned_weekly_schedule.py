@@ -629,6 +629,177 @@ def duplicate_entry(
     )
 
 
+def _bulk_insert_week_entries(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    payloads: Sequence[Mapping[str, Any]],
+) -> None:
+    if not payloads:
+        return
+    ensure_planned_weekly_schedule_table(cursor)
+    oid = int(organization_id)
+    params = []
+    for payload in payloads:
+        start = parse_time_value(payload.get("start_time"))
+        end = parse_time_value(payload.get("end_time"))
+        role = roles_to_storage(parse_weekly_roles(payload.get("role") or payload.get("roles")))
+        params.append(
+            (
+                oid,
+                week_start,
+                int(payload["user_id"]),
+                int(payload["day_of_week"]),
+                role,
+                start,
+                end,
+                max(0, int(payload.get("break_minutes") or 0)),
+            )
+        )
+    cursor.executemany(
+        """
+        INSERT INTO planned_weekly_schedule_entries (
+            organization_id, week_start, user_id, day_of_week,
+            role, start_time, end_time, break_minutes
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        params,
+    )
+
+
+def week_has_schedule_content(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+) -> bool:
+    if list_week_entries(cursor, organization_id, week_start=week_start):
+        return True
+    return bool(list_excluded_user_ids(cursor, organization_id, week_start=week_start))
+
+
+def find_latest_schedule_week_before(
+    cursor,
+    organization_id: int,
+    *,
+    before_week_start: date,
+) -> date | None:
+    ensure_planned_weekly_schedule_table(cursor)
+    cursor.execute(
+        """
+        SELECT week_start
+        FROM planned_weekly_schedule_entries
+        WHERE organization_id = %s AND week_start < %s
+        GROUP BY week_start
+        ORDER BY week_start DESC
+        LIMIT 1
+        """,
+        (int(organization_id), before_week_start),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    raw = row.get("week_start") if isinstance(row, dict) else row[0]
+    if isinstance(raw, date):
+        return raw
+    try:
+        return date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return None
+
+
+def carry_forward_week_schedule(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    target_week_start: date,
+    source_week_start: date,
+) -> dict[str, Any]:
+    """Copy entries and exclusions from source week into target week."""
+    oid = int(organization_id)
+    valid_user_ids = {
+        int(w.get("user_id") or 0)
+        for w in _load_workers(conn, oid)
+        if int(w.get("user_id") or 0) > 0
+    }
+
+    source_entries = list_week_entries(cursor, oid, week_start=source_week_start)
+    source_exclusions = list_excluded_user_ids(cursor, oid, week_start=source_week_start)
+
+    payloads: list[dict[str, Any]] = []
+    skipped_entries = 0
+    for entry in source_entries:
+        uid = int(entry.get("user_id") or 0)
+        if uid not in valid_user_ids:
+            skipped_entries += 1
+            continue
+        payloads.append(
+            {
+                "user_id": uid,
+                "day_of_week": entry["day_of_week"],
+                "role": entry.get("role"),
+                "start_time": entry["start_time"],
+                "end_time": entry["end_time"],
+                "break_minutes": entry.get("break_minutes", 0),
+            }
+        )
+
+    entries_copied = 0
+    if payloads:
+        _bulk_insert_week_entries(cursor, oid, week_start=target_week_start, payloads=payloads)
+        entries_copied = len(payloads)
+
+    exclusions_copied = 0
+    for uid in source_exclusions:
+        if uid not in valid_user_ids:
+            continue
+        set_employee_exclusion(
+            conn,
+            cursor,
+            oid,
+            week_start=target_week_start,
+            user_id=uid,
+            excluded=True,
+        )
+        exclusions_copied += 1
+
+    return {
+        "source_week_start": str(source_week_start),
+        "target_week_start": str(target_week_start),
+        "entries_copied": entries_copied,
+        "exclusions_copied": exclusions_copied,
+        "entries_skipped": skipped_entries,
+    }
+
+
+def ensure_week_schedule_carried_forward(
+    conn,
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+) -> dict[str, Any] | None:
+    """If target week has no schedule yet, seed it from the latest prior week."""
+    if week_has_schedule_content(cursor, organization_id, week_start=week_start):
+        return None
+    source = find_latest_schedule_week_before(
+        cursor,
+        organization_id,
+        before_week_start=week_start,
+    )
+    if not source:
+        return None
+    return carry_forward_week_schedule(
+        conn,
+        cursor,
+        organization_id,
+        target_week_start=week_start,
+        source_week_start=source,
+    )
+
+
 def build_week_payload(
     conn,
     cursor,
@@ -638,6 +809,8 @@ def build_week_payload(
     user_roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     from backend.weekly_schedule_display_settings import effective_weekly_schedule_view
+    from backend.payroll_employer_affiliation import employer_affiliation_from_flags
+
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
     entries = list_week_entries(cursor, organization_id, week_start=week_start)
@@ -668,6 +841,7 @@ def build_week_payload(
                 "can_work_rinse": bool(worker.get("can_work_rinse", True)),
                 "can_work_drop_off": bool(worker.get("can_work_drop_off", True)),
                 "can_work_both": bool(worker.get("can_work_both", True)),
+                "employer_affiliation": employer_affiliation_from_flags(worker),
                 "total_hours": stats["total_hours"],
                 "scheduled_days": stats["scheduled_days"],
                 "estimated_cost": stats["estimated_cost"],

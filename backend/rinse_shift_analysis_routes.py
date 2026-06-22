@@ -691,7 +691,11 @@ def register_rinse_shift_analysis_routes(
 
     @app.route("/rinse/shift-analysis/weekly-schedule", methods=["GET"])
     def rinse_shift_analysis_weekly_schedule_get():
-        from backend.planned_weekly_schedule import build_week_payload, normalize_week_start
+        from backend.planned_weekly_schedule import (
+            build_week_payload,
+            ensure_week_schedule_carried_forward,
+            normalize_week_start,
+        )
 
         conn = get_db()
         cursor = conn.cursor(dictionary=True)
@@ -709,7 +713,15 @@ def register_rinse_shift_analysis_routes(
                 week_start = normalize_week_start(raw_week)
             if not isinstance(week_start, date):
                 return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+            carry = ensure_week_schedule_carried_forward(
+                conn, cursor, tenant_oid, week_start=week_start
+            )
+            if carry:
+                conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
+            if carry:
+                payload["carried_forward_from"] = carry["source_week_start"]
+                payload["carried_forward"] = carry
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             return jsonify({"error": str(exc)}), 500

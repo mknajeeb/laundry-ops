@@ -62,6 +62,16 @@ from backend.hr_compliance import (
     upsert_generated_hr_form_record,
     upsert_hr_extended_profile,
 )
+from backend.hr_timeline import (
+    create_discipline_email_timeline_entry,
+    create_hr_timeline_entry,
+    delete_hr_timeline_entry,
+    get_hr_timeline_entry,
+    hr_timeline_meta,
+    list_hr_timeline_entries,
+    render_discipline_email_template,
+    update_hr_timeline_entry,
+)
 from backend.ta_helpers import (
     as_bool,
     haversine_meters,
@@ -3463,6 +3473,127 @@ def user_hr_form_i9(user_id):
         conn.close()
 
 
+@ta_bp.route("/hr-timeline/meta", methods=["GET"])
+@require_auth
+def hr_timeline_meta_route():
+    conn = get_db()
+    try:
+        if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+            return jsonify({"error": "Forbidden"}), 403
+        return jsonify(hr_timeline_meta())
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-timeline", methods=["GET", "POST"])
+@require_auth
+def user_hr_timeline(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR timeline requires unified payroll"}), 503
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        oid = int(u.get("organization_id") or _tenant_id())
+        if request.method == "GET":
+            if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+                return jsonify({"error": "Forbidden"}), 403
+            return jsonify({"items": list_hr_timeline_entries(conn, oid, user_id)})
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            if body.get("template_id"):
+                result = create_discipline_email_timeline_entry(
+                    conn, oid, user_id, body, actor_id=int(g.ta_user["id"])
+                )
+                write_audit(
+                    conn,
+                    g.ta_user["id"],
+                    "hr_timeline_entries",
+                    result.get("entry", {}).get("id"),
+                    "create_discipline_email",
+                    new={"template_id": body.get("template_id")},
+                )
+                conn.commit()
+                return jsonify(result), 201
+            row = create_hr_timeline_entry(
+                conn, oid, user_id, body, actor_id=int(g.ta_user["id"])
+            )
+            write_audit(conn, g.ta_user["id"], "hr_timeline_entries", row.get("id"), "create", new=body)
+            conn.commit()
+            return jsonify(row), 201
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-timeline/<int:entry_id>", methods=["PUT", "DELETE"])
+@require_auth
+def user_hr_timeline_item(user_id, entry_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR timeline requires unified payroll"}), 503
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u:
+            return jsonify({"error": "No payroll profile for this user"}), 404
+        if not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit"):
+            return jsonify({"error": "Forbidden"}), 403
+        oid = int(u.get("organization_id") or _tenant_id())
+        if request.method == "DELETE":
+            ok = delete_hr_timeline_entry(conn, oid, user_id, entry_id)
+            if not ok:
+                return jsonify({"error": "Not found"}), 404
+            write_audit(conn, g.ta_user["id"], "hr_timeline_entries", entry_id, "delete")
+            conn.commit()
+            return jsonify({"ok": True})
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            row = update_hr_timeline_entry(
+                conn, oid, user_id, entry_id, body, actor_id=int(g.ta_user["id"])
+            )
+            write_audit(conn, g.ta_user["id"], "hr_timeline_entries", entry_id, "update", new=body)
+            conn.commit()
+            return jsonify(row)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/users/<int:user_id>/hr-timeline/preview-email", methods=["POST"])
+@require_auth
+def user_hr_timeline_preview_email(user_id):
+    conn = get_db()
+    try:
+        if not payroll_profiles_active(conn):
+            return jsonify({"error": "HR timeline requires unified payroll"}), 503
+        if not user_has_perm(conn, g.ta_user["id"], "users.view"):
+            return jsonify({"error": "Forbidden"}), 403
+        u = fetch_payroll_profile_row(conn, user_id)
+        if not u or not _ta_user_can_access_payroll_subject(conn, user_id):
+            return jsonify({"error": "Not found"}), 404
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            rendered = render_discipline_email_template(
+                str(body.get("template_id") or ""),
+                worker_lane=str(body.get("worker_lane") or "employee_w2"),
+                fields=body.get("fields") if isinstance(body.get("fields"), dict) else {},
+            )
+            return jsonify(rendered)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+
 @ta_bp.route("/users/<int:user_id>/documents", methods=["GET", "POST"])
 @require_auth
 def user_document_records(user_id):
@@ -5732,6 +5863,7 @@ def payroll_payout_batch_detail(batch_id):
             "approve_hours",
             "hours_reviewed",
             "send_to_accountant",
+            "revert_to_draft",
             "process_batch",
             "mark_paid",
             "mark_line_paid",
@@ -6518,6 +6650,52 @@ def payroll_schedule_workers():
         return jsonify({"items": list_workers_enriched(conn, _tenant_id(), active_only=active_only)})
     except Exception as e:
         current_app.logger.exception("payroll_schedule_workers failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/workers/employer-affiliations", methods=["GET"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings", "users.view")
+def payroll_worker_employer_affiliations():
+    conn = get_db()
+    try:
+        from backend.payroll_employer_affiliation import list_employer_affiliation_rows
+
+        return jsonify({"items": list_employer_affiliation_rows(conn, _tenant_id())})
+    except Exception as e:
+        current_app.logger.exception("payroll_worker_employer_affiliations failed")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@ta_bp.route("/payroll/workers/by-user/<int:user_id>/employer-affiliation", methods=["PUT"])
+@require_auth
+@require_any_perm("ta.monitor", "ta.settings", "users.view", "users.edit")
+def payroll_worker_employer_affiliation(user_id: int):
+    conn = get_db()
+    try:
+        from backend.payroll_employer_affiliation import save_employer_affiliation
+
+        if not user_has_perm(conn, g.ta_user["id"], "users.edit") and not user_has_perm(
+            conn, g.ta_user["id"], "ta.settings"
+        ):
+            return jsonify({"error": "Forbidden"}), 403
+        body = request.get_json(silent=True) or {}
+        out = save_employer_affiliation(
+            conn,
+            _tenant_id(),
+            user_id,
+            str(body.get("employer_affiliation") or ""),
+        )
+        conn.commit()
+        return jsonify(out)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("payroll_worker_employer_affiliation failed")
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()

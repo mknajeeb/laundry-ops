@@ -664,6 +664,13 @@ export default function WeeklySchedulePage() {
               &quot;Show excluded&quot; to review and include them.
             </Alert>
           ) : null}
+          {data?.carried_forward_from ? (
+            <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }} className="no-print">
+              Schedule copied from the week of{" "}
+              {formatWeekRange(normalizeWeekStart(data.carried_forward_from))}. Edit shifts here as needed — future
+              empty weeks will carry forward from the latest saved week.
+            </Alert>
+          ) : null}
           {error ? (
             <Alert severity="error" sx={{ mb: 2 }} className="no-print">
               {error}

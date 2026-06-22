@@ -37,6 +37,11 @@ import {
   PAYROLL_DEFAULT_OT_RATE,
   PAYROLL_DEFAULT_REGULAR_RATE,
 } from "../../payroll/payrollWorkerDefaults";
+import {
+  EMPLOYER_AFFILIATION_OPTIONS,
+  employerAffiliationFromFlags,
+  flagsFromEmployerAffiliation,
+} from "../../payroll/employerAffiliation";
 
 function ProfileSection({ title, hint, children }) {
   return (
@@ -78,6 +83,7 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
         overtime_threshold: payrollDefaults.overtime_threshold,
         preferred_shift_id: w.preferred_shift_id ?? "",
         preferred_role_id: w.preferred_role_id ?? "",
+        employer_affiliation: w.employer_affiliation || employerAffiliationFromFlags(w),
         can_work_rinse: w.can_work_rinse !== false,
         can_work_drop_off: w.can_work_drop_off !== false,
         can_work_both: w.can_work_both !== false,
@@ -127,9 +133,8 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
         overtime_threshold: form.overtime_threshold === "" ? null : Number(form.overtime_threshold),
         preferred_shift_id: form.preferred_shift_id || null,
         preferred_role_id: form.preferred_role_id || null,
-        can_work_rinse: form.can_work_rinse,
-        can_work_drop_off: form.can_work_drop_off,
-        can_work_both: form.can_work_both,
+        employer_affiliation: form.employer_affiliation,
+        ...flagsFromEmployerAffiliation(form.employer_affiliation),
         active: form.active,
         notes: form.notes,
         availability: form.availability,
@@ -349,21 +354,35 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
           </FormControl>
         </Stack>
         {canEdit ? (
-          <Stack direction="row" spacing={2} flexWrap="wrap">
-            <FormControlLabel
-              control={<Checkbox checked={form.can_work_rinse} onChange={(e) => setForm({ ...form, can_work_rinse: e.target.checked })} />}
-              label="Can work Rinse"
-            />
-            <FormControlLabel
-              control={<Checkbox checked={form.can_work_drop_off} onChange={(e) => setForm({ ...form, can_work_drop_off: e.target.checked })} />}
-              label="Can work Drop Off"
-            />
-            <FormControlLabel
-              control={<Checkbox checked={form.can_work_both} onChange={(e) => setForm({ ...form, can_work_both: e.target.checked })} />}
-              label="Can work Both"
-            />
-          </Stack>
-        ) : null}
+          <FormControl size="small" fullWidth sx={{ maxWidth: 320 }}>
+            <InputLabel>Employer affiliation</InputLabel>
+            <Select
+              label="Employer affiliation"
+              value={form.employer_affiliation || employerAffiliationFromFlags(form)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setForm({
+                  ...form,
+                  employer_affiliation: next,
+                  ...flagsFromEmployerAffiliation(next),
+                });
+              }}
+            >
+              {EMPLOYER_AFFILIATION_OPTIONS.map((opt) => (
+                <MenuItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        ) : (
+          <Typography variant="body2">
+            {EMPLOYER_AFFILIATION_OPTIONS.find((opt) => opt.value === form.employer_affiliation)?.label || "—"}
+          </Typography>
+        )}
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+          Controls Weekly Schedule tabs (Rinse Exclusive · VeeWash · Combined). Also editable on User mapping.
+        </Typography>
       </ProfileSection>
 
       <ProfileSection title="Weekly availability">

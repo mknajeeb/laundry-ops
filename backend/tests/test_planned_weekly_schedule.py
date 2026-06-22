@@ -7,10 +7,13 @@ from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule import (
     build_week_payload,
+    carry_forward_week_schedule,
     compute_schedule_totals,
     create_entry,
     delete_entry,
     duplicate_entry,
+    ensure_week_schedule_carried_forward,
+    find_latest_schedule_week_before,
     get_entry,
     list_excluded_user_ids,
     list_week_entries,
@@ -22,6 +25,7 @@ from backend.planned_weekly_schedule import (
     serialize_entry,
     set_employee_exclusion,
     update_entry,
+    week_has_schedule_content,
 )
 
 
@@ -115,6 +119,17 @@ class _FakeCursor:
             if "and id =" in sql_norm:
                 org_id, entry_id = params
                 self._last = [r for r in self.rows if r["organization_id"] == org_id and r["id"] == entry_id]
+            elif "week_start <" in sql_norm and "group by week_start" in sql_norm:
+                org_id, before_week = params
+                weeks = sorted(
+                    {
+                        r["week_start"]
+                        for r in self.rows
+                        if r["organization_id"] == org_id and r["week_start"] < before_week
+                    },
+                    reverse=True,
+                )
+                self._last = [{"week_start": weeks[0]}] if weeks else []
             else:
                 org_id, week_start = params
                 self._last = [
@@ -123,6 +138,10 @@ class _FakeCursor:
                     if r["organization_id"] == org_id and r["week_start"] == week_start
                 ]
             return
+
+    def executemany(self, sql, params_list):
+        for params in params_list:
+            self.execute(sql, params)
 
     def fetchone(self):
         rows = getattr(self, "_last", [])
@@ -526,3 +545,110 @@ def test_update_entry_rejects_unknown_worker():
         updated, err = update_entry(conn, cursor, 1, created["id"], {"user_id": 999})
     assert updated is None
     assert err == "worker not found in payroll profiles"
+
+
+def test_find_latest_schedule_week_before():
+    cursor = _FakeCursor()
+    week_a = date(2026, 6, 7)
+    week_b = date(2026, 6, 14)
+    cursor.rows = [
+        {"id": 1, "organization_id": 1, "week_start": week_a, "user_id": 10, "day_of_week": 0, "role": "fold", "start_time": time(9, 0), "end_time": time(16, 0), "break_minutes": 0},
+        {"id": 2, "organization_id": 1, "week_start": week_b, "user_id": 10, "day_of_week": 1, "role": "wash", "start_time": time(9, 0), "end_time": time(16, 0), "break_minutes": 0},
+        {"id": 3, "organization_id": 2, "week_start": week_b, "user_id": 99, "day_of_week": 0, "role": "fold", "start_time": time(9, 0), "end_time": time(16, 0), "break_minutes": 0},
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True):
+        assert find_latest_schedule_week_before(cursor, 1, before_week_start=date(2026, 6, 21)) == week_b
+        assert find_latest_schedule_week_before(cursor, 1, before_week_start=week_b) == week_a
+        assert find_latest_schedule_week_before(cursor, 1, before_week_start=week_a) is None
+
+
+def test_carry_forward_week_schedule_copies_entries_and_exclusions():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    source = date(2026, 6, 14)
+    target = date(2026, 6, 21)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": source,
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "wash,fold",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 15,
+        }
+    ]
+    cursor.exclusions.append({"organization_id": 1, "week_start": source, "user_id": 20})
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        result = carry_forward_week_schedule(
+            conn,
+            cursor,
+            1,
+            target_week_start=target,
+            source_week_start=source,
+        )
+    assert result["entries_copied"] == 1
+    assert result["exclusions_copied"] == 1
+    copied = list_week_entries(cursor, 1, week_start=target)
+    assert len(copied) == 1
+    assert copied[0]["user_id"] == 10
+    assert copied[0]["day_of_week"] == 1
+    assert copied[0]["role"] == "wash,fold"
+    assert copied[0]["break_minutes"] == 15
+    assert list_excluded_user_ids(cursor, 1, week_start=target) == [20]
+
+
+def test_ensure_week_schedule_carried_forward_skips_when_target_has_content():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 21)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": week,
+            "user_id": 10,
+            "day_of_week": 0,
+            "role": "fold",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        }
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True):
+        assert week_has_schedule_content(cursor, 1, week_start=week) is True
+        assert ensure_week_schedule_carried_forward(conn, cursor, 1, week_start=week) is None
+
+
+def test_ensure_week_schedule_carried_forward_seeds_empty_week():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    source = date(2026, 6, 14)
+    target = date(2026, 6, 21)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": source,
+            "user_id": 10,
+            "day_of_week": 2,
+            "role": "sort",
+            "start_time": time(8, 0),
+            "end_time": time(14, 0),
+            "break_minutes": 0,
+        }
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ):
+        carry = ensure_week_schedule_carried_forward(conn, cursor, 1, week_start=target)
+    assert carry is not None
+    assert carry["source_week_start"] == str(source)
+    assert carry["entries_copied"] == 1
+    copied = list_week_entries(cursor, 1, week_start=target)
+    assert len(copied) == 1
+    assert copied[0]["day_of_week"] == 2

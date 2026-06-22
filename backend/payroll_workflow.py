@@ -43,6 +43,7 @@ BATCH_ACTIONS = (
     "approve_hours",
     "hours_reviewed",
     "send_to_accountant",
+    "revert_to_draft",
     "process_batch",
     "mark_paid",
     "mark_line_paid",
@@ -50,6 +51,8 @@ BATCH_ACTIONS = (
     "refresh_rates",
     "recalculate_taxes",
 )
+
+REVERT_TO_DRAFT_STATUSES = frozenset({"hours_reviewed", "sent_to_accountant", "accountant_reviewed"})
 
 ACCOUNTANT_VISIBLE_STATUSES = frozenset(
     {
@@ -1055,6 +1058,33 @@ def apply_batch_workflow_action(
             """
             UPDATE payout_batch_lines SET payment_status='approved_unpaid', line_status='approved'
             WHERE batch_id=%s AND organization_id=%s AND payment_status IN ('pending', 'approved_unpaid')
+            """,
+            (int(batch_id), int(organization_id)),
+        )
+    elif action == "revert_to_draft":
+        st = str(batch.get("status") or "")
+        if st not in REVERT_TO_DRAFT_STATUSES:
+            raise ValueError(
+                "Only draft-eligible batches can be reverted (hours reviewed or awaiting accountant)"
+            )
+        if batch.get("payout_details_finalized_at"):
+            raise ValueError("Cannot revert — payroll details are already finalized")
+        c.execute(
+            """
+            UPDATE payout_batches
+            SET status='draft',
+                sent_to_accountant_at=NULL,
+                approved_by=NULL,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=%s AND organization_id=%s
+            """,
+            (int(batch_id), int(organization_id)),
+        )
+        c.execute(
+            """
+            UPDATE payout_batch_lines
+            SET payment_status='pending', line_status='draft'
+            WHERE batch_id=%s AND organization_id=%s AND payment_status != 'paid'
             """,
             (int(batch_id), int(organization_id)),
         )

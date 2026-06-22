@@ -27,6 +27,8 @@ import {
   TableHead,
   TableRow,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -329,7 +331,7 @@ export default function PayoutBatchesPanel({
   const [lineEdit, setLineEdit] = useState(null);
   const [draft, setDraft] = useState({
     batch_name: "",
-    worker_category: "temp",
+    worker_category: "w2",
     pay_period_start: payPeriodStart || "",
     pay_period_end: payPeriodEnd || "",
     payout_frequency: "biweekly",
@@ -405,11 +407,14 @@ export default function PayoutBatchesPanel({
   }, [payPeriodStart, payPeriodEnd, batches, selectedId, loadDetail]);
 
   const openCreateBatch = () => {
-    setDraft((d) => ({
-      ...d,
-      pay_period_start: payPeriodStart || d.pay_period_start,
-      pay_period_end: payPeriodEnd || d.pay_period_end,
-    }));
+    setDraft({
+      batch_name: "",
+      worker_category: "w2",
+      pay_period_start: payPeriodStart || "",
+      pay_period_end: payPeriodEnd || "",
+      payout_frequency: "biweekly",
+      notes: "",
+    });
     setCreateOpen(true);
   };
 
@@ -597,6 +602,10 @@ export default function PayoutBatchesPanel({
   };
 
   const isEditable = detail?.status === "draft" || detail?.status === "hours_reviewed";
+  const canRevertToDraft =
+    ["hours_reviewed", "sent_to_accountant", "accountant_reviewed"].includes(detail?.status) &&
+    !detail?.payout_details_finalized_at &&
+    !["paid", "closed", "approved_for_payment"].includes(detail?.status);
   const isW2 = detail?.worker_category === "w2";
   const isGrossOnly = detail?.worker_category === "temp" || detail?.worker_category === "contractor_1099";
   const showSettlementColumns = Boolean(detail?.payout_details_finalized_at);
@@ -615,28 +624,97 @@ export default function PayoutBatchesPanel({
     setEditOpen(true);
   };
 
-  const batchFormFields = (
-    <Stack spacing={2}>
+  const confirmRevertToDraft = async () => {
+    if (
+      !window.confirm(
+        "Revert this batch to draft? You can edit hours, rename, or delete it again. Accountant review will need to be resent.",
+      )
+    ) {
+      return false;
+    }
+    setActionLoading(true);
+    try {
+      await runWorkflowAction("revert_to_draft");
+      setInfo("Batch reverted to draft — edit and delete are available again.");
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleEditBatchClick = async () => {
+    if (isEditable) {
+      openEditBatch();
+      return;
+    }
+    if (canRevertToDraft) {
+      const ok = await confirmRevertToDraft();
+      if (ok) openEditBatch();
+      return;
+    }
+    setError("This batch cannot be edited after it has been approved for payment or paid.");
+  };
+
+  const handleDeleteBatchClick = async () => {
+    if (isEditable) {
+      setDeleteOpen(true);
+      return;
+    }
+    if (canRevertToDraft) {
+      const ok = await confirmRevertToDraft();
+      if (ok) setDeleteOpen(true);
+      return;
+    }
+    setError("This batch cannot be deleted after it has been approved for payment or paid.");
+  };
+
+  const renderBatchFormFields = ({ lockCategory = false, showCategoryPicker = false } = {}) => (
+    <Stack spacing={2} sx={{ pt: 1 }}>
       <TextField
         label="Batch name"
         size="small"
         value={draft.batch_name}
         onChange={(e) => setDraft({ ...draft, batch_name: e.target.value })}
       />
-      <FormControl fullWidth size="small" disabled={!!detail}>
-        <InputLabel>Worker category</InputLabel>
-        <Select
-          label="Worker category"
-          value={draft.worker_category}
-          onChange={(e) => setDraft({ ...draft, worker_category: e.target.value })}
-        >
-          {CATEGORY_BATCH.map((o) => (
-            <MenuItem key={o.value} value={o.value}>
-              {o.label}
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
+      {showCategoryPicker ? (
+        <Box>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+            Worker category
+          </Typography>
+          <ToggleButtonGroup
+            exclusive
+            fullWidth
+            size="small"
+            value={draft.worker_category}
+            onChange={(_, value) => {
+              if (value) setDraft({ ...draft, worker_category: value });
+            }}
+          >
+            {CATEGORY_BATCH.map((o) => (
+              <ToggleButton key={o.value} value={o.value} sx={{ flex: 1, py: 1, lineHeight: 1.2 }}>
+                {o.label}
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+        </Box>
+      ) : (
+        <FormControl fullWidth size="small" disabled={lockCategory}>
+          <InputLabel>Worker category</InputLabel>
+          <Select
+            label="Worker category"
+            value={draft.worker_category}
+            onChange={(e) => setDraft({ ...draft, worker_category: e.target.value })}
+          >
+            {CATEGORY_BATCH.map((o) => (
+              <MenuItem key={o.value} value={o.value}>
+                {o.label}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      )}
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
         <TextField
           fullWidth
@@ -790,6 +868,62 @@ export default function PayoutBatchesPanel({
                 </Stack>
               ) : null}
 
+              {!isEditable && canRevertToDraft ? (
+                <Alert severity="info" sx={{ mb: 1.5 }}>
+                  This batch is locked while awaiting accountant review. Use <strong>Revert to draft</strong> below
+                  to unlock edit and delete.
+                </Alert>
+              ) : null}
+
+              {!isEditable && !canRevertToDraft && detail?.status !== "paid" && detail?.status !== "closed" ? (
+                <Alert severity="info" sx={{ mb: 1.5 }}>
+                  Edit and delete are only available for draft batches, or after reverting a batch that has not been
+                  paid or finalized.
+                </Alert>
+              ) : null}
+
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+                {canRevertToDraft ? (
+                  <Button
+                    size="small"
+                    variant="contained"
+                    color="warning"
+                    onClick={confirmRevertToDraft}
+                    disabled={actionLoading}
+                  >
+                    Revert to draft
+                  </Button>
+                ) : null}
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<EditIcon />}
+                  onClick={handleEditBatchClick}
+                  disabled={actionLoading}
+                >
+                  Edit batch
+                </Button>
+                <Button
+                  size="small"
+                  color="error"
+                  variant="outlined"
+                  startIcon={<DeleteIcon />}
+                  onClick={handleDeleteBatchClick}
+                  disabled={actionLoading}
+                >
+                  Delete
+                </Button>
+                <Button size="small" variant="outlined" startIcon={<PrintIcon />} onClick={() => setPrintPreviewOpen(true)}>
+                  Print preview
+                </Button>
+                <Button size="small" variant="outlined" onClick={() => openPrintWindow(printRef.current)}>
+                  Print
+                </Button>
+                <Button size="small" variant="outlined" onClick={downloadCsv} disabled={!workerLines.length}>
+                  CSV
+                </Button>
+              </Stack>
+
               <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                 <IconButton
                   size="small"
@@ -826,32 +960,36 @@ export default function PayoutBatchesPanel({
                       Apply scheduling rates
                     </Button>
                   ) : null}
-                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={openEditBatch} disabled={!isEditable}>
-                    Edit batch
-                  </Button>
-                  <Button
-                    size="small"
-                    color="error"
-                    variant="outlined"
-                    startIcon={<DeleteIcon />}
-                    onClick={() => setDeleteOpen(true)}
-                    disabled={!isEditable}
-                  >
-                    Delete
-                  </Button>
-                  <Button size="small" variant="outlined" startIcon={<PrintIcon />} onClick={() => setPrintPreviewOpen(true)}>
-                    Print preview
-                  </Button>
-                  <Button size="small" variant="outlined" onClick={() => openPrintWindow(printRef.current)}>
-                    Print
-                  </Button>
-                  <Button size="small" variant="outlined" onClick={downloadCsv} disabled={!workerLines.length}>
-                    CSV
-                  </Button>
                 </Stack>
               </Collapse>
 
               <Menu anchorEl={moreAnchor} open={Boolean(moreAnchor)} onClose={() => setMoreAnchor(null)}>
+                <MenuItem
+                  onClick={() => {
+                    setMoreAnchor(null);
+                    handleEditBatchClick();
+                  }}
+                >
+                  Edit batch
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    setMoreAnchor(null);
+                    handleDeleteBatchClick();
+                  }}
+                >
+                  Delete batch
+                </MenuItem>
+                {canRevertToDraft ? (
+                  <MenuItem
+                    onClick={() => {
+                      setMoreAnchor(null);
+                      confirmRevertToDraft();
+                    }}
+                  >
+                    Revert to draft
+                  </MenuItem>
+                ) : null}
                 <MenuItem
                   onClick={() => {
                     setMoreAnchor(null);
@@ -940,7 +1078,7 @@ export default function PayoutBatchesPanel({
 
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>New payout batch</DialogTitle>
-        <DialogContent>{batchFormFields}</DialogContent>
+        <DialogContent>{renderBatchFormFields({ showCategoryPicker: true })}</DialogContent>
         <DialogActions>
           <Button onClick={() => setCreateOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={createBatch}>
@@ -951,7 +1089,7 @@ export default function PayoutBatchesPanel({
 
       <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="sm" fullWidth>
         <DialogTitle>Edit batch</DialogTitle>
-        <DialogContent>{batchFormFields}</DialogContent>
+        <DialogContent>{renderBatchFormFields({ lockCategory: true })}</DialogContent>
         <DialogActions>
           <Button onClick={() => setEditOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={saveBatchEdit}>
@@ -965,6 +1103,7 @@ export default function PayoutBatchesPanel({
         <DialogContent>
           <Typography variant="body2">
             Delete <strong>{detail?.batch_name}</strong>? Only draft or hours-reviewed batches can be deleted.
+            {canRevertToDraft ? " Revert to draft first if this batch is awaiting accountant review." : ""}
           </Typography>
         </DialogContent>
         <DialogActions>

@@ -1169,6 +1169,14 @@ export const getPayrollWorkerSchedulingProfile = (userId) =>
 export const putPayrollWorkerSchedulingProfile = (userId, body) =>
   axios.put(`${API_BASE}/api/ta/payroll/workers/by-user/${userId}/scheduling`, body);
 
+export const getPayrollEmployerAffiliations = () =>
+  axios.get(`${API_BASE}/api/ta/payroll/workers/employer-affiliations`, { timeout: 30000 });
+
+export const putPayrollEmployerAffiliation = (userId, body) =>
+  axios.put(`${API_BASE}/api/ta/payroll/workers/by-user/${userId}/employer-affiliation`, body, {
+    timeout: 30000,
+  });
+
 export const getPayrollWorkerAvailability = (workerProfileId) =>
   axios.get(`${API_BASE}/api/ta/payroll/workers/${workerProfileId}/availability`);
 
@@ -1381,6 +1389,24 @@ export const putTaUserHrProfile = (userId, body) =>
   axios.put(`${API_BASE}/api/ta/users/${userId}/hr-profile`, body, {
     headers: { "Content-Type": "application/json" },
   });
+
+export const getHrTimelineMeta = () =>
+  axios.get(`${API_BASE}/api/ta/hr-timeline/meta`);
+
+export const getUserHrTimeline = (userId) =>
+  axios.get(`${API_BASE}/api/ta/users/${userId}/hr-timeline`);
+
+export const createUserHrTimelineEntry = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/users/${userId}/hr-timeline`, body);
+
+export const updateUserHrTimelineEntry = (userId, entryId, body) =>
+  axios.put(`${API_BASE}/api/ta/users/${userId}/hr-timeline/${entryId}`, body);
+
+export const deleteUserHrTimelineEntry = (userId, entryId) =>
+  axios.delete(`${API_BASE}/api/ta/users/${userId}/hr-timeline/${entryId}`);
+
+export const previewUserHrTimelineEmail = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/users/${userId}/hr-timeline/preview-email`, body);
 
 export const getTaUserHrFormsInventory = (userId) =>
   axios.get(`${API_BASE}/api/ta/users/${userId}/hr-forms/inventory`);
