@@ -73,14 +73,19 @@ function formatMoney(v) {
   return `$${num(v).toFixed(2)}`;
 }
 
-function formatMoneyOrPending(finalized, v) {
-  if (!finalized) return "—";
+function formatHours(v) {
+  const n = num(v);
+  return n > 0 ? n.toFixed(2) : "";
+}
+
+function formatMoneyOrBlank(finalized, v) {
+  if (!finalized) return "";
   return formatMoney(v);
 }
 
 function formatRate(rate) {
   const n = num(rate);
-  return n > 0 ? `$${n.toFixed(2)}` : "—";
+  return n > 0 ? `$${n.toFixed(2)}` : "";
 }
 
 function computeLineRates(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
@@ -130,10 +135,10 @@ function WorkflowStep({ active, done, label, description }) {
 
 function TaxCell({ line, workerName, onOpen }) {
   const finalized = isPayoutDetailsFinalized(line);
-  const label = formatTaxWithheldDisplay(line);
-  const clickable = finalized && (hasTaxWithheldBreakdown(line) || label !== "Pending");
+  const label = formatTaxWithheldDisplay(line, { pendingLabel: "" });
+  const clickable = finalized && label && (hasTaxWithheldBreakdown(line) || label !== "Pending");
   if (!clickable) {
-    return <Typography variant="body2">{finalized ? label : "—"}</Typography>;
+    return <Typography variant="body2">{label || ""}</Typography>;
   }
   return (
     <Link
@@ -341,7 +346,7 @@ export default function AccountantPayrollPanel() {
 
       {detail ? (
         <>
-          <PayrollBatchSummaryCard batch={detail} compact />
+          <PayrollBatchSummaryCard batch={detail} compact moneyEmpty="" />
 
           <Paper variant="outlined" sx={{ p: 2 }}>
             <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>
@@ -410,14 +415,14 @@ export default function AccountantPayrollPanel() {
                       return (
                         <TableRow key={ln.id} hover>
                           <TableCell>{ln.worker_name_snapshot}</TableCell>
-                          <TableCell align="right">{num(ln.approved_hours).toFixed(2)}</TableCell>
-                          <TableCell align="right">{num(ln.ot_hours).toFixed(2)}</TableCell>
+                          <TableCell align="right">{formatHours(ln.approved_hours)}</TableCell>
+                          <TableCell align="right">{formatHours(ln.ot_hours)}</TableCell>
                           <TableCell align="right">{formatRate(regRate)}</TableCell>
                           <TableCell align="right">{formatRate(otRate)}</TableCell>
                           <TableCell align="right">{formatMoney(lineGross(ln))}</TableCell>
                           {DEDUCTION_COLUMNS.map((col) => (
                             <TableCell key={col.key} align="right">
-                              {formatMoneyOrPending(lineFinalized, deductionAmount(ln, col))}
+                              {formatMoneyOrBlank(lineFinalized, deductionAmount(ln, col))}
                             </TableCell>
                           ))}
                           <TableCell align="right">
@@ -430,15 +435,17 @@ export default function AccountantPayrollPanel() {
                             />
                           </TableCell>
                           <TableCell align="right">
-                            {lineFinalized ? formatNetPaidDisplay(ln) : "—"}
+                            {lineFinalized ? formatNetPaidDisplay(ln, { pendingLabel: "" }) : ""}
                           </TableCell>
                           <TableCell>
-                            <Chip
-                              size="small"
-                              label={ln.payment_status_label || ln.payment_status || "Pending"}
-                              color={paymentStatusColor(ln.payment_status)}
-                              variant="outlined"
-                            />
+                            {ln.payment_status_label || ln.payment_status ? (
+                              <Chip
+                                size="small"
+                                label={ln.payment_status_label || ln.payment_status}
+                                color={paymentStatusColor(ln.payment_status)}
+                                variant="outlined"
+                              />
+                            ) : null}
                           </TableCell>
                         </TableRow>
                       );
@@ -447,10 +454,10 @@ export default function AccountantPayrollPanel() {
                       <TableRow>
                         <TableCell sx={{ fontWeight: 700 }}>Totals</TableCell>
                         <TableCell align="right" sx={{ fontWeight: 700 }}>
-                          {tableTotals.regHours.toFixed(2)}
+                          {formatHours(tableTotals.regHours)}
                         </TableCell>
                         <TableCell align="right" sx={{ fontWeight: 700 }}>
-                          {tableTotals.otHours.toFixed(2)}
+                          {formatHours(tableTotals.otHours)}
                         </TableCell>
                         <TableCell />
                         <TableCell />
@@ -461,14 +468,14 @@ export default function AccountantPayrollPanel() {
                           <TableCell key={col.key} align="right" sx={{ fontWeight: 700 }}>
                             {tableTotals.hasFinalizedLines
                               ? formatMoney(tableTotals.deductions[col.key])
-                              : "—"}
+                              : ""}
                           </TableCell>
                         ))}
                         <TableCell align="right" sx={{ fontWeight: 700 }}>
-                          {tableTotals.hasFinalizedLines ? formatMoney(tableTotals.totalTax) : "—"}
+                          {tableTotals.hasFinalizedLines ? formatMoney(tableTotals.totalTax) : ""}
                         </TableCell>
                         <TableCell align="right" sx={{ fontWeight: 700 }}>
-                          {tableTotals.hasFinalizedLines ? formatMoney(tableTotals.net) : "—"}
+                          {tableTotals.hasFinalizedLines ? formatMoney(tableTotals.net) : ""}
                         </TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>
                           {tableTotals.paidCount} paid · {tableTotals.pendingCount} pending

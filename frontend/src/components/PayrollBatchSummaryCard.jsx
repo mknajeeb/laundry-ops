@@ -4,7 +4,6 @@ import Tooltip from "@mui/material/Tooltip";
 import {
   displayStatusColor,
   displayStatusLabel,
-  formatPayrollMoney,
   payrollSummary,
   primaryAction,
 } from "../payroll/payrollBatchStatus";
@@ -14,9 +13,16 @@ export default function PayrollBatchSummaryCard({
   onPrimaryAction,
   primaryLoading = false,
   compact = false,
+  moneyEmpty = "—",
 }) {
   if (!batch) return null;
   const summary = payrollSummary(batch);
+  const fmt = (val) => {
+    if (val == null || val === "") return moneyEmpty;
+    const n = Number(val);
+    if (!Number.isFinite(n)) return moneyEmpty;
+    return `$${n.toFixed(2)}`;
+  };
   const action = primaryAction(batch);
   const period =
     batch.pay_period_start && batch.pay_period_end
@@ -62,31 +68,31 @@ export default function PayrollBatchSummaryCard({
             <Box>
               <Typography variant="caption" color="text.secondary">Gross</Typography>
               <Typography variant="body2" fontWeight={600}>
-                {formatPayrollMoney(summary.gross_payroll)}
+                {fmt(summary.gross_payroll)}
               </Typography>
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">Tax withheld</Typography>
               <Typography variant="body2" fontWeight={600}>
-                {formatPayrollMoney(summary.tax_withheld)}
+                {fmt(summary.tax_withheld)}
               </Typography>
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">Net payroll</Typography>
               <Typography variant="body2" fontWeight={600}>
-                {formatPayrollMoney(summary.net_payroll)}
+                {fmt(summary.net_payroll)}
               </Typography>
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">Paid</Typography>
               <Typography variant="body2" fontWeight={600}>
-                {formatPayrollMoney(summary.paid_amount)}
+                {fmt(summary.paid_amount)}
               </Typography>
             </Box>
             <Box>
               <Typography variant="caption" color="text.secondary">Outstanding</Typography>
               <Typography variant="body2" fontWeight={600}>
-                {formatPayrollMoney(summary.outstanding_amount)}
+                {fmt(summary.outstanding_amount)}
               </Typography>
             </Box>
           </Stack>
