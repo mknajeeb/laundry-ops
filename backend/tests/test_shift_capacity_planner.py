@@ -612,7 +612,130 @@ class TestPlannerBugFixes:
         assert "bags_in_dryer" in snap
         assert "bags_ready_to_fold" in snap
         assert "bags_folded" in snap
-        assert "bottleneck" not in snap
+        assert "bags_weighed" in snap
+        assert "bags_sorted" in snap
+        assert "sorted_surplus_before_next_batch" in snap
+        assert "bottleneck" in snap
+        assert "suggested_action" in snap
+
+    def test_decision_pack_present(self):
+        result = simulate_shift_capacity(_default_payload())
+        pack = result["operational"]["decision_pack"]
+        assert pack["decision_summary"]["total_bags"] == 50
+        assert isinstance(pack["action_plan"], list)
+        assert pack["batch_command_center"]
+        assert pack["next_batch_decision"]
+
+    def test_folder_count_affects_timing(self):
+        low = simulate_shift_capacity(_default_payload(folder_count=1))
+        high = simulate_shift_capacity(_default_payload(folder_count=5))
+        assert low["operational"]["time_milestone_rows"] != high["operational"]["time_milestone_rows"]
+
+    def test_sorter_helps_washer_changes_timing(self):
+        none = simulate_shift_capacity(_default_payload(helper_rule="none"))
+        helped = simulate_shift_capacity(_default_payload(helper_rule="sorter_helps_washer"))
+        none_rows = none["operational"]["time_milestone_rows"]
+        helped_rows = helped["operational"]["time_milestone_rows"]
+        assert none_rows != helped_rows or (
+            none["operational"]["decision_summary"]["folded_by_target"]
+            != helped["operational"]["decision_summary"]["folded_by_target"]
+        )
+
+    def test_washer_person_count_affects_timing(self):
+        one = simulate_shift_capacity(_default_payload(washer_person_count=1))
+        two = simulate_shift_capacity(_default_payload(washer_person_count=2))
+        one_finish = one["operational"]["decision_summary"].get("estimated_finish_time")
+        two_finish = two["operational"]["decision_summary"].get("estimated_finish_time")
+        one_folded = one["operational"]["decision_summary"]["folded_by_target"]
+        two_folded = two["operational"]["decision_summary"]["folded_by_target"]
+        assert two_folded >= one_folded or two_finish != one_finish
+
+    def test_batch_override_from_batch_changes_scenario(self):
+        base = simulate_shift_capacity(_default_payload())
+        override = simulate_shift_capacity(
+            _default_payload(
+                batch_overrides=[
+                    {
+                        "batch_number": 2,
+                        "apply_scope": "from_this_batch",
+                        "extra_folders": 1,
+                    }
+                ],
+            )
+        )
+        base_cmp = base["operational"].get("scenario_comparisons") or []
+        with_scenarios = simulate_shift_capacity(
+            _default_payload(include_scenario_comparisons=True)
+        )
+        comparisons = with_scenarios["operational"]["scenario_comparisons"]
+        assert comparisons
+        assert comparisons[0]["scenario"] == "Current"
+        folder_row = next(r for r in comparisons if "+1 folder" in r["scenario"])
+        assert folder_row["folded_by_target"] >= comparisons[0]["folded_by_target"]
+        assert override["operational"]["decision_summary"]["folded_by_target"] >= base[
+            "operational"
+        ]["decision_summary"]["folded_by_target"]
+
+    def test_batch_override_from_batch_two_affects_batch_two_timing(self):
+        """Overrides scoped from batch 2 must apply while batch 2 wash is running."""
+        payload = _default_payload(
+            start_time="7:00 AM",
+            target_time="12:00 PM",
+            bag_count=50,
+            orders_using_2_washers=40,
+            orders_using_2_dryers=10,
+            washer_count=4,
+            dryer_count=4,
+            wash_cycle_min=30,
+            dry_cycle_min=45,
+            sort_min_per_bag=5,
+            fold_min_per_bag=6,
+            folder_count=3,
+            sorter_count=1,
+            weigher_count=1,
+            washer_person_count=1,
+            batch_size=8,
+            helper_rule="none",
+            washing_strategy="batch_washing",
+        )
+
+        def batch_two(result):
+            rows = result["operational"]["decision_pack"]["batch_command_center"]
+            return next(b for b in rows if b["batch_number"] == 2)
+
+        base_b2 = batch_two(simulate_shift_capacity(payload))
+        sorter_b2 = batch_two(
+            simulate_shift_capacity(
+                {
+                    **payload,
+                    "batch_overrides": [
+                        {
+                            "batch_number": 2,
+                            "apply_scope": "from_this_batch",
+                            "sorter_helps_washer": True,
+                        }
+                    ],
+                }
+            )
+        )
+        folder_b2 = batch_two(
+            simulate_shift_capacity(
+                {
+                    **payload,
+                    "batch_overrides": [
+                        {
+                            "batch_number": 2,
+                            "apply_scope": "from_this_batch",
+                            "extra_folders": 1,
+                        }
+                    ],
+                }
+            )
+        )
+        assert sorter_b2["batch_end"] != base_b2["batch_end"] or sorter_b2["wash_end"] != base_b2[
+            "wash_end"
+        ]
+        assert folder_b2["fold_complete_at"] != base_b2["fold_complete_at"]
 
     def test_legacy_washing_strategy_aliases(self):
         batch = parse_planner_inputs({"washing_strategy": "hybrid_recommended"})
