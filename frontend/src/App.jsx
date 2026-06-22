@@ -278,6 +278,9 @@ function AppShell() {
   const mainScrollRef = useRef(null);
 
   const pathname = location.pathname || "/";
+  const isWeeklyScheduleRoute =
+    pathname === "/performance/weekly-schedule" ||
+    pathname.startsWith("/performance/weekly-schedule/");
 
   /** iOS PWA: keep main content in its own scroller; reset on navigation (fixes mid-page load + header overlap). */
   useLayoutEffect(() => {
@@ -681,17 +684,23 @@ function AppShell() {
         )}
         <Box
           ref={mainScrollRef}
-          className="app-main-scroll"
+          className={`app-main-scroll${isWeeklyScheduleRoute ? " app-main-scroll--schedule" : ""}`}
           sx={{
             p: { xs: 0, md: 1 },
             flex: 1,
             minWidth: 0,
             minHeight: 0,
-            overflowY: "auto",
+            overflowY: isWeeklyScheduleRoute ? "hidden" : "auto",
             overflowX: "hidden",
             WebkitOverflowScrolling: "touch",
             overscrollBehaviorY: "contain",
             pb: { xs: "env(safe-area-inset-bottom, 0px)", md: 1 },
+            ...(isWeeklyScheduleRoute
+              ? {
+                  display: "flex",
+                  flexDirection: "column",
+                }
+              : {}),
           }}
         >
           <ClockInGate user={user}>

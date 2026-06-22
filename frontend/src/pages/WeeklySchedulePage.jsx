@@ -232,7 +232,6 @@ export default function WeeklySchedulePage() {
   const [employerTab, setEmployerTab] = useState(EMPLOYER_TAB.VEEWASH);
   const printContentRef = useRef(null);
   const stickyHeaderRef = useRef(null);
-  const [stickyHeaderHeight, setStickyHeaderHeight] = useState(52);
 
   const display = data?.display || {};
   const canEdit = display.can_edit_schedule !== false;
@@ -477,16 +476,6 @@ export default function WeeklySchedulePage() {
   const showToolbarChips =
     (excludedCount > 0 && canManageExclusions) || costAllowed;
 
-  useEffect(() => {
-    const el = stickyHeaderRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return undefined;
-    const measure = () => setStickyHeaderHeight(el.offsetHeight || 52);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [hideEmployerTabs, showToolbarChips, employerTab, loading]);
-
   const cellProps = {
     entriesByCell,
     dropTarget,
@@ -508,40 +497,44 @@ export default function WeeklySchedulePage() {
     <Box
       className="weekly-schedule-print-root"
       sx={{
-        p: { xs: 1, md: 1.5 },
-        pb: { xs: 3, md: 4 },
+        p: { xs: 0, md: 1 },
         bgcolor: VEEWASH_DASHBOARD.pageBackground,
-        minHeight: "100%",
         width: "100%",
         maxWidth: "100%",
         minWidth: 0,
         boxSizing: "border-box",
+        flex: 1,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
       }}
     >
       <Paper
         className="weekly-schedule-print-area"
         elevation={0}
         sx={{
-          borderRadius: 3,
-          overflow: "visible",
+          borderRadius: { xs: 0, md: 3 },
+          overflow: "hidden",
           width: "100%",
           maxWidth: "100%",
           minWidth: 0,
-          border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-          boxShadow: "0 8px 30px rgba(15, 23, 42, 0.06)",
+          flex: 1,
+          minHeight: 0,
+          display: "flex",
+          flexDirection: "column",
+          border: { xs: "none", md: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}` },
+          boxShadow: { xs: "none", md: "0 8px 30px rgba(15, 23, 42, 0.06)" },
         }}
       >
         <Box
           ref={stickyHeaderRef}
           className="no-print weekly-schedule-sticky-header"
           sx={{
-            position: "sticky",
-            top: 0,
-            zIndex: 30,
+            flexShrink: 0,
             bgcolor: "#fff",
             borderBottom: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
-            borderRadius: "12px 12px 0 0",
-            boxShadow: "0 1px 0 rgba(15, 23, 42, 0.04)",
+            borderRadius: { md: "12px 12px 0 0" },
           }}
         >
           <Box
@@ -723,12 +716,21 @@ export default function WeeklySchedulePage() {
           ) : null}
         </Box>
 
-        <Box sx={{ p: { xs: 1.5, md: 2 }, minWidth: 0, maxWidth: "100%" }}>
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            p: { xs: 1.25, md: 1.5 },
+          }}
+        >
           {excludedCount > 0 && !showExcluded && canManageExclusions ? (
             <Alert
               severity="info"
               className="no-print"
-              sx={{ mb: 2, borderRadius: 2 }}
+              sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }}
               action={
                 <Button color="inherit" size="small" onClick={() => setShowExcluded(true)} sx={{ fontWeight: 700 }}>
                   Show excluded ({excludedCount})
@@ -740,32 +742,45 @@ export default function WeeklySchedulePage() {
             </Alert>
           ) : null}
           {data?.carried_forward_from ? (
-            <Alert severity="info" sx={{ mb: 2, borderRadius: 2 }} className="no-print">
+            <Alert severity="info" sx={{ mb: 1.25, borderRadius: 2, flexShrink: 0 }} className="no-print">
               Schedule copied from the week of{" "}
               {formatWeekRange(normalizeWeekStart(data.carried_forward_from))}. Edit shifts here as needed — future
               empty weeks will carry forward from the latest saved week.
             </Alert>
           ) : null}
           {error ? (
-            <Alert severity="error" sx={{ mb: 2 }} className="no-print">
+            <Alert severity="error" sx={{ mb: 1.25, flexShrink: 0 }} className="no-print">
               {error}
             </Alert>
           ) : null}
 
           {loading ? (
-            <Stack alignItems="center" py={6} className="no-print">
+            <Stack alignItems="center" py={6} className="no-print" sx={{ flex: 1 }}>
               <CircularProgress size={32} />
             </Stack>
           ) : (
             <>
-              <WeeklyScheduleSummaryBar
-                summary={weekSummary}
-                showCost={showCost && costAllowed}
-                compact={hideEmployerTabs}
-              />
+              <Box sx={{ flexShrink: 0 }}>
+                <WeeklyScheduleSummaryBar
+                  summary={weekSummary}
+                  showCost={showCost && costAllowed}
+                  compact={hideEmployerTabs}
+                />
+              </Box>
 
-              {isMobile ? (
-                <Stack spacing={1.5} className="weekly-schedule-mobile-stack">
+              <Box
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflow: "auto",
+                  WebkitOverflowScrolling: "touch",
+                  width: "100%",
+                  maxWidth: "100%",
+                }}
+                className="weekly-schedule-grid-scroll"
+              >
+                {isMobile ? (
+                  <Stack spacing={1.5} className="weekly-schedule-mobile-stack" sx={{ pb: 2 }}>
                   {(visibleEmployees || []).map((employee) => {
                     const excluded = Boolean(employee.excluded);
                     return (
@@ -818,12 +833,8 @@ export default function WeeklySchedulePage() {
                 <Box
                   sx={{
                     width: "100%",
-                    maxWidth: "100%",
                     minWidth: 0,
-                    overflowX: "auto",
-                    overflowY: "visible",
-                    WebkitOverflowScrolling: "touch",
-                    pb: 0.5,
+                    pb: 1,
                   }}
                   className="weekly-schedule-screen-grid"
                 >
@@ -847,7 +858,7 @@ export default function WeeklySchedulePage() {
                         borderBottom: "1px solid #e2e8f0",
                         position: "sticky",
                         left: 0,
-                        top: stickyHeaderHeight,
+                        top: 0,
                         zIndex: 5,
                         display: "flex",
                         alignItems: "flex-end",
@@ -870,8 +881,9 @@ export default function WeeklySchedulePage() {
                           borderBottom: "1px solid #e2e8f0",
                           borderLeft: "1px solid #e2e8f0",
                           position: "sticky",
-                          top: stickyHeaderHeight,
+                          top: 0,
                           zIndex: 3,
+                          bgcolor: "#f8fafc",
                         }}
                       >
                         <WeeklyScheduleDayHeader
@@ -918,7 +930,7 @@ export default function WeeklySchedulePage() {
                   </Box>
                 </Box>
               )}
-
+              </Box>
             </>
           )}
         </Box>

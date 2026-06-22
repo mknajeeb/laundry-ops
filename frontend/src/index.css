@@ -35,6 +35,12 @@ html {
   overflow-y: hidden;
 }
 
+.app-main-scroll--schedule > * {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
 .MuiPaper-root {
   border: 1px solid var(--line);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04) !important;
