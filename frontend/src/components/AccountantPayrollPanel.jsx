@@ -4,11 +4,13 @@ import {
   Box,
   Button,
   Chip,
+  Link,
   Paper,
   Stack,
   Table,
   TableBody,
   TableCell,
+  TableContainer,
   TableHead,
   TableRow,
   Typography,
@@ -17,19 +19,32 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import HourglassEmptyIcon from "@mui/icons-material/HourglassEmpty";
 import PayPeriodSelect from "./PayPeriodSelect";
 import PayrollBatchSummaryCard from "./PayrollBatchSummaryCard";
-import {
-  confirmPayoutPayment,
-  getPayoutBatchDetails,
-  getPayoutBatches,
-  processPayoutBatch,
-} from "../api";
+import TaxWithheldBreakdownDialog from "./TaxWithheldBreakdownDialog";
+import { getPayoutBatchDetails, getPayoutBatches, processPayoutBatch } from "../api";
 import {
   accountantPeriodStatusColor,
   accountantPeriodStatusLabel,
   pickDefaultAccountantBatch,
 } from "../payroll/accountantBatchPick";
 import { normPayPeriodYmd } from "../payroll/payPeriodOptions";
+import {
+  formatNetPaidDisplay,
+  formatTaxWithheldDisplay,
+  hasTaxWithheldBreakdown,
+  isPayoutDetailsFinalized,
+} from "../payroll/payoutSettlementDisplay";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
+
+const DEFAULT_OT_MULTIPLIER = 1.5;
+
+const DEDUCTION_COLUMNS = [
+  { key: "fit", label: "FIT" },
+  { key: "ss", label: "SS" },
+  { key: "medicare", label: "Medicare" },
+  { key: "state", label: "State" },
+  { key: "local", label: "Local" },
+  { key: "other", label: "Other", keys: ["other1", "other2"] },
+];
 
 function num(v) {
   const n = Number(v);
@@ -38,6 +53,47 @@ function num(v) {
 
 function lineGross(ln) {
   return num(ln.gross_amount || ln.total_amount || ln.gross_wages);
+}
+
+function deductionAmount(ln, col) {
+  const ded = ln.payout_details?.employee_deductions || {};
+  if (col.keys) {
+    return col.keys.reduce((s, k) => s + num(ded[k]), 0);
+  }
+  return num(ded[col.key]);
+}
+
+function lineTotalTax(ln) {
+  if (ln.tax_withheld != null && ln.tax_withheld !== "") return num(ln.tax_withheld);
+  const ded = ln.payout_details?.employee_deductions || {};
+  return DEDUCTION_COLUMNS.reduce((s, col) => s + deductionAmount({ payout_details: { employee_deductions: ded } }, col), 0);
+}
+
+function formatMoney(v) {
+  return `$${num(v).toFixed(2)}`;
+}
+
+function formatMoneyOrPending(finalized, v) {
+  if (!finalized) return "—";
+  return formatMoney(v);
+}
+
+function formatRate(rate) {
+  const n = num(rate);
+  return n > 0 ? `$${n.toFixed(2)}` : "—";
+}
+
+function computeLineRates(ln, otMultiplier = DEFAULT_OT_MULTIPLIER) {
+  const regRate = num(ln.rate);
+  const otHours = num(ln.ot_hours);
+  const otRate = otHours > 0 && regRate > 0 ? regRate * otMultiplier : 0;
+  return { regRate, otRate };
+}
+
+function paymentStatusColor(status) {
+  if (status === "paid") return "success";
+  if (status === "approved_unpaid") return "warning";
+  return "default";
 }
 
 function WorkflowStep({ active, done, label, description }) {
@@ -72,6 +128,27 @@ function WorkflowStep({ active, done, label, description }) {
   );
 }
 
+function TaxCell({ line, workerName, onOpen }) {
+  const finalized = isPayoutDetailsFinalized(line);
+  const label = formatTaxWithheldDisplay(line);
+  const clickable = finalized && (hasTaxWithheldBreakdown(line) || label !== "Pending");
+  if (!clickable) {
+    return <Typography variant="body2">{finalized ? label : "—"}</Typography>;
+  }
+  return (
+    <Link
+      component="button"
+      type="button"
+      variant="body2"
+      underline="hover"
+      onClick={() => onOpen(line, workerName)}
+      sx={{ cursor: "pointer" }}
+    >
+      {label}
+    </Link>
+  );
+}
+
 export default function AccountantPayrollPanel() {
   const [weekStartsOn, setWeekStartsOn] = useState(0);
   const [periodStart, setPeriodStart] = useState("");
@@ -83,6 +160,7 @@ export default function AccountantPayrollPanel() {
   const [info, setInfo] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [taxDialog, setTaxDialog] = useState({ open: false, line: null, workerName: "" });
   const autoPickedRef = useRef(false);
 
   const loadBatches = useCallback(async () => {
@@ -140,22 +218,43 @@ export default function AccountantPayrollPanel() {
     autoPickedRef.current = true;
   }, [batches]);
 
-  const totals = useMemo(() => {
+  const tableTotals = useMemo(() => {
     const lines = detail?.lines || [];
-    let gross = 0;
-    for (const ln of lines) gross += lineGross(ln);
-    return { gross, count: lines.length };
+    const totals = {
+      count: lines.length,
+      paidCount: 0,
+      pendingCount: 0,
+      regHours: 0,
+      otHours: 0,
+      gross: 0,
+      deductions: Object.fromEntries(DEDUCTION_COLUMNS.map((c) => [c.key, 0])),
+      totalTax: 0,
+      net: 0,
+      hasFinalizedLines: false,
+    };
+    for (const ln of lines) {
+      totals.regHours += num(ln.approved_hours);
+      totals.otHours += num(ln.ot_hours);
+      totals.gross += lineGross(ln);
+      if (ln.payment_status === "paid") totals.paidCount += 1;
+      else totals.pendingCount += 1;
+      if (!isPayoutDetailsFinalized(ln)) continue;
+      totals.hasFinalizedLines = true;
+      for (const col of DEDUCTION_COLUMNS) {
+        totals.deductions[col.key] += deductionAmount(ln, col);
+      }
+      totals.totalTax += lineTotalTax(ln);
+      totals.net += num(ln.net_paid);
+    }
+    return totals;
   }, [detail]);
 
   const periodStatus = accountantPeriodStatusLabel(periodBatch || detail);
   const status = String(detail?.status || "");
   const workflow = detail?.payout_workflow || {};
-  const accountantConfirmed = workflow.accountant_payment_confirmed;
   const finalized = workflow.payout_details_finalized;
 
   const canConfirmProcessed = detail?.can_process_as_accountant && status === "sent_to_accountant";
-  const awaitingPaymentConfirm =
-    status === "approved_for_payment" && finalized && workflow.awaiting_accountant_confirmation;
   const financePending = status === "approved_for_payment" && !finalized;
 
   const confirmPayrollProcessed = async () => {
@@ -176,22 +275,7 @@ export default function AccountantPayrollPanel() {
     }
   };
 
-  const markPaymentInitiated = async () => {
-    if (!detail?.id) return;
-    setSubmitting(true);
-    setError("");
-    setInfo("");
-    try {
-      const res = await confirmPayoutPayment(detail.id);
-      setDetail(res.data);
-      setInfo("Payment confirmed — recorded for this pay period.");
-      await loadBatches();
-    } catch (e) {
-      setError(e.response?.data?.error || e.message || "Could not record payment");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const colSpan = 5 + DEDUCTION_COLUMNS.length + 3;
 
   return (
     <Stack spacing={2}>
@@ -230,8 +314,8 @@ export default function AccountantPayrollPanel() {
           ) : null}
         </Stack>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Confirm when payroll has been processed externally. Tax details and paystubs are entered
-          by finance admin on the Finalize Payroll tab.
+          Confirm when payroll has been processed externally. Finance admin enters deductions,
+          updates net pay, and prints or emails paystubs on the Finalize Payroll tab.
         </Typography>
         {batches.length ? (
           <PayPeriodSelect
@@ -274,13 +358,7 @@ export default function AccountantPayrollPanel() {
                 active={financePending}
                 done={finalized}
                 label="Finance admin enters taxes & finalizes"
-                description="Federal, state, and payment details on Finalize Payroll tab."
-              />
-              <WorkflowStep
-                active={awaitingPaymentConfirm}
-                done={accountantConfirmed}
-                label="Confirm payment initiated"
-                description="After finance finalizes, confirm employees were paid."
+                description="Deductions, net pay, and paystubs on Finalize Payroll tab."
               />
             </Stack>
           </Paper>
@@ -291,7 +369,13 @@ export default function AccountantPayrollPanel() {
                 Employees in this batch
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                {totals.count} employee{totals.count === 1 ? "" : "s"} · Gross ${totals.gross.toFixed(2)}
+                {tableTotals.count} employee{tableTotals.count === 1 ? "" : "s"} · Reg{" "}
+                {tableTotals.regHours.toFixed(2)}h · OT {tableTotals.otHours.toFixed(2)}h · Gross{" "}
+                {formatMoney(tableTotals.gross)}
+                {tableTotals.paidCount || tableTotals.pendingCount
+                  ? ` · ${tableTotals.paidCount} paid · ${tableTotals.pendingCount} pending`
+                  : null}
+                {!finalized ? " · Tax and net pending finance finalize" : null}
               </Typography>
             </Box>
             {loading ? (
@@ -299,29 +383,108 @@ export default function AccountantPayrollPanel() {
                 <Typography color="text.secondary">Loading…</Typography>
               </Box>
             ) : (
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Employee</TableCell>
-                    <TableCell align="right">Gross</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {(detail.lines || []).map((ln) => (
-                    <TableRow key={ln.id}>
-                      <TableCell>{ln.worker_name_snapshot}</TableCell>
-                      <TableCell align="right">${lineGross(ln).toFixed(2)}</TableCell>
-                    </TableRow>
-                  ))}
-                  {(detail.lines || []).length === 0 ? (
+              <TableContainer sx={{ overflowX: "auto" }}>
+                <Table size="small" sx={{ minWidth: 1400 }}>
+                  <TableHead>
                     <TableRow>
-                      <TableCell colSpan={2}>
-                        <Typography variant="body2" color="text.secondary">No employees</Typography>
-                      </TableCell>
+                      <TableCell>Employee</TableCell>
+                      <TableCell align="right">Reg hrs</TableCell>
+                      <TableCell align="right">OT hrs</TableCell>
+                      <TableCell align="right">Reg rate</TableCell>
+                      <TableCell align="right">OT rate</TableCell>
+                      <TableCell align="right">Gross</TableCell>
+                      {DEDUCTION_COLUMNS.map((col) => (
+                        <TableCell key={col.key} align="right">
+                          {col.label}
+                        </TableCell>
+                      ))}
+                      <TableCell align="right">Total tax</TableCell>
+                      <TableCell align="right">Net</TableCell>
+                      <TableCell>Status</TableCell>
                     </TableRow>
-                  ) : null}
-                </TableBody>
-              </Table>
+                  </TableHead>
+                  <TableBody>
+                    {(detail.lines || []).map((ln) => {
+                      const lineFinalized = isPayoutDetailsFinalized(ln);
+                      const { regRate, otRate } = computeLineRates(ln);
+                      return (
+                        <TableRow key={ln.id} hover>
+                          <TableCell>{ln.worker_name_snapshot}</TableCell>
+                          <TableCell align="right">{num(ln.approved_hours).toFixed(2)}</TableCell>
+                          <TableCell align="right">{num(ln.ot_hours).toFixed(2)}</TableCell>
+                          <TableCell align="right">{formatRate(regRate)}</TableCell>
+                          <TableCell align="right">{formatRate(otRate)}</TableCell>
+                          <TableCell align="right">{formatMoney(lineGross(ln))}</TableCell>
+                          {DEDUCTION_COLUMNS.map((col) => (
+                            <TableCell key={col.key} align="right">
+                              {formatMoneyOrPending(lineFinalized, deductionAmount(ln, col))}
+                            </TableCell>
+                          ))}
+                          <TableCell align="right">
+                            <TaxCell
+                              line={ln}
+                              workerName={ln.worker_name_snapshot}
+                              onOpen={(line, workerName) =>
+                                setTaxDialog({ open: true, line, workerName })
+                              }
+                            />
+                          </TableCell>
+                          <TableCell align="right">
+                            {lineFinalized ? formatNetPaidDisplay(ln) : "—"}
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              size="small"
+                              label={ln.payment_status_label || ln.payment_status || "Pending"}
+                              color={paymentStatusColor(ln.payment_status)}
+                              variant="outlined"
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {(detail.lines || []).length > 0 ? (
+                      <TableRow>
+                        <TableCell sx={{ fontWeight: 700 }}>Totals</TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {tableTotals.regHours.toFixed(2)}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {tableTotals.otHours.toFixed(2)}
+                        </TableCell>
+                        <TableCell />
+                        <TableCell />
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {formatMoney(tableTotals.gross)}
+                        </TableCell>
+                        {DEDUCTION_COLUMNS.map((col) => (
+                          <TableCell key={col.key} align="right" sx={{ fontWeight: 700 }}>
+                            {tableTotals.hasFinalizedLines
+                              ? formatMoney(tableTotals.deductions[col.key])
+                              : "—"}
+                          </TableCell>
+                        ))}
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {tableTotals.hasFinalizedLines ? formatMoney(tableTotals.totalTax) : "—"}
+                        </TableCell>
+                        <TableCell align="right" sx={{ fontWeight: 700 }}>
+                          {tableTotals.hasFinalizedLines ? formatMoney(tableTotals.net) : "—"}
+                        </TableCell>
+                        <TableCell sx={{ fontWeight: 700 }}>
+                          {tableTotals.paidCount} paid · {tableTotals.pendingCount} pending
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                    {(detail.lines || []).length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={colSpan}>
+                          <Typography variant="body2" color="text.secondary">No employees</Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                  </TableBody>
+                </Table>
+              </TableContainer>
             )}
           </Paper>
 
@@ -338,18 +501,6 @@ export default function AccountantPayrollPanel() {
                 Confirm payroll processed
               </Button>
             ) : null}
-            {awaitingPaymentConfirm ? (
-              <Button
-                variant="contained"
-                color="success"
-                size="large"
-                disabled={submitting}
-                onClick={markPaymentInitiated}
-                startIcon={<CheckCircleOutlineIcon />}
-              >
-                Confirm payment initiated
-              </Button>
-            ) : null}
             {financePending ? (
               <Chip
                 icon={<HourglassEmptyIcon />}
@@ -358,10 +509,10 @@ export default function AccountantPayrollPanel() {
                 variant="outlined"
               />
             ) : null}
-            {accountantConfirmed && finalized ? (
+            {finalized ? (
               <Chip
                 icon={<CheckCircleOutlineIcon />}
-                label="Payment confirmed for this period"
+                label="Finance finalized — paystubs on Finalize Payroll"
                 color="success"
                 variant="outlined"
               />
@@ -369,6 +520,13 @@ export default function AccountantPayrollPanel() {
           </Stack>
         </>
       ) : null}
+
+      <TaxWithheldBreakdownDialog
+        open={taxDialog.open}
+        onClose={() => setTaxDialog({ open: false, line: null, workerName: "" })}
+        line={taxDialog.line}
+        workerName={taxDialog.workerName}
+      />
     </Stack>
   );
 }
