@@ -27,6 +27,11 @@ import {
 } from "../../payroll/employerAffiliation";
 
 function tabPreviewChips(affiliation) {
+  if (affiliation === EMPLOYER_AFFILIATION.NONE) {
+    return [
+      <Chip key="none" size="small" label="No schedule tabs" variant="outlined" color="default" />,
+    ];
+  }
   if (affiliation === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE) {
     return [<Chip key="rinse" size="small" label="Rinse tab" color="primary" variant="outlined" />];
   }
@@ -63,7 +68,7 @@ export default function EmployerAffiliationMappingPanel() {
   }, [load]);
 
   const counts = useMemo(() => {
-    const tally = { rinse_exclusive: 0, veewash: 0, both: 0 };
+    const tally = { rinse_exclusive: 0, veewash: 0, both: 0, none: 0 };
     for (const row of rows) {
       const aff = row.employer_affiliation || employerAffiliationFromFlags(row);
       if (tally[aff] != null) tally[aff] += 1;
@@ -101,16 +106,18 @@ export default function EmployerAffiliationMappingPanel() {
   return (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-        Employer affiliation (Rinse · VeeWash · Both)
+        Employer affiliation (Rinse · VeeWash · Both · None)
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" mb={1.5}>
         Stored on each worker&apos;s payroll scheduling profile. Controls which Weekly Schedule tabs they appear on.
+        Use <strong>None</strong> for system / admin accounts that should not appear on Rinse or VeeWash schedule tabs.
         Changes here are the same as editing the profile under People → Scheduling.
       </Typography>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         <Chip size="small" label={`Rinse Exclusive: ${counts.rinse_exclusive}`} />
         <Chip size="small" label={`VeeWash: ${counts.veewash}`} />
         <Chip size="small" label={`Both: ${counts.both}`} />
+        <Chip size="small" label={`None: ${counts.none}`} />
       </Stack>
       {message ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setMessage("")}>

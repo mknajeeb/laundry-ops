@@ -20,8 +20,9 @@ export function isRinseExclusiveEmployee(employee) {
 }
 
 export function matchesEmployerTab(employee, tab) {
-  if (tab === EMPLOYER_TAB.COMBINED) return true;
   const affiliation = employerAffiliationFromFlags(employee);
+  if (affiliation === EMPLOYER_AFFILIATION.NONE) return false;
+  if (tab === EMPLOYER_TAB.COMBINED) return true;
   if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) {
     return affiliation === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE || affiliation === EMPLOYER_AFFILIATION.BOTH;
   }

@@ -4,12 +4,14 @@ export const EMPLOYER_AFFILIATION = {
   RINSE_EXCLUSIVE: "rinse_exclusive",
   VEEWASH: "veewash",
   BOTH: "both",
+  NONE: "none",
 };
 
 export const EMPLOYER_AFFILIATION_OPTIONS = [
   { value: EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE, label: "Rinse Exclusive" },
   { value: EMPLOYER_AFFILIATION.VEEWASH, label: "VeeWash" },
   { value: EMPLOYER_AFFILIATION.BOTH, label: "Both" },
+  { value: EMPLOYER_AFFILIATION.NONE, label: "None" },
 ];
 
 function streamFlag(value) {
@@ -21,6 +23,7 @@ export function employerAffiliationFromFlags(worker) {
   const rinse = streamFlag(worker.can_work_rinse);
   const dropOff = streamFlag(worker.can_work_drop_off);
   const both = streamFlag(worker.can_work_both);
+  if (!rinse && !dropOff && !both) return EMPLOYER_AFFILIATION.NONE;
   if (rinse && dropOff && both) return EMPLOYER_AFFILIATION.BOTH;
   if (rinse && !dropOff && !both) return EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
   if (!rinse && dropOff && !both) return EMPLOYER_AFFILIATION.VEEWASH;
@@ -31,6 +34,9 @@ export function employerAffiliationFromFlags(worker) {
 
 export function flagsFromEmployerAffiliation(affiliation) {
   const aff = String(affiliation || "").trim().toLowerCase();
+  if (aff === EMPLOYER_AFFILIATION.NONE) {
+    return { can_work_rinse: false, can_work_drop_off: false, can_work_both: false };
+  }
   if (aff === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE) {
     return { can_work_rinse: true, can_work_drop_off: false, can_work_both: false };
   }

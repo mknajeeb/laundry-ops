@@ -2,6 +2,7 @@
 
 from backend.payroll_employer_affiliation import (
     EMPLOYER_AFFILIATION_BOTH,
+    EMPLOYER_AFFILIATION_NONE,
     EMPLOYER_AFFILIATION_RINSE,
     EMPLOYER_AFFILIATION_VEEWASH,
     employer_affiliation_from_flags,
@@ -49,6 +50,17 @@ def test_legacy_all_true_maps_to_both():
     )
 
 
+def test_flags_round_trip_none():
+    flags = flags_from_employer_affiliation(EMPLOYER_AFFILIATION_NONE)
+    assert flags == {
+        "can_work_rinse": False,
+        "can_work_drop_off": False,
+        "can_work_both": False,
+    }
+    assert employer_affiliation_from_flags(flags) == EMPLOYER_AFFILIATION_NONE
+
+
 def test_normalize_employer_affiliation():
     assert normalize_employer_affiliation("Rinse_Exclusive") == EMPLOYER_AFFILIATION_RINSE
+    assert normalize_employer_affiliation("NONE") == EMPLOYER_AFFILIATION_NONE
     assert normalize_employer_affiliation("invalid") is None

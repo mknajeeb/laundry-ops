@@ -791,7 +791,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
     if "employer_affiliation" in body:
         aff = normalize_employer_affiliation(body.get("employer_affiliation"))
         if not aff:
-            raise ValueError("employer_affiliation must be rinse_exclusive, veewash, or both")
+            raise ValueError("employer_affiliation must be rinse_exclusive, veewash, both, or none")
         body.update(flags_from_employer_affiliation(aff))
     prof = ensure_worker_profile(conn, oid, uid)
     wpid = int(prof["id"])

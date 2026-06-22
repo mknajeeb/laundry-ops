@@ -1,4 +1,4 @@
-"""Employer affiliation on payroll worker profiles — Rinse Exclusive, VeeWash, or Both."""
+"""Employer affiliation on payroll worker profiles — Rinse Exclusive, VeeWash, Both, or None."""
 
 from __future__ import annotations
 
@@ -7,8 +7,14 @@ from typing import Any, Mapping
 EMPLOYER_AFFILIATION_RINSE = "rinse_exclusive"
 EMPLOYER_AFFILIATION_VEEWASH = "veewash"
 EMPLOYER_AFFILIATION_BOTH = "both"
+EMPLOYER_AFFILIATION_NONE = "none"
 VALID_EMPLOYER_AFFILIATIONS = frozenset(
-    {EMPLOYER_AFFILIATION_RINSE, EMPLOYER_AFFILIATION_VEEWASH, EMPLOYER_AFFILIATION_BOTH}
+    {
+        EMPLOYER_AFFILIATION_RINSE,
+        EMPLOYER_AFFILIATION_VEEWASH,
+        EMPLOYER_AFFILIATION_BOTH,
+        EMPLOYER_AFFILIATION_NONE,
+    }
 )
 
 
@@ -23,6 +29,8 @@ def employer_affiliation_from_flags(worker: Mapping[str, Any] | None) -> str:
     rinse = _stream_flag(worker.get("can_work_rinse"))
     drop_off = _stream_flag(worker.get("can_work_drop_off"))
     both = _stream_flag(worker.get("can_work_both"))
+    if not rinse and not drop_off and not both:
+        return EMPLOYER_AFFILIATION_NONE
     if rinse and drop_off and both:
         return EMPLOYER_AFFILIATION_BOTH
     if rinse and not drop_off and not both:
@@ -38,6 +46,12 @@ def employer_affiliation_from_flags(worker: Mapping[str, Any] | None) -> str:
 
 def flags_from_employer_affiliation(affiliation: str) -> dict[str, bool]:
     aff = str(affiliation or "").strip().lower()
+    if aff == EMPLOYER_AFFILIATION_NONE:
+        return {
+            "can_work_rinse": False,
+            "can_work_drop_off": False,
+            "can_work_both": False,
+        }
     if aff == EMPLOYER_AFFILIATION_RINSE:
         return {
             "can_work_rinse": True,
@@ -95,7 +109,7 @@ def save_employer_affiliation(
 
     aff = normalize_employer_affiliation(affiliation)
     if not aff:
-        raise ValueError("employer_affiliation must be rinse_exclusive, veewash, or both")
+        raise ValueError("employer_affiliation must be rinse_exclusive, veewash, both, or none")
     flags = flags_from_employer_affiliation(aff)
     save_scheduling_profile(conn, int(organization_id), int(user_id), flags)
     worker = get_worker_by_user_id(conn, int(organization_id), int(user_id))
