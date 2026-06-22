@@ -505,13 +505,28 @@ export default function WeeklySchedulePage() {
   };
 
   return (
-    <Box className="weekly-schedule-print-root" sx={{ p: { xs: 1, md: 1.5 }, bgcolor: VEEWASH_DASHBOARD.pageBackground, minHeight: "100%" }}>
+    <Box
+      className="weekly-schedule-print-root"
+      sx={{
+        p: { xs: 1, md: 1.5 },
+        pb: { xs: 3, md: 4 },
+        bgcolor: VEEWASH_DASHBOARD.pageBackground,
+        minHeight: "100%",
+        width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
+        boxSizing: "border-box",
+      }}
+    >
       <Paper
         className="weekly-schedule-print-area"
         elevation={0}
         sx={{
           borderRadius: 3,
           overflow: "visible",
+          width: "100%",
+          maxWidth: "100%",
+          minWidth: 0,
           border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
           boxShadow: "0 8px 30px rgba(15, 23, 42, 0.06)",
         }}
@@ -708,7 +723,7 @@ export default function WeeklySchedulePage() {
           ) : null}
         </Box>
 
-        <Box sx={{ p: { xs: 1.5, md: 2 } }}>
+        <Box sx={{ p: { xs: 1.5, md: 2 }, minWidth: 0, maxWidth: "100%" }}>
           {excludedCount > 0 && !showExcluded && canManageExclusions ? (
             <Alert
               severity="info"
@@ -746,6 +761,7 @@ export default function WeeklySchedulePage() {
               <WeeklyScheduleSummaryBar
                 summary={weekSummary}
                 showCost={showCost && costAllowed}
+                compact={hideEmployerTabs}
               />
 
               {isMobile ? (
@@ -799,7 +815,18 @@ export default function WeeklySchedulePage() {
                   })}
                 </Stack>
               ) : (
-                <Box sx={{ overflowX: "auto" }} className="weekly-schedule-screen-grid">
+                <Box
+                  sx={{
+                    width: "100%",
+                    maxWidth: "100%",
+                    minWidth: 0,
+                    overflowX: "auto",
+                    overflowY: "visible",
+                    WebkitOverflowScrolling: "touch",
+                    pb: 0.5,
+                  }}
+                  className="weekly-schedule-screen-grid"
+                >
                   <Box
                     sx={{
                       display: "grid",
@@ -808,7 +835,7 @@ export default function WeeklySchedulePage() {
                       gap: 0,
                       border: "1px solid #e2e8f0",
                       borderRadius: 2.5,
-                      overflow: "hidden",
+                      overflow: "visible",
                       bgcolor: "#fff",
                     }}
                   >
@@ -821,7 +848,7 @@ export default function WeeklySchedulePage() {
                         position: "sticky",
                         left: 0,
                         top: stickyHeaderHeight,
-                        zIndex: 4,
+                        zIndex: 5,
                         display: "flex",
                         alignItems: "flex-end",
                       }}

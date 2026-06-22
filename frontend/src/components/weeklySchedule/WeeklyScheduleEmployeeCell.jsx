@@ -53,10 +53,10 @@ export default function WeeklyScheduleEmployeeCell({
         px: 1.15,
         py: 0.85,
         borderBottom: "1px solid #e2e8f0",
-        bgcolor: excluded ? "#fafafa" : "#fff",
         position: "sticky",
         left: 0,
-        zIndex: 1,
+        zIndex: 2,
+        bgcolor: excluded ? "#fafafa" : "#fff",
         boxShadow: excluded ? "none" : "2px 0 8px rgba(15,23,42,0.05)",
         minWidth: 0,
       }}
