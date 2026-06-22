@@ -53,6 +53,7 @@ import {
   shiftWeek,
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import { exportWeeklyScheduleCsv } from "../components/weeklySchedule/weeklyScheduleExport";
+import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
 import "../components/weeklySchedule/weeklySchedulePrint.css";
 import {
   computeFilteredDaySummaries,
@@ -725,7 +726,7 @@ export default function WeeklySchedulePage() {
               />
 
               {isMobile ? (
-                <Stack spacing={1.5}>
+                <Stack spacing={1.5} className="weekly-schedule-mobile-stack">
                   {(visibleEmployees || []).map((employee) => {
                     const excluded = Boolean(employee.excluded);
                     return (
@@ -775,7 +776,7 @@ export default function WeeklySchedulePage() {
                   })}
                 </Stack>
               ) : (
-                <Box sx={{ overflowX: "auto" }}>
+                <Box sx={{ overflowX: "auto" }} className="weekly-schedule-screen-grid">
                   <Box
                     sx={{
                       display: "grid",
@@ -863,6 +864,15 @@ export default function WeeklySchedulePage() {
                   </Box>
                 </Box>
               )}
+
+              <Box className="weekly-schedule-print-table-wrap">
+                <WeeklySchedulePrintTable
+                  employees={visibleEmployees}
+                  entries={data?.entries}
+                  dayLabels={DAY_LABELS}
+                  showRoleLabels={showRoleLabels}
+                />
+              </Box>
             </>
           )}
         </Box>

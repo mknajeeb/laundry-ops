@@ -59,6 +59,7 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost }) {
 
   return (
     <Box
+      className="weekly-schedule-print-summary"
       sx={{
         mb: 2,
         px: { xs: 1.5, md: 2 },
