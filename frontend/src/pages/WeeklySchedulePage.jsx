@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import {
   Alert,
   Box,
@@ -532,6 +533,20 @@ export default function WeeklySchedulePage() {
                 <ChevronRightIcon />
               </IconButton>
             </Stack>
+            <Button
+              size="small"
+              variant="outlined"
+              component={RouterLink}
+              to="/performance/user-mapping"
+              sx={{
+                fontWeight: 700,
+                color: "#fff",
+                borderColor: "rgba(255,255,255,0.45)",
+                "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
+              }}
+            >
+              User mapping
+            </Button>
             <Button
               size="small"
               variant="outlined"

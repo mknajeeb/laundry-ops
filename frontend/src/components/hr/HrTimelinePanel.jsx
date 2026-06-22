@@ -31,14 +31,14 @@ import {
   deleteUserHrTimelineEntry,
   getUserHrTimeline,
   previewUserHrTimelineEmail,
-} from "../api";
+} from "../../api";
 import {
   HR_DISCIPLINE_EMAIL_TEMPLATES,
   HR_TIMELINE_CATEGORIES,
   HR_TIMELINE_ENTRY_TYPES,
   entryTypeLabel,
-} from "../hr/hrTimelineConstants";
-import { VEEWASH_BRAND } from "../theme/veewashBrand";
+} from "../../hr/hrTimelineConstants";
+import { VEEWASH_BRAND } from "../../theme/veewashBrand";
 
 function chipColor(entryType) {
   if (entryType === "coaching") return "info";

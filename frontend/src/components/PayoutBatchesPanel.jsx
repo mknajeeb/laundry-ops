@@ -32,6 +32,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
@@ -778,7 +779,16 @@ export default function PayoutBatchesPanel({
           spacing={1}
         >
           <Typography variant="subtitle1">Payout batches</Typography>
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Button
+              size="small"
+              variant="text"
+              component={RouterLink}
+              to="/performance/user-mapping"
+              sx={{ fontWeight: 700 }}
+            >
+              User mapping
+            </Button>
             <FormControl size="small" sx={{ minWidth: 140 }}>
               <InputLabel>Filter</InputLabel>
               <Select label="Filter" value={filterCat} onChange={(e) => setFilterCat(e.target.value)}>
@@ -818,7 +828,10 @@ export default function PayoutBatchesPanel({
                   color={displayStatusColor(b)}
                   sx={{ ml: 0.5, flexShrink: 0 }}
                 />
-                {b.status === "draft" || b.status === "hours_reviewed" ? (
+                {b.status === "draft" ||
+                b.status === "hours_reviewed" ||
+                b.status === "sent_to_accountant" ||
+                b.status === "accountant_reviewed" ? (
                   <Tooltip title="Delete batch">
                     <IconButton
                       size="small"
