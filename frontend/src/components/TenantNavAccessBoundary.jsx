@@ -1,7 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { tenantNavItemForPath, tenantNavItemVisible } from "../constants/tenantNav";
-import { isAccountantOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "../utils/platformAccess";
+import { isAccountantOnlyUser, isRinseScheduleOnlyUser, tenantDefaultRoute, userSatisfiesRoleGate } from "../utils/platformAccess";
 
 function isLoginPath(path) {
   const p = path || "";
@@ -24,6 +24,15 @@ export default function TenantNavAccessBoundary({ user, payrollNavVisible = true
     const onKiosk = p === "/kiosk" || p.startsWith("/kiosk/");
     if (onKiosk || !onPayroll) {
       return <Navigate to="/payroll" replace />;
+    }
+    return children;
+  }
+
+  if (isRinseScheduleOnlyUser(user)) {
+    const onSchedule =
+      p === "/performance/weekly-schedule" || p.startsWith("/performance/weekly-schedule/");
+    if (!onSchedule) {
+      return <Navigate to="/performance/weekly-schedule" replace />;
     }
     return children;
   }

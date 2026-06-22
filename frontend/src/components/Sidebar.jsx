@@ -7,11 +7,78 @@ import { useI18n } from "../i18n/I18nContext";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "../constants/tenantNav";
 import TenantLogo from "./TenantLogo";
 
+const langToggleSx = {
+  flexShrink: 0,
+  width: "100%",
+  "& .MuiToggleButtonGroup-grouped": {
+    flex: 1,
+    borderColor: "#475569",
+  },
+  "& .MuiToggleButton-root": {
+    py: 0.6,
+    px: 1,
+    fontSize: 12,
+    fontWeight: 600,
+    letterSpacing: "0.02em",
+    textTransform: "none",
+    color: "#cbd5e1",
+    bgcolor: "rgba(15, 23, 42, 0.45)",
+    borderColor: "#475569",
+    "&:hover": {
+      bgcolor: "rgba(30, 41, 59, 0.85)",
+      color: "#f8fafc",
+    },
+    "&.Mui-selected": {
+      bgcolor: "#ffffff",
+      color: "#0f172a",
+      fontWeight: 700,
+      borderColor: "#e2e8f0",
+      "&:hover": {
+        bgcolor: "#f8fafc",
+        color: "#0f172a",
+      },
+    },
+  },
+};
+
+function SidebarHeader({ user, t }) {
+  return (
+    <Box
+      sx={{
+        mx: -1.5,
+        mt: -1.5,
+        mb: 1.25,
+        px: 1.5,
+        py: 2,
+        bgcolor: "#ffffff",
+        borderBottom: "1px solid #e2e8f0",
+        boxShadow: "0 1px 0 rgba(15, 23, 42, 0.04)",
+        flexShrink: 0,
+      }}
+    >
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1.25, minWidth: 0 }}>
+        <TenantLogo logoUrl={user?.organization_logo_url} size={44} />
+        <Typography
+          sx={{
+            fontSize: 17,
+            lineHeight: 1.25,
+            color: "#0f172a",
+            fontWeight: 700,
+            letterSpacing: "-0.01em",
+          }}
+          noWrap
+        >
+          {user?.organization_name || t("common.appName")}
+        </Typography>
+      </Box>
+    </Box>
+  );
+}
+
 function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
   const { locale, setLocale, t } = useI18n();
   const { loading: authLoading, hasPerm } = useAuth();
   const [payrollNavVisible, setPayrollNavVisible] = useState(true);
-  const roles = (user?.roles || []).map((r) => String(r).toUpperCase());
 
   useEffect(() => {
     if (authLoading || !user?.id) return;
@@ -44,20 +111,20 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
         boxSizing: "border-box",
       }}
     >
-      <Box sx={{ mb: 1, minHeight: 44, flexShrink: 0, display: "flex", alignItems: "center" }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1.2, minWidth: 0 }}>
-          <TenantLogo logoUrl={user?.organization_logo_url} size={40} />
-          <Typography sx={{ fontSize: 22, lineHeight: 1.15, color: "#ffffff", fontWeight: 700 }} noWrap>
-            {user?.organization_name || t("common.appName")}
-          </Typography>
-        </Box>
-      </Box>
-      <Typography sx={{ fontSize: 13, color: "#94a3b8", flexShrink: 0 }}>
+      <SidebarHeader user={user} t={t} />
+
+      <Typography
+        sx={{
+          fontSize: 13,
+          color: "#94a3b8",
+          flexShrink: 0,
+          px: 0.25,
+          mb: 1,
+        }}
+        noWrap
+      >
         {user?.display_name || user?.username}
       </Typography>
-      <Stack direction="row" spacing={0.6} sx={{ mt: 0.6, mb: 1.2, flexWrap: "wrap", flexShrink: 0 }}>
-        {roles.map((r) => <Chip key={r} label={r} size="small" sx={{ bgcolor: "#1e293b", color: "#cbd5e1" }} />)}
-      </Stack>
 
       {showKioskLock ? (
         <Button
@@ -70,15 +137,29 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
           {t("nav.lockTablet")}
         </Button>
       ) : null}
-      <Typography sx={{ fontSize: 11, color: "#94a3b8", mb: 0.5, flexShrink: 0 }}>{t("lang.label")}</Typography>
+
+      <Typography
+        sx={{
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "#64748b",
+          mb: 0.5,
+          flexShrink: 0,
+        }}
+      >
+        {t("lang.label")}
+      </Typography>
       <ToggleButtonGroup
         size="small"
         exclusive
+        fullWidth
         value={locale}
         onChange={(_, v) => {
           if (v !== null) setLocale(v);
         }}
-        sx={{ mb: 1.2, flexShrink: 0, "& .MuiToggleButton-root": { py: 0.25, px: 1, fontSize: 12, color: "#e2e8f0", borderColor: "#334155" } }}
+        sx={{ ...langToggleSx, mb: 1.2 }}
       >
         <ToggleButton value="en">{t("lang.en")}</ToggleButton>
         <ToggleButton value="es">{t("lang.es")}</ToggleButton>
@@ -105,7 +186,9 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
                 borderRadius: "10px",
                 color: isActive ? "#0f172a" : "#e2e8f0",
                 background: isActive ? "#f8fafc" : "#1e293b",
-                fontSize: 16,
+                fontSize: 15,
+                fontWeight: isActive ? 700 : 500,
+                transition: "background 0.15s ease, color 0.15s ease",
               })}
             >
               {t(item.labelKey)}
@@ -116,9 +199,19 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
 
       <Button
         fullWidth
-        sx={{ mt: 1.5, flexShrink: 0 }}
+        sx={{
+          mt: 1.5,
+          flexShrink: 0,
+          borderColor: "#475569",
+          color: "#e2e8f0",
+          py: 0.85,
+          fontWeight: 600,
+          "&:hover": {
+            borderColor: "#94a3b8",
+            bgcolor: "rgba(255,255,255,0.06)",
+          },
+        }}
         variant="outlined"
-        color="inherit"
         onClick={onLogout}
       >
         {t("nav.logout")}
@@ -128,3 +221,4 @@ function Sidebar({ activeBatch, user, onLogout, showKioskLock, onKioskLock }) {
 }
 
 export default Sidebar;
+export { SidebarHeader, langToggleSx };

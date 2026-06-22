@@ -713,6 +713,11 @@ def register_rinse_shift_analysis_routes(
                 week_start = normalize_week_start(raw_week)
             if not isinstance(week_start, date):
                 return jsonify({"error": "week_start must be YYYY-MM-DD"}), 400
+            from backend.weekly_schedule_display_settings import validate_schedule_week_access
+
+            week_err = validate_schedule_week_access(week_start, me.get("roles"))
+            if week_err:
+                return jsonify({"error": week_err}), 403
             carry = ensure_week_schedule_carried_forward(
                 conn, cursor, tenant_oid, week_start=week_start
             )

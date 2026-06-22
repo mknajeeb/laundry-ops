@@ -808,7 +808,7 @@ def build_week_payload(
     week_start: date,
     user_roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    from backend.weekly_schedule_display_settings import effective_weekly_schedule_view
+    from backend.weekly_schedule_display_settings import effective_weekly_schedule_view, apply_rinse_viewer_scope
     from backend.payroll_employer_affiliation import employer_affiliation_from_flags
 
     workers = _load_workers(conn, organization_id)
@@ -852,7 +852,7 @@ def build_week_payload(
 
     view = effective_weekly_schedule_view(cursor, organization_id, user_roles)
 
-    return {
+    payload = {
         "week_start": str(week_start),
         "day_labels": list(DAY_LABELS),
         "employees": employee_rows,
@@ -861,3 +861,6 @@ def build_week_payload(
         "excluded_user_ids": excluded_user_ids,
         "display": view,
     }
+    if view.get("lock_employer_tab"):
+        return apply_rinse_viewer_scope(payload)
+    return payload

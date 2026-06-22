@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any, Mapping, Sequence
 
+from backend.payroll_employer_affiliation import (
+    EMPLOYER_AFFILIATION_BOTH,
+    EMPLOYER_AFFILIATION_RINSE,
+)
 from backend.ta_helpers import table_exists
 
 KEY_WEEKLY_SCHEDULE_DISPLAY = "weekly_schedule_display_settings"
@@ -20,6 +25,10 @@ DEFAULTS: dict[str, bool] = {
 }
 
 PRIVILEGED_ROLES = frozenset({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN"})
+RINSE_SCHEDULE_VIEWER_ROLES = frozenset({"RINSE"})
+RINSE_EXCLUSIVE_EMPLOYER_AFFILIATIONS = frozenset(
+    {EMPLOYER_AFFILIATION_RINSE, EMPLOYER_AFFILIATION_BOTH}
+)
 
 
 def _truthy(raw: Any, default: bool = False) -> bool:
@@ -102,6 +111,73 @@ def _is_privileged(user_roles: Sequence[str] | None) -> bool:
     return bool(rs & PRIVILEGED_ROLES)
 
 
+def is_rinse_schedule_viewer(user_roles: Sequence[str] | None) -> bool:
+    """Rinse partner login: read-only Rinse Exclusive tab, current week onward."""
+    if _is_privileged(user_roles):
+        return False
+    rs = {str(r).upper() for r in (user_roles or [])}
+    return bool(rs & RINSE_SCHEDULE_VIEWER_ROLES)
+
+
+def current_schedule_week_start() -> date:
+    from backend.planned_weekly_schedule import normalize_week_start
+    from backend.rinse_scheduled_scrape import _today_et
+
+    return normalize_week_start(_today_et())  # type: ignore[return-value]
+
+
+def validate_schedule_week_access(
+    week_start: date,
+    user_roles: Sequence[str] | None,
+) -> str | None:
+    if not is_rinse_schedule_viewer(user_roles):
+        return None
+    min_week = current_schedule_week_start()
+    if week_start < min_week:
+        return f"Schedule is only available from the week of {min_week.isoformat()} onward"
+    return None
+
+
+def apply_rinse_viewer_scope(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Limit weekly schedule payload to Rinse Exclusive employees for RINSE role viewers."""
+    from backend.planned_weekly_schedule import compute_schedule_totals
+
+    out = dict(payload)
+    employees = [
+        row
+        for row in (out.get("employees") or [])
+        if row.get("employer_affiliation") in RINSE_EXCLUSIVE_EMPLOYER_AFFILIATIONS
+    ]
+    allowed_user_ids = {int(row["user_id"]) for row in employees if row.get("user_id") is not None}
+    entries = [
+        entry
+        for entry in (out.get("entries") or [])
+        if int(entry.get("user_id") or 0) in allowed_user_ids
+    ]
+    excluded_user_ids = [
+        int(uid)
+        for uid in (out.get("excluded_user_ids") or [])
+        if int(uid) in allowed_user_ids
+    ]
+    workers_by_uid = {
+        int(row["user_id"]): {
+            "user_id": row["user_id"],
+            "default_hourly_rate": row.get("default_hourly_rate"),
+        }
+        for row in employees
+        if row.get("user_id") is not None
+    }
+    out["employees"] = employees
+    out["entries"] = entries
+    out["excluded_user_ids"] = excluded_user_ids
+    out["totals"] = compute_schedule_totals(
+        entries,
+        workers_by_uid,
+        excluded_user_ids=excluded_user_ids,
+    )
+    return out
+
+
 def effective_weekly_schedule_view(
     cursor,
     organization_id: int,
@@ -110,6 +186,8 @@ def effective_weekly_schedule_view(
     """Resolve what the current user may see on the weekly schedule."""
     settings = get_weekly_schedule_display_settings(cursor, organization_id)
     privileged = _is_privileged(user_roles)
+    rinse_viewer = is_rinse_schedule_viewer(user_roles)
+    min_week = current_schedule_week_start().isoformat() if rinse_viewer else None
     if privileged:
         return {
             "is_privileged": True,
@@ -120,9 +198,14 @@ def effective_weekly_schedule_view(
             "can_edit_schedule": True,
             "can_manage_exclusions": True,
             "can_configure_sharing": True,
+            "employer_tab": None,
+            "lock_employer_tab": False,
+            "hide_employer_tabs": False,
+            "min_week_start": None,
+            "can_view_past_weeks": True,
             "org_settings": settings,
         }
-    return {
+    external_view = {
         "is_privileged": False,
         "show_estimated_cost": settings["share_cost_with_external"],
         "show_role_labels": settings["share_role_labels_with_external"],
@@ -131,6 +214,11 @@ def effective_weekly_schedule_view(
         "can_edit_schedule": False,
         "can_manage_exclusions": False,
         "can_configure_sharing": False,
+        "employer_tab": EMPLOYER_AFFILIATION_RINSE if rinse_viewer else None,
+        "lock_employer_tab": rinse_viewer,
+        "hide_employer_tabs": rinse_viewer,
+        "min_week_start": min_week,
+        "can_view_past_weeks": not rinse_viewer,
         "org_settings": {
             k: settings[k]
             for k in (
@@ -141,3 +229,4 @@ def effective_weekly_schedule_view(
             )
         },
     }
+    return external_view

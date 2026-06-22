@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { TENANT_NAV_ITEMS, tenantNavItemVisible } from "./tenantNav";
-import { isAccountantOnlyUser, tenantDefaultRoute, userMayUseKioskLock } from "../utils/platformAccess";
+import {
+  isAccountantOnlyUser,
+  isRinseScheduleOnlyUser,
+  tenantDefaultRoute,
+  userMayUseKioskLock,
+} from "../utils/platformAccess";
 
 describe("accountant-only navigation", () => {
   const accountantOnly = { id: 1, roles: ["ACCOUNTANT"] };
@@ -36,5 +41,30 @@ describe("accountant-only navigation", () => {
     expect(userMayUseKioskLock(accountantOnly)).toBe(false);
     expect(userMayUseKioskLock(adminAccountant)).toBe(false);
     expect(userMayUseKioskLock({ id: 4, roles: ["CHECKOUT"] })).toBe(true);
+  });
+});
+
+describe("rinse schedule-only navigation", () => {
+  const rinseOnly = { id: 5, roles: ["RINSE"] };
+  const adminRinse = { id: 6, roles: ["ADMIN", "RINSE"] };
+
+  it("detects pure rinse schedule role", () => {
+    expect(isRinseScheduleOnlyUser(rinseOnly)).toBe(true);
+    expect(isRinseScheduleOnlyUser(adminRinse)).toBe(false);
+    expect(isRinseScheduleOnlyUser({ roles: ["OPS"] })).toBe(false);
+  });
+
+  it("uses weekly schedule as default route for rinse-only users", () => {
+    expect(tenantDefaultRoute(rinseOnly)).toBe("/performance/weekly-schedule");
+    expect(tenantDefaultRoute(adminRinse)).toBe("/");
+  });
+
+  it("shows only weekly schedule in sidebar nav", () => {
+    const visible = TENANT_NAV_ITEMS.filter((item) => tenantNavItemVisible(rinseOnly, item));
+    expect(visible.map((item) => item.to)).toEqual(["/performance/weekly-schedule"]);
+  });
+
+  it("blocks kiosk lock for rinse-only users", () => {
+    expect(userMayUseKioskLock(rinseOnly)).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import {
   hasPlatformAdminRole,
   isAccountantOnlyUser,
+  isRinseScheduleOnlyUser,
   isTenantModuleEnabled,
   TENANT_PORTAL_ROLES,
   TENANT_STANDARD_OPS_ROLES,
@@ -81,7 +82,7 @@ export const TENANT_NAV_ITEMS = [
   {
     to: "/performance/weekly-schedule",
     labelKey: "nav.weeklySchedule",
-    roles: ["ADMIN", "OPS"],
+    roles: ["ADMIN", "OPS", "RINSE"],
     moduleKey: "scoreboard",
   },
   {
@@ -135,6 +136,10 @@ export function tenantNavItemVisible(user, item, payrollNavVisible = true, hasPe
     if (item.to !== "/payroll") return false;
     if (payrollNavVisible === false) return false;
     return isTenantModuleEnabled(user, item.moduleKey || "payroll");
+  }
+  if (isRinseScheduleOnlyUser(user)) {
+    if (item.to !== "/performance/weekly-schedule") return false;
+    return isTenantModuleEnabled(user, item.moduleKey || "scoreboard");
   }
   if (item.to === "/payroll" && payrollNavVisible === false) return false;
   if (item.skipModuleCheck) return hasPlatformAdminRole(user);

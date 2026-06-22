@@ -851,7 +851,7 @@ function AppShell() {
               path="/performance/weekly-schedule/employee/:userId"
               element={
                 <TenantOnlyRoute user={user}>
-                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "RINSE"]}>
                     <WeeklyScheduleEmployeeViewPage />
                   </GuardedRoute>
                 </TenantOnlyRoute>
@@ -861,7 +861,7 @@ function AppShell() {
               path="/performance/weekly-schedule"
               element={
                 <TenantOnlyRoute user={user}>
-                  <GuardedRoute user={user} roles={["ADMIN", "OPS"]}>
+                  <GuardedRoute user={user} roles={["ADMIN", "OPS", "RINSE"]}>
                     <WeeklySchedulePage />
                   </GuardedRoute>
                 </TenantOnlyRoute>

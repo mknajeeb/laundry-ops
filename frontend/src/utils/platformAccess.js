@@ -13,7 +13,7 @@ export const TENANT_STANDARD_OPS_ROLES = [
 ];
 
 /** All roles that may sign in to the tenant Laundry Ops app (includes narrow roles like CHECKOUT). */
-export const TENANT_PORTAL_ROLES = [...TENANT_STANDARD_OPS_ROLES, "CHECKOUT", "ACCOUNTANT"];
+export const TENANT_PORTAL_ROLES = [...TENANT_STANDARD_OPS_ROLES, "CHECKOUT", "ACCOUNTANT", "RINSE"];
 
 /** Platform operators: manage tenants and entitlements (not operational laundry UI). */
 export const PLATFORM_ADMIN_ROLES = ["SUPER_ADMIN", "PLATFORM_ADMIN"];
@@ -40,9 +40,20 @@ export function isAccountantOnlyUser(user) {
   return !r.some((role) => role !== "ACCOUNTANT" && TENANT_PORTAL_ROLES.includes(role));
 }
 
+/** True when the user only has the RINSE role (Rinse Exclusive schedule viewer). */
+export function isRinseScheduleOnlyUser(user) {
+  const r = normalizedRoles(user);
+  if (!r.includes("RINSE")) return false;
+  if (hasPlatformAdminRole(user)) return false;
+  const elevated = TENANT_PORTAL_ROLES.filter((role) => role !== "RINSE");
+  return !r.some((role) => elevated.includes(role));
+}
+
 /** Post-login / blocked-route landing path for tenant users. */
 export function tenantDefaultRoute(user) {
-  return isAccountantOnlyUser(user) ? "/payroll" : "/";
+  if (isAccountantOnlyUser(user)) return "/payroll";
+  if (isRinseScheduleOnlyUser(user)) return "/performance/weekly-schedule";
+  return "/";
 }
 
 /**
@@ -50,7 +61,7 @@ export function tenantDefaultRoute(user) {
  * Ops staff with clock access may lock to PIN kiosk explicitly; accountants use payroll only.
  */
 export function userMayUseKioskLock(user) {
-  if (!user || isAccountantOnlyUser(user) || isPlatformOnlyUser(user)) return false;
+  if (!user || isAccountantOnlyUser(user) || isRinseScheduleOnlyUser(user) || isPlatformOnlyUser(user)) return false;
   const roles = normalizedRoles(user);
   if (roles.some((r) => ["ADMIN", "SUPER_ADMIN", "PLATFORM_ADMIN"].includes(r))) return false;
   return true;

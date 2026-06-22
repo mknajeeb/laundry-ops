@@ -238,6 +238,11 @@ export default function WeeklySchedulePage() {
   const showEmployeeRates = display.show_employee_rates !== false;
   const costAllowed = display.show_estimated_cost !== false;
   const canConfigureSharing = display.can_configure_sharing !== false;
+  const lockEmployerTab = display.lock_employer_tab === true;
+  const hideEmployerTabs = display.hide_employer_tabs === true;
+  const minWeekStart = display.min_week_start || null;
+  const canViewPastWeeks = display.can_view_past_weeks !== false;
+  const lockedEmployerTab = display.employer_tab || EMPLOYER_TAB.RINSE_EXCLUSIVE;
 
   useEffect(() => {
     if (data?.display) {
@@ -291,10 +296,14 @@ export default function WeeklySchedulePage() {
   const dayTotals = data?.totals?.day_totals || [];
 
   useEffect(() => {
+    if (lockEmployerTab) {
+      setEmployerTab(lockedEmployerTab);
+      return;
+    }
     if (data?.employees?.length) {
       setEmployerTab(pickDefaultEmployerTab(data.employees));
     }
-  }, [data?.week_start]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data?.week_start, lockEmployerTab, lockedEmployerTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tabEmployees = useMemo(
     () => filterEmployeesByEmployerTab(data?.employees || [], employerTab),
@@ -433,9 +442,12 @@ export default function WeeklySchedulePage() {
 
   const changeWeek = (delta) => {
     const next = shiftWeek(weekStart, delta);
+    if (delta < 0 && minWeekStart && next < minWeekStart) return;
     setWeekStart(next);
     load(next);
   };
+
+  const canGoToPreviousWeek = canViewPastWeeks && (!minWeekStart || weekStart > minWeekStart);
 
   const openEmployeeView = (employee) => {
     const url = `/performance/weekly-schedule/employee/${employee.user_id}?week_start=${weekStart}`;
@@ -520,7 +532,12 @@ export default function WeeklySchedulePage() {
                 py: 0.25,
               }}
             >
-              <IconButton size="small" onClick={() => changeWeek(-1)} sx={{ color: "#fff" }}>
+              <IconButton
+                size="small"
+                onClick={() => changeWeek(-1)}
+                disabled={!canGoToPreviousWeek}
+                sx={{ color: "#fff", opacity: canGoToPreviousWeek ? 1 : 0.45 }}
+              >
                 <ChevronLeftIcon />
               </IconButton>
               <Typography
@@ -533,20 +550,22 @@ export default function WeeklySchedulePage() {
                 <ChevronRightIcon />
               </IconButton>
             </Stack>
-            <Button
-              size="small"
-              variant="outlined"
-              component={RouterLink}
-              to="/performance/user-mapping"
-              sx={{
-                fontWeight: 700,
-                color: "#fff",
-                borderColor: "rgba(255,255,255,0.45)",
-                "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
-              }}
-            >
-              User mapping
-            </Button>
+            {canEdit ? (
+              <Button
+                size="small"
+                variant="outlined"
+                component={RouterLink}
+                to="/performance/user-mapping"
+                sx={{
+                  fontWeight: 700,
+                  color: "#fff",
+                  borderColor: "rgba(255,255,255,0.45)",
+                  "&:hover": { borderColor: "#fff", bgcolor: "rgba(255,255,255,0.12)" },
+                }}
+              >
+                User mapping
+              </Button>
+            ) : null}
             <Button
               size="small"
               variant="outlined"
@@ -589,35 +608,37 @@ export default function WeeklySchedulePage() {
           </Typography>
         </Box>
 
-        <Box sx={{ px: 2, pt: 1.5, pb: 0, bgcolor: "#fff", borderBottom: "1px solid #e8eef2" }} className="no-print">
-          <Tabs
-            value={employerTab}
-            onChange={(_, value) => setEmployerTab(value)}
-            sx={{
-              minHeight: 40,
-              "& .MuiTab-root": {
+        {!hideEmployerTabs ? (
+          <Box sx={{ px: 2, pt: 1.5, pb: 0, bgcolor: "#fff", borderBottom: "1px solid #e8eef2" }} className="no-print">
+            <Tabs
+              value={employerTab}
+              onChange={(_, value) => setEmployerTab(value)}
+              sx={{
                 minHeight: 40,
-                py: 0.75,
-                fontWeight: 700,
-                fontSize: "0.8125rem",
-                textTransform: "none",
-              },
-            }}
-          >
-            <Tab
-              value={EMPLOYER_TAB.VEEWASH}
-              label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH).length})`}
-            />
-            <Tab
-              value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
-              label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
-            />
-            <Tab
-              value={EMPLOYER_TAB.COMBINED}
-              label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.COMBINED]} (${(data?.employees || []).length})`}
-            />
-          </Tabs>
-        </Box>
+                "& .MuiTab-root": {
+                  minHeight: 40,
+                  py: 0.75,
+                  fontWeight: 700,
+                  fontSize: "0.8125rem",
+                  textTransform: "none",
+                },
+              }}
+            >
+              <Tab
+                value={EMPLOYER_TAB.VEEWASH}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH).length})`}
+              />
+              <Tab
+                value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
+              />
+              <Tab
+                value={EMPLOYER_TAB.COMBINED}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.COMBINED]} (${(data?.employees || []).length})`}
+              />
+            </Tabs>
+          </Box>
+        ) : null}
 
         <Box
           className="no-print"
