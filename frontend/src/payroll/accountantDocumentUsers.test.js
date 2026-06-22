@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   filterAccountantDocumentUsers,
+  filterPayrollTimelineUsers,
   formatAccountantDocumentUserLabel,
   isAccountantSystemUser,
   isW2EmployeeForDocuments,
+  workerLaneForCategory,
 } from "./accountantDocumentUsers";
 
 describe("accountantDocumentUsers", () => {
@@ -49,5 +51,18 @@ describe("accountantDocumentUsers", () => {
     expect(filterAccountantDocumentUsers(users, "w2")).toEqual([w2Worker]);
     expect(filterAccountantDocumentUsers(users, "system_users")).toEqual([]);
     expect(filterAccountantDocumentUsers(users, "contractor_1099")).toEqual([]);
+  });
+
+  it("filters HR timeline workers by category", () => {
+    const contractor = {
+      id: 40,
+      first_name: "Jane",
+      last_name: "Contractor",
+      hr_form_lanes: ["contractor_1099"],
+    };
+    const users = [alliance, w2Worker, contractor];
+    expect(filterPayrollTimelineUsers(users, "w2")).toEqual([w2Worker]);
+    expect(filterPayrollTimelineUsers(users, "contractor_1099")).toEqual([contractor]);
+    expect(workerLaneForCategory("contractor_1099")).toBe("contractor_1099");
   });
 });

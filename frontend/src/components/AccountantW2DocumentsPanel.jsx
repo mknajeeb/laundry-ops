@@ -11,6 +11,8 @@ import {
   IconButton,
   Paper,
   Stack,
+  Tab,
+  Tabs,
   Table,
   TableBody,
   TableCell,
@@ -57,6 +59,7 @@ import DirectDepositFormPrint, {
 } from "../payroll/DirectDepositFormPrint";
 import { VEEWASH_BRAND } from "../theme/veewashBrand";
 import AccountantScopeFilters from "./AccountantScopeFilters";
+import PayrollHrTimelinePanel from "./PayrollHrTimelinePanel";
 import { accountantPeriodStatusLabel } from "../payroll/accountantBatchPick";
 
 async function fetchDocumentBlob(userId, record, { download = false } = {}) {
@@ -146,6 +149,7 @@ export default function AccountantW2DocumentsPanel({ embedded = false }) {
   const [uploadOpen, setUploadOpen] = useState(null);
   const [uploadFile, setUploadFile] = useState(null);
   const [printPreviewOpen, setPrintPreviewOpen] = useState(false);
+  const [detailTab, setDetailTab] = useState("documents");
   const uploadInputRef = useRef(null);
 
   const loadBatches = useCallback(async () => {
@@ -254,6 +258,7 @@ export default function AccountantW2DocumentsPanel({ embedded = false }) {
 
   useEffect(() => {
     setSelected(null);
+    setDetailTab("documents");
   }, [category, viewMode, selectedBatchId]);
 
   const workerOptions =
@@ -396,8 +401,8 @@ export default function AccountantW2DocumentsPanel({ embedded = false }) {
               Employee Documents
             </Typography>
             <Typography variant="body2" sx={{ opacity: 0.92, maxWidth: 640 }}>
-              Print direct deposit from VeeWash. Upload signed copies for the other items. Accountants can
-              view and print; admins can upload and manage files.
+              Print direct deposit from VeeWash. Upload signed copies for the other items. Use HR
+              Timeline for coaching, warnings, and internal notes — no signed discipline forms.
             </Typography>
           </>
         ) : (
@@ -429,6 +434,26 @@ export default function AccountantW2DocumentsPanel({ embedded = false }) {
       />
 
       {selected ? (
+        <>
+          <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+            <Tabs
+              value={detailTab}
+              onChange={(_, v) => setDetailTab(v)}
+              sx={{ minHeight: 36 }}
+            >
+              <Tab value="documents" label="Signed documents" sx={{ minHeight: 36, py: 0.5 }} />
+              <Tab value="hr_timeline" label="HR Timeline" sx={{ minHeight: 36, py: 0.5 }} />
+            </Tabs>
+          </Box>
+
+          {detailTab === "hr_timeline" ? (
+            <PayrollHrTimelinePanel
+              category="w2"
+              selectedWorker={selected}
+              onWorkerChange={setSelected}
+              compact
+            />
+          ) : (
         <TableContainer
           component={Paper}
           elevation={0}
@@ -586,6 +611,8 @@ export default function AccountantW2DocumentsPanel({ embedded = false }) {
             </TableBody>
           </Table>
         </TableContainer>
+          )}
+        </>
       ) : viewMode === "batch" && !selectedBatchId ? (
         <Alert severity="info">Select a batch, then choose an employee to manage documents.</Alert>
       ) : (

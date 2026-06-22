@@ -78,6 +78,32 @@ export function filterAccountantDocumentUsers(users, category) {
   return list.filter(isW2EmployeeForDocuments);
 }
 
+function hasLane(user, lane) {
+  const lanes = user?.hr_form_lanes || [];
+  return lanes.includes(lane);
+}
+
+/** Payroll workers eligible for HR Timeline by category (mirrors document filing scope). */
+export function filterPayrollTimelineUsers(users, category) {
+  const list = users || [];
+  if (category === "w2") return list.filter(isW2EmployeeForDocuments);
+  if (category === "contractor_1099") {
+    return list.filter((u) => hasLane(u, "contractor_1099") && !isAccountantSystemUser(u));
+  }
+  if (category === "temp") {
+    return list.filter(
+      (u) => (hasLane(u, "contractor_temp") || hasLane(u, "temp")) && !isAccountantSystemUser(u),
+    );
+  }
+  return [];
+}
+
+export function workerLaneForCategory(category) {
+  if (category === "contractor_1099") return "contractor_1099";
+  if (category === "temp") return "contractor_temp";
+  return "employee_w2";
+}
+
 export function mapAccountantDocumentUserOption(user) {
   return {
     id: user.id ?? user.user_id,
