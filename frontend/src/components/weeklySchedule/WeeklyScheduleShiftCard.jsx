@@ -16,14 +16,23 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import CheckIcon from "@mui/icons-material/Check";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
+import {
+  EMPLOYER_TAB_LABELS,
+  EMPLOYER_TAB,
+  resolveEntryEmployerAffiliation,
+  SHIFT_EMPLOYER_AFFILIATION,
+} from "./weeklyScheduleEmployerTabs";
 import { parseEntryRoles, roleLabels, shiftPeriodStyle } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleShiftCard({
   entry,
+  employee,
   onEdit,
   onDelete,
   onDuplicate,
+  onSetEmployer,
   onDragStart,
   onDragEnd,
   dragging,
@@ -44,7 +53,9 @@ export default function WeeklyScheduleShiftCard({
   const breakSuffix = showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
   const roleText = showRoleLabels ? roleLabels(roles) : "";
-  const hasActions = Boolean((onEdit || onDuplicate || onDelete) && !muted);
+  const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
+  const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee);
+  const canSetEmployer = Boolean(onSetEmployer && !muted);
 
   const closeMenu = () => setMenuAnchor(null);
 
@@ -177,8 +188,39 @@ export default function WeeklyScheduleShiftCard({
               onClick={(e) => e.stopPropagation()}
               anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
               transformOrigin={{ vertical: "top", horizontal: "right" }}
-              slotProps={{ paper: { sx: { minWidth: 160 } } }}
+              slotProps={{ paper: { sx: { minWidth: 196 } } }}
             >
+              {canSetEmployer ? (
+                <>
+                  {[SHIFT_EMPLOYER_AFFILIATION.VEEWASH, SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE].map((affiliation) => {
+                    const selected = shiftEmployer === affiliation;
+                    const label =
+                      affiliation === SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE
+                        ? EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]
+                        : EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH];
+                    return (
+                      <MenuItem
+                        key={affiliation}
+                        selected={selected}
+                        onClick={() => {
+                          closeMenu();
+                          if (!selected) onSetEmployer(entry, affiliation);
+                        }}
+                      >
+                        <ListItemIcon sx={{ minWidth: 28 }}>
+                          {selected ? <CheckIcon fontSize="small" /> : <Box sx={{ width: 18 }} />}
+                        </ListItemIcon>
+                        <ListItemText primaryTypographyProps={{ fontSize: "0.875rem", fontWeight: 600 }}>
+                          {label}
+                        </ListItemText>
+                      </MenuItem>
+                    );
+                  })}
+                  {(onEdit || onDuplicate || onDelete) ? (
+                    <Box sx={{ my: 0.5, borderTop: "1px solid", borderColor: "divider" }} />
+                  ) : null}
+                </>
+              ) : null}
               {onEdit ? (
                 <MenuItem
                   onClick={() => {

@@ -128,9 +128,9 @@ def test_apply_rinse_viewer_scope_filters_employees_and_entries():
             {"user_id": 3, "employer_affiliation": "both", "default_hourly_rate": 19},
         ],
         "entries": [
-            {"user_id": 1, "day_of_week": 0, "hours": 7, "role": "fold"},
-            {"user_id": 2, "day_of_week": 0, "hours": 8, "role": "wash"},
-            {"user_id": 3, "day_of_week": 1, "hours": 6, "role": "sort"},
+            {"user_id": 1, "day_of_week": 0, "hours": 7, "role": "fold", "employer_affiliation": "rinse_exclusive"},
+            {"user_id": 2, "day_of_week": 0, "hours": 8, "role": "wash", "employer_affiliation": "veewash"},
+            {"user_id": 3, "day_of_week": 1, "hours": 6, "role": "sort", "employer_affiliation": "rinse_exclusive"},
         ],
         "excluded_user_ids": [1, 2],
         "totals": {},

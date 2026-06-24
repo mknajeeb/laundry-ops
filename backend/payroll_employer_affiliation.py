@@ -16,6 +16,12 @@ VALID_EMPLOYER_AFFILIATIONS = frozenset(
         EMPLOYER_AFFILIATION_NONE,
     }
 )
+SHIFT_EMPLOYER_AFFILIATIONS = frozenset(
+    {
+        EMPLOYER_AFFILIATION_RINSE,
+        EMPLOYER_AFFILIATION_VEEWASH,
+    }
+)
 
 
 def _stream_flag(value: Any) -> bool:
@@ -76,6 +82,21 @@ def normalize_employer_affiliation(raw: Any) -> str | None:
     if aff in VALID_EMPLOYER_AFFILIATIONS:
         return aff
     return None
+
+
+def normalize_shift_employer_affiliation(raw: Any) -> str | None:
+    aff = str(raw or "").strip().lower()
+    if aff in SHIFT_EMPLOYER_AFFILIATIONS:
+        return aff
+    return None
+
+
+def default_shift_employer_affiliation(worker: Mapping[str, Any] | None) -> str:
+    """Default per-shift employer tab from worker profile flags."""
+    aff = employer_affiliation_from_flags(worker)
+    if aff == EMPLOYER_AFFILIATION_RINSE:
+        return EMPLOYER_AFFILIATION_RINSE
+    return EMPLOYER_AFFILIATION_VEEWASH
 
 
 def list_employer_affiliation_rows(conn, organization_id: int) -> list[dict[str, Any]]:

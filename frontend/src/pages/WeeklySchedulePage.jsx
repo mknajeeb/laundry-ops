@@ -44,6 +44,8 @@ import {
   EMPLOYER_TAB,
   EMPLOYER_TAB_LABELS,
   filterEmployeesByEmployerTab,
+  filterEntriesByEmployerTab,
+  defaultShiftEmployerForTab,
   pickDefaultEmployerTab,
 } from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
 import {
@@ -92,6 +94,7 @@ function ScheduleDayCell({
   openEdit,
   handleDelete,
   handleDuplicate,
+  handleSetEmployer,
   compact = false,
 }) {
   const cellKey = `${employee.user_id}:${dow}`;
@@ -155,6 +158,7 @@ function ScheduleDayCell({
         <WeeklyScheduleShiftCard
           key={entry.id}
           entry={entry}
+          employee={employee}
           dragging={draggingId === entry.id}
           muted={excluded}
           showRoleLabels={showRoleLabels}
@@ -162,6 +166,7 @@ function ScheduleDayCell({
           onEdit={canEdit ? openEdit : undefined}
           onDelete={canEdit ? handleDelete : undefined}
           onDuplicate={canEdit ? handleDuplicate : undefined}
+          onSetEmployer={canEdit ? handleSetEmployer : undefined}
           duplicating={duplicatingId === entry.id}
           onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
           onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
@@ -286,16 +291,6 @@ export default function WeeklySchedulePage() {
     load(weekStart);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const entriesByCell = useMemo(() => {
-    const map = {};
-    for (const entry of data?.entries || []) {
-      const key = `${entry.user_id}:${entry.day_of_week}`;
-      if (!map[key]) map[key] = [];
-      map[key].push(entry);
-    }
-    return map;
-  }, [data?.entries]);
-
   const dayTotals = data?.totals?.day_totals || [];
 
   useEffect(() => {
@@ -304,14 +299,29 @@ export default function WeeklySchedulePage() {
       return;
     }
     if (data?.employees?.length) {
-      setEmployerTab(pickDefaultEmployerTab(data.employees));
+      setEmployerTab(pickDefaultEmployerTab(data.employees, data.entries));
     }
   }, [data?.week_start, lockEmployerTab, lockedEmployerTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabEmployees = useMemo(
-    () => filterEmployeesByEmployerTab(data?.employees || [], employerTab),
-    [data?.employees, employerTab],
+  const tabEntries = useMemo(
+    () => filterEntriesByEmployerTab(data?.entries || [], employerTab, data?.employees || []),
+    [data?.entries, data?.employees, employerTab],
   );
+
+  const tabEmployees = useMemo(
+    () => filterEmployeesByEmployerTab(data?.employees || [], employerTab, data?.entries || []),
+    [data?.employees, data?.entries, employerTab],
+  );
+
+  const entriesByCell = useMemo(() => {
+    const map = {};
+    for (const entry of tabEntries) {
+      const key = `${entry.user_id}:${entry.day_of_week}`;
+      if (!map[key]) map[key] = [];
+      map[key].push(entry);
+    }
+    return map;
+  }, [tabEntries]);
 
   const tabUserIds = useMemo(
     () => tabEmployees.map((employee) => employee.user_id),
@@ -324,9 +334,10 @@ export default function WeeklySchedulePage() {
         ? computeWeekSummary(data, {
             includeExcluded: showExcluded,
             userIds: tabUserIds,
+            entries: tabEntries,
           })
         : null,
-    [data, showExcluded, tabUserIds],
+    [data, showExcluded, tabUserIds, tabEntries],
   );
 
   const filteredDaySummaries = useMemo(
@@ -335,9 +346,10 @@ export default function WeeklySchedulePage() {
         ? computeFilteredDaySummaries(data, {
             userIds: tabUserIds,
             includeExcluded: showExcluded,
+            entries: tabEntries,
           })
         : [],
-    [data, tabUserIds, showExcluded],
+    [data, tabUserIds, showExcluded, tabEntries],
   );
 
   const visibleEmployees = useMemo(() => {
@@ -391,7 +403,11 @@ export default function WeeklySchedulePage() {
         const res = await updateWeeklyScheduleEntry(editingEntry.id, form);
         setData(res.data);
       } else {
-        const res = await createWeeklyScheduleEntry({ week_start: weekStart, ...form });
+        const res = await createWeeklyScheduleEntry({
+          week_start: weekStart,
+          employer_affiliation: form.employer_affiliation || defaultShiftEmployerForTab(employerTab),
+          ...form,
+        });
         setData(res.data);
       }
       setDialogOpen(false);
@@ -426,6 +442,16 @@ export default function WeeklySchedulePage() {
       setError(e?.response?.data?.error || "Failed to duplicate shift");
     } finally {
       setDuplicatingId(null);
+    }
+  };
+
+  const handleSetEmployer = async (entry, employerAffiliation) => {
+    setError("");
+    try {
+      const res = await updateWeeklyScheduleEntry(entry.id, { employer_affiliation: employerAffiliation });
+      setData(res.data);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to update shift employer");
     }
   };
 
@@ -466,7 +492,7 @@ export default function WeeklySchedulePage() {
   const handleExport = () => {
     exportWeeklyScheduleCsv({
       employees: visibleEmployees,
-      entries: data?.entries,
+      entries: tabEntries,
       weekStart,
       tabLabel: EMPLOYER_TAB_LABELS[employerTab],
       showRoleLabels,
@@ -491,6 +517,7 @@ export default function WeeklySchedulePage() {
     openEdit,
     handleDelete,
     handleDuplicate,
+    handleSetEmployer,
   };
 
   return (
@@ -663,11 +690,11 @@ export default function WeeklySchedulePage() {
               >
                 <Tab
                   value={EMPLOYER_TAB.VEEWASH}
-                  label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH).length})`}
-                />
-                <Tab
-                  value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
-                  label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE).length})`}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH, data?.entries || []).length})`}
+              />
+              <Tab
+                value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE, data?.entries || []).length})`}
                 />
                 <Tab
                   value={EMPLOYER_TAB.COMBINED}
@@ -796,7 +823,7 @@ export default function WeeklySchedulePage() {
                       >
                         <WeeklyScheduleEmployeeCell
                           employee={employee}
-                          entries={data?.entries}
+                          entries={tabEntries}
                           excluded={excluded}
                           canManageExclusions={canManageExclusions}
                           excludeSaving={excludeSavingUserId === employee.user_id}
@@ -899,7 +926,7 @@ export default function WeeklySchedulePage() {
                         <Box key={employee.user_id} sx={{ display: "contents" }}>
                           <WeeklyScheduleEmployeeCell
                             employee={employee}
-                            entries={data?.entries}
+                            entries={tabEntries}
                             excluded={excluded}
                             canManageExclusions={canManageExclusions}
                             excludeSaving={excludeSavingUserId === employee.user_id}
@@ -957,7 +984,7 @@ export default function WeeklySchedulePage() {
           </div>
           <WeeklySchedulePrintTable
             employees={visibleEmployees}
-            entries={data?.entries}
+            entries={tabEntries}
             dayLabels={DAY_LABELS}
             showRoleLabels={showRoleLabels}
           />

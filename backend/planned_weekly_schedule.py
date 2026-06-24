@@ -132,9 +132,26 @@ def _ensure_role_column_width(cursor) -> None:
         return
 
 
+def _ensure_employer_affiliation_column(cursor) -> None:
+    try:
+        cursor.execute(
+            "SHOW COLUMNS FROM planned_weekly_schedule_entries LIKE 'employer_affiliation'"
+        )
+        if cursor.fetchone():
+            return
+        cursor.execute(
+            "ALTER TABLE planned_weekly_schedule_entries "
+            "ADD COLUMN employer_affiliation VARCHAR(32) NULL DEFAULT NULL "
+            "AFTER break_minutes"
+        )
+    except Exception:
+        return
+
+
 def ensure_planned_weekly_schedule_table(cursor) -> None:
     if table_exists(cursor, "planned_weekly_schedule_entries"):
         _ensure_role_column_width(cursor)
+        _ensure_employer_affiliation_column(cursor)
         return
     cursor.execute(
         """
@@ -148,6 +165,7 @@ def ensure_planned_weekly_schedule_table(cursor) -> None:
           start_time TIME NOT NULL,
           end_time TIME NOT NULL,
           break_minutes INT NOT NULL DEFAULT 0,
+          employer_affiliation VARCHAR(32) NULL DEFAULT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP NULL ON UPDATE CURRENT_TIMESTAMP,
           INDEX idx_pwse_org_week (organization_id, week_start),
@@ -173,10 +191,17 @@ def _shift_hours_for_entry(entry: Mapping[str, Any]) -> float:
     return calc_hours(start, end, break_min)
 
 
+def _entry_employer_affiliation(row: Mapping[str, Any]) -> str | None:
+    from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
+
+    return normalize_shift_employer_affiliation(row.get("employer_affiliation"))
+
+
 def serialize_entry(row: Mapping[str, Any]) -> dict[str, Any]:
     roles = parse_weekly_roles(row.get("role"))
     role = roles_to_storage(roles)
     hours = _shift_hours_for_entry(row)
+    employer_affiliation = _entry_employer_affiliation(row)
     out: dict[str, Any] = {
         "id": int(row.get("id") or 0),
         "organization_id": int(row.get("organization_id") or 0),
@@ -191,6 +216,24 @@ def serialize_entry(row: Mapping[str, Any]) -> dict[str, Any]:
         "break_minutes": max(0, int(row.get("break_minutes") or 0)),
         "hours": hours,
     }
+    if employer_affiliation:
+        out["employer_affiliation"] = employer_affiliation
+    return out
+
+
+def enrich_entries_with_employer_affiliation(
+    entries: Sequence[Mapping[str, Any]],
+    workers_by_user_id: Mapping[int, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    from backend.payroll_employer_affiliation import default_shift_employer_affiliation
+
+    out: list[dict[str, Any]] = []
+    for entry in entries or []:
+        row = dict(entry)
+        if not row.get("employer_affiliation"):
+            uid = int(row.get("user_id") or 0)
+            row["employer_affiliation"] = default_shift_employer_affiliation(workers_by_user_id.get(uid))
+        out.append(row)
     return out
 
 
@@ -311,7 +354,7 @@ def list_week_entries(
     cursor.execute(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
-               role, start_time, end_time, break_minutes
+               role, start_time, end_time, break_minutes, employer_affiliation
         FROM planned_weekly_schedule_entries
         WHERE organization_id = %s AND week_start = %s
         ORDER BY user_id ASC, day_of_week ASC, start_time ASC, id ASC
@@ -400,7 +443,7 @@ def get_entry(
     cursor.execute(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
-               role, start_time, end_time, break_minutes
+               role, start_time, end_time, break_minutes, employer_affiliation
         FROM planned_weekly_schedule_entries
         WHERE organization_id = %s AND id = %s
         LIMIT 1
@@ -459,6 +502,13 @@ def _validate_entry_payload(
             out["break_minutes"] = max(0, int(data.get("break_minutes") or 0))
         except (TypeError, ValueError):
             return None, "break_minutes must be a non-negative integer"
+    if "employer_affiliation" in data:
+        from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
+
+        aff = normalize_shift_employer_affiliation(data.get("employer_affiliation"))
+        if not aff:
+            return None, "employer_affiliation must be veewash or rinse_exclusive"
+        out["employer_affiliation"] = aff
     return out, None
 
 
@@ -485,12 +535,17 @@ def create_entry(
     worker_err = _assert_worker_in_org(conn, organization_id, payload["user_id"])
     if worker_err:
         return None, worker_err
+    if "employer_affiliation" not in payload:
+        from backend.payroll_employer_affiliation import default_shift_employer_affiliation
+
+        worker = _workers_index(_load_workers(conn, organization_id)).get(int(payload["user_id"]))
+        payload["employer_affiliation"] = default_shift_employer_affiliation(worker)
     cursor.execute(
         """
         INSERT INTO planned_weekly_schedule_entries (
             organization_id, week_start, user_id, day_of_week,
-            role, start_time, end_time, break_minutes
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            role, start_time, end_time, break_minutes, employer_affiliation
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
@@ -501,6 +556,7 @@ def create_entry(
             payload["start_time"],
             payload["end_time"],
             payload.get("break_minutes", 0),
+            payload["employer_affiliation"],
         ),
     )
     entry_id = int(cursor.lastrowid or 0)
@@ -525,6 +581,7 @@ def update_entry(
         "start_time": existing["start_time"],
         "end_time": existing["end_time"],
         "break_minutes": existing["break_minutes"],
+        "employer_affiliation": existing.get("employer_affiliation"),
         **dict(data or {}),
     }
     payload, err = _validate_entry_payload(merged)
@@ -536,7 +593,8 @@ def update_entry(
     cursor.execute(
         """
         UPDATE planned_weekly_schedule_entries
-        SET user_id=%s, day_of_week=%s, role=%s, start_time=%s, end_time=%s, break_minutes=%s
+        SET user_id=%s, day_of_week=%s, role=%s, start_time=%s, end_time=%s, break_minutes=%s,
+            employer_affiliation=%s
         WHERE organization_id=%s AND id=%s
         """,
         (
@@ -546,6 +604,7 @@ def update_entry(
             payload["start_time"],
             payload["end_time"],
             payload.get("break_minutes", 0),
+            payload.get("employer_affiliation") or existing.get("employer_affiliation"),
             int(organization_id),
             int(entry_id),
         ),
@@ -625,6 +684,7 @@ def duplicate_entry(
             "start_time": existing["start_time"],
             "end_time": existing["end_time"],
             "break_minutes": existing["break_minutes"],
+            "employer_affiliation": existing.get("employer_affiliation"),
         },
     )
 
@@ -645,6 +705,9 @@ def _bulk_insert_week_entries(
         start = parse_time_value(payload.get("start_time"))
         end = parse_time_value(payload.get("end_time"))
         role = roles_to_storage(parse_weekly_roles(payload.get("role") or payload.get("roles")))
+        from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
+
+        employer_affiliation = normalize_shift_employer_affiliation(payload.get("employer_affiliation"))
         params.append(
             (
                 oid,
@@ -655,14 +718,15 @@ def _bulk_insert_week_entries(
                 start,
                 end,
                 max(0, int(payload.get("break_minutes") or 0)),
+                employer_affiliation,
             )
         )
     cursor.executemany(
         """
         INSERT INTO planned_weekly_schedule_entries (
             organization_id, week_start, user_id, day_of_week,
-            role, start_time, end_time, break_minutes
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            role, start_time, end_time, break_minutes, employer_affiliation
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         params,
     )
@@ -743,6 +807,7 @@ def carry_forward_week_schedule(
                 "start_time": entry["start_time"],
                 "end_time": entry["end_time"],
                 "break_minutes": entry.get("break_minutes", 0),
+                "employer_affiliation": entry.get("employer_affiliation"),
             }
         )
 
@@ -813,7 +878,10 @@ def build_week_payload(
 
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
-    entries = list_week_entries(cursor, organization_id, week_start=week_start)
+    entries = enrich_entries_with_employer_affiliation(
+        list_week_entries(cursor, organization_id, week_start=week_start),
+        workers_by_uid,
+    )
     excluded_user_ids = list_excluded_user_ids(cursor, organization_id, week_start=week_start)
     excluded_set = set(excluded_user_ids)
     totals = compute_schedule_totals(

@@ -167,9 +167,10 @@ export function formatEmployeeWeeklySummary(employee) {
   return `${hrsLabel} hrs • ${dayLabel}`;
 }
 
-export function computeWeekSummary(data, { includeExcluded = false, userIds = null } = {}) {
+export function computeWeekSummary(data, { includeExcluded = false, userIds = null, entries = null } = {}) {
   const allowed = userIds ? new Set(userIds.map(Number)) : null;
-  const entries = (data?.entries || []).filter((entry) => {
+  const sourceEntries = entries ?? data?.entries ?? [];
+  const filteredEntries = sourceEntries.filter((entry) => {
     const uid = Number(entry.user_id);
     if (allowed && !allowed.has(uid)) return false;
     const employee = (data?.employees || []).find((e) => Number(e.user_id) === uid);
@@ -181,8 +182,11 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   let sortCount = 0;
   let washCount = 0;
   let foldCount = 0;
+  const scheduledUserIds = new Set();
 
-  for (const entry of entries) {
+  for (const entry of filteredEntries) {
+    const uid = Number(entry.user_id);
+    scheduledUserIds.add(uid);
     const hours = Number(entry.hours || 0);
     totalHours += hours;
     const roles = parseEntryRoles(entry);
@@ -200,7 +204,7 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     const uid = Number(employee.user_id);
     if (allowed && !allowed.has(uid)) continue;
     if (employee.excluded && !includeExcluded) continue;
-    if (Number(employee.scheduled_days || 0) > 0) employeesScheduled += 1;
+    if (scheduledUserIds.has(uid)) employeesScheduled += 1;
     if (!employee.excluded) {
       estimatedCost += Number(employee.estimated_cost || 0);
     }
@@ -216,8 +220,9 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   };
 }
 
-export function computeFilteredDaySummaries(data, { userIds = null, includeExcluded = false } = {}) {
+export function computeFilteredDaySummaries(data, { userIds = null, includeExcluded = false, entries = null } = {}) {
   const allowed = userIds ? new Set(userIds.map(Number)) : null;
+  const sourceEntries = entries ?? data?.entries ?? [];
   const summaries = Array.from({ length: 7 }, () => ({
     people: 0,
     hours: 0,
@@ -227,7 +232,7 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
   }));
   const peopleByDay = Array.from({ length: 7 }, () => new Set());
 
-  for (const entry of data?.entries || []) {
+  for (const entry of sourceEntries) {
     const uid = Number(entry.user_id);
     if (allowed && !allowed.has(uid)) continue;
     const employee = (data?.employees || []).find((e) => Number(e.user_id) === uid);

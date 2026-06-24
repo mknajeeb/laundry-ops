@@ -91,11 +91,12 @@ class _FakeCursor:
                 "start_time": params[5],
                 "end_time": params[6],
                 "break_minutes": params[7],
+                "employer_affiliation": params[8] if len(params) > 8 else None,
             }
             self.rows.append(row)
             return
         if "update planned_weekly_schedule_entries" in sql_norm:
-            entry_id = params[7]
+            entry_id = params[8] if len(params) > 8 else params[7]
             for row in self.rows:
                 if row["id"] == entry_id:
                     row.update(
@@ -106,6 +107,7 @@ class _FakeCursor:
                             "start_time": params[3],
                             "end_time": params[4],
                             "break_minutes": params[5],
+                            "employer_affiliation": params[6] if len(params) > 8 else row.get("employer_affiliation"),
                         }
                     )
             return
@@ -488,6 +490,44 @@ def test_duplicate_entry_preserves_multi_role():
     assert err is None
     assert copied["role"] == "sort,wash,fold"
     assert copied["roles"] == ["sort", "wash", "fold"]
+
+
+def test_create_and_update_entry_employer_affiliation():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ), patch(
+        "backend.payroll_schedule.worker_exists_in_schedule_grid",
+        return_value=True,
+    ):
+        created, err = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 2,
+                "role": "fold",
+                "start_time": "09:00",
+                "end_time": "16:00",
+                "employer_affiliation": "rinse_exclusive",
+            },
+        )
+        assert err is None
+        assert created["employer_affiliation"] == "rinse_exclusive"
+
+        updated, err = update_entry(
+            conn,
+            cursor,
+            1,
+            created["id"],
+            {"employer_affiliation": "veewash"},
+        )
+        assert err is None
+        assert updated["employer_affiliation"] == "veewash"
 
 
 def test_org_isolation_on_get_and_delete():

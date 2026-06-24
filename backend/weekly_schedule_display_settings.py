@@ -139,20 +139,21 @@ def validate_schedule_week_access(
 
 
 def apply_rinse_viewer_scope(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Limit weekly schedule payload to Rinse Exclusive employees for RINSE role viewers."""
+    """Limit weekly schedule payload to Rinse Exclusive shifts for RINSE role viewers."""
     from backend.planned_weekly_schedule import compute_schedule_totals
+    from backend.payroll_employer_affiliation import EMPLOYER_AFFILIATION_RINSE
 
     out = dict(payload)
-    employees = [
-        row
-        for row in (out.get("employees") or [])
-        if row.get("employer_affiliation") in RINSE_EXCLUSIVE_EMPLOYER_AFFILIATIONS
-    ]
-    allowed_user_ids = {int(row["user_id"]) for row in employees if row.get("user_id") is not None}
     entries = [
         entry
         for entry in (out.get("entries") or [])
-        if int(entry.get("user_id") or 0) in allowed_user_ids
+        if entry.get("employer_affiliation") == EMPLOYER_AFFILIATION_RINSE
+    ]
+    allowed_user_ids = {int(entry.get("user_id") or 0) for entry in entries if entry.get("user_id") is not None}
+    employees = [
+        row
+        for row in (out.get("employees") or [])
+        if int(row.get("user_id") or 0) in allowed_user_ids
     ]
     excluded_user_ids = [
         int(uid)
