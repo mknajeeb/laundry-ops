@@ -542,6 +542,10 @@ class TestEmployeeProductivityPayloadBackwardCompat:
             "backend.daily_shift_roster.list_roster_entries",
             lambda *_a, **_k: [],
         )
+        monkeypatch.setattr(
+            "backend.rinse_simple_shift_performance._load_rinse_user_maps",
+            lambda *_a, **_k: {},
+        )
 
         payload = build_employee_productivity_dashboard_payload(
             object(),

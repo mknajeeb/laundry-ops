@@ -11,10 +11,12 @@ from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import event_ts, gaming_events_from_records, ts_valid
 from backend.rinse_folding_et import naive_et_day_end_inclusive
+from backend.rinse_folding_et import naive_et_day_end_exclusive, period_datetime_bounds_et
 from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
     is_complete_cleaning_purpose,
+    is_operator_upstream_processing_purpose,
     is_sent_to_vendor_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
@@ -27,6 +29,10 @@ from backend.rinse_wf_weight_events import (
 )
 
 UNKNOWN_EMPLOYEE = "Unknown user"
+PRODUCTIVITY_END_LAST_COMPLETION = "last_completion"
+PRODUCTIVITY_END_CLOCK_OUT = "clock_out"
+PRODUCTIVITY_START_CLOCK_IN = "clock_in"
+PRODUCTIVITY_START_OPERATOR_PROCESSING = "operator_processing"
 
 
 def _normalize_employee(raw: Any) -> str:
@@ -144,6 +150,103 @@ def _resolve_anchor_ts(events: Sequence[Mapping[str, Any]], selected_date_et: da
     from backend.rinse_at_vendor_module import _resolve_selected_day_anchor_ts
 
     return _resolve_selected_day_anchor_ts(events, selected_date_et)
+
+
+def _build_roster_role_lookup(
+    cursor,
+    organization_id: int,
+    selected_date_et: date,
+) -> dict[str, str]:
+    from backend.daily_shift_roster import build_roster_role_lookup, list_roster_entries
+
+    entries = list_roster_entries(cursor, int(organization_id), roster_date=selected_date_et)
+    return build_roster_role_lookup(entries)
+
+
+def _actual_clock_out_from_sessions(sessions: Sequence[Mapping[str, Any]]) -> datetime | None:
+    outs = [
+        sh.get("clock_out_at")
+        for sh in sessions
+        if isinstance(sh, Mapping) and isinstance(sh.get("clock_out_at"), datetime)
+    ]
+    return max(outs) if outs else None
+
+
+def _load_upstream_processing_scan_times_bulk(
+    cursor,
+    organization_id: int,
+    rinse_user_names: Sequence[str],
+    selected_date_et: date,
+) -> dict[str, list[datetime]]:
+    from backend.ta_helpers import table_exists
+
+    names = sorted({str(n).strip() for n in rinse_user_names if str(n).strip()})
+    if not names or not table_exists(cursor, "rinse_bag_scan_events"):
+        return {}
+
+    org = int(organization_id)
+    start_dt, _end_incl = period_datetime_bounds_et(selected_date_et, selected_date_et)
+    end_exclusive = naive_et_day_end_exclusive(selected_date_et)
+    out: dict[str, list[datetime]] = {n.casefold(): [] for n in names}
+    chunk = 100
+    for i in range(0, len(names), chunk):
+        part = names[i : i + chunk]
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT user_name, purpose, scanned_at_parsed
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed >= %s
+              AND scanned_at_parsed < %s
+              AND user_name IN ({placeholders})
+            """,
+            (org, start_dt, end_exclusive, *part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            if not is_operator_upstream_processing_purpose(row.get("purpose")):
+                continue
+            ts = row.get("scanned_at_parsed")
+            if not isinstance(ts, datetime):
+                continue
+            uname = str(row.get("user_name") or "").strip().casefold()
+            if uname in out:
+                out[uname].append(ts)
+    return out
+
+
+def _last_scan_before(timestamps: Sequence[datetime], before: datetime) -> datetime | None:
+    candidates = [ts for ts in timestamps if ts < before]
+    return max(candidates) if candidates else None
+
+
+def _compute_productive_window(
+    *,
+    roster_role: str | None,
+    clock_in: datetime | None,
+    first_comp: datetime | None,
+    last_comp: datetime | None,
+    actual_clock_out: datetime | None,
+    upstream_scans: Sequence[datetime],
+) -> tuple[datetime | None, datetime | None, str, str]:
+    productive_start = clock_in
+    start_source = PRODUCTIVITY_START_CLOCK_IN
+    if roster_role == "operator" and first_comp is not None:
+        last_proc = _last_scan_before(upstream_scans, first_comp)
+        if last_proc is not None:
+            productive_start = last_proc
+            start_source = PRODUCTIVITY_START_OPERATOR_PROCESSING
+
+    productive_end = last_comp
+    end_source = PRODUCTIVITY_END_LAST_COMPLETION
+    if roster_role == "folder" and actual_clock_out is not None:
+        productive_end = actual_clock_out
+        end_source = PRODUCTIVITY_END_CLOCK_OUT
+
+    return productive_start, productive_end, start_source, end_source
 
 
 def _completed_lbs(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> float | None:
@@ -282,6 +385,16 @@ def build_employee_completed_bags_today(
         else {}
     )
     window_cache: dict[int, tuple[datetime | None, datetime | None, str | None]] = {}
+    roster_roles = _build_roster_role_lookup(cursor, org, selected_date_et)
+    credited_employees = [
+        emp for emp in by_employee.keys() if emp != UNKNOWN_EMPLOYEE
+    ]
+    upstream_scans_by_employee = _load_upstream_processing_scan_times_bulk(
+        cursor,
+        org,
+        credited_employees,
+        selected_date_et,
+    )
 
     employees: list[dict[str, Any]] = []
     for employee, bags in sorted(by_employee.items(), key=lambda x: x[0].lower()):
@@ -299,7 +412,9 @@ def build_employee_completed_bags_today(
         clock_in: datetime | None = None
         clock_out: datetime | None = None
         clock_diagnostic: str | None = None
+        user_sessions: list[dict[str, Any]] = []
         if user_id is not None:
+            user_sessions = sessions_by_user.get(user_id) or []
             clock_in, clock_out, clock_diagnostic = _employee_shift_window(
                 cursor,
                 org,
@@ -312,6 +427,24 @@ def build_employee_completed_bags_today(
             )
         elif employee == UNKNOWN_EMPLOYEE:
             clock_diagnostic = "Clock-in missing"
+
+        roster_role = None
+        if employee != UNKNOWN_EMPLOYEE:
+            from backend.daily_shift_roster import resolve_roster_role_for_rinse_user
+
+            roster_role = resolve_roster_role_for_rinse_user(
+                employee, roster_roles, user_maps
+            )
+        actual_clock_out = _actual_clock_out_from_sessions(user_sessions)
+        upstream_scans = upstream_scans_by_employee.get(employee.casefold()) or []
+        productive_start, productive_end, start_source, end_source = _compute_productive_window(
+            roster_role=roster_role,
+            clock_in=clock_in,
+            first_comp=first_comp,
+            last_comp=last_comp,
+            actual_clock_out=actual_clock_out,
+            upstream_scans=upstream_scans,
+        )
 
         missing_weight_count = sum(1 for b in bags_sorted if b.get("weight_missing"))
         total_lbs = round(
@@ -327,8 +460,8 @@ def build_employee_completed_bags_today(
 
         if clock_in is None:
             productivity_note = "Missing clock-in data"
-        elif last_comp is not None:
-            productive_sec = max(0, int((last_comp - clock_in).total_seconds()))
+        elif productive_start is not None and productive_end is not None:
+            productive_sec = max(0, int((productive_end - productive_start).total_seconds()))
             productive_hours = round(productive_sec / 3600.0, 4)
             worked_hours = productive_hours
             if clock_out is not None and clock_out >= clock_in:
@@ -344,8 +477,14 @@ def build_employee_completed_bags_today(
         employees.append(
             {
                 "employee": employee,
+                "roster_role": roster_role,
                 "clock_in_time": clock_in.isoformat() if clock_in else None,
+                "clock_out_time": actual_clock_out.isoformat() if actual_clock_out else None,
                 "clock_in_time_et": None,
+                "productive_start_time": productive_start.isoformat() if productive_start else None,
+                "productive_end_time": productive_end.isoformat() if productive_end else None,
+                "productivity_start_source": start_source,
+                "productivity_end_source": end_source,
                 "last_completion_time": last_comp.isoformat() if last_comp else None,
                 "first_completion_time": first_comp.isoformat() if first_comp else None,
                 "worked_hours": worked_hours,
@@ -373,6 +512,9 @@ def build_employee_completed_bags_today(
 
     for emp in employees:
         emp["clock_in_time_et"] = _ts_et(emp.get("clock_in_time"))
+        emp["clock_out_time_et"] = _ts_et(emp.get("clock_out_time"))
+        emp["productive_start_time_et"] = _ts_et(emp.get("productive_start_time"))
+        emp["productive_end_time_et"] = _ts_et(emp.get("productive_end_time"))
         emp["last_completion_time_et"] = _ts_et(emp.get("last_completion_time"))
         emp["first_completion_time_et"] = _ts_et(emp.get("first_completion_time"))
 
@@ -475,11 +617,14 @@ def build_employee_productivity_dashboard_payload(
     scoped_emp = apply_employee_productivity_scope(emp, include_hd=include_hd)
     from backend.daily_shift_labor_summary import build_labor_summary
     from backend.daily_shift_roster import list_roster_entries
+    from backend.rinse_simple_shift_performance import _load_rinse_user_maps
 
     roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
+    user_maps = _load_rinse_user_maps(cursor, org)
     labor_summary = build_labor_summary(
         roster_entries,
         productivity_section=scoped_emp,
+        user_maps=user_maps,
     )
     return {
         "selected_date_et": selected_date_et.isoformat(),

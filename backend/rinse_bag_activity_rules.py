@@ -39,6 +39,7 @@ from backend.rinse_scan_purpose import (
     is_received_from_vendor_purpose,
     is_start_cleaning_purpose,
     is_weight_entry_purpose,
+    normalize_scan_purpose,
     purpose_contains_workitem,
 )
 
@@ -449,25 +450,43 @@ def extract_bag_activity_credits(
             )
         )
 
-        add_ev, sort_start_ev, sort_end_ev = sorting_bounds_v2(
-            anchored, weight_ts, weight_ev, full_timeline=tl
+        from backend.rinse_sorting_session import compute_sorting_session
+
+        sort_session = compute_sorting_session(
+            anchored, tl, weight_ev=weight_ev, weight_ts=weight_ts
         )
-        if add_ev is not None:
-            add_ts = event_ts(add_ev)
-            if ts_valid(add_ts):
+        if sort_session is not None:
+            sort_start_ts = (
+                event_ts(sort_session.sort_start_ev) if sort_session.sort_start_ev else weight_ts
+            )
+            sort_end_ts = (
+                event_ts(sort_session.sort_end_ev) if sort_session.sort_end_ev else None
+            )
+            activity_ts = sort_end_ts if ts_valid(sort_end_ts) else sort_start_ts
+            end_ev = sort_session.sort_end_ev or sort_session.add_photos_ev
+            if ts_valid(activity_ts):
+                flags: tuple[str, ...] = ()
+                if sort_session.confidence == "inferred":
+                    flags = ("INFERRED_SORTING_BEFORE_WASH_HANDOFF",)
+                if sort_end_ts is None:
+                    flags = (*flags, "MISSING_SORTING_END")
                 credits.append(
                     BagActivityCredit(
                         bag_id=bid,
                         role=ROLE_SORTING,
-                        employee=_operator(add_ev),
-                        activity_at=add_ts,
-                        start_time=event_ts(sort_start_ev) if sort_start_ev else weight_ts,
-                        end_time=event_ts(sort_end_ev) if sort_end_ev else add_ts,
+                        employee=sort_session.employee,
+                        activity_at=activity_ts,
+                        start_time=sort_start_ts if ts_valid(sort_start_ts) else weight_ts,
+                        end_time=sort_end_ts,
                         lbs=default_lbs,
                         customer=customer,
-                        needs_review=sort_end_ev is None,
-                        flags=("MISSING_SORTING_END",) if sort_end_ev is None else (),
-                        activity_kind="add-photos",
+                        needs_review=sort_end_ts is None,
+                        flags=flags,
+                        activity_kind=(
+                            normalize_scan_purpose(end_ev.get("purpose"))
+                            if end_ev is not None
+                            else "add-photos"
+                        ),
                     )
                 )
 

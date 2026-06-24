@@ -652,10 +652,20 @@ def build_bag_activity_slices(
     s_start_ev, s_end_ev = _sorting_boundary_events(timeline)
     anchored = _anchored_timeline(timeline)
     _, weight_ts = _first_weight_after_anchor(anchored)
-    add_ev = _first_add_photos_after(anchored, after_ts=weight_ts) if weight_ts else None
+    weight_ev, _ = _first_weight_after_anchor(anchored)
+    sort_session = None
+    if weight_ev is not None and weight_ts is not None:
+        sort_session = compute_sorting_session(
+            anchored, timeline, weight_ev=weight_ev, weight_ts=weight_ts
+        )
+    add_ev = canonical_add_photos_for_weight(anchored, weight_ts) if weight_ts else None
     s_start_user = _event_user(s_start_ev)
     s_end_user = _event_user(s_end_ev)
-    s_assigned = _event_user(add_ev) or s_end_user
+    s_assigned = (
+        sort_session.employee
+        if sort_session and sort_session.employee
+        else (_event_user(add_ev) or s_end_user)
+    )
     s_review: list[str] = []
     if s_start_user and s_assigned and not _users_match(s_start_user, s_assigned):
         s_review.append(REVIEW_USER_AMBIGUOUS)

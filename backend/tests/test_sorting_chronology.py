@@ -574,3 +574,26 @@ class TestSortingChronologySessions:
         assert sessions[0]["employee"] == "Maria"
         assert sessions[0]["sort_start_et"] == datetime(2026, 6, 18, 8, 21)
         assert sessions[0]["sort_end_et"] == datetime(2026, 6, 18, 8, 26)
+
+    def test_BZABOG8NPP_wash_handoff_add_photos_credits_weigh_operator(self):
+        """Francis sorted/weighed; Joshua add-photos bundled with start-cleaning is wash handoff."""
+        at = datetime
+        events = [
+            _ev("sent-to-vendor", at(2026, 6, 24, 4, 33), ev_id=1, user="Melissa"),
+            _ev("weight-entry", at(2026, 6, 24, 9, 43), ev_id=2, scan_index=10, user="Francis (Veewash)"),
+            _ev("cleaning", at(2026, 6, 24, 9, 43), ev_id=3, scan_index=11, user="Francis (Veewash)"),
+            _ev("cleaning", at(2026, 6, 24, 10, 43), ev_id=4, scan_index=9, user="Francis (Veewash)"),
+            _ev("start-cleaning", at(2026, 6, 24, 11, 11), ev_id=5, scan_index=3, user="Joshua (Veewash)"),
+            _ev("ready-washer", at(2026, 6, 24, 11, 11), ev_id=6, scan_index=5, user="Joshua (Veewash)"),
+            _ev("add-photos", at(2026, 6, 24, 11, 11), ev_id=7, scan_index=6, user="Joshua (Veewash)"),
+        ]
+        sessions = extract_sorting_sessions_for_bag(
+            "BZABOG8NPP",
+            events,
+            selected_date_et=date(2026, 6, 24),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Francis (Veewash)"
+        assert sessions[0]["sort_start_et"] == at(2026, 6, 24, 9, 43)
+        assert sessions[0]["sort_end_et"] == at(2026, 6, 24, 10, 43)
+        assert sessions[0]["duration_seconds"] == 3600

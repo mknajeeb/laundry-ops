@@ -65,7 +65,41 @@ def canonical_add_photos_for_weight(
     weight_ts: datetime,
 ) -> Mapping[str, Any] | None:
     """First canonical add-photos strictly after *weight_ts* (one sort cycle anchor)."""
-    return _first_add_photos_after(anchored, after_ts=weight_ts)
+    for ev in anchored:
+        if not is_add_photos_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts <= weight_ts:
+            continue
+        if is_wash_handoff_add_photos_scan(anchored, ev, ts):
+            continue
+        return ev
+    return None
+
+
+def is_wash_handoff_add_photos_scan(
+    anchored: Sequence[Mapping[str, Any]],
+    add_ev: Mapping[str, Any],
+    add_ts: datetime,
+) -> bool:
+    """
+    add-photos at the same timestamp as start-cleaning/ready-washer is wash setup,
+    not a sorting completion marker.
+    """
+    add_user = _operator(add_ev)
+    if not add_user:
+        return False
+    for ev in anchored:
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts != add_ts:
+            continue
+        if not _operators_match(_operator(ev), add_user):
+            continue
+        if is_start_cleaning_purpose(ev.get("purpose")) or is_ready_washer_purpose(
+            ev.get("purpose")
+        ):
+            return True
+    return False
 
 
 def _is_post_sort_downstream_scan(raw: str | None) -> bool:
@@ -349,6 +383,80 @@ class SortingSessionResult:
         return normalize_scan_purpose(self.sort_end_ev.get("purpose"))
 
 
+def _first_cross_employee_start_cleaning_after(
+    anchored: Sequence[Mapping[str, Any]],
+    *,
+    after_ts: datetime,
+    weight_user: str | None,
+) -> tuple[Mapping[str, Any] | None, datetime | None]:
+    if not weight_user:
+        return None, None
+    for ev in anchored:
+        if not is_start_cleaning_purpose(ev.get("purpose")):
+            continue
+        ts = event_ts(ev)
+        if not ts_valid(ts) or ts <= after_ts:
+            continue
+        sc_user = _operator(ev)
+        if sc_user and not _operators_match(sc_user, weight_user):
+            return ev, ts
+    return None, None
+
+
+def _cleanings_by_employee_between(
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    employee: str,
+    after_ts: datetime,
+    before_ts: datetime,
+) -> list[Mapping[str, Any]]:
+    return [
+        ev
+        for ev in timeline
+        if is_cleaning_purpose_for_activity_start(ev.get("purpose"))
+        and _operators_match(_operator(ev), employee)
+        and ts_valid(event_ts(ev))
+        and event_ts(ev) >= after_ts
+        and event_ts(ev) < before_ts
+    ]
+
+
+def compute_sorting_session_inferred_before_wash_handoff(
+    anchored: Sequence[Mapping[str, Any]],
+    timeline: Sequence[Mapping[str, Any]],
+    *,
+    weight_ev: Mapping[str, Any],
+    weight_ts: datetime,
+) -> SortingSessionResult | None:
+    """
+    When sorting employee weighed/sorted but a later operator's wash handoff
+    includes a bundled add-photos scan, credit the weigh/sort employee.
+    """
+    weight_user = _operator(weight_ev)
+    handoff_ev, handoff_ts = _first_cross_employee_start_cleaning_after(
+        anchored, after_ts=weight_ts, weight_user=weight_user
+    )
+    if handoff_ev is None or handoff_ts is None or not weight_user:
+        return None
+    cleanings = _cleanings_by_employee_between(
+        timeline,
+        employee=weight_user,
+        after_ts=weight_ts,
+        before_ts=handoff_ts,
+    )
+    if not cleanings:
+        return None
+    sort_start_ev = min(cleanings, key=sort_key_ev)
+    sort_end_ev = max(cleanings, key=sort_key_ev)
+    return SortingSessionResult(
+        add_photos_ev=sort_end_ev,
+        sort_start_ev=sort_start_ev,
+        sort_end_ev=sort_end_ev,
+        employee=weight_user,
+        confidence="inferred",
+    )
+
+
 def compute_sorting_session(
     anchored: Sequence[Mapping[str, Any]],
     timeline: Sequence[Mapping[str, Any]],
@@ -363,11 +471,19 @@ def compute_sorting_session(
     Returns None when no canonical add-photos exists after *weight_ts*.
     """
     add_ev = add_photos_ev or canonical_add_photos_for_weight(anchored, weight_ts)
+    if add_ev is not None:
+        add_ts = event_ts(add_ev)
+        if not ts_valid(add_ts) or is_wash_handoff_add_photos_scan(anchored, add_ev, add_ts):
+            add_ev = None
     if add_ev is None:
-        return None
+        return compute_sorting_session_inferred_before_wash_handoff(
+            anchored, timeline, weight_ev=weight_ev, weight_ts=weight_ts
+        )
     add_ts = event_ts(add_ev)
     if not ts_valid(add_ts):
-        return None
+        return compute_sorting_session_inferred_before_wash_handoff(
+            anchored, timeline, weight_ev=weight_ev, weight_ts=weight_ts
+        )
 
     cycle_employee = _operator(add_ev)
     sort_start_ev = _sorting_start_ev(

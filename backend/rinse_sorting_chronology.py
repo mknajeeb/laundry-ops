@@ -35,7 +35,9 @@ from backend.rinse_scan_purpose import (
 )
 from backend.rinse_sorting_session import (
     compute_sorting_session,
+    compute_sorting_session_inferred_before_wash_handoff,
     has_post_sort_downstream_between,
+    is_wash_handoff_add_photos_scan,
     same_scan_event,
     session_source_label,
 )
@@ -235,6 +237,8 @@ def extract_sorting_sessions_for_bag(
     # so wash/setup scans between add-photos and create-issue still block later rows.
     completed_sort_anchor_ts: datetime | None = None
     for add_ev_iter, add_ts in add_photos_events:
+        if is_wash_handoff_add_photos_scan(anchored, add_ev_iter, add_ts):
+            continue
         if completed_sort_anchor_ts is not None:
             add_employee = _operator(add_ev_iter)
             if has_post_sort_downstream_between(
@@ -298,6 +302,33 @@ def extract_sorting_sessions_for_bag(
         )
         if completed_sort_anchor_ts is None or add_ts > completed_sort_anchor_ts:
             completed_sort_anchor_ts = add_ts
+    if not sessions:
+        weight_pair = _last_weight_before_ts(anchored, before_ts=datetime.max)
+        if weight_pair is not None:
+            weight_ev, weight_ts = weight_pair
+            inferred = compute_sorting_session_inferred_before_wash_handoff(
+                anchored, tl, weight_ev=weight_ev, weight_ts=weight_ts
+            )
+            if inferred is not None:
+                start_at = inferred.sort_start_et
+                end_at = inferred.sort_end_et
+                if ts_valid(start_at) and _session_touches_date(
+                    start_at, end_at or start_at, selected_date_et
+                ):
+                    sessions.append(
+                        {
+                            "bag_id": bid,
+                            "employee": inferred.employee,
+                            "sort_start_et": start_at,
+                            "sort_end_et": end_at or start_at,
+                            "duration_seconds": _duration_seconds(start_at, end_at or start_at),
+                            "confidence": inferred.confidence,
+                            "source": session_source_label(
+                                inferred.sort_start_ev, inferred.sort_end_ev
+                            ),
+                            "end_event_purpose": inferred.end_event_purpose,
+                        }
+                    )
     return _dedupe_sessions_by_window(sessions)
 
 

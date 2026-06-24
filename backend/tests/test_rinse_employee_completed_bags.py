@@ -8,6 +8,9 @@ from unittest.mock import patch
 from backend.rinse_at_vendor_module import MOD_AT_VENDOR_COMPLETED
 from backend.rinse_employee_completed_bags import (
     UNKNOWN_EMPLOYEE,
+    PRODUCTIVITY_END_CLOCK_OUT,
+    PRODUCTIVITY_START_OPERATOR_PROCESSING,
+    _compute_productive_window,
     build_employee_completed_bags_today,
     resolve_completion_attribution,
 )
@@ -20,6 +23,8 @@ T2 = datetime(2026, 6, 10, 6, 0)
 T3 = datetime(2026, 6, 10, 7, 0)
 T4 = datetime(2026, 6, 10, 8, 0)
 CLOCK_IN = datetime(2026, 6, 10, 4, 30)
+CLOCK_OUT = datetime(2026, 6, 10, 9, 0)
+PROC_SCAN = datetime(2026, 6, 10, 6, 15)
 
 
 def _ev(
@@ -126,18 +131,67 @@ class TestResolveCompletionAttribution:
         assert employee == UNKNOWN_EMPLOYEE
 
 
+class TestComputeProductiveWindow:
+    def test_operator_uses_last_upstream_scan_before_first_completion(self):
+        start, end, start_source, end_source = _compute_productive_window(
+            roster_role="operator",
+            clock_in=CLOCK_IN,
+            first_comp=T3,
+            last_comp=T4,
+            actual_clock_out=None,
+            upstream_scans=[datetime(2026, 6, 10, 5, 30), datetime(2026, 6, 10, 6, 45)],
+        )
+        assert start == datetime(2026, 6, 10, 6, 45)
+        assert end == T4
+        assert start_source == PRODUCTIVITY_START_OPERATOR_PROCESSING
+        assert end_source == "last_completion"
+
+    def test_folder_uses_clock_out_when_set(self):
+        start, end, start_source, end_source = _compute_productive_window(
+            roster_role="folder",
+            clock_in=CLOCK_IN,
+            first_comp=T3,
+            last_comp=T3,
+            actual_clock_out=CLOCK_OUT,
+            upstream_scans=[],
+        )
+        assert start == CLOCK_IN
+        assert end == CLOCK_OUT
+        assert start_source == "clock_in"
+        assert end_source == PRODUCTIVITY_END_CLOCK_OUT
+
+
 class TestBuildEmployeeCompletedBagsToday:
-    def _build(self, rows, events_by_bag, *, clock_in=CLOCK_IN, user_maps=None):
+    def _build(
+        self,
+        rows,
+        events_by_bag,
+        *,
+        clock_in=CLOCK_IN,
+        clock_out=None,
+        user_maps=None,
+        roster_roles=None,
+        upstream_scans=None,
+    ):
         user_maps = user_maps or {
             "alice worker": {"user_id": 42, "display_name": "Alice Worker"},
             "weight clerk": {"user_id": 43, "display_name": "Weight Clerk"},
             "hd finisher": {"user_id": 44, "display_name": "HD Finisher"},
         }
         sessions = {
-            42: [{"clock_in": CLOCK_IN, "clock_out": None}],
-            43: [{"clock_in": CLOCK_IN, "clock_out": None}],
-            44: [{"clock_in": CLOCK_IN, "clock_out": None}],
+            42: [{"clock_in_at": CLOCK_IN, "clock_out_at": clock_out}],
+            43: [{"clock_in_at": CLOCK_IN, "clock_out_at": clock_out}],
+            44: [{"clock_in_at": CLOCK_IN, "clock_out_at": clock_out}],
         }
+        roster_roles = roster_roles or {}
+
+        def _shift_window(_c, _o, *, user_id, **kwargs):
+            sess = sessions.get(user_id) or []
+            if not sess:
+                return None, None, "Clock-in missing"
+            cin = sess[0].get("clock_in_at")
+            cout = sess[0].get("clock_out_at")
+            return cin, cout, None
 
         with patch(
             "backend.rinse_simple_shift_performance._load_rinse_user_maps",
@@ -147,9 +201,13 @@ class TestBuildEmployeeCompletedBagsToday:
             return_value=sessions,
         ), patch(
             "backend.rinse_simple_shift_performance._employee_shift_window",
-            side_effect=lambda _c, _o, *, user_id, **_: (
-                (clock_in, None, None) if user_id in sessions else (None, None, "Clock-in missing")
-            ),
+            side_effect=_shift_window,
+        ), patch(
+            "backend.rinse_employee_completed_bags._build_roster_role_lookup",
+            return_value=roster_roles,
+        ), patch(
+            "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
+            return_value=upstream_scans or {},
         ):
             return build_employee_completed_bags_today(
                 object(),
@@ -252,3 +310,47 @@ class TestBuildEmployeeCompletedBagsToday:
         emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
         bag_ids = [b["bag_id"] for b in emp["bags"]]
         assert bag_ids == ["BAG1", "BAG2"]
+
+    def test_operator_productive_hours_use_last_processing_scan(self):
+        row = _completed_row("BAG1")
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2),
+                _ev("weight-entry", T3, user_name="Weight Clerk"),
+            ],
+        }
+        out = self._build(
+            [row],
+            events,
+            roster_roles={"weight clerk": "operator"},
+            upstream_scans={"weight clerk": [T2]},
+        )
+        emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
+        expected_hours = round((T3 - T2).total_seconds() / 3600.0, 4)
+        assert emp["productive_start_time"] == T2.isoformat()
+        assert emp["productivity_start_source"] == PRODUCTIVITY_START_OPERATOR_PROCESSING
+        assert emp["productive_hours"] == expected_hours
+
+    def test_folder_productive_hours_use_clock_out_when_set(self):
+        row = _completed_row("BAG1")
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2),
+                _ev("weight-entry", T3, user_name="Weight Clerk"),
+            ],
+        }
+        out = self._build(
+            [row],
+            events,
+            clock_out=CLOCK_OUT,
+            roster_roles={"weight clerk": "folder"},
+        )
+        emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
+        expected_hours = round((CLOCK_OUT - CLOCK_IN).total_seconds() / 3600.0, 4)
+        assert emp["productive_end_time"] == CLOCK_OUT.isoformat()
+        assert emp["productivity_end_source"] == PRODUCTIVITY_END_CLOCK_OUT
+        assert emp["productive_hours"] == expected_hours

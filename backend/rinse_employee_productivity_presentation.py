@@ -5,6 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
+from backend.rinse_employee_completed_bags import (
+    PRODUCTIVITY_END_CLOCK_OUT,
+    PRODUCTIVITY_END_LAST_COMPLETION,
+)
+
 
 def _service_type(bag: Mapping[str, Any]) -> str:
     return str(bag.get("service_type") or bag.get("service_bucket") or "").upper()
@@ -41,6 +46,12 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
     )
 
     clock_in = _parse_ts(emp.get("clock_in_time"))
+    productive_start = _parse_ts(emp.get("productive_start_time")) or clock_in
+    end_source = str(emp.get("productivity_end_source") or PRODUCTIVITY_END_LAST_COMPLETION)
+    if end_source == PRODUCTIVITY_END_CLOCK_OUT:
+        productive_end = _parse_ts(emp.get("productive_end_time"))
+    else:
+        productive_end = last_comp
     productive_hours = emp.get("productive_hours")
     bags_per_hour = emp.get("bags_per_hour")
     lbs_per_hour = emp.get("lbs_per_hour")
@@ -50,7 +61,16 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
         productive_hours = None
         bags_per_hour = None
         lbs_per_hour = None
-    elif last_comp is not None:
+    elif productive_start is not None and productive_end is not None:
+        productive_sec = max(0, int((productive_end - productive_start).total_seconds()))
+        productive_hours = round(productive_sec / 3600.0, 4)
+        if productive_hours > 0:
+            bags_per_hour = round(len(bags_sorted) / productive_hours, 4)
+            lbs_per_hour = round(total_lbs / productive_hours, 4) if total_lbs else None
+        else:
+            bags_per_hour = None
+            lbs_per_hour = None
+    elif last_comp is not None and clock_in is not None:
         productive_sec = max(0, int((last_comp - clock_in).total_seconds()))
         productive_hours = round(productive_sec / 3600.0, 4)
         if productive_hours > 0:
@@ -82,6 +102,12 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
             "last_completion_time": last_comp.isoformat() if last_comp else None,
             "first_completion_time_et": _ts_et(first_comp),
             "last_completion_time_et": _ts_et(last_comp),
+            "productive_start_time": (
+                productive_start.isoformat() if productive_start is not None else emp.get("productive_start_time")
+            ),
+            "productive_end_time": (
+                productive_end.isoformat() if productive_end is not None else emp.get("productive_end_time")
+            ),
             "productive_hours": productive_hours,
             "worked_hours": productive_hours,
             "bags_per_hour": bags_per_hour,

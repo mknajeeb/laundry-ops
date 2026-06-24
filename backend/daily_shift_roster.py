@@ -136,6 +136,62 @@ def normalize_employee_name(raw: Any) -> str:
     return str(raw or "").strip()
 
 
+def build_roster_role_lookup(entries: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict) or entry.get("excluded"):
+            continue
+        name = normalize_employee_name(entry.get("employee_name"))
+        role = str(entry.get("role") or "folder").strip().lower()
+        if not name or role not in VALID_ROLES:
+            continue
+        key = name.casefold()
+        if key not in out or role == "operator":
+            out[key] = role
+    return out
+
+
+def resolve_roster_role_for_rinse_user(
+    rinse_user_name: str,
+    roster_roles_by_name: Mapping[str, str],
+    user_maps: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str | None:
+    rinse_key = normalize_employee_name(rinse_user_name).casefold()
+    if rinse_key in roster_roles_by_name:
+        return roster_roles_by_name[rinse_key]
+    mapping = (user_maps or {}).get(rinse_key) or {}
+    display = normalize_employee_name(mapping.get("display_name")).casefold()
+    if display:
+        for roster_name, role in roster_roles_by_name.items():
+            if roster_name.startswith(display) or roster_name.split()[0] == display:
+                return role
+    first_token = rinse_key.split("(")[0].strip()
+    if first_token:
+        for roster_name, role in roster_roles_by_name.items():
+            if roster_name.startswith(first_token) or roster_name.split()[0] == first_token:
+                return role
+    return None
+
+
+def productivity_for_roster_entry(
+    roster_employee_name: str,
+    productivity_by_name: Mapping[str, Mapping[str, Any]],
+    user_maps: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    roster_key = normalize_employee_name(roster_employee_name).casefold()
+    if roster_key in productivity_by_name:
+        return dict(productivity_by_name[roster_key])
+    for rinse_key, prod in productivity_by_name.items():
+        mapping = (user_maps or {}).get(rinse_key) or {}
+        display = normalize_employee_name(mapping.get("display_name")).casefold()
+        if display and (roster_key.startswith(display) or roster_key.split()[0] == display):
+            return dict(prod)
+        first_token = rinse_key.split("(")[0].strip()
+        if first_token and (roster_key.startswith(first_token) or roster_key.split()[0] == first_token):
+            return dict(prod)
+    return None
+
+
 def calc_hours(
     start_time: time,
     end_time: time,

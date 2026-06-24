@@ -202,6 +202,30 @@ def is_lifecycle_sorting_progress_marker_purpose(raw: str | None) -> bool:
     return False
 
 
+def is_operator_upstream_processing_purpose(raw: str | None) -> bool:
+    """Weighing, sorting, washing, or drying — not folding/completion scans."""
+    if is_complete_cleaning_purpose(raw):
+        return False
+    if is_processed_by_vendor_purpose(raw):
+        return False
+    if is_assembly_printed_ct_purpose(raw):
+        return False
+    p = normalize_scan_purpose(raw)
+    if p == "garments-reviewed":
+        return False
+    if is_move_bag_purpose(raw):
+        return False
+    return (
+        is_weight_entry_purpose(raw)
+        or is_ghost_cleaning_purpose(raw)
+        or is_lifecycle_sorting_progress_marker_purpose(raw)
+        or is_start_cleaning_purpose(raw)
+        or is_ready_washer_purpose(raw)
+        or is_washer_settings_purpose(raw)
+        or is_drying_purpose(raw)
+    )
+
+
 def is_cleaning_related_purpose(raw: str | None) -> bool:
     """
     Purpose labels indicating cleaning/prep activity (gaming stages only).

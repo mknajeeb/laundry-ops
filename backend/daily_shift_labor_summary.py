@@ -34,7 +34,10 @@ def _role_metrics(
     productivity_by_name: Mapping[str, Mapping[str, Any]],
     role: str,
     include_bags: bool,
+    user_maps: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from backend.daily_shift_roster import productivity_for_roster_entry
+
     role_entries = [e for e in entries if str(e.get("role") or "").lower() == role]
     total_hours = round(sum(float(e.get("hours") or 0) for e in role_entries), 4)
     labor_cost = round(sum(float(e.get("cost") or 0) for e in role_entries), 2)
@@ -42,7 +45,11 @@ def _role_metrics(
     bags = 0
     pounds = 0.0
     for entry in role_entries:
-        prod = productivity_by_name.get(_norm_name(entry.get("employee_name")))
+        prod = productivity_for_roster_entry(
+            entry.get("employee_name"),
+            productivity_by_name,
+            user_maps=user_maps,
+        )
         if not prod:
             continue
         bags += int(prod.get("completed_bags") or 0)
@@ -72,6 +79,7 @@ def build_labor_summary(
     roster_entries: Sequence[Mapping[str, Any]] | None,
     *,
     productivity_section: Mapping[str, Any] | None = None,
+    user_maps: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     entries = [
         dict(e)
@@ -115,8 +123,20 @@ def build_labor_summary(
     total_bags = int(executive.get("total_bags_completed") or 0)
     total_pounds = float(executive.get("total_pounds_completed") or 0)
 
-    folders = _role_metrics(entries, productivity_by_name=productivity_by_name, role="folder", include_bags=True)
-    operators = _role_metrics(entries, productivity_by_name=productivity_by_name, role="operator", include_bags=False)
+    folders = _role_metrics(
+        entries,
+        productivity_by_name=productivity_by_name,
+        role="folder",
+        include_bags=True,
+        user_maps=user_maps,
+    )
+    operators = _role_metrics(
+        entries,
+        productivity_by_name=productivity_by_name,
+        role="operator",
+        include_bags=False,
+        user_maps=user_maps,
+    )
 
     employee_details = [
         {

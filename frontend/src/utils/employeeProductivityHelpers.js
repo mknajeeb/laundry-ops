@@ -58,6 +58,31 @@ export function isMissingClockIn(emp) {
   return !emp?.clock_in_time && !emp?.clock_in_time_et;
 }
 
+export function productivityStartLabel(emp) {
+  if (emp?.productivity_start_source === "operator_processing") return "Folding Start";
+  return "Clock In";
+}
+
+export function productivityStartDisplay(emp, formatTime) {
+  if (isMissingClockIn(emp)) return "Missing clock-in";
+  if (emp?.productivity_start_source === "operator_processing") {
+    return formatTime(emp.productive_start_time_et || emp.productive_start_time);
+  }
+  return formatTime(emp.clock_in_time_et || emp.clock_in_time);
+}
+
+export function productivityEndLabel(emp) {
+  if (emp?.productivity_end_source === "clock_out") return "Clock Out";
+  return "Last Completion";
+}
+
+export function productivityEndDisplay(emp, formatTime) {
+  if (emp?.productivity_end_source === "clock_out") {
+    return formatTime(emp.clock_out_time_et || emp.productive_end_time_et || emp.productive_end_time);
+  }
+  return formatTime(emp.last_completion_time_et || emp.last_completion_time);
+}
+
 export function fmtProductivityRate(value, missingClockIn) {
   if (missingClockIn) return "N/A";
   if (value == null || Number.isNaN(Number(value))) return "N/A";

@@ -32,6 +32,10 @@ import {
   fmtProductivityRate,
   fmtSummaryNumber,
   isMissingClockIn,
+  productivityEndDisplay,
+  productivityEndLabel,
+  productivityStartDisplay,
+  productivityStartLabel,
   rankEmployees,
 } from "../../utils/employeeProductivityHelpers";
 import EmployeeProductivityDrilldown, {
@@ -51,8 +55,14 @@ function EmployeeSummaryPanel({ emp }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
   const items = [
-    { label: "Clock In", value: missingClockIn ? "Missing clock-in" : formatFriendlyEtWall(emp.clock_in_time_et || emp.clock_in_time) },
-    { label: "Last Completion", value: formatFriendlyEtWall(emp.last_completion_time_et || emp.last_completion_time) },
+    {
+      label: productivityStartLabel(emp),
+      value: productivityStartDisplay(emp, formatFriendlyEtWall),
+    },
+    {
+      label: productivityEndLabel(emp),
+      value: productivityEndDisplay(emp, formatFriendlyEtWall),
+    },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
     { label: "Bags", value: emp.completed_bags ?? 0 },
     { label: "Pounds", value: emp.total_completed_lbs ?? 0 },
