@@ -69,6 +69,20 @@ class TestBuildSpecialInstructionsRaw:
     def test_flags_without_si_column_are_ignored(self):
         assert build_special_instructions_raw(use_fab="X", use_oxic="X") is None
 
+    def test_flags_from_unusable_si_column_catalog_pollution(self):
+        raw = build_special_instructions_raw(
+            special_instructions_col=CHRISTIAN_CATALOG_ONLY,
+            use_fab="X",
+            use_oxic="X",
+            use_hypo="X",
+        )
+        assert "USE FABRIC SOFTENER" in raw
+        assert "USE OXICLEAN" in raw
+        assert "Hypoallergenic" in raw
+
+    def test_catalog_pollution_without_flags_stays_none(self):
+        assert build_special_instructions_raw(special_instructions_col=CHRISTIAN_CATALOG_ONLY) is None
+
     def test_hypo_flag(self):
         raw = build_special_instructions_raw(
             special_instructions_col="Use Hypoallergenic Soap",

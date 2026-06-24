@@ -189,9 +189,16 @@ def build_special_instructions_raw(
                 continue
             _add(chunk)
 
-    # Flag columns are scrape derivatives of the labeled SI field — ignore when SI is empty.
     if not parts:
-        return None
+        # Labeled "Special Instructions:" with no content — portal template flags are stale.
+        if has_labeled_block and not labeled:
+            return None
+        # No SI column at all — flag-only rows are unreliable (list-view template defaults).
+        if not str(special_instructions_col or "").strip():
+            return None
+        # SI column present but unusable (vendor catalog noise) — trust scrape flag columns.
+        if not (_flag_marked(use_fab) or _flag_marked(use_oxic) or _flag_marked(use_hypo)):
+            return None
 
     if _flag_marked(use_fab):
         _add("USE FABRIC SOFTENER")
