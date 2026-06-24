@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -43,7 +44,7 @@ class TestScanEventDedupeKey(unittest.TestCase):
         )
         self.assertEqual(k1, k2)
 
-    def test_different_scan_index_different_key(self):
+    def test_different_scan_index_same_key_when_other_fields_match(self):
         at = datetime(2026, 5, 16, 23, 10)
         raw = "Saturday, May 16, 2026 11:10 PM"
         k1 = compute_scan_event_dedupe_key(
@@ -52,21 +53,21 @@ class TestScanEventDedupeKey(unittest.TestCase):
             scan_index=1,
             rack="FOLDING",
             user_name="U",
-            purpose="",
+            purpose="weight-entry",
             time_scanned_raw=raw,
             scanned_at_parsed=at,
         )
         k2 = compute_scan_event_dedupe_key(
             organization_id=1,
             bag_id="BAG",
-            scan_index=2,
+            scan_index=99,
             rack="FOLDING",
             user_name="U",
-            purpose="",
+            purpose="weight-entry",
             time_scanned_raw=raw,
             scanned_at_parsed=at,
         )
-        self.assertNotEqual(k1, k2)
+        self.assertEqual(k1, k2)
 
 
 class InMemoryScanEventStore:
@@ -91,21 +92,44 @@ class InMemoryScanEventStore:
         self.rows.append(row)
         return "inserted"
 
+    def delete_bags(self, org: int, bag_ids: list[str]) -> int:
+        bids = set(bag_ids)
+        before = len(self.rows)
+        self.rows = [
+            r
+            for r in self.rows
+            if not (r["organization_id"] == org and r["bag_id"] in bids)
+        ]
+        return before - len(self.rows)
+
     def count(self, org: int, bag_id: str) -> int:
         return sum(1 for r in self.rows if r["organization_id"] == org and r["bag_id"] == bag_id)
+
+
+def _parse_event_time(raw: str) -> datetime:
+    match = re.search(r"(\d+):(\d{2})\s+PM", raw)
+    if not match:
+        return datetime(2026, 5, 16, 22, 0)
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour != 12:
+        hour += 12
+    return datetime(2026, 5, 16, hour, minute)
 
 
 def _events_df(bag_id: str = "30WI6KW06G", n: int = 19) -> pd.DataFrame:
     rows = []
     for i in range(1, n + 1):
+        minute = i % 60
+        hour = 10 + (i // 60)
         rows.append(
             {
                 "Bag ID": bag_id,
                 "Scan Index": str(i),
                 "Rack": "FOLDING" if i < 10 else "CLEAN",
-                "Time Scanned": "Friday 11:04 PM",
+                "Time Scanned": f"Friday, May 16, 2026 {hour}:{minute:02d} PM",
                 "User": "Sarah Kamran",
-                "Purpose": "",
+                "Purpose": f"step-{i}",
                 "Last Location": "",
                 "Last Scan": "",
             }
@@ -139,7 +163,16 @@ class TestMergeScanEventsIdempotent(unittest.TestCase):
         with (
             patch("backend.rinse_bag_registry.ensure_rinse_bag_tables"),
             patch("backend.rinse_bag_registry.ensure_rinse_bag_scan_events_dedupe_schema"),
+            patch(
+                "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
+                side_effect=lambda _c, _o, ids, **kw: (list(ids), []),
+            ),
+            patch(
+                "backend.rinse_bag_registry.delete_persistent_scan_events_for_bags",
+                side_effect=lambda _c, org, bag_ids: store.delete_bags(org, list(bag_ids)),
+            ),
             patch("backend.rinse_bag_registry.upsert_scan_event_row", side_effect=_upsert_side_effect),
+            patch("backend.rinse_bag_registry.parse_rinse_scanned_at", side_effect=_parse_event_time),
         ):
             from backend.rinse_bag_completion import normalize_bag_id
 

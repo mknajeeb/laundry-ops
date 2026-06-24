@@ -91,7 +91,7 @@ class TestCanonicalScanUpsert:
             "backend.rinse_bag_registry.ensure_rinse_bag_scan_events_dedupe_schema"
         ), patch("backend.rinse_bag_registry.upsert_scan_event_row", side_effect=_upsert), patch(
             "backend.rinse_bag_registry.compute_scan_event_dedupe_key",
-            side_effect=lambda **k: "dup" if k.get("scan_index") == 1 else "new",
+            side_effect=lambda **k: "dup" if k.get("purpose") == "add-photos" else "new",
         ), patch(
             "backend.rinse_bag_registry.parse_rinse_scanned_at",
             return_value=datetime(2026, 6, 13, 20, 0),

@@ -269,12 +269,12 @@ def classify_portal_rows_against_db(
         dk = compute_scan_event_dedupe_key(
             organization_id=int(organization_id),
             bag_id=bag_id,
-            scan_index=scan_index,
             rack=row.get("Rack"),
             user_name=row.get("User"),
             purpose=row.get("Purpose"),
             time_scanned_raw=time_raw,
             scanned_at_parsed=_parse_scanned_at(time_raw),
+            last_location=row.get("Last Location"),
         )
         if dk in dedupe_keys:
             already_present += 1
@@ -765,6 +765,7 @@ def refresh_off_portal_pending_scans(
                 int(upload_batch_id),
                 df,
                 source_name,
+                replace_existing=False,
             )
             imported_count = int(merge_result.get("events_inserted") or 0)
             any_imported = any_imported or imported_count > 0

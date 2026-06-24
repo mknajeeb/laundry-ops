@@ -128,7 +128,7 @@ class TestDedupeKeyDistinctScans(unittest.TestCase):
         self.assertNotEqual(k15, k17)
 
     def test_same_rack_user_purpose_different_timestamp_different_key(self):
-        base = dict(rack="FOLDING", user="Sarah", purpose="", scan_index=2)
+        base = dict(rack="FOLDING", user="Sarah", purpose="weight-entry", scan_index=2)
         k1 = self._key(
             **base,
             raw="Sunday, May 17, 2026 3:04 PM",
@@ -140,6 +140,28 @@ class TestDedupeKeyDistinctScans(unittest.TestCase):
             parsed=datetime(2026, 5, 17, 15, 17, 0),
         )
         self.assertNotEqual(k1, k2)
+
+    def test_same_scan_index_different_rack_different_key(self):
+        base = dict(
+            raw="Sunday, May 17, 2026 3:04 PM",
+            parsed=datetime(2026, 5, 17, 15, 4, 0),
+            scan_index=2,
+        )
+        k1 = self._key(**base, rack="FOLDING", user="Sarah", purpose="weight-entry")
+        k2 = self._key(**base, rack="CLEAN", user="Sarah", purpose="weight-entry")
+        self.assertNotEqual(k1, k2)
+
+    def test_renumbered_scan_index_same_key(self):
+        base = dict(
+            rack="FOLDING",
+            user="Sarah",
+            purpose="weight-entry",
+            raw="Sunday, May 17, 2026 3:04 PM",
+            parsed=datetime(2026, 5, 17, 15, 4, 0),
+        )
+        k1 = self._key(**base, scan_index=2)
+        k2 = self._key(**base, scan_index=99)
+        self.assertEqual(k1, k2)
 
     def test_blank_parsed_without_raw_raises(self):
         with self.assertRaises(ValueError):
@@ -226,6 +248,10 @@ class TestImmutableUpsertAndMerge(unittest.TestCase):
         with (
             patch("backend.rinse_bag_registry.ensure_rinse_bag_tables"),
             patch("backend.rinse_bag_registry.ensure_rinse_bag_scan_events_dedupe_schema"),
+            patch(
+                "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
+                side_effect=lambda _c, _o, ids, **kw: (list(ids), []),
+            ),
             patch("backend.rinse_bag_registry.upsert_scan_event_row", side_effect=_side),
         ):
             from backend.rinse_bag_completion import normalize_bag_id
@@ -241,7 +267,7 @@ class TestImmutableUpsertAndMerge(unittest.TestCase):
             self.assertEqual(first["rack"], second["rack"])
             self.assertEqual(second["source_upload_batch_id"], 200)
 
-    def test_may_15_row_not_overwritten_by_may_17_upload(self):
+    def test_second_upload_replaces_prior_cycle_scans(self):
         store = ImmutableScanEventStore()
         cursor = MagicMock()
         df15 = self._row_df(self.BAG, 1, "Thursday, May 15, 2026 2:00 PM", rack="FOLDING")
@@ -250,10 +276,27 @@ class TestImmutableUpsertAndMerge(unittest.TestCase):
         def _side(_cursor, **kwargs):
             return store.upsert(kwargs)
 
+        def _delete(_cursor, org, bag_ids):
+            bids = set(bag_ids)
+            store.rows = [
+                r
+                for r in store.rows
+                if not (r["organization_id"] == org and r["bag_id"] in bids)
+            ]
+            return len(bag_ids)
+
         with (
             patch("backend.rinse_bag_registry.ensure_rinse_bag_tables"),
             patch("backend.rinse_bag_registry.ensure_rinse_bag_scan_events_dedupe_schema"),
+            patch(
+                "backend.rinse_bag_operational_owner.filter_bag_ids_for_operational_write",
+                side_effect=lambda _c, _o, ids, **kw: (list(ids), []),
+            ),
             patch("backend.rinse_bag_registry.upsert_scan_event_row", side_effect=_side),
+            patch(
+                "backend.rinse_bag_registry.delete_persistent_scan_events_for_bags",
+                side_effect=_delete,
+            ),
         ):
             from backend.rinse_bag_completion import normalize_bag_id
 
@@ -261,10 +304,9 @@ class TestImmutableUpsertAndMerge(unittest.TestCase):
             merge_scan_events_from_upload(cursor, self.ORG, 2, df17, "may17.csv")
             bid = normalize_bag_id(self.BAG)
             rows = sorted(store.by_bag(self.ORG, bid), key=lambda r: r["scanned_at_parsed"])
-            self.assertEqual(len(rows), 2)
-            self.assertEqual(rows[0]["scanned_at_parsed"], datetime(2026, 5, 15, 14, 0))
-            self.assertEqual(rows[0]["rack"], "FOLDING")
-            self.assertEqual(rows[1]["scanned_at_parsed"], datetime(2026, 5, 17, 15, 17))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["scanned_at_parsed"], datetime(2026, 5, 17, 15, 17))
+            self.assertEqual(rows[0]["rack"], "CLEAN")
 
 
 class TestTimelineReadPath(unittest.TestCase):

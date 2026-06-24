@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 
 from backend.rinse_bag_completion import (
     COMPLETION_COMPLETED,
     COMPLETION_INCOMPLETE,
+    COMPLETION_REJECTED,
     REASON_NO_CLEAN_SCAN,
     CompletionResult,
     completion_result_references_persisted_events,
@@ -203,6 +204,120 @@ def is_bag_already_completed(cursor, organization_id: int, bag_id: str) -> bool:
         return False
     status = row["completion_status"] if isinstance(row, dict) else row[0]
     return str(status or "").upper() == COMPLETION_COMPLETED
+
+
+def is_bag_portal_scrape_rejected(cursor, organization_id: int, bag_id: str) -> bool:
+    """True when registry marks bag rejected for disappearing from a full portal scrape."""
+    from backend.rinse_bag_completion import (
+        COMPLETION_REJECTED,
+        REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE,
+    )
+
+    row = get_registry_row(cursor, organization_id, bag_id)
+    if not row:
+        return False
+    return (
+        str(row.get("completion_status") or "").upper() == COMPLETION_REJECTED
+        and str(row.get("completion_reason") or "").strip()
+        == REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE
+    )
+
+
+def mark_registry_rejected_portal_absence(
+    cursor,
+    organization_id: int,
+    bag_id: str,
+    *,
+    upload_batch_id: int,
+    rejected_at: datetime | None = None,
+) -> bool:
+    """
+    Mark bag REJECTED because it was incomplete and missing from the latest full portal upload.
+    """
+    from backend.rinse_bag_completion import (
+        COMPLETION_REJECTED,
+        REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE,
+        TRIGGER_KIND_PORTAL_SCRAPE_ABSENCE_REJECT,
+    )
+
+    bid = normalize_bag_id(bag_id)
+    if not bid:
+        return False
+    org = int(organization_id)
+    ensure_rinse_bag_registry_table(cursor)
+    existing = get_registry_row(cursor, org, bid)
+    if existing and str(existing.get("completion_status") or "").upper() in (
+        COMPLETION_REJECTED,
+        COMPLETION_COMPLETED,
+    ):
+        if is_bag_portal_scrape_rejected(cursor, org, bid):
+            return False
+        if str(existing.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+            return False
+
+    when = rejected_at or datetime.utcnow()
+    batch_id = int(upload_batch_id)
+    cursor.execute(
+        """
+        INSERT INTO rinse_bag_registry (
+            organization_id, bag_id, completion_status, completion_reason,
+            completed_at, trigger_kind, last_upload_batch_id, created_at, updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            completion_status = VALUES(completion_status),
+            completion_reason = VALUES(completion_reason),
+            completed_at = VALUES(completed_at),
+            trigger_kind = VALUES(trigger_kind),
+            last_upload_batch_id = VALUES(last_upload_batch_id),
+            updated_at = NOW()
+        """,
+        (
+            org,
+            bid,
+            COMPLETION_REJECTED,
+            REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE,
+            when,
+            TRIGGER_KIND_PORTAL_SCRAPE_ABSENCE_REJECT,
+            batch_id,
+        ),
+    )
+    return True
+
+
+def deactivate_at_vendor_presence_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: Sequence[str],
+) -> int:
+    """Deactivate live At Vendor presence rows for rejected / departed bags."""
+    from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR
+    from backend.ta_helpers import table_exists
+
+    if not table_exists(cursor, "rinse_cleaner_ticket_presence"):
+        return 0
+    org = int(organization_id)
+    normalized = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not normalized:
+        return 0
+    deactivated = 0
+    chunk_size = 200
+    now = datetime.utcnow()
+    for i in range(0, len(normalized), chunk_size):
+        chunk = normalized[i : i + chunk_size]
+        placeholders = ",".join(["%s"] * len(chunk))
+        cursor.execute(
+            f"""
+            UPDATE rinse_cleaner_ticket_presence
+            SET active = 0, last_seen_at = %s
+            WHERE organization_id = %s
+              AND portal_status = %s
+              AND active = 1
+              AND UPPER(TRIM(bag_id)) IN ({placeholders})
+            """,
+            (now, org, PORTAL_STATUS_AT_VENDOR, *[b.upper() for b in chunk]),
+        )
+        deactivated += int(cursor.rowcount or 0)
+    return deactivated
 
 
 def mark_registry_completed_portal_absence(
@@ -420,18 +535,48 @@ def upsert_scan_event_row(
     return "inserted"
 
 
+def delete_persistent_scan_events_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str] | tuple[str, ...],
+) -> int:
+    """Remove all persistent scan rows for bags before a full portal-timeline replace."""
+    ensure_rinse_bag_scan_events_dedupe_schema(cursor)
+    org = int(organization_id)
+    normalized = sorted({normalize_bag_id(b) for b in bag_ids if normalize_bag_id(b)})
+    if not normalized:
+        return 0
+    deleted = 0
+    chunk_size = 200
+    for i in range(0, len(normalized), chunk_size):
+        chunk = normalized[i : i + chunk_size]
+        placeholders = ",".join(["%s"] * len(chunk))
+        cursor.execute(
+            f"""
+            DELETE FROM rinse_bag_scan_events
+            WHERE organization_id = %s AND bag_id IN ({placeholders})
+            """,
+            (org, *chunk),
+        )
+        deleted += int(cursor.rowcount or 0)
+    return deleted
+
+
 def merge_scan_events_from_upload(
     cursor,
     organization_id: int,
     upload_batch_id: int,
     events_df: pd.DataFrame,
     source_filename: str = "",
+    *,
+    replace_existing: bool = True,
 ) -> dict[str, Any]:
     """
-    Copy scan-events into rinse_bag_scan_events (idempotent per logical scan).
+    Copy scan-events into rinse_bag_scan_events.
 
-    Upserts by (organization_id, bag_id, dedupe_key) so re-uploading the same CSV
-  across new upload batches does not accumulate duplicate rows.
+    When replace_existing=True (default), each bag's prior persistent timeline is
+    deleted first so the portal export fully replaces old cycle scans.
+    Upserts by (organization_id, bag_id, dedupe_key) within the import batch.
     Ensures registry row exists per bag.
     """
     ensure_rinse_bag_tables(cursor)
@@ -456,6 +601,9 @@ def merge_scan_events_from_upload(
         cursor, org, raw_bag_ids, context="scan_import", assign_on_first=True
     )
     bag_ids = sorted(allowed_ids)
+    events_deleted = 0
+    if replace_existing and bag_ids:
+        events_deleted = delete_persistent_scan_events_for_bags(cursor, org, bag_ids)
     inserted = 0
     metadata_updated = 0
     skipped_no_time = 0
@@ -486,12 +634,12 @@ def merge_scan_events_from_upload(
                 dedupe_key = compute_scan_event_dedupe_key(
                     organization_id=org,
                     bag_id=bag_id,
-                    scan_index=scan_index,
                     rack=rack,
                     user_name=user_name,
                     purpose=purpose,
                     time_scanned_raw=time_raw_db,
                     scanned_at_parsed=scanned_db,
+                    last_location=last_loc,
                 )
             except ValueError:
                 skipped_no_time += 1
@@ -535,12 +683,14 @@ def merge_scan_events_from_upload(
     return {
         "bags_merged": len(bag_ids),
         "events_inserted": inserted,
+        "events_deleted": events_deleted,
         "events_already_present": metadata_updated,
         "events_metadata_updated": metadata_updated,
         "events_updated": metadata_updated,
         "events_skipped_no_time": skipped_no_time,
         "bags_rejected_operational_owner": rejected_owner,
         "operational_owner_rejected": owner_rejected,
+        "replace_existing": replace_existing,
         "bag_ids": bag_ids,
     }
 
@@ -580,6 +730,13 @@ def apply_completion_to_registry(
     cursor, organization_id: int, bag_id: str
 ) -> dict[str, Any]:
     bid = normalize_bag_id(bag_id)
+    org = int(organization_id)
+    if is_bag_portal_scrape_rejected(cursor, org, bid):
+        return {
+            "bag_id": bid,
+            "completion_status": COMPLETION_REJECTED,
+            "skipped": "portal_scrape_rejected",
+        }
     events = fetch_persistent_scan_events_for_bag(cursor, organization_id, bid)
     result = evaluate_bag_completion(events)
     if result.completion_status == COMPLETION_COMPLETED and not completion_result_references_persisted_events(
