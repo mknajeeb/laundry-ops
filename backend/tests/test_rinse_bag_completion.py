@@ -8,6 +8,7 @@ from datetime import datetime
 from backend.rinse_bag_completion import (
     COMPLETION_COMPLETED,
     COMPLETION_INCOMPLETE,
+    COMPLETION_REJECTED,
     REASON_CLEAN_RACK_SCANNED,
     REASON_NO_CLEAN_SCAN,
     TRIGGER_CLEAN_RACK,
@@ -44,6 +45,11 @@ class TestNormalizeBagId(unittest.TestCase):
 
     def test_uppercase(self):
         self.assertEqual(normalize_bag_id("abcd12"), "ABCD12")
+
+
+class TestCompletionStatuses(unittest.TestCase):
+    def test_rejected_status_exported_for_registry(self):
+        self.assertEqual(COMPLETION_REJECTED, "REJECTED")
 
 
 class TestRackAndUser(unittest.TestCase):
