@@ -66,18 +66,24 @@ export function filterEmployeesByEmployerTab(employees, tab, entries = null) {
   const list = employees || [];
   if (tab === EMPLOYER_TAB.COMBINED) return list;
 
-  const tabEntries = filterEntriesByEmployerTab(entries || [], tab, list);
+  const allEntries = entries || [];
+  const tabEntries = filterEntriesByEmployerTab(allEntries, tab, list);
   const userIdsWithTabEntries = new Set(tabEntries.map((entry) => Number(entry.user_id)));
 
   return list.filter((employee) => {
     const uid = Number(employee.user_id);
     if (userIdsWithTabEntries.has(uid)) return true;
+    const hasAnyEntry = allEntries.some((entry) => Number(entry.user_id) === uid);
+    if (hasAnyEntry) return false;
     return matchesEmployerTab(employee, tab);
   });
 }
 
+/** Tab badge count — employees with at least one shift assigned to this employer. */
 export function countEmployeesForEmployerTab(employees, tab, entries = null) {
-  return filterEmployeesByEmployerTab(employees, tab, entries).length;
+  if (tab === EMPLOYER_TAB.COMBINED) return (employees || []).length;
+  const tabEntries = filterEntriesByEmployerTab(entries || [], tab, employees);
+  return new Set(tabEntries.map((entry) => Number(entry.user_id))).size;
 }
 
 /** Default to whichever tab has more employees (VeeWash when tied). */

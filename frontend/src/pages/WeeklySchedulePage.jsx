@@ -45,6 +45,7 @@ import {
   EMPLOYER_TAB_LABELS,
   filterEmployeesByEmployerTab,
   filterEntriesByEmployerTab,
+  countEmployeesForEmployerTab,
   defaultShiftEmployerForTab,
   pickDefaultEmployerTab,
 } from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
@@ -690,11 +691,11 @@ export default function WeeklySchedulePage() {
               >
                 <Tab
                   value={EMPLOYER_TAB.VEEWASH}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH, data?.entries || []).length})`}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${countEmployeesForEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH, data?.entries || [])})`}
               />
               <Tab
                 value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${filterEmployeesByEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE, data?.entries || []).length})`}
+                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${countEmployeesForEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE, data?.entries || [])})`}
                 />
                 <Tab
                   value={EMPLOYER_TAB.COMBINED}
