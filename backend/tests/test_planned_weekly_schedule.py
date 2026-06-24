@@ -530,6 +530,38 @@ def test_create_and_update_entry_employer_affiliation():
         assert updated["employer_affiliation"] == "veewash"
 
 
+def test_duplicate_entry_without_stored_employer_uses_worker_default():
+    cursor = _FakeCursor()
+    conn = MagicMock()
+    week = date(2026, 6, 14)
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True), patch(
+        "backend.planned_weekly_schedule._load_workers", return_value=_mock_workers()
+    ), patch(
+        "backend.payroll_schedule.worker_exists_in_schedule_grid",
+        return_value=True,
+    ):
+        created, err = create_entry(
+            conn,
+            cursor,
+            1,
+            week_start=week,
+            data={
+                "user_id": 10,
+                "day_of_week": 1,
+                "role": "fold",
+                "start_time": "09:00",
+                "end_time": "16:00",
+            },
+        )
+        assert err is None
+        created["employer_affiliation"] = None
+        cursor.rows[-1]["employer_affiliation"] = None
+
+        copied, err = duplicate_entry(conn, cursor, 1, created["id"])
+        assert err is None
+        assert copied["employer_affiliation"] == "veewash"
+
+
 def test_org_isolation_on_get_and_delete():
     cursor = _FakeCursor()
     conn = MagicMock()

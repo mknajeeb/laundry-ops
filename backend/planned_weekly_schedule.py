@@ -505,10 +505,12 @@ def _validate_entry_payload(
     if "employer_affiliation" in data:
         from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
 
-        aff = normalize_shift_employer_affiliation(data.get("employer_affiliation"))
-        if not aff:
-            return None, "employer_affiliation must be veewash or rinse_exclusive"
-        out["employer_affiliation"] = aff
+        raw_aff = data.get("employer_affiliation")
+        if raw_aff is not None and str(raw_aff).strip():
+            aff = normalize_shift_employer_affiliation(raw_aff)
+            if not aff:
+                return None, "employer_affiliation must be veewash or rinse_exclusive"
+            out["employer_affiliation"] = aff
     return out, None
 
 
@@ -581,9 +583,10 @@ def update_entry(
         "start_time": existing["start_time"],
         "end_time": existing["end_time"],
         "break_minutes": existing["break_minutes"],
-        "employer_affiliation": existing.get("employer_affiliation"),
         **dict(data or {}),
     }
+    if "employer_affiliation" not in merged and existing.get("employer_affiliation"):
+        merged["employer_affiliation"] = existing.get("employer_affiliation")
     payload, err = _validate_entry_payload(merged)
     if err:
         return None, err
@@ -672,20 +675,22 @@ def duplicate_entry(
     target_day = normalize_day_of_week(day_of_week) if day_of_week is not None else int(existing["day_of_week"])
     if target_day is None:
         return None, "day_of_week must be 0-6 (Sun-Sat)"
+    duplicate_data: dict[str, Any] = {
+        "user_id": target_user,
+        "day_of_week": target_day,
+        "roles": existing.get("roles") or parse_weekly_roles(existing["role"]),
+        "start_time": existing["start_time"],
+        "end_time": existing["end_time"],
+        "break_minutes": existing["break_minutes"],
+    }
+    if existing.get("employer_affiliation"):
+        duplicate_data["employer_affiliation"] = existing["employer_affiliation"]
     return create_entry(
         conn,
         cursor,
         organization_id,
         week_start=date.fromisoformat(str(existing["week_start"])),
-        data={
-            "user_id": target_user,
-            "day_of_week": target_day,
-            "roles": existing.get("roles") or parse_weekly_roles(existing["role"]),
-            "start_time": existing["start_time"],
-            "end_time": existing["end_time"],
-            "break_minutes": existing["break_minutes"],
-            "employer_affiliation": existing.get("employer_affiliation"),
-        },
+        data=duplicate_data,
     )
 
 
