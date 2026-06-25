@@ -61,6 +61,19 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
         productive_hours = None
         bags_per_hour = None
         lbs_per_hour = None
+    elif (
+        emp.get("roster_role") in ("operator", "folder")
+        and emp.get("folding_duration_seconds") is not None
+        and len(bags_sorted) == int(emp.get("completed_bags") or 0)
+    ):
+        productive_sec = max(0, int(emp.get("folding_duration_seconds") or 0))
+        productive_hours = round(productive_sec / 3600.0, 4)
+        if productive_hours > 0:
+            bags_per_hour = round(len(bags_sorted) / productive_hours, 4)
+            lbs_per_hour = round(total_lbs / productive_hours, 4) if total_lbs else None
+        else:
+            bags_per_hour = None
+            lbs_per_hour = None
     elif productive_start is not None and productive_end is not None:
         productive_sec = max(0, int((productive_end - productive_start).total_seconds()))
         productive_hours = round(productive_sec / 3600.0, 4)
@@ -112,6 +125,8 @@ def _recalc_employee_metrics(emp: Mapping[str, Any], scoped_bags: list[dict[str,
             "worked_hours": productive_hours,
             "bags_per_hour": bags_per_hour,
             "lbs_per_hour": lbs_per_hour,
+            "folding_blocks": emp.get("folding_blocks") or [],
+            "folding_duration_seconds": emp.get("folding_duration_seconds"),
             "productivity_note": productivity_note,
             "wf_bags_in_scope": sum(1 for b in bags_sorted if _service_type(b) == "WF"),
             "hd_bags_in_scope": sum(1 for b in bags_sorted if _service_type(b) == "HD"),
