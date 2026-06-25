@@ -230,6 +230,7 @@ def mark_registry_rejected_portal_absence(
     *,
     upload_batch_id: int,
     rejected_at: datetime | None = None,
+    force: bool = False,
 ) -> bool:
     """
     Mark bag REJECTED because it was incomplete and missing from the latest full portal upload.
@@ -252,7 +253,10 @@ def mark_registry_rejected_portal_absence(
     ):
         if is_bag_portal_scrape_rejected(cursor, org, bid):
             return False
-        if str(existing.get("completion_status") or "").upper() == COMPLETION_COMPLETED:
+        if (
+            not force
+            and str(existing.get("completion_status") or "").upper() == COMPLETION_COMPLETED
+        ):
             return False
 
     when = rejected_at or datetime.utcnow()

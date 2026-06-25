@@ -328,6 +328,44 @@ def _load_portal_scrape_rejected_bag_ids(cursor, organization_id: int) -> set[st
     }
 
 
+def _load_off_portal_registry_terminal_bag_ids(cursor, organization_id: int) -> set[str]:
+    """Completed registry bags gone from portal and live presence — stale pending carry."""
+    from backend.rinse_bag_completion import COMPLETION_COMPLETED
+    from backend.rinse_off_portal_scan_refresh import (
+        bag_in_portal_crawl_batch,
+        get_latest_successful_crawl_batch_id,
+    )
+
+    org = int(organization_id)
+    excluded = _load_portal_scrape_rejected_bag_ids(cursor, org)
+    if not table_exists(cursor, "rinse_bag_registry"):
+        return excluded
+
+    batch_id = get_latest_successful_crawl_batch_id(cursor, org)
+    if not batch_id:
+        return excluded
+
+    live_by_bag = _load_active_at_vendor_presence_by_bag(cursor, org)
+    cursor.execute(
+        """
+        SELECT UPPER(TRIM(bag_id)) AS bag_id
+        FROM rinse_bag_registry
+        WHERE organization_id = %s
+          AND UPPER(COALESCE(completion_status, '')) = %s
+        """,
+        (org, COMPLETION_COMPLETED),
+    )
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid or bid in live_by_bag:
+            continue
+        if not bag_in_portal_crawl_batch(cursor, org, int(batch_id), bid):
+            excluded.add(bid)
+    return excluded
+
+
 INCLUSION_CARRY_IN = "carry_in_open_at_midnight"
 INCLUSION_NEW_SENT = "new_sent_to_vendor_today"
 INCLUSION_CLEAN_SCRAPE_SEED = "clean_veewash_scrape_seed"
@@ -2764,9 +2802,9 @@ def build_at_vendor_module(
     if still_present_ids:
         rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in still_present_ids]
 
-    rejected_ids = _load_portal_scrape_rejected_bag_ids(cursor, org)
-    if rejected_ids:
-        rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in rejected_ids]
+    excluded_ids = _load_off_portal_registry_terminal_bag_ids(cursor, org)
+    if excluded_ids:
+        rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in excluded_ids]
 
     t_edd = time.perf_counter()
     prior_edd_map = _load_prior_edd_from_batches_bulk(cursor, org, pending_for_prior_edd)

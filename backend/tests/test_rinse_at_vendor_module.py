@@ -1560,7 +1560,7 @@ class TestCrossDayCompletionAttribution:
             "backend.rinse_at_vendor_module._load_completed_before_day_start_still_present",
             return_value=([], set()),
         ), patch(
-            "backend.rinse_at_vendor_module._load_portal_scrape_rejected_bag_ids",
+            "backend.rinse_at_vendor_module._load_off_portal_registry_terminal_bag_ids",
             return_value=set(),
         ), patch(
             "backend.rinse_employee_completed_bags.build_employee_completed_bags_today",
