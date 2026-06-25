@@ -8,12 +8,15 @@ from unittest.mock import patch
 from backend.rinse_at_vendor_module import MOD_AT_VENDOR_COMPLETED
 from backend.rinse_employee_completed_bags import (
     UNKNOWN_EMPLOYEE,
-    FOLD_START_SOURCE_INFERRED_PRIOR_SCAN,
+    FOLD_BLOCK_END_CLOCK_OUT,
+    FOLD_BLOCK_START_CLOCK_IN,
+    FOLD_BLOCK_START_PRIOR_SCAN,
     PRODUCTIVITY_END_CLOCK_OUT,
+    PRODUCTIVITY_START_CLOCK_IN,
     PRODUCTIVITY_START_INFERRED_FOLD,
     PRODUCTIVITY_START_OPERATOR_PROCESSING,
+    _compute_folding_blocks,
     _compute_productive_window,
-    _infer_fold_start_for_completion,
     build_employee_completed_bags_today,
     resolve_completion_attribution,
 )
@@ -136,7 +139,7 @@ class TestResolveCompletionAttribution:
 
 class TestComputeProductiveWindow:
     def test_operator_uses_last_upstream_scan_before_first_completion(self):
-        start, end, start_source, end_source = _compute_productive_window(
+        start, end, start_source, end_source, total_sec = _compute_productive_window(
             roster_role="operator",
             clock_in=CLOCK_IN,
             first_comp=T3,
@@ -148,9 +151,10 @@ class TestComputeProductiveWindow:
         assert end == T4
         assert start_source == PRODUCTIVITY_START_OPERATOR_PROCESSING
         assert end_source == "last_completion"
+        assert total_sec == int((T4 - datetime(2026, 6, 10, 6, 45)).total_seconds())
 
     def test_folder_uses_clock_out_when_set(self):
-        start, end, start_source, end_source = _compute_productive_window(
+        start, end, start_source, end_source, total_sec = _compute_productive_window(
             roster_role="folder",
             clock_in=CLOCK_IN,
             first_comp=T3,
@@ -162,6 +166,7 @@ class TestComputeProductiveWindow:
         assert end == CLOCK_OUT
         assert start_source == "clock_in"
         assert end_source == PRODUCTIVITY_END_CLOCK_OUT
+        assert total_sec == int((CLOCK_OUT - CLOCK_IN).total_seconds())
 
 
 class TestBuildEmployeeCompletedBagsToday:
@@ -214,7 +219,7 @@ class TestBuildEmployeeCompletedBagsToday:
             "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
             return_value=upstream_scans or {},
         ), patch(
-            "backend.rinse_employee_completed_bags._load_employee_work_scan_events_bulk",
+            "backend.rinse_employee_completed_bags._load_employee_day_scan_events_bulk",
             return_value={},
         ):
             return build_employee_completed_bags_today(
@@ -319,7 +324,7 @@ class TestBuildEmployeeCompletedBagsToday:
         bag_ids = [b["bag_id"] for b in emp["bags"]]
         assert bag_ids == ["BAG1", "BAG2"]
 
-    def test_operator_productive_hours_use_last_processing_scan(self):
+    def test_operator_productive_hours_use_folding_blocks(self):
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
@@ -334,17 +339,16 @@ class TestBuildEmployeeCompletedBagsToday:
             [row],
             events,
             roster_roles={"weight clerk": "operator"},
-            upstream_scans={"weight clerk": [T2]},
         )
         emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
-        bag = emp["bags"][0]
-        assert bag["fold_start_time"] == T2.isoformat()
-        assert bag["fold_end_time"] == T3.isoformat()
-        assert bag["fold_start_source"] == FOLD_START_SOURCE_INFERRED_PRIOR_SCAN
+        blocks = emp["folding_blocks"]
+        assert len(blocks) == 1
+        assert blocks[0]["start_time"] == T2.isoformat()
+        assert blocks[0]["start_source"] == FOLD_BLOCK_START_PRIOR_SCAN
+        assert blocks[0]["end_time"] == T3.isoformat()
         expected_hours = round((T3 - T2).total_seconds() / 3600.0, 4)
-        assert emp["productive_start_time"] == T2.isoformat()
-        assert emp["productivity_start_source"] == PRODUCTIVITY_START_INFERRED_FOLD
         assert emp["productive_hours"] == expected_hours
+        assert emp["productivity_start_source"] == PRODUCTIVITY_START_INFERRED_FOLD
 
     def test_folder_productive_hours_use_clock_out_when_set(self):
         row = _completed_row("BAG1")
@@ -369,10 +373,10 @@ class TestBuildEmployeeCompletedBagsToday:
         assert emp["productive_hours"] == expected_hours
 
 
-class TestFoldStartInference:
-    """Per-bag fold_start for Operator/Folder roster roles — fold_end/completion unchanged."""
+class TestFoldingBlocks:
+    """Shift-level folding work windows for Operator/Folder — completion credit unchanged."""
 
-    def _build(self, rows, events_by_bag, *, roster_roles=None, clock_in=CLOCK_IN, clock_out=None):
+    def _build(self, rows, events_by_bag, *, roster_roles=None, clock_in=CLOCK_IN, clock_out=None, user_maps=None):
         helper = TestBuildEmployeeCompletedBagsToday()
         return helper._build(
             rows,
@@ -380,19 +384,20 @@ class TestFoldStartInference:
             roster_roles=roster_roles or {},
             clock_in=clock_in,
             clock_out=clock_out,
+            user_maps=user_maps,
         )
 
-    def test_folder_infers_fold_start_from_prior_scan(self):
+    def test_folder_no_prior_scans_starts_at_punch_in(self):
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0),
-                _ev("drying", T1, user_name="Folder Person"),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2, user_name="Processor"),
                 _ev("weight-entry", T3, user_name="Folder Person", ev_id=4),
             ],
         }
-        helper = TestBuildEmployeeCompletedBagsToday()
-        out = helper._build(
+        out = self._build(
             [row],
             events,
             roster_roles={"folder person": "folder"},
@@ -400,14 +405,101 @@ class TestFoldStartInference:
             user_maps={"folder person": {"user_id": 50, "display_name": "Folder Person"}},
         )
         emp = next(e for e in out["employees"] if e["employee"] == "Folder Person")
-        bag = emp["bags"][0]
-        assert bag["fold_start_time"] == T1.isoformat()
-        assert bag["fold_end_time"] == T3.isoformat()
-        assert bag["fold_duration_seconds"] == int((T3 - T1).total_seconds())
-        assert emp["productivity_start_source"] == PRODUCTIVITY_START_INFERRED_FOLD
-        assert emp["completed_bags"] == 1
+        assert len(emp["folding_blocks"]) == 1
+        assert emp["folding_blocks"][0]["start_time"] == CLOCK_IN.isoformat()
+        assert emp["folding_blocks"][0]["start_source"] == FOLD_BLOCK_START_CLOCK_IN
 
-    def test_fold_end_and_completion_credit_unchanged(self):
+    def test_operator_prior_operational_scan_starts_block(self):
+        row = _completed_row("BAG1")
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("drying", T2, user_name="Weight Clerk"),
+                _ev("weight-entry", T1, user_name="Processor"),
+                _ev("add-photos", datetime(2026, 6, 10, 6, 30), user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
+            ],
+        }
+        out = self._build([row], events, roster_roles={"weight clerk": "operator"})
+        emp = out["employees"][0]
+        assert emp["folding_blocks"][0]["start_time"] == T2.isoformat()
+        assert emp["folding_blocks"][0]["start_source"] == FOLD_BLOCK_START_PRIOR_SCAN
+
+    def test_two_folding_blocks_after_non_folding_gap(self):
+        row1 = _completed_row("BAG1")
+        row2 = _completed_row("BAG2")
+        row2["completion_time"] = T4.isoformat()
+        gap = datetime(2026, 6, 10, 7, 30)
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2, user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+            ],
+            "BAG2": [
+                _ev("sent-to-vendor", T0),
+                _ev("drying", gap, user_name="Weight Clerk", ev_id=5),
+                _ev("weight-entry", T1),
+                _ev("add-photos", datetime(2026, 6, 10, 7, 45), user_name="Processor"),
+                _ev("weight-entry", T4, user_name="Weight Clerk", ev_id=7),
+            ],
+        }
+        out = self._build([row1, row2], events, roster_roles={"weight clerk": "operator"})
+        emp = out["employees"][0]
+        assert len(emp["folding_blocks"]) == 2
+        assert emp["folding_blocks"][0]["end_time"] == T3.isoformat()
+        assert emp["folding_blocks"][1]["start_time"] == gap.isoformat()
+
+    def test_final_block_ends_at_punch_out_without_later_scans(self):
+        row = _completed_row("BAG1")
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2, user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Folder Person", ev_id=4),
+            ],
+        }
+        out = self._build(
+            [row],
+            events,
+            roster_roles={"folder person": "folder"},
+            clock_out=CLOCK_OUT,
+            user_maps={"folder person": {"user_id": 50, "display_name": "Folder Person"}},
+        )
+        emp = next(e for e in out["employees"] if e["employee"] == "Folder Person")
+        assert emp["folding_blocks"][0]["end_time"] == CLOCK_OUT.isoformat()
+        assert emp["folding_blocks"][0]["end_source"] == FOLD_BLOCK_END_CLOCK_OUT
+        expected_hours = round((CLOCK_OUT - CLOCK_IN).total_seconds() / 3600.0, 4)
+        assert emp["productive_hours"] == expected_hours
+
+    def test_block_ends_at_last_completion_before_non_folding_scan(self):
+        row = _completed_row("BAG1")
+        after = datetime(2026, 6, 10, 7, 30)
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2, user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+            ],
+            "BAG2": [
+                _ev("sent-to-vendor", T0),
+                _ev("drying", after, user_name="Weight Clerk", ev_id=5),
+            ],
+        }
+        out = self._build(
+            [row],
+            events,
+            roster_roles={"weight clerk": "operator"},
+            clock_out=CLOCK_OUT,
+        )
+        emp = out["employees"][0]
+        assert emp["folding_blocks"][0]["end_time"] == T3.isoformat()
+        assert emp["folding_blocks"][0]["end_source"] == "last_completion"
+
+    def test_fold_completion_credit_unchanged(self):
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
@@ -422,129 +514,91 @@ class TestFoldStartInference:
         bag = out["employees"][0]["bags"][0]
         assert bag["completed_by_employee"] == "Weight Clerk"
         assert bag["completion_time"] == T3.isoformat()
-        assert bag["fold_end_time"] == T3.isoformat()
         assert out["reconciliation"]["employee_attributed_bag_count"] == 1
 
-    def test_no_cross_employee_fold_start(self):
+    def test_no_cross_employee_non_folding_scans(self):
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0),
-                _ev("weight-entry", T2, user_name="Other Worker"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+                _ev("drying", T2, user_name="Other Worker"),
+                _ev("weight-entry", T1),
+                _ev("add-photos", datetime(2026, 6, 10, 6, 30), user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
-        bag = out["employees"][0]["bags"][0]
-        assert bag["fold_start_time"] is None
-        assert bag["fold_start_source"] is None
+        emp = out["employees"][0]
+        assert emp["folding_blocks"][0]["start_time"] == CLOCK_IN.isoformat()
 
-    def test_no_cross_day_fold_start(self):
+    def test_no_cross_day_non_folding_scans(self):
         prior_day = datetime(2026, 6, 9, 18, 0)
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0),
-                _ev("weight-entry", prior_day, user_name="Weight Clerk"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+                _ev("drying", prior_day, user_name="Weight Clerk"),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2, user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
-        bag = out["employees"][0]["bags"][0]
-        assert bag["fold_start_time"] is None
+        emp = out["employees"][0]
+        assert emp["folding_blocks"][0]["start_time"] == CLOCK_IN.isoformat()
 
-    def test_shift_boundary_blocks_prior_scan_before_clock_in(self):
-        row = _completed_row("BAG1")
+    def test_shift_boundary_blocks_scan_before_clock_in(self):
         early = datetime(2026, 6, 10, 4, 0)
+        row = _completed_row("BAG1")
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0),
-                _ev("weight-entry", early, user_name="Weight Clerk"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
+                _ev("drying", early, user_name="Weight Clerk"),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2, user_name="Processor"),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
-        bag = out["employees"][0]["bags"][0]
-        assert bag["fold_start_time"] is None
+        emp = out["employees"][0]
+        assert emp["folding_blocks"][0]["start_time"] == CLOCK_IN.isoformat()
 
-    def test_repeat_trip_ignores_scans_before_lifecycle_anchor(self):
+    def test_repeat_trip_ignores_pre_anchor_non_folding_scans(self):
         resend = datetime(2026, 6, 10, 6, 30)
         post_resend = datetime(2026, 6, 10, 6, 45)
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
-                _ev("sent-to-vendor", T0, user_name="System", ev_id=1),
-                _ev("weight-entry", T1, user_name="Weight Clerk", ev_id=2),
-                _ev("sent-to-vendor", resend, user_name="System", ev_id=3),
-                _ev("drying", T2, user_name="Weight Clerk", ev_id=4),
-                _ev("drying", post_resend, user_name="Weight Clerk", ev_id=5),
-                _ev("weight-entry", T1, user_name="Processor", ev_id=6),
-                _ev("add-photos", T2, user_name="Processor", ev_id=7),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=8),
+                _ev("sent-to-vendor", T0, ev_id=1),
+                _ev("drying", T1, user_name="Weight Clerk", ev_id=2),
+                _ev("sent-to-vendor", resend, ev_id=3),
+                _ev("drying", post_resend, user_name="Weight Clerk", ev_id=4),
+                _ev("weight-entry", T1, user_name="Processor", ev_id=5),
+                _ev("add-photos", T2, user_name="Processor", ev_id=6),
+                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=7),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
-        bag = out["employees"][0]["bags"][0]
-        assert bag["fold_start_time"] == post_resend.isoformat()
-        assert bag["fold_start_source"] == FOLD_START_SOURCE_INFERRED_PRIOR_SCAN
+        emp = out["employees"][0]
+        assert emp["folding_blocks"][0]["start_time"] == post_resend.isoformat()
 
-    def test_prior_bag_completion_counts_as_fold_start_anchor(self):
-        row1 = _completed_row("BAG1")
-        row1["completion_time"] = T2.isoformat()
-        row2 = _completed_row("BAG2")
-        row2["completion_time"] = T4.isoformat()
-        events = {
-            "BAG1": [
-                _ev("sent-to-vendor", T0),
-                _ev("weight-entry", T1),
-                _ev("add-photos", datetime(2026, 6, 10, 5, 30), user_name="Processor"),
-                _ev("weight-entry", T2, user_name="Weight Clerk", ev_id=4),
-            ],
-            "BAG2": [
-                _ev("sent-to-vendor", T0),
-                _ev("weight-entry", T1),
-                _ev("add-photos", datetime(2026, 6, 10, 7, 30), user_name="Processor"),
-                _ev("weight-entry", T4, user_name="Weight Clerk", ev_id=6),
-            ],
-        }
-        out = self._build(
-            [row1, row2],
-            events,
-            roster_roles={"weight clerk": "operator"},
-        )
-        emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
-        assert emp["completed_bags"] == 2
-        bag2 = next(b for b in emp["bags"] if b["bag_id"] == "BAG2")
-        assert bag2["fold_start_time"] == T2.isoformat()
-
-    def test_non_roster_role_skips_fold_start_inference(self):
-        row = _completed_row("BAG1")
-        events = {
-            "BAG1": [
-                _ev("sent-to-vendor", T0),
-                _ev("weight-entry", T2, user_name="Weight Clerk"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
-            ],
-        }
-        out = self._build([row], events, roster_roles={"weight clerk": "driver"})
-        bag = out["employees"][0]["bags"][0]
-        assert bag.get("fold_start_time") is None
-
-    def test_infer_fold_start_unit_no_completion_scan_as_prior(self):
-        fold_start, source = _infer_fold_start_for_completion(
-            employee="Weight Clerk",
-            bag_id="BAG1",
-            fold_end=T3,
-            anchor_ts=T0,
-            bag_events=[
-                _ev("sent-to-vendor", T0),
-                _ev("weight-entry", T2, user_name="Weight Clerk"),
-                _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=4),
-            ],
-            employee_work_scans=[],
-            clock_in=CLOCK_IN,
-            clock_out=None,
+    def test_folding_blocks_sum_productive_hours(self):
+        blocks = _compute_folding_blocks(
             roster_role="operator",
+            clock_in=CLOCK_IN,
+            clock_out=CLOCK_OUT,
+            non_folding_scans=[T2, datetime(2026, 6, 10, 7, 30)],
+            fold_completions=[T3, T4],
         )
-        assert fold_start == T2
-        assert source == FOLD_START_SOURCE_INFERRED_PRIOR_SCAN
+        assert len(blocks) == 2
+        total = sum(b["duration_seconds"] for b in blocks)
+        _, _, _, _, productive_sec = _compute_productive_window(
+            roster_role="operator",
+            clock_in=CLOCK_IN,
+            first_comp=T3,
+            last_comp=T4,
+            actual_clock_out=CLOCK_OUT,
+            upstream_scans=[],
+            folding_blocks=blocks,
+        )
+        assert productive_sec == total

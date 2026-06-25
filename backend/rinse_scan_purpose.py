@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 
 def normalize_scan_purpose(raw: str | None) -> str:
@@ -208,8 +209,8 @@ def _purpose_or_rack_is_folding(raw: str | None, rack: Any = None) -> bool:
     return "folding" in str(rack or "").lower()
 
 
-def is_fold_inference_prior_work_purpose(raw: str | None, *, rack: Any = None) -> bool:
-    """Valid employee work scan that may end immediately before a fold completion."""
+def is_fold_block_non_folding_purpose(raw: str | None, *, rack: Any = None) -> bool:
+    """Operational scan that is not folding-rack activity or a completion signal."""
     if is_sent_to_vendor_purpose(raw) or is_received_from_vendor_purpose(raw):
         return False
     if is_move_bag_purpose(raw):
@@ -221,16 +222,22 @@ def is_fold_inference_prior_work_purpose(raw: str | None, *, rack: Any = None) -
     if is_load_in_purpose(raw):
         return False
     if _purpose_or_rack_is_folding(raw, rack):
-        return True
-    if is_operator_upstream_processing_purpose(raw):
-        return True
+        return False
     if is_complete_cleaning_purpose(raw):
-        return True
+        return False
     if is_assembly_printed_ct_purpose(raw):
-        return True
+        return False
     if normalize_scan_purpose(raw) == "garments-reviewed":
-        return True
-    return False
+        return False
+    return (
+        is_operator_upstream_processing_purpose(raw)
+        or is_lifecycle_sorting_progress_marker_purpose(raw)
+    )
+
+
+def is_fold_inference_prior_work_purpose(raw: str | None, *, rack: Any = None) -> bool:
+    """Alias — non-folding operational scan used for folding block boundaries."""
+    return is_fold_block_non_folding_purpose(raw, rack=rack)
 
 
 def is_operator_upstream_processing_purpose(raw: str | None) -> bool:
