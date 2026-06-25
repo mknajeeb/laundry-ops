@@ -597,3 +597,139 @@ class TestSortingChronologySessions:
         assert sessions[0]["sort_start_et"] == at(2026, 6, 24, 9, 43)
         assert sessions[0]["sort_end_et"] == at(2026, 6, 24, 10, 43)
         assert sessions[0]["duration_seconds"] == 3600
+
+
+class TestRepeatTripSortingCycleBoundaries:
+    """Regression: repeat-trip bags must not stretch sorting across vendor cycles."""
+
+    def test_DJMFG1YEH7_latest_vendor_cycle_only_on_selected_day(self):
+        """Francis Jun 17 sort must not appear on Jun 25; Maria 9:33→9:39 only."""
+        at = datetime
+        events = [
+            _ev("sent-to-vendor", at(2026, 6, 17, 4, 30), ev_id=1, user="Melissa"),
+            _ev(
+                "cleaning",
+                at(2026, 6, 17, 9, 0),
+                ev_id=2,
+                scan_index=2,
+                user="Francis (Veewash)",
+            ),
+            _ev(
+                "weight-entry",
+                at(2026, 6, 17, 9, 5),
+                ev_id=3,
+                scan_index=3,
+                user="Francis (Veewash)",
+            ),
+            _ev(
+                "add-photos",
+                at(2026, 6, 17, 9, 43),
+                ev_id=4,
+                scan_index=4,
+                user="Francis (Veewash)",
+            ),
+            _ev(
+                "start-cleaning",
+                at(2026, 6, 17, 10, 43),
+                ev_id=5,
+                scan_index=5,
+                user="Joshua (Veewash)",
+            ),
+            _ev("sent-to-vendor", at(2026, 6, 22, 4, 22), ev_id=10, user="Melissa"),
+            _ev("weight-entry", at(2026, 6, 22, 7, 52), ev_id=11, scan_index=11, user="Maria"),
+            _ev("add-photos", at(2026, 6, 22, 17, 4), ev_id=12, scan_index=12, user="Maria"),
+            _ev("sent-to-vendor", at(2026, 6, 25, 5, 9), ev_id=20, user="Melissa"),
+            _ev(
+                "cleaning",
+                at(2026, 6, 25, 9, 33),
+                ev_id=21,
+                scan_index=21,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "weight-entry",
+                at(2026, 6, 25, 9, 33),
+                ev_id=22,
+                scan_index=22,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "add-photos",
+                at(2026, 6, 25, 9, 38),
+                ev_id=23,
+                scan_index=23,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "split-load",
+                at(2026, 6, 25, 9, 39),
+                ev_id=24,
+                scan_index=24,
+                user="Maria (Veewash)",
+            ),
+            _ev(
+                "start-cleaning",
+                at(2026, 6, 25, 10, 0),
+                ev_id=25,
+                scan_index=25,
+                user="Joshua (Veewash)",
+            ),
+        ]
+        jun25 = extract_sorting_sessions_for_bag(
+            "DJMFG1YEH7",
+            events,
+            selected_date_et=date(2026, 6, 25),
+        )
+        assert len(jun25) == 1
+        assert jun25[0]["employee"] == "Maria (Veewash)"
+        assert jun25[0]["sort_start_et"] == at(2026, 6, 25, 9, 33)
+        assert jun25[0]["sort_end_et"] == at(2026, 6, 25, 9, 39)
+        assert jun25[0]["duration_seconds"] == 360
+        assert not any("Francis" in str(s.get("employee") or "") for s in jun25)
+
+        jun17_only = events[:5]
+        jun17 = extract_sorting_sessions_for_bag(
+            "DJMFG1YEH7",
+            jun17_only,
+            selected_date_et=date(2026, 6, 17),
+        )
+        assert len(jun17) == 1
+        assert "Francis" in str(jun17[0]["employee"])
+        assert jun17[0]["duration_seconds"] < 3 * 3600
+
+    def test_sorting_end_capped_at_wash_handoff_not_later_cycle(self):
+        """add-photos bundled with start-cleaning ends sort; later cycle add-photos ignored."""
+        at = datetime
+        events = [
+            _ev("sent-to-vendor", at(2026, 6, 17, 4, 0), ev_id=1),
+            _ev("cleaning", at(2026, 6, 17, 8, 0), ev_id=2, scan_index=2, user="Francis"),
+            _ev("weight-entry", at(2026, 6, 17, 8, 5), ev_id=3, scan_index=3, user="Francis"),
+            _ev("add-photos", at(2026, 6, 17, 8, 10), ev_id=4, scan_index=4, user="Francis"),
+            _ev("start-cleaning", at(2026, 6, 17, 8, 10), ev_id=5, scan_index=5, user="Joshua"),
+            _ev("sent-to-vendor", at(2026, 6, 25, 5, 9), ev_id=20),
+            _ev("cleaning", at(2026, 6, 25, 9, 33), ev_id=21, scan_index=21, user="Maria"),
+            _ev("weight-entry", at(2026, 6, 25, 9, 33), ev_id=22, scan_index=22, user="Maria"),
+            _ev("add-photos", at(2026, 6, 25, 9, 39), ev_id=23, scan_index=23, user="Maria"),
+        ]
+        sessions = extract_sorting_sessions_for_bag(
+            "REPEAT1",
+            events,
+            selected_date_et=date(2026, 6, 25),
+        )
+        assert len(sessions) == 1
+        assert sessions[0]["employee"] == "Maria"
+        assert sessions[0]["duration_seconds"] <= 6 * 60
+
+    def test_lifecycle_anchor_uses_latest_sent_to_vendor(self):
+        from backend.rinse_bag_stage_bounds import lifecycle_anchor
+
+        at = datetime
+        tl = gaming_events_from_records(
+            [
+                _ev("sent-to-vendor", at(2026, 6, 17, 4, 0), ev_id=1),
+                _ev("add-photos", at(2026, 6, 17, 9, 0), ev_id=2, scan_index=2),
+                _ev("sent-to-vendor", at(2026, 6, 25, 5, 9), ev_id=3, scan_index=3),
+            ]
+        )
+        anchor_ts, _ = lifecycle_anchor(tl)
+        assert anchor_ts == at(2026, 6, 25, 5, 9)

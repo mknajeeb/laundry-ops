@@ -1581,8 +1581,71 @@ class TestCrossDayCompletionAttribution:
         assert "SEEDDONE" not in [r["bag_id"] for r in out["rows"]]
         assert out["completed_before_day_start_count"] + out["start_of_day_open_carry_in_count"] == 2
 
+    def test_bags_completed_today_includes_repeat_trip_resend_completion(self):
+        from backend.rinse_at_vendor_module import _latest_sent_to_vendor_ts
+        from backend.rinse_folding_et import naive_et_day_end_exclusive, naive_et_day_start
 
-class TestPresenceSnapshotDeliveryMeta:
+        selected = date(2026, 6, 25)
+        day_start = naive_et_day_start(selected)
+        day_end_excl = naive_et_day_end_exclusive(selected)
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 19, 4, 0)),
+            _ev("weight-entry", datetime(2026, 6, 19, 10, 0)),
+            _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
+            _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 11)),
+            _ev("weight-entry", datetime(2026, 6, 25, 7, 37)),
+            _ev("add-photos", datetime(2026, 6, 25, 15, 36)),
+            _ev("weight-entry", datetime(2026, 6, 25, 15, 37)),
+        ]
+        resend_ts = _latest_sent_to_vendor_ts(
+            events, on_or_after=day_start, before=day_end_excl
+        )
+        assert resend_ts == datetime(2026, 6, 25, 5, 11)
+
+        row = _build_row(
+            bag_id="73NBRCJBHJ",
+            meta={"service_type": "WF"},
+            events=events,
+            selected_date_et=selected,
+            as_of_end=naive_et_day_end_inclusive(selected),
+            completion_window_start=day_start,
+        )
+        assert row["at_vendor_status"] == AV_STATUS_COMPLETED
+        assert row["completion_time"] == datetime(2026, 6, 25, 15, 37).isoformat()
+
+    def test_still_present_skips_bags_with_same_day_sent_to_vendor_reset(self):
+        from backend.rinse_at_vendor_module import _latest_sent_to_vendor_ts
+        from backend.rinse_folding_et import naive_et_day_end_exclusive, naive_et_day_start
+
+        selected = date(2026, 6, 25)
+        day_start = naive_et_day_start(selected)
+        day_end_excl = naive_et_day_end_exclusive(selected)
+        prior_completed_cycle = [
+            _ev("sent-to-vendor", datetime(2026, 6, 19, 4, 0)),
+            _ev("weight-entry", datetime(2026, 6, 19, 10, 0)),
+            _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
+            _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 9)),
+        ]
+        assert (
+            _latest_sent_to_vendor_ts(
+                prior_completed_cycle,
+                on_or_after=day_start,
+                before=day_end_excl,
+            )
+            is not None
+        )
+        # Same-day re-send must bypass stale completed-before-day-start carry logic.
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_OPEN_AT_DAY_START,
+            _classify_baseline_seed_bag,
+        )
+
+        daily_class, _, _, _ = _classify_baseline_seed_bag(
+            prior_completed_cycle,
+            service_type="WF",
+            selected_date_et=selected,
+        )
+        assert daily_class == DAILY_CLASS_OPEN_AT_DAY_START
     def test_resolve_delivery_fields_presence_run_snapshot_uses_estimated_delivery_date(self):
         edd, texts, source = resolve_delivery_fields(
             {
