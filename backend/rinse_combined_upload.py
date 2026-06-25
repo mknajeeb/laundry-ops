@@ -680,6 +680,20 @@ def commit_rinse_combined_upload(
         replace_existing=True,
     )
 
+    persistent_merge_payload: dict[str, Any] = {}
+    if is_auto_scrape and not events_df.empty:
+        from backend.rinse_bag_registry import merge_scan_events_from_upload
+
+        persistent_merge_payload = merge_scan_events_from_upload(
+            cursor,
+            tenant_oid,
+            upload_batch_id,
+            events_df,
+            events_filename,
+            replace_existing=True,
+            credential_sourced=True,
+        )
+
     finalize_upload_batch_row_counts(
         cursor, tenant_oid, upload_batch_id, counts["rows_inserted"], schema
     )
@@ -702,6 +716,7 @@ def commit_rinse_combined_upload(
         "require_both_csv": True,
         "upload_files": upload_files,
         "scan_events_batch": batch_events_payload,
+        "persistent_scan_merge": persistent_merge_payload,
         "draft_bag_ids": bag_ids,
         "finalize_on_confirm": True,
         "portal_scrape_meta": portal_meta_payload.get("portal_scrape_meta"),

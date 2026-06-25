@@ -246,9 +246,9 @@ def finalize_rinse_after_batch_confirm(
     batch_id = int(upload_batch_id)
     accepted = list(accepted_portal_rows or [])
 
-    from backend.rinse_portal_absence_completion import complete_bags_missing_from_latest_portal
+    from backend.rinse_portal_absence_completion import reject_bags_missing_from_latest_portal
 
-    portal_absence = complete_bags_missing_from_latest_portal(
+    portal_absence = reject_bags_missing_from_latest_portal(
         cursor, org, batch_id, accepted
     )
     absence_bag_ids = list(portal_absence.get("bag_ids") or [])
@@ -262,6 +262,8 @@ def finalize_rinse_after_batch_confirm(
             batch_id,
             events_df,
             source_filename or "batch_confirm",
+            replace_existing=True,
+            credential_sourced=True,
         )
 
     merge_bag_ids = list(merge_payload.get("bag_ids") or [])
@@ -279,7 +281,6 @@ def finalize_rinse_after_batch_confirm(
     completion_candidate_ids = _union_normalized_bag_ids(
         merge_bag_ids,
         accepted_bag_ids,
-        absence_bag_ids,
     )
 
     completion_payload: dict[str, Any] = {"bags_recomputed": 0, "bags_completed": 0, "bags": []}
@@ -313,7 +314,9 @@ def finalize_rinse_after_batch_confirm(
         "folding_summary": folding_summary,
         "bag_ids": completion_candidate_ids,
         "newly_completed_clean_rack_count": newly_completed_clean_rack_count,
-        "missing_prior_bags_completed_count": int(portal_absence.get("count") or 0),
+        "missing_prior_bags_rejected_count": int(portal_absence.get("count") or 0),
+        "missing_prior_bags_completed_count": 0,
+        "missing_prior_bag_ids_rejected": absence_bag_ids,
         "missing_prior_bag_ids_completed": absence_bag_ids,
         "full_snapshot": bool(portal_absence.get("full_snapshot")),
         **folding_summary,

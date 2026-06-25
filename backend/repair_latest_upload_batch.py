@@ -649,6 +649,7 @@ def repair_latest_upload_batch(
             batch_id,
             events_df,
             source_filename=f"repair_batch_{batch_id}",
+            credential_sourced=True,
         )
         summary["scan_events_merged"] = True
     elif not events_df.empty:

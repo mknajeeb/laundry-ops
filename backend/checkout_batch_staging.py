@@ -26,7 +26,12 @@ def insert_staging_from_upload_row(
         from backend.rinse_bag_operational_owner import assert_operational_write_allowed
 
         allowed, _, _ = assert_operational_write_allowed(
-            cursor, org, tid, context="staging_import", assign_on_first=True
+            cursor,
+            org,
+            tid,
+            context="staging_import",
+            assign_on_first=True,
+            credential_sourced=True,
         )
         if not allowed:
             raise ValueError(f"operational_owner_mismatch: bag {tid} not owned by org {org}")

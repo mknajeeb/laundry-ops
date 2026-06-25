@@ -443,6 +443,7 @@ def upsert_scan_event_row(
     source_upload_batch_id: int,
     source_filename: str | None,
     raw_json: str | None,
+    credential_sourced: bool = False,
 ) -> str:
     """
     Insert a new scan row, or touch metadata only when dedupe_key matches.
@@ -459,6 +460,7 @@ def upsert_scan_event_row(
         bag_id,
         context="scan_event_upsert",
         assign_on_first=True,
+        credential_sourced=credential_sourced,
     )
     if not allowed:
         return "rejected_operational_owner"
@@ -570,6 +572,7 @@ def merge_scan_events_from_upload(
     source_filename: str = "",
     *,
     replace_existing: bool = True,
+    credential_sourced: bool = False,
 ) -> dict[str, Any]:
     """
     Copy scan-events into rinse_bag_scan_events.
@@ -598,7 +601,12 @@ def merge_scan_events_from_upload(
 
     raw_bag_ids = sorted(df["Bag ID"].unique().tolist())
     allowed_ids, owner_rejected = filter_bag_ids_for_operational_write(
-        cursor, org, raw_bag_ids, context="scan_import", assign_on_first=True
+        cursor,
+        org,
+        raw_bag_ids,
+        context="scan_import",
+        assign_on_first=True,
+        credential_sourced=credential_sourced,
     )
     bag_ids = sorted(allowed_ids)
     events_deleted = 0
@@ -660,6 +668,7 @@ def merge_scan_events_from_upload(
                 source_upload_batch_id=batch_id,
                 source_filename=(source_filename or "")[:512] or None,
                 raw_json=json.dumps(raw),
+                credential_sourced=credential_sourced,
             )
             if action == "rejected_operational_owner":
                 rejected_owner += 1

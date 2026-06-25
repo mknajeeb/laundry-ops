@@ -139,6 +139,7 @@ def main() -> int:
             events_df,
             source_filename=f"replace_batch_{batch_id}",
             replace_existing=True,
+            credential_sourced=True,
         )
         bag_ids = list(merge_payload.get("bag_ids") or [])
         completion_payload = recompute_completion_for_bags(cur, org, bag_ids) if bag_ids else {}

@@ -83,6 +83,16 @@ def confirm_upload_batch_core(
             dual_block,
         )
 
+    from backend.manual_checkout_settings import checkout_at_vendor_override_active
+    from backend.manual_checkout_eligibility import (
+        reclassify_checkout_batch_upload_rows,
+        resolve_stale_portal_attention_rows_before_confirm,
+    )
+
+    resolve_stale_portal_attention_rows_before_confirm(cursor, tenant_oid, batch_id)
+    if checkout_at_vendor_override_active(cursor, tenant_oid):
+        reclassify_checkout_batch_upload_rows(cursor, tenant_oid, batch_id)
+
     cursor.execute(
         """
         SELECT COUNT(*) AS attention_count
@@ -99,12 +109,6 @@ def confirm_upload_batch_core(
             409,
             {"error": "Batch has NEEDS_ATTENTION rows", "attention_count": attention_count},
         )
-
-    from backend.manual_checkout_settings import checkout_at_vendor_override_active
-    from backend.manual_checkout_eligibility import reclassify_checkout_batch_upload_rows
-
-    if checkout_at_vendor_override_active(cursor, tenant_oid):
-        reclassify_checkout_batch_upload_rows(cursor, tenant_oid, batch_id)
 
     ubr_tid_sel = ", ticket_id" if table_has_column(cursor, "upload_batch_rows", "ticket_id") else ""
     ubr_si_sel = ""
@@ -376,8 +380,14 @@ def confirm_upload_batch_core(
         "forced_checkout_pending": forced_pending,
         "moved_to_final": moved_to_final,
         "rinse_finalize": rinse_finalize,
+        "missing_prior_bags_rejected_count": int(
+            rinse_finalize.get("missing_prior_bags_rejected_count") or 0
+        ),
         "missing_prior_bags_completed_count": int(
             rinse_finalize.get("missing_prior_bags_completed_count") or 0
+        ),
+        "missing_prior_bag_ids_rejected": list(
+            rinse_finalize.get("missing_prior_bag_ids_rejected") or []
         ),
         "missing_prior_bag_ids_completed": list(
             rinse_finalize.get("missing_prior_bag_ids_completed") or []

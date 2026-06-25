@@ -108,7 +108,12 @@ def upsert_registry_from_portal_row(
     from backend.rinse_bag_operational_owner import assert_operational_write_allowed
 
     allowed, reject_reason, _ = assert_operational_write_allowed(
-        cursor, org, bid, context="registry_upsert", assign_on_first=True
+        cursor,
+        org,
+        bid,
+        context="registry_upsert",
+        assign_on_first=True,
+        credential_sourced=True,
     )
     if not allowed:
         return

@@ -167,6 +167,28 @@ class TestTicketFirstStaging(unittest.TestCase):
         find_staging.assert_not_called()
         ins.assert_not_called()
 
+    def test_insert_staging_uses_credential_sourced_owner_gate(self):
+        cursor = MagicMock()
+        cursor.lastrowid = 9001
+        canonical = MagicMock()
+        canonical.owner_organization_id = 3
+
+        with patch(
+            "backend.checkout_batch_staging.find_staging_by_ticket_id",
+            return_value=None,
+        ), patch(
+            "backend.rinse_bag_operational_owner.assert_operational_write_allowed",
+            return_value=(True, None, canonical),
+        ) as gate:
+            action, sid = upsert_staging_for_ticket_upload_row(
+                cursor, 1, _row("E9ZDC1B7MW"), date(2026, 6, 25), self.cap
+            )
+
+        self.assertEqual(action, "inserted")
+        self.assertEqual(sid, 9001)
+        gate.assert_called_once()
+        self.assertTrue(gate.call_args.kwargs.get("credential_sourced"))
+
 
 class TestBatchSummaryNotStaged(unittest.TestCase):
     def test_accepted_ticket_not_excluded_when_staged_by_ticket(self):
