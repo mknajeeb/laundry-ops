@@ -202,6 +202,37 @@ def is_lifecycle_sorting_progress_marker_purpose(raw: str | None) -> bool:
     return False
 
 
+def _purpose_or_rack_is_folding(raw: str | None, rack: Any = None) -> bool:
+    if normalize_scan_purpose(raw) == "folding":
+        return True
+    return "folding" in str(rack or "").lower()
+
+
+def is_fold_inference_prior_work_purpose(raw: str | None, *, rack: Any = None) -> bool:
+    """Valid employee work scan that may end immediately before a fold completion."""
+    if is_sent_to_vendor_purpose(raw) or is_received_from_vendor_purpose(raw):
+        return False
+    if is_move_bag_purpose(raw):
+        return False
+    if is_load_out_purpose(raw) or is_at_delivery_location_purpose(raw):
+        return False
+    if is_processed_by_vendor_purpose(raw):
+        return False
+    if is_load_in_purpose(raw):
+        return False
+    if _purpose_or_rack_is_folding(raw, rack):
+        return True
+    if is_operator_upstream_processing_purpose(raw):
+        return True
+    if is_complete_cleaning_purpose(raw):
+        return True
+    if is_assembly_printed_ct_purpose(raw):
+        return True
+    if normalize_scan_purpose(raw) == "garments-reviewed":
+        return True
+    return False
+
+
 def is_operator_upstream_processing_purpose(raw: str | None) -> bool:
     """Weighing, sorting, washing, or drying — not folding/completion scans."""
     if is_complete_cleaning_purpose(raw):

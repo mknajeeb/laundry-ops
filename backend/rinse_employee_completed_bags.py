@@ -16,10 +16,12 @@ from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
     is_complete_cleaning_purpose,
+    is_fold_inference_prior_work_purpose,
     is_operator_upstream_processing_purpose,
     is_sent_to_vendor_purpose,
     is_weight_entry_purpose,
     normalize_scan_purpose,
+    _purpose_or_rack_is_folding,
 )
 from backend.rinse_wf_weight_events import (
     _latest_wf_processing_after_anchor,
@@ -33,6 +35,9 @@ PRODUCTIVITY_END_LAST_COMPLETION = "last_completion"
 PRODUCTIVITY_END_CLOCK_OUT = "clock_out"
 PRODUCTIVITY_START_CLOCK_IN = "clock_in"
 PRODUCTIVITY_START_OPERATOR_PROCESSING = "operator_processing"
+PRODUCTIVITY_START_INFERRED_FOLD = "inferred_fold_start"
+FOLD_START_SOURCE_EXPLICIT_RACK = "folding_rack_scan"
+FOLD_START_SOURCE_INFERRED_PRIOR_SCAN = "prior_work_scan"
 
 
 def _normalize_employee(raw: Any) -> str:
@@ -223,6 +228,246 @@ def _last_scan_before(timestamps: Sequence[datetime], before: datetime) -> datet
     return max(candidates) if candidates else None
 
 
+def _scan_event_timestamp(ev: Mapping[str, Any]) -> datetime | None:
+    ts = ev.get("scanned_at_parsed")
+    if isinstance(ts, datetime):
+        return ts
+    return event_ts(ev)
+
+
+def _explicit_fold_start_from_bag_events(
+    events: Sequence[Mapping[str, Any]],
+    *,
+    employee: str,
+    anchor_ts: datetime | None,
+    fold_end: datetime,
+) -> datetime | None:
+    """Earliest FOLDING-rack scan by the credited employee before fold completion."""
+    if anchor_ts is None or not ts_valid(anchor_ts):
+        return None
+    emp_key = employee.casefold()
+    candidates: list[datetime] = []
+    for ev in gaming_events_from_records(events):
+        if _event_user_name(ev).casefold() != emp_key:
+            continue
+        ts = _scan_event_timestamp(ev)
+        if ts is None or not ts_valid(ts):
+            continue
+        if ts < anchor_ts or ts >= fold_end:
+            continue
+        purpose = ev.get("purpose")
+        rack = ev.get("rack")
+        if not _purpose_or_rack_is_folding(purpose, rack):
+            continue
+        candidates.append(ts)
+    return min(candidates) if candidates else None
+
+
+def _scan_within_shift_window(
+    ts: datetime,
+    *,
+    clock_in: datetime | None,
+    clock_out: datetime | None,
+) -> bool:
+    if clock_in is not None and ts < clock_in:
+        return False
+    if clock_out is not None and ts > clock_out:
+        return False
+    return True
+
+
+def _scan_passes_lifecycle_for_bag(
+    ev: Mapping[str, Any],
+    *,
+    bag_id: str,
+    anchor_ts: datetime | None,
+    fold_end: datetime,
+) -> bool:
+    ts = _scan_event_timestamp(ev)
+    if ts is None or ts >= fold_end:
+        return False
+    ev_bag = str(ev.get("bag_id") or bag_id or "").strip().upper()
+    if ev_bag == bag_id:
+        if anchor_ts is None or not ts_valid(anchor_ts):
+            return False
+        return ts >= anchor_ts
+    return True
+
+
+def _infer_fold_start_for_completion(
+    *,
+    employee: str,
+    bag_id: str,
+    fold_end: datetime,
+    anchor_ts: datetime | None,
+    bag_events: Sequence[Mapping[str, Any]],
+    employee_work_scans: Sequence[Mapping[str, Any]],
+    clock_in: datetime | None,
+    clock_out: datetime | None,
+    roster_role: str | None,
+) -> tuple[datetime | None, str | None]:
+    """Per-bag fold_start for Operator/Folder roster roles; does not alter fold_end."""
+    if roster_role not in ("operator", "folder"):
+        return None, None
+    if not ts_valid(fold_end):
+        return None, None
+
+    explicit = _explicit_fold_start_from_bag_events(
+        bag_events,
+        employee=employee,
+        anchor_ts=anchor_ts,
+        fold_end=fold_end,
+    )
+    if explicit is not None:
+        return explicit, FOLD_START_SOURCE_EXPLICIT_RACK
+
+    emp_key = employee.casefold()
+    candidates: list[datetime] = []
+    seen: set[tuple[str, datetime, str, str]] = set()
+
+    def _consider(ev: Mapping[str, Any], *, default_bag_id: str) -> None:
+        if _event_user_name(ev).casefold() != emp_key:
+            return
+        ts = _scan_event_timestamp(ev)
+        if ts is None or not ts_valid(ts) or ts >= fold_end:
+            return
+        if not _scan_within_shift_window(ts, clock_in=clock_in, clock_out=clock_out):
+            return
+        bid = str(ev.get("bag_id") or default_bag_id or "").strip().upper()
+        if not _scan_passes_lifecycle_for_bag(
+            {**ev, "bag_id": bid},
+            bag_id=bag_id,
+            anchor_ts=anchor_ts,
+            fold_end=fold_end,
+        ):
+            return
+        purpose = ev.get("purpose")
+        rack = ev.get("rack")
+        if not is_fold_inference_prior_work_purpose(purpose, rack=rack):
+            return
+        dedupe_key = (
+            bid,
+            ts,
+            str(purpose or ""),
+            str(rack or ""),
+        )
+        if dedupe_key in seen:
+            return
+        seen.add(dedupe_key)
+        candidates.append(ts)
+
+    for ev in employee_work_scans:
+        bid = str(ev.get("bag_id") or "").strip().upper()
+        _consider(ev, default_bag_id=bid)
+    for ev in bag_events:
+        _consider(ev, default_bag_id=bag_id)
+
+    inferred = _last_scan_before(candidates, fold_end)
+    if inferred is None:
+        return None, None
+    return inferred, FOLD_START_SOURCE_INFERRED_PRIOR_SCAN
+
+
+def _load_employee_work_scan_events_bulk(
+    cursor,
+    organization_id: int,
+    rinse_user_names: Sequence[str],
+    selected_date_et: date,
+) -> dict[str, list[dict[str, Any]]]:
+    from backend.ta_helpers import table_exists
+
+    names = sorted({str(n).strip() for n in rinse_user_names if str(n).strip()})
+    if not names or not table_exists(cursor, "rinse_bag_scan_events"):
+        return {}
+
+    org = int(organization_id)
+    start_dt, _end_incl = period_datetime_bounds_et(selected_date_et, selected_date_et)
+    end_exclusive = naive_et_day_end_exclusive(selected_date_et)
+    out: dict[str, list[dict[str, Any]]] = {n.casefold(): [] for n in names}
+    chunk = 100
+    for i in range(0, len(names), chunk):
+        part = names[i : i + chunk]
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, user_name, purpose, rack, scanned_at_parsed
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND scanned_at_parsed IS NOT NULL
+              AND scanned_at_parsed >= %s
+              AND scanned_at_parsed < %s
+              AND user_name IN ({placeholders})
+            """,
+            (org, start_dt, end_exclusive, *part),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            purpose = row.get("purpose")
+            rack = row.get("rack")
+            if not is_fold_inference_prior_work_purpose(purpose, rack=rack):
+                continue
+            ts = row.get("scanned_at_parsed")
+            if not isinstance(ts, datetime):
+                continue
+            uname = str(row.get("user_name") or "").strip().casefold()
+            if uname in out:
+                out[uname].append(dict(row))
+    return out
+
+
+def _dedupe_work_scan_events(
+    scans: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    seen: set[tuple[str, datetime, str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for ev in scans:
+        if not isinstance(ev, Mapping):
+            continue
+        ts = _scan_event_timestamp(ev)
+        if ts is None:
+            continue
+        bid = str(ev.get("bag_id") or "").strip().upper()
+        dedupe_key = (
+            bid,
+            ts,
+            str(ev.get("purpose") or ""),
+            str(ev.get("rack") or ""),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        out.append(dict(ev))
+    return out
+
+
+def _employee_work_scans_from_events_by_bag(
+    employee: str,
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+    selected_date_et: date,
+) -> list[dict[str, Any]]:
+    start_dt, _end_incl = period_datetime_bounds_et(selected_date_et, selected_date_et)
+    end_exclusive = naive_et_day_end_exclusive(selected_date_et)
+    emp_key = employee.casefold()
+    out: list[dict[str, Any]] = []
+    for bid, evs in events_by_bag.items():
+        bag_id = str(bid or "").strip().upper()
+        for ev in evs or []:
+            if not isinstance(ev, Mapping):
+                continue
+            if _event_user_name(ev).casefold() != emp_key:
+                continue
+            ts = _scan_event_timestamp(ev)
+            if ts is None or ts < start_dt or ts >= end_exclusive:
+                continue
+            purpose = ev.get("purpose")
+            rack = ev.get("rack")
+            if not is_fold_inference_prior_work_purpose(purpose, rack=rack):
+                continue
+            out.append({**dict(ev), "bag_id": bag_id})
+    return out
+
+
 def _compute_productive_window(
     *,
     roster_role: str | None,
@@ -231,10 +476,15 @@ def _compute_productive_window(
     last_comp: datetime | None,
     actual_clock_out: datetime | None,
     upstream_scans: Sequence[datetime],
+    per_bag_fold_starts: Sequence[datetime] | None = None,
 ) -> tuple[datetime | None, datetime | None, str, str]:
     productive_start = clock_in
     start_source = PRODUCTIVITY_START_CLOCK_IN
-    if roster_role == "operator" and first_comp is not None:
+    fold_starts = [ts for ts in (per_bag_fold_starts or []) if ts_valid(ts)]
+    if roster_role in ("operator", "folder") and fold_starts:
+        productive_start = min(fold_starts)
+        start_source = PRODUCTIVITY_START_INFERRED_FOLD
+    elif roster_role == "operator" and first_comp is not None:
         last_proc = _last_scan_before(upstream_scans, first_comp)
         if last_proc is not None:
             productive_start = last_proc
@@ -350,6 +600,7 @@ def build_employee_completed_bags_today(
             "weight_missing": lbs is None,
             "service_type": svc if svc in ("WF", "HD") else row.get("service_type"),
             "service_bucket": row.get("service_bucket") or svc,
+            "lifecycle_anchor_ts": anchor.isoformat() if anchor else None,
             "attribution_matches_workload_time": (
                 comp_ts is not None
                 and row.get("completion_time") is not None
@@ -395,6 +646,21 @@ def build_employee_completed_bags_today(
         credited_employees,
         selected_date_et,
     )
+    work_scans_by_employee = _load_employee_work_scan_events_bulk(
+        cursor,
+        org,
+        credited_employees,
+        selected_date_et,
+    )
+    for employee_name in credited_employees:
+        key = employee_name.casefold()
+        merged = _dedupe_work_scan_events(
+            list(work_scans_by_employee.get(key) or [])
+            + _employee_work_scans_from_events_by_bag(
+                employee_name, events_by_bag, selected_date_et
+            )
+        )
+        work_scans_by_employee[key] = merged
 
     employees: list[dict[str, Any]] = []
     for employee, bags in sorted(by_employee.items(), key=lambda x: x[0].lower()):
@@ -437,6 +703,48 @@ def build_employee_completed_bags_today(
             )
         actual_clock_out = _actual_clock_out_from_sessions(user_sessions)
         upstream_scans = upstream_scans_by_employee.get(employee.casefold()) or []
+        employee_work_scans = work_scans_by_employee.get(employee.casefold()) or []
+
+        per_bag_fold_starts: list[datetime] = []
+        for bag in bags_sorted:
+            fold_end: datetime | None = None
+            if bag.get("completion_time"):
+                try:
+                    fold_end = datetime.fromisoformat(str(bag["completion_time"]))
+                except ValueError:
+                    fold_end = None
+            anchor_ts: datetime | None = None
+            raw_anchor = bag.get("lifecycle_anchor_ts")
+            if raw_anchor:
+                try:
+                    anchor_ts = datetime.fromisoformat(str(raw_anchor))
+                except ValueError:
+                    anchor_ts = None
+            bid = str(bag.get("bag_id") or "").strip().upper()
+            bag_events = events_by_bag.get(bid) or []
+            fold_start, fold_start_source = _infer_fold_start_for_completion(
+                employee=employee,
+                bag_id=bid,
+                fold_end=fold_end,
+                anchor_ts=anchor_ts,
+                bag_events=bag_events,
+                employee_work_scans=employee_work_scans,
+                clock_in=clock_in,
+                clock_out=actual_clock_out or clock_out,
+                roster_role=roster_role,
+            )
+            bag["fold_end_time"] = fold_end.isoformat() if fold_end else None
+            bag["fold_start_time"] = fold_start.isoformat() if fold_start else None
+            bag["fold_start_source"] = fold_start_source
+            if fold_start is not None and fold_end is not None:
+                bag["fold_duration_seconds"] = max(
+                    0, int((fold_end - fold_start).total_seconds())
+                )
+            else:
+                bag["fold_duration_seconds"] = None
+            if fold_start is not None:
+                per_bag_fold_starts.append(fold_start)
+
         productive_start, productive_end, start_source, end_source = _compute_productive_window(
             roster_role=roster_role,
             clock_in=clock_in,
@@ -444,6 +752,7 @@ def build_employee_completed_bags_today(
             last_comp=last_comp,
             actual_clock_out=actual_clock_out,
             upstream_scans=upstream_scans,
+            per_bag_fold_starts=per_bag_fold_starts,
         )
 
         missing_weight_count = sum(1 for b in bags_sorted if b.get("weight_missing"))

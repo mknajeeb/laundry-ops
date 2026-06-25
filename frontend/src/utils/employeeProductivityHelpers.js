@@ -59,13 +59,21 @@ export function isMissingClockIn(emp) {
 }
 
 export function productivityStartLabel(emp) {
-  if (emp?.productivity_start_source === "operator_processing") return "Folding Start";
+  if (
+    emp?.productivity_start_source === "operator_processing" ||
+    emp?.productivity_start_source === "inferred_fold_start"
+  ) {
+    return "Folding Start";
+  }
   return "Clock In";
 }
 
 export function productivityStartDisplay(emp, formatTime) {
   if (isMissingClockIn(emp)) return "Missing clock-in";
-  if (emp?.productivity_start_source === "operator_processing") {
+  if (
+    emp?.productivity_start_source === "operator_processing" ||
+    emp?.productivity_start_source === "inferred_fold_start"
+  ) {
     return formatTime(emp.productive_start_time_et || emp.productive_start_time);
   }
   return formatTime(emp.clock_in_time_et || emp.clock_in_time);
