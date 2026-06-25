@@ -58,17 +58,20 @@ def main() -> int:
             exp = EXPECTED[bid]
             row = completed.get(bid)
             bag = emp_bags.get(bid)
+            in_stale_bucket = bid in still_ids
             check = {
                 "bag_id": bid,
                 "in_completed_today": row is not None,
-                "not_still_present": bid not in still_ids,
+                "present_in_completed_before_day_start_still_present": in_stale_bucket,
+                "present_in_stale_bucket": "YES" if in_stale_bucket else "NO",
+                "skipped_from_stale_bucket": "YES" if not in_stale_bucket else "NO",
                 "employee": (bag or {}).get("employee_credited") or (bag or {}).get("completed_by_employee"),
                 "lbs": (bag or {}).get("completed_lbs") or (bag or {}).get("weight"),
                 "completion_time_et": (row or {}).get("completion_time_et"),
             }
             if not check["in_completed_today"]:
                 report["ok"] = False
-            if not check["not_still_present"]:
+            if in_stale_bucket:
                 report["ok"] = False
             if exp["employee"].lower() not in str(check["employee"] or "").lower():
                 report["ok"] = False
@@ -107,6 +110,13 @@ def main() -> int:
         report["sorting"] = sort_check
         report["completed_today_count"] = av.get("completed_today_count")
         report["reconciliation_ok"] = (av.get("reconciliation") or {}).get("ok")
+        report["stale_bucket_summary"] = {
+            "bucket": "completed_before_day_start_still_present",
+            "workload_bags_in_stale_bucket": sorted(bid for bid in WORKLOAD_BAGS if bid in still_ids),
+            "all_workload_bags_absent_from_stale_bucket": all(
+                bid not in still_ids for bid in WORKLOAD_BAGS
+            ),
+        }
 
         print(json.dumps(report, indent=2, default=str))
         return 0 if report["ok"] else 1
