@@ -1434,6 +1434,7 @@ class TestCrossDayCompletionAttribution:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
         ]
         daily_class, signal, comp_ts, _ = _classify_baseline_seed_bag(
@@ -1442,8 +1443,32 @@ class TestCrossDayCompletionAttribution:
             selected_date_et=date(2026, 6, 13),
         )
         assert daily_class == DAILY_CLASS_COMPLETED_BEFORE_DAY_START
-        assert signal == "weight-entry"
+        assert signal == "post_processing_weight"
         assert comp_ts == datetime(2026, 6, 12, 21, 0)
+
+    def test_baseline_seed_resend_today_opens_new_cycle(self):
+        from backend.rinse_at_vendor_module import (
+            DAILY_CLASS_OPEN_AT_DAY_START,
+            _classify_baseline_seed_bag,
+        )
+
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
+            _ev("sent-to-vendor", datetime(2026, 6, 13, 5, 11)),
+            _ev("weight-entry", datetime(2026, 6, 13, 15, 37)),
+            _ev("weight-entry", datetime(2026, 6, 13, 15, 37)),
+        ]
+        daily_class, signal, comp_ts, sent_ts = _classify_baseline_seed_bag(
+            events,
+            service_type="WF",
+            selected_date_et=date(2026, 6, 13),
+        )
+        assert daily_class == DAILY_CLASS_OPEN_AT_DAY_START
+        assert signal is None
+        assert comp_ts is None
+        assert sent_ts == datetime(2026, 6, 13, 5, 11)
 
     def test_completion_counts_on_completion_et_date_only(self):
         from backend.rinse_at_vendor_module import (
@@ -1455,6 +1480,7 @@ class TestCrossDayCompletionAttribution:
         events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
         ]
         june12_row = _build_row(
@@ -1510,6 +1536,7 @@ class TestCrossDayCompletionAttribution:
         done_events = [
             _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
             _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+            _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
             _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
         ]
         new_events = [_ev("sent-to-vendor", datetime(2026, 6, 13, 10, 0))]
@@ -1529,6 +1556,15 @@ class TestCrossDayCompletionAttribution:
         ), patch(
             "backend.rinse_at_vendor_module._load_prior_edd_from_batches_bulk",
             return_value={},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_completed_before_day_start_still_present",
+            return_value=([], set()),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_portal_scrape_rejected_bag_ids",
+            return_value=set(),
+        ), patch(
+            "backend.rinse_employee_completed_bags.build_employee_completed_bags_today",
+            return_value={"employees": [], "reconciliation": {"ok": True}, "reconciliation_banner": {}},
         ):
             out = build_at_vendor_module(
                 object(),

@@ -125,6 +125,13 @@ def _classify_baseline_seed_bag(
 ) -> tuple[str, str | None, datetime | None, datetime | None]:
     """Classify a baseline snapshot bag at selected ET day start."""
     start_of_day_et = naive_et_day_start(selected_date_et)
+    end_excl = naive_et_day_end_exclusive(selected_date_et)
+    today_sent_ts = _latest_sent_to_vendor_ts(
+        events, on_or_after=start_of_day_et, before=end_excl
+    )
+    if today_sent_ts is not None:
+        return DAILY_CLASS_OPEN_AT_DAY_START, None, None, today_sent_ts
+
     prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
     anchor_ts = _latest_sent_to_vendor_ts(events, before=start_of_day_et)
     status, signal, comp_ts, sent_ts, _ = _evaluate_bag_as_of(
@@ -293,6 +300,32 @@ def _load_registry_service_types(
             if bid and row.get("service_type"):
                 out[bid] = row.get("service_type")
     return out
+
+
+def _load_portal_scrape_rejected_bag_ids(cursor, organization_id: int) -> set[str]:
+    from backend.rinse_bag_completion import (
+        COMPLETION_REJECTED,
+        REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE,
+    )
+
+    org = int(organization_id)
+    if not table_exists(cursor, "rinse_bag_registry"):
+        return set()
+    cursor.execute(
+        """
+        SELECT UPPER(TRIM(bag_id)) AS bag_id
+        FROM rinse_bag_registry
+        WHERE organization_id = %s
+          AND UPPER(COALESCE(completion_status, '')) = %s
+          AND completion_reason = %s
+        """,
+        (org, COMPLETION_REJECTED, REASON_MISSING_FROM_LATEST_PORTAL_SCRAPE),
+    )
+    return {
+        str(row.get("bag_id") or "").strip().upper()
+        for row in (cursor.fetchall() or [])
+        if isinstance(row, dict) and row.get("bag_id")
+    }
 
 
 INCLUSION_CARRY_IN = "carry_in_open_at_midnight"
@@ -1879,6 +1912,8 @@ def _load_completed_before_day_start_still_present(
     if not live_by_bag:
         return [], set()
     prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
+    day_start = naive_et_day_start(selected_date_et)
+    day_end_excl = naive_et_day_end_exclusive(selected_date_et)
     bag_ids = sorted(live_by_bag.keys())
     events_by_bag = _load_at_vendor_scan_events_for_bags(cursor, organization_id, bag_ids)
     registry = _load_registry_service_types(cursor, organization_id, bag_ids)
@@ -1887,10 +1922,19 @@ def _load_completed_before_day_start_still_present(
     for bid in bag_ids:
         pres = live_by_bag[bid]
         svc = _normalize_service(pres.get("service_type") or registry.get(bid))
+        bag_events = events_by_bag.get(bid) or []
+        if _latest_sent_to_vendor_ts(
+            bag_events, on_or_after=day_start, before=day_end_excl
+        ) is not None:
+            continue
+        cycle_anchor = _latest_sent_to_vendor_ts(bag_events, before=day_start)
+        if cycle_anchor is None:
+            continue
         st, sig, comp_ts, sent_ts, _ = _evaluate_bag_as_of(
-            events_by_bag.get(bid) or [],
+            bag_events,
             service_type=svc,
             as_of_end=prior_day_end,
+            anchor_ts_override=cycle_anchor,
         )
         if st != AV_STATUS_COMPLETED or comp_ts is None:
             continue
@@ -2720,6 +2764,10 @@ def build_at_vendor_module(
     if still_present_ids:
         rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in still_present_ids]
 
+    rejected_ids = _load_portal_scrape_rejected_bag_ids(cursor, org)
+    if rejected_ids:
+        rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in rejected_ids]
+
     t_edd = time.perf_counter()
     prior_edd_map = _load_prior_edd_from_batches_bulk(cursor, org, pending_for_prior_edd)
     step_ms["prior_edd_ms"] = round((time.perf_counter() - t_edd) * 1000, 1)
@@ -2744,26 +2792,33 @@ def build_at_vendor_module(
     changed_to_rush = len(changed_rows)
 
     prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
+    end_excl = naive_et_day_end_exclusive(selected_date_et)
     bags_completed_today: list[str] = []
     for row in completed_rows:
         bid = str(row.get("bag_id") or "").strip().upper()
         if not bid:
             continue
         svc = _normalize_service(row.get("service_type"))
+        bag_events = events_by_bag.get(bid) or []
+        if _latest_sent_to_vendor_ts(
+            bag_events, on_or_after=start_of_day_et, before=end_excl
+        ) is not None:
+            bags_completed_today.append(bid)
+            continue
         midnight_anchor = _latest_sent_to_vendor_ts(
-            events_by_bag.get(bid) or [],
+            bag_events,
             before=start_of_day_et,
         )
         if midnight_anchor is not None:
             midnight_status, _, _, _, _ = _evaluate_bag_as_of(
-                events_by_bag.get(bid) or [],
+                bag_events,
                 service_type=svc,
                 as_of_end=prior_day_end,
                 anchor_ts_override=midnight_anchor,
             )
         else:
             midnight_status = _bag_status_as_of(
-                events_by_bag.get(bid) or [],
+                bag_events,
                 service_type=svc,
                 as_of_end=prior_day_end,
             )
