@@ -3,6 +3,10 @@ Standardized sorting session start/end measurement for display and analytics.
 
 Productivity credit calculation (``sorting_bounds_v2`` in rinse_bag_activity_rules)
 keeps its own bounds; use this module wherever sorting duration is measured or shown.
+
+Sort end is capped at wash handoff, split-load, create-issue, and cross-employee
+boundaries so sessions never span vendor/customer cycles. See
+docs/postmortems/repeat_trip_scan_cycle_fix_2026-06-25.md.
 """
 
 from __future__ import annotations

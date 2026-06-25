@@ -10,6 +10,8 @@ Session grouping:
 - Bounds from rinse_sorting_session (standardized sort start/end measurement).
 - Sessions overlapping other bags sorted by the same employee push sort_start forward.
 - Sessions are ordered globally by sort_start_et; gap_until_next is wall time to the next session start.
+
+Lifecycle boundaries (repeat-trip bags): docs/postmortems/repeat_trip_scan_cycle_fix_2026-06-25.md
 """
 
 from __future__ import annotations

@@ -69,6 +69,8 @@ def visible_timeline(timeline: Sequence[Mapping[str, Any]]) -> list[dict[str, An
 def lifecycle_anchor(
     timeline: Sequence[Mapping[str, Any]],
 ) -> tuple[datetime | None, Mapping[str, Any] | None]:
+    # Latest sent-to-vendor anchors the current lifecycle (repeat-trip bags return through
+    # VeeWash). See docs/postmortems/repeat_trip_scan_cycle_fix_2026-06-25.md.
     candidates: list[Mapping[str, Any]] = []
     for ev in timeline:
         if not is_sent_to_vendor_purpose(ev.get("purpose")):
@@ -78,7 +80,7 @@ def lifecycle_anchor(
             candidates.append(ev)
     if not candidates:
         return None, None
-    ev = min(candidates, key=sort_key_ev)
+    ev = max(candidates, key=sort_key_ev)
     return event_ts(ev), ev
 
 

@@ -123,7 +123,11 @@ def _classify_baseline_seed_bag(
     service_type: str,
     selected_date_et: date,
 ) -> tuple[str, str | None, datetime | None, datetime | None]:
-    """Classify a baseline snapshot bag at selected ET day start."""
+    """Classify a baseline snapshot bag at selected ET day start.
+
+    Same-day sent-to-vendor opens a fresh cycle for repeat-trip bags; see
+    docs/postmortems/repeat_trip_scan_cycle_fix_2026-06-25.md.
+    """
     start_of_day_et = naive_et_day_start(selected_date_et)
     end_excl = naive_et_day_end_exclusive(selected_date_et)
     today_sent_ts = _latest_sent_to_vendor_ts(
@@ -1945,7 +1949,11 @@ def _load_completed_before_day_start_still_present(
     *,
     selected_date_et: date,
 ) -> tuple[list[dict[str, Any]], set[str]]:
-    """Live At Vendor snapshot bags completed before selected day start (monitoring only)."""
+    """Live At Vendor snapshot bags completed before selected day start (monitoring only).
+
+    Bags with same-day sent-to-vendor are skipped (new lifecycle); see
+    docs/postmortems/repeat_trip_scan_cycle_fix_2026-06-25.md.
+    """
     live_by_bag = _load_active_at_vendor_presence_by_bag(cursor, organization_id)
     if not live_by_bag:
         return [], set()
