@@ -48,6 +48,11 @@ jobs:
           test -f scripts/rinse-cleanertickets/package.json
           ls -la scripts/rinse-cleanertickets/
 
+      - name: Daily upload checkout regression (required)
+        run: |
+          source antenv/bin/activate
+          pytest backend/tests/test_daily_upload_checkout_regression.py -q --tb=short
+
       - name: Ensure startup.sh is executable
         run: chmod +x startup.sh
 
