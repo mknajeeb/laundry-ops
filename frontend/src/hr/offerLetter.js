@@ -1,5 +1,7 @@
 /** Offer letter field defaults and timeline helpers for HR Timeline. */
 
+export const OFFER_LETTER_CONTACT_EMAIL = "care@veewash.com";
+
 export function isContractorLane(workerLane) {
   return String(workerLane || "").startsWith("contractor") || workerLane === "contractor_1099";
 }
@@ -19,6 +21,8 @@ export function defaultOfferLetterFields({ prefill, workerName, managerName, wor
     candidate_name: workerName || p.full_name || "",
     candidate_address: p.address || "",
     position: p.job_title || (isContractor ? "Laundry Service Contractor" : "Laundry Production Associate"),
+    position_details: "",
+    contact_email: OFFER_LETTER_CONTACT_EMAIL,
     start_date: p.start_date || p.hire_date || "",
     hourly_rate: p.rate_per_hour != null && p.rate_per_hour !== "" ? String(p.rate_per_hour) : "",
     compensation: formatOfferCompensation(p.rate_per_hour),

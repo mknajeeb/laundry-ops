@@ -1,6 +1,7 @@
 import ContractorPrintShell from "../../contractorForms/ContractorPrintShell";
 import {
   formatDisplayDate,
+  OFFER_LETTER_CONTACT_EMAIL,
   offerLetterDocumentTitle,
 } from "../../hr/offerLetter";
 
@@ -9,11 +10,11 @@ function display(val, fallback = "[not specified]") {
   return s || fallback;
 }
 
-function DetailRow({ label, value }) {
+function DetailRow({ label, value, multiline = false }) {
   return (
     <tr>
       <th>{label}</th>
-      <td>{value}</td>
+      <td style={multiline ? { whiteSpace: "pre-wrap" } : undefined}>{value}</td>
     </tr>
   );
 }
@@ -24,6 +25,9 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
   const docTitle = offerLetterDocumentTitle(isContractor);
   const candidate = display(fields.candidate_name, "[Candidate Name]");
   const position = display(fields.position);
+  const positionDetails = String(fields.position_details || "").trim();
+  const contactEmail = String(fields.contact_email || OFFER_LETTER_CONTACT_EMAIL).trim()
+    || OFFER_LETTER_CONTACT_EMAIL;
   const startDate = formatDisplayDate(fields.start_date);
   const compensation = display(fields.compensation);
   const location = display(fields.work_location);
@@ -85,6 +89,9 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
         <table className="cform-offer-table">
           <tbody>
             <DetailRow label="Position" value={position} />
+            {positionDetails ? (
+              <DetailRow label="Position details" value={positionDetails} multiline />
+            ) : null}
             <DetailRow label="Start date" value={startDate} />
             <DetailRow label="Work location" value={location} />
             <DetailRow label="Schedule" value={schedule} />
@@ -120,13 +127,27 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
         {responseDeadline ? (
           <p>
             Please confirm your acceptance of this offer by <strong>{responseDeadline}</strong> by
-            contacting {manager}
-            {fields.manager_title ? `, ${managerTitle},` : ""} or replying in writing.
+            emailing <strong>{contactEmail}</strong>
+            {manager && manager !== "[Manager Name]" ? (
+              <>
+                {" "}
+                or contacting {manager}
+                {fields.manager_title ? `, ${managerTitle},` : ""}
+              </>
+            ) : null}
+            .
           </p>
         ) : (
           <p>
-            Please confirm your acceptance of this offer by contacting {manager}
-            {fields.manager_title ? `, ${managerTitle},` : ""} or replying in writing.
+            Please confirm your acceptance of this offer by emailing <strong>{contactEmail}</strong>
+            {manager && manager !== "[Manager Name]" ? (
+              <>
+                {" "}
+                or contacting {manager}
+                {fields.manager_title ? `, ${managerTitle},` : ""}
+              </>
+            ) : null}
+            .
           </p>
         )}
 

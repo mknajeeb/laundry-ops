@@ -561,10 +561,20 @@ export default function HrTimelinePanel({
               />
               <TextField
                 size="small"
-                label="Position"
+                label="Position title"
                 value={offerDraft.position}
                 onChange={(e) => setOfferDraft((d) => ({ ...d, position: e.target.value }))}
                 fullWidth
+              />
+              <TextField
+                size="small"
+                label="Position details (optional)"
+                value={offerDraft.position_details}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, position_details: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={3}
+                helperText="Duties, department, or other role details shown on the letter."
               />
               <Stack direction="row" gap={1} flexWrap="wrap">
                 <TextField
