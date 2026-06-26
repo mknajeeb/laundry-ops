@@ -257,6 +257,22 @@ def create_hr_timeline_entry(
     return get_hr_timeline_entry(conn, organization_id, user_id, int(entry_id)) or {}
 
 
+def create_offer_letter_timeline_entry(
+    conn,
+    organization_id: int,
+    user_id: int,
+    body: dict,
+    *,
+    actor_id: int,
+) -> dict:
+    """Create an offer letter timeline entry (requires offer_letter entry type on API)."""
+    payload = dict(body or {})
+    payload["entry_type"] = "offer_letter"
+    if not str(payload.get("description") or "").strip():
+        raise ValueError("description is required")
+    return create_hr_timeline_entry(conn, organization_id, user_id, payload, actor_id=actor_id)
+
+
 def update_hr_timeline_entry(
     conn,
     organization_id: int,

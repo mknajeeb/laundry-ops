@@ -502,6 +502,16 @@
   font-size: 9.5pt;
 }
 
+.cform-offer-digital-signature {
+  font-family: "Segoe Script", "Brush Script MT", "Snell Roundhand", "Apple Chancery", cursive;
+  font-size: 22pt;
+  font-weight: 400;
+  font-style: italic;
+  color: #1e3a8a;
+  margin: 0 0 0.1in !important;
+  line-height: 1.1;
+}
+
 @media print {
   @page {
     size: letter portrait;

@@ -233,13 +233,44 @@ async function renderBodyToPdf(root, { pageSize = "letter portrait", win } = {})
 }
 
 /** Download print-ready PDF (does not open the print dialog). */
+export async function getPrintDocumentPdfBlob(
+  rootEl,
+  { pageSize = "letter portrait", title = "Document" } = {},
+) {
+  const html = buildPrintDocumentHtml(rootEl, { pageSize, title });
+  if (!html) return null;
+
+  let session;
+  try {
+    session = await loadHtmlForPdfCapture(html);
+    const pdf = await renderBodyToPdf(session.container, {
+      pageSize,
+      win: session.win,
+    });
+    return pdf.output("blob");
+  } finally {
+    cleanupPdfCaptureSession(session);
+  }
+}
+
+/** Download print-ready PDF (does not open the print dialog). */
 export async function downloadPrintDocumentPdf(
   rootEl,
   { pageSize = "letter portrait", filename = "document.pdf", title = "Document" } = {},
 ) {
-  const html = buildPrintDocumentHtml(rootEl, { pageSize, title });
-  if (!html) return false;
-  return downloadHtmlDocumentPdf(html, { pageSize, filename });
+  const blob = await getPrintDocumentPdfBlob(rootEl, { pageSize, title });
+  if (!blob) return false;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return true;
 }
 
 /** Download a full HTML document string as PDF (e.g. server-generated paystubs). */

@@ -166,7 +166,13 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
 
         <div className="cform-offer-signatures">
           <div className="cform-offer-sig-block">
-            <div className="cform-sig-line" />
+            {manager && manager !== "[Manager Name]" ? (
+              <p className="cform-offer-digital-signature" aria-label={`Signed by ${manager}`}>
+                {manager}
+              </p>
+            ) : (
+              <div className="cform-sig-line" />
+            )}
             <p>{manager}</p>
             <p>{managerTitle}</p>
             <p>{companyName}</p>

@@ -7,6 +7,7 @@ import pytest
 from backend.hr_timeline import (
     create_discipline_email_timeline_entry,
     create_hr_timeline_entry,
+    create_offer_letter_timeline_entry,
     hr_timeline_meta,
     render_discipline_email_template,
 )
@@ -108,3 +109,35 @@ def test_create_discipline_email_timeline_entry():
         )
     assert result["email"]["template_id"] == "coaching_late_arrival"
     assert result["entry"]["entry_type"] == "coaching"
+
+
+def test_create_offer_letter_timeline_entry():
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value = cursor
+    cursor.lastrowid = 77
+    with patch("backend.hr_timeline.table_exists", return_value=True), patch(
+        "backend.hr_timeline.get_hr_timeline_entry",
+        return_value={
+            "id": 77,
+            "entry_type": "offer_letter",
+            "category": "General",
+            "description": "Offer of Employment generated.",
+        },
+    ):
+        row = create_offer_letter_timeline_entry(
+            conn,
+            1,
+            9,
+            {
+                "entry_type": "offer_letter",
+                "category": "General",
+                "description": "Offer of Employment generated.",
+                "entry_date": "2026-06-01",
+                "email_subject": "Offer of Employment — Manager — Jane",
+                "email_body": "Dear Jane,",
+                "email_sent": True,
+            },
+            actor_id=3,
+        )
+    assert row["entry_type"] == "offer_letter"

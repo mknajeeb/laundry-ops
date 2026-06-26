@@ -21,6 +21,7 @@ export default function ContractorPrintPreviewDialog({
   pageSize = "letter portrait",
   onCopyEmail,
   onOpenEmail,
+  openEmailLabel = "Open in email",
 }) {
   const scrollRef = useRef(null);
 
@@ -73,7 +74,7 @@ export default function ContractorPrintPreviewDialog({
         ) : null}
         {onOpenEmail ? (
           <Button startIcon={<EmailIcon />} onClick={onOpenEmail}>
-            Open in email
+            {openEmailLabel}
           </Button>
         ) : null}
         <Button onClick={onClose}>Close</Button>

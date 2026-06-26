@@ -35,7 +35,7 @@ import {
   previewUserHrTimelineEmail,
 } from "../../api";
 import ContractorPrintPreviewDialog from "../../contractorForms/ContractorPrintPreviewDialog";
-import { openPrintWindow } from "../../contractorForms/contractorPrint";
+import { getPrintDocumentPdfBlob, openPrintWindow } from "../../contractorForms/contractorPrint";
 import "../../contractorForms/contractorPrint.css";
 import {
   HR_DISCIPLINE_EMAIL_TEMPLATES,
@@ -44,6 +44,7 @@ import {
   entryTypeLabel,
 } from "../../hr/hrTimelineConstants";
 import {
+  buildOfferLetterEmailFilename,
   buildOfferLetterTimelineDescription,
   buildOfferLetterEmail,
   defaultOfferLetterFields,
@@ -170,6 +171,11 @@ export default function HrTimelinePanel({
     [offerFields],
   );
 
+  const offerEmailWithAttachment = useMemo(
+    () => (offerFields ? buildOfferLetterEmail(offerFields, { includeAttachmentNote: true }) : null),
+    [offerFields],
+  );
+
   const offerPrintTitle = useMemo(
     () => offerLetterDocumentTitle(offerFields?.is_contractor),
     [offerFields?.is_contractor],
@@ -192,14 +198,64 @@ export default function HrTimelinePanel({
     }
   };
 
-  const openOfferMailto = () => {
-    if (!offerEmail) return;
-    const subject = encodeURIComponent(offerEmail.subject || "");
-    const body = encodeURIComponent(offerEmail.body || "");
+  const openOfferMailto = (emailContent = offerEmail) => {
+    if (!emailContent) return;
+    const subject = encodeURIComponent(emailContent.subject || "");
+    const body = encodeURIComponent(emailContent.body || "");
     const to = encodeURIComponent(
       offerFields?.candidate_email || workerEmail || "",
     );
     window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
+  };
+
+  const sendOfferEmailWithPdf = async () => {
+    if (!offerFields || !offerEmailWithAttachment || !offerPrintRef.current) return;
+    setBusy(true);
+    setError("");
+    try {
+      const filename = buildOfferLetterEmailFilename(offerFields);
+      const blob = await getPrintDocumentPdfBlob(offerPrintRef.current, {
+        pageSize: "letter portrait",
+        title: offerPrintTitle,
+      });
+      if (!blob) {
+        throw new Error("Could not generate offer letter PDF");
+      }
+      const file = new File([blob], filename, { type: "application/pdf" });
+      const sharePayload = {
+        title: offerEmailWithAttachment.subject,
+        text: offerEmailWithAttachment.body,
+        files: [file],
+      };
+      if (navigator.share && navigator.canShare?.(sharePayload)) {
+        await navigator.share(sharePayload);
+        setInfo("Email opened with the offer letter PDF attached.");
+        return;
+      }
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      const attachNote = `\n\nPlease attach the downloaded file: ${filename}`;
+      openOfferMailto({
+        subject: offerEmailWithAttachment.subject,
+        body: `${offerEmailWithAttachment.body}${attachNote}`,
+      });
+      setInfo("PDF downloaded — attach it in your email draft.");
+    } catch (e) {
+      if (e?.name !== "AbortError") {
+        setError(e?.message || "Could not prepare offer email with PDF");
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const logOfferLetter = async (markSent = false) => {
@@ -712,8 +768,12 @@ export default function HrTimelinePanel({
           <Button startIcon={<ContentCopyIcon />} onClick={copyOfferEmail} disabled={!offerEmail}>
             Copy email
           </Button>
-          <Button startIcon={<EmailIcon />} onClick={openOfferMailto} disabled={!offerEmail}>
-            Open in email
+          <Button
+            startIcon={<EmailIcon />}
+            onClick={sendOfferEmailWithPdf}
+            disabled={busy || !offerEmailWithAttachment || !offerFields?.position}
+          >
+            Send email (PDF)
           </Button>
           <Button onClick={() => setOfferPreviewOpen(true)} disabled={!offerFields}>
             Preview
@@ -745,7 +805,8 @@ export default function HrTimelinePanel({
         title={offerPrintTitle}
         printRef={offerPrintRef}
         onCopyEmail={copyOfferEmail}
-        onOpenEmail={openOfferMailto}
+        onOpenEmail={sendOfferEmailWithPdf}
+        openEmailLabel="Send email (PDF)"
       />
 
       <Box

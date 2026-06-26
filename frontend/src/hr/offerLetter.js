@@ -69,8 +69,20 @@ function lineOrNull(label, value) {
   return s ? `- ${label}: ${s}` : null;
 }
 
+export function buildOfferLetterEmailFilename(fields = {}) {
+  const slug = (val, fallback) =>
+    String(val || fallback)
+      .trim()
+      .replace(/[^\w\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 48) || fallback;
+  const name = slug(fields.candidate_name, "candidate");
+  const position = slug(fields.position, "offer");
+  return `Offer-${name}-${position}.pdf`;
+}
+
 /** Plain-text email for mailto / timeline logging. */
-export function buildOfferLetterEmail(fields = {}) {
+export function buildOfferLetterEmail(fields = {}, { includeAttachmentNote = false } = {}) {
   const docTitle = offerLetterDocumentTitle(fields.is_contractor);
   const candidate = String(fields.candidate_name || "[Name]").trim() || "[Name]";
   const firstName = candidate.split(/\s+/)[0] || candidate;
@@ -106,8 +118,12 @@ export function buildOfferLetterEmail(fields = {}) {
   const bodyLines = [
     `Dear ${firstName},`,
     "",
-    `${companyName} is pleased to extend a ${docTitle.toLowerCase()} for the position of ${position}.`,
+    `${companyName} is pleased to extend an ${docTitle.toLowerCase()} for the position of ${position}.`,
     "",
+    includeAttachmentNote
+      ? "Please review the attached offer letter PDF for full details."
+      : null,
+    includeAttachmentNote ? "" : null,
     "Offer summary:",
     ...summaryLines,
     "",
@@ -119,7 +135,7 @@ export function buildOfferLetterEmail(fields = {}) {
     manager || "[Manager Name]",
     managerTitle || "[Title]",
     companyName,
-  ];
+  ].filter((line) => line !== null);
 
   if (String(fields.additional_terms || "").trim()) {
     bodyLines.splice(
