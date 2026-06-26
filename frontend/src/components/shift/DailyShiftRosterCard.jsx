@@ -33,6 +33,45 @@ function formatHoursDisplay(entry) {
   return fmtLaborValue(entry.hours, { digits: 2 });
 }
 
+function RosterTimeWithOriginal({ current, original }) {
+  if (!current) return "—";
+  if (!original || current === original) return current;
+  return (
+    <>
+      {current}{" "}
+      <Typography
+        component="span"
+        variant="inherit"
+        sx={{ textDecoration: "line-through", color: "text.secondary", fontWeight: 500 }}
+      >
+        {original}
+      </Typography>
+    </>
+  );
+}
+
+function rosterTimeRangeLabel(entry) {
+  const endLabel = entry?.shift_open || !entry?.end_time ? "Open" : formatTime12(entry.end_time);
+  const endOriginal =
+    entry?.times_modified && entry?.original_end_time && !entry?.shift_open
+      ? formatTime12(entry.original_end_time)
+      : null;
+  const startCurrent = formatTime12(entry.start_time);
+  const startOriginal = entry?.times_modified ? formatTime12(entry.original_start_time) : null;
+
+  return (
+    <>
+      <RosterTimeWithOriginal current={startCurrent} original={startOriginal} />
+      {" → "}
+      {entry?.shift_open || !entry?.end_time ? (
+        endLabel
+      ) : (
+        <RosterTimeWithOriginal current={endLabel} original={endOriginal} />
+      )}
+    </>
+  );
+}
+
 function formatCostDisplay(entry) {
   if (entry?.shift_open || entry?.cost == null) return "—";
   return fmtLaborValue(entry.cost, { currency: true });
@@ -49,7 +88,6 @@ export default function DailyShiftRosterCard({
   excludeSaving = false,
 }) {
   const excluded = Boolean(entry?.excluded);
-  const endLabel = entry?.shift_open || !entry?.end_time ? "Open" : formatTime12(entry.end_time);
 
   return (
     <Box
@@ -111,7 +149,7 @@ export default function DailyShiftRosterCard({
             <Chip
               size="small"
               variant="outlined"
-              label={`${formatTime12(entry.start_time)} → ${endLabel}`}
+              label={rosterTimeRangeLabel(entry)}
               sx={{ height: 28, fontWeight: 600, maxWidth: "100%" }}
             />
           </Stack>

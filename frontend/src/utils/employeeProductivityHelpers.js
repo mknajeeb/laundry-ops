@@ -55,10 +55,15 @@ function rankValue(emp, rankBy) {
 }
 
 export function isMissingClockIn(emp) {
+  if (Number(emp?.productive_hours) > 0) return false;
+  if (emp?.productive_start_time || emp?.productive_start_time_et) return false;
   return !emp?.clock_in_time && !emp?.clock_in_time_et;
 }
 
 export function productivityStartLabel(emp) {
+  if (emp?.productivity_start_source === "roster_modified") {
+    return "Shift Start";
+  }
   if (
     emp?.productivity_start_source === "operator_processing" ||
     emp?.productivity_start_source === "inferred_fold_start"
@@ -68,27 +73,86 @@ export function productivityStartLabel(emp) {
   return "Clock In";
 }
 
-export function productivityStartDisplay(emp, formatTime) {
-  if (isMissingClockIn(emp)) return "Missing clock-in";
-  if (
-    emp?.productivity_start_source === "operator_processing" ||
-    emp?.productivity_start_source === "inferred_fold_start"
-  ) {
-    return formatTime(emp.productive_start_time_et || emp.productive_start_time);
-  }
-  return formatTime(emp.clock_in_time_et || emp.clock_in_time);
-}
-
 export function productivityEndLabel(emp) {
+  if (emp?.productivity_end_source === "roster_modified") return "Shift End";
   if (emp?.productivity_end_source === "clock_out") return "Clock Out";
   return "Last Completion";
 }
 
-export function productivityEndDisplay(emp, formatTime) {
-  if (emp?.productivity_end_source === "clock_out") {
-    return formatTime(emp.clock_out_time_et || emp.productive_end_time_et || emp.productive_end_time);
+function renderTimeWithOriginal(current, original, formatTime) {
+  if (!current) return "—";
+  if (original && original !== current) {
+    return {
+      current: formatTime(current),
+      original: formatTime(original),
+    };
   }
-  return formatTime(emp.last_completion_time_et || emp.last_completion_time);
+  return { current: formatTime(current), original: null };
+}
+
+export function productivityStartDisplayParts(emp, formatTime) {
+  if (isMissingClockIn(emp)) return { current: "Missing clock-in", original: null };
+  if (emp?.roster_times_modified) {
+    return renderTimeWithOriginal(
+      emp.roster_start_time_et || emp.roster_start_time || emp.productive_start_time_et || emp.productive_start_time,
+      emp.roster_original_start_time_et || emp.roster_original_start_time,
+      formatTime,
+    );
+  }
+  if (
+    emp?.productivity_start_source === "operator_processing" ||
+    emp?.productivity_start_source === "inferred_fold_start"
+  ) {
+    return renderTimeWithOriginal(
+      emp.productive_start_time_et || emp.productive_start_time,
+      null,
+      formatTime,
+    );
+  }
+  if (!emp?.clock_in_time && !emp?.clock_in_time_et) {
+    return renderTimeWithOriginal(
+      emp.productive_start_time_et || emp.productive_start_time,
+      null,
+      formatTime,
+    );
+  }
+  return renderTimeWithOriginal(
+    emp.clock_in_time_et || emp.clock_in_time,
+    null,
+    formatTime,
+  );
+}
+
+export function productivityEndDisplayParts(emp, formatTime) {
+  if (emp?.roster_times_modified) {
+    return renderTimeWithOriginal(
+      emp.roster_end_time_et || emp.roster_end_time || emp.productive_end_time_et || emp.productive_end_time,
+      emp.roster_original_end_time_et || emp.roster_original_end_time,
+      formatTime,
+    );
+  }
+  if (emp?.productivity_end_source === "clock_out") {
+    return renderTimeWithOriginal(
+      emp.clock_out_time_et || emp.productive_end_time_et || emp.productive_end_time,
+      null,
+      formatTime,
+    );
+  }
+  return renderTimeWithOriginal(
+    emp.last_completion_time_et || emp.last_completion_time,
+    null,
+    formatTime,
+  );
+}
+
+export function productivityStartDisplay(emp, formatTime) {
+  const parts = productivityStartDisplayParts(emp, formatTime);
+  return parts.current ?? "—";
+}
+
+export function productivityEndDisplay(emp, formatTime) {
+  const parts = productivityEndDisplayParts(emp, formatTime);
+  return parts.current ?? "—";
 }
 
 export function fmtProductivityRate(value, missingClockIn) {

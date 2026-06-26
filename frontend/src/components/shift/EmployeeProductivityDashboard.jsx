@@ -32,9 +32,9 @@ import {
   fmtProductivityRate,
   fmtSummaryNumber,
   isMissingClockIn,
-  productivityEndDisplay,
+  productivityEndDisplayParts,
   productivityEndLabel,
-  productivityStartDisplay,
+  productivityStartDisplayParts,
   productivityStartLabel,
   rankEmployees,
 } from "../../utils/employeeProductivityHelpers";
@@ -51,17 +51,36 @@ const DATE_PRESETS = [
   { id: "custom", label: "Custom ET Date" },
 ];
 
+function ProductivityTimeValue({ parts }) {
+  if (!parts?.current) return "—";
+  if (!parts.original) return parts.current;
+  return (
+    <>
+      {parts.current}{" "}
+      <Typography
+        component="span"
+        variant="inherit"
+        sx={{ textDecoration: "line-through", color: "text.secondary", fontWeight: 500 }}
+      >
+        {parts.original}
+      </Typography>
+    </>
+  );
+}
+
 function EmployeeSummaryPanel({ emp }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+  const startParts = productivityStartDisplayParts(emp, formatFriendlyEtWall);
+  const endParts = productivityEndDisplayParts(emp, formatFriendlyEtWall);
   const items = [
     {
       label: productivityStartLabel(emp),
-      value: productivityStartDisplay(emp, formatFriendlyEtWall),
+      value: <ProductivityTimeValue parts={startParts} />,
     },
     {
       label: productivityEndLabel(emp),
-      value: productivityEndDisplay(emp, formatFriendlyEtWall),
+      value: <ProductivityTimeValue parts={endParts} />,
     },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
     { label: "Bags", value: emp.completed_bags ?? 0 },
@@ -184,10 +203,10 @@ export default function EmployeeProductivityDashboard({
   const [datePreset, setDatePreset] = useState(() => resolvePreset(initialDateEt));
   const [customDate, setCustomDate] = useState(initialDateEt || todayRange().start);
   const [activeDateEt, setActiveDateEt] = useState(initialDateEt || todayRange().start);
-  const [section, setSection] = useState(initialSection || null);
+  const [section, setSection] = useState(null);
   const [laborSummary, setLaborSummary] = useState(null);
   const [scopeLabel, setScopeLabel] = useState(initialSection?.productivity_scope_label || "WF Only");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState("");
 
   const fetchSection = useCallback(async (dateEt) => {
@@ -206,10 +225,13 @@ export default function EmployeeProductivityDashboard({
       setActiveDateEt(dateEt);
     } catch (e) {
       setFetchError(e?.response?.data?.error || "Failed to load employee productivity");
+      if (initialSection && dateEt === (initialDateEt || activeDateEt)) {
+        setSection(initialSection);
+      }
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeDateEt, initialDateEt, initialSection]);
 
   useEffect(() => {
     fetchSection(activeDateEt);
@@ -249,6 +271,19 @@ export default function EmployeeProductivityDashboard({
     else if (value === "yesterday") applyDate(yesterdayRange().start);
     else if (value === "custom") setCustomDate(activeDateEt);
   };
+
+  if (!section && loading) {
+    return (
+      <Paper elevation={0} sx={{ mt: 1.5, mb: 1.5, p: 2, borderRadius: 2 }}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <CircularProgress size={20} />
+          <Typography variant="body2" color="text.secondary" fontWeight={600}>
+            Loading employee productivity…
+          </Typography>
+        </Stack>
+      </Paper>
+    );
+  }
 
   if (!section && !loading && !fetchError) return null;
 

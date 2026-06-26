@@ -33,15 +33,17 @@ from backend.rinse_wf_weight_events import (
 UNKNOWN_EMPLOYEE = "Unknown user"
 PRODUCTIVITY_END_LAST_COMPLETION = "last_completion"
 PRODUCTIVITY_END_CLOCK_OUT = "clock_out"
+PRODUCTIVITY_END_ROSTER_MODIFIED = "roster_modified"
 PRODUCTIVITY_START_CLOCK_IN = "clock_in"
 PRODUCTIVITY_START_OPERATOR_PROCESSING = "operator_processing"
 PRODUCTIVITY_START_INFERRED_FOLD = "inferred_fold_start"
+PRODUCTIVITY_START_ROSTER_MODIFIED = "roster_modified"
 FOLD_BLOCK_START_CLOCK_IN = "clock_in"
 FOLD_BLOCK_START_PRIOR_SCAN = "prior_work_scan"
 FOLD_BLOCK_END_LAST_COMPLETION = "last_completion"
 FOLD_BLOCK_END_CLOCK_OUT = "clock_out"
+ScanMoment = tuple[datetime, str]
 # When summed micro-block durations fall below this fraction of the continuous span,
-# use the continuous folding start → end window for productive hours (single block only).
 FOLDING_CONTINUOUS_SPAN_MIN_FRACTION = 0.5
 # Split folding blocks when completions are separated by a long gap with no WF pipeline work.
 FOLDING_INACTIVE_GAP_SECONDS = 60 * 60
@@ -235,6 +237,26 @@ def _last_scan_before(timestamps: Sequence[datetime], before: datetime) -> datet
     return max(candidates) if candidates else None
 
 
+def _last_scan_before_on_other_bag(
+    scans: Sequence[ScanMoment],
+    *,
+    before: datetime,
+    exclude_bag: str,
+) -> datetime | None:
+    """Latest scan before ``before`` that is not on the completion bag being started."""
+    excluded = str(exclude_bag or "").strip().upper()
+    candidates = [
+        ts
+        for ts, bid in scans
+        if ts_valid(ts) and ts < before and str(bid or "").strip().upper() != excluded
+    ]
+    return max(candidates) if candidates else None
+
+
+def _scan_moment_timestamps(scans: Sequence[ScanMoment]) -> list[datetime]:
+    return [ts for ts, _ in scans if ts_valid(ts)]
+
+
 def _has_wf_pipeline_between(
     start: datetime,
     end: datetime,
@@ -418,9 +440,9 @@ def _collect_employee_non_folding_scans(
     anchor_by_bag: Mapping[str, datetime],
     clock_in: datetime | None,
     clock_out: datetime | None,
-) -> list[datetime]:
+) -> list[ScanMoment]:
     emp_key = employee.casefold()
-    timestamps: list[datetime] = []
+    moments: list[ScanMoment] = []
     seen: set[tuple[datetime, str]] = set()
     for ev in day_scans:
         if _event_user_name(ev).casefold() != emp_key:
@@ -444,8 +466,8 @@ def _collect_employee_non_folding_scans(
         if dedupe in seen:
             continue
         seen.add(dedupe)
-        timestamps.append(ts)
-    return sorted(timestamps)
+        moments.append((ts, bid))
+    return sorted(moments, key=lambda item: item[0])
 
 
 def _collect_employee_wf_pipeline_scans(
@@ -456,10 +478,10 @@ def _collect_employee_wf_pipeline_scans(
     anchor_by_bag: Mapping[str, datetime],
     clock_in: datetime | None,
     clock_out: datetime | None,
-) -> list[datetime]:
+) -> list[ScanMoment]:
     """WF pipeline activity timestamps used to infer folding block start."""
     emp_key = employee.casefold()
-    timestamps: list[datetime] = []
+    moments: list[ScanMoment] = []
     seen: set[tuple[datetime, str]] = set()
     for ev in day_scans:
         if _event_user_name(ev).casefold() != emp_key:
@@ -482,8 +504,8 @@ def _collect_employee_wf_pipeline_scans(
         if dedupe in seen:
             continue
         seen.add(dedupe)
-        timestamps.append(ts)
-    return sorted(timestamps)
+        moments.append((ts, bid))
+    return sorted(moments, key=lambda item: item[0])
 
 
 def _compute_folding_blocks(
@@ -491,43 +513,58 @@ def _compute_folding_blocks(
     roster_role: str | None,
     clock_in: datetime | None,
     clock_out: datetime | None,
-    non_folding_scans: Sequence[datetime],
-    fold_completions: Sequence[datetime],
-    wf_pipeline_scans: Sequence[datetime] | None = None,
+    non_folding_scans: Sequence[ScanMoment],
+    fold_completions: Sequence[ScanMoment],
+    wf_pipeline_scans: Sequence[ScanMoment] | None = None,
 ) -> list[dict[str, Any]]:
     if roster_role not in ("operator", "folder"):
         return []
     if clock_in is None or not ts_valid(clock_in):
         return []
 
-    completions = sorted({ts for ts in fold_completions if ts_valid(ts)})
+    completions = sorted(
+        [(ts, bid) for ts, bid in fold_completions if ts_valid(ts)],
+        key=lambda item: item[0],
+    )
     if not completions:
         return []
 
-    non_fold = sorted({ts for ts in non_folding_scans if ts_valid(ts)})
-    wf_pipeline = sorted({ts for ts in (wf_pipeline_scans or []) if ts_valid(ts)})
+    non_fold = sorted(
+        [(ts, bid) for ts, bid in non_folding_scans if ts_valid(ts)],
+        key=lambda item: item[0],
+    )
+    wf_pipeline = sorted(
+        [(ts, bid) for ts, bid in (wf_pipeline_scans or []) if ts_valid(ts)],
+        key=lambda item: item[0],
+    )
+    wf_pipeline_ts = _scan_moment_timestamps(wf_pipeline)
+    non_fold_ts = _scan_moment_timestamps(non_fold)
 
-    groups: list[list[datetime]] = []
-    current: list[datetime] = [completions[0]]
-    for comp in completions[1:]:
-        prev = current[-1]
+    groups: list[list[ScanMoment]] = []
+    current: list[ScanMoment] = [completions[0]]
+    for comp_ts, comp_bid in completions[1:]:
+        prev_ts, _ = current[-1]
         inactive_gap = (
-            (comp - prev).total_seconds() > FOLDING_INACTIVE_GAP_SECONDS
-            and not _has_wf_pipeline_in_inactive_gap_core(prev, comp, wf_pipeline)
+            (comp_ts - prev_ts).total_seconds() > FOLDING_INACTIVE_GAP_SECONDS
+            and not _has_wf_pipeline_in_inactive_gap_core(prev_ts, comp_ts, wf_pipeline_ts)
         )
-        if inactive_gap or any(prev < nf < comp for nf in non_fold):
+        if inactive_gap or any(prev_ts < ts < comp_ts for ts in non_fold_ts):
             groups.append(current)
-            current = [comp]
+            current = [(comp_ts, comp_bid)]
         else:
-            current.append(comp)
+            current.append((comp_ts, comp_bid))
     groups.append(current)
 
     blocks: list[dict[str, Any]] = []
-    for idx, group in enumerate(groups):
-        first_comp = min(group)
-        last_comp = max(group)
-        prior = _last_scan_before(non_fold, first_comp)
-        wf_prior = _last_scan_before(wf_pipeline, first_comp)
+    for group in groups:
+        first_comp, first_bid = min(group, key=lambda item: item[0])
+        last_comp, _ = max(group, key=lambda item: item[0])
+        prior = _last_scan_before_on_other_bag(
+            non_fold, before=first_comp, exclude_bag=first_bid
+        )
+        wf_prior = _last_scan_before_on_other_bag(
+            wf_pipeline, before=first_comp, exclude_bag=first_bid
+        )
         if prior is not None and prior >= clock_in:
             block_start = prior
             start_source = FOLD_BLOCK_START_PRIOR_SCAN
@@ -755,7 +792,15 @@ def build_employee_completed_bags_today(
         else {}
     )
     window_cache: dict[int, tuple[datetime | None, datetime | None, str | None]] = {}
-    roster_roles = _build_roster_role_lookup(cursor, org, selected_date_et)
+    from backend.daily_shift_roster import (
+        build_roster_role_lookup,
+        list_roster_entries,
+        roster_entry_for_employee_name,
+        roster_shift_datetimes,
+    )
+
+    roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
+    roster_roles = build_roster_role_lookup(roster_entries)
     credited_employees = [
         emp for emp in by_employee.keys() if emp != UNKNOWN_EMPLOYEE
     ]
@@ -788,6 +833,18 @@ def build_employee_completed_bags_today(
             for b in bags_sorted
             if b.get("completion_time")
         ]
+        fold_completion_moments: list[ScanMoment] = []
+        for bag in bags_sorted:
+            raw_ts = bag.get("completion_time")
+            bid = str(bag.get("bag_id") or "").strip().upper()
+            if not raw_ts or not bid:
+                continue
+            try:
+                ts = datetime.fromisoformat(str(raw_ts))
+            except ValueError:
+                continue
+            if ts_valid(ts):
+                fold_completion_moments.append((ts, bid))
         first_comp = min(comp_times) if comp_times else None
         last_comp = max(comp_times) if comp_times else None
 
@@ -811,6 +868,37 @@ def build_employee_completed_bags_today(
             )
         elif employee == UNKNOWN_EMPLOYEE:
             clock_diagnostic = "Clock-in missing"
+
+        roster_entry_matched: dict[str, Any] | None = None
+        roster_modified = False
+        roster_in: datetime | None = None
+        roster_out: datetime | None = None
+        if employee != UNKNOWN_EMPLOYEE:
+            from backend.daily_shift_roster import (
+                roster_entry_for_employee_name,
+                roster_shift_datetimes,
+                roster_times_modified,
+            )
+
+            roster_entry_matched = roster_entry_for_employee_name(
+                employee,
+                roster_entries,
+                user_maps=user_maps,
+            )
+            if roster_entry_matched:
+                roster_modified = roster_times_modified(roster_entry_matched)
+                roster_in, roster_out = roster_shift_datetimes(
+                    roster_entry_matched, selected_date_et
+                )
+                if roster_modified and roster_in is not None:
+                    clock_in = roster_in
+                    if roster_out is not None:
+                        clock_out = roster_out
+                    clock_diagnostic = "Using modified daily shift roster times"
+                elif clock_in is None and roster_in is not None:
+                    clock_in = roster_in
+                    clock_out = roster_out
+                    clock_diagnostic = "Using daily shift roster times (no payroll clock-in)"
 
         roster_role = None
         if employee != UNKNOWN_EMPLOYEE:
@@ -847,21 +935,42 @@ def build_employee_completed_bags_today(
             clock_in=clock_in,
             clock_out=shift_clock_out,
             non_folding_scans=non_folding_scans,
-            fold_completions=comp_times,
+            fold_completions=fold_completion_moments,
             wf_pipeline_scans=wf_pipeline_scans,
         )
 
-        productive_start, productive_end, start_source, end_source, productive_sec = (
-            _compute_productive_window(
-                roster_role=roster_role,
-                clock_in=clock_in,
-                first_comp=first_comp,
-                last_comp=last_comp,
-                actual_clock_out=actual_clock_out,
-                upstream_scans=upstream_scans,
-                folding_blocks=folding_blocks,
+        if roster_modified and roster_in is not None and roster_out is not None:
+            from backend.daily_shift_roster import calc_hours, parse_time_value
+
+            roster_start = parse_time_value(roster_entry_matched.get("start_time"))
+            roster_end = parse_time_value(roster_entry_matched.get("end_time"))
+            break_min = int(roster_entry_matched.get("break_minutes") or 0)
+            roster_hours = (
+                calc_hours(roster_start, roster_end, break_min)
+                if roster_start and roster_end
+                else None
             )
-        )
+            productive_start = roster_in
+            productive_end = roster_out
+            start_source = PRODUCTIVITY_START_ROSTER_MODIFIED
+            end_source = PRODUCTIVITY_END_ROSTER_MODIFIED
+            if roster_hours is not None and roster_hours > 0:
+                productive_sec = max(0, int(round(roster_hours * 3600.0)))
+            else:
+                productive_sec = max(0, int((roster_out - roster_in).total_seconds()))
+            folding_blocks = []
+        else:
+            productive_start, productive_end, start_source, end_source, productive_sec = (
+                _compute_productive_window(
+                    roster_role=roster_role,
+                    clock_in=clock_in,
+                    first_comp=first_comp,
+                    last_comp=last_comp,
+                    actual_clock_out=actual_clock_out,
+                    upstream_scans=upstream_scans,
+                    folding_blocks=folding_blocks,
+                )
+            )
         folding_duration_seconds = productive_sec or 0
 
         missing_weight_count = sum(1 for b in bags_sorted if b.get("weight_missing"))
@@ -890,11 +999,46 @@ def build_employee_completed_bags_today(
                 bags_per_hour = round(len(bags_sorted) / productive_hours, 4)
                 if total_lbs:
                     lbs_per_hour = round(total_lbs / productive_hours, 4)
+        elif (
+            roster_entry_matched
+            and roster_entry_matched.get("hours") is not None
+            and float(roster_entry_matched.get("hours") or 0) > 0
+        ):
+            productive_hours = round(float(roster_entry_matched["hours"]), 4)
+            worked_hours = productive_hours
+            wall_clock_hours = productive_hours
+            bags_per_hour = round(len(bags_sorted) / productive_hours, 4)
+            if total_lbs:
+                lbs_per_hour = round(total_lbs / productive_hours, 4)
+            productivity_note = clock_diagnostic
+
+        roster_original_in: datetime | None = None
+        roster_original_out: datetime | None = None
+        if roster_entry_matched:
+            from backend.daily_shift_roster import parse_time_value
+
+            orig_start = parse_time_value(roster_entry_matched.get("original_start_time"))
+            orig_end = parse_time_value(roster_entry_matched.get("original_end_time"))
+            if orig_start is not None:
+                roster_original_in = datetime.combine(selected_date_et, orig_start)
+            if orig_end is not None:
+                roster_original_out = datetime.combine(selected_date_et, orig_end)
+                if roster_original_in and roster_original_out <= roster_original_in:
+                    roster_original_out += timedelta(days=1)
 
         employees.append(
             {
                 "employee": employee,
                 "roster_role": roster_role,
+                "roster_times_modified": roster_modified,
+                "roster_start_time": roster_in.isoformat() if roster_in else None,
+                "roster_end_time": roster_out.isoformat() if roster_out else None,
+                "roster_original_start_time": roster_original_in.isoformat()
+                if roster_original_in
+                else None,
+                "roster_original_end_time": roster_original_out.isoformat()
+                if roster_original_out
+                else None,
                 "clock_in_time": clock_in.isoformat() if clock_in else None,
                 "clock_out_time": actual_clock_out.isoformat() if actual_clock_out else None,
                 "clock_in_time_et": None,
@@ -934,6 +1078,10 @@ def build_employee_completed_bags_today(
         emp["clock_out_time_et"] = _ts_et(emp.get("clock_out_time"))
         emp["productive_start_time_et"] = _ts_et(emp.get("productive_start_time"))
         emp["productive_end_time_et"] = _ts_et(emp.get("productive_end_time"))
+        emp["roster_start_time_et"] = _ts_et(emp.get("roster_start_time"))
+        emp["roster_end_time_et"] = _ts_et(emp.get("roster_end_time"))
+        emp["roster_original_start_time_et"] = _ts_et(emp.get("roster_original_start_time"))
+        emp["roster_original_end_time_et"] = _ts_et(emp.get("roster_original_end_time"))
         emp["last_completion_time_et"] = _ts_et(emp.get("last_completion_time"))
         emp["first_completion_time_et"] = _ts_et(emp.get("first_completion_time"))
 

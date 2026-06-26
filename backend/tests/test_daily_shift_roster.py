@@ -12,9 +12,13 @@ from backend.daily_shift_roster import (
     calc_hours,
     create_roster_entry,
     delete_roster_entry,
+    employee_names_match,
     list_roster_entries,
+    normalize_employee_name,
     normalize_role,
     parse_time_value,
+    productivity_for_roster_entry,
+    roster_entry_for_employee_name,
     roster_entry_match_key,
     serialize_roster_entry_data,
     update_roster_entry,
@@ -49,10 +53,12 @@ class _FakeCursor:
                 "role": params[3],
                 "start_time": params[4],
                 "end_time": params[5],
-                "break_minutes": params[6],
-                "rate": params[7],
-                "notes": params[8],
-                "excluded": params[9] if len(params) > 9 else 0,
+                "original_start_time": params[6],
+                "original_end_time": params[7],
+                "break_minutes": params[8],
+                "rate": params[9],
+                "notes": params[10],
+                "excluded": params[11] if len(params) > 11 else 0,
             }
             self.rows.append(row)
             return
@@ -66,10 +72,12 @@ class _FakeCursor:
                             "role": params[1],
                             "start_time": params[2],
                             "end_time": params[3],
-                            "break_minutes": params[4],
-                            "rate": params[5],
-                            "notes": params[6],
-                            "excluded": params[7],
+                            "original_start_time": params[4],
+                            "original_end_time": params[5],
+                            "break_minutes": params[6],
+                            "rate": params[7],
+                            "notes": params[8],
+                            "excluded": params[9],
                         }
                     )
             return
@@ -150,6 +158,9 @@ class TestRosterCrud:
         assert err is None
         assert entry["hours"] == 7.5
         assert entry["cost"] == 138.75
+        assert entry["original_start_time"] == "08:00"
+        assert entry["original_end_time"] == "16:00"
+        assert entry["times_modified"] is False
 
         entries = list_roster_entries(cursor, org, roster_date=roster_date)
         assert len(entries) == 1
@@ -158,11 +169,14 @@ class TestRosterCrud:
             cursor,
             org,
             entry["id"],
-            {"break_minutes": 60, "rate": 19},
+            {"start_time": "08:30", "break_minutes": 60, "rate": 19},
         )
         assert err is None
-        assert updated["hours"] == 7.0
-        assert updated["cost"] == 133.0
+        assert updated["hours"] == 6.5
+        assert updated["cost"] == 123.5
+        assert updated["start_time"] == "08:30"
+        assert updated["original_start_time"] == "08:00"
+        assert updated["times_modified"] is True
 
         ok, err = delete_roster_entry(cursor, org, entry["id"])
         assert ok is True
@@ -555,3 +569,60 @@ class TestEmployeeProductivityPayloadBackwardCompat:
         assert payload["employee_completed_bags_today"]["executive_summary"]["total_bags_completed"] == 2
         assert payload["labor_summary"]["available"] is False
         assert "labor_summary" in payload
+
+
+class TestRosterNameMatching:
+    def test_normalize_duplicate_payroll_name(self):
+        assert normalize_employee_name("Yesenia Yesenia") == "Yesenia"
+
+    def test_employee_names_match_yessenia_variants(self):
+        assert employee_names_match("Yesenia", "Yessenia (VeeWash)")
+        assert employee_names_match("Yesenia Yesenia", "Yessenia (VeeWash)")
+
+    def test_productivity_for_roster_entry_fuzzy_match(self):
+        productivity = {
+            "yessenia (veewash)": {
+                "employee": "Yessenia (VeeWash)",
+                "completed_bags": 13,
+                "total_completed_lbs": 217.8,
+            }
+        }
+        prod = productivity_for_roster_entry("Yesenia", productivity)
+        assert prod is not None
+        assert prod["completed_bags"] == 13
+
+    def test_labor_summary_counts_fuzzy_matched_bags(self):
+        roster = [
+            {
+                "employee_name": "Yesenia",
+                "role": "folder",
+                "hours": 4.63,
+                "cost": 78.77,
+                "rate": 17.0,
+            }
+        ]
+        productivity = {
+            "executive_summary": {
+                "total_bags_completed": 13,
+                "total_pounds_completed": 217.8,
+            },
+            "employees": [
+                {"employee": "Yessenia (VeeWash)", "completed_bags": 13, "total_completed_lbs": 217.8},
+            ],
+        }
+        summary = build_labor_summary(roster, productivity_section=productivity)
+        assert summary["role_breakdown"]["folders"]["bags_completed"] == 13
+
+    def test_roster_entry_for_employee_name(self):
+        entries = [
+            {
+                "employee_name": "Yesenia",
+                "role": "folder",
+                "start_time": "14:00",
+                "end_time": "18:38",
+                "excluded": False,
+            }
+        ]
+        found = roster_entry_for_employee_name("Yessenia (VeeWash)", entries)
+        assert found is not None
+        assert found["employee_name"] == "Yesenia"

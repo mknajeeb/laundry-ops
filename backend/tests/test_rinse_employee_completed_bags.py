@@ -215,7 +215,10 @@ class TestBuildEmployeeCompletedBagsToday:
             "backend.rinse_simple_shift_performance._employee_shift_window",
             side_effect=_shift_window,
         ), patch(
-            "backend.rinse_employee_completed_bags._build_roster_role_lookup",
+            "backend.daily_shift_roster.list_roster_entries",
+            return_value=[],
+        ), patch(
+            "backend.daily_shift_roster.build_roster_role_lookup",
             return_value=roster_roles,
         ), patch(
             "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
@@ -333,8 +336,10 @@ class TestBuildEmployeeCompletedBagsToday:
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
                 _ev("add-photos", T2, user_name="Processor"),
-                _ev("weight-entry", T2, user_name="Weight Clerk", ev_id=5),
                 _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=6),
+            ],
+            "BAG2": [
+                _ev("drying", T2, user_name="Weight Clerk", ev_id=5),
             ],
         }
         out = self._build(
@@ -369,7 +374,7 @@ class TestBuildEmployeeCompletedBagsToday:
             roster_roles={"weight clerk": "folder"},
         )
         emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
-        expected_hours = round((T3 - T2).total_seconds() / 3600.0, 4)
+        expected_hours = round((T3 - CLOCK_IN).total_seconds() / 3600.0, 4)
         assert emp["productive_end_time"] == T3.isoformat()
         assert emp["productivity_end_source"] == PRODUCTIVITY_END_LAST_COMPLETION
         assert emp["productive_hours"] == expected_hours
@@ -416,10 +421,12 @@ class TestFoldingBlocks:
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0),
-                _ev("drying", T2, user_name="Weight Clerk"),
                 _ev("weight-entry", T1, user_name="Processor"),
                 _ev("add-photos", datetime(2026, 6, 10, 6, 30), user_name="Processor"),
                 _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=5),
+            ],
+            "BAG2": [
+                _ev("drying", T2, user_name="Weight Clerk"),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
@@ -441,10 +448,12 @@ class TestFoldingBlocks:
             ],
             "BAG2": [
                 _ev("sent-to-vendor", T0),
-                _ev("drying", gap, user_name="Weight Clerk", ev_id=5),
                 _ev("weight-entry", T1),
                 _ev("add-photos", datetime(2026, 6, 10, 7, 45), user_name="Processor"),
                 _ev("weight-entry", T4, user_name="Weight Clerk", ev_id=7),
+            ],
+            "BAG3": [
+                _ev("drying", gap, user_name="Weight Clerk", ev_id=5),
             ],
         }
         out = self._build([row1, row2], events, roster_roles={"weight clerk": "operator"})
@@ -568,20 +577,23 @@ class TestFoldingBlocks:
     def test_repeat_trip_ignores_pre_anchor_non_folding_scans(self):
         resend = datetime(2026, 6, 10, 6, 30)
         post_resend = datetime(2026, 6, 10, 6, 45)
+        post_anchor_proc = datetime(2026, 6, 10, 6, 35)
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0, ev_id=1),
                 _ev("drying", T1, user_name="Weight Clerk", ev_id=2),
                 _ev("sent-to-vendor", resend, ev_id=3),
-                _ev("drying", post_resend, user_name="Weight Clerk", ev_id=4),
-                _ev("weight-entry", T1, user_name="Processor", ev_id=5),
-                _ev("add-photos", T2, user_name="Processor", ev_id=6),
+                _ev("weight-entry", post_anchor_proc, user_name="Processor", ev_id=5),
+                _ev("add-photos", post_resend, user_name="Processor", ev_id=6),
                 _ev("weight-entry", T3, user_name="Weight Clerk", ev_id=7),
+            ],
+            "BAG2": [
+                _ev("drying", post_resend, user_name="Weight Clerk", ev_id=4),
             ],
         }
         out = self._build([row], events, roster_roles={"weight clerk": "operator"})
-        emp = out["employees"][0]
+        emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
         assert emp["folding_blocks"][0]["start_time"] == post_resend.isoformat()
 
     def test_folding_blocks_sum_productive_hours(self):
@@ -589,8 +601,8 @@ class TestFoldingBlocks:
             roster_role="operator",
             clock_in=CLOCK_IN,
             clock_out=CLOCK_OUT,
-            non_folding_scans=[T2, datetime(2026, 6, 10, 7, 30)],
-            fold_completions=[T3, T4],
+            non_folding_scans=[(T2, "BAG1"), (datetime(2026, 6, 10, 7, 30), "BAG2")],
+            fold_completions=[(T3, "BAG1"), (T4, "BAG2")],
         )
         assert len(blocks) == 2
         total = sum(b["duration_seconds"] for b in blocks)
@@ -630,6 +642,9 @@ class TestFoldingBlocks:
         rows = []
         events: dict[str, list] = {}
         sent = datetime(2026, 6, 24, 8, 0)
+        events["FOLD_START"] = [
+            _ev("add-photos", fold_start, user_name=folder, ev_id=900),
+        ]
         for idx, comp_ts in enumerate(completion_times, start=1):
             bid = f"BAG{idx:02d}"
             row = _completed_row(bid, service_type="WF")
@@ -667,7 +682,10 @@ class TestFoldingBlocks:
             "backend.rinse_simple_shift_performance._employee_shift_window",
             return_value=(clock_in, clock_out, None),
         ), patch(
-            "backend.rinse_employee_completed_bags._build_roster_role_lookup",
+            "backend.daily_shift_roster.list_roster_entries",
+            return_value=[],
+        ), patch(
+            "backend.daily_shift_roster.build_roster_role_lookup",
             return_value={"evelin folder": "folder"},
         ), patch(
             "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
@@ -714,6 +732,12 @@ class TestFoldingBlocks:
         rows = []
         events: dict[str, list] = {}
         sent = datetime(2026, 6, 24, 8, 0)
+        events["MORNING_START"] = [
+            _ev("add-photos", datetime(2026, 6, 25, 9, 55), user_name=folder, ev_id=900),
+        ]
+        events["AFTERNOON_START"] = [
+            _ev("add-photos", datetime(2026, 6, 25, 13, 55), user_name=folder, ev_id=901),
+        ]
         for idx, (add_photos, comp_ts) in enumerate(morning + afternoon, start=1):
             bid = f"WIN{idx}"
             row = _completed_row(bid, service_type="WF")
@@ -737,7 +761,10 @@ class TestFoldingBlocks:
             "backend.rinse_simple_shift_performance._employee_shift_window",
             return_value=(clock_in, datetime(2026, 6, 25, 16, 0), None),
         ), patch(
-            "backend.rinse_employee_completed_bags._build_roster_role_lookup",
+            "backend.daily_shift_roster.list_roster_entries",
+            return_value=[],
+        ), patch(
+            "backend.daily_shift_roster.build_roster_role_lookup",
             return_value={"split shift folder": "folder"},
         ), patch(
             "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
@@ -764,3 +791,20 @@ class TestFoldingBlocks:
         assert emp["productive_hours"] < full_span_hours - 1.0
         assert emp["bags_per_hour"] is not None
         assert 1.5 <= emp["bags_per_hour"] <= 3.0
+
+    def test_same_bag_scan_does_not_set_folding_start(self):
+        """Prior scan on the bag being completed must not anchor folding start."""
+        clock_in = datetime(2026, 6, 25, 9, 43, 46)
+        first_comp = datetime(2026, 6, 25, 10, 25, 0)
+        same_bag = "D6TP8N672R"
+        blocks = _compute_folding_blocks(
+            roster_role="folder",
+            clock_in=clock_in,
+            clock_out=datetime(2026, 6, 25, 16, 54, 34),
+            non_folding_scans=[(datetime(2026, 6, 25, 10, 17, 0), same_bag)],
+            fold_completions=[(first_comp, same_bag)],
+            wf_pipeline_scans=[(datetime(2026, 6, 25, 10, 15, 0), same_bag)],
+        )
+        assert len(blocks) == 1
+        assert blocks[0]["start_time"] == clock_in.isoformat()
+        assert blocks[0]["start_source"] == FOLD_BLOCK_START_CLOCK_IN

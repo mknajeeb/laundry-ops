@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, time, timedelta
+from difflib import SequenceMatcher
 from typing import Any, Mapping, Sequence
 
 from backend.ta_helpers import table_exists
@@ -16,6 +17,7 @@ def ensure_daily_shift_roster_table(cursor) -> None:
     if table_exists(cursor, "daily_shift_roster_entries"):
         _ensure_end_time_nullable(cursor)
         _ensure_excluded_column(cursor)
+        _ensure_original_time_columns(cursor)
         return
     cursor.execute(
         """
@@ -27,6 +29,8 @@ def ensure_daily_shift_roster_table(cursor) -> None:
           role VARCHAR(16) NOT NULL DEFAULT 'folder',
           start_time TIME NOT NULL,
           end_time TIME NULL,
+          original_start_time TIME NULL,
+          original_end_time TIME NULL,
           break_minutes INT NOT NULL DEFAULT 0,
           rate DECIMAL(10,2) NOT NULL DEFAULT 0.00,
           notes TEXT NULL,
@@ -65,6 +69,36 @@ def _ensure_excluded_column(cursor) -> None:
         )
     except Exception:
         return
+
+
+def _ensure_original_time_columns(cursor) -> None:
+    for col in ("original_start_time", "original_end_time"):
+        try:
+            cursor.execute(f"SHOW COLUMNS FROM daily_shift_roster_entries LIKE '{col}'")
+            if cursor.fetchone():
+                continue
+            cursor.execute(
+                f"ALTER TABLE daily_shift_roster_entries ADD COLUMN {col} TIME NULL AFTER end_time"
+            )
+        except Exception:
+            return
+
+
+def roster_times_modified(entry: Mapping[str, Any] | None) -> bool:
+    """True when roster start/end differ from the saved original baseline."""
+    if not entry or not isinstance(entry, dict):
+        return False
+    original_start = parse_time_value(entry.get("original_start_time"))
+    if original_start is None:
+        return False
+    current_start = parse_time_value(entry.get("start_time"))
+    current_end = parse_time_value(entry.get("end_time"))
+    original_end = parse_time_value(entry.get("original_end_time"))
+    if current_start != original_start:
+        return True
+    if original_end is not None and current_end != original_end:
+        return True
+    return False
 
 
 def _is_excluded(data: Mapping[str, Any]) -> bool:
@@ -133,7 +167,115 @@ def normalize_role(raw: Any) -> str | None:
 
 
 def normalize_employee_name(raw: Any) -> str:
-    return str(raw or "").strip()
+    name = re.sub(r"\s+", " ", str(raw or "").strip())
+    if not name:
+        return ""
+    tokens = name.split(" ")
+    if len(tokens) >= 2 and len({t.casefold() for t in tokens}) == 1:
+        return tokens[0]
+    if len(tokens) == 2 and tokens[0].casefold() == tokens[1].casefold():
+        return tokens[0]
+    return name
+
+
+def _name_first_token(name: str) -> str:
+    text = str(name or "").strip()
+    if "(" in text:
+        text = text.split("(", 1)[0]
+    tokens = [t for t in re.sub(r"\s+", " ", text).strip().split(" ") if t]
+    return tokens[0].casefold() if tokens else ""
+
+
+def _first_tokens_fuzzy_match(name_a: str, name_b: str, *, min_ratio: float = 0.84) -> bool:
+    a = _name_first_token(name_a)
+    b = _name_first_token(name_b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= min_ratio
+
+
+def _names_match_direct(name_a: str, name_b: str) -> bool:
+    a = normalize_employee_name(name_a).casefold()
+    b = normalize_employee_name(name_b).casefold()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    a_base = a.split("(", 1)[0].strip()
+    b_base = b.split("(", 1)[0].strip()
+    if a_base == b_base:
+        return True
+    if a_base.startswith(b_base) or b_base.startswith(a_base):
+        return True
+    a_first = a_base.split()[0] if a_base.split() else ""
+    b_first = b_base.split()[0] if b_base.split() else ""
+    if a_first and b_first and (a_first == b_first or _first_tokens_fuzzy_match(name_a, name_b)):
+        return True
+    return _first_tokens_fuzzy_match(name_a, name_b)
+
+
+def employee_names_match(
+    name_a: str,
+    name_b: str,
+    *,
+    user_maps: Mapping[str, Mapping[str, Any]] | None = None,
+) -> bool:
+    if _names_match_direct(name_a, name_b):
+        return True
+    if not user_maps:
+        return False
+    for rinse_key, mapping in user_maps.items():
+        if not isinstance(mapping, dict):
+            continue
+        labels = [
+            str(rinse_key or ""),
+            normalize_employee_name(mapping.get("display_name")),
+        ]
+        labels = [label for label in labels if label]
+        if not labels:
+            continue
+        a_hit = any(_names_match_direct(name_a, label) for label in labels)
+        b_hit = any(_names_match_direct(name_b, label) for label in labels)
+        if a_hit and b_hit:
+            return True
+    return False
+
+
+def roster_entry_for_employee_name(
+    employee_name: str,
+    roster_entries: Sequence[Mapping[str, Any]],
+    *,
+    user_maps: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    target = normalize_employee_name(employee_name)
+    if not target:
+        return None
+    for entry in roster_entries or []:
+        if not isinstance(entry, dict) or entry.get("excluded"):
+            continue
+        roster_name = normalize_employee_name(entry.get("employee_name"))
+        if employee_names_match(target, roster_name, user_maps=user_maps):
+            return dict(entry)
+    return None
+
+
+def roster_shift_datetimes(
+    entry: Mapping[str, Any],
+    roster_date: date,
+) -> tuple[datetime | None, datetime | None]:
+    if not isinstance(entry, dict) or entry.get("excluded") or entry.get("shift_open"):
+        return None, None
+    start = parse_time_value(entry.get("start_time"))
+    end = parse_time_value(entry.get("end_time"))
+    if start is None or end is None:
+        return None, None
+    clock_in = datetime.combine(roster_date, start)
+    clock_out = datetime.combine(roster_date, end)
+    if clock_out <= clock_in:
+        clock_out += timedelta(days=1)
+    return clock_in, clock_out
 
 
 def build_roster_role_lookup(entries: Sequence[Mapping[str, Any]]) -> dict[str, str]:
@@ -159,17 +301,9 @@ def resolve_roster_role_for_rinse_user(
     rinse_key = normalize_employee_name(rinse_user_name).casefold()
     if rinse_key in roster_roles_by_name:
         return roster_roles_by_name[rinse_key]
-    mapping = (user_maps or {}).get(rinse_key) or {}
-    display = normalize_employee_name(mapping.get("display_name")).casefold()
-    if display:
-        for roster_name, role in roster_roles_by_name.items():
-            if roster_name.startswith(display) or roster_name.split()[0] == display:
-                return role
-    first_token = rinse_key.split("(")[0].strip()
-    if first_token:
-        for roster_name, role in roster_roles_by_name.items():
-            if roster_name.startswith(first_token) or roster_name.split()[0] == first_token:
-                return role
+    for roster_name, role in roster_roles_by_name.items():
+        if employee_names_match(rinse_user_name, roster_name, user_maps=user_maps):
+            return role
     return None
 
 
@@ -182,12 +316,8 @@ def productivity_for_roster_entry(
     if roster_key in productivity_by_name:
         return dict(productivity_by_name[roster_key])
     for rinse_key, prod in productivity_by_name.items():
-        mapping = (user_maps or {}).get(rinse_key) or {}
-        display = normalize_employee_name(mapping.get("display_name")).casefold()
-        if display and (roster_key.startswith(display) or roster_key.split()[0] == display):
-            return dict(prod)
-        first_token = rinse_key.split("(")[0].strip()
-        if first_token and (roster_key.startswith(first_token) or roster_key.split()[0] == first_token):
+        employee_label = str(prod.get("employee") or rinse_key)
+        if employee_names_match(roster_employee_name, employee_label, user_maps=user_maps):
             return dict(prod)
     return None
 
@@ -238,6 +368,8 @@ def serialize_roster_entry_data(data: Mapping[str, Any]) -> dict[str, Any]:
         "role": role,
         "start_time": _time_to_str(start),
         "end_time": _time_to_str(end) if end else None,
+        "original_start_time": _time_to_str(parse_time_value(data.get("original_start_time"))),
+        "original_end_time": _time_to_str(parse_time_value(data.get("original_end_time"))),
         "break_minutes": break_min,
         "rate": rate,
         "notes": str(data.get("notes") or "").strip() or None,
@@ -246,6 +378,7 @@ def serialize_roster_entry_data(data: Mapping[str, Any]) -> dict[str, Any]:
         "hours": hours,
         "cost": cost,
     }
+    out["times_modified"] = roster_times_modified(out)
     if data.get("id"):
         out["id"] = int(data.get("id") or 0)
     if data.get("organization_id"):
@@ -320,7 +453,8 @@ def list_roster_entries(
     cursor.execute(
         """
         SELECT id, organization_id, roster_date, employee_name, role,
-               start_time, end_time, break_minutes, rate, notes, excluded
+               start_time, end_time, original_start_time, original_end_time,
+               break_minutes, rate, notes, excluded
         FROM daily_shift_roster_entries
         WHERE organization_id = %s AND roster_date = %s
         ORDER BY role ASC, employee_name ASC, start_time ASC, id ASC
@@ -340,7 +474,8 @@ def get_roster_entry(
     cursor.execute(
         """
         SELECT id, organization_id, roster_date, employee_name, role,
-               start_time, end_time, break_minutes, rate, notes, excluded
+               start_time, end_time, original_start_time, original_end_time,
+               break_minutes, rate, notes, excluded
         FROM daily_shift_roster_entries
         WHERE organization_id = %s AND id = %s
         LIMIT 1
@@ -368,14 +503,17 @@ def create_roster_entry(
         """
         INSERT INTO daily_shift_roster_entries (
             organization_id, roster_date, employee_name, role,
-            start_time, end_time, break_minutes, rate, notes, excluded
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            start_time, end_time, original_start_time, original_end_time,
+            break_minutes, rate, notes, excluded
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
             int(organization_id),
             roster_date,
             payload["employee_name"],
             payload["role"],
+            payload["start_time"],
+            payload["end_time"],
             payload["start_time"],
             payload["end_time"],
             payload["break_minutes"],
@@ -413,10 +551,16 @@ def update_roster_entry(
     payload, err = _validate_entry_payload(merged)
     if err:
         return None, err
+    original_start = parse_time_value(existing.get("original_start_time"))
+    original_end = parse_time_value(existing.get("original_end_time"))
+    if original_start is None:
+        original_start = parse_time_value(existing.get("start_time"))
+        original_end = parse_time_value(existing.get("end_time"))
     cursor.execute(
         """
         UPDATE daily_shift_roster_entries
         SET employee_name=%s, role=%s, start_time=%s, end_time=%s,
+            original_start_time=%s, original_end_time=%s,
             break_minutes=%s, rate=%s, notes=%s, excluded=%s
         WHERE organization_id=%s AND id=%s
         """,
@@ -425,6 +569,8 @@ def update_roster_entry(
             payload["role"],
             payload["start_time"],
             payload["end_time"],
+            original_start,
+            original_end,
             payload["break_minutes"],
             payload["rate"],
             payload.get("notes"),
