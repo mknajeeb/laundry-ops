@@ -810,6 +810,25 @@ def run_rinse_combined_sync_for_org(
         conn.commit()
 
 
+def _build_gate_block_operational_log(
+    portal_gate: Mapping[str, Any],
+    scan_events_only_detail: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    merge = (scan_events_only_detail or {}).get("persistent_scan_merge") or {}
+    imported_count = int(merge.get("events_inserted") or 0)
+    scan_batch_id = (scan_events_only_detail or {}).get("batch_id")
+    import_status = (scan_events_only_detail or {}).get("status")
+    import_attempted = scan_events_only_detail is not None
+    return {
+        "portal_confirm_blocked": portal_gate.get("confirm_decision") == "inspect_only",
+        "portal_confirm_block_reason": portal_gate.get("reason"),
+        "scan_events_import_attempted": import_attempted,
+        "scan_events_imported_count": imported_count if import_status == "scan_events_imported" else 0,
+        "scan_events_import_status": import_status,
+        "scan_only_batch_id": scan_batch_id,
+    }
+
+
 def _run_targeted_pending_scan_refresh(
     conn,
     cursor,
@@ -826,6 +845,7 @@ def _run_targeted_pending_scan_refresh(
         off_portal_refresh_dry_run,
         off_portal_refresh_enabled,
         off_portal_refresh_rush_only,
+        off_portal_refresh_scheduled_timeout_sec,
         refresh_pending_workload_scans_via_direct_lookup,
     )
     from backend.rinse_shift_monitor_baseline import (
@@ -851,6 +871,9 @@ def _run_targeted_pending_scan_refresh(
 
     try:
         refresh_dry = off_portal_refresh_dry_run() if run_type == "scheduled" else False
+        refresh_timeout = (
+            off_portal_refresh_scheduled_timeout_sec() if run_type == "scheduled" else None
+        )
         baseline_ctx = build_baseline_context(
             cursor, org_id, get_shift_monitor_baseline(cursor, org_id)
         )
@@ -863,6 +886,7 @@ def _run_targeted_pending_scan_refresh(
             dry_run=refresh_dry,
             rush_only=off_portal_refresh_rush_only(),
             log_fn=lambda msg: log.write(msg + "\n"),
+            timeout_sec=refresh_timeout,
         )
         if not refresh_dry:
             conn.commit()
@@ -1121,7 +1145,16 @@ def run_scheduled_scrape_for_org(
                     "portal_confirm_gate": portal_gate,
                     "sync_warning": gate_warning,
                     "scan_events_only_import": scan_events_only_detail,
+                    **_build_gate_block_operational_log(portal_gate, scan_events_only_detail),
                 }
+                log.write(
+                    "Operational: "
+                    f"portal_confirm_blocked={result.detail.get('portal_confirm_blocked')} "
+                    f"scan_events_import_attempted={result.detail.get('scan_events_import_attempted')} "
+                    f"scan_events_imported_count={result.detail.get('scan_events_imported_count')} "
+                    f"scan_only_batch_id={result.detail.get('scan_only_batch_id')} "
+                    f"portal_confirm_block_reason={result.detail.get('portal_confirm_block_reason')}\n"
+                )
                 if targeted_pending_refresh_detail is not None:
                     result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
                 conn.commit()

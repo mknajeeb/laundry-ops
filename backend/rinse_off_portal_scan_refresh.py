@@ -62,6 +62,21 @@ def off_portal_refresh_timeout_sec() -> int:
         return 3600
 
 
+def off_portal_refresh_scheduled_timeout_sec() -> int:
+    """Shorter cap for targeted refresh during scheduled scrape (non-blocking)."""
+    try:
+        return max(60, int(os.getenv("RINSE_OFF_PORTAL_SCAN_REFRESH_SCHEDULED_TIMEOUT_SEC", "300") or 300))
+    except (TypeError, ValueError):
+        return 300
+
+
+def off_portal_refresh_chunk_size() -> int:
+    try:
+        return max(1, int(os.getenv("RINSE_OFF_PORTAL_SCAN_REFRESH_CHUNK_SIZE", "8") or 8))
+    except (TypeError, ValueError):
+        return 8
+
+
 def off_portal_refresh_rush_only() -> bool:
     return _env_flag("RINSE_OFF_PORTAL_SCAN_REFRESH_RUSH_ONLY", default=False)
 
@@ -175,34 +190,73 @@ def run_targeted_portal_scrape(
     *,
     organization_id: int | None = None,
     timeout_sec: int | None = None,
+    chunk_size: int | None = None,
 ) -> dict[str, Any]:
     ids = sorted({str(b or "").strip().upper() for b in bag_ids if str(b or "").strip()})
     if not ids:
-        return {"bags": []}
+        return {"bags": [], "lookup_failed_bag_ids": [], "timed_out_bag_ids": []}
     if not TARGETED_SCRAPE_SCRIPT.is_file():
         raise RuntimeError(f"Missing targeted scrape script: {TARGETED_SCRAPE_SCRIPT}")
+
     env = {**dict(os.environ)}
     if organization_id is not None:
         env.update(_scraper_env_for_org(organization_id))
-    timeout = timeout_sec if timeout_sec is not None else off_portal_refresh_timeout_sec()
-    proc = subprocess.run(
-        ["node", str(TARGETED_SCRAPE_SCRIPT), *ids],
-        cwd=str(TARGETED_SCRAPE_SCRIPT.parent),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"Targeted portal scrape failed rc={proc.returncode}\n"
-            f"stderr={proc.stderr[-2000:]}\nstdout={proc.stdout[-2000:]}"
-        )
-    raw = proc.stdout.strip()
-    start = raw.find("{")
-    if start < 0:
-        raise RuntimeError(f"No JSON in targeted scrape output: {raw[-500:]}")
-    return json.loads(raw[start:])
+
+    total_timeout = timeout_sec if timeout_sec is not None else off_portal_refresh_timeout_sec()
+    chunk_n = chunk_size if chunk_size is not None else off_portal_refresh_chunk_size()
+    chunks: list[list[str]] = [ids[i : i + chunk_n] for i in range(0, len(ids), chunk_n)]
+    per_chunk_timeout = max(60, total_timeout // max(1, len(chunks)))
+
+    all_bags: list[dict[str, Any]] = []
+    lookup_failed_bag_ids: list[str] = []
+    timed_out_bag_ids: list[str] = []
+
+    for chunk in chunks:
+        try:
+            proc = subprocess.run(
+                ["node", str(TARGETED_SCRAPE_SCRIPT), *chunk],
+                cwd=str(TARGETED_SCRAPE_SCRIPT.parent),
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=per_chunk_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            timed_out_bag_ids.extend(chunk)
+            lookup_failed_bag_ids.extend(chunk)
+            continue
+        if proc.returncode != 0:
+            lookup_failed_bag_ids.extend(chunk)
+            continue
+        raw = proc.stdout.strip()
+        start = raw.find("{")
+        if start < 0:
+            lookup_failed_bag_ids.extend(chunk)
+            continue
+        try:
+            payload = json.loads(raw[start:])
+        except json.JSONDecodeError:
+            lookup_failed_bag_ids.extend(chunk)
+            continue
+        chunk_bags = payload.get("bags") if isinstance(payload, dict) else None
+        if not isinstance(chunk_bags, list):
+            lookup_failed_bag_ids.extend(chunk)
+            continue
+        for bag in chunk_bags:
+            if isinstance(bag, dict):
+                all_bags.append(bag)
+                bid = str(bag.get("bag_id") or "").strip().upper()
+                if bid and not bag.get("found", True) and bag.get("scans") in (None, []):
+                    if bid not in lookup_failed_bag_ids:
+                        lookup_failed_bag_ids.append(bid)
+
+    return {
+        "bags": all_bags,
+        "lookup_failed_bag_ids": sorted(set(lookup_failed_bag_ids)),
+        "timed_out_bag_ids": sorted(set(timed_out_bag_ids)),
+        "chunks_processed": len(chunks),
+        "per_chunk_timeout_sec": per_chunk_timeout,
+    }
 
 
 def _load_db_scan_keys(cursor, organization_id: int, bag_id: str) -> tuple[set[str], set[tuple[str, ...]]]:
@@ -625,6 +679,7 @@ def refresh_off_portal_pending_scans(
     rush_only: bool | None = None,
     target_scope: str = "off_portal",
     log_fn: Callable[[str], None] | None = None,
+    timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     """Direct ?q=BAGID refresh. target_scope=not_in_latest_crawl includes on-portal pending bags missing from crawl."""
     from backend.rinse_bag_registry import merge_scan_events_from_upload
@@ -684,10 +739,15 @@ def refresh_off_portal_pending_scans(
             "bags": [],
         }
 
-    portal = run_targeted_portal_scrape(targets, organization_id=org)
+    portal = run_targeted_portal_scrape(
+        targets, organization_id=org, timeout_sec=timeout_sec
+    )
     portal_by_bag = {
         str(b.get("bag_id") or "").strip().upper(): b for b in portal.get("bags") or [] if b.get("bag_id")
     }
+    lookup_failed_bag_ids = sorted(set(portal.get("lookup_failed_bag_ids") or []))
+    timed_out_bag_ids = sorted(set(portal.get("timed_out_bag_ids") or []))
+    scrape_failed_set = set(lookup_failed_bag_ids)
 
     av = build_at_vendor_module(
         cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
@@ -705,12 +765,27 @@ def refresh_off_portal_pending_scans(
     total_inserted = 0
     total_present = 0
     total_skipped = 0
-    lookup_failed = 0
-    lookup_failed_bag_ids: list[str] = []
+    lookup_failed = len(lookup_failed_bag_ids)
     bag_reports: list[dict[str, Any]] = []
     any_imported = False
 
     for bid in targets:
+        if bid in scrape_failed_set:
+            bag_reports.append(
+                {
+                    "bag_id": bid,
+                    "lookup_ok": False,
+                    "direct_lookup_success": False,
+                    "status_before": rows_by_bag.get(bid, {}).get("at_vendor_status"),
+                    "missing_scans_imported": 0,
+                    "error": "timeout" if bid in timed_out_bag_ids else "targeted_scrape_failed",
+                }
+            )
+            _log(
+                f"targeted refresh skip {bid}: "
+                f"{'timeout' if bid in timed_out_bag_ids else 'direct lookup failed'}"
+            )
+            continue
         module_row = rows_by_bag.get(bid) or {}
         on_portal = bool(on_portal_map.get(bid))
         in_latest_crawl = (
@@ -839,6 +914,7 @@ def refresh_off_portal_pending_scans(
         "events_skipped_no_time": total_skipped,
         "lookup_failed": lookup_failed,
         "lookup_failed_bag_ids": lookup_failed_bag_ids,
+        "timed_out_bag_ids": timed_out_bag_ids,
         "bags": bag_reports,
     }
 
@@ -855,6 +931,7 @@ def refresh_pending_workload_scans_via_direct_lookup(
     max_bags: int | None = None,
     rush_only: bool = False,
     log_fn: Callable[[str], None] | None = None,
+    timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     """Targeted ?q=BAGID refresh for pending workload bags not in the latest portal crawl."""
     return refresh_off_portal_pending_scans(
@@ -869,4 +946,5 @@ def refresh_pending_workload_scans_via_direct_lookup(
         rush_only=rush_only,
         target_scope="not_in_latest_crawl",
         log_fn=log_fn,
+        timeout_sec=timeout_sec,
     )
