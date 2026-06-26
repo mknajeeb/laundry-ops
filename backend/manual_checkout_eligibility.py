@@ -262,7 +262,7 @@ def classify_at_vendor_checkout_row(
     if not tid:
         raise ValueError("classify_at_vendor_checkout_row requires ticket_id")
 
-    if was_completed_before_upload:
+    if was_completed_before_upload and row_date_before_batch:
         return ROW_REJECTED, REASON_ALREADY_COMPLETED
 
     if row_date_before_batch:
