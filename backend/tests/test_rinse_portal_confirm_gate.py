@@ -204,12 +204,30 @@ class TestScheduledScrapePortalGateIntegration:
                 p.stop()
 
     def test_scheduled_gate_blocks_empty_si_scrape(self, scrape_paths):
-        result = self._run_with_portal_rows(scrape_paths, [_row()])
+        from unittest.mock import patch
+
+        scan_import_payload = {
+            "status": "scan_events_imported",
+            "scan_rows": 5,
+            "batch_id": 501,
+            "persistent_scan_merge": {"events_inserted": 12, "bags_merged": 4},
+        }
+        with patch(
+            "backend.rinse_scheduled_scrape._import_scan_events_when_portal_gate_blocked",
+            return_value=scan_import_payload,
+        ) as mock_scan_import, patch(
+            "backend.rinse_scheduled_scrape._run_targeted_pending_scan_refresh",
+            return_value={"targeted_refresh_ran": False},
+        ):
+            result = self._run_with_portal_rows(scrape_paths, [_row()])
+        mock_scan_import.assert_called_once()
         assert result.status == "inspect_only"
-        assert result.batch_id is None
+        assert result.batch_id == 501
+        assert result.scan_events_count == 5
         gate = (result.detail or {}).get("portal_confirm_gate") or {}
         assert gate.get("confirm_decision") == "inspect_only"
         assert result.detail.get("sync_warning") == GATE_FAILURE_REASON
+        assert (result.detail.get("scan_events_only_import") or {}).get("status") == "scan_events_imported"
 
     def test_scheduled_gate_allows_clean_si_scrape(self, scrape_paths):
         result = self._run_with_portal_rows(scrape_paths, [_row(si="USE OXICLEAN")])

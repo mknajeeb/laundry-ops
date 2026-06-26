@@ -606,6 +606,76 @@ def commit_draft_upload_batch_from_orders_df(
     }
 
 
+def commit_scheduled_scan_events_only(
+    conn,
+    cursor,
+    tenant_oid: int,
+    batch_date: date,
+    events_filename: str,
+    events_df: pd.DataFrame,
+) -> dict[str, Any]:
+    """
+    Persist scheduled scan-events export when portal ACA gate blocks portal upload.
+
+    Keeps rinse_bag_scan_events current so Shift Monitor completions/productivity
+    do not stall when the portal CSV lacks credible supply SI/flags.
+    """
+    from backend.rinse_bag_registry import merge_scan_events_from_upload, recompute_completion_for_bags
+    from backend.rinse_scan_events_upload import commit_scan_events_for_batch
+
+    schema = get_upload_batch_schema(cursor)
+    shell_name = f"scheduled-scan-events-only + {events_filename}"
+    upload_batch_id = create_draft_upload_batch_shell(
+        cursor, tenant_oid, batch_date, shell_name, schema
+    )
+
+    batch_events_payload = commit_scan_events_for_batch(
+        cursor,
+        tenant_oid,
+        upload_batch_id,
+        events_df,
+        events_filename,
+        replace_existing=True,
+    )
+
+    persistent_merge_payload: dict[str, Any] = {}
+    if not events_df.empty:
+        persistent_merge_payload = merge_scan_events_from_upload(
+            cursor,
+            tenant_oid,
+            upload_batch_id,
+            events_df,
+            events_filename,
+            replace_existing=True,
+            credential_sourced=True,
+        )
+        bag_ids = list(persistent_merge_payload.get("bag_ids") or [])
+        if bag_ids:
+            recompute_completion_for_bags(cursor, tenant_oid, bag_ids)
+
+    if schema.has_state:
+        set_parts = ["state = 'CONFIRMED'", "confirmed_at = NOW()", "orders_loaded = 0"]
+        if schema.has_rows_inserted:
+            set_parts.append("rows_inserted = 0")
+        cursor.execute(
+            f"""
+            UPDATE upload_batches
+            SET {", ".join(set_parts)}
+            WHERE batch_id = %s
+            """,
+            (int(upload_batch_id),),
+        )
+
+    conn.commit()
+    return {
+        "status": "scan_events_only",
+        "source": "scheduled_scan_events_only",
+        "batch_id": upload_batch_id,
+        "scan_events_batch": batch_events_payload,
+        "persistent_scan_merge": persistent_merge_payload,
+    }
+
+
 def commit_rinse_combined_upload(
     conn,
     cursor,

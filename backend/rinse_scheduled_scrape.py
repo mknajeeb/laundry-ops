@@ -810,6 +810,136 @@ def run_rinse_combined_sync_for_org(
         conn.commit()
 
 
+def _run_targeted_pending_scan_refresh(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    upload_batch_id: int | None,
+    batch_date: date,
+    run_type: str,
+    targeted_pending_refresh: bool | None,
+    log,
+) -> dict[str, Any] | None:
+    from backend.rinse_off_portal_scan_refresh import (
+        build_targeted_refresh_sync_summary,
+        off_portal_refresh_dry_run,
+        off_portal_refresh_enabled,
+        off_portal_refresh_rush_only,
+        refresh_pending_workload_scans_via_direct_lookup,
+    )
+    from backend.rinse_shift_monitor_baseline import (
+        build_baseline_context,
+        get_shift_monitor_baseline,
+    )
+
+    refresh_enabled = off_portal_refresh_enabled()
+    run_targeted = (
+        targeted_pending_refresh
+        if targeted_pending_refresh is not None
+        else (run_type == "manual" or refresh_enabled)
+    )
+    if not run_targeted:
+        log.write(
+            "Targeted pending scan refresh skipped "
+            "(RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0)\n"
+        )
+        return build_targeted_refresh_sync_summary(
+            None,
+            skipped_reason="RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0",
+        )
+
+    try:
+        refresh_dry = off_portal_refresh_dry_run() if run_type == "scheduled" else False
+        baseline_ctx = build_baseline_context(
+            cursor, org_id, get_shift_monitor_baseline(cursor, org_id)
+        )
+        raw_refresh = refresh_pending_workload_scans_via_direct_lookup(
+            cursor,
+            org_id,
+            upload_batch_id=upload_batch_id,
+            selected_date_et=batch_date,
+            baseline_ctx=baseline_ctx,
+            dry_run=refresh_dry,
+            rush_only=off_portal_refresh_rush_only(),
+            log_fn=lambda msg: log.write(msg + "\n"),
+        )
+        if not refresh_dry:
+            conn.commit()
+        summary = build_targeted_refresh_sync_summary(raw_refresh)
+        log.write(
+            "Targeted pending scan refresh: "
+            f"considered={summary.get('targeted_bags_considered')} "
+            f"refreshed={summary.get('targeted_bags_refreshed')} "
+            f"inserted={summary.get('missing_scans_imported')} "
+            f"completed={summary.get('bags_completed_after_refresh')} "
+            f"lookup_failed={summary.get('lookup_failures')} "
+            f"dry_run={refresh_dry}\n"
+        )
+        return summary
+    except Exception as refresh_exc:
+        conn.rollback()
+        log.write(f"Targeted pending scan refresh ERROR (non-fatal): {refresh_exc}\n")
+        return build_targeted_refresh_sync_summary({"error": str(refresh_exc)})
+
+
+def _import_scan_events_when_portal_gate_blocked(
+    conn,
+    cursor,
+    *,
+    org_id: int,
+    paths: ScrapePaths,
+    scan_script: Path,
+    env: dict[str, str],
+    log,
+    batch_date: date,
+) -> dict[str, Any] | None:
+    """Run scan-events scrape and merge into persistent storage despite ACA gate block."""
+    if _run_bash_script(scan_script, env, log) != 0:
+        log.write("Scan-events scrape failed during inspect_only recovery path\n")
+        return {"status": "scan_events_scrape_failed"}
+
+    scan_rows = count_csv_data_rows(paths.scan_events_csv)
+    log.write(f"Scan-events scrape (inspect_only path): rows={scan_rows}\n")
+    if scan_rows < 1:
+        log.write("Scan-events CSV empty during inspect_only recovery path\n")
+        return {"status": "scan_events_csv_empty", "scan_rows": scan_rows}
+
+    from backend.rinse_combined_upload import commit_scheduled_scan_events_only
+    from backend.rinse_scan_events_upload import parse_scan_events_csv
+
+    events_name = f"scheduled-rinse-events-{_stamp_et()}.csv"
+    events_df, warnings = parse_scan_events_csv(str(paths.scan_events_csv))
+    if events_df.empty:
+        log.write("Scan-events CSV parsed to zero rows during inspect_only recovery path\n")
+        return {
+            "status": "scan_events_parse_empty",
+            "scan_rows": scan_rows,
+            "warnings": warnings,
+        }
+
+    payload = commit_scheduled_scan_events_only(
+        conn,
+        cursor,
+        org_id,
+        batch_date,
+        events_name,
+        events_df,
+    )
+    log.write(
+        "Scan-events-only import during inspect_only: "
+        f"batch_id={payload.get('batch_id')} "
+        f"events_inserted={(payload.get('persistent_scan_merge') or {}).get('events_inserted')} "
+        f"bags_merged={(payload.get('persistent_scan_merge') or {}).get('bags_merged')}\n"
+    )
+    return {
+        "status": "scan_events_imported",
+        "scan_rows": scan_rows,
+        "warnings": warnings,
+        **payload,
+    }
+
+
 def run_scheduled_scrape_for_org(
     conn,
     organization_id: int,
@@ -949,10 +1079,51 @@ def run_scheduled_scrape_for_org(
                 result.status = "inspect_only"
                 result.at_vendor_status = "inspect_only"
                 result.error_message = gate_warning
+                scan_events_only_detail: dict[str, Any] | None = None
+                targeted_pending_refresh_detail: dict[str, Any] | None = None
+                batch_date = _today_et()
+
+                if not dry_run:
+                    scan_events_only_detail = _import_scan_events_when_portal_gate_blocked(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        paths=paths,
+                        scan_script=scan_script,
+                        env=env,
+                        log=log,
+                        batch_date=batch_date,
+                    )
+                    if scan_events_only_detail:
+                        result.scan_events_count = int(
+                            scan_events_only_detail.get("scan_rows")
+                            or (scan_events_only_detail.get("scan_events_batch") or {}).get(
+                                "rows_inserted"
+                            )
+                            or 0
+                        )
+                        scan_batch_id = scan_events_only_detail.get("batch_id")
+                        if scan_batch_id:
+                            result.batch_id = int(scan_batch_id)
+
+                    targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
+                        conn,
+                        cursor,
+                        org_id=org_id,
+                        upload_batch_id=result.batch_id,
+                        batch_date=batch_date,
+                        run_type=run_type,
+                        targeted_pending_refresh=targeted_pending_refresh,
+                        log=log,
+                    )
+
                 result.detail = {
                     "portal_confirm_gate": portal_gate,
                     "sync_warning": gate_warning,
+                    "scan_events_only_import": scan_events_only_detail,
                 }
+                if targeted_pending_refresh_detail is not None:
+                    result.detail["targeted_pending_scan_refresh"] = targeted_pending_refresh_detail
                 conn.commit()
                 return result
 
@@ -1043,73 +1214,17 @@ def run_scheduled_scrape_for_org(
 
             off_portal_refresh_detail: dict[str, Any] | None = None
             targeted_pending_refresh_detail: dict[str, Any] | None = None
-            from backend.rinse_off_portal_scan_refresh import (
-                build_targeted_refresh_sync_summary,
-                off_portal_refresh_dry_run,
-                off_portal_refresh_enabled,
-                off_portal_refresh_rush_only,
-                refresh_pending_workload_scans_via_direct_lookup,
-            )
-
-            refresh_enabled = off_portal_refresh_enabled()
-            run_targeted = (
-                targeted_pending_refresh
-                if targeted_pending_refresh is not None
-                else (run_type == "manual" or refresh_enabled)
-            )
             if not dry_run and batch_id and final_status in ("success", "needs_attention"):
-                from backend.rinse_shift_monitor_baseline import (
-                    build_baseline_context,
-                    get_shift_monitor_baseline,
+                targeted_pending_refresh_detail = _run_targeted_pending_scan_refresh(
+                    conn,
+                    cursor,
+                    org_id=org_id,
+                    upload_batch_id=int(batch_id),
+                    batch_date=batch_date,
+                    run_type=run_type,
+                    targeted_pending_refresh=targeted_pending_refresh,
+                    log=log,
                 )
-
-                baseline_ctx = build_baseline_context(
-                    cursor, org_id, get_shift_monitor_baseline(cursor, org_id)
-                )
-                if run_targeted:
-                    try:
-                        refresh_dry = (
-                            off_portal_refresh_dry_run() if run_type == "scheduled" else False
-                        )
-                        raw_refresh = refresh_pending_workload_scans_via_direct_lookup(
-                            cursor,
-                            org_id,
-                            upload_batch_id=int(batch_id),
-                            selected_date_et=batch_date,
-                            baseline_ctx=baseline_ctx,
-                            dry_run=refresh_dry,
-                            rush_only=off_portal_refresh_rush_only(),
-                            log_fn=lambda msg: log.write(msg + "\n"),
-                        )
-                        if not refresh_dry:
-                            conn.commit()
-                        targeted_pending_refresh_detail = build_targeted_refresh_sync_summary(
-                            raw_refresh
-                        )
-                        log.write(
-                            "Targeted pending scan refresh: "
-                            f"considered={targeted_pending_refresh_detail.get('targeted_bags_considered')} "
-                            f"refreshed={targeted_pending_refresh_detail.get('targeted_bags_refreshed')} "
-                            f"inserted={targeted_pending_refresh_detail.get('missing_scans_imported')} "
-                            f"completed={targeted_pending_refresh_detail.get('bags_completed_after_refresh')} "
-                            f"lookup_failed={targeted_pending_refresh_detail.get('lookup_failures')} "
-                            f"dry_run={refresh_dry}\n"
-                        )
-                    except Exception as refresh_exc:
-                        conn.rollback()
-                        log.write(f"Targeted pending scan refresh ERROR (non-fatal): {refresh_exc}\n")
-                        targeted_pending_refresh_detail = build_targeted_refresh_sync_summary(
-                            {"error": str(refresh_exc)}
-                        )
-                else:
-                    targeted_pending_refresh_detail = build_targeted_refresh_sync_summary(
-                        None,
-                        skipped_reason="RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0",
-                    )
-                    log.write(
-                        "Targeted pending scan refresh skipped "
-                        "(RINSE_OFF_PORTAL_SCAN_REFRESH_ENABLED=0)\n"
-                    )
 
             result.status = final_status
             result.at_vendor_status = final_status
