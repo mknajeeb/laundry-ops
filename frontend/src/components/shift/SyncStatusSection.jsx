@@ -97,6 +97,11 @@ export default function SyncStatusSection({
   const cycleWarn =
     !misleadingCronSkip &&
     (cycle.cycle_status === "failed" || cycle.cycle_status === "partial_success");
+  const inspectOnlyWarn =
+    cycle.cycle_status === "inspect_only" || Boolean(cycle.sync_warning || cycle.failure_message?.includes("no credible supply"));
+  const gateWarning =
+    cycle.sync_warning
+    || (inspectOnlyWarn ? cycle.failure_message : null);
   const avScanRows = avSync?.scan_events_count ?? avSync?.freshness?.scan_events_count;
   const avPortalRows = avSync?.rows_found ?? avSync?.freshness?.rows_found;
   const avBatchId = avSync?.imported_batch_id ?? avSync?.freshness?.imported_batch_id;
@@ -147,6 +152,11 @@ export default function SyncStatusSection({
         </Box>
       </Box>
       <Collapse in={open}>
+        {gateWarning ? (
+          <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
+            {gateWarning}
+          </Alert>
+        ) : null}
         {cycleWarn ? (
           <Alert severity="warning" sx={{ mb: 1, py: 0.5 }}>
             Cycle status: {cycle.cycle_status || "unknown"}

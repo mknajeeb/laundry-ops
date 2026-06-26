@@ -41,6 +41,16 @@ def scheduled_scrape_enabled() -> bool:
     return _truthy(os.getenv("RINSE_SCHEDULED_SCRAPE_ENABLED"))
 
 
+def portal_auto_confirm_force_enabled() -> bool:
+    return _truthy(os.getenv("RINSE_PORTAL_AUTO_CONFIRM_FORCE"))
+
+
+def _resolve_force_portal_confirm(explicit: bool | None) -> bool:
+    if explicit is not None:
+        return bool(explicit)
+    return portal_auto_confirm_force_enabled()
+
+
 def parse_scheduled_org_ids() -> list[int]:
     """
     Comma/semicolon-separated organization IDs to process sequentially each run.
@@ -385,6 +395,8 @@ def _resolve_combined_cycle_status(
         return "AT_VENDOR_IMPORT_FAILED"
     if import_status == "needs_attention":
         return "needs_attention"
+    if import_status == "inspect_only":
+        return "inspect_only"
     if import_status in ("success", "dry_run"):
         return "success"
     return str(import_status or "failed")
@@ -810,6 +822,7 @@ def run_scheduled_scrape_for_org(
     combined_cycle: _CombinedCycleContext | None = None,
     av_presence_detail: dict[str, Any] | None = None,
     targeted_pending_refresh: bool | None = None,
+    force_portal_confirm: bool | None = None,
 ) -> ScheduledScrapeResult:
     """
     At Vendor bag-detail CSV scrape + scan import.
@@ -911,12 +924,42 @@ def run_scheduled_scrape_for_org(
             if not paths.portal_csv.is_file() or count_csv_data_rows(paths.portal_csv) < 1:
                 raise RuntimeError("Portal CSV missing or empty after scrape")
 
+            from backend.rinse_portal_confirm_gate import evaluate_portal_confirm_gate
+
+            force_confirm = _resolve_force_portal_confirm(force_portal_confirm)
+            portal_gate = evaluate_portal_confirm_gate(
+                paths.portal_csv, force_confirm=force_confirm
+            )
+            portal_rows = int(portal_gate.get("total_rows") or count_csv_data_rows(paths.portal_csv))
+            result.portal_rows_count = portal_rows
+            log.write(
+                "Portal confirm gate: "
+                f"decision={portal_gate.get('confirm_decision')} "
+                f"reason={portal_gate.get('reason')} "
+                f"clean_si={portal_gate.get('rows_with_clean_si')} "
+                f"credible_flags={portal_gate.get('rows_with_credible_flags')} "
+                f"template_flags={portal_gate.get('rows_with_template_like_flags')}\n"
+            )
+            if portal_gate.get("force_override"):
+                log.write(f"WARNING: {portal_gate.get('warning')}\n")
+
+            if not portal_gate.get("should_create_batch"):
+                gate_warning = portal_gate.get("warning") or portal_gate.get("reason")
+                log.write(f"{gate_warning}\n")
+                result.status = "inspect_only"
+                result.at_vendor_status = "inspect_only"
+                result.error_message = gate_warning
+                result.detail = {
+                    "portal_confirm_gate": portal_gate,
+                    "sync_warning": gate_warning,
+                }
+                conn.commit()
+                return result
+
             if _run_bash_script(scan_script, env, log) != 0:
                 raise RuntimeError("Scan-events scrape subprocess failed")
 
-            portal_rows = count_csv_data_rows(paths.portal_csv)
             scan_rows = count_csv_data_rows(paths.scan_events_csv)
-            result.portal_rows_count = portal_rows
             result.scan_events_count = scan_rows
 
             if scan_rows < 1:
@@ -954,12 +997,18 @@ def run_scheduled_scrape_for_org(
                 log.write(
                     "WARNING: portal scrape hit max pages — "
                     "MISSING_FROM_LATEST_PORTAL_UPLOAD will be skipped on confirm\n"
+                    "(rejected rule applies only on full portal snapshots)\n"
                 )
             batch_id = int(draft_payload["batch_id"])
             result.batch_id = batch_id
             log.write(f"Draft batch_id={batch_id} rows_inserted={draft_payload.get('rows_inserted')}\n")
 
             accepted = _count_accepted_rows(cursor, batch_id)
+            from backend.manual_checkout_eligibility import (
+                resolve_stale_portal_attention_rows_before_confirm,
+            )
+
+            resolve_stale_portal_attention_rows_before_confirm(cursor, org_id, batch_id)
             attention = _count_attention_rows(cursor, batch_id)
 
             if accepted < 1:
@@ -1070,7 +1119,10 @@ def run_scheduled_scrape_for_org(
                 "warnings": warnings,
                 "attention_count": attention,
                 "accepted_count": accepted,
+                "portal_confirm_gate": portal_gate,
             }
+            if portal_gate.get("force_override"):
+                result.detail["sync_warning"] = portal_gate.get("warning")
             if off_portal_refresh_detail is not None:
                 result.detail["off_portal_scan_refresh"] = off_portal_refresh_detail
             if targeted_pending_refresh_detail is not None:

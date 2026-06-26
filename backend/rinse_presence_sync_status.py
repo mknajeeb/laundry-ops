@@ -760,4 +760,10 @@ def build_rinse_sync_cycle_status(cursor, organization_id: int) -> dict[str, Any
                 cycle[key] = targeted[key]
         if isinstance(row.get("finished_at"), datetime):
             cycle["targeted_refresh_completed_at_et"] = _short_time_et(row.get("finished_at"))
+    sync_warning = detail.get("sync_warning")
+    if sync_warning:
+        cycle["sync_warning"] = sync_warning
+    portal_gate = detail.get("portal_confirm_gate")
+    if isinstance(portal_gate, dict):
+        cycle["portal_confirm_gate"] = portal_gate
     return cycle

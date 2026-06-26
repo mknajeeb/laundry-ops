@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from backend.rinse_presence_scrape import PresenceScrapeResult, ready_for_vendor_scrape_enabled
 from backend.rinse_scheduled_scrape import _combine_scheduled_status
 from backend.rinse_cleaner_ticket_presence import PORTAL_STATUS_AT_VENDOR, PORTAL_STATUS_READY, apply_presence_scrape
+from backend.tests.portal_csv_gate_fixtures import write_gate_passing_portal_csv
 
 
 class TestCombineScheduledStatus:
@@ -254,7 +255,7 @@ class TestScheduledScrapeRunsBoth:
             log_path=run_dir / "log",
         )
         mock_paths.return_value = p
-        p.portal_csv.write_text("h\n1\n")
+        write_gate_passing_portal_csv(p.portal_csv)
         p.scan_events_csv.write_text("h\n1\n")
 
         call_order: list[str] = []
@@ -345,7 +346,7 @@ class TestScheduledScrapeRunsBoth:
             log_path=run_dir / "log",
         )
         mock_paths.return_value = p
-        p.portal_csv.write_text("h\n1\n")
+        write_gate_passing_portal_csv(p.portal_csv)
         p.scan_events_csv.write_text("h\n1\n")
 
         mock_rfv.return_value = PresenceScrapeResult(
@@ -722,7 +723,7 @@ class TestAtVendorOnlyDoesNotRunRfv:
             log_path=run_dir / "log",
         )
         mock_paths.return_value = p
-        p.portal_csv.write_text("h\n1\n")
+        write_gate_passing_portal_csv(p.portal_csv)
         p.scan_events_csv.write_text("h\n1\n")
 
         conn = MagicMock()

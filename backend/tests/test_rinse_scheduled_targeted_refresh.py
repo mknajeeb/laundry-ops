@@ -1,11 +1,11 @@
 """Scheduled ACA sync runs targeted pending refresh when env enabled."""
 
-from __future__ import annotations
-
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+
+from backend.tests.portal_csv_gate_fixtures import write_gate_passing_portal_csv
 
 
 def _run_scheduled_with_mocks(*, refresh_side_effect=None, refresh_return=None):
@@ -21,7 +21,7 @@ def _run_scheduled_with_mocks(*, refresh_side_effect=None, refresh_return=None):
         scan_events_csv=run_dir / "e.csv",
         log_path=run_dir / "log",
     )
-    paths.portal_csv.write_text("h\n1\n")
+    write_gate_passing_portal_csv(paths.portal_csv)
     paths.scan_events_csv.write_text("h\n1\n")
 
     conn = MagicMock()
