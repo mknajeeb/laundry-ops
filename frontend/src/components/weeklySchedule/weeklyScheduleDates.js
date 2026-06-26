@@ -21,3 +21,9 @@ export function formatWeekRange(weekStart) {
     dt.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   return `${fmt(start)} – ${fmt(end)}`;
 }
+
+export function formatDayDate(weekStart, dayOfWeek) {
+  const d = new Date(`${weekStart}T12:00:00`);
+  d.setDate(d.getDate() + Number(dayOfWeek));
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
