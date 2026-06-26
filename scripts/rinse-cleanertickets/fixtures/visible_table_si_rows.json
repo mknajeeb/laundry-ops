@@ -1,0 +1,49 @@
+{
+  "table_headers": [
+    "",
+    "Estd. Delivery",
+    "Customer",
+    "# L/DC",
+    "# WF LBS",
+    "# WF ITEMS",
+    "# HD",
+    "# R",
+    "Special Instructions",
+    "Assembled",
+    "Bagged"
+  ],
+  "rows": [
+    {
+      "bag_id": "5I16QGWDZ5",
+      "customer": "Sofia Sam 0",
+      "visible_table_special_instructions": "USE FABRIC SOFTENER\nUSE OXICLEAN",
+      "expanded_detail_special_instructions": "VENDOR NOTES\nWash and Fold\nVendor Price: $1.50",
+      "expected_final_special_instructions": "USE FABRIC SOFTENER\nUSE OXICLEAN",
+      "expected_flags": {
+        "USE_FAB": "X",
+        "USE_OXIC": "X"
+      }
+    },
+    {
+      "bag_id": "10DXTFBXFC",
+      "customer": "Ankur Vashi 0",
+      "visible_table_special_instructions": "USE OXICLEAN\nUse Hypoallergenic Soap\nPlease ensure accurate pairing of socks.",
+      "expanded_detail_special_instructions": "",
+      "expected_final_special_instructions": "USE OXICLEAN\nUse Hypoallergenic Soap\nPlease ensure accurate pairing of socks.",
+      "expected_flags": {
+        "USE_OXIC": "X",
+        "Use_Hypo": "X"
+      }
+    },
+    {
+      "bag_id": "BLSFEW5N1S",
+      "customer": "Julie Nelson",
+      "visible_table_special_instructions": "",
+      "expanded_detail_special_instructions": "Low dry heat only",
+      "expected_final_special_instructions": "Low dry heat only",
+      "expected_flags": {
+        "Low_DRY": "X"
+      }
+    }
+  ]
+}

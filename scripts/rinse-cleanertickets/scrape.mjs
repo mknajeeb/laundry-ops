@@ -1160,6 +1160,175 @@ function finalizePortalHd({ rawFourth, combined, serviceType }) {
   return "NA";
 }
 
+/** Preserve intentional line breaks from a table cell (br / innerText newlines). */
+function normalizeCellMultilineText(raw) {
+  return String(raw || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function isVendorCatalogPollution(text) {
+  const u = String(text || "").trim();
+  if (!u) return false;
+  if (/^vendor\s+notes/i.test(u)) return true;
+  return /\b(VENDOR NOTES|VENDOR PRICE|WASH AND FOLD|HANG DRY|DRY CLEAN|PRESS ONLY)\b/i.test(u);
+}
+
+function isPortalTableStatusMarker(text) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t) return true;
+  if (/^[✗✓×x\-–—]+$/u.test(t)) return true;
+  if (/^(?:n\/a|na|none|null)$/i.test(t)) return true;
+  if (/^\d+$/.test(t)) return true;
+  return false;
+}
+
+function cleanVisibleTableSpecialInstructions(raw) {
+  const normalized = normalizeCellMultilineText(raw);
+  if (!normalized || isPortalTableStatusMarker(normalized)) return "";
+  if (isVendorCatalogPollution(normalized)) return "";
+  return normalized.slice(0, 500);
+}
+
+/** Pure helper for unit tests — locate SI column index from header label strings. */
+function findSpecialInstructionsColumnIndexFromHeaders(headerTexts) {
+  const headers = Array.isArray(headerTexts) ? headerTexts : [];
+  for (let i = 0; i < headers.length; i++) {
+    const norm = String(headers[i] || "").replace(/\s+/g, " ").trim();
+    if (/^special\s+instructions?\s*$/i.test(norm)) return i;
+  }
+  for (let i = 0; i < headers.length; i++) {
+    if (/special\s+instructions?/i.test(String(headers[i] || ""))) return i;
+  }
+  return -1;
+}
+
+/** Map header index to list-row `<td>` index (expand column is stripped from data rows). */
+function dataColumnIndexForSpecialInstructions(headerTexts) {
+  const headerIdx = findSpecialInstructionsColumnIndexFromHeaders(headerTexts);
+  if (headerIdx < 0) return -1;
+  const leadingEmpty =
+    headerTexts.length > 0 && !String(headerTexts[0] || "").replace(/\s+/g, " ").trim();
+  return leadingEmpty ? headerIdx - 1 : headerIdx;
+}
+
+async function detectSpecialInstructionsColumnIndex(page) {
+  const idx = await page
+    .evaluate(() => {
+      function headerCells(table) {
+        const thead = table.querySelector("thead");
+        if (thead) {
+          const row = thead.querySelector("tr");
+          if (row) return Array.from(row.querySelectorAll("th, td"));
+        }
+        const first = table.querySelector("tbody tr");
+        if (first && first.querySelector("th")) {
+          return Array.from(first.querySelectorAll("th"));
+        }
+        return [];
+      }
+      function matchIdx(cells) {
+        for (let i = 0; i < cells.length; i++) {
+          const norm = (cells[i].innerText || cells[i].textContent || "").replace(/\s+/g, " ").trim();
+          if (/^special\s+instructions?\s*$/i.test(norm)) return i;
+        }
+        for (let i = 0; i < cells.length; i++) {
+          const t = cells[i].innerText || cells[i].textContent || "";
+          if (/special\s+instructions?/i.test(t)) return i;
+        }
+        return -1;
+      }
+      function dataIdx(cells, headerIdx) {
+        if (headerIdx < 0) return -1;
+        const leadingEmpty =
+          cells.length > 0 && !(cells[0].innerText || cells[0].textContent || "").trim();
+        return leadingEmpty ? headerIdx - 1 : headerIdx;
+      }
+      const tables = Array.from(document.querySelectorAll("table"));
+      for (const table of tables) {
+        const blob = (table.innerText || "").slice(0, 800);
+        if (!/customer/i.test(blob)) continue;
+        const headers = headerCells(table);
+        const idxHit = matchIdx(headers);
+        if (idxHit >= 0) return dataIdx(headers, idxHit);
+      }
+      for (const table of tables) {
+        const headers = headerCells(table);
+        const idxHit = matchIdx(headers);
+        if (idxHit >= 0) return dataIdx(headers, idxHit);
+      }
+      return -1;
+    })
+    .catch(() => -1);
+  return typeof idx === "number" && idx >= 0 ? idx : -1;
+}
+
+/** Read Special Instructions from the visible list-row table column (primary source). */
+async function readVisibleTableSpecialInstructions(rowLocator, columnIndex) {
+  if (columnIndex == null || columnIndex < 0) return "";
+  return rowLocator
+    .evaluate((el, colIdx) => {
+      let tds = Array.from(el.querySelectorAll(":scope > td"));
+      if (!tds.length) tds = Array.from(el.querySelectorAll(":scope > [role='gridcell']"));
+      if (tds.length > 1) {
+        const first = (tds[0].innerText || "").trim();
+        if (first.length <= 2 && !/\d{1,2}\/\d{1,2}/.test(first)) {
+          tds = tds.slice(1);
+        }
+      }
+      const normLines = (s) =>
+        String(s || "")
+          .replace(/\u00a0/g, " ")
+          .replace(/\r\n/g, "\n")
+          .split("\n")
+          .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n");
+      function readCell(td) {
+        if (!td) return "";
+        const clone = td.cloneNode(true);
+        clone.querySelectorAll("table, textarea, button, .notes-edit, a.notes-edit").forEach((n) => n.remove());
+        clone.querySelectorAll("i[data-toggle='tooltip']").forEach((n) => n.remove());
+        const notes = clone.querySelector(".cleanerticket-notes");
+        const raw = notes ? notes.innerText || notes.textContent || "" : clone.innerText || clone.textContent || "";
+        return normLines(raw);
+      }
+      let out = readCell(tds[colIdx]);
+      return out;
+    }, columnIndex)
+    .catch(() => "");
+}
+
+function resolveFinalSpecialInstructions(visibleTableSi, expandedDetailSi) {
+  const visible = cleanVisibleTableSpecialInstructions(visibleTableSi);
+  if (visible) return visible;
+  const expanded = String(expandedDetailSi || "").trim();
+  if (expanded && !isVendorCatalogPollution(expanded)) return expanded.slice(0, 500);
+  return "";
+}
+
+function derivePortalSupplyFlagsFromSi(siText) {
+  const probe = String(siText || "");
+  const tl = probe.toLowerCase();
+  return {
+    USE_OXIC: /\buse\s+oxiclean\b|\buse\s+oxic\b/i.test(probe) ? "X" : "",
+    Use_Hypo:
+      (/\buse\s+hypoallergenic\b/i.test(probe) || /\bhypoallergenic\s+soap\b/i.test(probe)) &&
+      !/hypochlor/.test(tl)
+        ? "X"
+        : "",
+    USE_FAB: /\buse\s+fabric\s+softener\b/i.test(probe) ? "X" : "",
+    Low_DRY: /\blow\s+dry\b/i.test(probe) ? "X" : "",
+    NO_SCEN: /\bno\s*scen|\bno\s*scent|\bunscented\b/i.test(probe) ? "X" : "",
+    Extra_Scen: /\bextra\s*scen|\bextra\s*scent\b/i.test(probe) ? "X" : "",
+  };
+}
+
 function extractSpecialInstructionsFromText(combined) {
   const text = String(combined || "");
   const labeled =
@@ -1180,25 +1349,17 @@ function extractSpecialInstructionsFromText(combined) {
 
 function derivePortalSupplyFlags(collapsedRowText, combined) {
   const siText = extractSpecialInstructionsFromText(combined);
-  /** Only the labeled Special Instructions field — not list rows or expanded vendor menus. */
-  const probe = siText;
-  const tl = probe.toLowerCase();
-  return {
-    USE_OXIC: /\buse\s+oxiclean\b|\buse\s+oxic\b/i.test(probe) ? "X" : "",
-    Use_Hypo:
-      (/\buse\s+hypoallergenic\b/i.test(probe) || /\bhypoallergenic\s+soap\b/i.test(probe)) &&
-      !/hypochlor/.test(tl)
-        ? "X"
-        : "",
-    USE_FAB: /\buse\s+fabric\s+softener\b/i.test(probe) ? "X" : "",
-    Low_DRY: /\blow\s+dry\b/i.test(probe) ? "X" : "",
-    NO_SCEN: /\bno\s*scen|\bno\s*scent|\bunscented\b/i.test(probe) ? "X" : "",
-    Extra_Scen: /\bextra\s*scen|\bextra\s*scent\b/i.test(probe) ? "X" : "",
-  };
+  return derivePortalSupplyFlagsFromSi(siText);
 }
 
 /** Portal CSV: first four `<td>`s (or first four logical lines) go out raw; bag parens raw. */
-function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts = null, bagDisplay = "") {
+function parsePortalFields(
+  collapsedRowText,
+  expandedFullText,
+  directCellTexts = null,
+  bagDisplay = "",
+  opts = {},
+) {
   let combined = `${String(collapsedRowText || "").trim()}\n${String(expandedFullText || "").trim()}`.trim();
   if (!/Bag:\s*[^\n]+/i.test(combined) && String(bagDisplay || "").trim()) {
     combined = `${combined}\nBag: ${String(bagDisplay).trim()}`.trim();
@@ -1266,7 +1427,10 @@ function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts =
   if (!wf_lbs && wfLbsM) wf_lbs = wfLbsM[1];
 
   const t = combined;
-  const flags = derivePortalSupplyFlags(collapsedRowText, combined);
+  const expandedDetailSi = extractSpecialInstructionsFromText(combined);
+  const visibleTableSi = opts.visibleTableSi || "";
+  const special_instructions = resolveFinalSpecialInstructions(visibleTableSi, expandedDetailSi);
+  const flags = derivePortalSupplyFlagsFromSi(special_instructions);
 
   const skipLine = (l) =>
     !l ||
@@ -1318,8 +1482,6 @@ function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts =
     combined.match(/\bWF\s*ITEMS\s*:?\s*(\d+)\b/i);
   if (wfItemsM) wf_items = wfItemsM[1];
 
-  const special_instructions = extractSpecialInstructionsFromText(combined);
-
   return {
     date_display,
     estd_delivery,
@@ -1330,6 +1492,8 @@ function parsePortalFields(collapsedRowText, expandedFullText, directCellTexts =
     wf_items,
     notes_summary: notes,
     special_instructions,
+    visible_table_special_instructions: cleanVisibleTableSpecialInstructions(visibleTableSi),
+    expanded_detail_special_instructions: expandedDetailSi,
     bag_service: bagParts.bag_service,
     bag_subservice: bagParts.bag_subservice,
     service_type: bagParts.service_type,
@@ -1540,6 +1704,18 @@ async function scrapePage(page, pageLabel, layout) {
   await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
   await page.waitForTimeout(100);
 
+  let siColumnIndex = -1;
+  if (layout === "portal") {
+    siColumnIndex = await detectSpecialInstructionsColumnIndex(page);
+    if (siColumnIndex >= 0) {
+      progressLine(`  Special Instructions column: index ${siColumnIndex} (visible table)`);
+    } else {
+      console.warn(
+        "  Special Instructions column not found in table headers — expanded detail pane will be used as fallback.",
+      );
+    }
+  }
+
   const out = [];
   let recordIndex = 0;
   /* # HD column is omitted when there are no hang-dry rows on the page — allow fewer <td>. */
@@ -1599,6 +1775,12 @@ async function scrapePage(page, pageLabel, layout) {
     /* Single progress line per ticket; rowCount can grow as expanded detail <tr> siblings are inserted. */
     const rowHint = `${j + 1}/${rowCount}`;
     const preview = trimmed.replace(/\s+/g, " ").slice(0, 72);
+
+    let visibleTableSiRaw = "";
+    if (layout === "portal" && siColumnIndex >= 0) {
+      visibleTableSiRaw = await readVisibleTableSpecialInstructions(cand, siColumnIndex);
+    }
+
     const { bagId, bagDisplay, raw, customer, fullText, collapsed } = await expandRowAndReadBag(
       page,
       cand,
@@ -1615,8 +1797,10 @@ async function scrapePage(page, pageLabel, layout) {
     };
     let portal = null;
     if (layout === "portal") {
-      portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId);
-      out.push({ ...base, portal });
+      portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId, {
+        visibleTableSi: visibleTableSiRaw,
+      });
+      out.push({ ...base, portal, si_column_index: siColumnIndex });
     } else {
       out.push(base);
     }
@@ -1665,7 +1849,7 @@ async function scrapePage(page, pageLabel, layout) {
     );
   }
 
-  return { rows: out, tableRowCount: initialRowCount };
+  return { rows: out, tableRowCount: initialRowCount, siColumnIndex };
 }
 
 function statusFromTicketsUrl(url) {
@@ -1842,6 +2026,7 @@ async function main() {
     let pageLoaded = false;
     let lastPageUrl = baseUrl;
     let emptyTableDetected = false;
+    let siColumnIndexDetected = null;
 
     function normFingerprint(s) {
       return String(s || "")
@@ -1885,7 +2070,10 @@ async function main() {
       sessionAuthenticated = true;
       lastPageUrl = page.url();
 
-      const { rows, tableRowCount } = await scrapePage(page, url, layout);
+      const { rows, tableRowCount, siColumnIndex } = await scrapePage(page, url, layout);
+      if (siColumnIndex != null && siColumnIndex >= 0) {
+        siColumnIndexDetected = siColumnIndex;
+      }
 
       if (tableRowCount === 0) {
         emptyTableDetected = true;
@@ -2058,6 +2246,33 @@ async function main() {
     console.error("[rinse-scrape] wrote CSV:", outCsvAbsolute, `(${allRows.length} rows)`);
     progressLine(`\nWrote ${allRows.length} row records → ${outCsvAbsolute}`);
 
+    if (layout === "portal" && allRows.length > 0) {
+      const siDebugPath =
+        (process.env.OUTPUT_PORTAL_SI_DEBUG && String(process.env.OUTPUT_PORTAL_SI_DEBUG).trim()) ||
+        `${outCsvAbsolute}.si_debug.json`;
+      const siDebugPayload = {
+        scraped_at: new Date().toISOString(),
+        special_instructions_column_index: siColumnIndexDetected,
+        row_count: allRows.length,
+        rows: allRows.map((r) => ({
+          order_id: String(r.bag_id || "").trim(),
+          bag_id: String(r.bag_display || r.bag_id || "").trim(),
+          customer: String(r.portal?.customer_name || r.customer_snippet || "").trim(),
+          visible_table_special_instructions: r.portal?.visible_table_special_instructions || "",
+          expanded_detail_special_instructions: r.portal?.expanded_detail_special_instructions || "",
+          final_special_instructions: r.portal?.special_instructions || "",
+        })),
+      };
+      fs.writeFileSync(siDebugPath, `${JSON.stringify(siDebugPayload, null, 2)}\n`, "utf8");
+      console.error("[rinse-scrape] wrote SI debug:", siDebugPath);
+      const withCleanSi = siDebugPayload.rows.filter((row) =>
+        Boolean(String(row.final_special_instructions || "").trim()),
+      ).length;
+      progressLine(
+        `Special Instructions debug: ${withCleanSi}/${allRows.length} row(s) with final SI (column index ${siColumnIndexDetected ?? "n/a"}).`,
+      );
+    }
+
     if (
       statusFromTicketsUrl(baseUrl) === "at_vendor"
       && sessionAuthenticated
@@ -2138,6 +2353,16 @@ export {
   portalDataRow,
   csvEscape,
   PORTAL_TICKET_DATE_LINE_RE,
+  findSpecialInstructionsColumnIndexFromHeaders,
+  dataColumnIndexForSpecialInstructions,
+  normalizeCellMultilineText,
+  cleanVisibleTableSpecialInstructions,
+  resolveFinalSpecialInstructions,
+  derivePortalSupplyFlagsFromSi,
+  isVendorCatalogPollution,
+  isPortalTableStatusMarker,
+  detectSpecialInstructionsColumnIndex,
+  readVisibleTableSpecialInstructions,
 };
 
 if (isCliEntry()) {

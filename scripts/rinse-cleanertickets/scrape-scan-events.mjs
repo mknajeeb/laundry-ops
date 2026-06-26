@@ -26,6 +26,9 @@ import {
   portalHeaderRow,
   portalDataRow,
   csvEscape,
+  detectSpecialInstructionsColumnIndex,
+  readVisibleTableSpecialInstructions,
+  normalizeCellMultilineText,
 } from "./scrape.mjs";
 import {
   __rinseDir,
@@ -119,6 +122,11 @@ async function scrapeScanEventsOnPage(page) {
   await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
   await page.waitForTimeout(100);
 
+  const siColumnIndex = await detectSpecialInstructionsColumnIndex(page);
+  if (siColumnIndex >= 0) {
+    progressLine(`  Special Instructions column: index ${siColumnIndex} (visible table)`);
+  }
+
   const out = [];
   let recordIndex = 0;
   const minListTd = Math.max(2, Math.min(12, parseInt(process.env.RINSE_MIN_LIST_TD || "2", 10) || 2));
@@ -174,12 +182,19 @@ async function scrapeScanEventsOnPage(page) {
     const rowHint = `${j + 1}/${rowCount}`;
     const preview = trimmed.replace(/\s+/g, " ").slice(0, 72);
 
+    let visibleTableSiRaw = "";
+    if (siColumnIndex >= 0) {
+      visibleTableSiRaw = await readVisibleTableSpecialInstructions(cand, siColumnIndex);
+    }
+
     const { bagId, bagDisplay, customer, fullText, collapsed } = await expandRowAndReadBag(
       page,
       cand,
       rt,
     );
-    const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId);
+    const portal = parsePortalFields(collapsed || rt, fullText, tdTexts, bagDisplay || bagId, {
+      visibleTableSi: visibleTableSiRaw,
+    });
     const scans = await extractScansFromExpandedTicket(cand);
     const bd = bagDisplay || bagId;
     const bagIdCode = ticketIdFromBag(bagId, bd);
