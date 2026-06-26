@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -26,18 +26,31 @@ import AddIcon from "@mui/icons-material/Add";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import EmailIcon from "@mui/icons-material/Email";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import PrintIcon from "@mui/icons-material/Print";
 import {
   createUserHrTimelineEntry,
   deleteUserHrTimelineEntry,
+  getTaUserHrProfile,
   getUserHrTimeline,
   previewUserHrTimelineEmail,
 } from "../../api";
+import ContractorPrintPreviewDialog from "../../contractorForms/ContractorPrintPreviewDialog";
+import { openPrintWindow } from "../../contractorForms/contractorPrint";
+import "../../contractorForms/contractorPrint.css";
 import {
   HR_DISCIPLINE_EMAIL_TEMPLATES,
   HR_TIMELINE_CATEGORIES,
   HR_TIMELINE_ENTRY_TYPES,
   entryTypeLabel,
 } from "../../hr/hrTimelineConstants";
+import {
+  buildOfferLetterTimelineDescription,
+  defaultOfferLetterFields,
+  formatOfferCompensation,
+  offerLetterDocumentTitle,
+} from "../../hr/offerLetter";
+import { buildW2PrefillFromHrProfile } from "../../w2Forms/w2Prefill";
+import OfferLetterPrintDocument from "./OfferLetterPrintDocument";
 import { VEEWASH_BRAND } from "../../theme/veewashBrand";
 
 function chipColor(entryType) {
@@ -45,6 +58,7 @@ function chipColor(entryType) {
   if (entryType === "warning") return "warning";
   if (entryType === "separation_note") return "error";
   if (entryType === "recognition") return "success";
+  if (entryType === "offer_letter") return "primary";
   if (entryType === "management_note") return "default";
   return "default";
 }
@@ -86,6 +100,11 @@ export default function HrTimelinePanel({
   });
   const [emailPreview, setEmailPreview] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [hrPrefill, setHrPrefill] = useState(null);
+  const [offerOpen, setOfferOpen] = useState(false);
+  const [offerPreviewOpen, setOfferPreviewOpen] = useState(false);
+  const [offerDraft, setOfferDraft] = useState(null);
+  const offerPrintRef = useRef(null);
 
   const load = useCallback(async () => {
     if (!userId) return;
@@ -105,6 +124,77 @@ export default function HrTimelinePanel({
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    if (!userId) {
+      setHrPrefill(null);
+      return;
+    }
+    let cancelled = false;
+    getTaUserHrProfile(userId)
+      .then((res) => {
+        if (!cancelled) setHrPrefill(buildW2PrefillFromHrProfile(res.data));
+      })
+      .catch(() => {
+        if (!cancelled) setHrPrefill(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const openOfferLetter = () => {
+    setOfferDraft(
+      defaultOfferLetterFields({
+        prefill: hrPrefill,
+        workerName,
+        managerName,
+        workerLane,
+      }),
+    );
+    setOfferOpen(true);
+  };
+
+  const offerFields = useMemo(() => {
+    if (!offerDraft) return null;
+    return {
+      ...offerDraft,
+      compensation: offerDraft.compensation || formatOfferCompensation(offerDraft.hourly_rate),
+    };
+  }, [offerDraft]);
+
+  const offerPrintTitle = useMemo(
+    () => offerLetterDocumentTitle(offerFields?.is_contractor),
+    [offerFields?.is_contractor],
+  );
+
+  const printOfferLetter = () => {
+    openPrintWindow(offerPrintRef?.current, {
+      pageSize: "letter portrait",
+      title: offerPrintTitle,
+    });
+  };
+
+  const logOfferLetter = async () => {
+    if (!offerFields) return;
+    setBusy(true);
+    setError("");
+    try {
+      await createUserHrTimelineEntry(userId, {
+        entry_type: "offer_letter",
+        category: "General",
+        entry_date: offerFields.offer_date || new Date().toISOString().slice(0, 10),
+        description: buildOfferLetterTimelineDescription(offerFields),
+      });
+      setInfo("Offer letter logged to HR Timeline.");
+      setOfferOpen(false);
+      await load();
+    } catch (e) {
+      setError(e.response?.data?.error || e.message || "Could not log offer letter");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const templateFields = useMemo(
     () => ({
@@ -236,7 +326,10 @@ export default function HrTimelinePanel({
             </Typography>
           </Box>
           {canEdit ? (
-            <Stack direction="row" spacing={1}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+              <Button size="small" startIcon={<PrintIcon />} variant="outlined" onClick={openOfferLetter}>
+                Offer letter
+              </Button>
               <Button size="small" startIcon={<EmailIcon />} onClick={() => setEmailOpen(true)}>
                 Send discipline email
               </Button>
@@ -444,6 +537,169 @@ export default function HrTimelinePanel({
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Dialog open={offerOpen} onClose={() => setOfferOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>{offerPrintTitle || "Offer letter"}</DialogTitle>
+        <DialogContent>
+          {offerDraft ? (
+            <Stack spacing={1.5} sx={{ mt: 1 }}>
+              <TextField
+                size="small"
+                label="Candidate name"
+                value={offerDraft.candidate_name}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, candidate_name: e.target.value }))}
+                fullWidth
+              />
+              <TextField
+                size="small"
+                label="Address (optional)"
+                value={offerDraft.candidate_address}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, candidate_address: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={2}
+              />
+              <TextField
+                size="small"
+                label="Position"
+                value={offerDraft.position}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, position: e.target.value }))}
+                fullWidth
+              />
+              <Stack direction="row" gap={1} flexWrap="wrap">
+                <TextField
+                  size="small"
+                  type="date"
+                  label="Start date"
+                  value={offerDraft.start_date}
+                  onChange={(e) => setOfferDraft((d) => ({ ...d, start_date: e.target.value }))}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ flex: 1, minWidth: 140 }}
+                />
+                <TextField
+                  size="small"
+                  type="date"
+                  label="Offer date"
+                  value={offerDraft.offer_date}
+                  onChange={(e) => setOfferDraft((d) => ({ ...d, offer_date: e.target.value }))}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ flex: 1, minWidth: 140 }}
+                />
+              </Stack>
+              <TextField
+                size="small"
+                label={offerDraft.is_contractor ? "Service rate" : "Hourly rate"}
+                value={offerDraft.hourly_rate}
+                onChange={(e) =>
+                  setOfferDraft((d) => ({
+                    ...d,
+                    hourly_rate: e.target.value,
+                    compensation: formatOfferCompensation(e.target.value),
+                  }))
+                }
+                fullWidth
+                helperText={offerDraft.compensation || "Enter rate to show on letter"}
+              />
+              <TextField
+                size="small"
+                label="Work location"
+                value={offerDraft.work_location}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, work_location: e.target.value }))}
+                fullWidth
+              />
+              <TextField
+                size="small"
+                label="Schedule"
+                value={offerDraft.schedule}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, schedule: e.target.value }))}
+                fullWidth
+              />
+              <TextField
+                size="small"
+                label="Pay frequency"
+                value={offerDraft.pay_frequency}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, pay_frequency: e.target.value }))}
+                fullWidth
+              />
+              <Stack direction="row" gap={1} flexWrap="wrap">
+                <TextField
+                  size="small"
+                  label="Manager name"
+                  value={offerDraft.manager_name}
+                  onChange={(e) => setOfferDraft((d) => ({ ...d, manager_name: e.target.value }))}
+                  sx={{ flex: 1, minWidth: 160 }}
+                />
+                <TextField
+                  size="small"
+                  label="Manager title"
+                  value={offerDraft.manager_title}
+                  onChange={(e) => setOfferDraft((d) => ({ ...d, manager_title: e.target.value }))}
+                  sx={{ flex: 1, minWidth: 160 }}
+                />
+              </Stack>
+              <TextField
+                size="small"
+                type="date"
+                label="Response deadline (optional)"
+                value={offerDraft.response_deadline}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, response_deadline: e.target.value }))}
+                InputLabelProps={{ shrink: true }}
+                fullWidth
+              />
+              <TextField
+                size="small"
+                label="Additional terms (optional)"
+                value={offerDraft.additional_terms}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, additional_terms: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={2}
+              />
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOfferOpen(false)}>Cancel</Button>
+          <Button onClick={() => setOfferPreviewOpen(true)} disabled={!offerFields}>
+            Preview
+          </Button>
+          <Button variant="outlined" onClick={logOfferLetter} disabled={busy || !offerFields?.position}>
+            Log to timeline
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<PrintIcon />}
+            onClick={printOfferLetter}
+            disabled={!offerFields?.position}
+          >
+            Print
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <ContractorPrintPreviewDialog
+        open={offerPreviewOpen}
+        onClose={() => setOfferPreviewOpen(false)}
+        title={offerPrintTitle}
+        printRef={offerPrintRef}
+      />
+
+      <Box
+        aria-hidden
+        sx={{
+          position: "fixed",
+          left: -9999,
+          top: 0,
+          width: "7.5in",
+          pointerEvents: "none",
+        }}
+      >
+        <div ref={offerPrintRef}>
+          {offerFields ? (
+            <OfferLetterPrintDocument fields={offerFields} prefill={hrPrefill || {}} />
+          ) : null}
+        </div>
+      </Box>
     </Stack>
   );
 }

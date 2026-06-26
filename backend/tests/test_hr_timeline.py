@@ -16,7 +16,9 @@ def test_hr_timeline_meta_includes_management_note():
     meta = hr_timeline_meta()
     ids = [t["id"] for t in meta["entry_types"]]
     assert "management_note" in ids
+    assert "offer_letter" in ids
     assert any(t["label"] == "Management Note" for t in meta["entry_types"])
+    assert any(t["label"] == "Offer Letter" for t in meta["entry_types"])
 
 
 def test_coaching_late_arrival_second_is_warning_not_separation():

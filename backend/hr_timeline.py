@@ -19,6 +19,7 @@ HR_TIMELINE_ENTRY_TYPES = frozenset(
         "recognition",
         "separation_note",
         "management_note",
+        "offer_letter",
     }
 )
 
@@ -32,6 +33,7 @@ HR_TIMELINE_ENTRY_TYPE_LABELS = {
     "recognition": "Recognition",
     "separation_note": "Separation Note",
     "management_note": "Management Note",
+    "offer_letter": "Offer Letter",
 }
 
 HR_TIMELINE_CATEGORIES = frozenset(

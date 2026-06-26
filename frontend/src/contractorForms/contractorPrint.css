@@ -434,6 +434,69 @@
   background: #f1f5f9;
 }
 
+.cform-offer-letter p {
+  margin: 0 0 0.12in;
+}
+
+.cform-offer-date {
+  text-align: right;
+  color: #475569;
+}
+
+.cform-offer-recipient {
+  margin-bottom: 0.16in;
+}
+
+.cform-offer-re {
+  margin-top: 0.18in !important;
+}
+
+.cform-offer-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.16in 0 0.18in;
+  font-size: 10pt;
+}
+
+.cform-offer-table th,
+.cform-offer-table td {
+  border: 1px solid #cbd5e1;
+  padding: 0.07in 0.1in;
+  vertical-align: top;
+  text-align: left;
+}
+
+.cform-offer-table th {
+  width: 32%;
+  background: #f8fafc;
+  font-weight: 600;
+  color: #334155;
+}
+
+.cform-offer-additional {
+  margin: 0.14in 0;
+  padding: 0.1in 0.12in;
+  border-left: 3px solid #1e3a8a;
+  background: #f8fafc;
+}
+
+.cform-offer-signatures {
+  display: flex;
+  gap: 0.35in;
+  margin-top: 0.28in;
+  flex-wrap: wrap;
+}
+
+.cform-offer-sig-block {
+  flex: 1;
+  min-width: 2.4in;
+}
+
+.cform-offer-sig-block p {
+  margin: 0.04in 0 0;
+  font-size: 9.5pt;
+}
+
 @media print {
   @page {
     size: letter portrait;
