@@ -6,7 +6,7 @@ PHASE 1 FROZEN — bug fixes only. Phase 2 UI reads this module as single source
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import event_ts, gaming_events_from_records, ts_valid
@@ -16,10 +16,11 @@ from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
     is_complete_cleaning_purpose,
-    is_fold_block_non_folding_purpose,
+    is_fold_block_split_purpose,
     is_operator_upstream_processing_purpose,
     is_sent_to_vendor_purpose,
     is_weight_entry_purpose,
+    is_wf_folding_pipeline_purpose,
     normalize_scan_purpose,
 )
 from backend.rinse_wf_weight_events import (
@@ -39,6 +40,11 @@ FOLD_BLOCK_START_CLOCK_IN = "clock_in"
 FOLD_BLOCK_START_PRIOR_SCAN = "prior_work_scan"
 FOLD_BLOCK_END_LAST_COMPLETION = "last_completion"
 FOLD_BLOCK_END_CLOCK_OUT = "clock_out"
+# When summed micro-block durations fall below this fraction of the continuous span,
+# use the continuous folding start → end window for productive hours (single block only).
+FOLDING_CONTINUOUS_SPAN_MIN_FRACTION = 0.5
+# Split folding blocks when completions are separated by a long gap with no WF pipeline work.
+FOLDING_INACTIVE_GAP_SECONDS = 60 * 60
 
 
 def _normalize_employee(raw: Any) -> str:
@@ -229,6 +235,31 @@ def _last_scan_before(timestamps: Sequence[datetime], before: datetime) -> datet
     return max(candidates) if candidates else None
 
 
+def _has_wf_pipeline_between(
+    start: datetime,
+    end: datetime,
+    wf_pipeline: Sequence[datetime],
+) -> bool:
+    return any(start < ts < end for ts in wf_pipeline if ts_valid(ts))
+
+
+def _has_wf_pipeline_in_inactive_gap_core(
+    prev_completion: datetime,
+    next_completion: datetime,
+    wf_pipeline: Sequence[datetime],
+) -> bool:
+    """True when WF pipeline work occurred in the middle of a long inter-completion gap."""
+    if next_completion <= prev_completion:
+        return False
+    gap = next_completion - prev_completion
+    margin = min(timedelta(minutes=45), gap / 2)
+    core_start = prev_completion + margin
+    core_end = next_completion - margin
+    if core_end <= core_start:
+        return False
+    return _has_wf_pipeline_between(core_start, core_end, wf_pipeline)
+
+
 def _scan_event_timestamp(ev: Mapping[str, Any]) -> datetime | None:
     ts = ev.get("scanned_at_parsed")
     if isinstance(ts, datetime):
@@ -404,7 +435,45 @@ def _collect_employee_non_folding_scans(
         rack = ev.get("rack")
         if (ts, bid) in completion_keys:
             continue
-        if not is_fold_block_non_folding_purpose(purpose, rack=rack):
+        if not is_fold_block_split_purpose(purpose, rack=rack):
+            continue
+        anchor = anchor_by_bag.get(bid)
+        if bid and anchor is not None and ts < anchor:
+            continue
+        dedupe = (ts, bid)
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        timestamps.append(ts)
+    return sorted(timestamps)
+
+
+def _collect_employee_wf_pipeline_scans(
+    employee: str,
+    *,
+    day_scans: Sequence[Mapping[str, Any]],
+    completion_keys: set[tuple[datetime, str]],
+    anchor_by_bag: Mapping[str, datetime],
+    clock_in: datetime | None,
+    clock_out: datetime | None,
+) -> list[datetime]:
+    """WF pipeline activity timestamps used to infer folding block start."""
+    emp_key = employee.casefold()
+    timestamps: list[datetime] = []
+    seen: set[tuple[datetime, str]] = set()
+    for ev in day_scans:
+        if _event_user_name(ev).casefold() != emp_key:
+            continue
+        ts = _scan_event_timestamp(ev)
+        if ts is None or not ts_valid(ts):
+            continue
+        if not _scan_within_shift_window(ts, clock_in=clock_in, clock_out=clock_out):
+            continue
+        bid = str(ev.get("bag_id") or "").strip().upper()
+        purpose = ev.get("purpose")
+        if (ts, bid) in completion_keys:
+            continue
+        if not is_wf_folding_pipeline_purpose(purpose):
             continue
         anchor = anchor_by_bag.get(bid)
         if bid and anchor is not None and ts < anchor:
@@ -424,6 +493,7 @@ def _compute_folding_blocks(
     clock_out: datetime | None,
     non_folding_scans: Sequence[datetime],
     fold_completions: Sequence[datetime],
+    wf_pipeline_scans: Sequence[datetime] | None = None,
 ) -> list[dict[str, Any]]:
     if roster_role not in ("operator", "folder"):
         return []
@@ -435,11 +505,17 @@ def _compute_folding_blocks(
         return []
 
     non_fold = sorted({ts for ts in non_folding_scans if ts_valid(ts)})
+    wf_pipeline = sorted({ts for ts in (wf_pipeline_scans or []) if ts_valid(ts)})
 
     groups: list[list[datetime]] = []
     current: list[datetime] = [completions[0]]
     for comp in completions[1:]:
-        if any(current[-1] < nf < comp for nf in non_fold):
+        prev = current[-1]
+        inactive_gap = (
+            (comp - prev).total_seconds() > FOLDING_INACTIVE_GAP_SECONDS
+            and not _has_wf_pipeline_in_inactive_gap_core(prev, comp, wf_pipeline)
+        )
+        if inactive_gap or any(prev < nf < comp for nf in non_fold):
             groups.append(current)
             current = [comp]
         else:
@@ -451,24 +527,19 @@ def _compute_folding_blocks(
         first_comp = min(group)
         last_comp = max(group)
         prior = _last_scan_before(non_fold, first_comp)
+        wf_prior = _last_scan_before(wf_pipeline, first_comp)
         if prior is not None and prior >= clock_in:
             block_start = prior
+            start_source = FOLD_BLOCK_START_PRIOR_SCAN
+        elif wf_prior is not None and wf_prior >= clock_in:
+            block_start = wf_prior
             start_source = FOLD_BLOCK_START_PRIOR_SCAN
         else:
             block_start = clock_in
             start_source = FOLD_BLOCK_START_CLOCK_IN
 
-        is_last_block = idx == len(groups) - 1
-        has_non_fold_after = any(nf > last_comp for nf in non_fold)
-        if has_non_fold_after:
-            block_end = last_comp
-            end_source = FOLD_BLOCK_END_LAST_COMPLETION
-        elif is_last_block and clock_out is not None and clock_out >= last_comp:
-            block_end = clock_out
-            end_source = FOLD_BLOCK_END_CLOCK_OUT
-        else:
-            block_end = last_comp
-            end_source = FOLD_BLOCK_END_LAST_COMPLETION
+        block_end = last_comp
+        end_source = FOLD_BLOCK_END_LAST_COMPLETION
 
         blocks.append(
             {
@@ -494,6 +565,13 @@ def _folding_productivity_from_blocks(
     except (ValueError, KeyError, TypeError):
         return None, None, PRODUCTIVITY_START_CLOCK_IN, PRODUCTIVITY_END_LAST_COMPLETION, 0
     total_sec = sum(int(b.get("duration_seconds") or 0) for b in blocks)
+    if len(blocks) == 1:
+        continuous_sec = max(0, int((last_end - first_start).total_seconds()))
+        if (
+            continuous_sec > 0
+            and total_sec < int(continuous_sec * FOLDING_CONTINUOUS_SPAN_MIN_FRACTION)
+        ):
+            total_sec = continuous_sec
     start_source = str(blocks[0].get("start_source") or PRODUCTIVITY_START_INFERRED_FOLD)
     end_source = str(blocks[-1].get("end_source") or PRODUCTIVITY_END_LAST_COMPLETION)
     if start_source == FOLD_BLOCK_START_CLOCK_IN:
@@ -756,12 +834,21 @@ def build_employee_completed_bags_today(
             clock_in=clock_in,
             clock_out=shift_clock_out,
         )
+        wf_pipeline_scans = _collect_employee_wf_pipeline_scans(
+            employee,
+            day_scans=employee_day_scans,
+            completion_keys=completion_keys,
+            anchor_by_bag=anchor_by_bag,
+            clock_in=clock_in,
+            clock_out=shift_clock_out,
+        )
         folding_blocks = _compute_folding_blocks(
             roster_role=roster_role,
             clock_in=clock_in,
             clock_out=shift_clock_out,
             non_folding_scans=non_folding_scans,
             fold_completions=comp_times,
+            wf_pipeline_scans=wf_pipeline_scans,
         )
 
         productive_start, productive_end, start_source, end_source, productive_sec = (

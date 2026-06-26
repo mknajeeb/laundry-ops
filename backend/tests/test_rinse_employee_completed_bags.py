@@ -9,9 +9,11 @@ from backend.rinse_at_vendor_module import MOD_AT_VENDOR_COMPLETED
 from backend.rinse_employee_completed_bags import (
     UNKNOWN_EMPLOYEE,
     FOLD_BLOCK_END_CLOCK_OUT,
+    FOLD_BLOCK_END_LAST_COMPLETION,
     FOLD_BLOCK_START_CLOCK_IN,
     FOLD_BLOCK_START_PRIOR_SCAN,
     PRODUCTIVITY_END_CLOCK_OUT,
+    PRODUCTIVITY_END_LAST_COMPLETION,
     PRODUCTIVITY_START_CLOCK_IN,
     PRODUCTIVITY_START_INFERRED_FOLD,
     PRODUCTIVITY_START_OPERATOR_PROCESSING,
@@ -350,13 +352,13 @@ class TestBuildEmployeeCompletedBagsToday:
         assert emp["productive_hours"] == expected_hours
         assert emp["productivity_start_source"] == PRODUCTIVITY_START_INFERRED_FOLD
 
-    def test_folder_productive_hours_use_clock_out_when_set(self):
+    def test_folder_productive_hours_end_at_last_completion(self):
         row = _completed_row("BAG1")
         events = {
             "BAG1": [
                 _ev("sent-to-vendor", T0),
                 _ev("weight-entry", T1),
-                _ev("add-photos", T2),
+                _ev("add-photos", T2, user_name="Weight Clerk"),
                 _ev("weight-entry", T3, user_name="Weight Clerk"),
             ],
         }
@@ -367,9 +369,9 @@ class TestBuildEmployeeCompletedBagsToday:
             roster_roles={"weight clerk": "folder"},
         )
         emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
-        expected_hours = round((CLOCK_OUT - CLOCK_IN).total_seconds() / 3600.0, 4)
-        assert emp["productive_end_time"] == CLOCK_OUT.isoformat()
-        assert emp["productivity_end_source"] == PRODUCTIVITY_END_CLOCK_OUT
+        expected_hours = round((T3 - T2).total_seconds() / 3600.0, 4)
+        assert emp["productive_end_time"] == T3.isoformat()
+        assert emp["productivity_end_source"] == PRODUCTIVITY_END_LAST_COMPLETION
         assert emp["productive_hours"] == expected_hours
 
 
@@ -469,9 +471,9 @@ class TestFoldingBlocks:
             user_maps={"folder person": {"user_id": 50, "display_name": "Folder Person"}},
         )
         emp = next(e for e in out["employees"] if e["employee"] == "Folder Person")
-        assert emp["folding_blocks"][0]["end_time"] == CLOCK_OUT.isoformat()
-        assert emp["folding_blocks"][0]["end_source"] == FOLD_BLOCK_END_CLOCK_OUT
-        expected_hours = round((CLOCK_OUT - CLOCK_IN).total_seconds() / 3600.0, 4)
+        assert emp["folding_blocks"][0]["end_time"] == T3.isoformat()
+        assert emp["folding_blocks"][0]["end_source"] == FOLD_BLOCK_END_LAST_COMPLETION
+        expected_hours = round((T3 - CLOCK_IN).total_seconds() / 3600.0, 4)
         assert emp["productive_hours"] == expected_hours
 
     def test_block_ends_at_last_completion_before_non_folding_scan(self):
@@ -602,3 +604,163 @@ class TestFoldingBlocks:
             folding_blocks=blocks,
         )
         assert productive_sec == total
+
+    def test_folder_evelin_like_day_uses_continuous_folding_span_not_micro_blocks(self):
+        """Regression: WF pipeline steps must not collapse productive hours to ~1 min/bag."""
+        folder = "Evelin Folder"
+        selected = date(2026, 6, 25)
+        clock_in = datetime(2026, 6, 25, 9, 28, 6)
+        clock_out = datetime(2026, 6, 25, 17, 1, 1)
+        fold_start = datetime(2026, 6, 25, 10, 10, 0)
+        completion_times = [
+            datetime(2026, 6, 25, 10, 12),
+            datetime(2026, 6, 25, 10, 59),
+            datetime(2026, 6, 25, 11, 27),
+            datetime(2026, 6, 25, 12, 12),
+            datetime(2026, 6, 25, 13, 11),
+            datetime(2026, 6, 25, 13, 31),
+            datetime(2026, 6, 25, 14, 8),
+            datetime(2026, 6, 25, 14, 41),
+            datetime(2026, 6, 25, 15, 12),
+            datetime(2026, 6, 25, 15, 24),
+            datetime(2026, 6, 25, 15, 56),
+            datetime(2026, 6, 25, 16, 21),
+            datetime(2026, 6, 25, 16, 46),
+        ]
+        rows = []
+        events: dict[str, list] = {}
+        sent = datetime(2026, 6, 24, 8, 0)
+        for idx, comp_ts in enumerate(completion_times, start=1):
+            bid = f"BAG{idx:02d}"
+            row = _completed_row(bid, service_type="WF")
+            row["completion_time"] = comp_ts.isoformat()
+            rows.append(row)
+            add_photos = comp_ts.replace(minute=max(0, comp_ts.minute - 2))
+            cleaning = add_photos.replace(minute=max(0, add_photos.minute - 8))
+            events[bid] = [
+                _ev("sent-to-vendor", sent, ev_id=idx * 10),
+                _ev("cleaning", cleaning, user_name=folder, ev_id=idx * 10 + 1),
+                _ev("complete-cleaning", cleaning, user_name=folder, ev_id=idx * 10 + 2),
+                _ev("add-photos", add_photos, user_name=folder, ev_id=idx * 10 + 3),
+                _ev("weight-entry", comp_ts, user_name=folder, ev_id=idx * 10 + 4),
+            ]
+
+        helper = TestBuildEmployeeCompletedBagsToday()
+        out = helper._build(
+            rows,
+            events,
+            clock_in=clock_in,
+            clock_out=clock_out,
+            roster_roles={"evelin folder": "folder"},
+            user_maps={
+                "evelin folder": {"user_id": 51, "display_name": folder},
+            },
+        )
+        # Patch selected date for Jun 25 ET window
+        with patch(
+            "backend.rinse_simple_shift_performance._load_rinse_user_maps",
+            return_value={"evelin folder": {"user_id": 51, "display_name": folder}},
+        ), patch(
+            "backend.rinse_processing_productivity._load_shift_sessions_bulk",
+            return_value={51: [{"clock_in_at": clock_in, "clock_out_at": clock_out}]},
+        ), patch(
+            "backend.rinse_simple_shift_performance._employee_shift_window",
+            return_value=(clock_in, clock_out, None),
+        ), patch(
+            "backend.rinse_employee_completed_bags._build_roster_role_lookup",
+            return_value={"evelin folder": "folder"},
+        ), patch(
+            "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
+            return_value={},
+        ), patch(
+            "backend.rinse_employee_completed_bags._load_employee_day_scan_events_bulk",
+            return_value={},
+        ):
+            out = build_employee_completed_bags_today(
+                object(),
+                3,
+                completed_rows=rows,
+                events_by_bag=events,
+                selected_date_et=selected,
+                registry_meta_by_bag={},
+            )
+
+        emp = next(e for e in out["employees"] if e["employee"] == folder)
+        micro_block_sum_hours = round(13 * 90 / 3600.0, 4)  # old ~1–2 min/block pattern
+        assert emp["productive_hours"] > 1.0
+        assert emp["productive_hours"] > micro_block_sum_hours * 2
+        assert 6.0 <= emp["productive_hours"] <= 7.5
+        assert emp["productive_start_time"] == fold_start.isoformat()
+        assert emp["productive_end_time"] == completion_times[-1].isoformat()
+        assert emp["bags_per_hour"] is not None
+        assert 1.5 <= emp["bags_per_hour"] <= 3.0
+        assert emp["lbs_per_hour"] is not None
+        assert len(emp["folding_blocks"]) == 1
+        assert emp["folding_blocks"][0]["completion_count"] == 13
+
+    def test_two_folding_windows_with_inactive_gap_sums_blocks_not_full_span(self):
+        """Regression: lunch-length gap must not inflate hours via continuous-span fallback."""
+        folder = "Split Shift Folder"
+        selected = date(2026, 6, 25)
+        clock_in = datetime(2026, 6, 25, 9, 0, 0)
+        morning = [
+            (datetime(2026, 6, 25, 10, 0), datetime(2026, 6, 25, 10, 30)),
+            (datetime(2026, 6, 25, 10, 35), datetime(2026, 6, 25, 11, 0)),
+        ]
+        afternoon = [
+            (datetime(2026, 6, 25, 14, 0), datetime(2026, 6, 25, 14, 30)),
+            (datetime(2026, 6, 25, 14, 35), datetime(2026, 6, 25, 15, 0)),
+        ]
+        rows = []
+        events: dict[str, list] = {}
+        sent = datetime(2026, 6, 24, 8, 0)
+        for idx, (add_photos, comp_ts) in enumerate(morning + afternoon, start=1):
+            bid = f"WIN{idx}"
+            row = _completed_row(bid, service_type="WF")
+            row["completion_time"] = comp_ts.isoformat()
+            rows.append(row)
+            cleaning = add_photos.replace(minute=max(0, add_photos.minute - 5))
+            events[bid] = [
+                _ev("sent-to-vendor", sent, ev_id=idx * 10),
+                _ev("cleaning", cleaning, user_name=folder, ev_id=idx * 10 + 1),
+                _ev("add-photos", add_photos, user_name=folder, ev_id=idx * 10 + 2),
+                _ev("weight-entry", comp_ts, user_name=folder, ev_id=idx * 10 + 3),
+            ]
+
+        with patch(
+            "backend.rinse_simple_shift_performance._load_rinse_user_maps",
+            return_value={"split shift folder": {"user_id": 52, "display_name": folder}},
+        ), patch(
+            "backend.rinse_processing_productivity._load_shift_sessions_bulk",
+            return_value={52: [{"clock_in_at": clock_in, "clock_out_at": datetime(2026, 6, 25, 16, 0)}]},
+        ), patch(
+            "backend.rinse_simple_shift_performance._employee_shift_window",
+            return_value=(clock_in, datetime(2026, 6, 25, 16, 0), None),
+        ), patch(
+            "backend.rinse_employee_completed_bags._build_roster_role_lookup",
+            return_value={"split shift folder": "folder"},
+        ), patch(
+            "backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk",
+            return_value={},
+        ), patch(
+            "backend.rinse_employee_completed_bags._load_employee_day_scan_events_bulk",
+            return_value={},
+        ):
+            out = build_employee_completed_bags_today(
+                object(),
+                3,
+                completed_rows=rows,
+                events_by_bag=events,
+                selected_date_et=selected,
+                registry_meta_by_bag={},
+            )
+
+        emp = next(e for e in out["employees"] if e["employee"] == folder)
+        full_span_hours = (datetime(2026, 6, 25, 15, 0) - datetime(2026, 6, 25, 10, 0)).total_seconds() / 3600.0
+        assert len(emp["folding_blocks"]) == 2
+        block_sum_hours = sum(b["duration_seconds"] for b in emp["folding_blocks"]) / 3600.0
+        assert 1.5 <= emp["productive_hours"] <= 2.5
+        assert emp["productive_hours"] == round(block_sum_hours, 4)
+        assert emp["productive_hours"] < full_span_hours - 1.0
+        assert emp["bags_per_hour"] is not None
+        assert 1.5 <= emp["bags_per_hour"] <= 3.0

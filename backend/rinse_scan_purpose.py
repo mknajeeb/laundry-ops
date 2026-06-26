@@ -209,6 +209,24 @@ def _purpose_or_rack_is_folding(raw: str | None, rack: Any = None) -> bool:
     return "folding" in str(rack or "").lower()
 
 
+def is_wf_folding_pipeline_purpose(raw: str | None) -> bool:
+    """Same-bag WF steps that are part of folding/completion flow, not block splits."""
+    if is_add_photos_purpose(raw):
+        return True
+    if is_complete_cleaning_purpose(raw):
+        return True
+    if is_start_cleaning_purpose(raw) or is_ghost_cleaning_purpose(raw):
+        return True
+    return is_cleaning_related_purpose(raw)
+
+
+def is_fold_block_split_purpose(raw: str | None, *, rack: Any = None) -> bool:
+    """Scan that ends one folding block and starts another (excludes WF pipeline steps)."""
+    if is_wf_folding_pipeline_purpose(raw):
+        return False
+    return is_fold_block_non_folding_purpose(raw, rack=rack)
+
+
 def is_fold_block_non_folding_purpose(raw: str | None, *, rack: Any = None) -> bool:
     """Operational scan that is not folding-rack activity or a completion signal."""
     if is_sent_to_vendor_purpose(raw) or is_received_from_vendor_purpose(raw):
