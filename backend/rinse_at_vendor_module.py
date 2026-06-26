@@ -2,6 +2,36 @@
 At Vendor Shift Monitor module — sent-to-vendor scope, lightweight queries.
 
 Independent of CFS/staging/registry population. Uses selected ET day only.
+
+Day's Load (Shift Monitor invariant)
+====================================
+**Day's Load** = every bag that entered today's ET operational workload.
+
+Included:
+  - Carry-in bags open at midnight.
+  - New sent-to-vendor bags created today.
+  - Bags completed today (even if they later leave the vendor portal).
+  - Repeat-trip bags that begin a new lifecycle today (same-day sent-to-vendor).
+
+Excluded:
+  - Bags completed before midnight.
+  - Phantom pending bags (registry-terminal, off-portal stale carry).
+  - Portal-scrape rejected bags.
+  - Invalid/stale bags that never belonged to today's workload.
+
+Principle: a bag does **not** leave Day's Load because it was completed or
+disappeared from the vendor portal. Completion moves Pending ↓ and Completed
+Today ↑; it does not reduce Day's Load.
+
+Day's Load may decrease only for: invalid/stale correction, portal-scrape
+rejection, explicit administrative removal, or data-integrity correction.
+
+Accounting invariant (after exclusions)::
+
+    Day's Load == Pending + Completed Today
+
+See ``validate_days_load_invariant`` and ``TestDaysLoadInvariant``.
+Repeat-trip lifecycle rules: docs/postmortems/repeat_trip_scan_cycle_fix_2026-06-25.md
 """
 
 from __future__ import annotations
@@ -333,7 +363,11 @@ def _load_portal_scrape_rejected_bag_ids(cursor, organization_id: int) -> set[st
 
 
 def _load_off_portal_registry_terminal_bag_ids(cursor, organization_id: int) -> set[str]:
-    """Completed registry bags gone from portal and live presence — stale pending carry."""
+    """Completed registry bags gone from portal and live presence.
+
+    Used with ``_apply_off_portal_workload_row_filter`` to drop stale *pending*
+    carry only; completed rows stay in Day's Load.
+    """
     from backend.rinse_bag_completion import COMPLETION_COMPLETED
     from backend.rinse_off_portal_scan_refresh import (
         bag_in_portal_crawl_batch,
@@ -368,6 +402,92 @@ def _load_off_portal_registry_terminal_bag_ids(cursor, organization_id: int) -> 
         if not bag_in_portal_crawl_batch(cursor, org, int(batch_id), bid):
             excluded.add(bid)
     return excluded
+
+
+# ---------------------------------------------------------------------------
+# Day's Load row filter — see module docstring for the permanent definition.
+# Off-portal registry-terminal IDs must NOT remove completed-today rows.
+# ---------------------------------------------------------------------------
+
+
+def validate_days_load_invariant(module: Mapping[str, Any]) -> None:
+    """Assert Shift Monitor Day's Load accounting (permanent regression guard).
+
+    Raises ``AssertionError`` when::
+
+        Day's Load != Pending + Completed Today
+
+    after all valid population exclusions have been applied.
+    """
+    days_load = int(
+        module.get("days_load_total")
+        or module.get("daily_workload_total")
+        or module.get("total")
+        or 0
+    )
+    pending = int(module.get("pending") if module.get("pending") is not None else module.get("pending_count") or 0)
+    completed = int(
+        module.get("completed")
+        if module.get("completed") is not None
+        else module.get("completed_today_count") or 0
+    )
+    rows = module.get("rows") or []
+    assert days_load == pending + completed, (
+        "Day's Load invariant violated: "
+        f"days_load={days_load} pending={pending} completed={completed}"
+    )
+    assert days_load == len(rows), (
+        f"Day's Load must equal visible workload rows: days_load={days_load} rows={len(rows)}"
+    )
+    if module.get("total_equals_pending_plus_completed") is not None:
+        assert module.get("total_equals_pending_plus_completed") is True
+
+
+def _apply_off_portal_workload_row_filter(
+    rows: list[dict[str, Any]],
+    *,
+    off_portal_terminal_ids: set[str],
+    portal_scrape_rejected_ids: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Drop stale off-portal *pending* rows; keep completed in Day's Load.
+
+    Portal-scrape-rejected bags stay excluded regardless of status (operator review).
+    Completed-today bags must remain in rows when they leave the vendor portal.
+    See module docstring — completion must not shrink Day's Load.
+    """
+    if not off_portal_terminal_ids and not portal_scrape_rejected_ids:
+        return rows, {
+            "off_portal_stale_pending_excluded": [],
+            "portal_scrape_rejected_excluded": [],
+            "off_portal_completed_retained_in_days_load": [],
+        }
+    kept: list[dict[str, Any]] = []
+    off_portal_stale_pending_excluded: list[str] = []
+    portal_scrape_rejected_excluded: list[str] = []
+    off_portal_completed_retained: list[str] = []
+    for row in rows:
+        bid = str(row.get("bag_id") or "").strip().upper()
+        if not bid:
+            kept.append(row)
+            continue
+        if bid in portal_scrape_rejected_ids:
+            portal_scrape_rejected_excluded.append(bid)
+            continue
+        if bid in off_portal_terminal_ids:
+            tags = row.get("module_tags") or []
+            if MOD_AT_VENDOR_COMPLETED in tags:
+                off_portal_completed_retained.append(bid)
+                kept.append(row)
+                continue
+            if MOD_AT_VENDOR_PENDING in tags:
+                off_portal_stale_pending_excluded.append(bid)
+                continue
+        kept.append(row)
+    return kept, {
+        "off_portal_stale_pending_excluded": sorted(set(off_portal_stale_pending_excluded)),
+        "portal_scrape_rejected_excluded": sorted(set(portal_scrape_rejected_excluded)),
+        "off_portal_completed_retained_in_days_load": sorted(set(off_portal_completed_retained)),
+    }
 
 
 INCLUSION_CARRY_IN = "carry_in_open_at_midnight"
@@ -2810,9 +2930,16 @@ def build_at_vendor_module(
     if still_present_ids:
         rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in still_present_ids]
 
-    excluded_ids = _load_off_portal_registry_terminal_bag_ids(cursor, org)
-    if excluded_ids:
-        rows = [r for r in rows if str(r.get("bag_id") or "").strip().upper() not in excluded_ids]
+    off_portal_terminal_ids: set[str] = set()
+    portal_scrape_rejected_ids: set[str] = set()
+    if hasattr(cursor, "execute"):
+        off_portal_terminal_ids = _load_off_portal_registry_terminal_bag_ids(cursor, org)
+        portal_scrape_rejected_ids = _load_portal_scrape_rejected_bag_ids(cursor, org)
+    rows, off_portal_filter_meta = _apply_off_portal_workload_row_filter(
+        rows,
+        off_portal_terminal_ids=off_portal_terminal_ids,
+        portal_scrape_rejected_ids=portal_scrape_rejected_ids,
+    )
 
     t_edd = time.perf_counter()
     prior_edd_map = _load_prior_edd_from_batches_bulk(cursor, org, pending_for_prior_edd)
@@ -2894,6 +3021,15 @@ def build_at_vendor_module(
         "bags_completed_today": bags_completed_today,
         "bags_gone_from_vendor_home_but_counted": gone_but_counted,
         "selected_day_at_vendor_total": selected_day_total,
+        "days_load_total": selected_day_total,
+        **off_portal_filter_meta,
+        "off_portal_completed_today_count": len(
+            [
+                bid
+                for bid in off_portal_filter_meta.get("off_portal_completed_retained_in_days_load") or []
+                if bid in bags_completed_today
+            ]
+        ),
     }
     if uses_clean_baseline and baseline_ctx:
         baseline_snapshot_count = len(baseline_snapshot_ids)
@@ -3159,8 +3295,15 @@ def build_at_vendor_module(
         "rows": rows,
         "cards": cards,
         "total": selected_day_total,
+        "days_load_total": selected_day_total,
         "pending": pending,
         "completed": completed,
+        "off_portal_stale_pending_excluded_count": len(
+            off_portal_filter_meta.get("off_portal_stale_pending_excluded") or []
+        ),
+        "off_portal_completed_retained_count": len(
+            off_portal_filter_meta.get("off_portal_completed_retained_in_days_load") or []
+        ),
         "changed_to_rush": changed_to_rush,
         "total_equals_pending_plus_completed": selected_day_total == pending + completed,
         "uses_scans": True,

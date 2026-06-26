@@ -29,6 +29,8 @@ from backend.rinse_at_vendor_module import (
     classify_at_vendor_rush,
     explain_historical_scope_vs_presence,
     resolve_delivery_fields,
+    validate_days_load_invariant,
+    _apply_off_portal_workload_row_filter,
     _enrich_presence_delivery_meta,
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive
@@ -1684,3 +1686,248 @@ class TestCrossDayCompletionAttribution:
         assert row["rush_bucket"] == AV_NON_RUSH
         assert row["estimated_delivery_date"] == "2026-06-15"
         assert "Non-Rush because EDD" in (row.get("rush_reason") or "")
+
+
+class TestDaysLoadOffPortalFilter:
+    """Day's Load must stay stable when completed bags leave the vendor portal."""
+
+    def test_apply_filter_retains_off_portal_completed(self):
+        from backend.rinse_at_vendor_module import _apply_off_portal_workload_row_filter
+
+        rows = [
+            {"bag_id": "DONEOFF", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED]},
+            {"bag_id": "STALE", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "LIVE", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+        ]
+        kept, meta = _apply_off_portal_workload_row_filter(
+            rows,
+            off_portal_terminal_ids={"DONEOFF", "STALE"},
+            portal_scrape_rejected_ids=set(),
+        )
+        kept_ids = {r["bag_id"] for r in kept}
+        assert kept_ids == {"DONEOFF", "LIVE"}
+        assert meta["off_portal_completed_retained_in_days_load"] == ["DONEOFF"]
+        assert meta["off_portal_stale_pending_excluded"] == ["STALE"]
+
+    def test_apply_filter_excludes_portal_scrape_rejected_regardless_of_status(self):
+        from backend.rinse_at_vendor_module import _apply_off_portal_workload_row_filter
+
+        rows = [
+            {"bag_id": "REJECTED", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED]},
+        ]
+        kept, meta = _apply_off_portal_workload_row_filter(
+            rows,
+            off_portal_terminal_ids={"REJECTED"},
+            portal_scrape_rejected_ids={"REJECTED"},
+        )
+        assert kept == []
+        assert meta["portal_scrape_rejected_excluded"] == ["REJECTED"]
+
+    def test_apply_filter_excludes_off_portal_stale_rush_wf_pending(self):
+        from backend.rinse_at_vendor_module import _apply_off_portal_workload_row_filter
+
+        rows = [
+            {"bag_id": "PHANTOM", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "REAL", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+        ]
+        kept, meta = _apply_off_portal_workload_row_filter(
+            rows,
+            off_portal_terminal_ids={"PHANTOM"},
+            portal_scrape_rejected_ids=set(),
+        )
+        assert [r["bag_id"] for r in kept] == ["REAL"]
+        assert meta["off_portal_stale_pending_excluded"] == ["PHANTOM"]
+
+    def test_days_load_unchanged_when_pending_completes_off_portal(self):
+        from backend.rinse_at_vendor_module import _apply_off_portal_workload_row_filter
+
+        pending_kept, _ = _apply_off_portal_workload_row_filter(
+            [{"bag_id": "BAG1", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]}],
+            off_portal_terminal_ids=set(),
+            portal_scrape_rejected_ids=set(),
+        )
+        completed_kept, meta = _apply_off_portal_workload_row_filter(
+            [{"bag_id": "BAG1", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED]}],
+            off_portal_terminal_ids={"BAG1"},
+            portal_scrape_rejected_ids=set(),
+        )
+        assert len(pending_kept) == 1
+        assert len(completed_kept) == 1
+        assert meta["off_portal_completed_retained_in_days_load"] == ["BAG1"]
+
+
+def _days_load_module_from_rows(rows: list[dict]) -> dict:
+    pending = sum(
+        1 for r in rows if MOD_AT_VENDOR_PENDING in (r.get("module_tags") or [])
+    )
+    completed = sum(
+        1 for r in rows if MOD_AT_VENDOR_COMPLETED in (r.get("module_tags") or [])
+    )
+    total = len(rows)
+    return {
+        "total": total,
+        "days_load_total": total,
+        "daily_workload_total": total,
+        "pending": pending,
+        "completed": completed,
+        "completed_today_count": completed,
+        "rows": rows,
+        "total_equals_pending_plus_completed": total == pending + completed,
+    }
+
+
+class TestDaysLoadInvariant:
+    """Permanent Shift Monitor invariant: Day's Load == Pending + Completed Today."""
+
+    def test_invariant_formula_on_module_output(self):
+        rows = [
+            {"bag_id": "P1", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "P2", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "C1", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED]},
+        ]
+        validate_days_load_invariant(_days_load_module_from_rows(rows))
+
+    def test_completing_bag_never_decreases_days_load(self):
+        pending_row = {
+            "bag_id": "BAG1",
+            "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING],
+        }
+        completed_row = {
+            "bag_id": "BAG1",
+            "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED],
+        }
+        before = _days_load_module_from_rows([pending_row, {"bag_id": "P2", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]}])
+        after = _days_load_module_from_rows([completed_row, {"bag_id": "P2", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]}])
+        validate_days_load_invariant(before)
+        validate_days_load_invariant(after)
+        assert before["days_load_total"] == after["days_load_total"]
+        assert before["pending"] == after["pending"] + 1
+        assert after["completed"] == before["completed"] + 1
+
+    def test_off_portal_removal_never_decreases_days_load_for_completed(self):
+        rows = [
+            {"bag_id": "OPEN", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "DONE", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED]},
+        ]
+        before = _days_load_module_from_rows(rows)
+        kept, _ = _apply_off_portal_workload_row_filter(
+            rows,
+            off_portal_terminal_ids={"DONE"},
+            portal_scrape_rejected_ids=set(),
+        )
+        after = _days_load_module_from_rows(kept)
+        validate_days_load_invariant(before)
+        validate_days_load_invariant(after)
+        assert before["days_load_total"] == after["days_load_total"]
+        assert "DONE" in [r["bag_id"] for r in kept]
+
+    def test_phantom_pending_off_portal_excluded_and_invariant_holds(self):
+        rows = [
+            {"bag_id": "PHANTOM", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "REAL", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+        ]
+        kept, meta = _apply_off_portal_workload_row_filter(
+            rows,
+            off_portal_terminal_ids={"PHANTOM"},
+            portal_scrape_rejected_ids=set(),
+        )
+        out = _days_load_module_from_rows(kept)
+        validate_days_load_invariant(out)
+        assert out["days_load_total"] == 1
+        assert meta["off_portal_stale_pending_excluded"] == ["PHANTOM"]
+
+    def test_pre_midnight_completed_excluded_invariant_on_baseline_module(self):
+        from unittest.mock import patch
+
+        population = [
+            {"bag_id": "SEEDOPEN", "service_type": "WF", "population_inclusion": INCLUSION_CLEAN_SCRAPE_SEED},
+            {"bag_id": "SEEDDONE", "service_type": "WF", "population_inclusion": INCLUSION_CLEAN_SCRAPE_SEED},
+            {"bag_id": "NEW1", "service_type": "HD", "population_inclusion": INCLUSION_NEW_SENT},
+        ]
+        population_meta = {
+            "available": True,
+            "baseline_snapshot_bag_ids": ["SEEDOPEN", "SEEDDONE"],
+            "same_day_arrival_bag_ids": ["NEW1"],
+            "current_live_vendor_home_total": 2,
+            "daily_metrics_reliable": True,
+        }
+        with patch(
+            "backend.rinse_at_vendor_module._load_baseline_gated_at_vendor_population",
+            return_value=(population, population_meta),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_at_vendor_scan_events_for_bags",
+            return_value={
+                "SEEDOPEN": [_ev("sent-to-vendor", datetime(2026, 6, 13, 1, 0))],
+                "SEEDDONE": [
+                    _ev("sent-to-vendor", datetime(2026, 6, 12, 18, 0)),
+                    _ev("weight-entry", datetime(2026, 6, 12, 20, 0)),
+                    _ev("add-photos", datetime(2026, 6, 12, 20, 30)),
+                    _ev("weight-entry", datetime(2026, 6, 12, 21, 0)),
+                ],
+                "NEW1": [_ev("sent-to-vendor", datetime(2026, 6, 13, 10, 0))],
+            },
+        ), patch(
+            "backend.rinse_at_vendor_module._load_registry_service_types",
+            return_value={"SEEDOPEN": "WF", "SEEDDONE": "WF", "NEW1": "HD"},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_prior_edd_from_batches_bulk",
+            return_value={},
+        ), patch(
+            "backend.rinse_at_vendor_module._load_completed_before_day_start_still_present",
+            return_value=([], set()),
+        ), patch(
+            "backend.rinse_at_vendor_module._load_off_portal_registry_terminal_bag_ids",
+            return_value=set(),
+        ), patch(
+            "backend.rinse_employee_completed_bags.build_employee_completed_bags_today",
+            return_value={"employees": [], "reconciliation": {"ok": True}, "reconciliation_banner": {}},
+        ):
+            out = build_at_vendor_module(
+                object(),
+                3,
+                selected_date_et=date(2026, 6, 13),
+                baseline_ctx=CLEAN_BASELINE_CTX,
+            )
+        validate_days_load_invariant(out)
+        assert "SEEDDONE" not in [r["bag_id"] for r in out["rows"]]
+        assert out["days_load_total"] == 2
+
+    def test_repeat_trip_resend_counts_in_days_load_invariant(self):
+        from backend.rinse_folding_et import naive_et_day_end_exclusive, naive_et_day_start
+
+        selected = date(2026, 6, 25)
+        day_start = naive_et_day_start(selected)
+        events = [
+            _ev("sent-to-vendor", datetime(2026, 6, 19, 4, 0)),
+            _ev("weight-entry", datetime(2026, 6, 19, 10, 0)),
+            _ev("weight-entry", datetime(2026, 6, 19, 11, 0)),
+            _ev("sent-to-vendor", datetime(2026, 6, 25, 5, 11)),
+            _ev("weight-entry", datetime(2026, 6, 25, 7, 37)),
+            _ev("add-photos", datetime(2026, 6, 25, 15, 36)),
+            _ev("weight-entry", datetime(2026, 6, 25, 15, 37)),
+        ]
+        row = _build_row(
+            bag_id="73NBRCJBHJ",
+            meta={"service_type": "WF"},
+            events=events,
+            selected_date_et=selected,
+            as_of_end=naive_et_day_end_inclusive(selected),
+            completion_window_start=day_start,
+        )
+        assert MOD_AT_VENDOR_COMPLETED in row.get("module_tags", [])
+        validate_days_load_invariant(_days_load_module_from_rows([row]))
+
+    def test_portal_scrape_rejected_reduces_days_load(self):
+        rows = [
+            {"bag_id": "GOOD", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_PENDING]},
+            {"bag_id": "BAD", "module_tags": [MOD_AT_VENDOR_TOTAL, MOD_AT_VENDOR_COMPLETED]},
+        ]
+        kept, meta = _apply_off_portal_workload_row_filter(
+            rows,
+            off_portal_terminal_ids={"BAD"},
+            portal_scrape_rejected_ids={"BAD"},
+        )
+        out = _days_load_module_from_rows(kept)
+        validate_days_load_invariant(out)
+        assert out["days_load_total"] == 1
+        assert meta["portal_scrape_rejected_excluded"] == ["BAD"]
