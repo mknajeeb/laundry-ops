@@ -16,6 +16,7 @@ from backend.manual_checkout_settings import (
     get_checkout_include_completed_if_at_vendor,
 )
 from backend.rinse_bag_completion import (
+    REASON_ALREADY_COMPLETED,
     REASON_OK,
     REASON_RACK_SCAN_AFTER_CLEAN,
     REASON_UPDATED_EXISTING_BAG,
@@ -28,6 +29,8 @@ from backend.rinse_bag_completion import (
     rack_contains_clean,
     _progressive_timeline_sort_key,
 )
+
+REASON_OLDER_THAN_BATCH_DATE = "OLDER_THAN_BATCH_DATE"
 from backend.rinse_scan_purpose import (
     is_inbound_cycle_reset_purpose,
     is_rack_location_movement_purpose,
@@ -245,6 +248,7 @@ def classify_at_vendor_checkout_row(
     ticket_id: str | None,
     has_active_staging: bool,
     row_date_before_batch: bool,
+    was_completed_before_upload: bool = False,
     staging_sent_reason: str | None = None,
     has_rack_scan_after_clean: bool = False,
     apply_rack_after_clean_rule: bool = False,
@@ -258,8 +262,11 @@ def classify_at_vendor_checkout_row(
     if not tid:
         raise ValueError("classify_at_vendor_checkout_row requires ticket_id")
 
+    if was_completed_before_upload:
+        return ROW_REJECTED, REASON_ALREADY_COMPLETED
+
     if row_date_before_batch:
-        return "NEEDS_ATTENTION", "OLDER_THAN_BATCH_DATE"
+        return "NEEDS_ATTENTION", REASON_OLDER_THAN_BATCH_DATE
 
     # Bag is in latest vendor upload/scrape — stale staging sent/force and rack-after-CLEAN
     # do not remove it from checkout. True sent-out is enforced via checkout_log or absence
@@ -300,10 +307,13 @@ def effective_checkout_row_status(
         except Exception:
             row_date_before_batch = False
 
+    from backend.rinse_bag_registry import is_bag_already_completed
+
     return classify_at_vendor_checkout_row(
         ticket_id=tid,
         has_active_staging=bool(has_active_staging),
         row_date_before_batch=row_date_before_batch,
+        was_completed_before_upload=is_bag_already_completed(cursor, org, tid),
     )
 
 
@@ -339,7 +349,73 @@ def classify_upload_row_for_checkout(
         ticket_id=ticket_id,
         has_active_staging=has_active_staging,
         row_date_before_batch=row_date_before_batch,
+        was_completed_before_upload=was_completed_before_upload,
     )
+
+
+def resolve_stale_portal_attention_rows_before_confirm(
+    cursor,
+    organization_id: int,
+    batch_id: int,
+) -> dict[str, Any]:
+    """
+    Completed bags still on Vendor Home often carry yesterday's EDD on today's scrape.
+    Downgrade NEEDS_ATTENTION/OLDER_THAN_BATCH_DATE → REJECTED/ALREADY_COMPLETED so one
+    stale portal row cannot block scan-event import for the whole batch.
+    """
+    from backend.rinse_bag_registry import is_bag_already_completed
+    from backend.ta_helpers import table_exists, table_has_column
+
+    org = int(organization_id)
+    bid = int(batch_id)
+    if not table_exists(cursor, "upload_batch_rows"):
+        return {"resolved_count": 0, "resolved_bag_ids": []}
+
+    row_col = "upload_batch_id"
+    if not table_has_column(cursor, "upload_batch_rows", row_col):
+        row_col = "batch_id" if table_has_column(cursor, "upload_batch_rows", "batch_id") else None
+    if not row_col:
+        return {"resolved_count": 0, "resolved_bag_ids": []}
+
+    row_pk = "id"
+    if table_has_column(cursor, "upload_batch_rows", "row_id"):
+        row_pk = "row_id"
+    elif not table_has_column(cursor, "upload_batch_rows", "id"):
+        row_pk = "row_id"
+
+    cursor.execute(
+        f"""
+        SELECT {row_pk} AS row_pk, ticket_id
+        FROM upload_batch_rows
+        WHERE {row_col} = %s
+          AND row_status = 'NEEDS_ATTENTION'
+          AND reason = %s
+          AND ticket_id IS NOT NULL
+          AND TRIM(ticket_id) != ''
+        """,
+        (bid, REASON_OLDER_THAN_BATCH_DATE),
+    )
+    resolved: list[str] = []
+    for row in cursor.fetchall() or []:
+        if not isinstance(row, dict):
+            continue
+        tid = normalize_bag_id(row.get("ticket_id"))
+        row_id = row.get("row_pk")
+        if not tid or row_id is None:
+            continue
+        if not is_bag_already_completed(cursor, org, tid):
+            continue
+        cursor.execute(
+            f"""
+            UPDATE upload_batch_rows
+            SET row_status = %s, reason = %s, updated_at = NOW()
+            WHERE {row_pk} = %s
+            """,
+            (ROW_REJECTED, REASON_ALREADY_COMPLETED, row_id),
+        )
+        resolved.append(tid)
+
+    return {"resolved_count": len(resolved), "resolved_bag_ids": sorted(set(resolved))}
 
 
 # Back-compat aliases
