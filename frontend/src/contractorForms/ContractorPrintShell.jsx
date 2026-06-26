@@ -68,10 +68,20 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
 }
 
 /** Wraps printable contractor content with branded header and print-safe layout. */
-export default function ContractorPrintShell({ prefill, documentTitle, children, compact = false }) {
-  const rootClass = compact
-    ? "contractor-print-root contractor-print-root--one-page"
-    : "contractor-print-root";
+export default function ContractorPrintShell({
+  prefill,
+  documentTitle,
+  children,
+  compact = false,
+  offerLetter = false,
+}) {
+  const rootClass = [
+    "contractor-print-root",
+    compact && "contractor-print-root--one-page",
+    offerLetter && "contractor-print-root--offer-letter",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className={rootClass}>
       <ContractorPrintLetterhead prefill={prefill} documentTitle={documentTitle} />

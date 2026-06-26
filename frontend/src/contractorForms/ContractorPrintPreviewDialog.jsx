@@ -8,6 +8,8 @@ import {
   DialogTitle,
 } from "@mui/material";
 import PrintIcon from "@mui/icons-material/Print";
+import EmailIcon from "@mui/icons-material/Email";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import { openPrintWindow } from "./contractorPrint";
 
 /** On-screen print preview with a direct Print action. */
@@ -17,6 +19,8 @@ export default function ContractorPrintPreviewDialog({
   title,
   printRef,
   pageSize = "letter portrait",
+  onCopyEmail,
+  onOpenEmail,
 }) {
   const scrollRef = useRef(null);
 
@@ -62,6 +66,16 @@ export default function ContractorPrintPreviewDialog({
         </Box>
       </DialogContent>
       <DialogActions>
+        {onCopyEmail ? (
+          <Button startIcon={<ContentCopyIcon />} onClick={onCopyEmail}>
+            Copy email
+          </Button>
+        ) : null}
+        {onOpenEmail ? (
+          <Button startIcon={<EmailIcon />} onClick={onOpenEmail}>
+            Open in email
+          </Button>
+        ) : null}
         <Button onClick={onClose}>Close</Button>
         <Button variant="contained" startIcon={<PrintIcon />} onClick={handlePrint}>
           Print

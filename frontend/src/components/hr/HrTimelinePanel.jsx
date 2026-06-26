@@ -45,6 +45,7 @@ import {
 } from "../../hr/hrTimelineConstants";
 import {
   buildOfferLetterTimelineDescription,
+  buildOfferLetterEmail,
   defaultOfferLetterFields,
   formatOfferCompensation,
   offerLetterDocumentTitle,
@@ -148,6 +149,7 @@ export default function HrTimelinePanel({
       defaultOfferLetterFields({
         prefill: hrPrefill,
         workerName,
+        workerEmail,
         managerName,
         workerLane,
       }),
@@ -163,6 +165,11 @@ export default function HrTimelinePanel({
     };
   }, [offerDraft]);
 
+  const offerEmail = useMemo(
+    () => (offerFields ? buildOfferLetterEmail(offerFields) : null),
+    [offerFields],
+  );
+
   const offerPrintTitle = useMemo(
     () => offerLetterDocumentTitle(offerFields?.is_contractor),
     [offerFields?.is_contractor],
@@ -175,8 +182,28 @@ export default function HrTimelinePanel({
     });
   };
 
-  const logOfferLetter = async () => {
-    if (!offerFields) return;
+  const copyOfferEmail = async () => {
+    if (!offerEmail) return;
+    try {
+      await navigator.clipboard.writeText(`Subject: ${offerEmail.subject}\n\n${offerEmail.body}`);
+      setInfo("Offer email copied to clipboard.");
+    } catch {
+      setError("Could not copy — copy manually from the email draft.");
+    }
+  };
+
+  const openOfferMailto = () => {
+    if (!offerEmail) return;
+    const subject = encodeURIComponent(offerEmail.subject || "");
+    const body = encodeURIComponent(offerEmail.body || "");
+    const to = encodeURIComponent(
+      offerFields?.candidate_email || workerEmail || "",
+    );
+    window.location.href = `mailto:${to}?subject=${subject}&body=${body}`;
+  };
+
+  const logOfferLetter = async (markSent = false) => {
+    if (!offerFields || !offerEmail) return;
     setBusy(true);
     setError("");
     try {
@@ -185,8 +212,11 @@ export default function HrTimelinePanel({
         category: "General",
         entry_date: offerFields.offer_date || new Date().toISOString().slice(0, 10),
         description: buildOfferLetterTimelineDescription(offerFields),
+        email_subject: offerEmail.subject,
+        email_body: offerEmail.body,
+        email_sent: markSent,
       });
-      setInfo("Offer letter logged to HR Timeline.");
+      setInfo(markSent ? "Offer letter logged — mark email as sent." : "Offer letter logged to HR Timeline.");
       setOfferOpen(false);
       await load();
     } catch (e) {
@@ -552,6 +582,15 @@ export default function HrTimelinePanel({
               />
               <TextField
                 size="small"
+                label="Candidate email"
+                type="email"
+                value={offerDraft.candidate_email}
+                onChange={(e) => setOfferDraft((d) => ({ ...d, candidate_email: e.target.value }))}
+                fullWidth
+                helperText="Used when opening the offer in your email app."
+              />
+              <TextField
+                size="small"
                 label="Address (optional)"
                 value={offerDraft.candidate_address}
                 onChange={(e) => setOfferDraft((d) => ({ ...d, candidate_address: e.target.value }))}
@@ -668,13 +707,26 @@ export default function HrTimelinePanel({
             </Stack>
           ) : null}
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ flexWrap: "wrap", gap: 0.5 }}>
           <Button onClick={() => setOfferOpen(false)}>Cancel</Button>
+          <Button startIcon={<ContentCopyIcon />} onClick={copyOfferEmail} disabled={!offerEmail}>
+            Copy email
+          </Button>
+          <Button startIcon={<EmailIcon />} onClick={openOfferMailto} disabled={!offerEmail}>
+            Open in email
+          </Button>
           <Button onClick={() => setOfferPreviewOpen(true)} disabled={!offerFields}>
             Preview
           </Button>
-          <Button variant="outlined" onClick={logOfferLetter} disabled={busy || !offerFields?.position}>
+          <Button variant="outlined" onClick={() => logOfferLetter(false)} disabled={busy || !offerFields?.position}>
             Log to timeline
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => logOfferLetter(true)}
+            disabled={busy || !offerFields?.position}
+          >
+            Log + mark email sent
           </Button>
           <Button
             variant="contained"
@@ -692,6 +744,8 @@ export default function HrTimelinePanel({
         onClose={() => setOfferPreviewOpen(false)}
         title={offerPrintTitle}
         printRef={offerPrintRef}
+        onCopyEmail={copyOfferEmail}
+        onOpenEmail={openOfferMailto}
       />
 
       <Box

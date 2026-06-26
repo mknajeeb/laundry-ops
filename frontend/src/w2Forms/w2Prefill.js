@@ -32,7 +32,7 @@ export function buildW2PrefillFromHrProfile(data) {
     rate_per_hour: rate != null && rate !== "" ? Number(rate) : null,
     payment_method: String(work.payment_method || payroll.payment_method || "").trim(),
     payment_cycle: String(work.payment_cycle || "Biweekly").trim(),
-    company_name: String(org.employer_name || "VeeWash / Washpro").trim(),
+    company_name: String(org.employer_name || "VeeWash").trim(),
     company_address: String(
       org.employer_address || "10438 Jamaica Avenue, Richmond Hill, NY 11418",
     ).trim(),

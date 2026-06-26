@@ -438,6 +438,11 @@
   margin: 0 0 0.12in;
 }
 
+.contractor-print-root--offer-letter {
+  box-sizing: border-box;
+  padding: 0.4in 0.65in 0.35in;
+}
+
 .cform-offer-date {
   text-align: right;
   color: #475569;

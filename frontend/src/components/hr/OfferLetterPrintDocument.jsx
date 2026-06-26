@@ -3,6 +3,7 @@ import {
   formatDisplayDate,
   OFFER_LETTER_CONTACT_EMAIL,
   offerLetterDocumentTitle,
+  resolveOfferLetterCompanyName,
 } from "../../hr/offerLetter";
 
 function display(val, fallback = "[not specified]") {
@@ -40,9 +41,10 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
     ? formatDisplayDate(fields.response_deadline)
     : null;
   const additionalTerms = String(fields.additional_terms || "").trim();
+  const companyName = resolveOfferLetterCompanyName({ ...prefill, ...fields });
 
   return (
-    <ContractorPrintShell prefill={prefill} documentTitle={docTitle}>
+    <ContractorPrintShell prefill={prefill} documentTitle={docTitle} offerLetter>
       <div className="cform-offer-letter">
         <p className="cform-offer-date">{offerDate}</p>
 
@@ -60,7 +62,7 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
         {isContractor ? (
           <>
             <p>
-              VeeWash / WashPro is pleased to offer you an opportunity to perform services as an
+              {companyName} is pleased to offer you an opportunity to perform services as an
               independent contractor in the position of <strong>{position}</strong>, subject to the
               terms below and the Independent Contractor Agreement and related standards documents
               you will receive for review and signature.
@@ -74,7 +76,7 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
         ) : (
           <>
             <p>
-              VeeWash / WashPro is pleased to offer you employment in the position of{" "}
+              {companyName} is pleased to offer you employment in the position of{" "}
               <strong>{position}</strong> on an at-will basis, subject to the terms below and the
               policies described in the Employee Handbook and Performance Standards Addendum.
             </p>
@@ -167,7 +169,7 @@ export default function OfferLetterPrintDocument({ fields = {}, prefill = {} }) 
             <div className="cform-sig-line" />
             <p>{manager}</p>
             <p>{managerTitle}</p>
-            <p>VeeWash / WashPro</p>
+            <p>{companyName}</p>
           </div>
           <div className="cform-offer-sig-block">
             <div className="cform-sig-line" />
