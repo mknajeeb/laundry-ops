@@ -315,7 +315,7 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   column-gap: 0.35in;
-  row-gap: 0.05in;
+  row-gap: 0.08in;
   page-break-inside: avoid;
   align-items: start;
 }
@@ -380,22 +380,10 @@
   line-height: 1.35;
 }
 
-.cform-sig-date-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.08in;
-  min-width: 0;
-}
-
-.cform-sig-date-row .cform-sig-line {
-  flex: 1;
-  min-width: 0;
-}
-
 .cform-sig-date-label {
   font-size: 10pt;
-  flex-shrink: 0;
-  white-space: nowrap;
+  justify-self: start;
+  margin-top: 0.06in;
 }
 
 .cform-sig-line {
@@ -405,8 +393,20 @@
   margin: 0;
 }
 
+.cform-sig-line--field,
+.cform-sig-line--date {
+  width: 68%;
+  max-width: 2.35in;
+  justify-self: start;
+}
+
+.cform-sig-line--field {
+  margin-top: 0.08in;
+}
+
 .cform-sig-line--date {
   min-height: 0.16in;
+  margin-top: 0.04in;
 }
 
 .contractor-payment-table {

@@ -265,17 +265,14 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
           )}
         </div>
 
-        <div className="cform-sig-line" />
-        <div className="cform-sig-line" />
+        <div className="cform-sig-line cform-sig-line--field" />
+        <div className="cform-sig-line cform-sig-line--field" />
 
-        <div className="cform-sig-date-row">
-          <div className="cform-sig-line cform-sig-line--date" />
-          <strong className="cform-sig-date-label">Date</strong>
-        </div>
-        <div className="cform-sig-date-row">
-          <div className="cform-sig-line cform-sig-line--date" />
-          <strong className="cform-sig-date-label">Date</strong>
-        </div>
+        <strong className="cform-sig-date-label">Date</strong>
+        <strong className="cform-sig-date-label">Date</strong>
+
+        <div className="cform-sig-line cform-sig-line--date" />
+        <div className="cform-sig-line cform-sig-line--date" />
       </div>
     </>
   );
