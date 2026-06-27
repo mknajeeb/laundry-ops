@@ -235,42 +235,46 @@ export default function ContractorInvoicePaymentPrint({ record, prefill }) {
       <PrintTable rows={part2Rows} />
 
       <div className="cform-sig-block">
-        <div className="cform-sig-col">
-          <strong className="cform-sig-heading">Contractor / worker signature</strong>
-          <div className="cform-sig-info">
-            {workerName ? (
-              <p>
-                <strong>Name:</strong> {workerName}
-              </p>
-            ) : (
-              <p className="cform-sig-info-placeholder">&nbsp;</p>
-            )}
-          </div>
-          <div className="cform-sig-line" />
-          <strong className="cform-sig-date-label">Date</strong>
-          <div className="cform-sig-line cform-sig-line--date" />
+        <strong className="cform-sig-heading">Contractor / worker signature</strong>
+        <strong className="cform-sig-heading">Company signature</strong>
+
+        <div className="cform-sig-info">
+          {workerName ? (
+            <p>
+              <strong>Name:</strong> {workerName}
+            </p>
+          ) : (
+            <p className="cform-sig-info-placeholder">&nbsp;</p>
+          )}
+          <p className="cform-sig-info-placeholder">&nbsp;</p>
         </div>
-        <div className="cform-sig-col">
-          <strong className="cform-sig-heading">Company signature</strong>
-          <div className="cform-sig-info">
-            {supervisor.name ? (
-              <p>
-                <strong>Name:</strong> {supervisor.name}
-              </p>
-            ) : (
-              <p className="cform-sig-info-placeholder">&nbsp;</p>
-            )}
-            {supervisor.title ? (
-              <p>
-                <strong>Title:</strong> {supervisor.title}
-              </p>
-            ) : (
-              <p className="cform-sig-info-placeholder">&nbsp;</p>
-            )}
-          </div>
-          <div className="cform-sig-line" />
-          <strong className="cform-sig-date-label">Date</strong>
+        <div className="cform-sig-info">
+          {supervisor.name ? (
+            <p>
+              <strong>Name:</strong> {supervisor.name}
+            </p>
+          ) : (
+            <p className="cform-sig-info-placeholder">&nbsp;</p>
+          )}
+          {supervisor.title ? (
+            <p>
+              <strong>Title:</strong> {supervisor.title}
+            </p>
+          ) : (
+            <p className="cform-sig-info-placeholder">&nbsp;</p>
+          )}
+        </div>
+
+        <div className="cform-sig-line" />
+        <div className="cform-sig-line" />
+
+        <div className="cform-sig-date-row">
           <div className="cform-sig-line cform-sig-line--date" />
+          <strong className="cform-sig-date-label">Date</strong>
+        </div>
+        <div className="cform-sig-date-row">
+          <div className="cform-sig-line cform-sig-line--date" />
+          <strong className="cform-sig-date-label">Date</strong>
         </div>
       </div>
     </>

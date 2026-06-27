@@ -217,15 +217,9 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   column-gap: 0.35in;
+  row-gap: 0.05in;
   page-break-inside: avoid;
   align-items: start;
-}
-
-.cform-sig-col {
-  display: flex;
-  flex-direction: column;
-  gap: 0.05in;
-  min-width: 0;
 }
 
 .cform-p--compact {
@@ -271,7 +265,7 @@
 .cform-sig-info {
   font-size: 10pt;
   line-height: 1.35;
-  align-self: start;
+  min-height: calc(2 * 1.35em + 0.04in);
 }
 
 .cform-sig-info p {
@@ -288,9 +282,22 @@
   line-height: 1.35;
 }
 
+.cform-sig-date-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.08in;
+  min-width: 0;
+}
+
+.cform-sig-date-row .cform-sig-line {
+  flex: 1;
+  min-width: 0;
+}
+
 .cform-sig-date-label {
   font-size: 10pt;
-  align-self: end;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .cform-sig-line {
