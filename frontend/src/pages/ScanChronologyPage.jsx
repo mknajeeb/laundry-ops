@@ -63,6 +63,7 @@ const ACTIVITY_TYPE_OPTIONS = [
   { id: "sorting", label: "Sorting" },
   { id: "washing", label: "Washing" },
   { id: "drying", label: "Drying" },
+  { id: "post_processing_weight", label: "Post-processing weight" },
 ];
 
 const LONG_GAP_SECONDS = 15 * 60;
@@ -119,6 +120,7 @@ const ACTIVITY_CHIP_COLORS = {
   sorting: { bg: "#ecfdf5", color: "#047857" },
   washing: { bg: "#eff6ff", color: "#1d4ed8" },
   drying: { bg: "#fff7ed", color: "#c2410c" },
+  post_processing_weight: { bg: "#fdf4ff", color: "#7e22ce" },
 };
 
 const COVERAGE_STATUS_COLORS = {

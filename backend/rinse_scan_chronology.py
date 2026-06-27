@@ -16,6 +16,9 @@ from backend.rinse_washing_chronology import (
     build_washer_utilization_payload,
     build_washing_chronology_payload,
 )
+from backend.rinse_post_processing_weight_chronology import (
+    build_post_processing_weight_chronology_payload,
+)
 from backend.rinse_weighing_chronology import build_weighing_chronology_payload
 
 VALID_STAGES = frozenset(
@@ -31,7 +34,7 @@ VALID_STAGES = frozenset(
     }
 )
 
-ACTIVITY_TYPES = frozenset({"weighing", "sorting", "washing", "drying"})
+ACTIVITY_TYPES = frozenset({"weighing", "sorting", "washing", "drying", "post_processing_weight"})
 VALID_ACTIVITY_TYPE_FILTERS = frozenset({"all", *ACTIVITY_TYPES})
 
 DURATION_STAGES = frozenset({"weighing", "sorting"})
@@ -43,6 +46,7 @@ _ACTIVITY_LABELS = {
     "sorting": "Sorting",
     "washing": "Washing",
     "drying": "Drying",
+    "post_processing_weight": "Post-processing weight",
 }
 
 _UNKNOWN_EMPLOYEE = "Unknown"
@@ -179,6 +183,24 @@ def _activity_from_drying_session(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _activity_from_post_processing_weight_row(row: dict[str, Any]) -> dict[str, Any]:
+    purpose = row.get("event_purpose") or "post_processing_weight"
+    return {
+        "activity_type": "post_processing_weight",
+        "activity_label": _ACTIVITY_LABELS["post_processing_weight"],
+        "time_et": row.get("timestamp_et"),
+        "end_et": None,
+        "bag_id": row.get("bag_id"),
+        "employee": _employee_key(row.get("employee")),
+        "machine_or_rack": None,
+        "duration_seconds": None,
+        "source": purpose,
+        "confidence": row.get("confidence"),
+        "start_event_purpose": purpose,
+        "end_event_purpose": None,
+    }
+
+
 def _activity_sort_key(row: dict[str, Any]) -> tuple:
     ts = row.get("time_et")
     return (
@@ -197,6 +219,9 @@ def _employee_activity_summary(activities: list[dict[str, Any]]) -> dict[str, An
         "sorting_sessions": sum(1 for a in activities if a.get("activity_type") == "sorting"),
         "washer_loads": sum(1 for a in activities if a.get("activity_type") == "washing"),
         "dryer_loads": sum(1 for a in activities if a.get("activity_type") == "drying"),
+        "post_processing_weight_count": sum(
+            1 for a in activities if a.get("activity_type") == "post_processing_weight"
+        ),
         "first_activity_et": min(timestamps) if timestamps else None,
         "last_activity_et": max(timestamps) if timestamps else None,
     }
@@ -212,6 +237,9 @@ def build_user_activity_summary(activities: list[dict[str, Any]]) -> dict[str, A
         "sorting_sessions": sum(1 for a in activities if a.get("activity_type") == "sorting"),
         "washer_loads": sum(1 for a in activities if a.get("activity_type") == "washing"),
         "dryer_loads": sum(1 for a in activities if a.get("activity_type") == "drying"),
+        "post_processing_weight_count": sum(
+            1 for a in activities if a.get("activity_type") == "post_processing_weight"
+        ),
         "first_activity_et": min(timestamps) if timestamps else None,
         "last_activity_et": max(timestamps) if timestamps else None,
     }
@@ -250,6 +278,7 @@ def merge_stage_sessions_to_activities(
     sorting_sessions: list[dict[str, Any]] | None = None,
     washing_sessions: list[dict[str, Any]] | None = None,
     drying_sessions: list[dict[str, Any]] | None = None,
+    post_processing_weight_sessions: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     activities: list[dict[str, Any]] = []
     for row in weighing_sessions or []:
@@ -260,6 +289,8 @@ def merge_stage_sessions_to_activities(
         activities.append(_activity_from_washing_session(row))
     for row in drying_sessions or []:
         activities.append(_activity_from_drying_session(row))
+    for row in post_processing_weight_sessions or []:
+        activities.append(_activity_from_post_processing_weight_row(row))
     activities.sort(key=_activity_sort_key)
     return activities
 
@@ -292,6 +323,7 @@ def build_user_activity_chronology_payload(
     sorting_sessions: list[dict[str, Any]] = []
     washing_sessions: list[dict[str, Any]] = []
     drying_sessions: list[dict[str, Any]] = []
+    post_processing_weight_sessions: list[dict[str, Any]] = []
 
     if type_filter in ("all", "weighing"):
         weighing_payload = build_scan_chronology_payload(
@@ -333,11 +365,23 @@ def build_user_activity_chronology_payload(
         )
         drying_sessions = drying_payload.get("sessions") or []
 
+    if type_filter in ("all", "post_processing_weight"):
+        ppw_payload = build_post_processing_weight_chronology_payload(
+            cursor,
+            organization_id,
+            selected_date_et=selected_date_et,
+            employee_filter=employee_filter,
+            bag_id_filter=bag_id_filter,
+            confidence_filter=confidence_filter,
+        )
+        post_processing_weight_sessions = ppw_payload.get("sessions") or []
+
     activities = merge_stage_sessions_to_activities(
         weighing_sessions=weighing_sessions,
         sorting_sessions=sorting_sessions,
         washing_sessions=washing_sessions,
         drying_sessions=drying_sessions,
+        post_processing_weight_sessions=post_processing_weight_sessions,
     )
 
     employee_names = sorted(
@@ -355,9 +399,10 @@ def build_user_activity_chronology_payload(
         "machines": [],
         "event_purposes": None,
         "grouping_rules": (
-            "User activity merges weighing, sorting, washing, and drying chronology "
-            "builders for the selected ET day; activities are grouped by employee and "
-            "ordered chronologically within each employee."
+            "User activity merges weighing, sorting, washing, drying, and "
+            "post-processing weight chronology builders for the selected ET day; "
+            "activities are grouped by employee and ordered chronologically within "
+            "each employee."
         ),
     }
 

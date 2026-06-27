@@ -1,10 +1,12 @@
 /** Phase 2 — client-side ranking for employee productivity (Phase 1 data unchanged). */
 
 export const PRODUCTIVITY_RANK_OPTIONS = [
+  { id: "processed", label: "Processed Bags" },
   { id: "bags", label: "Completed Bags" },
+  { id: "processed_hr", label: "Processed / Hour" },
+  { id: "bags_hr", label: "Completed / Hour" },
   { id: "lbs", label: "Completed Lbs" },
   { id: "avg_lbs_bag", label: "Avg Lbs / Bag" },
-  { id: "bags_hr", label: "Bags / Hour" },
   { id: "lbs_hr", label: "Lbs / Hour" },
 ];
 
@@ -40,14 +42,22 @@ export function fmtAvgLbsPerBag(emp) {
 
 function rankValue(emp, rankBy) {
   switch (rankBy) {
+    case "processed":
+      return Number(emp.processed_bags_count) || 0;
+    case "processed_hr":
+      return emp.processed_bags_per_hour != null ? Number(emp.processed_bags_per_hour) : null;
     case "lbs":
       return Number(emp.total_completed_lbs) || 0;
     case "avg_lbs_bag":
       return avgLbsPerCompletedBag(emp);
     case "bags_hr":
-      return emp.bags_per_hour != null ? Number(emp.bags_per_hour) : null;
+      return emp.completed_bags_per_hour != null
+        ? Number(emp.completed_bags_per_hour)
+        : (emp.bags_per_hour != null ? Number(emp.bags_per_hour) : null);
     case "lbs_hr":
-      return emp.lbs_per_hour != null ? Number(emp.lbs_per_hour) : null;
+      return emp.processed_lbs_per_hour != null
+        ? Number(emp.processed_lbs_per_hour)
+        : (emp.lbs_per_hour != null ? Number(emp.lbs_per_hour) : null);
     case "bags":
     default:
       return Number(emp.completed_bags) || 0;
@@ -178,11 +188,11 @@ export function performanceTier(rank, total, { minBags = 1 } = {}) {
 }
 
 /** Sort employees for ranking display; null rates sort last. Client-side only — no API reload. */
-export function rankEmployees(employees, rankBy = "bags") {
+export function rankEmployees(employees, rankBy = "processed") {
   const list = [...(employees || [])];
   list.sort((a, b) => {
-    const aActive = Number(a?.completed_bags) > 0;
-    const bActive = Number(b?.completed_bags) > 0;
+    const aActive = Number(a?.processed_bags_count) > 0 || Number(a?.completed_bags) > 0;
+    const bActive = Number(b?.processed_bags_count) > 0 || Number(b?.completed_bags) > 0;
     if (aActive !== bActive) return aActive ? -1 : 1;
     const av = rankValue(a, rankBy);
     const bv = rankValue(b, rankBy);
@@ -192,10 +202,12 @@ export function rankEmployees(employees, rankBy = "bags") {
     if (bv !== av) return bv - av;
     return String(a.employee || "").localeCompare(String(b.employee || ""));
   });
-  const activeCount = list.filter((e) => Number(e?.completed_bags) > 0).length;
+  const activeCount = list.filter(
+    (e) => Number(e?.processed_bags_count) > 0 || Number(e?.completed_bags) > 0,
+  ).length;
   let rank = 0;
   return list.map((emp) => {
-    const active = Number(emp?.completed_bags) > 0;
+    const active = Number(emp?.processed_bags_count) > 0 || Number(emp?.completed_bags) > 0;
     const productivityRank = active ? ++rank : null;
     return {
       ...emp,
@@ -216,27 +228,33 @@ export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
       variant: "default",
     },
     {
-      key: "bags_completed",
-      label: "Total Bags Completed",
-      value: fmtSummaryNumber(summary.total_bags_completed, 0),
+      key: "bags_processed",
+      label: "Total Processed Today",
+      value: fmtSummaryNumber(summary.total_bags_processed, 0),
       variant: "wf",
     },
     {
-      key: "pounds_completed",
-      label: "Total Pounds Completed",
-      value: fmtSummaryNumber(summary.total_pounds_completed, 1),
+      key: "bags_completed",
+      label: "Total Completed Today",
+      value: fmtSummaryNumber(summary.total_bags_completed, 0),
+      variant: "snapshot",
+    },
+    {
+      key: "pending_completion",
+      label: "Pending Completion",
+      value: fmtSummaryNumber(summary.total_pending_completion, 0),
       variant: "hd",
     },
     {
-      key: "avg_bags_hr",
-      label: "Average Bags / Hour",
-      value: fmtSummaryNumber(summary.average_bags_per_hour, 2),
+      key: "avg_processed_hr",
+      label: "Avg Processed / Hour",
+      value: fmtSummaryNumber(summary.average_processed_bags_per_hour, 2),
       variant: "default",
     },
     {
-      key: "avg_lbs_hr",
-      label: "Average Pounds / Hour",
-      value: fmtSummaryNumber(summary.average_pounds_per_hour, 2),
+      key: "avg_completed_hr",
+      label: "Avg Completed / Hour",
+      value: fmtSummaryNumber(summary.average_completed_bags_per_hour, 2),
       variant: "default",
       sub: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
     },

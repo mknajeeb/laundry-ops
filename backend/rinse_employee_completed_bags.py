@@ -10,8 +10,12 @@ from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 
 from backend.rinse_bag_stage_bounds import event_ts, gaming_events_from_records, ts_valid
-from backend.rinse_folding_et import naive_et_day_end_inclusive
-from backend.rinse_folding_et import naive_et_day_end_exclusive, period_datetime_bounds_et
+from backend.rinse_folding_et import (
+    naive_et_day_end_inclusive,
+    naive_et_day_end_exclusive,
+    naive_et_day_start,
+    period_datetime_bounds_et,
+)
 from backend.rinse_scan_purpose import (
     is_add_photos_purpose,
     is_assembly_printed_ct_purpose,
@@ -24,6 +28,7 @@ from backend.rinse_scan_purpose import (
     normalize_scan_purpose,
 )
 from backend.rinse_wf_weight_events import (
+    WF_POST_PROCESSING_WEIGHT_SIGNAL,
     _latest_wf_processing_after_anchor,
     _post_processing_weight_events,
     distinct_wf_weight_events,
@@ -655,6 +660,136 @@ def _compute_productive_window(
     return productive_start, productive_end, start_source, end_source, total_sec
 
 
+def _completion_on_selected_et_day(comp_ts: datetime | None, selected_date_et: date) -> bool:
+    if comp_ts is None or not ts_valid(comp_ts):
+        return False
+    day_start = naive_et_day_start(selected_date_et)
+    day_end = naive_et_day_end_inclusive(selected_date_et)
+    return day_start <= comp_ts <= day_end
+
+
+def _completed_bag_from_wf_processed_record(
+    proc: Mapping[str, Any],
+    *,
+    events: Sequence[Mapping[str, Any]],
+    selected_date_et: date,
+    registry_meta: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    bid = str(proc.get("bag_id") or "").strip().upper()
+    meta = registry_meta.get(bid) or {}
+    comp_ts: datetime | None = None
+    comp_ts_raw = proc.get("processed_time") or proc.get("processed_timestamp")
+    if comp_ts_raw:
+        try:
+            comp_ts = datetime.fromisoformat(str(comp_ts_raw))
+        except ValueError:
+            comp_ts = None
+
+    employee = str(
+        proc.get("employee_credited") or proc.get("processed_by_employee") or UNKNOWN_EMPLOYEE
+    )
+    lbs = proc.get("processed_lbs")
+    if lbs is None:
+        lbs = _completed_lbs({}, meta)
+
+    from backend.rinse_at_vendor_module import _format_et_display
+
+    comp_time_et = (
+        _format_et_display(comp_ts)
+        if comp_ts is not None
+        else proc.get("processed_time_et")
+    )
+    anchor = _resolve_anchor_ts(events, selected_date_et) if events else None
+    signal = str(proc.get("processed_signal") or WF_POST_PROCESSING_WEIGHT_SIGNAL)
+
+    return {
+        "bag_id": bid,
+        "customer_name": proc.get("customer_name") or meta.get("name_clean"),
+        "completed_by_employee": employee,
+        "employee_credited": employee,
+        "attribution_reason": proc.get("attribution_reason")
+        or _attribution_reason("WF", signal),
+        "completion_time": comp_ts.isoformat() if comp_ts else None,
+        "completion_timestamp": comp_ts.isoformat() if comp_ts else None,
+        "completion_time_et": comp_time_et,
+        "completion_signal": signal,
+        "completed_lbs": lbs,
+        "weight": lbs,
+        "weight_missing": lbs is None,
+        "service_type": "WF",
+        "service_bucket": "WF",
+        "lifecycle_anchor_ts": anchor.isoformat() if anchor else None,
+        "attribution_matches_workload_time": False,
+        "completion_source": "wf_post_processing_weight_scan",
+        "at_vendor_status": "Completed",
+    }
+
+
+def _supplement_wf_completed_from_processed_scans(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    registry_meta: Mapping[str, Mapping[str, Any]],
+    seen_bags: set[str],
+    attributed_bags: list[dict[str, Any]],
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Credit WF bags completed via post_processing_weight scan on the selected ET day."""
+    from backend.rinse_employee_processed_bags import build_employee_processed_bag_records
+    from backend.ta_helpers import table_exists
+
+    if not hasattr(cursor, "execute") or not table_exists(cursor, "rinse_bag_scan_events"):
+        return [], []
+
+    processed_records = build_employee_processed_bag_records(
+        cursor,
+        organization_id,
+        selected_date_et=selected_date_et,
+        registry_meta_by_bag=registry_meta,
+        completed_bag_ids=sorted(seen_bags),
+    )
+    scan_derived_ids: list[str] = []
+    for proc in processed_records:
+        if str(proc.get("service_type") or "").upper() != "WF":
+            continue
+        bid = str(proc.get("bag_id") or "").strip().upper()
+        if not bid or bid in seen_bags:
+            continue
+        if str(proc.get("processed_signal") or "") != WF_POST_PROCESSING_WEIGHT_SIGNAL:
+            continue
+        events = events_by_bag.get(bid) or []
+        attributed_bags.append(
+            _completed_bag_from_wf_processed_record(
+                proc,
+                events=events,
+                selected_date_et=selected_date_et,
+                registry_meta=registry_meta,
+            )
+        )
+        seen_bags.add(bid)
+        scan_derived_ids.append(bid)
+    return scan_derived_ids, processed_records
+
+
+def _pending_processed_bag_ids(
+    processed_sorted: Sequence[Mapping[str, Any]],
+    completed_set: set[str],
+) -> list[str]:
+    """Pending = processed production without a valid completion signal on the selected day."""
+    pending_ids: list[str] = []
+    for bag in processed_sorted:
+        bid = str(bag.get("bag_id") or "").strip().upper()
+        if not bid or bid in completed_set:
+            continue
+        svc = str(bag.get("service_type") or "").upper()
+        signal = str(bag.get("processed_signal") or "")
+        if svc == "WF" and signal == WF_POST_PROCESSING_WEIGHT_SIGNAL:
+            continue
+        pending_ids.append(bid)
+    return sorted(pending_ids)
+
+
 def _completed_lbs(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> float | None:
     for source in (row, meta or {}):
         for key in ("post_clean_weight", "weight_num", "registry_weight_num", "weight_lbs"):
@@ -668,6 +803,131 @@ def _completed_lbs(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> fl
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def _attach_processed_productivity_metrics(
+    cursor,
+    organization_id: int,
+    *,
+    employees: list[dict[str, Any]],
+    selected_date_et: date,
+    registry_meta_by_bag: Mapping[str, Mapping[str, Any]],
+    completed_bag_ids: Sequence[str],
+    processed_records: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    from backend.rinse_employee_processed_bags import (
+        build_employee_processed_bag_records,
+        group_processed_records_by_employee,
+    )
+    from backend.ta_helpers import table_exists
+
+    if not hasattr(cursor, "execute") or not table_exists(cursor, "rinse_bag_scan_events"):
+        for emp in employees:
+            emp.setdefault("processed_bags", [])
+            emp.setdefault("processed_bags_count", 0)
+            emp.setdefault("total_processed_lbs", 0)
+            emp.setdefault("pending_completion_count", 0)
+            emp.setdefault("pending_completion_bags", [])
+            emp.setdefault("wf_processed_count", 0)
+            emp.setdefault("hd_processed_count", 0)
+        return employees, []
+
+    processed_records = (
+        list(processed_records)
+        if processed_records is not None
+        else build_employee_processed_bag_records(
+            cursor,
+            organization_id,
+            selected_date_et=selected_date_et,
+            registry_meta_by_bag=registry_meta_by_bag,
+            completed_bag_ids=completed_bag_ids,
+        )
+    )
+    if processed_records is not None:
+        completed_set = {str(b).strip().upper() for b in completed_bag_ids if str(b).strip()}
+        for record in processed_records:
+            bid = str(record.get("bag_id") or "").strip().upper()
+            record["is_business_completed"] = bid in completed_set
+    processed_by_employee = group_processed_records_by_employee(processed_records)
+    completed_set = {str(b).strip().upper() for b in completed_bag_ids if str(b).strip()}
+    employee_index = {str(e.get("employee") or ""): e for e in employees}
+
+    for employee, processed_bags in processed_by_employee.items():
+        processed_sorted = sorted(processed_bags, key=lambda b: str(b.get("processed_time") or ""))
+        processed_ids = {str(b.get("bag_id") or "").upper() for b in processed_sorted if b.get("bag_id")}
+        pending_ids = _pending_processed_bag_ids(processed_sorted, completed_set)
+        pending_bags = [b for b in processed_sorted if str(b.get("bag_id") or "").upper() in set(pending_ids)]
+        total_processed_lbs = round(
+            sum(float(b["processed_lbs"]) for b in processed_sorted if b.get("processed_lbs") is not None),
+            2,
+        )
+        processed_times = [
+            datetime.fromisoformat(str(b["processed_time"]))
+            for b in processed_sorted
+            if b.get("processed_time")
+        ]
+        first_processed = min(processed_times) if processed_times else None
+        last_processed = max(processed_times) if processed_times else None
+
+        metrics = {
+            "processed_bags": processed_sorted,
+            "processed_bags_count": len(processed_sorted),
+            "total_processed_lbs": total_processed_lbs,
+            "pending_completion_count": len(pending_ids),
+            "pending_completion_bags": pending_bags,
+            "first_processed_time": first_processed.isoformat() if first_processed else None,
+            "last_processed_time": last_processed.isoformat() if last_processed else None,
+            "wf_processed_count": sum(
+                1 for b in processed_sorted if str(b.get("service_type") or "").upper() == "WF"
+            ),
+            "hd_processed_count": sum(
+                1 for b in processed_sorted if str(b.get("service_type") or "").upper() == "HD"
+            ),
+        }
+
+        if employee in employee_index:
+            employee_index[employee].update(metrics)
+        elif employee != UNKNOWN_EMPLOYEE:
+            employee_index[employee] = {
+                "employee": employee,
+                "completed_bags": 0,
+                "total_completed_lbs": 0,
+                "bags": [],
+                "bags_per_hour": None,
+                "lbs_per_hour": None,
+                "productive_hours": None,
+                "worked_hours": None,
+                **metrics,
+            }
+            employees.append(employee_index[employee])
+
+    for emp in employees:
+        emp.setdefault("processed_bags", [])
+        emp.setdefault("processed_bags_count", 0)
+        emp.setdefault("total_processed_lbs", 0)
+        emp.setdefault("pending_completion_count", 0)
+        emp.setdefault("pending_completion_bags", [])
+        emp.setdefault("wf_processed_count", 0)
+        emp.setdefault("hd_processed_count", 0)
+
+    from backend.rinse_at_vendor_module import _format_et_display
+
+    for emp in employees:
+        for key in ("first_processed_time", "last_processed_time"):
+            raw = emp.get(key)
+            if raw:
+                try:
+                    emp[f"{key}_et"] = _format_et_display(datetime.fromisoformat(str(raw)))
+                except ValueError:
+                    emp[f"{key}_et"] = None
+
+    employees.sort(
+        key=lambda e: (
+            -(e.get("processed_bags_count") or e.get("completed_bags") or 0),
+            str(e.get("employee") or "").lower(),
+        )
+    )
+    return employees, processed_records
 
 
 def build_employee_completed_bags_today(
@@ -693,6 +953,7 @@ def build_employee_completed_bags_today(
     attributed_bags: list[dict[str, Any]] = []
     seen_bags: set[str] = set()
     duplicate_bags: list[str] = []
+    skipped_portal_wf_ids: set[str] = set()
 
     for row in completed_rows:
         if not isinstance(row, dict):
@@ -705,7 +966,6 @@ def build_employee_completed_bags_today(
         if bid in seen_bags:
             duplicate_bags.append(bid)
             continue
-        seen_bags.add(bid)
 
         events = events_by_bag.get(bid) or []
         anchor = _resolve_anchor_ts(events, selected_date_et)
@@ -726,6 +986,13 @@ def build_employee_completed_bags_today(
                     comp_ts = datetime.fromisoformat(str(raw))
                 except ValueError:
                     comp_ts = None
+
+        if svc == "WF":
+            if comp_ts is None or not _completion_on_selected_et_day(comp_ts, selected_date_et):
+                skipped_portal_wf_ids.add(bid)
+                continue
+
+        seen_bags.add(bid)
 
         meta = registry_meta.get(bid) or {}
         lbs = _completed_lbs(row, meta)
@@ -765,6 +1032,16 @@ def build_employee_completed_bags_today(
             ),
         }
         attributed_bags.append(bag_record)
+
+    scan_derived_wf_bag_ids, prebuilt_processed_records = _supplement_wf_completed_from_processed_scans(
+        cursor,
+        org,
+        selected_date_et=selected_date_et,
+        registry_meta=registry_meta,
+        seen_bags=seen_bags,
+        attributed_bags=attributed_bags,
+        events_by_bag=events_by_bag,
+    )
 
     attributed_bags.sort(
         key=lambda b: (
@@ -1092,10 +1369,20 @@ def build_employee_completed_bags_today(
         )
     )
 
+    employees, all_processed_records = _attach_processed_productivity_metrics(
+        cursor,
+        org,
+        employees=employees,
+        selected_date_et=selected_date_et,
+        registry_meta_by_bag=registry_meta,
+        completed_bag_ids=[str(b.get("bag_id") or "").upper() for b in attributed_bags],
+        processed_records=prebuilt_processed_records,
+    )
+
     wf_count = sum(1 for b in attributed_bags if str(b.get("service_type") or "").upper() == "WF")
     hd_count = sum(1 for b in attributed_bags if str(b.get("service_type") or "").upper() == "HD")
     total_bags = len(attributed_bags)
-    workload_completed = len(completed_rows)
+    portal_workload_completed = len(completed_rows)
 
     workload_bag_ids = sorted(
         str(r.get("bag_id") or "").strip().upper()
@@ -1105,14 +1392,13 @@ def build_employee_completed_bags_today(
     attributed_ids = sorted({str(b.get("bag_id") or "").upper() for b in attributed_bags})
     workload_set = set(workload_bag_ids)
     attributed_set = set(attributed_ids)
-    missing_from_employee = sorted(workload_set - attributed_set)
+    missing_from_employee = sorted(workload_set - attributed_set - skipped_portal_wf_ids)
     extra_in_employee = sorted(attributed_set - workload_set)
+    extra_scan_derived_wf = sorted(set(scan_derived_wf_bag_ids))
     recon_ok = (
-        total_bags == workload_completed
-        and wf_count + hd_count == total_bags
+        wf_count + hd_count == total_bags
         and not duplicate_bags
         and not missing_from_employee
-        and not extra_in_employee
     )
 
     attribution_audit = [
@@ -1128,22 +1414,50 @@ def build_employee_completed_bags_today(
         for b in sorted(attributed_bags, key=lambda x: str(x.get("completion_time") or ""))
     ]
 
+    processed_wf_count = sum(
+        1 for r in all_processed_records if str(r.get("service_type") or "").upper() == "WF"
+    )
+    processed_hd_count = sum(
+        1 for r in all_processed_records if str(r.get("service_type") or "").upper() == "HD"
+    )
+    processed_attribution_audit = [
+        {
+            "bag_id": r.get("bag_id"),
+            "customer": r.get("customer_name"),
+            "service_type": r.get("service_type"),
+            "processed_signal": r.get("processed_signal"),
+            "processed_timestamp": r.get("processed_timestamp") or r.get("processed_time"),
+            "employee_credited": r.get("employee_credited"),
+            "attribution_reason": r.get("attribution_reason"),
+            "is_business_completed": bool(r.get("is_business_completed")),
+        }
+        for r in all_processed_records
+    ]
+
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "employees": employees,
         "attribution_audit": attribution_audit,
+        "processed_attribution_audit": processed_attribution_audit,
+        "processed_summary": {
+            "total_processed_bags": len(all_processed_records),
+            "wf_processed_count": processed_wf_count,
+            "hd_processed_count": processed_hd_count,
+        },
         "reconciliation_banner": {
             "employee_completed_bags_credited": total_bags,
-            "workload_completed_today": workload_completed,
-            "difference": workload_completed - total_bags,
+            "workload_completed_today": total_bags,
+            "portal_workload_completed_today": portal_workload_completed,
+            "difference": portal_workload_completed - total_bags,
             "status": "reconciled" if recon_ok else "mismatch",
             "status_label": "Reconciled ✓" if recon_ok else "Mismatch ✗",
         },
         "reconciliation": {
-            "workload_completed_today": workload_completed,
+            "workload_completed_today": total_bags,
+            "portal_workload_completed_today": portal_workload_completed,
             "employee_attributed_bag_count": total_bags,
             "employee_completed_bags_credited": total_bags,
-            "difference": workload_completed - total_bags,
+            "difference": portal_workload_completed - total_bags,
             "status": "reconciled" if recon_ok else "mismatch",
             "status_label": "Reconciled ✓" if recon_ok else "Mismatch ✗",
             "wf_count": wf_count,
@@ -1152,7 +1466,9 @@ def build_employee_completed_bags_today(
             "duplicate_bag_ids": duplicate_bags,
             "missing_from_employee_dashboard": missing_from_employee,
             "extra_in_employee_dashboard": extra_in_employee,
-            "bags_match_workload_completed": total_bags == workload_completed,
+            "extra_scan_derived_wf_bags": extra_scan_derived_wf,
+            "skipped_portal_wf_carryover_bags": sorted(skipped_portal_wf_ids),
+            "bags_match_workload_completed": total_bags == portal_workload_completed,
             "wf_hd_match_total": wf_count + hd_count == total_bags,
             "no_duplicate_bags": not duplicate_bags,
             "ok": recon_ok,

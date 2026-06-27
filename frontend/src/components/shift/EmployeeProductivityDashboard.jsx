@@ -72,21 +72,29 @@ function EmployeeSummaryPanel({ emp }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
   const startParts = productivityStartDisplayParts(emp, formatFriendlyEtWall);
-  const endParts = productivityEndDisplayParts(emp, formatFriendlyEtWall);
+  const endParts = emp.last_processed_time || emp.last_processed_time_et
+    ? {
+        current: formatFriendlyEtWall(emp.last_processed_time_et || emp.last_processed_time),
+        original: null,
+      }
+    : productivityEndDisplayParts(emp, formatFriendlyEtWall);
   const items = [
     {
       label: productivityStartLabel(emp),
       value: <ProductivityTimeValue parts={startParts} />,
     },
     {
-      label: productivityEndLabel(emp),
+      label: emp.last_processed_time ? "Last Processed" : productivityEndLabel(emp),
       value: <ProductivityTimeValue parts={endParts} />,
     },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
-    { label: "Bags", value: emp.completed_bags ?? 0 },
-    { label: "Pounds", value: emp.total_completed_lbs ?? 0 },
-    { label: "Bags / Hr", value: fmtProductivityRate(emp.bags_per_hour, missingClockIn) },
-    { label: "Lbs / Hr", value: fmtProductivityRate(emp.lbs_per_hour, missingClockIn) },
+    { label: "Processed Today", value: emp.processed_bags_count ?? 0 },
+    { label: "Completed Today", value: emp.completed_bags ?? 0 },
+    { label: "Pending Completion", value: emp.pending_completion_count ?? 0 },
+    { label: "Processed / Hr", value: fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn) },
+    { label: "Completed / Hr", value: fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn) },
+    { label: "Processed Lbs", value: emp.total_processed_lbs ?? 0 },
+    { label: "Completed Lbs", value: emp.total_completed_lbs ?? 0 },
   ];
 
   return (
@@ -155,10 +163,10 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              {emp.completed_bags ?? 0} bags · {emp.total_completed_lbs ?? 0} lbs · {fmtAvgLbsPerBag(emp)} avg lbs/bag
+              {emp.processed_bags_count ?? 0} processed · {emp.completed_bags ?? 0} completed · {emp.pending_completion_count ?? 0} pending
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {fmtProductivityRate(emp.bags_per_hour, missingClockIn)} bags/hr · {fmtProductivityRate(emp.lbs_per_hour, missingClockIn)} lbs/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
+              {fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)} processed/hr · {fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn)} completed/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
             </Typography>
           </Box>
           <ExpandMoreIcon
@@ -177,6 +185,8 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
           <EmployeeSummaryPanel emp={emp} />
           <EmployeeProductivityDrilldown
             bags={emp.bags}
+            processedBags={emp.processed_bags}
+            pendingBags={emp.pending_completion_bags}
             referenceDateEt={selectedDate}
             loading={loading}
           />
@@ -199,7 +209,7 @@ export default function EmployeeProductivityDashboard({
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [expandedEmployee, setExpandedEmployee] = useState(null);
   const [reconOpen, setReconOpen] = useState(false);
-  const [rankBy, setRankBy] = useState("bags");
+  const [rankBy, setRankBy] = useState("processed");
   const [datePreset, setDatePreset] = useState(() => resolvePreset(initialDateEt));
   const [customDate, setCustomDate] = useState(initialDateEt || todayRange().start);
   const [activeDateEt, setActiveDateEt] = useState(initialDateEt || todayRange().start);
@@ -520,11 +530,11 @@ export default function EmployeeProductivityDashboard({
                 <TableRow>
                   <TableCell sx={{ fontWeight: 700, width: 52, py: 1.25 }}>Rank</TableCell>
                   <TableCell sx={{ fontWeight: 700, py: 1.25 }}>Employee</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Bags</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Lbs</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Avg Lbs / Bag</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Bags / Hr</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Lbs / Hr</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Processed</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Pending</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Processed / Hr</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed / Hr</TableCell>
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Productive Hours</TableCell>
                   <TableCell padding="checkbox" sx={{ py: 1.25 }} />
                 </TableRow>
@@ -554,18 +564,11 @@ export default function EmployeeProductivityDashboard({
                           {emp.productivity_rank ?? "—"}
                         </TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>{emp.employee}</TableCell>
+                        <TableCell align="right">{emp.processed_bags_count ?? 0}</TableCell>
                         <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
-                        <TableCell align="right">
-                          {emp.total_completed_lbs ?? 0}
-                          {emp.missing_weight_count > 0 ? (
-                            <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.5, display: "block" }}>
-                              ({emp.missing_weight_count} no wt)
-                            </Typography>
-                          ) : null}
-                        </TableCell>
-                        <TableCell align="right">{fmtAvgLbsPerBag(emp)}</TableCell>
-                        <TableCell align="right">{fmtProductivityRate(emp.bags_per_hour, missingClockIn)}</TableCell>
-                        <TableCell align="right">{fmtProductivityRate(emp.lbs_per_hour, missingClockIn)}</TableCell>
+                        <TableCell align="right">{emp.pending_completion_count ?? 0}</TableCell>
+                        <TableCell align="right">{fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)}</TableCell>
+                        <TableCell align="right">{fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn)}</TableCell>
                         <TableCell align="right">
                           {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)}
                         </TableCell>
@@ -587,6 +590,8 @@ export default function EmployeeProductivityDashboard({
                               <EmployeeSummaryPanel emp={emp} />
                               <EmployeeProductivityDrilldown
                                 bags={emp.bags}
+                                processedBags={emp.processed_bags}
+                                pendingBags={emp.pending_completion_bags}
                                 referenceDateEt={selectedDate}
                                 loading={loading}
                               />

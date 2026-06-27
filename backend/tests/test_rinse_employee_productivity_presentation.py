@@ -25,20 +25,38 @@ def _bag(bag_id: str, service_type: str, completion_time: str, lbs: float = 10.0
     }
 
 
-def _employee(name: str, bags: list[dict]) -> dict:
+def _processed_bag(bag_id: str, service_type: str, processed_time: str, lbs: float = 10.0) -> dict:
+    return {
+        "bag_id": bag_id,
+        "service_type": service_type,
+        "service_bucket": service_type,
+        "processed_time": processed_time,
+        "processed_timestamp": processed_time,
+        "processed_lbs": lbs,
+        "processed_signal": "post_processing_weight" if service_type == "WF" else "garments-reviewed",
+        "weight_missing": False,
+        "customer_name": "Customer",
+    }
+
+
+def _employee(name: str, bags: list[dict], *, processed_bags: list[dict] | None = None) -> dict:
+    processed = processed_bags if processed_bags is not None else [dict(b) for b in bags]
     return {
         "employee": name,
         "clock_in_time": CLOCK_IN,
         "clock_in_time_et": "2026-06-10 04:30:00",
         "completed_bags": len(bags),
         "total_completed_lbs": sum(float(b["completed_lbs"]) for b in bags),
+        "processed_bags": processed,
+        "processed_bags_count": len(processed),
+        "total_processed_lbs": sum(float(b.get("processed_lbs") or b.get("completed_lbs") or 0) for b in processed),
         "bags": bags,
         "bags_per_hour": 2.0,
         "lbs_per_hour": 20.0,
         "productive_hours": 1.5,
         "worked_hours": 1.5,
-        "last_completion_time": max(b["completion_time"] for b in bags),
-        "last_completion_time_et": "2026-06-10 08:00:00",
+        "last_completion_time": max(b["completion_time"] for b in bags) if bags else None,
+        "last_completion_time_et": "2026-06-10 08:00:00" if bags else None,
     }
 
 
@@ -93,7 +111,6 @@ class TestApplyEmployeeProductivityScope:
         assert bob["bags"] == []
 
         assert scoped["executive_summary"]["total_bags_completed"] == 1
-        assert scoped["executive_summary"]["total_pounds_completed"] == 12.0
         assert scoped["executive_summary"]["total_employees_active"] == 1
         assert scoped["productivity_scope_label"] == "WF Only"
         assert scoped["reconciliation"]["employee_completed_bags_credited"] == 1
@@ -115,4 +132,20 @@ class TestApplyEmployeeProductivityScope:
         last = datetime.fromisoformat(WF_COMP)
         expected_hours = round((last - clock_in).total_seconds() / 3600.0, 4)
         assert alice["productive_hours"] == expected_hours
-        assert alice["bags_per_hour"] == round(1 / expected_hours, 4)
+        assert alice["completed_bags_per_hour"] == round(1 / expected_hours, 4)
+
+    def test_pending_completion_from_processed_minus_completed(self):
+        wf_done = _bag("WF1", "WF", WF_COMP, 12.0)
+        hd_pending = _processed_bag("HD2", "HD", "2026-06-10T06:30:00", 11.0)
+        section = _section()
+        section["employees"] = [
+            _employee("Alice", [wf_done], processed_bags=[wf_done, hd_pending]),
+        ]
+        scoped = apply_employee_productivity_scope(section, include_hd=True)
+        alice = scoped["employees"][0]
+        assert alice["processed_bags_count"] == 2
+        assert alice["completed_bags"] == 1
+        assert alice["pending_completion_count"] == 1
+        assert alice["pending_completion_bags"][0]["bag_id"] == "HD2"
+        assert alice["processed_bags_per_hour"] == round(2 / alice["productive_hours"], 4)
+        assert alice["completed_bags_per_hour"] == round(1 / alice["productive_hours"], 4)

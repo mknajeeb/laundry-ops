@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   Box,
+  Chip,
   Collapse,
   Link,
   Paper,
@@ -18,48 +19,70 @@ import {
 import ShiftBagRecordRow from "./ShiftBagRecordRow";
 import { formatFriendlyEtWall } from "../../utils/rinseTimeFormat";
 
-function completionTs(bag) {
-  return String(bag.completion_time || bag.completion_timestamp || "");
+function eventTs(bag) {
+  return String(
+    bag.processed_time
+    || bag.processed_timestamp
+    || bag.completion_time
+    || bag.completion_timestamp
+    || "",
+  );
 }
 
-function BagMobileCard({ bag, expanded, onToggle, referenceDateEt }) {
+function normalizeProcessedBag(bag) {
+  return {
+    ...bag,
+    completion_time: bag.completion_time || bag.processed_time || bag.processed_timestamp,
+    completion_time_et: bag.completion_time_et || bag.processed_time_et,
+    completion_signal: bag.completion_signal || bag.processed_signal,
+    completed_lbs: bag.completed_lbs ?? bag.processed_lbs,
+  };
+}
+
+function BagMobileCard({ bag, expanded, onToggle, referenceDateEt, statusLabel }) {
+  const normalized = normalizeProcessedBag(bag);
   return (
     <Paper variant="outlined" sx={{ p: 1.1, borderRadius: 1.5 }}>
       <Stack spacing={0.5}>
         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
           <Box sx={{ minWidth: 0 }}>
-            <Link
-              component="button"
-              type="button"
-              underline="hover"
-              fontWeight={800}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggle();
-              }}
-              sx={{ fontSize: "0.95rem", wordBreak: "break-all", textAlign: "left" }}
-            >
-              {bag.bag_id}
-            </Link>
+            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+              <Link
+                component="button"
+                type="button"
+                underline="hover"
+                fontWeight={800}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle();
+                }}
+                sx={{ fontSize: "0.95rem", wordBreak: "break-all", textAlign: "left" }}
+              >
+                {bag.bag_id}
+              </Link>
+              {statusLabel ? (
+                <Chip label={statusLabel} size="small" sx={{ fontWeight: 700, fontSize: "0.7rem" }} />
+              ) : null}
+            </Stack>
             <Typography variant="body2" color="text.secondary">
-              {formatFriendlyEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
+              {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
             </Typography>
           </Box>
           <Typography variant="body2" fontWeight={700} sx={{ whiteSpace: "nowrap" }}>
-            {bag.completed_lbs != null ? `${bag.completed_lbs} lbs` : "—"}
+            {normalized.completed_lbs != null ? `${normalized.completed_lbs} lbs` : "—"}
           </Typography>
         </Stack>
         <Typography variant="body2" sx={{ wordBreak: "break-word" }}>
           {bag.customer_name || "—"}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          {bag.service_type || bag.service_bucket || "—"} · {bag.completion_signal || "—"}
+          {bag.service_type || bag.service_bucket || "—"} · {normalized.completion_signal || "—"}
         </Typography>
       </Stack>
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{ mt: 1 }}>
           <ShiftBagRecordRow
-            row={bag}
+            row={normalized}
             variant="at_vendor"
             referenceDateEt={referenceDateEt}
             defaultOpen
@@ -71,9 +94,113 @@ function BagMobileCard({ bag, expanded, onToggle, referenceDateEt }) {
   );
 }
 
-/** Phase 1 drilldown — chronological bag table + clickable bag expand (frozen attribution). */
+function BagTableSection({
+  title,
+  bags,
+  expandedBagId,
+  setExpandedBagId,
+  referenceDateEt,
+  statusForBag,
+}) {
+  const sortedBags = useMemo(
+    () => [...(bags || [])].sort((a, b) => eventTs(a).localeCompare(eventTs(b))),
+    [bags],
+  );
+  const expandedBag = sortedBags.find((b) => b.bag_id === expandedBagId);
+
+  if (!sortedBags.length) {
+    return (
+      <Box sx={{ mb: 1.25 }}>
+        <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+          {title}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          None
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={{ mb: 1.25 }}>
+      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
+        {title}
+      </Typography>
+      <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 1.5, overflowX: "auto" }}>
+        <Table size="small" aria-label={title}>
+          <TableHead>
+            <TableRow>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Time</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Bag ID</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Customer</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Service</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }} align="right">Weight</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Signal</TableCell>
+              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Status</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {sortedBags.map((bag) => {
+              const normalized = normalizeProcessedBag(bag);
+              const statusLabel = statusForBag ? statusForBag(bag) : null;
+              return (
+                <TableRow
+                  key={`${title}-${bag.bag_id}`}
+                  selected={expandedBagId === bag.bag_id}
+                  hover
+                  sx={{ "& td": { py: 1.1 } }}
+                >
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    {formatFriendlyEtWall(normalized.completion_time_et || normalized.completion_time)}
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      component="button"
+                      type="button"
+                      underline="hover"
+                      fontWeight={700}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id));
+                      }}
+                    >
+                      {bag.bag_id}
+                    </Link>
+                  </TableCell>
+                  <TableCell sx={{ maxWidth: 180, wordBreak: "break-word" }}>{bag.customer_name || "—"}</TableCell>
+                  <TableCell>{bag.service_type || bag.service_bucket || "—"}</TableCell>
+                  <TableCell align="right">
+                    {normalized.completed_lbs != null ? `${normalized.completed_lbs} lbs` : "—"}
+                  </TableCell>
+                  <TableCell>{normalized.completion_signal || "—"}</TableCell>
+                  <TableCell>{statusLabel || "—"}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+      {expandedBag ? (
+        <Box sx={{ mt: 1 }}>
+          <ShiftBagRecordRow
+            key={expandedBag.bag_id}
+            row={normalizeProcessedBag(expandedBag)}
+            variant="at_vendor"
+            referenceDateEt={referenceDateEt}
+            defaultOpen
+            friendlyTimeDisplay
+          />
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+/** Drilldown for processed vs completed employee work. */
 export default function EmployeeProductivityDrilldown({
   bags,
+  processedBags,
+  pendingBags,
   referenceDateEt,
   loading = false,
 }) {
@@ -81,10 +208,14 @@ export default function EmployeeProductivityDrilldown({
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [expandedBagId, setExpandedBagId] = useState(null);
 
-  const sortedBags = useMemo(
-    () => [...(bags || [])].sort((a, b) => completionTs(a).localeCompare(completionTs(b))),
+  const completedIds = useMemo(
+    () => new Set((bags || []).map((bag) => String(bag.bag_id || "").toUpperCase())),
     [bags],
   );
+  const processed = processedBags || [];
+  const pending = pendingBags || (processed.filter(
+    (bag) => !completedIds.has(String(bag.bag_id || "").toUpperCase()),
+  ));
 
   if (loading) {
     return (
@@ -93,30 +224,33 @@ export default function EmployeeProductivityDrilldown({
       </Typography>
     );
   }
-  if (!sortedBags.length) {
+  if (!processed.length && !(bags || []).length) {
     return (
       <Typography variant="body2" color="text.secondary">
-        No completed bags for this employee.
+        No processed bags for this employee.
       </Typography>
     );
   }
 
-  const expandedBag = sortedBags.find((b) => b.bag_id === expandedBagId);
+  const statusForBag = (bag) => (
+    completedIds.has(String(bag.bag_id || "").toUpperCase()) ? "Completed" : "Pending completion"
+  );
 
   if (isMobile) {
     return (
       <Box sx={{ py: 0.5 }}>
         <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-          Completed Bags
+          Processed Bags
         </Typography>
         <Stack spacing={1}>
-          {sortedBags.map((bag) => (
+          {[...processed].sort((a, b) => eventTs(a).localeCompare(eventTs(b))).map((bag) => (
             <BagMobileCard
-              key={bag.bag_id}
+              key={`processed-${bag.bag_id}`}
               bag={bag}
               expanded={expandedBagId === bag.bag_id}
               onToggle={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
               referenceDateEt={referenceDateEt}
+              statusLabel={statusForBag(bag)}
             />
           ))}
         </Stack>
@@ -126,69 +260,32 @@ export default function EmployeeProductivityDrilldown({
 
   return (
     <Box sx={{ py: 0.5 }}>
-      <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-        Completed Bags
-      </Typography>
-      <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 1.5, overflowX: "auto" }}>
-        <Table size="small" aria-label="Employee completed bags drilldown">
-          <TableHead>
-            <TableRow>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Completion Time</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Bag ID</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Customer</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Service</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }} align="right">Weight</TableCell>
-              <TableCell sx={{ fontWeight: 700, py: 1.1 }}>Completion Signal</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {sortedBags.map((bag) => (
-              <TableRow
-                key={bag.bag_id}
-                selected={expandedBagId === bag.bag_id}
-                hover
-                sx={{ "& td": { py: 1.1 } }}
-              >
-                <TableCell sx={{ whiteSpace: "nowrap" }}>
-                  {formatFriendlyEtWall(bag.completion_time_et || bag.completion_time || bag.completion_timestamp)}
-                </TableCell>
-                <TableCell>
-                  <Link
-                    component="button"
-                    type="button"
-                    underline="hover"
-                    fontWeight={700}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id));
-                    }}
-                  >
-                    {bag.bag_id}
-                  </Link>
-                </TableCell>
-                <TableCell sx={{ maxWidth: 180, wordBreak: "break-word" }}>{bag.customer_name || "—"}</TableCell>
-                <TableCell>{bag.service_type || bag.service_bucket || "—"}</TableCell>
-                <TableCell align="right">
-                  {bag.completed_lbs != null ? `${bag.completed_lbs} lbs` : "—"}
-                </TableCell>
-                <TableCell>{bag.completion_signal || "—"}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-      {expandedBag ? (
-        <Box sx={{ mt: 1 }}>
-          <ShiftBagRecordRow
-            key={expandedBag.bag_id}
-            row={expandedBag}
-            variant="at_vendor"
-            referenceDateEt={referenceDateEt}
-            defaultOpen
-            friendlyTimeDisplay
-          />
-        </Box>
+      <BagTableSection
+        title={`Processed Bags (${processed.length})`}
+        bags={processed}
+        expandedBagId={expandedBagId}
+        setExpandedBagId={setExpandedBagId}
+        referenceDateEt={referenceDateEt}
+        statusForBag={statusForBag}
+      />
+      {pending.length ? (
+        <BagTableSection
+          title={`Pending Completion (${pending.length})`}
+          bags={pending}
+          expandedBagId={expandedBagId}
+          setExpandedBagId={setExpandedBagId}
+          referenceDateEt={referenceDateEt}
+          statusForBag={() => "Pending completion"}
+        />
       ) : null}
+      <BagTableSection
+        title={`Completed Bags (${(bags || []).length})`}
+        bags={bags}
+        expandedBagId={expandedBagId}
+        setExpandedBagId={setExpandedBagId}
+        referenceDateEt={referenceDateEt}
+        statusForBag={() => "Completed"}
+      />
     </Box>
   );
 }
