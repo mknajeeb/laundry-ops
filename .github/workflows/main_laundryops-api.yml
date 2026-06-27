@@ -37,6 +37,7 @@ jobs:
           python -m venv antenv
           source antenv/bin/activate
           pip install -r requirements.txt
+          pip install pytest
 
       - name: Verify files that must reach Azure
         run: |
@@ -51,7 +52,7 @@ jobs:
       - name: Daily upload checkout regression (required)
         run: |
           source antenv/bin/activate
-          pytest backend/tests/test_daily_upload_checkout_regression.py -q --tb=short
+          python -m pytest backend/tests/test_daily_upload_checkout_regression.py -q --tb=short
 
       - name: Ensure startup.sh is executable
         run: chmod +x startup.sh
