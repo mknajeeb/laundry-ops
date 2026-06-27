@@ -1,12 +1,17 @@
 import { resolveIssuerEntity } from "./issuerProfiles";
 
+export function isWashmateIssuer(prefill) {
+  return resolveIssuerEntity(prefill?.issued_by_entity) === "washmate";
+}
+
 export function contractorLetterheadClassName(prefill) {
-  const isWashmate = resolveIssuerEntity(prefill?.issued_by_entity) === "washmate";
-  return isWashmate ? "cform-letterhead cform-letterhead--washmate" : "cform-letterhead";
+  return isWashmateIssuer(prefill)
+    ? "cform-letterhead cform-letterhead--washmate"
+    : "cform-letterhead";
 }
 
 export function contractorLogoClassName(prefill, mini = false) {
-  const isWashmate = resolveIssuerEntity(prefill?.issued_by_entity) === "washmate";
+  const isWashmate = isWashmateIssuer(prefill);
   if (mini) {
     return isWashmate ? "cform-logo-mini cform-logo-mini-washmate" : "cform-logo-mini";
   }

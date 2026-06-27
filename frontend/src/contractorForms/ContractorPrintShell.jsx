@@ -1,6 +1,10 @@
 import ContractorPrintLogo from "./ContractorPrintLogo";
 import { companyContactMiniText, resolveCompanyContact } from "./companyContact";
-import { contractorLetterheadClassName, contractorLogoClassName } from "./contractorLetterhead";
+import {
+  contractorLetterheadClassName,
+  contractorLogoClassName,
+  isWashmateIssuer,
+} from "./contractorLetterhead";
 import { contractorLogoSrc, EMBEDDED_VEEWASH_LOGO } from "./contractorLogo";
 
 function escapeHtml(s) {
@@ -14,15 +18,17 @@ function escapeHtml(s) {
 export function miniHeadHtml(prefill) {
   const logoSrc = contractorLogoSrc(prefill);
   const logoClass = contractorLogoClassName(prefill, true);
+  const washmate = isWashmateIssuer(prefill);
   const company = escapeHtml(prefill?.company_name || "VeeWash");
   const contact = escapeHtml(companyContactMiniText(prefill));
+  const companyHtml = washmate ? "" : `<span class="cform-mini-company">${company}</span>`;
   const contactHtml = contact
     ? `<span class="cform-mini-contact">${contact}</span>`
     : "";
   return (
     `<div class="cform-mini-head">` +
     `<img src="${logoSrc}" alt="" class="${logoClass}" onerror="this.onerror=null;this.src='${EMBEDDED_VEEWASH_LOGO}'" />` +
-    `<span class="cform-mini-company">${company}</span>` +
+    companyHtml +
     contactHtml +
     `</div>`
   );
@@ -30,6 +36,7 @@ export function miniHeadHtml(prefill) {
 
 export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false }) {
   const company = prefill?.company_name || "VeeWash";
+  const washmate = isWashmateIssuer(prefill);
   const { address, phone, website, websiteLabel, showWebsite, showPhone } = resolveCompanyContact(prefill);
   const logoClass = contractorLogoClassName(prefill, mini);
   const miniContact = companyContactMiniText(prefill);
@@ -38,7 +45,7 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
     return (
       <div className="cform-mini-head">
         <ContractorPrintLogo prefill={prefill} className={logoClass} />
-        <span className="cform-mini-company">{company}</span>
+        {!washmate ? <span className="cform-mini-company">{company}</span> : null}
         {miniContact ? <span className="cform-mini-contact">{miniContact}</span> : null}
       </div>
     );
@@ -47,8 +54,12 @@ export function ContractorPrintLetterhead({ prefill, documentTitle, mini = false
   return (
     <header className={contractorLetterheadClassName(prefill)}>
       <ContractorPrintLogo prefill={prefill} className={logoClass} />
-      <div className="cform-letterhead-text">
-        <div className="cform-company-name">{company}</div>
+      <div
+        className={
+          washmate ? "cform-letterhead-text cform-letterhead-text--washmate" : "cform-letterhead-text"
+        }
+      >
+        {!washmate ? <div className="cform-company-name">{company}</div> : null}
         <div className="cform-company-address">{address}</div>
         {showPhone || showWebsite ? (
           <div className="cform-company-contact">

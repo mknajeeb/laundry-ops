@@ -45,20 +45,27 @@
 .cform-letterhead--washmate {
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.1in;
+  gap: 0.08in;
 }
 
 .cform-letterhead--washmate .cform-logo-washmate {
-  width: 2.4in;
+  width: auto;
+  max-width: 3.25in;
   height: auto;
   min-width: unset;
-  max-height: 0.62in;
+  min-height: unset;
+  max-height: 0.78in;
   object-fit: contain;
   object-position: left center;
+  display: block;
 }
 
 .cform-letterhead--washmate .cform-letterhead-text {
   padding-top: 0;
+}
+
+.cform-letterhead-text--washmate .cform-company-address {
+  margin-top: 0;
 }
 
 .cform-letterhead-text {
@@ -126,10 +133,14 @@
 }
 
 .cform-logo-mini-washmate {
-  width: 0.58in;
-  height: 0.58in;
-  min-width: 0.58in;
+  width: auto;
+  max-width: 1.1in;
+  height: auto;
+  max-height: 0.28in;
+  min-width: unset;
   background: transparent;
+  object-fit: contain;
+  object-position: left center;
 }
 
 .cform-mini-company {
