@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 from backend.checkout_batch_summary import build_checkout_batch_summary
 from backend.daily_upload_checkout_contract import (
     assert_confirm_pipeline_wired,
+    assert_daily_upload_import_graph,
     assert_finalize_scan_merge_wired,
     assert_portal_owner_gate_wired,
 )
@@ -29,6 +30,9 @@ from backend.rinse_bag_completion import REASON_ALREADY_COMPLETED, REASON_OK
 
 
 class TestDailyUploadImportContract(unittest.TestCase):
+    def test_daily_upload_import_graph_is_complete(self):
+        assert_daily_upload_import_graph()
+
     def test_resolve_stale_helper_is_importable(self):
         self.assertTrue(callable(resolve_stale_portal_attention_rows_before_confirm))
 

@@ -47,3 +47,21 @@ def assert_finalize_scan_merge_wired(source: str) -> None:
     for token in FINALIZE_MERGE_SCAN_ARGS:
         if token not in source:
             raise AssertionError(f"finalize_rinse_after_batch_confirm merge must include {token}")
+
+
+# --- Symbols finalize/confirm must be able to import (partial-deploy guard) ---
+FINALIZE_REQUIRED_EXPORTS: tuple[tuple[str, str], ...] = (
+    ("backend.manual_checkout_eligibility", "resolve_stale_portal_attention_rows_before_confirm"),
+    ("backend.manual_checkout_eligibility", "reclassify_checkout_batch_upload_rows"),
+    ("backend.rinse_portal_absence_completion", "reject_bags_missing_from_latest_portal"),
+)
+
+
+def assert_daily_upload_import_graph() -> None:
+    """Import every symbol the confirm/finalize path needs — fails before deploy if split."""
+    import importlib
+
+    for module_name, symbol in FINALIZE_REQUIRED_EXPORTS:
+        mod = importlib.import_module(module_name)
+        if not hasattr(mod, symbol):
+            raise AssertionError(f"{module_name} must export {symbol} (prod ImportError guard)")
