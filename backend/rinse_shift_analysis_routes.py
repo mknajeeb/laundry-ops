@@ -456,6 +456,47 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/workload-productivity-debug", methods=["GET"])
+    def rinse_shift_analysis_workload_productivity_debug():
+        """Debug — workload ↔ employee productivity reconciliation audit."""
+        from backend.rinse_employee_completed_bags import build_workload_productivity_debug_payload
+        from backend.rinse_shift_monitor_baseline import (
+            build_baseline_context,
+            get_shift_monitor_baseline,
+        )
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            tenant_oid = user_org_id(me)
+            raw_date = (request.args.get("date_et") or request.args.get("date_start") or "").strip()
+            if not raw_date:
+                from backend.rinse_scheduled_scrape import _today_et
+
+                selected = _today_et()
+            else:
+                selected = parse_date_value(raw_date)
+            if not isinstance(selected, date):
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            baseline_ctx = build_baseline_context(
+                cursor, tenant_oid, get_shift_monitor_baseline(cursor, tenant_oid)
+            )
+            payload = build_workload_productivity_debug_payload(
+                cursor,
+                tenant_oid,
+                selected_date_et=selected,
+                baseline_ctx=baseline_ctx,
+            )
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/daily-roster", methods=["GET"])
     def rinse_shift_analysis_daily_roster_get():
         from backend.daily_shift_roster import build_roster_payload

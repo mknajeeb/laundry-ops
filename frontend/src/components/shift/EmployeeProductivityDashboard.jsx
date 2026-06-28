@@ -28,6 +28,7 @@ import {
   PRODUCTIVITY_RANK_OPTIONS,
   PERFORMANCE_TIER_STYLES,
   buildExecutiveSummaryCards,
+  employeeShowsSplitView,
   fmtAvgLbsPerBag,
   fmtProductivityRate,
   fmtSummaryNumber,
@@ -37,6 +38,7 @@ import {
   productivityStartDisplayParts,
   productivityStartLabel,
   rankEmployees,
+  sectionShowsSplitView,
 } from "../../utils/employeeProductivityHelpers";
 import EmployeeProductivityDrilldown, {
   EmployeeProductivityDrilldownCollapse,
@@ -68,9 +70,11 @@ function ProductivityTimeValue({ parts }) {
   );
 }
 
-function EmployeeSummaryPanel({ emp }) {
+function EmployeeSummaryPanel({ emp, showSplit }) {
   const missingClockIn = isMissingClockIn(emp);
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+  const creditedBags = emp.credited_bags_count ?? emp.processed_bags_count ?? 0;
+  const creditedLbs = emp.total_credited_lbs ?? emp.total_processed_lbs ?? 0;
   const startParts = productivityStartDisplayParts(emp, formatFriendlyEtWall);
   const endParts = emp.last_processed_time || emp.last_processed_time_et
     ? {
@@ -84,18 +88,30 @@ function EmployeeSummaryPanel({ emp }) {
       value: <ProductivityTimeValue parts={startParts} />,
     },
     {
-      label: emp.last_processed_time ? "Last Processed" : productivityEndLabel(emp),
+      label: emp.last_processed_time ? "Last Credited" : productivityEndLabel(emp),
       value: <ProductivityTimeValue parts={endParts} />,
     },
     { label: "Productive Hours", value: missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2) },
-    { label: "Processed Today", value: emp.processed_bags_count ?? 0 },
-    { label: "Completed Today", value: emp.completed_bags ?? 0 },
-    { label: "Pending Completion", value: emp.pending_completion_count ?? 0 },
-    { label: "Processed / Hr", value: fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn) },
-    { label: "Completed / Hr", value: fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn) },
-    { label: "Processed Lbs", value: emp.total_processed_lbs ?? 0 },
-    { label: "Completed Lbs", value: emp.total_completed_lbs ?? 0 },
+    { label: showSplit ? "Credited Workload Bags" : "Credited Bags", value: creditedBags },
   ];
+  if (showSplit) {
+    items.push(
+      { label: "Credited Completed", value: emp.completed_bags ?? 0 },
+      { label: "Credited Pending", value: emp.pending_completion_count ?? 0 },
+    );
+  }
+  items.push(
+    { label: showSplit ? "Credited Lbs" : "Credited Lbs", value: creditedLbs },
+    { label: "Bags / Hr", value: fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn) },
+    { label: "Lbs / Hr", value: fmtProductivityRate(emp.processed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn) },
+  );
+  if (showSplit) {
+    items.push(
+      { label: "Completed / Hr", value: fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn) },
+      { label: "Completed Lbs", value: emp.total_completed_lbs ?? 0 },
+      { label: "Completed Lbs / Hr", value: fmtProductivityRate(emp.completed_lbs_per_hour, missingClockIn) },
+    );
+  }
 
   return (
     <Box
@@ -133,10 +149,11 @@ function EmployeeSummaryPanel({ emp }) {
   );
 }
 
-function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
+function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading, showSplit }) {
   const missingClockIn = isMissingClockIn(emp);
   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
+  const creditedBags = emp.credited_bags_count ?? emp.processed_bags_count ?? 0;
 
   return (
     <Paper
@@ -163,10 +180,12 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
               </Typography>
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-              {emp.processed_bags_count ?? 0} processed · {emp.completed_bags ?? 0} completed · {emp.pending_completion_count ?? 0} pending
+              {showSplit
+                ? `${creditedBags} credited · ${emp.completed_bags ?? 0} completed · ${emp.pending_completion_count ?? 0} pending`
+                : `${creditedBags} credited · ${emp.total_credited_lbs ?? emp.total_processed_lbs ?? 0} lbs`}
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              {fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)} processed/hr · {fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn)} completed/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
+              {fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)} bags/hr · {fmtProductivityRate(emp.processed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)} lbs/hr · {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)} hrs
             </Typography>
           </Box>
           <ExpandMoreIcon
@@ -182,10 +201,10 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
       </Box>
       <EmployeeProductivityDrilldownCollapse open={open}>
         <Box sx={{ px: 1.25, pb: 1.25 }}>
-          <EmployeeSummaryPanel emp={emp} />
+          <EmployeeSummaryPanel emp={emp} showSplit={showSplit} />
           <EmployeeProductivityDrilldown
             bags={emp.bags}
-            processedBags={emp.processed_bags}
+            processedBags={emp.workload_bags || emp.processed_bags}
             pendingBags={emp.pending_completion_bags}
             referenceDateEt={selectedDate}
             loading={loading}
@@ -252,8 +271,9 @@ export default function EmployeeProductivityDashboard({
   const recon = section?.reconciliation || {};
   const banner = section?.reconciliation_banner || recon;
   const reconciled = banner.status === "reconciled" || recon.ok === true;
-  const credited = banner.employee_completed_bags_credited ?? recon.employee_attributed_bag_count ?? 0;
-  const workload = banner.workload_completed_today ?? recon.workload_completed_today ?? 0;
+  const credited = banner.employee_completed_bags_credited ?? banner.credited_total ?? recon.employee_attributed_bag_count ?? 0;
+  const workload = banner.workload_total ?? banner.workload_completed_today ?? recon.workload_total ?? recon.workload_completed_today ?? 0;
+  const unassigned = recon.unassigned_count ?? 0;
   const selectedDate = section?.selected_date_et || activeDateEt;
   const productivityScopeLabel = section?.productivity_scope_label || scopeLabel || "WF Only";
 
@@ -261,6 +281,7 @@ export default function EmployeeProductivityDashboard({
     () => rankEmployees(employees, rankBy),
     [employees, rankBy],
   );
+  const showSplit = useMemo(() => sectionShowsSplitView(rankedEmployees), [rankedEmployees]);
 
   const kpiCards = useMemo(
     () => buildExecutiveSummaryCards(executiveSummary, productivityScopeLabel),
@@ -456,10 +477,18 @@ export default function EmployeeProductivityDashboard({
                 Scope: {productivityScopeLabel}
               </Typography>
               <Typography variant="caption" display="block">
-                Employee completed bags credited: {credited}
+                Workload bags in scope: {workload}
               </Typography>
               <Typography variant="caption" display="block">
-                Workload completed: {workload}
+                Employee credited bags: {credited}
+              </Typography>
+              {unassigned > 0 ? (
+                <Typography variant="caption" display="block">
+                  Unassigned bags: {unassigned}
+                </Typography>
+              ) : null}
+              <Typography variant="caption" display="block">
+                Credited + unassigned must equal workload total
               </Typography>
               <Typography variant="caption" display="block" fontWeight={700} sx={{ mt: 0.35 }}>
                 Status: {banner.status_label || (reconciled ? "Reconciled ✓" : "Mismatch ✗")}
@@ -520,6 +549,7 @@ export default function EmployeeProductivityDashboard({
                 onToggle={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
                 selectedDate={selectedDate}
                 loading={loading}
+                showSplit={showSplit && employeeShowsSplitView(emp)}
               />
             ))}
           </Stack>
@@ -530,11 +560,25 @@ export default function EmployeeProductivityDashboard({
                 <TableRow>
                   <TableCell sx={{ fontWeight: 700, width: 52, py: 1.25 }}>Rank</TableCell>
                   <TableCell sx={{ fontWeight: 700, py: 1.25 }}>Employee</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Processed</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Pending</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Processed / Hr</TableCell>
-                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed / Hr</TableCell>
+                  {showSplit ? (
+                    <>
+                      <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Credited</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Pending</TableCell>
+                    </>
+                  ) : (
+                    <>
+                      <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Credited Bags</TableCell>
+                      <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Credited Lbs</TableCell>
+                    </>
+                  )}
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Bags / Hr</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Lbs / Hr</TableCell>
+                  {showSplit ? (
+                    <>
+                      <TableCell align="right" sx={{ fontWeight: 700, py: 1.25 }}>Completed / Hr</TableCell>
+                    </>
+                  ) : null}
                   <TableCell align="right" sx={{ fontWeight: 700, py: 1.25, whiteSpace: "nowrap" }}>Productive Hours</TableCell>
                   <TableCell padding="checkbox" sx={{ py: 1.25 }} />
                 </TableRow>
@@ -545,6 +589,8 @@ export default function EmployeeProductivityDashboard({
                   const missingClockIn = isMissingClockIn(emp);
                   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
                   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
+                  const empSplit = showSplit && employeeShowsSplitView(emp);
+                  const colSpan = showSplit ? 10 : 8;
                   return (
                     <Fragment key={emp.employee}>
                       <TableRow
@@ -564,11 +610,23 @@ export default function EmployeeProductivityDashboard({
                           {emp.productivity_rank ?? "—"}
                         </TableCell>
                         <TableCell sx={{ fontWeight: 700 }}>{emp.employee}</TableCell>
-                        <TableCell align="right">{emp.processed_bags_count ?? 0}</TableCell>
-                        <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
-                        <TableCell align="right">{emp.pending_completion_count ?? 0}</TableCell>
+                        {showSplit ? (
+                          <>
+                            <TableCell align="right">{emp.credited_bags_count ?? emp.processed_bags_count ?? 0}</TableCell>
+                            <TableCell align="right">{emp.completed_bags ?? 0}</TableCell>
+                            <TableCell align="right">{emp.pending_completion_count ?? 0}</TableCell>
+                          </>
+                        ) : (
+                          <>
+                            <TableCell align="right">{emp.credited_bags_count ?? emp.processed_bags_count ?? 0}</TableCell>
+                            <TableCell align="right">{emp.total_credited_lbs ?? emp.total_processed_lbs ?? 0}</TableCell>
+                          </>
+                        )}
                         <TableCell align="right">{fmtProductivityRate(emp.processed_bags_per_hour ?? emp.bags_per_hour, missingClockIn)}</TableCell>
-                        <TableCell align="right">{fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn)}</TableCell>
+                        <TableCell align="right">{fmtProductivityRate(emp.processed_lbs_per_hour ?? emp.lbs_per_hour, missingClockIn)}</TableCell>
+                        {showSplit ? (
+                          <TableCell align="right">{fmtProductivityRate(emp.completed_bags_per_hour, missingClockIn)}</TableCell>
+                        ) : null}
                         <TableCell align="right">
                           {missingClockIn ? "N/A" : fmtSummaryNumber(productiveHrs, 2)}
                         </TableCell>
@@ -584,13 +642,13 @@ export default function EmployeeProductivityDashboard({
                         </TableCell>
                       </TableRow>
                       <TableRow>
-                        <TableCell colSpan={9} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
+                        <TableCell colSpan={colSpan} sx={{ py: 0, borderBottom: open ? undefined : "none" }}>
                           <EmployeeProductivityDrilldownCollapse open={open}>
                             <Box sx={{ py: 1.25, px: 0.5 }}>
-                              <EmployeeSummaryPanel emp={emp} />
+                              <EmployeeSummaryPanel emp={emp} showSplit={empSplit} />
                               <EmployeeProductivityDrilldown
                                 bags={emp.bags}
-                                processedBags={emp.processed_bags}
+                                processedBags={emp.workload_bags || emp.processed_bags}
                                 pendingBags={emp.pending_completion_bags}
                                 referenceDateEt={selectedDate}
                                 loading={loading}

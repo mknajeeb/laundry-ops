@@ -938,6 +938,7 @@ def build_employee_completed_bags_today(
     events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
     selected_date_et: date,
     registry_meta_by_bag: Mapping[str, Mapping[str, Any]] | None = None,
+    workload_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     from backend.rinse_simple_shift_performance import (
         _employee_shift_window,
@@ -949,110 +950,127 @@ def build_employee_completed_bags_today(
     as_of_end = naive_et_day_end_inclusive(selected_date_et)
     user_maps = _load_rinse_user_maps(cursor, org)
     registry_meta = registry_meta_by_bag or {}
+    use_workload_mode = workload_rows is not None
 
     attributed_bags: list[dict[str, Any]] = []
     seen_bags: set[str] = set()
     duplicate_bags: list[str] = []
     skipped_portal_wf_ids: set[str] = set()
+    prebuilt_processed_records: list[dict[str, Any]] | None = None
+    scan_derived_wf_bag_ids: list[str] = []
 
-    for row in completed_rows:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("at_vendor_status") or "") != "Completed":
-            continue
-        bid = str(row.get("bag_id") or "").strip().upper()
-        if not bid:
-            continue
-        if bid in seen_bags:
-            duplicate_bags.append(bid)
-            continue
+    if use_workload_mode:
+        from backend.rinse_employee_workload_productivity import credit_workload_bags
 
-        events = events_by_bag.get(bid) or []
-        anchor = _resolve_anchor_ts(events, selected_date_et)
-        svc = str(row.get("service_type") or row.get("service_bucket") or "").upper()
-        employee, attr_comp_ts, attr_signal = resolve_completion_attribution(
-            service_type=svc,
-            events=events,
-            anchor_ts=anchor,
-            as_of_end=as_of_end,
+        attributed_bags, duplicate_bags = credit_workload_bags(
+            workload_rows or [],
+            events_by_bag=events_by_bag,
+            selected_date_et=selected_date_et,
+            registry_meta=registry_meta,
         )
-        comp_ts = attr_comp_ts
-        if comp_ts is None:
-            raw = row.get("completion_time")
-            if isinstance(raw, datetime):
-                comp_ts = raw
-            elif raw:
-                try:
-                    comp_ts = datetime.fromisoformat(str(raw))
-                except ValueError:
-                    comp_ts = None
-
-        if svc == "WF":
-            if comp_ts is None or not _completion_on_selected_et_day(comp_ts, selected_date_et):
-                skipped_portal_wf_ids.add(bid)
+        seen_bags = {str(b.get("bag_id") or "").upper() for b in attributed_bags if b.get("bag_id")}
+    else:
+        for row in completed_rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("at_vendor_status") or "") != "Completed":
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if not bid:
+                continue
+            if bid in seen_bags:
+                duplicate_bags.append(bid)
                 continue
 
-        seen_bags.add(bid)
+            events = events_by_bag.get(bid) or []
+            anchor = _resolve_anchor_ts(events, selected_date_et)
+            svc = str(row.get("service_type") or row.get("service_bucket") or "").upper()
+            employee, attr_comp_ts, attr_signal = resolve_completion_attribution(
+                service_type=svc,
+                events=events,
+                anchor_ts=anchor,
+                as_of_end=as_of_end,
+            )
+            comp_ts = attr_comp_ts
+            if comp_ts is None:
+                raw = row.get("completion_time")
+                if isinstance(raw, datetime):
+                    comp_ts = raw
+                elif raw:
+                    try:
+                        comp_ts = datetime.fromisoformat(str(raw))
+                    except ValueError:
+                        comp_ts = None
 
-        meta = registry_meta.get(bid) or {}
-        lbs = _completed_lbs(row, meta)
-        attr_reason = _attribution_reason(svc, attr_signal or row.get("completion_signal"))
-        if employee == UNKNOWN_EMPLOYEE:
-            if attr_comp_ts is None:
-                attr_reason = "No completion attribution scan found — grouped under Unknown user"
-            else:
-                attr_reason = f"{attr_reason}; user_name missing on attribution scan"
-        comp_time_et = None
-        if comp_ts is not None:
-            from backend.rinse_at_vendor_module import _format_et_display
+            if svc == "WF":
+                if comp_ts is None or not _completion_on_selected_et_day(comp_ts, selected_date_et):
+                    skipped_portal_wf_ids.add(bid)
+                    continue
 
-            comp_time_et = _format_et_display(comp_ts)
-        bag_record = {
-            **dict(row),
-            "bag_id": bid,
-            "customer_name": row.get("customer_name") or meta.get("name_clean"),
-            "completed_by_employee": employee,
-            "employee_credited": employee,
-            "attribution_reason": attr_reason,
-            "completion_time": comp_ts.isoformat() if comp_ts else row.get("completion_time"),
-            "completion_timestamp": comp_ts.isoformat() if comp_ts else row.get("completion_time"),
-            "completion_time_et": comp_time_et or row.get("completion_time_et"),
-            "completion_signal": attr_signal or row.get("completion_signal"),
-            "completed_lbs": lbs,
-            "weight": lbs,
-            "weight_missing": lbs is None,
-            "service_type": svc if svc in ("WF", "HD") else row.get("service_type"),
-            "service_bucket": row.get("service_bucket") or svc,
-            "lifecycle_anchor_ts": anchor.isoformat() if anchor else None,
-            "attribution_matches_workload_time": (
-                comp_ts is not None
-                and row.get("completion_time") is not None
-                and str(comp_ts.isoformat())[:19]
-                == str(row.get("completion_time"))[:19]
-            ),
-        }
-        attributed_bags.append(bag_record)
+            seen_bags.add(bid)
 
-    scan_derived_wf_bag_ids, prebuilt_processed_records = _supplement_wf_completed_from_processed_scans(
-        cursor,
-        org,
-        selected_date_et=selected_date_et,
-        registry_meta=registry_meta,
-        seen_bags=seen_bags,
-        attributed_bags=attributed_bags,
-        events_by_bag=events_by_bag,
-    )
+            meta = registry_meta.get(bid) or {}
+            lbs = _completed_lbs(row, meta)
+            attr_reason = _attribution_reason(svc, attr_signal or row.get("completion_signal"))
+            if employee == UNKNOWN_EMPLOYEE:
+                if attr_comp_ts is None:
+                    attr_reason = "No completion attribution scan found — grouped under Unknown user"
+                else:
+                    attr_reason = f"{attr_reason}; user_name missing on attribution scan"
+            comp_time_et = None
+            if comp_ts is not None:
+                from backend.rinse_at_vendor_module import _format_et_display
+
+                comp_time_et = _format_et_display(comp_ts)
+            bag_record = {
+                **dict(row),
+                "bag_id": bid,
+                "customer_name": row.get("customer_name") or meta.get("name_clean"),
+                "completed_by_employee": employee,
+                "employee_credited": employee,
+                "attribution_reason": attr_reason,
+                "completion_time": comp_ts.isoformat() if comp_ts else row.get("completion_time"),
+                "completion_timestamp": comp_ts.isoformat() if comp_ts else row.get("completion_time"),
+                "completion_time_et": comp_time_et or row.get("completion_time_et"),
+                "completion_signal": attr_signal or row.get("completion_signal"),
+                "completed_lbs": lbs,
+                "weight": lbs,
+                "weight_missing": lbs is None,
+                "service_type": svc if svc in ("WF", "HD") else row.get("service_type"),
+                "service_bucket": row.get("service_bucket") or svc,
+                "lifecycle_anchor_ts": anchor.isoformat() if anchor else None,
+                "attribution_matches_workload_time": (
+                    comp_ts is not None
+                    and row.get("completion_time") is not None
+                    and str(comp_ts.isoformat())[:19]
+                    == str(row.get("completion_time"))[:19]
+                ),
+            }
+            attributed_bags.append(bag_record)
+
+        scan_derived_wf_bag_ids, prebuilt_processed_records = _supplement_wf_completed_from_processed_scans(
+            cursor,
+            org,
+            selected_date_et=selected_date_et,
+            registry_meta=registry_meta,
+            seen_bags=seen_bags,
+            attributed_bags=attributed_bags,
+            events_by_bag=events_by_bag,
+        )
 
     attributed_bags.sort(
         key=lambda b: (
-            str(b.get("completed_by_employee") or "").lower(),
-            b.get("completion_time") or "",
+            str(b.get("credited_employee") or b.get("completed_by_employee") or "").lower(),
+            b.get("credit_timestamp") or b.get("completion_time") or "",
         )
     )
 
     by_employee: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for bag in attributed_bags:
-        by_employee[str(bag.get("completed_by_employee") or UNKNOWN_EMPLOYEE)].append(bag)
+        emp_key = str(
+            bag.get("credited_employee") or bag.get("completed_by_employee") or UNKNOWN_EMPLOYEE
+        )
+        by_employee[emp_key].append(bag)
 
     user_ids = sorted(
         {
@@ -1079,7 +1097,10 @@ def build_employee_completed_bags_today(
     roster_entries = list_roster_entries(cursor, org, roster_date=selected_date_et)
     roster_roles = build_roster_role_lookup(roster_entries)
     credited_employees = [
-        emp for emp in by_employee.keys() if emp != UNKNOWN_EMPLOYEE
+        emp
+        for emp in by_employee.keys()
+        if emp not in (UNKNOWN_EMPLOYEE,)
+        and not str(emp).startswith("Unassigned")
     ]
     upstream_scans_by_employee = _load_upstream_processing_scan_times_bulk(
         cursor,
@@ -1104,15 +1125,32 @@ def build_employee_completed_bags_today(
 
     employees: list[dict[str, Any]] = []
     for employee, bags in sorted(by_employee.items(), key=lambda x: x[0].lower()):
-        bags_sorted = sorted(bags, key=lambda b: str(b.get("completion_time") or ""))
-        comp_times = [
-            datetime.fromisoformat(str(b["completion_time"]))
-            for b in bags_sorted
-            if b.get("completion_time")
-        ]
+        if use_workload_mode:
+            workload_sorted = sorted(
+                bags, key=lambda b: str(b.get("credit_timestamp") or b.get("bag_id") or "")
+            )
+            bags_sorted = [
+                b for b in workload_sorted if str(b.get("workload_status") or "") == "completed"
+            ]
+            pending_bags_list = [
+                b for b in workload_sorted if str(b.get("workload_status") or "") == "pending"
+            ]
+        else:
+            workload_sorted = sorted(bags, key=lambda b: str(b.get("completion_time") or ""))
+            bags_sorted = workload_sorted
+            pending_bags_list = []
+        comp_times = []
+        for b in workload_sorted:
+            raw_ts = b.get("credit_timestamp") or b.get("completion_time")
+            if not raw_ts:
+                continue
+            try:
+                comp_times.append(datetime.fromisoformat(str(raw_ts)))
+            except ValueError:
+                continue
         fold_completion_moments: list[ScanMoment] = []
         for bag in bags_sorted:
-            raw_ts = bag.get("completion_time")
+            raw_ts = bag.get("credit_timestamp") or bag.get("completion_time")
             bid = str(bag.get("bag_id") or "").strip().upper()
             if not raw_ts or not bid:
                 continue
@@ -1125,7 +1163,7 @@ def build_employee_completed_bags_today(
         first_comp = min(comp_times) if comp_times else None
         last_comp = max(comp_times) if comp_times else None
 
-        mapping = user_maps.get(employee.casefold()) if employee != UNKNOWN_EMPLOYEE else None
+        mapping = user_maps.get(employee.casefold()) if employee not in (UNKNOWN_EMPLOYEE,) and not str(employee).startswith("Unassigned") else None
         user_id = int(mapping["user_id"]) if mapping and mapping.get("user_id") else None
         clock_in: datetime | None = None
         clock_out: datetime | None = None
@@ -1143,14 +1181,14 @@ def build_employee_completed_bags_today(
                 last_sync_loaded=True,
                 window_cache=window_cache,
             )
-        elif employee == UNKNOWN_EMPLOYEE:
-            clock_diagnostic = "Clock-in missing"
+        elif employee in (UNKNOWN_EMPLOYEE,) or str(employee).startswith("Unassigned"):
+            clock_diagnostic = "Unassigned — no payroll clock-in"
 
         roster_entry_matched: dict[str, Any] | None = None
         roster_modified = False
         roster_in: datetime | None = None
         roster_out: datetime | None = None
-        if employee != UNKNOWN_EMPLOYEE:
+        if employee not in (UNKNOWN_EMPLOYEE,) and not str(employee).startswith("Unassigned"):
             from backend.daily_shift_roster import (
                 roster_entry_for_employee_name,
                 roster_shift_datetimes,
@@ -1178,7 +1216,7 @@ def build_employee_completed_bags_today(
                     clock_diagnostic = "Using daily shift roster times (no payroll clock-in)"
 
         roster_role = None
-        if employee != UNKNOWN_EMPLOYEE:
+        if employee not in (UNKNOWN_EMPLOYEE,) and not str(employee).startswith("Unassigned"):
             from backend.daily_shift_roster import resolve_roster_role_for_rinse_user
 
             roster_role = resolve_roster_role_for_rinse_user(
@@ -1251,10 +1289,21 @@ def build_employee_completed_bags_today(
         folding_duration_seconds = productive_sec or 0
 
         missing_weight_count = sum(1 for b in bags_sorted if b.get("weight_missing"))
-        total_lbs = round(
+        total_completed_lbs = round(
             sum(float(b["completed_lbs"]) for b in bags_sorted if b.get("completed_lbs") is not None),
             2,
         )
+        total_credited_lbs = round(
+            sum(
+                float(b.get("credited_lbs") or b.get("processed_lbs") or b.get("completed_lbs") or 0)
+                for b in workload_sorted
+                if (b.get("credited_lbs") is not None or b.get("processed_lbs") is not None or b.get("completed_lbs") is not None)
+            ),
+            2,
+        )
+        credited_bag_count = len(workload_sorted)
+        rate_bag_count = credited_bag_count if use_workload_mode else len(bags_sorted)
+        rate_lbs = total_credited_lbs if use_workload_mode else total_completed_lbs
         worked_hours: float | None = None
         wall_clock_hours: float | None = None
         productive_hours: float | None = None
@@ -1273,9 +1322,9 @@ def build_employee_completed_bags_today(
             else:
                 wall_clock_hours = productive_hours
             if productive_hours > 0:
-                bags_per_hour = round(len(bags_sorted) / productive_hours, 4)
-                if total_lbs:
-                    lbs_per_hour = round(total_lbs / productive_hours, 4)
+                bags_per_hour = round(rate_bag_count / productive_hours, 4)
+                if rate_lbs:
+                    lbs_per_hour = round(rate_lbs / productive_hours, 4)
         elif (
             roster_entry_matched
             and roster_entry_matched.get("hours") is not None
@@ -1284,9 +1333,9 @@ def build_employee_completed_bags_today(
             productive_hours = round(float(roster_entry_matched["hours"]), 4)
             worked_hours = productive_hours
             wall_clock_hours = productive_hours
-            bags_per_hour = round(len(bags_sorted) / productive_hours, 4)
-            if total_lbs:
-                lbs_per_hour = round(total_lbs / productive_hours, 4)
+            bags_per_hour = round(rate_bag_count / productive_hours, 4)
+            if rate_lbs:
+                lbs_per_hour = round(rate_lbs / productive_hours, 4)
             productivity_note = clock_diagnostic
 
         roster_original_in: datetime | None = None
@@ -1331,12 +1380,37 @@ def build_employee_completed_bags_today(
                 "productive_hours": productive_hours,
                 "wall_clock_hours": wall_clock_hours,
                 "completed_bags": len(bags_sorted),
-                "total_completed_lbs": total_lbs,
+                "total_completed_lbs": total_completed_lbs,
+                "credited_bags_count": credited_bag_count,
+                "total_credited_lbs": total_credited_lbs,
+                "workload_bags": workload_sorted,
+                "processed_bags_count": credited_bag_count,
+                "processed_bags": workload_sorted,
+                "total_processed_lbs": total_credited_lbs,
+                "pending_completion_count": len(pending_bags_list),
+                "pending_completion_bags": pending_bags_list,
+                "processed_bags_per_hour": bags_per_hour,
+                "processed_lbs_per_hour": lbs_per_hour,
+                "completed_bags_per_hour": (
+                    round(len(bags_sorted) / productive_hours, 4)
+                    if productive_hours and productive_hours > 0 and bags_sorted
+                    else None
+                ),
+                "completed_lbs_per_hour": (
+                    round(total_completed_lbs / productive_hours, 4)
+                    if productive_hours and productive_hours > 0 and total_completed_lbs
+                    else None
+                ),
                 "bags_per_hour": bags_per_hour,
                 "lbs_per_hour": lbs_per_hour,
                 "missing_weight_count": missing_weight_count,
                 "productivity_note": productivity_note or clock_diagnostic,
                 "bags": bags_sorted,
+                "show_processed_completed_split": (
+                    not use_workload_mode
+                    or len(pending_bags_list) > 0
+                    or len(bags_sorted) != credited_bag_count
+                ),
             }
         )
 
@@ -1364,95 +1438,116 @@ def build_employee_completed_bags_today(
 
     employees.sort(
         key=lambda e: (
-            -(e.get("completed_bags") or 0),
+            -(e.get("credited_bags_count") or e.get("processed_bags_count") or e.get("completed_bags") or 0),
             str(e.get("employee") or "").lower(),
         )
     )
 
-    employees, all_processed_records = _attach_processed_productivity_metrics(
-        cursor,
-        org,
-        employees=employees,
-        selected_date_et=selected_date_et,
-        registry_meta_by_bag=registry_meta,
-        completed_bag_ids=[str(b.get("bag_id") or "").upper() for b in attributed_bags],
-        processed_records=prebuilt_processed_records,
-    )
+    if use_workload_mode:
+        all_processed_records = list(attributed_bags)
+        for emp in employees:
+            wl = emp.get("workload_bags") or emp.get("processed_bags") or []
+            emp["processed_bags"] = wl
+            emp["processed_bags_count"] = len(wl)
+            emp["total_processed_lbs"] = emp.get("total_credited_lbs") or emp.get("total_processed_lbs") or 0
+            if emp.get("first_processed_time") is None and wl:
+                times = [
+                    datetime.fromisoformat(str(b["credit_timestamp"]))
+                    for b in wl
+                    if b.get("credit_timestamp")
+                ]
+                if times:
+                    emp["first_processed_time"] = min(times).isoformat()
+                    emp["last_processed_time"] = max(times).isoformat()
+        from backend.rinse_employee_workload_productivity import build_workload_productivity_reconciliation
 
-    wf_count = sum(1 for b in attributed_bags if str(b.get("service_type") or "").upper() == "WF")
-    hd_count = sum(1 for b in attributed_bags if str(b.get("service_type") or "").upper() == "HD")
-    total_bags = len(attributed_bags)
-    portal_workload_completed = len(completed_rows)
-
-    workload_bag_ids = sorted(
-        str(r.get("bag_id") or "").strip().upper()
-        for r in completed_rows
-        if isinstance(r, dict) and r.get("bag_id")
-    )
-    attributed_ids = sorted({str(b.get("bag_id") or "").upper() for b in attributed_bags})
-    workload_set = set(workload_bag_ids)
-    attributed_set = set(attributed_ids)
-    missing_from_employee = sorted(workload_set - attributed_set - skipped_portal_wf_ids)
-    extra_in_employee = sorted(attributed_set - workload_set)
-    extra_scan_derived_wf = sorted(set(scan_derived_wf_bag_ids))
-    recon_ok = (
-        wf_count + hd_count == total_bags
-        and not duplicate_bags
-        and not missing_from_employee
-    )
-
-    attribution_audit = [
-        {
-            "bag_id": b.get("bag_id"),
-            "customer": b.get("customer_name"),
-            "service_type": b.get("service_type"),
-            "completion_signal": b.get("completion_signal"),
-            "completion_timestamp": b.get("completion_timestamp") or b.get("completion_time"),
-            "employee_credited": b.get("employee_credited"),
-            "attribution_reason": b.get("attribution_reason"),
+        reconciliation = build_workload_productivity_reconciliation(
+            workload_rows=workload_rows or [],
+            credited_bags=attributed_bags,
+            duplicate_bag_ids=duplicate_bags,
+            selected_date_et=selected_date_et,
+        )
+        reconciliation_banner = {
+            "employee_completed_bags_credited": reconciliation.get("credited_total"),
+            "workload_total": reconciliation.get("workload_total"),
+            "workload_completed_today": reconciliation.get("workload_completed_today"),
+            "credited_completed": reconciliation.get("credited_completed"),
+            "credited_pending": reconciliation.get("credited_pending"),
+            "unassigned_count": reconciliation.get("unassigned_count"),
+            "difference": reconciliation.get("difference"),
+            "status": reconciliation.get("status"),
+            "status_label": reconciliation.get("status_label"),
         }
-        for b in sorted(attributed_bags, key=lambda x: str(x.get("completion_time") or ""))
-    ]
+        attribution_audit = reconciliation.get("workload_attribution_audit") or []
+        processed_attribution_audit = attribution_audit
+        processed_wf_count = reconciliation.get("credited_wf_count") or 0
+        processed_hd_count = reconciliation.get("credited_hd_count") or 0
+    else:
+        employees, all_processed_records = _attach_processed_productivity_metrics(
+            cursor,
+            org,
+            employees=employees,
+            selected_date_et=selected_date_et,
+            registry_meta_by_bag=registry_meta,
+            completed_bag_ids=[str(b.get("bag_id") or "").upper() for b in attributed_bags],
+            processed_records=prebuilt_processed_records,
+        )
 
-    processed_wf_count = sum(
-        1 for r in all_processed_records if str(r.get("service_type") or "").upper() == "WF"
-    )
-    processed_hd_count = sum(
-        1 for r in all_processed_records if str(r.get("service_type") or "").upper() == "HD"
-    )
-    processed_attribution_audit = [
-        {
-            "bag_id": r.get("bag_id"),
-            "customer": r.get("customer_name"),
-            "service_type": r.get("service_type"),
-            "processed_signal": r.get("processed_signal"),
-            "processed_timestamp": r.get("processed_timestamp") or r.get("processed_time"),
-            "employee_credited": r.get("employee_credited"),
-            "attribution_reason": r.get("attribution_reason"),
-            "is_business_completed": bool(r.get("is_business_completed")),
-        }
-        for r in all_processed_records
-    ]
+        wf_count = sum(1 for b in attributed_bags if str(b.get("service_type") or "").upper() == "WF")
+        hd_count = sum(1 for b in attributed_bags if str(b.get("service_type") or "").upper() == "HD")
+        total_bags = len(attributed_bags)
+        portal_workload_completed = len(completed_rows)
 
-    return {
-        "selected_date_et": selected_date_et.isoformat(),
-        "employees": employees,
-        "attribution_audit": attribution_audit,
-        "processed_attribution_audit": processed_attribution_audit,
-        "processed_summary": {
-            "total_processed_bags": len(all_processed_records),
-            "wf_processed_count": processed_wf_count,
-            "hd_processed_count": processed_hd_count,
-        },
-        "reconciliation_banner": {
-            "employee_completed_bags_credited": total_bags,
-            "workload_completed_today": total_bags,
-            "portal_workload_completed_today": portal_workload_completed,
-            "difference": portal_workload_completed - total_bags,
-            "status": "reconciled" if recon_ok else "mismatch",
-            "status_label": "Reconciled ✓" if recon_ok else "Mismatch ✗",
-        },
-        "reconciliation": {
+        workload_bag_ids = sorted(
+            str(r.get("bag_id") or "").strip().upper()
+            for r in completed_rows
+            if isinstance(r, dict) and r.get("bag_id")
+        )
+        attributed_ids = sorted({str(b.get("bag_id") or "").upper() for b in attributed_bags})
+        workload_set = set(workload_bag_ids)
+        attributed_set = set(attributed_ids)
+        missing_from_employee = sorted(workload_set - attributed_set - skipped_portal_wf_ids)
+        extra_in_employee = sorted(attributed_set - workload_set)
+        extra_scan_derived_wf = sorted(set(scan_derived_wf_bag_ids))
+        recon_ok = (
+            wf_count + hd_count == total_bags
+            and not duplicate_bags
+            and not missing_from_employee
+        )
+
+        attribution_audit = [
+            {
+                "bag_id": b.get("bag_id"),
+                "customer": b.get("customer_name"),
+                "service_type": b.get("service_type"),
+                "completion_signal": b.get("completion_signal"),
+                "completion_timestamp": b.get("completion_timestamp") or b.get("completion_time"),
+                "employee_credited": b.get("employee_credited"),
+                "attribution_reason": b.get("attribution_reason"),
+            }
+            for b in sorted(attributed_bags, key=lambda x: str(x.get("completion_time") or ""))
+        ]
+
+        processed_wf_count = sum(
+            1 for r in all_processed_records if str(r.get("service_type") or "").upper() == "WF"
+        )
+        processed_hd_count = sum(
+            1 for r in all_processed_records if str(r.get("service_type") or "").upper() == "HD"
+        )
+        processed_attribution_audit = [
+            {
+                "bag_id": r.get("bag_id"),
+                "customer": r.get("customer_name"),
+                "service_type": r.get("service_type"),
+                "processed_signal": r.get("processed_signal"),
+                "processed_timestamp": r.get("processed_timestamp") or r.get("processed_time"),
+                "employee_credited": r.get("employee_credited"),
+                "attribution_reason": r.get("attribution_reason"),
+                "is_business_completed": bool(r.get("is_business_completed")),
+            }
+            for r in all_processed_records
+        ]
+        reconciliation = {
             "workload_completed_today": total_bags,
             "portal_workload_completed_today": portal_workload_completed,
             "employee_attributed_bag_count": total_bags,
@@ -1472,7 +1567,29 @@ def build_employee_completed_bags_today(
             "wf_hd_match_total": wf_count + hd_count == total_bags,
             "no_duplicate_bags": not duplicate_bags,
             "ok": recon_ok,
+        }
+        reconciliation_banner = {
+            "employee_completed_bags_credited": total_bags,
+            "workload_completed_today": total_bags,
+            "portal_workload_completed_today": portal_workload_completed,
+            "difference": portal_workload_completed - total_bags,
+            "status": reconciliation["status"],
+            "status_label": reconciliation["status_label"],
+        }
+
+    return {
+        "selected_date_et": selected_date_et.isoformat(),
+        "employees": employees,
+        "attribution_audit": attribution_audit,
+        "processed_attribution_audit": processed_attribution_audit,
+        "processed_summary": {
+            "total_processed_bags": len(all_processed_records),
+            "wf_processed_count": processed_wf_count,
+            "hd_processed_count": processed_hd_count,
         },
+        "reconciliation_banner": reconciliation_banner,
+        "reconciliation": reconciliation,
+        "workload_based_productivity": use_workload_mode,
     }
 
 
@@ -1513,7 +1630,60 @@ def build_employee_productivity_dashboard_payload(
         "selected_date_et": selected_date_et.isoformat(),
         "employee_completed_bags_today": scoped_emp,
         "completed_today_kpi": av.get("completed") or av.get("completed_today_count"),
+        "workload_total_kpi": av.get("total") or av.get("days_load_total"),
         "include_hd_in_employee_productivity": include_hd,
         "productivity_scope_label": productivity_scope_label(include_hd),
         "labor_summary": labor_summary,
+    }
+
+
+def build_workload_productivity_debug_payload(
+    cursor,
+    organization_id: int,
+    *,
+    selected_date_et: date,
+    baseline_ctx: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Admin/debug payload explaining workload ↔ productivity reconciliation."""
+    from backend.rinse_at_vendor_module import build_at_vendor_module
+    from backend.rinse_employee_productivity_presentation import apply_employee_productivity_scope
+    from backend.rinse_employee_productivity_settings import include_hd_in_employee_productivity
+
+    org = int(organization_id)
+    av = build_at_vendor_module(
+        cursor, org, selected_date_et=selected_date_et, baseline_ctx=baseline_ctx
+    )
+    emp = av.get("employee_completed_bags_today") or {}
+    include_hd = include_hd_in_employee_productivity(cursor, org)
+    scoped = apply_employee_productivity_scope(emp, include_hd=include_hd)
+    recon = scoped.get("reconciliation") or {}
+    return {
+        "selected_date_et": selected_date_et.isoformat(),
+        "productivity_scope": scoped.get("productivity_scope_label"),
+        "workload_summary": {
+            "total": av.get("total") or av.get("days_load_total"),
+            "pending": av.get("pending"),
+            "completed_today": av.get("completed") or av.get("completed_today_count"),
+            "wf_total": av.get("wf_total"),
+            "hd_total": av.get("hd_total"),
+            "wf_pending": av.get("wf_pending"),
+            "hd_pending": av.get("hd_pending"),
+            "wf_completed": av.get("wf_completed"),
+            "hd_completed": av.get("hd_completed"),
+        },
+        "productivity_reconciliation": recon,
+        "workload_attribution_audit": scoped.get("attribution_audit") or recon.get("workload_attribution_audit") or [],
+        "employees": [
+            {
+                "employee": e.get("employee"),
+                "credited_bags_count": e.get("credited_bags_count") or e.get("processed_bags_count"),
+                "completed_bags": e.get("completed_bags"),
+                "pending_completion_count": e.get("pending_completion_count"),
+                "total_credited_lbs": e.get("total_credited_lbs") or e.get("total_processed_lbs"),
+                "lbs_per_hour": e.get("processed_lbs_per_hour") or e.get("lbs_per_hour"),
+                "bags_per_hour": e.get("processed_bags_per_hour") or e.get("bags_per_hour"),
+            }
+            for e in (scoped.get("employees") or [])
+        ],
+        "executive_summary": scoped.get("executive_summary") or {},
     }

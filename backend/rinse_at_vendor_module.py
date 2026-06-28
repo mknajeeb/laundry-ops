@@ -147,11 +147,94 @@ def _completion_date_et(completion_ts: datetime | None) -> date | None:
     return completion_ts.date()
 
 
+def _vendor_departure_purpose_sql_filter(column: str = "purpose") -> str:
+    expr = _normalize_purpose_sql_expr(column)
+    return (
+        f"(LOCATE('received-from-vendor', {expr}) > 0 "
+        f"OR LOCATE('actual-delivery', {expr}) > 0 "
+        f"OR LOCATE('load-out', {expr}) > 0 "
+        f"OR LOCATE('at-delivery-location', {expr}) > 0)"
+    )
+
+
+def _purpose_matches_vendor_departure(raw: str | None) -> bool:
+    from backend.rinse_scan_purpose import scan_purpose_indicates_vendor_cycle_departed
+
+    return scan_purpose_indicates_vendor_cycle_departed(raw)
+
+
+def _vendor_cycle_departed_after_anchor(
+    departure_events: Sequence[Mapping[str, Any]],
+    *,
+    anchor_ts: datetime,
+    before: datetime,
+) -> bool:
+    """True when the bag left the vendor cycle after anchor and before ``before``."""
+    from backend.rinse_bag_stage_bounds import event_ts, ts_valid
+
+    for ev in departure_events:
+        ts = event_ts(ev)
+        if not ts_valid(ts):
+            continue
+        if ts <= anchor_ts or ts >= before:
+            continue
+        if _purpose_matches_vendor_departure(ev.get("purpose")):
+            return True
+    return False
+
+
+def _load_vendor_departure_events_for_bags(
+    cursor,
+    organization_id: int,
+    bag_ids: list[str],
+    *,
+    scanned_before: datetime | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    org = int(organization_id)
+    out: dict[str, list[dict[str, Any]]] = {bid: [] for bid in bag_ids if bid}
+    if not bag_ids or not table_exists(cursor, "rinse_bag_scan_events"):
+        return out
+    purpose_filter = _vendor_departure_purpose_sql_filter()
+    time_sql = ""
+    time_args: list[Any] = []
+    if scanned_before is not None:
+        time_sql = " AND scanned_at_parsed < %s"
+        time_args.append(scanned_before)
+    chunk = 1000
+    for i in range(0, len(bag_ids), chunk):
+        part = [b for b in bag_ids[i : i + chunk] if b]
+        if not part:
+            continue
+        placeholders = ",".join(["%s"] * len(part))
+        cursor.execute(
+            f"""
+            SELECT bag_id, purpose, scanned_at_parsed, scan_index, id
+            FROM rinse_bag_scan_events
+            WHERE organization_id = %s
+              AND UPPER(TRIM(bag_id)) IN ({placeholders})
+              AND {purpose_filter}
+              {time_sql}
+            ORDER BY bag_id, scanned_at_parsed, scan_index, id
+            """,
+            (org, *part, *time_args),
+        )
+        for row in cursor.fetchall() or []:
+            if not isinstance(row, dict):
+                continue
+            if not _purpose_matches_vendor_departure(row.get("purpose")):
+                continue
+            bid = str(row.get("bag_id") or "").strip().upper()
+            if bid:
+                out.setdefault(bid, []).append(row)
+    return out
+
+
 def _classify_baseline_seed_bag(
     events: Sequence[Mapping[str, Any]],
     *,
     service_type: str,
     selected_date_et: date,
+    departure_events: Sequence[Mapping[str, Any]] | None = None,
 ) -> tuple[str, str | None, datetime | None, datetime | None]:
     """Classify a baseline snapshot bag at selected ET day start.
 
@@ -168,6 +251,17 @@ def _classify_baseline_seed_bag(
 
     prior_day_end = naive_et_day_end_inclusive(selected_date_et - timedelta(days=1))
     anchor_ts = _latest_sent_to_vendor_ts(events, before=start_of_day_et)
+    if (
+        anchor_ts is not None
+        and departure_events
+        and _vendor_cycle_departed_after_anchor(
+            departure_events,
+            anchor_ts=anchor_ts,
+            before=start_of_day_et,
+        )
+    ):
+        return DAILY_CLASS_DEPARTED_BEFORE_DAY_START, None, None, anchor_ts
+
     status, signal, comp_ts, sent_ts, _ = _evaluate_bag_as_of(
         events,
         service_type=service_type,
@@ -193,6 +287,7 @@ AV_STATUS_COMPLETED = "Completed"
 
 DAILY_CLASS_OPEN_AT_DAY_START = "OPEN_AT_DAY_START"
 DAILY_CLASS_COMPLETED_BEFORE_DAY_START = "COMPLETED_BEFORE_DAY_START"
+DAILY_CLASS_DEPARTED_BEFORE_DAY_START = "DEPARTED_BEFORE_DAY_START"
 DAILY_CLASS_COMPLETED_DURING_SELECTED_DAY = "COMPLETED_DURING_SELECTED_DAY"
 DAILY_CLASS_PENDING_AS_OF_SELECTED_DAY_END_OR_NOW = "PENDING_AS_OF_SELECTED_DAY_END_OR_NOW"
 
@@ -581,6 +676,12 @@ def _load_carry_in_open_at_midnight_bag_ids(
         sorted(candidates),
         scanned_before=start,
     )
+    departure_by_bag = _load_vendor_departure_events_for_bags(
+        cursor,
+        org,
+        sorted(candidates),
+        scanned_before=start,
+    )
 
     carry_in: set[str] = set()
     excluded: list[str] = []
@@ -590,6 +691,16 @@ def _load_carry_in_open_at_midnight_bag_ids(
             events_by_bag.get(bid) or [],
             before=start,
         )
+        if (
+            midnight_anchor is not None
+            and _vendor_cycle_departed_after_anchor(
+                departure_by_bag.get(bid) or [],
+                anchor_ts=midnight_anchor,
+                before=start,
+            )
+        ):
+            excluded.append(bid)
+            continue
         if midnight_anchor is not None:
             status, _, _, _, _ = _evaluate_bag_as_of(
                 events_by_bag.get(bid) or [],
@@ -2780,6 +2891,7 @@ def build_at_vendor_module(
     baseline_snapshot_ids: set[str] = set()
     same_day_arrival_ids: set[str] = set()
     completed_before_day_start_ids: set[str] = set()
+    departed_before_day_start_ids: set[str] = set()
     open_at_day_start_ids: set[str] = set()
     completed_before_day_start_audit: list[dict[str, Any]] = []
     t_events = time.perf_counter()
@@ -2802,6 +2914,14 @@ def build_at_vendor_module(
             event_bag_ids,
             scanned_before=scan_through_exclusive,
         )
+        departure_events_by_bag: dict[str, list[dict[str, Any]]] = {}
+        if hasattr(cursor, "execute"):
+            departure_events_by_bag = _load_vendor_departure_events_for_bags(
+                cursor,
+                org,
+                event_bag_ids,
+                scanned_before=scan_through_exclusive,
+            )
         registry_cache = population_meta.get("registry_service_cache") or {}
         registry_service_pre = (
             registry_cache
@@ -2818,6 +2938,7 @@ def build_at_vendor_module(
                 events_by_bag.get(bid) or [],
                 service_type=svc,
                 selected_date_et=selected_date_et,
+                departure_events=departure_events_by_bag.get(bid) or [],
             )
             if daily_class == DAILY_CLASS_COMPLETED_BEFORE_DAY_START:
                 completed_before_day_start_ids.add(bid)
@@ -2834,6 +2955,8 @@ def build_at_vendor_module(
                         "sent_to_vendor_time_et": _format_et_display(sent_ts),
                     }
                 )
+            elif daily_class == DAILY_CLASS_DEPARTED_BEFORE_DAY_START:
+                departed_before_day_start_ids.add(bid)
             else:
                 open_at_day_start_ids.add(bid)
         workload_ids = open_at_day_start_ids | same_day_arrival_ids
@@ -3034,6 +3157,7 @@ def build_at_vendor_module(
     if uses_clean_baseline and baseline_ctx:
         baseline_snapshot_count = len(baseline_snapshot_ids)
         completed_before_day_start_count = len(completed_before_day_start_ids)
+        departed_before_day_start_count = len(departed_before_day_start_ids)
         start_of_day_open_carry_in_count = len(open_at_day_start_ids)
         same_day_arrivals_count = len(same_day_arrival_ids)
         daily_workload_total = selected_day_total
@@ -3043,6 +3167,8 @@ def build_at_vendor_module(
             {
                 "baseline_snapshot_count": baseline_snapshot_count,
                 "completed_before_day_start_count": completed_before_day_start_count,
+                "departed_before_day_start_count": departed_before_day_start_count,
+                "departed_before_day_start_bag_ids": sorted(departed_before_day_start_ids),
                 "start_of_day_open_carry_in_count": start_of_day_open_carry_in_count,
                 "start_of_day_carry_in_count": start_of_day_open_carry_in_count,
                 "carry_in_open_at_midnight_count": start_of_day_open_carry_in_count,
@@ -3132,6 +3258,9 @@ def build_at_vendor_module(
     from backend.rinse_employee_completed_bags import build_employee_completed_bags_today
     from backend.rinse_simple_shift_performance import _load_bag_metadata
 
+    workload_bag_ids = [
+        str(r.get("bag_id") or "").strip().upper() for r in rows if r.get("bag_id")
+    ]
     completed_bag_ids = [
         str(r.get("bag_id") or "").strip().upper() for r in completed_rows if r.get("bag_id")
     ]
@@ -3139,9 +3268,10 @@ def build_at_vendor_module(
         cursor,
         org,
         completed_rows=completed_rows,
+        workload_rows=rows,
         events_by_bag=events_by_bag,
         selected_date_et=selected_date_et,
-        registry_meta_by_bag=_load_bag_metadata(cursor, org, completed_bag_ids),
+        registry_meta_by_bag=_load_bag_metadata(cursor, org, workload_bag_ids),
     )
     step_ms["employee_completed_bags_ms"] = round((time.perf_counter() - t_emp) * 1000, 1)
 

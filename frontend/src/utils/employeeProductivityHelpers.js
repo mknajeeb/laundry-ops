@@ -1,11 +1,11 @@
 /** Phase 2 — client-side ranking for employee productivity (Phase 1 data unchanged). */
 
 export const PRODUCTIVITY_RANK_OPTIONS = [
-  { id: "processed", label: "Processed Bags" },
+  { id: "processed", label: "Credited Bags" },
   { id: "bags", label: "Completed Bags" },
-  { id: "processed_hr", label: "Processed / Hour" },
+  { id: "processed_hr", label: "Bags / Hour" },
   { id: "bags_hr", label: "Completed / Hour" },
-  { id: "lbs", label: "Completed Lbs" },
+  { id: "lbs", label: "Credited Lbs" },
   { id: "avg_lbs_bag", label: "Avg Lbs / Bag" },
   { id: "lbs_hr", label: "Lbs / Hour" },
 ];
@@ -29,9 +29,9 @@ export const PERFORMANCE_TIER_STYLES = {
 };
 
 export function avgLbsPerCompletedBag(emp) {
-  const bags = Number(emp?.completed_bags) || 0;
+  const bags = Number(emp?.credited_bags_count ?? emp?.processed_bags_count ?? emp?.completed_bags) || 0;
   if (bags <= 0) return null;
-  return (Number(emp?.total_completed_lbs) || 0) / bags;
+  return (Number(emp?.total_credited_lbs ?? emp?.total_processed_lbs ?? emp?.total_completed_lbs) || 0) / bags;
 }
 
 export function fmtAvgLbsPerBag(emp) {
@@ -43,11 +43,13 @@ export function fmtAvgLbsPerBag(emp) {
 function rankValue(emp, rankBy) {
   switch (rankBy) {
     case "processed":
-      return Number(emp.processed_bags_count) || 0;
+      return Number(emp.credited_bags_count ?? emp.processed_bags_count) || 0;
     case "processed_hr":
-      return emp.processed_bags_per_hour != null ? Number(emp.processed_bags_per_hour) : null;
+      return emp.processed_bags_per_hour != null
+        ? Number(emp.processed_bags_per_hour)
+        : (emp.bags_per_hour != null ? Number(emp.bags_per_hour) : null);
     case "lbs":
-      return Number(emp.total_completed_lbs) || 0;
+      return Number(emp.total_credited_lbs ?? emp.total_processed_lbs ?? emp.total_completed_lbs) || 0;
     case "avg_lbs_bag":
       return avgLbsPerCompletedBag(emp);
     case "bags_hr":
@@ -62,6 +64,18 @@ function rankValue(emp, rankBy) {
     default:
       return Number(emp.completed_bags) || 0;
   }
+}
+
+export function employeeShowsSplitView(emp) {
+  if (emp?.show_processed_completed_split === false) return false;
+  const credited = Number(emp?.credited_bags_count ?? emp?.processed_bags_count) || 0;
+  const completed = Number(emp?.completed_bags) || 0;
+  const pending = Number(emp?.pending_completion_count) || 0;
+  return pending > 0 || (credited > 0 && completed !== credited);
+}
+
+export function sectionShowsSplitView(employees = []) {
+  return employees.some((emp) => employeeShowsSplitView(emp));
 }
 
 export function isMissingClockIn(emp) {
@@ -220,7 +234,9 @@ export function rankEmployees(employees, rankBy = "processed") {
 }
 
 export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
-  return [
+  const splitView = Number(summary.total_pending_completion) > 0
+    || Number(summary.total_bags_credited) !== Number(summary.total_bags_completed);
+  const cards = [
     {
       key: "employees_active",
       label: "Total Employees Active",
@@ -228,37 +244,52 @@ export function buildExecutiveSummaryCards(summary = {}, scopeLabel = "") {
       variant: "default",
     },
     {
-      key: "bags_processed",
-      label: "Total Processed Today",
-      value: fmtSummaryNumber(summary.total_bags_processed, 0),
+      key: "bags_credited",
+      label: splitView ? "Credited Workload Bags" : "Credited Bags",
+      value: fmtSummaryNumber(summary.total_bags_credited ?? summary.total_bags_processed, 0),
       variant: "wf",
     },
-    {
-      key: "bags_completed",
-      label: "Total Completed Today",
-      value: fmtSummaryNumber(summary.total_bags_completed, 0),
-      variant: "snapshot",
-    },
-    {
-      key: "pending_completion",
-      label: "Pending Completion",
-      value: fmtSummaryNumber(summary.total_pending_completion, 0),
+  ];
+  if (splitView) {
+    cards.push(
+      {
+        key: "bags_completed",
+        label: "Credited Completed",
+        value: fmtSummaryNumber(summary.total_bags_completed, 0),
+        variant: "snapshot",
+      },
+      {
+        key: "pending_completion",
+        label: "Credited Pending",
+        value: fmtSummaryNumber(summary.total_pending_completion, 0),
+        variant: "hd",
+      },
+    );
+  }
+  if (Number(summary.total_unassigned_bags) > 0) {
+    cards.push({
+      key: "unassigned",
+      label: "Unassigned Bags",
+      value: fmtSummaryNumber(summary.total_unassigned_bags, 0),
       variant: "hd",
-    },
+    });
+  }
+  cards.push(
     {
-      key: "avg_processed_hr",
-      label: "Avg Processed / Hour",
-      value: fmtSummaryNumber(summary.average_processed_bags_per_hour, 2),
+      key: "avg_bags_hr",
+      label: "Avg Bags / Hour",
+      value: fmtSummaryNumber(summary.average_bags_per_hour ?? summary.average_processed_bags_per_hour, 2),
       variant: "default",
     },
     {
-      key: "avg_completed_hr",
-      label: "Avg Completed / Hour",
-      value: fmtSummaryNumber(summary.average_completed_bags_per_hour, 2),
+      key: "avg_lbs_hr",
+      label: "Avg Lbs / Hour",
+      value: fmtSummaryNumber(summary.average_pounds_per_hour ?? summary.average_processed_pounds_per_hour, 2),
       variant: "default",
       sub: scopeLabel ? `Scope: ${scopeLabel}` : undefined,
     },
-  ];
+  );
+  return cards;
 }
 
 export function fmtLaborValue(value, { currency = false, digits = 2 } = {}) {

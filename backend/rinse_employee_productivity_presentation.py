@@ -10,6 +10,7 @@ from backend.rinse_employee_completed_bags import (
     PRODUCTIVITY_END_LAST_COMPLETION,
     WF_POST_PROCESSING_WEIGHT_SIGNAL,
 )
+from backend.rinse_employee_workload_productivity import UNASSIGNED_EMPLOYEE
 
 
 def _service_type(bag: Mapping[str, Any]) -> str:
@@ -147,7 +148,11 @@ def _recalc_employee_metrics(
     )
 
     total_processed_lbs = round(
-        sum(float(b["processed_lbs"]) for b in processed_sorted if b.get("processed_lbs") is not None),
+        sum(
+            float(b.get("credited_lbs") or b.get("processed_lbs") or 0)
+            for b in processed_sorted
+            if b.get("credited_lbs") is not None or b.get("processed_lbs") is not None
+        ),
         2,
     )
     completed_ids = {str(b.get("bag_id") or "").upper() for b in bags_sorted if b.get("bag_id")}
@@ -163,6 +168,15 @@ def _recalc_employee_metrics(
             completed_ids.add(bid)
     pending_ids = sorted(processed_ids - completed_ids)
     pending_bags = [b for b in processed_sorted if str(b.get("bag_id") or "").upper() in pending_ids]
+    if any(str(b.get("workload_status") or "") == "pending" for b in processed_sorted):
+        pending_bags = [b for b in processed_sorted if str(b.get("workload_status") or "") == "pending"]
+        pending_ids = sorted(str(b.get("bag_id") or "").upper() for b in pending_bags if b.get("bag_id"))
+        completed_ids = {
+            str(b.get("bag_id") or "").upper()
+            for b in processed_sorted
+            if str(b.get("workload_status") or "") == "completed" and b.get("bag_id")
+        }
+        bags_sorted = [b for b in processed_sorted if str(b.get("bag_id") or "").upper() in completed_ids]
 
     processed_times = [_parse_ts(b.get("processed_time") or b.get("processed_timestamp")) for b in processed_sorted]
     processed_times = [t for t in processed_times if t is not None]
@@ -230,6 +244,12 @@ def _recalc_employee_metrics(
             "completed_lbs_per_hour": completed_lbs_per_hour,
             "bags_per_hour": processed_bags_per_hour,
             "lbs_per_hour": processed_lbs_per_hour,
+            "credited_bags_count": len(processed_sorted),
+            "total_credited_lbs": total_processed_lbs,
+            "workload_bags": processed_sorted,
+            "show_processed_completed_split": (
+                len(pending_ids) > 0 or len(bags_sorted) != len(processed_sorted)
+            ),
             "folding_blocks": emp.get("folding_blocks") or [],
             "folding_duration_seconds": emp.get("folding_duration_seconds"),
             "productivity_note": productivity_note,
@@ -242,20 +262,43 @@ def _recalc_employee_metrics(
     return out
 
 
-def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    active_processed = [e for e in employees if int(e.get("processed_bags_count") or 0) > 0]
-    active_completed = [e for e in employees if int(e.get("completed_bags") or 0) > 0]
-    total_processed = sum(int(e.get("processed_bags_count") or 0) for e in employees)
-    total_completed = sum(int(e.get("completed_bags") or 0) for e in employees)
-    total_processed_lbs = round(sum(float(e.get("total_processed_lbs") or 0) for e in employees), 2)
-    total_completed_lbs = round(sum(float(e.get("total_completed_lbs") or 0) for e in employees), 2)
-    total_pending = sum(int(e.get("pending_completion_count") or 0) for e in employees)
+def _scoped_workload_bags(bags: Sequence[Mapping[str, Any]], *, include_hd: bool) -> list[dict[str, Any]]:
+    if include_hd:
+        return [dict(b) for b in (bags or []) if isinstance(b, dict)]
+    return [dict(b) for b in (bags or []) if isinstance(b, dict) and _service_type(b) == "WF"]
 
-    processed_rates = [
-        float(e["processed_bags_per_hour"])
-        for e in active_processed
-        if e.get("processed_bags_per_hour") is not None
-        and not isinstance(e.get("processed_bags_per_hour"), str)
+
+def _employee_workload_bags(emp: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = emp.get("workload_bags") or emp.get("processed_bags") or emp.get("bags") or []
+    return [dict(b) for b in raw if isinstance(b, dict)]
+
+
+def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    active_credited = [
+        e for e in employees if int(e.get("credited_bags_count") or e.get("processed_bags_count") or 0) > 0
+    ]
+    active_completed = [e for e in employees if int(e.get("completed_bags") or 0) > 0]
+    total_credited = sum(
+        int(e.get("credited_bags_count") or e.get("processed_bags_count") or 0) for e in employees
+    )
+    total_completed = sum(int(e.get("completed_bags") or 0) for e in employees)
+    total_pending = sum(int(e.get("pending_completion_count") or 0) for e in employees)
+    total_credited_lbs = round(
+        sum(float(e.get("total_credited_lbs") or e.get("total_processed_lbs") or 0) for e in employees),
+        2,
+    )
+    total_completed_lbs = round(sum(float(e.get("total_completed_lbs") or 0) for e in employees), 2)
+    unassigned_count = sum(
+        int(e.get("credited_bags_count") or e.get("processed_bags_count") or 0)
+        for e in employees
+        if str(e.get("employee") or "").startswith("Unassigned")
+    )
+
+    credited_rates = [
+        float(e["processed_bags_per_hour"] if e.get("processed_bags_per_hour") is not None else e.get("bags_per_hour"))
+        for e in active_credited
+        if (e.get("processed_bags_per_hour") is not None or e.get("bags_per_hour") is not None)
+        and not isinstance(e.get("processed_bags_per_hour") or e.get("bags_per_hour"), str)
     ]
     completed_rates = [
         float(e["completed_bags_per_hour"])
@@ -263,11 +306,11 @@ def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str
         if e.get("completed_bags_per_hour") is not None
         and not isinstance(e.get("completed_bags_per_hour"), str)
     ]
-    processed_lbs_rates = [
-        float(e["processed_lbs_per_hour"])
-        for e in active_processed
-        if e.get("processed_lbs_per_hour") is not None
-        and not isinstance(e.get("processed_lbs_per_hour"), str)
+    credited_lbs_rates = [
+        float(e["processed_lbs_per_hour"] if e.get("processed_lbs_per_hour") is not None else e.get("lbs_per_hour"))
+        for e in active_credited
+        if (e.get("processed_lbs_per_hour") is not None or e.get("lbs_per_hour") is not None)
+        and not isinstance(e.get("processed_lbs_per_hour") or e.get("lbs_per_hour"), str)
     ]
     completed_lbs_rates = [
         float(e["completed_lbs_per_hour"])
@@ -282,18 +325,22 @@ def _build_executive_summary(employees: Sequence[Mapping[str, Any]]) -> dict[str
         return round(sum(vals) / len(vals), 2)
 
     return {
-        "total_employees_active": len(active_processed) or len(active_completed),
-        "total_bags_processed": total_processed,
+        "total_employees_active": len(active_credited) or len(active_completed),
+        "total_bags_credited": total_credited,
         "total_bags_completed": total_completed,
         "total_pending_completion": total_pending,
-        "total_pounds_processed": total_processed_lbs,
+        "total_unassigned_bags": unassigned_count,
+        "total_credited_lbs": total_credited_lbs,
         "total_pounds_completed": total_completed_lbs,
-        "average_processed_bags_per_hour": _avg(processed_rates),
+        "average_bags_per_hour": _avg(credited_rates),
+        "average_pounds_per_hour": _avg(credited_lbs_rates),
         "average_completed_bags_per_hour": _avg(completed_rates),
-        "average_processed_pounds_per_hour": _avg(processed_lbs_rates),
         "average_completed_pounds_per_hour": _avg(completed_lbs_rates),
-        "average_bags_per_hour": _avg(processed_rates),
-        "average_pounds_per_hour": _avg(processed_lbs_rates),
+        # Backward-compatible aliases
+        "total_bags_processed": total_credited,
+        "total_pounds_processed": total_credited_lbs,
+        "average_processed_bags_per_hour": _avg(credited_rates),
+        "average_processed_pounds_per_hour": _avg(credited_lbs_rates),
     }
 
 
@@ -305,45 +352,63 @@ def _scoped_reconciliation(
 ) -> dict[str, Any]:
     recon = dict(section.get("reconciliation") or {})
     banner = dict(section.get("reconciliation_banner") or {})
-    wf_count = int(recon.get("wf_count") or 0)
-    hd_count = int(recon.get("hd_count") or 0)
+    workload_based = bool(section.get("workload_based_productivity"))
+    wf_count = int(recon.get("credited_wf_count") or recon.get("wf_count") or 0)
+    hd_count = int(recon.get("credited_hd_count") or recon.get("hd_count") or 0)
 
-    if include_hd:
-        workload = int(recon.get("workload_completed_today") or banner.get("workload_completed_today") or 0)
+    if workload_based:
+        if include_hd:
+            workload = int(recon.get("workload_total") or banner.get("workload_total") or 0)
+        else:
+            workload = int(recon.get("workload_wf_total") or wf_count)
         credited = scoped_bag_count
+        difference = workload - credited
+        recon_ok = (
+            credited == workload
+            and recon.get("no_duplicate_bags", True)
+            and not recon.get("duplicate_bag_ids")
+            and not recon.get("missing_from_employee_productivity")
+        )
     else:
-        workload = wf_count
-        credited = scoped_bag_count
-
-    difference = workload - credited
-    recon_ok = (
-        credited == workload
-        and (include_hd or hd_count == 0 or credited == wf_count)
-        and recon.get("no_duplicate_bags", True)
-        and not recon.get("duplicate_bag_ids")
-        and not recon.get("missing_from_employee_dashboard")
-    )
-    if not include_hd:
-        recon_ok = credited == workload and recon.get("no_duplicate_bags", True)
+        if include_hd:
+            workload = int(recon.get("workload_completed_today") or banner.get("workload_completed_today") or 0)
+            credited = scoped_bag_count
+        else:
+            workload = wf_count
+            credited = scoped_bag_count
+        difference = workload - credited
+        recon_ok = (
+            credited == workload
+            and (include_hd or hd_count == 0 or credited == wf_count)
+            and recon.get("no_duplicate_bags", True)
+            and not recon.get("duplicate_bag_ids")
+            and not recon.get("missing_from_employee_dashboard")
+        )
+        if not include_hd:
+            recon_ok = credited == workload and recon.get("no_duplicate_bags", True)
 
     status = "reconciled" if recon_ok else "mismatch"
     status_label = "Reconciled ✓" if recon_ok else "Mismatch ✗"
     scoped_recon = {
         **recon,
-        "workload_completed_today": workload,
+        "workload_total": workload if workload_based else recon.get("workload_total"),
+        "workload_completed_today": workload if not workload_based else recon.get("workload_completed_today"),
         "employee_attributed_bag_count": credited,
         "employee_completed_bags_credited": credited,
+        "credited_total": credited,
         "difference": difference,
         "status": status,
         "status_label": status_label,
         "ok": recon_ok,
-        "bags_match_workload_completed": credited == workload,
+        "bags_match_workload_total": credited == workload if workload_based else recon.get("bags_match_workload_total"),
+        "bags_match_workload_completed": credited == workload if not workload_based else recon.get("bags_match_workload_completed"),
         "productivity_scope_wf_only": not include_hd,
     }
     scoped_banner = {
         **banner,
         "employee_completed_bags_credited": credited,
-        "workload_completed_today": workload,
+        "workload_total": workload if workload_based else banner.get("workload_total"),
+        "workload_completed_today": workload if not workload_based else banner.get("workload_completed_today"),
         "difference": difference,
         "status": status,
         "status_label": status_label,
@@ -368,20 +433,18 @@ def apply_employee_productivity_scope(
 
     scoped_employees: list[dict[str, Any]] = []
     scoped_bag_count = 0
-    scoped_processed_count = 0
     for emp in section.get("employees") or []:
         if not isinstance(emp, dict):
             continue
-        bags = _scoped_bags(emp.get("bags") or [], include_hd=include_hd)
-        processed = _scoped_processed_bags(emp.get("processed_bags") or [], include_hd=include_hd)
-        scoped_bag_count += len(bags)
-        scoped_processed_count += len(processed)
-        recalced = _recalc_employee_metrics(emp, bags, scoped_processed=processed)
+        workload = _scoped_workload_bags(_employee_workload_bags(emp), include_hd=include_hd)
+        completed = _scoped_bags(emp.get("bags") or [], include_hd=include_hd)
+        scoped_bag_count += len(workload)
+        recalced = _recalc_employee_metrics(emp, completed, scoped_processed=workload)
         scoped_employees.append(recalced)
 
     scoped_employees.sort(
         key=lambda e: (
-            -(e.get("processed_bags_count") or e.get("completed_bags") or 0),
+            -(e.get("credited_bags_count") or e.get("processed_bags_count") or e.get("completed_bags") or 0),
             str(e.get("employee") or "").lower(),
         )
     )
@@ -394,10 +457,13 @@ def apply_employee_productivity_scope(
 
     processed_summary = dict(section.get("processed_summary") or {})
     if not include_hd:
+        scoped_wf = sum(
+            int(e.get("credited_bags_count") or e.get("processed_bags_count") or 0) for e in scoped_employees
+        )
         processed_summary = {
             **processed_summary,
-            "total_processed_bags": scoped_processed_count,
-            "wf_processed_count": scoped_processed_count,
+            "total_processed_bags": scoped_wf,
+            "wf_processed_count": scoped_wf,
             "hd_processed_count": 0,
         }
 
