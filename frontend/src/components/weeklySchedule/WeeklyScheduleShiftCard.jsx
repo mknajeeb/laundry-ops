@@ -24,7 +24,7 @@ import {
   resolveEntryEmployerAffiliation,
   SHIFT_EMPLOYER_AFFILIATION,
 } from "./weeklyScheduleEmployerTabs";
-import { parseEntryRoles, roleLabels, shiftPeriodStyle } from "./weeklyScheduleRoles";
+import { entryRoleCardStyle, parseEntryRoles, roleLabels } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleShiftCard({
   entry,
@@ -48,7 +48,7 @@ export default function WeeklyScheduleShiftCard({
   const menuOpen = Boolean(menuAnchor);
 
   const roles = parseEntryRoles(entry);
-  const period = shiftPeriodStyle(entry);
+  const cardStyle = entryRoleCardStyle(roles);
   const hours = Number(entry.hours || 0);
   const breakMin = Number(entry.break_minutes || 0);
   const breakSuffix = scheduleEndTimeEnabled && showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
@@ -79,29 +79,40 @@ export default function WeeklyScheduleShiftCard({
       }}
       sx={{
         position: "relative",
-        pl: 1,
+        pl: 1.15,
         pr: hasActions ? 0.25 : 0.75,
         py: 0.35,
         mb: 0.35,
         borderRadius: 1.25,
         cursor: muted ? "default" : "grab",
-        border: `1px solid ${muted ? "#e8ecf0" : period.border}`,
-        bgcolor: muted ? "#f8fafc" : period.bg,
+        border: `1px solid ${muted ? "#e8ecf0" : cardStyle.border}`,
+        bgcolor: muted ? "#f8fafc" : cardStyle.bg,
         opacity: dragging ? 0.45 : muted ? 0.72 : 1,
         boxShadow: "none",
-        overflow: "visible",
+        overflow: "hidden",
         transition: "border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease",
         "&:hover": muted
           ? {}
           : {
-              bgcolor: period.hoverBg,
-              borderColor: period.accent,
+              bgcolor: cardStyle.hoverBg,
+              borderColor: cardStyle.accent,
               boxShadow: "0 1px 4px rgba(15, 23, 42, 0.06)",
             },
         "&:active": muted ? {} : { cursor: "grabbing" },
         "&:hover .shift-card-menu-btn": {
           opacity: 1,
         },
+        "&::before": muted
+          ? undefined
+          : {
+              content: '""',
+              position: "absolute",
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: cardStyle.multiRole ? 4 : 3,
+              background: cardStyle.stripe,
+            },
       }}
     >
       <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.25, minWidth: 0 }}>
@@ -148,7 +159,7 @@ export default function WeeklyScheduleShiftCard({
               sx={{
                 display: "block",
                 mt: 0.15,
-                color: period.accent,
+                color: cardStyle.accent,
                 fontSize: "0.68rem",
                 fontWeight: 700,
                 lineHeight: 1.25,
@@ -180,7 +191,7 @@ export default function WeeklyScheduleShiftCard({
                   flexShrink: 0,
                   opacity: isMobile ? 1 : 0,
                   transition: "opacity 0.12s ease",
-                  color: period.accent,
+                  color: cardStyle.accent,
                 }}
               >
                 <MoreVertIcon sx={{ fontSize: 16 }} />

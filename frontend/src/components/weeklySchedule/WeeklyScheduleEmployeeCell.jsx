@@ -3,10 +3,8 @@ import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import VisibilityOffOutlinedIcon from "@mui/icons-material/VisibilityOffOutlined";
 import {
-  ROLE_STYLES,
-  employeeScheduleRoles,
+  employeeWeeklyRoleCounts,
   formatEmployeeWeeklySummary,
-  roleLabels,
 } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleEmployeeCell({
@@ -25,9 +23,7 @@ export default function WeeklyScheduleEmployeeCell({
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
-  const scheduleRoles = employeeScheduleRoles(employee.user_id, entries);
-  const scheduleRolesLabel = scheduleRoles.length ? roleLabels(scheduleRoles) : null;
-  const primaryRoleKey = scheduleRoles[0] || null;
+  const roleCounts = employeeWeeklyRoleCounts(employee.user_id, entries);
   const weeklySummary = formatEmployeeWeeklySummary(employee, { daysOnly });
 
   const rateParts = [];
@@ -81,23 +77,25 @@ export default function WeeklyScheduleEmployeeCell({
             </Typography>
           </Tooltip>
 
-          {scheduleRolesLabel && !excluded ? (
-            <Typography
-              variant="caption"
-              sx={{
-                display: "block",
-                mt: 0.25,
-                fontWeight: 600,
-                color:
-                  scheduleRoles.length === 1
-                    ? (ROLE_STYLES[primaryRoleKey] || ROLE_STYLES.fold).accent
-                    : "text.secondary",
-                fontSize: "0.75rem",
-                lineHeight: 1.3,
-              }}
-            >
-              {scheduleRolesLabel}
-            </Typography>
+          {roleCounts.length && !excluded ? (
+            <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
+              {roleCounts.map(({ key, label, count, style }) => (
+                <Chip
+                  key={key}
+                  size="small"
+                  label={`${label} ${count}`}
+                  sx={{
+                    height: 20,
+                    fontSize: "0.68rem",
+                    fontWeight: 700,
+                    bgcolor: style.chipBg,
+                    color: style.accent,
+                    border: `1px solid ${style.border}`,
+                    "& .MuiChip-label": { px: 0.75 },
+                  }}
+                />
+              ))}
+            </Stack>
           ) : null}
 
           {!excluded ? (

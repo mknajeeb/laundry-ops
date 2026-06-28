@@ -98,6 +98,42 @@ export function primaryRoleStyle(entry) {
   return ROLE_STYLES[key] || ROLE_STYLES.fold;
 }
 
+function blendRoleColors(colors, direction = "135deg") {
+  if (!colors.length) return ROLE_STYLES.fold.bg;
+  if (colors.length === 1) return colors[0];
+  const step = 100 / colors.length;
+  const stops = colors.map((color, i) => `${color} ${i * step}%, ${color} ${(i + 1) * step}%`).join(", ");
+  return `linear-gradient(${direction}, ${stops})`;
+}
+
+/** Shift card fill, border, and stripe styling from one or more roles. */
+export function entryRoleCardStyle(entryOrRoles) {
+  const roles = Array.isArray(entryOrRoles) ? sortRoles(entryOrRoles) : parseEntryRoles(entryOrRoles);
+  const keys = roles.length ? roles : ["fold"];
+  const styles = keys.map((key) => ROLE_STYLES[key] || ROLE_STYLES.fold);
+  const primary = styles[0];
+
+  if (styles.length === 1) {
+    return {
+      bg: primary.bg,
+      hoverBg: primary.hoverBg,
+      border: primary.border,
+      accent: primary.accent,
+      stripe: primary.accent,
+      multiRole: false,
+    };
+  }
+
+  return {
+    bg: blendRoleColors(styles.map((style) => style.bg)),
+    hoverBg: blendRoleColors(styles.map((style) => style.hoverBg)),
+    border: blendRoleColors(styles.map((style) => style.border), "90deg"),
+    accent: primary.accent,
+    stripe: roleStripeGradient(keys),
+    multiRole: true,
+  };
+}
+
 export function roleStripeGradient(roles) {
   const keys = sortRoles(roles.length ? roles : ["fold"]);
   const colors = keys.map((k) => (ROLE_STYLES[k] || ROLE_STYLES.fold).accent);
@@ -139,6 +175,23 @@ export function shiftPeriodKey(entry) {
 
 export function shiftPeriodStyle(entry) {
   return SHIFT_PERIOD_STYLES[shiftPeriodKey(entry)] || SHIFT_PERIOD_STYLES.morning;
+}
+
+/** Count each role assignment for an employee across the week (multi-role shifts count each role). */
+export function employeeWeeklyRoleCounts(userId, entries) {
+  const counts = {};
+  for (const entry of entries || []) {
+    if (Number(entry.user_id) !== Number(userId)) continue;
+    for (const roleKey of parseEntryRoles(entry)) {
+      counts[roleKey] = (counts[roleKey] || 0) + 1;
+    }
+  }
+  return sortRoles(Object.keys(counts)).map((key) => ({
+    key,
+    label: ROLE_STYLES[key]?.label || key,
+    count: counts[key],
+    style: ROLE_STYLES[key] || ROLE_STYLES.fold,
+  }));
 }
 
 /** Unique roles assigned to an employee across their week entries, in Wash · Sort · Fold order. */
@@ -319,6 +372,7 @@ export function scheduleCellBackground({ entries, excluded, isDropTarget }) {
   if (isDropTarget) {
     return `linear-gradient(${DROP_TARGET_OVERLAY}, ${DROP_TARGET_OVERLAY}), ${base}`;
   }
-  if (entries?.length) return "#f8fafc";
+  const roleBg = cellRoleBackground(entries);
+  if (roleBg) return roleBg;
   return base;
 }
