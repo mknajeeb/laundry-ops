@@ -40,6 +40,7 @@ export default function WeeklyScheduleShiftCard({
   muted = false,
   showRoleLabels = true,
   showBreakMinutes = true,
+  scheduleEndTimeEnabled = true,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
@@ -50,7 +51,7 @@ export default function WeeklyScheduleShiftCard({
   const period = shiftPeriodStyle(entry);
   const hours = Number(entry.hours || 0);
   const breakMin = Number(entry.break_minutes || 0);
-  const breakSuffix = showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
+  const breakSuffix = scheduleEndTimeEnabled && showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
   const roleText = showRoleLabels ? roleLabels(roles) : "";
   const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
@@ -118,25 +119,29 @@ export default function WeeklyScheduleShiftCard({
               textOverflow: "clip",
             }}
           >
-            {formatTime12(entry.start_time)} – {formatTime12(entry.end_time)}
+            {scheduleEndTimeEnabled
+              ? `${formatTime12(entry.start_time)} – ${formatTime12(entry.end_time)}`
+              : formatTime12(entry.start_time)}
           </Typography>
-          <Typography
-            variant="caption"
-            sx={{
-              display: "block",
-              mt: 0.15,
-              color: "text.secondary",
-              fontSize: "0.68rem",
-              fontWeight: 700,
-              lineHeight: 1.25,
-              whiteSpace: "nowrap",
-              overflow: "visible",
-              textOverflow: "clip",
-            }}
-          >
-            {hoursLabel}
-            {breakSuffix}
-          </Typography>
+          {scheduleEndTimeEnabled ? (
+            <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                mt: 0.15,
+                color: "text.secondary",
+                fontSize: "0.68rem",
+                fontWeight: 700,
+                lineHeight: 1.25,
+                whiteSpace: "nowrap",
+                overflow: "visible",
+                textOverflow: "clip",
+              }}
+            >
+              {hoursLabel}
+              {breakSuffix}
+            </Typography>
+          ) : null}
           {roleText ? (
             <Typography
               variant="caption"

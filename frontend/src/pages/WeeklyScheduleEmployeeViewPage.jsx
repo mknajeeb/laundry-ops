@@ -76,6 +76,8 @@ export default function WeeklyScheduleEmployeeViewPage() {
   const display = data?.display || {};
   const showRoleLabels = display.show_role_labels !== false;
   const showBreakMinutes = display.show_break_minutes !== false;
+  const scheduleEndTimeEnabled = display.schedule_end_time_enabled !== false;
+  const daysOnly = !scheduleEndTimeEnabled;
 
   const handlePrint = () => {
     window.print();
@@ -151,7 +153,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
               </Typography>
             ) : null}
             <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600, opacity: 0.95 }}>
-              {formatEmployeeWeeklySummary(employee)}
+              {formatEmployeeWeeklySummary(employee, { daysOnly })}
             </Typography>
           </Box>
 
@@ -211,6 +213,7 @@ export default function WeeklyScheduleEmployeeViewPage() {
                           muted
                           showRoleLabels={showRoleLabels}
                           showBreakMinutes={showBreakMinutes}
+                          scheduleEndTimeEnabled={scheduleEndTimeEnabled}
                         />
                       ))
                     ) : (

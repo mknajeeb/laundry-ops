@@ -9,9 +9,9 @@ from typing import Any, Mapping, Sequence
 from backend.daily_shift_roster import calc_cost, calc_hours, parse_time_value
 from backend.ta_helpers import table_exists
 
-VALID_ROLES = frozenset({"sort", "wash", "fold"})
+VALID_ROLES = frozenset({"sort", "wash", "fold", "weigher"})
 LEGACY_ROLE_MAP = {"folder": "fold", "operator": "wash", "folders": "fold", "operators": "wash"}
-ROLE_SORT_ORDER = ("sort", "wash", "fold")
+ROLE_SORT_ORDER = ("sort", "wash", "weigher", "fold")
 DAY_LABELS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 
 
@@ -197,10 +197,14 @@ def _entry_employer_affiliation(row: Mapping[str, Any]) -> str | None:
     return normalize_shift_employer_affiliation(row.get("employer_affiliation"))
 
 
-def serialize_entry(row: Mapping[str, Any]) -> dict[str, Any]:
+def serialize_entry(
+    row: Mapping[str, Any],
+    *,
+    schedule_end_time_enabled: bool = True,
+) -> dict[str, Any]:
     roles = parse_weekly_roles(row.get("role"))
     role = roles_to_storage(roles)
-    hours = _shift_hours_for_entry(row)
+    hours = 0.0 if not schedule_end_time_enabled else _shift_hours_for_entry(row)
     employer_affiliation = _entry_employer_affiliation(row)
     out: dict[str, Any] = {
         "id": int(row.get("id") or 0),
@@ -262,6 +266,7 @@ def compute_schedule_totals(
             "total_hours": 0.0,
             "sort_count": 0,
             "wash_count": 0,
+            "weigher_count": 0,
             "fold_count": 0,
             "operator_count": 0,
             "folder_count": 0,
@@ -302,6 +307,8 @@ def compute_schedule_totals(
                 day["sort_count"] = int(day["sort_count"]) + 1
             elif role == "wash":
                 day["wash_count"] = int(day["wash_count"]) + 1
+            elif role == "weigher":
+                day["weigher_count"] = int(day["weigher_count"]) + 1
             elif role == "fold":
                 day["fold_count"] = int(day["fold_count"]) + 1
             if role == "wash":
@@ -344,6 +351,13 @@ def _workers_index(workers: Sequence[Mapping[str, Any]]) -> dict[int, dict[str, 
     return out
 
 
+def _schedule_end_time_enabled(cursor, organization_id: int) -> bool:
+    from backend.weekly_schedule_display_settings import get_weekly_schedule_display_settings
+
+    settings = get_weekly_schedule_display_settings(cursor, int(organization_id))
+    return bool(settings.get("schedule_end_time_enabled", True))
+
+
 def list_week_entries(
     cursor,
     organization_id: int,
@@ -351,6 +365,7 @@ def list_week_entries(
     week_start: date,
 ) -> list[dict[str, Any]]:
     ensure_planned_weekly_schedule_table(cursor)
+    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
     cursor.execute(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
@@ -362,7 +377,11 @@ def list_week_entries(
         (int(organization_id), week_start),
     )
     rows = cursor.fetchall() or []
-    return [serialize_entry(r) for r in rows if isinstance(r, dict)]
+    return [
+        serialize_entry(r, schedule_end_time_enabled=end_time_enabled)
+        for r in rows
+        if isinstance(r, dict)
+    ]
 
 
 def list_excluded_user_ids(
@@ -453,13 +472,15 @@ def get_entry(
     row = cursor.fetchone()
     if not row or not isinstance(row, dict):
         return None
-    return serialize_entry(row)
+    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+    return serialize_entry(row, schedule_end_time_enabled=end_time_enabled)
 
 
 def _validate_entry_payload(
     data: Mapping[str, Any],
     *,
     partial: bool = False,
+    schedule_end_time_enabled: bool = True,
 ) -> tuple[dict[str, Any] | None, str | None]:
     out: dict[str, Any] = {}
     if not partial or "user_id" in data:
@@ -479,25 +500,34 @@ def _validate_entry_payload(
         roles_raw = data.get("roles") if "roles" in data else data.get("role")
         roles = parse_weekly_roles(roles_raw)
         if not roles:
-            return None, "role must be sort, wash, and/or fold"
+            return None, "role must be sort, wash, weigher, and/or fold"
         out["role"] = roles_to_storage(roles)
     if not partial or "start_time" in data:
         start = parse_time_value(data.get("start_time"))
         if start is None:
             return None, "start_time is required (HH:MM)"
         out["start_time"] = start
-    if not partial or "end_time" in data:
-        end = parse_time_value(data.get("end_time"))
-        if end is None:
-            return None, "end_time is required (HH:MM)"
-        out["end_time"] = end
-    if (
-        "start_time" in out
-        and "end_time" in out
-        and calc_hours(out["start_time"], out["end_time"], int(data.get("break_minutes") or 0)) <= 0
-    ):
-        return None, "hours must be greater than zero"
-    if "break_minutes" in data or not partial:
+    if schedule_end_time_enabled:
+        if not partial or "end_time" in data:
+            end = parse_time_value(data.get("end_time"))
+            if end is None:
+                return None, "end_time is required (HH:MM)"
+            out["end_time"] = end
+        if (
+            "start_time" in out
+            and "end_time" in out
+            and calc_hours(out["start_time"], out["end_time"], int(data.get("break_minutes") or 0)) <= 0
+        ):
+            return None, "hours must be greater than zero"
+    else:
+        start = out.get("start_time") or parse_time_value(data.get("start_time"))
+        if start is None and not partial:
+            return None, "start_time is required (HH:MM)"
+        if start is not None:
+            out["start_time"] = start
+            out["end_time"] = start
+        out["break_minutes"] = 0
+    if schedule_end_time_enabled and ("break_minutes" in data or not partial):
         try:
             out["break_minutes"] = max(0, int(data.get("break_minutes") or 0))
         except (TypeError, ValueError):
@@ -531,7 +561,11 @@ def create_entry(
     data: Mapping[str, Any],
 ) -> tuple[dict[str, Any] | None, str | None]:
     ensure_planned_weekly_schedule_table(cursor)
-    payload, err = _validate_entry_payload(data)
+    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+    payload, err = _validate_entry_payload(
+        data,
+        schedule_end_time_enabled=end_time_enabled,
+    )
     if err:
         return None, err
     worker_err = _assert_worker_in_org(conn, organization_id, payload["user_id"])
@@ -587,7 +621,11 @@ def update_entry(
     }
     if "employer_affiliation" not in merged and existing.get("employer_affiliation"):
         merged["employer_affiliation"] = existing.get("employer_affiliation")
-    payload, err = _validate_entry_payload(merged)
+    end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+    payload, err = _validate_entry_payload(
+        merged,
+        schedule_end_time_enabled=end_time_enabled,
+    )
     if err:
         return None, err
     worker_err = _assert_worker_in_org(conn, organization_id, payload["user_id"])

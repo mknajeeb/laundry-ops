@@ -176,9 +176,30 @@ def test_normalize_week_start_snaps_to_sunday():
 def test_normalize_weekly_role_legacy_and_new():
     assert normalize_weekly_role("folder") == "fold"
     assert normalize_weekly_role("operator") == "wash"
+    assert normalize_weekly_role("weigher") == "weigher"
     assert normalize_weekly_role("sort") == "sort"
     assert parse_weekly_roles("wash,fold") == ["wash", "fold"]
-    assert roles_to_storage(["fold", "sort", "wash"]) == "sort,wash,fold"
+    assert parse_weekly_roles("wash,weigher") == ["wash", "weigher"]
+    assert roles_to_storage(["fold", "sort", "wash", "weigher"]) == "sort,wash,weigher,fold"
+
+
+def test_serialize_entry_days_only_has_zero_hours():
+    entry = serialize_entry(
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": date(2026, 6, 14),
+            "user_id": 10,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+        },
+        schedule_end_time_enabled=False,
+    )
+    assert entry["hours"] == 0.0
+    assert entry["start_time"] == "09:00"
 
 
 def test_shift_hours_nine_to_four_is_seven():

@@ -43,6 +43,7 @@ def test_display_settings_defaults():
         settings = get_weekly_schedule_display_settings(cursor, 3)
     assert settings["show_estimated_cost_default"] is False
     assert settings["show_employee_rates_default"] is False
+    assert settings["schedule_end_time_enabled"] is True
     assert settings["share_cost_with_external"] is False
 
 
@@ -62,6 +63,7 @@ def test_effective_view_admin_sees_cost_by_default():
     assert view["is_privileged"] is True
     assert view["show_estimated_cost"] is False
     assert view["show_employee_rates"] is False
+    assert view["schedule_end_time_enabled"] is True
 
 
 def test_save_display_settings_round_trip():

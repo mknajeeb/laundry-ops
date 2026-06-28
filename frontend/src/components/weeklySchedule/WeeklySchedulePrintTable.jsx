@@ -6,6 +6,7 @@ export default function WeeklySchedulePrintTable({
   entries,
   dayLabels,
   showRoleLabels = true,
+  daysOnly = false,
 }) {
   return (
     <table className="weekly-schedule-print-table">
@@ -30,7 +31,7 @@ export default function WeeklySchedulePrintTable({
                   <div className="weekly-schedule-print-employee-meta">{roleLabels(roles)}</div>
                 ) : null}
                 <div className="weekly-schedule-print-employee-meta">
-                  {formatEmployeeWeeklySummary(employee)}
+                  {formatEmployeeWeeklySummary(employee, { daysOnly })}
                 </div>
               </td>
               {(dayLabels || []).map((label, dow) => {
@@ -39,7 +40,11 @@ export default function WeeklySchedulePrintTable({
                     Number(entry.user_id) === Number(employee.user_id) &&
                     Number(entry.day_of_week) === dow,
                 );
-                const text = formatDayShiftsText(cellEntries, { showRoleLabels, forExport: true });
+                const text = formatDayShiftsText(cellEntries, {
+                  showRoleLabels,
+                  forExport: true,
+                  scheduleEndTimeEnabled: !daysOnly,
+                });
                 return (
                   <td key={`${employee.user_id}-${label}`} className="weekly-schedule-print-td-day">
                     {text

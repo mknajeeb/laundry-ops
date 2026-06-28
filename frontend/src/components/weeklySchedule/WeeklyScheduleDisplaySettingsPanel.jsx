@@ -67,6 +67,11 @@ export default function WeeklyScheduleDisplaySettingsPanel() {
 
   const toggles = [
     {
+      key: "schedule_end_time_enabled",
+      label: "Require shift end time (calculate hours)",
+      hint: "When off, only a start time is required and shifts count by day instead of hours.",
+    },
+    {
       key: "show_estimated_cost_default",
       label: "Show estimated labor cost (admin view)",
       hint: "Default for managers viewing the weekly schedule.",

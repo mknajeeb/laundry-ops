@@ -5,6 +5,7 @@ const ROLE_ACCENT = {
   fold: VEEWASH_DASHBOARD.tealDark,
   sort: VEEWASH_DASHBOARD.primaryBlueDark,
   wash: VEEWASH_DASHBOARD.rushCopper,
+  weigher: "#6d28d9",
 };
 
 function formatHours(value) {
@@ -49,11 +50,27 @@ function SummaryMetric({ label, value, accent, compact = false }) {
 export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = false }) {
   if (!summary) return null;
 
+  const daysOnly = summary.daysOnly === true;
   const metrics = [
-    { label: compact ? "Employees" : "Employees Scheduled", value: summary.employeesScheduled, accent: VEEWASH_DASHBOARD.primaryBlueDark },
-    { label: compact ? "Hours" : "Total Hours", value: formatHours(summary.totalHours), accent: VEEWASH_DASHBOARD.tealDark },
+    {
+      label: compact ? "Employees" : "Employees Scheduled",
+      value: summary.employeesScheduled,
+      accent: VEEWASH_DASHBOARD.primaryBlueDark,
+    },
+    daysOnly
+      ? {
+          label: compact ? "Days" : "Total Days",
+          value: summary.totalDays,
+          accent: VEEWASH_DASHBOARD.tealDark,
+        }
+      : {
+          label: compact ? "Hours" : "Total Hours",
+          value: formatHours(summary.totalHours),
+          accent: VEEWASH_DASHBOARD.tealDark,
+        },
     { label: "Wash", value: summary.washCount, accent: ROLE_ACCENT.wash },
     { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
+    { label: "Weigher", value: summary.weigherCount, accent: ROLE_ACCENT.weigher },
     { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
   ];
 

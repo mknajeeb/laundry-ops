@@ -19,14 +19,18 @@ function exportRoleLabels(roles) {
     .join(" / ");
 }
 
-export function formatShiftEntryText(entry, { showRoleLabels = true, forExport = false } = {}) {
+export function formatShiftEntryText(entry, { showRoleLabels = true, forExport = false, scheduleEndTimeEnabled = true } = {}) {
   const hours = Number(entry.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
   const roleText = showRoleLabels ? ` ${exportRoleLabels(parseEntryRoles(entry))}` : "";
   const start = formatTime12(entry.start_time);
   const end = formatTime12(entry.end_time);
-  const range = forExport ? `${start} - ${end}` : `${start} – ${end}`;
-  const text = `${range} (${hoursLabel})${roleText}`;
+  const range = scheduleEndTimeEnabled
+    ? forExport
+      ? `${start} - ${end}`
+      : `${start} – ${end}`
+    : start;
+  const text = scheduleEndTimeEnabled ? `${range} (${hoursLabel})${roleText}` : `${range}${roleText}`;
   return forExport ? exportAsciiText(text) : text;
 }
 
@@ -52,8 +56,14 @@ export function exportWeeklyScheduleCsv({
   tabLabel,
   filename,
   showRoleLabels = true,
+  scheduleEndTimeEnabled = true,
 }) {
-  const headers = ["Employee", "Roles", ...DAY_LABELS, "Total Hours"];
+  const headers = [
+    "Employee",
+    "Roles",
+    ...DAY_LABELS,
+    scheduleEndTimeEnabled ? "Total Hours" : "Total Days",
+  ];
   const lines = [headers.map(csvCell).join(",")];
 
   for (const employee of employees || []) {
@@ -69,11 +79,15 @@ export function exportWeeklyScheduleCsv({
           Number(entry.user_id) === Number(employee.user_id) &&
           Number(entry.day_of_week) === dow,
       );
-      row.push(csvCell(formatDayShiftsText(cellEntries, { showRoleLabels, forExport: true })));
+      row.push(csvCell(formatDayShiftsText(cellEntries, { showRoleLabels, forExport: true, scheduleEndTimeEnabled })));
     }
 
-    const totalHours = Number(employee.total_hours || 0);
-    row.push(Number.isInteger(totalHours) ? String(totalHours) : totalHours.toFixed(1));
+    if (scheduleEndTimeEnabled) {
+      const totalHours = Number(employee.total_hours || 0);
+      row.push(Number.isInteger(totalHours) ? String(totalHours) : totalHours.toFixed(1));
+    } else {
+      row.push(String(Number(employee.scheduled_days || 0)));
+    }
     lines.push(row.join(","));
   }
 

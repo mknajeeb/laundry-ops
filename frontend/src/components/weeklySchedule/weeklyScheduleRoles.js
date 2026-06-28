@@ -2,11 +2,12 @@ import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
 import { normalizeTimeHm } from "../datetime/scheduleTimeUi";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
-export const ROLE_ORDER = ["wash", "sort", "fold"];
+export const ROLE_ORDER = ["wash", "sort", "weigher", "fold"];
 
 export const WEEKLY_SCHEDULE_ROLES = [
   { value: "wash", label: "Wash" },
   { value: "sort", label: "Sort" },
+  { value: "weigher", label: "Weigher" },
   { value: "fold", label: "Fold" },
 ];
 
@@ -46,6 +47,15 @@ export const ROLE_STYLES = {
     cellBg: "#f3faf8",
     border: VEEWASH_DASHBOARD.tealBorder,
     label: "Fold",
+  },
+  weigher: {
+    accent: "#6d28d9",
+    bg: "#f3e8ff",
+    hoverBg: "#e9d5ff",
+    chipBg: "#ede9fe",
+    cellBg: "#faf5ff",
+    border: "rgba(109, 40, 217, 0.28)",
+    label: "Weigher",
   },
   folder: {
     accent: VEEWASH_DASHBOARD.tealDark,
@@ -159,15 +169,16 @@ export function deriveEmployeePrimaryRole(userId, entries) {
   return ranked[0]?.[0] || null;
 }
 
-export function formatEmployeeWeeklySummary(employee) {
+export function formatEmployeeWeeklySummary(employee, { daysOnly = false } = {}) {
   const hours = Number(employee?.total_hours || 0);
   const days = Number(employee?.scheduled_days || 0);
-  const hrsLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
   const dayLabel = days === 1 ? "1 day" : `${days} days`;
+  if (daysOnly) return dayLabel;
+  const hrsLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
   return `${hrsLabel} hrs • ${dayLabel}`;
 }
 
-export function computeWeekSummary(data, { includeExcluded = false, userIds = null, entries = null } = {}) {
+export function computeWeekSummary(data, { includeExcluded = false, userIds = null, entries = null, daysOnly = false } = {}) {
   const allowed = userIds ? new Set(userIds.map(Number)) : null;
   const sourceEntries = entries ?? data?.entries ?? [];
   const filteredEntries = sourceEntries.filter((entry) => {
@@ -179,14 +190,17 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   });
 
   let totalHours = 0;
+  let totalDays = 0;
   let sortCount = 0;
   let washCount = 0;
+  let weigherCount = 0;
   let foldCount = 0;
   const scheduledUserIds = new Set();
 
   for (const entry of filteredEntries) {
     const uid = Number(entry.user_id);
     scheduledUserIds.add(uid);
+    totalDays += 1;
     const hours = Number(entry.hours || 0);
     totalHours += hours;
     const roles = parseEntryRoles(entry);
@@ -194,6 +208,7 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     for (const role of countedRoles) {
       if (role === "sort") sortCount += 1;
       else if (role === "wash") washCount += 1;
+      else if (role === "weigher") weigherCount += 1;
       else if (role === "fold") foldCount += 1;
     }
   }
@@ -213,8 +228,11 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   return {
     employeesScheduled,
     totalHours,
+    totalDays,
+    daysOnly,
     sortCount,
     washCount,
+    weigherCount,
     foldCount,
     estimatedCost,
   };
@@ -228,6 +246,7 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     hours: 0,
     sort: 0,
     wash: 0,
+    weigher: 0,
     fold: 0,
   }));
   const peopleByDay = Array.from({ length: 7 }, () => new Set());
@@ -248,6 +267,7 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     for (const role of countedRoles) {
       if (role === "sort") summaries[dow].sort += 1;
       else if (role === "wash") summaries[dow].wash += 1;
+      else if (role === "weigher") summaries[dow].weigher += 1;
       else if (role === "fold") summaries[dow].fold += 1;
     }
   }

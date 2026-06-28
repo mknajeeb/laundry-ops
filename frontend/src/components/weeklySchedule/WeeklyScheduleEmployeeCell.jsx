@@ -19,6 +19,7 @@ export default function WeeklyScheduleEmployeeCell({
   showCost,
   showRates,
   costAllowed,
+  daysOnly = false,
   onViewSchedule,
 }) {
   const theme = useTheme();
@@ -27,7 +28,7 @@ export default function WeeklyScheduleEmployeeCell({
   const scheduleRoles = employeeScheduleRoles(employee.user_id, entries);
   const scheduleRolesLabel = scheduleRoles.length ? roleLabels(scheduleRoles) : null;
   const primaryRoleKey = scheduleRoles[0] || null;
-  const weeklySummary = formatEmployeeWeeklySummary(employee);
+  const weeklySummary = formatEmployeeWeeklySummary(employee, { daysOnly });
 
   const rateParts = [];
   if (showRates && employee?.default_hourly_rate) {

@@ -9,7 +9,7 @@ export const EMPLOYER_TAB = {
 };
 
 export const EMPLOYER_TAB_LABELS = {
-  [EMPLOYER_TAB.VEEWASH]: "VeeWash",
+  [EMPLOYER_TAB.VEEWASH]: "Washpro",
   [EMPLOYER_TAB.RINSE_EXCLUSIVE]: "Rinse Exclusive",
   [EMPLOYER_TAB.COMBINED]: "Combined",
 };

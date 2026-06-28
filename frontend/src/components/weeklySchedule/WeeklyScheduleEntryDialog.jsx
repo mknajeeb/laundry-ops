@@ -23,6 +23,7 @@ export default function WeeklyScheduleEntryDialog({
   entry,
   defaultUserId,
   defaultDay,
+  scheduleEndTimeEnabled = true,
 }) {
   const isEdit = Boolean(entry?.id);
   const [userId, setUserId] = useState(defaultUserId || "");
@@ -52,8 +53,8 @@ export default function WeeklyScheduleEntryDialog({
   }, [open, entry, defaultUserId, defaultDay]);
 
   const canSave = useMemo(
-    () => Boolean(userId) && startTime && endTime && roles.length > 0,
-    [userId, startTime, endTime, roles],
+    () => Boolean(userId) && startTime && roles.length > 0 && (scheduleEndTimeEnabled ? Boolean(endTime) : true),
+    [userId, startTime, endTime, roles, scheduleEndTimeEnabled],
   );
 
   const handleSubmit = () => {
@@ -63,8 +64,9 @@ export default function WeeklyScheduleEntryDialog({
       day_of_week: Number(dayOfWeek),
       roles,
       start_time: startTime,
-      end_time: endTime,
-      break_minutes: breakMinutes,
+      ...(scheduleEndTimeEnabled
+        ? { end_time: endTime, break_minutes: breakMinutes }
+        : { end_time: startTime, break_minutes: 0 }),
     });
   };
 
@@ -105,7 +107,8 @@ export default function WeeklyScheduleEntryDialog({
             breakMinutes={breakMinutes}
             onStartChange={setStartTime}
             onEndChange={setEndTime}
-            onBreakChange={setBreakMinutes}
+            onBreakChange={scheduleEndTimeEnabled ? setBreakMinutes : undefined}
+            endTimeEnabled={scheduleEndTimeEnabled}
             overnightEnabled
           />
         </Stack>

@@ -15,6 +15,7 @@ export default function ShiftScheduleTimeFields({
   maxShiftHours,
   overnightEnabled = false,
   validationContext,
+  endTimeEnabled = true,
 }) {
   const grossHours = useMemo(() => {
     const st = computeScheduledHours(startTime, endTime, 0);
@@ -39,7 +40,7 @@ export default function ShiftScheduleTimeFields({
   }, [startTime, endTime, breakMinutes, maxShiftHours, overnightEnabled, validationContext]);
 
   const hoursLine =
-    startTime && endTime ? (
+    endTimeEnabled && startTime && endTime ? (
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
         {formatTime12(startTime)} – {formatTime12(endTime)} ={" "}
         <strong>{grossHours.toFixed(1)}</strong> scheduled hour{grossHours === 1 ? "" : "s"}
@@ -57,9 +58,11 @@ export default function ShiftScheduleTimeFields({
     <Stack spacing={1.5}>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
         <PlanningTimePicker label="Start" value={startTime} onChange={onStartChange} />
-        <PlanningTimePicker label="End" value={endTime} onChange={onEndChange} />
+        {endTimeEnabled ? (
+          <PlanningTimePicker label="End" value={endTime} onChange={onEndChange} />
+        ) : null}
       </Stack>
-      {onBreakChange ? (
+      {endTimeEnabled && onBreakChange ? (
         <TextField
           label="Break (minutes)"
           type="number"
@@ -69,6 +72,11 @@ export default function ShiftScheduleTimeFields({
           onChange={(e) => onBreakChange(Number(e.target.value) || 0)}
           sx={{ maxWidth: 160 }}
         />
+      ) : null}
+      {!endTimeEnabled ? (
+        <Typography variant="body2" color="text.secondary">
+          Start time only — this shift counts as one scheduled day (hours are not calculated).
+        </Typography>
       ) : null}
       {hoursLine}
       {errors.map((msg) => (

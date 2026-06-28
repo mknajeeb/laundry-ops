@@ -9,7 +9,7 @@ function roleCountLines(summary) {
   })).filter((line) => line.count > 0);
 }
 
-export default function WeeklyScheduleDayHeader({ dayLabel, summary }) {
+export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = false }) {
   const people = Number(summary?.people || 0);
   const hours = Number(summary?.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
@@ -36,12 +36,14 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary }) {
       >
         {people} Employee{people === 1 ? "" : "s"}
       </Typography>
-      <Typography
-        variant="body2"
-        sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.8125rem", lineHeight: 1.3 }}
-      >
-        {hoursLabel} Hour{hours === 1 ? "" : "s"}
-      </Typography>
+      {!daysOnly ? (
+        <Typography
+          variant="body2"
+          sx={{ fontWeight: 600, color: "text.secondary", fontSize: "0.8125rem", lineHeight: 1.3 }}
+        >
+          {hoursLabel} Hour{hours === 1 ? "" : "s"}
+        </Typography>
+      ) : null}
       {roleLines.length ? (
         <Box sx={{ mt: 0.5 }}>
           {roleLines.map(({ key, label, count }) => (

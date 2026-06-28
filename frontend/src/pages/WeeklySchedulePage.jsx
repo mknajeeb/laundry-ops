@@ -71,6 +71,7 @@ function daySummary(day) {
     hours: Number(day?.hours ?? day?.total_hours ?? 0),
     sort: Number(day?.sort ?? day?.sort_count ?? 0),
     wash: Number(day?.wash ?? day?.wash_count ?? 0),
+    weigher: Number(day?.weigher ?? day?.weigher_count ?? 0),
     fold: Number(day?.fold ?? day?.fold_count ?? 0),
   };
 }
@@ -92,6 +93,7 @@ function ScheduleDayCell({
   duplicatingId,
   showRoleLabels,
   showBreakMinutes,
+  scheduleEndTimeEnabled,
   openEdit,
   handleDelete,
   handleDuplicate,
@@ -164,6 +166,7 @@ function ScheduleDayCell({
           muted={excluded}
           showRoleLabels={showRoleLabels}
           showBreakMinutes={showBreakMinutes}
+          scheduleEndTimeEnabled={scheduleEndTimeEnabled}
           onEdit={canEdit ? openEdit : undefined}
           onDelete={canEdit ? handleDelete : undefined}
           onDuplicate={canEdit ? handleDuplicate : undefined}
@@ -252,6 +255,8 @@ export default function WeeklySchedulePage() {
   const minWeekStart = display.min_week_start || null;
   const canViewPastWeeks = display.can_view_past_weeks !== false;
   const lockedEmployerTab = display.employer_tab || EMPLOYER_TAB.RINSE_EXCLUSIVE;
+  const scheduleEndTimeEnabled = display.schedule_end_time_enabled !== false;
+  const daysOnly = !scheduleEndTimeEnabled;
 
   useEffect(() => {
     if (data?.display) {
@@ -336,9 +341,10 @@ export default function WeeklySchedulePage() {
             includeExcluded: showExcluded,
             userIds: tabUserIds,
             entries: tabEntries,
+            daysOnly,
           })
         : null,
-    [data, showExcluded, tabUserIds, tabEntries],
+    [data, showExcluded, tabUserIds, tabEntries, daysOnly],
   );
 
   const filteredDaySummaries = useMemo(
@@ -497,6 +503,7 @@ export default function WeeklySchedulePage() {
       weekStart,
       tabLabel: EMPLOYER_TAB_LABELS[employerTab],
       showRoleLabels,
+      scheduleEndTimeEnabled,
     });
   };
 
@@ -515,6 +522,7 @@ export default function WeeklySchedulePage() {
     duplicatingId,
     showRoleLabels,
     showBreakMinutes,
+    scheduleEndTimeEnabled,
     openEdit,
     handleDelete,
     handleDuplicate,
@@ -832,6 +840,7 @@ export default function WeeklySchedulePage() {
                           showCost={showCost}
                           showRates={showEmployeeRates}
                           costAllowed={costAllowed}
+                          daysOnly={daysOnly}
                           onViewSchedule={openEmployeeView}
                         />
                         <Box sx={{ px: 1.25, pb: 1.25, display: "grid", gap: 0.75 }}>
@@ -905,7 +914,6 @@ export default function WeeklySchedulePage() {
                       <Box
                         key={label}
                         sx={{
-                          bgcolor: "#f8fafc",
                           borderBottom: "1px solid #e2e8f0",
                           borderLeft: "1px solid #e2e8f0",
                           position: "sticky",
@@ -917,6 +925,7 @@ export default function WeeklySchedulePage() {
                         <WeeklyScheduleDayHeader
                           dayLabel={label}
                           summary={daySummary(filteredDaySummaries[dow] || dayTotals[dow])}
+                          daysOnly={daysOnly}
                         />
                       </Box>
                     ))}
@@ -988,6 +997,7 @@ export default function WeeklySchedulePage() {
             entries={tabEntries}
             dayLabels={DAY_LABELS}
             showRoleLabels={showRoleLabels}
+            daysOnly={daysOnly}
           />
         </Box>
       ) : null}
@@ -1000,6 +1010,7 @@ export default function WeeklySchedulePage() {
         entry={editingEntry}
         defaultUserId={dialogDefaults.userId}
         defaultDay={dialogDefaults.day}
+        scheduleEndTimeEnabled={scheduleEndTimeEnabled}
       />
     </Box>
   );
