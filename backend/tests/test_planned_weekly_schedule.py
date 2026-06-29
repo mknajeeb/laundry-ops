@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.planned_weekly_schedule import (
     build_week_payload,
+    bulk_set_week_entry_employer_affiliation,
     carry_forward_week_schedule,
     compute_schedule_totals,
     create_entry,
@@ -96,6 +97,15 @@ class _FakeCursor:
             self.rows.append(row)
             return
         if "update planned_weekly_schedule_entries" in sql_norm:
+            if "set employer_affiliation=%s" in sql_norm and "week_start=%s" in sql_norm:
+                aff, org_id, week_start = params
+                count = 0
+                for row in self.rows:
+                    if row["organization_id"] == org_id and row["week_start"] == week_start:
+                        row["employer_affiliation"] = aff
+                        count += 1
+                self._rowcount = count
+                return
             entry_id = params[8] if len(params) > 8 else params[7]
             for row in self.rows:
                 if row["id"] == entry_id:
@@ -745,3 +755,44 @@ def test_ensure_week_schedule_carried_forward_seeds_empty_week():
     copied = list_week_entries(cursor, 1, week_start=target)
     assert len(copied) == 1
     assert copied[0]["day_of_week"] == 2
+
+
+def test_bulk_set_week_entry_employer_affiliation():
+    cursor = _FakeCursor()
+    week = date(2026, 6, 28)
+    cursor.rows = [
+        {
+            "id": 1,
+            "organization_id": 1,
+            "week_start": week,
+            "user_id": 10,
+            "day_of_week": 0,
+            "role": "fold",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+            "employer_affiliation": "veewash",
+        },
+        {
+            "id": 2,
+            "organization_id": 1,
+            "week_start": week,
+            "user_id": 20,
+            "day_of_week": 1,
+            "role": "wash",
+            "start_time": time(9, 0),
+            "end_time": time(16, 0),
+            "break_minutes": 0,
+            "employer_affiliation": "veewash",
+        },
+    ]
+    with patch("backend.planned_weekly_schedule.table_exists", return_value=True):
+        updated, err = bulk_set_week_entry_employer_affiliation(
+            cursor,
+            1,
+            week_start=week,
+            employer_affiliation="rinse_exclusive",
+        )
+    assert err is None
+    assert updated == 2
+    assert all(row["employer_affiliation"] == "rinse_exclusive" for row in cursor.rows)

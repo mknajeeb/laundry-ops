@@ -25,7 +25,11 @@ export const SHIFT_EMPLOYER_AFFILIATION = {
 
 /** @deprecated use employerAffiliationFromFlags */
 export function isRinseExclusiveEmployee(employee) {
-  return employerAffiliationFromFlags(employee) === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
+  return resolveEmployeeEmployerAffiliation(employee) === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
+}
+
+export function resolveEmployeeEmployerAffiliation(employee) {
+  return employerAffiliationFromFlags(employee);
 }
 
 export function resolveEntryEmployerAffiliation(entry, employee) {
@@ -33,14 +37,17 @@ export function resolveEntryEmployerAffiliation(entry, employee) {
   if (raw === SHIFT_EMPLOYER_AFFILIATION.VEEWASH || raw === SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE) {
     return raw;
   }
-  const profile = employerAffiliationFromFlags(employee);
-  if (profile === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE) return SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
+  const profile = resolveEmployeeEmployerAffiliation(employee);
+  if (profile === EMPLOYER_AFFILIATION.NONE) return null;
+  if (profile === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE || profile === EMPLOYER_AFFILIATION.BOTH) {
+    return SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
+  }
   return SHIFT_EMPLOYER_AFFILIATION.VEEWASH;
 }
 
 export function matchesEmployerTab(employee, tab) {
-  const affiliation = employerAffiliationFromFlags(employee);
-  if (affiliation === EMPLOYER_AFFILIATION.NONE) return false;
+  const affiliation = resolveEmployeeEmployerAffiliation(employee);
+  if (affiliation === EMPLOYER_AFFILIATION.NONE) return tab === EMPLOYER_TAB.COMBINED;
   if (tab === EMPLOYER_TAB.COMBINED) return true;
   if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) {
     return affiliation === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE || affiliation === EMPLOYER_AFFILIATION.BOTH;
@@ -54,7 +61,10 @@ export function matchesEmployerTab(employee, tab) {
 export function matchesEntryEmployerTab(entry, tab, employeesById = null) {
   if (tab === EMPLOYER_TAB.COMBINED) return true;
   const employee = employeesById?.get(Number(entry?.user_id));
+  const employeeAff = resolveEmployeeEmployerAffiliation(employee);
+  if (employeeAff === EMPLOYER_AFFILIATION.NONE) return false;
   const affiliation = resolveEntryEmployerAffiliation(entry, employee);
+  if (!affiliation) return false;
   if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) return affiliation === SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
   if (tab === EMPLOYER_TAB.VEEWASH) return affiliation === SHIFT_EMPLOYER_AFFILIATION.VEEWASH;
   return true;
@@ -76,6 +86,8 @@ export function filterEmployeesByEmployerTab(employees, tab, entries = null) {
 
   return list.filter((employee) => {
     const uid = Number(employee.user_id);
+    const affiliation = resolveEmployeeEmployerAffiliation(employee);
+    if (affiliation === EMPLOYER_AFFILIATION.NONE) return false;
     if (userIdsWithTabEntries.has(uid)) return true;
     const hasAnyEntry = allEntries.some((entry) => Number(entry.user_id) === uid);
     if (hasAnyEntry) return false;
@@ -85,7 +97,9 @@ export function filterEmployeesByEmployerTab(employees, tab, entries = null) {
 
 /** Tab badge count — employees with at least one shift assigned to this employer. */
 export function countEmployeesForEmployerTab(employees, tab, entries = null) {
-  if (tab === EMPLOYER_TAB.COMBINED) return (employees || []).length;
+  if (tab === EMPLOYER_TAB.COMBINED) {
+    return filterEmployeesByEmployerTab(employees, tab, entries).length;
+  }
   const tabEntries = filterEntriesByEmployerTab(entries || [], tab, employees);
   return new Set(tabEntries.map((entry) => Number(entry.user_id))).size;
 }

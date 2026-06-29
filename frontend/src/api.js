@@ -580,6 +580,9 @@ export const duplicateWeeklyScheduleEntry = (entryId, body = {}) =>
 export const setWeeklyScheduleExclusion = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/exclusions`, body, { timeout: 30000 });
 
+export const bulkSetWeeklyScheduleEmployer = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/weekly-schedule/bulk-employer`, body, { timeout: 30000 });
+
 export const getWeeklyScheduleDisplaySettings = () =>
   axios.get(`${API_BASE}/rinse/shift-analysis/weekly-schedule/display-settings`, { timeout: 30000 });
 

@@ -552,6 +552,15 @@ def _assert_worker_in_org(conn, organization_id: int, user_id: int) -> str | Non
     return None
 
 
+def _assert_worker_schedulable(conn, organization_id: int, user_id: int) -> str | None:
+    from backend.payroll_employer_affiliation import EMPLOYER_AFFILIATION_NONE, employer_affiliation_from_flags
+
+    worker = _workers_index(_load_workers(conn, organization_id)).get(int(user_id))
+    if employer_affiliation_from_flags(worker) == EMPLOYER_AFFILIATION_NONE:
+        return "worker is not on Rinse or Washpro schedule (affiliation none)"
+    return None
+
+
 def create_entry(
     conn,
     cursor,
@@ -571,6 +580,9 @@ def create_entry(
     worker_err = _assert_worker_in_org(conn, organization_id, payload["user_id"])
     if worker_err:
         return None, worker_err
+    schedulable_err = _assert_worker_schedulable(conn, organization_id, payload["user_id"])
+    if schedulable_err:
+        return None, schedulable_err
     if "employer_affiliation" not in payload:
         from backend.payroll_employer_affiliation import default_shift_employer_affiliation
 
@@ -906,6 +918,31 @@ def ensure_week_schedule_carried_forward(
         target_week_start=week_start,
         source_week_start=source,
     )
+
+
+def bulk_set_week_entry_employer_affiliation(
+    cursor,
+    organization_id: int,
+    *,
+    week_start: date,
+    employer_affiliation: str,
+) -> tuple[int, str | None]:
+    from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
+
+    ensure_planned_weekly_schedule_table(cursor)
+    aff = normalize_shift_employer_affiliation(employer_affiliation)
+    if not aff:
+        return 0, "employer_affiliation must be veewash or rinse_exclusive"
+    cursor.execute(
+        """
+        UPDATE planned_weekly_schedule_entries
+        SET employer_affiliation=%s
+        WHERE organization_id=%s AND week_start=%s
+        """,
+        (aff, int(organization_id), week_start),
+    )
+    updated = int(getattr(cursor, "rowcount", 0) or 0)
+    return updated, None
 
 
 def build_week_payload(

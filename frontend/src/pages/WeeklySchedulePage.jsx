@@ -25,6 +25,7 @@ import FileDownloadOutlinedIcon from "@mui/icons-material/FileDownloadOutlined";
 import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
 import PrintIcon from "@mui/icons-material/Print";
 import {
+  bulkSetWeeklyScheduleEmployer,
   createWeeklyScheduleEntry,
   deleteWeeklyScheduleEntry,
   duplicateWeeklyScheduleEntry,
@@ -48,6 +49,7 @@ import {
   countEmployeesForEmployerTab,
   defaultShiftEmployerForTab,
   pickDefaultEmployerTab,
+  SHIFT_EMPLOYER_AFFILIATION,
 } from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
 import {
   DAY_LABELS,
@@ -238,6 +240,7 @@ export default function WeeklySchedulePage() {
   const [costSaving, setCostSaving] = useState(false);
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
   const [duplicatingId, setDuplicatingId] = useState(null);
+  const [bulkEmployerSaving, setBulkEmployerSaving] = useState(false);
   const [employerTab, setEmployerTab] = useState(EMPLOYER_TAB.VEEWASH);
   const printContentRef = useRef(null);
   const stickyHeaderRef = useRef(null);
@@ -507,6 +510,30 @@ export default function WeeklySchedulePage() {
     });
   };
 
+  const handleBulkMoveToRinseExclusive = async () => {
+    if (
+      !window.confirm(
+        "Move every shift this week to Rinse Exclusive? Shifts on the Washpro tab will move to Rinse Exclusive.",
+      )
+    ) {
+      return;
+    }
+    setBulkEmployerSaving(true);
+    setError("");
+    try {
+      const res = await bulkSetWeeklyScheduleEmployer({
+        week_start: weekStart,
+        employer_affiliation: SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE,
+      });
+      setData(res.data);
+      setEmployerTab(EMPLOYER_TAB.RINSE_EXCLUSIVE);
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to move shifts to Rinse Exclusive");
+    } finally {
+      setBulkEmployerSaving(false);
+    }
+  };
+
   const showToolbarChips =
     (excludedCount > 0 && canManageExclusions) || costAllowed;
 
@@ -651,6 +678,17 @@ export default function WeeklySchedulePage() {
                   sx={{ fontWeight: 700, py: 0.35 }}
                 >
                   User mapping
+                </Button>
+              ) : null}
+              {canEdit ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  disabled={bulkEmployerSaving || !data?.entries?.length}
+                  onClick={handleBulkMoveToRinseExclusive}
+                  sx={{ fontWeight: 700, py: 0.35 }}
+                >
+                  {bulkEmployerSaving ? "Moving…" : "All → Rinse Exclusive"}
                 </Button>
               ) : null}
               <Button

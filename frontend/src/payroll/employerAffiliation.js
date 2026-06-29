@@ -23,6 +23,10 @@ function streamFlag(value) {
 
 export function employerAffiliationFromFlags(worker) {
   if (!worker) return EMPLOYER_AFFILIATION.VEEWASH;
+  const explicit = String(worker.employer_affiliation || "").trim().toLowerCase();
+  if (Object.values(EMPLOYER_AFFILIATION).includes(explicit)) {
+    return explicit;
+  }
   const rinse = streamFlag(worker.can_work_rinse);
   const dropOff = streamFlag(worker.can_work_drop_off);
   const both = streamFlag(worker.can_work_both);
