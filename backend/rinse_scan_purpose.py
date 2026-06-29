@@ -89,6 +89,20 @@ def is_at_delivery_location_purpose(raw: str | None) -> bool:
     return p == "at-delivery-location" or "at-delivery-location" in p
 
 
+def is_actual_delivery_purpose(raw: str | None) -> bool:
+    return "actual-delivery" in normalize_scan_purpose(raw)
+
+
+def scan_purpose_indicates_vendor_cycle_departed(raw: str | None) -> bool:
+    """Bag left the current vendor cycle (returned to Rinse or delivered to customer)."""
+    return (
+        is_received_from_vendor_purpose(raw)
+        or is_actual_delivery_purpose(raw)
+        or is_load_out_purpose(raw)
+        or is_at_delivery_location_purpose(raw)
+    )
+
+
 def scan_purpose_indicates_sent_left(raw: str | None) -> bool:
     """Outbound/delivery scan evidence — bag left the facility workflow."""
     return is_load_out_purpose(raw) or is_at_delivery_location_purpose(raw)
