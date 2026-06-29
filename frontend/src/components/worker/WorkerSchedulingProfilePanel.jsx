@@ -39,6 +39,7 @@ import {
 } from "../../payroll/payrollWorkerDefaults";
 import {
   EMPLOYER_AFFILIATION_OPTIONS,
+  NON_RINSE_EMPLOYER_LABEL,
   employerAffiliationFromFlags,
   flagsFromEmployerAffiliation,
 } from "../../payroll/employerAffiliation";
@@ -381,7 +382,7 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
           </Typography>
         )}
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-          Controls Weekly Schedule tabs (Rinse Exclusive · VeeWash · Combined). Also editable on User mapping.
+          Controls Weekly Schedule tabs (Rinse Exclusive · {NON_RINSE_EMPLOYER_LABEL} · Combined). Also editable on User mapping.
         </Typography>
       </ProfileSection>
 

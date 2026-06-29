@@ -1,5 +1,8 @@
 /** Employer affiliation on worker profiles — mirrors backend/payroll_employer_affiliation.py */
 
+/** User-facing label for non-Rinse-exclusive schedule tab and affiliation (internal key remains `veewash`). */
+export const NON_RINSE_EMPLOYER_LABEL = "Washpro";
+
 export const EMPLOYER_AFFILIATION = {
   RINSE_EXCLUSIVE: "rinse_exclusive",
   VEEWASH: "veewash",
@@ -9,7 +12,7 @@ export const EMPLOYER_AFFILIATION = {
 
 export const EMPLOYER_AFFILIATION_OPTIONS = [
   { value: EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE, label: "Rinse Exclusive" },
-  { value: EMPLOYER_AFFILIATION.VEEWASH, label: "VeeWash" },
+  { value: EMPLOYER_AFFILIATION.VEEWASH, label: NON_RINSE_EMPLOYER_LABEL },
   { value: EMPLOYER_AFFILIATION.BOTH, label: "Both" },
   { value: EMPLOYER_AFFILIATION.NONE, label: "None" },
 ];

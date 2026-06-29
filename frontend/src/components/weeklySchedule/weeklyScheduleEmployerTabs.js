@@ -1,6 +1,10 @@
-/** Employer tab filtering — Rinse Exclusive vs VeeWash (per-shift + worker profile). */
+/** Employer tab filtering — Rinse Exclusive vs Washpro (non-Rinse; per-shift + worker profile). */
 
-import { EMPLOYER_AFFILIATION, employerAffiliationFromFlags } from "../../payroll/employerAffiliation";
+import {
+  EMPLOYER_AFFILIATION,
+  NON_RINSE_EMPLOYER_LABEL,
+  employerAffiliationFromFlags,
+} from "../../payroll/employerAffiliation";
 
 export const EMPLOYER_TAB = {
   VEEWASH: "veewash",
@@ -9,7 +13,7 @@ export const EMPLOYER_TAB = {
 };
 
 export const EMPLOYER_TAB_LABELS = {
-  [EMPLOYER_TAB.VEEWASH]: "Washpro",
+  [EMPLOYER_TAB.VEEWASH]: NON_RINSE_EMPLOYER_LABEL,
   [EMPLOYER_TAB.RINSE_EXCLUSIVE]: "Rinse Exclusive",
   [EMPLOYER_TAB.COMBINED]: "Combined",
 };
@@ -86,7 +90,7 @@ export function countEmployeesForEmployerTab(employees, tab, entries = null) {
   return new Set(tabEntries.map((entry) => Number(entry.user_id))).size;
 }
 
-/** Default to whichever tab has more employees (VeeWash when tied). */
+/** Default to whichever tab has more employees (Washpro when tied). */
 export function pickDefaultEmployerTab(employees, entries = null) {
   const rinseCount = countEmployeesForEmployerTab(employees, EMPLOYER_TAB.RINSE_EXCLUSIVE, entries);
   const veewashCount = countEmployeesForEmployerTab(employees, EMPLOYER_TAB.VEEWASH, entries);

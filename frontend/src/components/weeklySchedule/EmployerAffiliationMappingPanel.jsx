@@ -22,6 +22,7 @@ import { getPayrollEmployerAffiliations, putPayrollEmployerAffiliation } from ".
 import {
   EMPLOYER_AFFILIATION,
   EMPLOYER_AFFILIATION_OPTIONS,
+  NON_RINSE_EMPLOYER_LABEL,
   employerAffiliationFromFlags,
   employerAffiliationLabel,
 } from "../../payroll/employerAffiliation";
@@ -38,10 +39,12 @@ function tabPreviewChips(affiliation) {
   if (affiliation === EMPLOYER_AFFILIATION.BOTH) {
     return [
       <Chip key="rinse" size="small" label="Rinse tab" color="primary" variant="outlined" />,
-      <Chip key="veewash" size="small" label="VeeWash tab" color="secondary" variant="outlined" />,
+      <Chip key="washpro" size="small" label={`${NON_RINSE_EMPLOYER_LABEL} tab`} color="secondary" variant="outlined" />,
     ];
   }
-  return [<Chip key="veewash" size="small" label="VeeWash tab" color="secondary" variant="outlined" />];
+  return [
+    <Chip key="washpro" size="small" label={`${NON_RINSE_EMPLOYER_LABEL} tab`} color="secondary" variant="outlined" />,
+  ];
 }
 
 export default function EmployerAffiliationMappingPanel() {
@@ -106,16 +109,16 @@ export default function EmployerAffiliationMappingPanel() {
   return (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-        Employer affiliation (Rinse · VeeWash · Both · None)
+        Employer affiliation (Rinse · {NON_RINSE_EMPLOYER_LABEL} · Both · None)
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" mb={1.5}>
         Stored on each worker&apos;s payroll scheduling profile. Controls which Weekly Schedule tabs they appear on.
-        Use <strong>None</strong> for system / admin accounts that should not appear on Rinse or VeeWash schedule tabs.
+        Use <strong>None</strong> for system / admin accounts that should not appear on Rinse or {NON_RINSE_EMPLOYER_LABEL} schedule tabs.
         Changes here are the same as editing the profile under People → Scheduling.
       </Typography>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
         <Chip size="small" label={`Rinse Exclusive: ${counts.rinse_exclusive}`} />
-        <Chip size="small" label={`VeeWash: ${counts.veewash}`} />
+        <Chip size="small" label={`${NON_RINSE_EMPLOYER_LABEL}: ${counts.veewash}`} />
         <Chip size="small" label={`Both: ${counts.both}`} />
         <Chip size="small" label={`None: ${counts.none}`} />
       </Stack>
