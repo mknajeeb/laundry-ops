@@ -9,9 +9,20 @@ from typing import Any, Mapping, Sequence
 from backend.daily_shift_roster import calc_cost, calc_hours, parse_time_value
 from backend.ta_helpers import table_exists
 
-VALID_ROLES = frozenset({"sort", "wash", "fold", "weigher"})
-LEGACY_ROLE_MAP = {"folder": "fold", "operator": "wash", "folders": "fold", "operators": "wash"}
-ROLE_SORT_ORDER = ("sort", "wash", "weigher", "fold")
+VALID_ROLES = frozenset({"sort", "wash", "fold", "weigher", "hd_operator", "hd_folder"})
+LEGACY_ROLE_MAP = {
+    "folder": "fold",
+    "operator": "wash",
+    "folders": "fold",
+    "operators": "wash",
+    "hd operator": "hd_operator",
+    "hd_operator": "hd_operator",
+    "hd-operator": "hd_operator",
+    "hd folder": "hd_folder",
+    "hd_folder": "hd_folder",
+    "hd-folder": "hd_folder",
+}
+ROLE_SORT_ORDER = ("sort", "wash", "weigher", "fold", "hd_operator", "hd_folder")
 DAY_LABELS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 
 
@@ -281,6 +292,8 @@ def compute_schedule_totals(
             "wash_count": 0,
             "weigher_count": 0,
             "fold_count": 0,
+            "hd_operator_count": 0,
+            "hd_folder_count": 0,
             "operator_count": 0,
             "folder_count": 0,
         }
@@ -324,6 +337,10 @@ def compute_schedule_totals(
                 day["weigher_count"] = int(day["weigher_count"]) + 1
             elif role == "fold":
                 day["fold_count"] = int(day["fold_count"]) + 1
+            elif role == "hd_operator":
+                day["hd_operator_count"] = int(day["hd_operator_count"]) + 1
+            elif role == "hd_folder":
+                day["hd_folder_count"] = int(day["hd_folder_count"]) + 1
             if role == "wash":
                 day["operator_count"] = int(day["operator_count"]) + 1
             if role == "fold":
@@ -535,7 +552,7 @@ def _validate_entry_payload(
         roles_raw = data.get("roles") if "roles" in data else data.get("role")
         roles = parse_weekly_roles(roles_raw)
         if not roles:
-            return None, "role must be sort, wash, weigher, and/or fold"
+            return None, "role must be sort, wash, weigher, fold, hd_operator, and/or hd_folder"
         out["role"] = roles_to_storage(roles)
     if not partial or "start_time" in data:
         start = parse_time_value(data.get("start_time"))

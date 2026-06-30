@@ -2,13 +2,15 @@ import { parseTimeToMinutes } from "../../payroll/schedulePlanner";
 import { normalizeTimeHm } from "../datetime/scheduleTimeUi";
 import { VEEWASH_DASHBOARD } from "../../theme/veewashDashboard";
 
-export const ROLE_ORDER = ["wash", "sort", "weigher", "fold"];
+export const ROLE_ORDER = ["wash", "sort", "weigher", "fold", "hd_operator", "hd_folder"];
 
 export const WEEKLY_SCHEDULE_ROLES = [
   { value: "wash", label: "Wash" },
   { value: "sort", label: "Sort" },
   { value: "weigher", label: "Weigher" },
   { value: "fold", label: "Fold" },
+  { value: "hd_operator", label: "HD Operator" },
+  { value: "hd_folder", label: "HD Folder" },
 ];
 
 const ROLE_ORDER_INDEX = Object.fromEntries(ROLE_ORDER.map((role, index) => [role, index]));
@@ -56,6 +58,24 @@ export const ROLE_STYLES = {
     cellBg: "#faf5ff",
     border: "rgba(109, 40, 217, 0.28)",
     label: "Weigher",
+  },
+  hd_operator: {
+    accent: "#be185d",
+    bg: "#fce7f3",
+    hoverBg: "#fbcfe8",
+    chipBg: "#fdf2f8",
+    cellBg: "#fff5fa",
+    border: "rgba(190, 24, 93, 0.28)",
+    label: "HD Operator",
+  },
+  hd_folder: {
+    accent: "#0f766e",
+    bg: "#ccfbf1",
+    hoverBg: "#99f6e4",
+    chipBg: "#d1faf5",
+    cellBg: "#ecfdf5",
+    border: "rgba(15, 118, 110, 0.28)",
+    label: "HD Folder",
   },
   folder: {
     accent: VEEWASH_DASHBOARD.tealDark,
@@ -248,6 +268,8 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
   let washCount = 0;
   let weigherCount = 0;
   let foldCount = 0;
+  let hdOperatorCount = 0;
+  let hdFolderCount = 0;
   const scheduledUserIds = new Set();
 
   for (const entry of filteredEntries) {
@@ -263,6 +285,8 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
       else if (role === "wash") washCount += 1;
       else if (role === "weigher") weigherCount += 1;
       else if (role === "fold") foldCount += 1;
+      else if (role === "hd_operator") hdOperatorCount += 1;
+      else if (role === "hd_folder") hdFolderCount += 1;
     }
   }
 
@@ -287,6 +311,8 @@ export function computeWeekSummary(data, { includeExcluded = false, userIds = nu
     washCount,
     weigherCount,
     foldCount,
+    hdOperatorCount,
+    hdFolderCount,
     estimatedCost,
   };
 }
@@ -301,6 +327,8 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
     wash: 0,
     weigher: 0,
     fold: 0,
+    hd_operator: 0,
+    hd_folder: 0,
   }));
   const peopleByDay = Array.from({ length: 7 }, () => new Set());
 
@@ -322,6 +350,8 @@ export function computeFilteredDaySummaries(data, { userIds = null, includeExclu
       else if (role === "wash") summaries[dow].wash += 1;
       else if (role === "weigher") summaries[dow].weigher += 1;
       else if (role === "fold") summaries[dow].fold += 1;
+      else if (role === "hd_operator") summaries[dow].hd_operator += 1;
+      else if (role === "hd_folder") summaries[dow].hd_folder += 1;
     }
   }
 

@@ -196,10 +196,13 @@ def test_normalize_weekly_role_legacy_and_new():
     assert normalize_weekly_role("folder") == "fold"
     assert normalize_weekly_role("operator") == "wash"
     assert normalize_weekly_role("weigher") == "weigher"
+    assert normalize_weekly_role("hd_operator") == "hd_operator"
+    assert normalize_weekly_role("hd folder") == "hd_folder"
     assert normalize_weekly_role("sort") == "sort"
     assert parse_weekly_roles("wash,fold") == ["wash", "fold"]
     assert parse_weekly_roles("wash,weigher") == ["wash", "weigher"]
-    assert roles_to_storage(["fold", "sort", "wash", "weigher"]) == "sort,wash,weigher,fold"
+    assert parse_weekly_roles("hd_operator,hd_folder") == ["hd_operator", "hd_folder"]
+    assert roles_to_storage(["fold", "sort", "wash", "weigher", "hd_operator"]) == "sort,wash,weigher,fold,hd_operator"
 
 
 def test_serialize_entry_days_only_has_zero_hours():

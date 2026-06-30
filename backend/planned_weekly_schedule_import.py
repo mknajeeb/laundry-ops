@@ -52,11 +52,15 @@ def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
     if not text:
         return ["fold"]
     roles: list[str] = []
+    if "hd operator" in text or "hd_operator" in text:
+        roles.append("hd_operator")
+    if "hd folder" in text or "hd_folder" in text:
+        roles.append("hd_folder")
     if "sort" in text:
         roles.append("sort")
     if "wash" in text:
         roles.append("wash")
-    if "fold" in text:
+    if "fold" in text and "hd folder" not in text and "hd_folder" not in text:
         roles.append("fold")
     if roles:
         return roles

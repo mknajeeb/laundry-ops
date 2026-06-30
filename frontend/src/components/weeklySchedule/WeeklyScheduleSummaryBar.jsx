@@ -6,6 +6,8 @@ const ROLE_ACCENT = {
   sort: VEEWASH_DASHBOARD.primaryBlueDark,
   wash: VEEWASH_DASHBOARD.rushCopper,
   weigher: "#6d28d9",
+  hd_operator: "#be185d",
+  hd_folder: "#0f766e",
 };
 
 function formatHours(value) {
@@ -72,6 +74,8 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
     { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
     { label: "Weigher", value: summary.weigherCount, accent: ROLE_ACCENT.weigher },
     { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
+    { label: "HD Operator", value: summary.hdOperatorCount, accent: ROLE_ACCENT.hd_operator },
+    { label: "HD Folder", value: summary.hdFolderCount, accent: ROLE_ACCENT.hd_folder },
   ];
 
   if (showCost) {
