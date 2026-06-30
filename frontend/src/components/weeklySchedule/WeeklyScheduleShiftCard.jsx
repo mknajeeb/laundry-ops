@@ -7,6 +7,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Stack,
   Tooltip,
   Typography,
   useMediaQuery,
@@ -26,6 +27,7 @@ import {
 } from "./weeklyScheduleEmployerTabs";
 import { entityLabel } from "../../payroll/businessEntity";
 import { entryRoleCardStyle, parseEntryRoles, roleLabels } from "./weeklyScheduleRoles";
+import ScheduleRoleChip from "./ScheduleRoleChip";
 
 export default function WeeklyScheduleShiftCard({
   entry,
@@ -55,7 +57,7 @@ export default function WeeklyScheduleShiftCard({
   const breakMin = Number(entry.break_minutes || 0);
   const breakSuffix = scheduleEndTimeEnabled && showBreakMinutes && breakMin > 0 ? ` · −${breakMin}m break` : "";
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
-  const roleText = showRoleLabels ? roleLabels(roles) : "";
+  const roleTooltip = showRoleLabels ? roleLabels(roles) : "";
   const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
   const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee, organizationSlug);
   const canSetEmployer = Boolean(onSetEmployer && !muted);
@@ -64,6 +66,7 @@ export default function WeeklyScheduleShiftCard({
   const closeMenu = () => setMenuAnchor(null);
 
   return (
+    <Tooltip title={roleTooltip || ""} disableHoverListener={!roleTooltip} enterDelay={500}>
     <Paper
       elevation={0}
       data-shift-card
@@ -92,7 +95,7 @@ export default function WeeklyScheduleShiftCard({
         bgcolor: muted ? "#f8fafc" : cardStyle.bg,
         opacity: dragging ? 0.45 : muted ? 0.72 : 1,
         boxShadow: "none",
-        overflow: "hidden",
+        overflow: "visible",
         transition: "border-color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease",
         "&:hover": muted
           ? {}
@@ -144,35 +147,21 @@ export default function WeeklyScheduleShiftCard({
                 display: "block",
                 mt: 0.15,
                 color: "text.secondary",
-                fontSize: "0.68rem",
+                fontSize: "0.65rem",
                 fontWeight: 700,
                 lineHeight: 1.25,
-                whiteSpace: "nowrap",
-                overflow: "visible",
-                textOverflow: "clip",
               }}
             >
               {hoursLabel}
               {breakSuffix}
             </Typography>
           ) : null}
-          {roleText ? (
-            <Typography
-              variant="caption"
-              sx={{
-                display: "block",
-                mt: 0.15,
-                color: cardStyle.accent,
-                fontSize: "0.68rem",
-                fontWeight: 700,
-                lineHeight: 1.25,
-                whiteSpace: "nowrap",
-                overflow: "visible",
-                textOverflow: "clip",
-              }}
-            >
-              {roleText}
-            </Typography>
+          {showRoleLabels && roles.length ? (
+            <Stack direction="row" spacing={0.35} useFlexGap flexWrap="wrap" sx={{ mt: 0.35, maxWidth: "100%" }}>
+              {roles.map((roleKey) => (
+                <ScheduleRoleChip key={roleKey} roleKey={roleKey} />
+              ))}
+            </Stack>
           ) : null}
         </Box>
 
@@ -289,5 +278,6 @@ export default function WeeklyScheduleShiftCard({
         ) : null}
       </Box>
     </Paper>
+    </Tooltip>
   );
 }

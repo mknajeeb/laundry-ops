@@ -150,8 +150,8 @@ function ScheduleDayCell({
         handleDrop(employee.user_id, dow, entryId);
       }}
       sx={{
-        px: compact ? 0 : 0.5,
-        py: compact ? 0.65 : 0.4,
+        px: 0.55,
+        py: 0.55,
         minHeight: compact ? 0 : 44,
         borderBottom: compact ? "none" : "1px solid #e2e8f0",
         borderLeft: compact ? "none" : "1px solid #e2e8f0",
@@ -430,10 +430,10 @@ export default function WeeklySchedulePage() {
   );
 
   const employeeColWidth = isTablet ? "minmax(180px, 195px)" : "minmax(185px, 200px)";
-  const dayColWidth = isTablet ? "minmax(128px, 1fr)" : "minmax(138px, 1fr)";
+  const dayColWidth = isTablet ? "minmax(148px, 1fr)" : "minmax(158px, 1fr)";
   const gridMinWidth = isTablet
-    ? 195 + visibleDayColumns.length * 128
-    : 200 + visibleDayColumns.length * 138;
+    ? 195 + visibleDayColumns.length * 148
+    : 200 + visibleDayColumns.length * 158;
 
   const handleExcludeToggle = async (employee, excluded) => {
     setExcludeSavingUserId(employee.user_id);

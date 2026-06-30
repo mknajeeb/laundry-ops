@@ -1,10 +1,10 @@
-import { Box, Typography } from "@mui/material";
-import { ROLE_ORDER, ROLE_STYLES } from "./weeklyScheduleRoles";
+import { Box, Stack, Typography } from "@mui/material";
+import { ROLE_ORDER } from "./weeklyScheduleRoles";
+import ScheduleRoleChip from "./ScheduleRoleChip";
 
 function roleCountLines(summary) {
   return ROLE_ORDER.map((key) => ({
     key,
-    label: ROLE_STYLES[key]?.label || key,
     count: Number(summary?.[key] || 0),
   })).filter((line) => line.count > 0);
 }
@@ -16,21 +16,44 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
   const roleLines = roleCountLines(summary);
 
   if (compact) {
-    const roleText = roleLines.map(({ label, count }) => `${label}:${count}`).join(" ");
-    const parts = [`${people} emp`];
-    if (!daysOnly) parts.push(`${hoursLabel}h`);
-    if (roleText) parts.push(roleText);
+    const statParts = [`${people} emp`];
+    if (!daysOnly) statParts.push(`${hoursLabel} h`);
+
     return (
-      <Box sx={{ px: 0.75, py: 0.55 }}>
+      <Box sx={{ px: 0.85, py: 0.65, minWidth: 0 }}>
         <Typography
           variant="caption"
-          sx={{ display: "block", fontWeight: 800, letterSpacing: "0.08em", fontSize: "0.68rem", lineHeight: 1.2 }}
+          sx={{
+            display: "block",
+            fontWeight: 800,
+            letterSpacing: "0.1em",
+            fontSize: "0.7rem",
+            lineHeight: 1.2,
+            color: "text.primary",
+          }}
         >
           {dayLabel.toUpperCase()}
         </Typography>
-        <Typography variant="caption" sx={{ display: "block", color: "text.secondary", fontWeight: 600, lineHeight: 1.25 }}>
-          {parts.join(" · ")}
+        <Typography
+          variant="caption"
+          sx={{
+            display: "block",
+            mt: 0.25,
+            color: "text.secondary",
+            fontWeight: 600,
+            fontSize: "0.65rem",
+            lineHeight: 1.25,
+          }}
+        >
+          {statParts.join(" · ")}
         </Typography>
+        {roleLines.length ? (
+          <Stack direction="row" spacing={0.35} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
+            {roleLines.map(({ key, count }) => (
+              <ScheduleRoleChip key={key} roleKey={key} count={count} />
+            ))}
+          </Stack>
+        ) : null}
       </Box>
     );
   }
@@ -65,22 +88,11 @@ export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = 
         </Typography>
       ) : null}
       {roleLines.length ? (
-        <Box sx={{ mt: 0.5 }}>
-          {roleLines.map(({ key, label, count }) => (
-            <Typography
-              key={key}
-              variant="body2"
-              sx={{
-                fontWeight: 600,
-                fontSize: "0.78rem",
-                lineHeight: 1.35,
-                color: (ROLE_STYLES[key] || ROLE_STYLES.fold).accent,
-              }}
-            >
-              {label}: {count}
-            </Typography>
+        <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.5 }}>
+          {roleLines.map(({ key, count }) => (
+            <ScheduleRoleChip key={key} roleKey={key} count={count} />
           ))}
-        </Box>
+        </Stack>
       ) : null}
     </Box>
   );

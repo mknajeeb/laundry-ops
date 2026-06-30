@@ -17,6 +17,22 @@ export const WEEKLY_SCHEDULE_ROLES = [
 
 const ROLE_ORDER_INDEX = Object.fromEntries(ROLE_ORDER.map((role, index) => [role, index]));
 
+/** Short labels for tight grid cells and day headers. */
+export const ROLE_COMPACT_LABELS = {
+  wash: "Wash",
+  sort: "Sort",
+  weigher: "Weigh",
+  fold: "Fold",
+  hd_operator: "HD Op",
+  hd_folder: "HD Fold",
+  non_rinse_folder: "NR Fold",
+  attendant: "Attend",
+};
+
+export function roleCompactLabel(roleKey) {
+  return ROLE_COMPACT_LABELS[roleKey] || ROLE_STYLES[roleKey]?.label || roleKey;
+}
+
 export function sortRoles(roles) {
   return [...(roles || [])].sort(
     (a, b) => (ROLE_ORDER_INDEX[a] ?? 99) - (ROLE_ORDER_INDEX[b] ?? 99),
