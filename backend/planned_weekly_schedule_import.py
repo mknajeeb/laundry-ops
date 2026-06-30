@@ -52,6 +52,8 @@ def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
     if not text:
         return ["fold"]
     roles: list[str] = []
+    if "non-rinse folder" in text or "non rinse folder" in text or "non_rinse_folder" in text:
+        roles.append("non_rinse_folder")
     if "hd operator" in text or "hd_operator" in text:
         roles.append("hd_operator")
     if "hd folder" in text or "hd_folder" in text:
@@ -62,7 +64,7 @@ def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
         roles.append("sort")
     if "wash" in text:
         roles.append("wash")
-    if "fold" in text and "hd folder" not in text and "hd_folder" not in text:
+    if "fold" in text and "hd folder" not in text and "hd_folder" not in text and "non-rinse" not in text and "non_rinse" not in text:
         roles.append("fold")
     if roles:
         return roles

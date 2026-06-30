@@ -8,6 +8,7 @@ const ROLE_ACCENT = {
   weigher: "#6d28d9",
   hd_operator: "#be185d",
   hd_folder: "#0f766e",
+  non_rinse_folder: "#4338ca",
   attendant: "#b45309",
 };
 
@@ -77,6 +78,7 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
     { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
     { label: "HD Operator", value: summary.hdOperatorCount, accent: ROLE_ACCENT.hd_operator },
     { label: "HD Folder", value: summary.hdFolderCount, accent: ROLE_ACCENT.hd_folder },
+    { label: "Non-Rinse Folder", value: summary.nonRinseFolderCount, accent: ROLE_ACCENT.non_rinse_folder },
     { label: "Attendant", value: summary.attendantCount, accent: ROLE_ACCENT.attendant },
   ];
 
