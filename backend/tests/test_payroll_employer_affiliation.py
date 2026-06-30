@@ -28,7 +28,8 @@ def test_flags_round_trip_veewash():
         "can_work_drop_off": True,
         "can_work_both": False,
     }
-    assert employer_affiliation_from_flags(flags) == EMPLOYER_AFFILIATION_VEEWASH
+    assert employer_affiliation_from_flags(flags, organization_slug="washpro") == EMPLOYER_AFFILIATION_VEEWASH
+    assert employer_affiliation_from_flags(flags, organization_slug="veewash") == "veewash"
 
 
 def test_flags_round_trip_both():

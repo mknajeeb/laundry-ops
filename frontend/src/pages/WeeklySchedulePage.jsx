@@ -42,15 +42,17 @@ import WeeklyScheduleEmployeeCell from "../components/weeklySchedule/WeeklySched
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
 import WeeklyScheduleSummaryBar from "../components/weeklySchedule/WeeklyScheduleSummaryBar";
 import {
-  EMPLOYER_TAB,
-  EMPLOYER_TAB_LABELS,
-  filterEmployeesByEmployerTab,
-  filterEntriesByEmployerTab,
+  ENTITY_TAB,
+  ENTITY_TAB_LABELS,
   countEmployeesForEmployerTab,
   defaultShiftEmployerForTab,
+  filterEmployeesByEmployerTab,
+  filterEntriesByEmployerTab,
   pickDefaultEmployerTab,
+  visibleEntityTabs,
   SHIFT_EMPLOYER_AFFILIATION,
 } from "../components/weeklySchedule/weeklyScheduleEmployerTabs";
+import { entityLabel } from "../payroll/businessEntity";
 import {
   DAY_LABELS,
   formatWeekRange,
@@ -100,6 +102,7 @@ function ScheduleDayCell({
   handleDelete,
   handleDuplicate,
   handleSetEmployer,
+  organizationSlug = null,
   compact = false,
 }) {
   const cellKey = `${employee.user_id}:${dow}`;
@@ -173,6 +176,7 @@ function ScheduleDayCell({
           onDelete={canEdit ? handleDelete : undefined}
           onDuplicate={canEdit ? handleDuplicate : undefined}
           onSetEmployer={canEdit ? handleSetEmployer : undefined}
+          organizationSlug={organizationSlug}
           duplicating={duplicatingId === entry.id}
           onDragStart={canEdit ? (e) => setDraggingId(e.id) : undefined}
           onDragEnd={canEdit ? () => setDraggingId(null) : undefined}
@@ -241,7 +245,7 @@ export default function WeeklySchedulePage() {
   const [excludeSavingUserId, setExcludeSavingUserId] = useState(null);
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [bulkEmployerSaving, setBulkEmployerSaving] = useState(false);
-  const [employerTab, setEmployerTab] = useState(EMPLOYER_TAB.VEEWASH);
+  const [employerTab, setEmployerTab] = useState(ENTITY_TAB.WASHPRO);
   const printContentRef = useRef(null);
   const stickyHeaderRef = useRef(null);
 
@@ -257,7 +261,10 @@ export default function WeeklySchedulePage() {
   const hideEmployerTabs = display.hide_employer_tabs === true;
   const minWeekStart = display.min_week_start || null;
   const canViewPastWeeks = display.can_view_past_weeks !== false;
-  const lockedEmployerTab = display.employer_tab || EMPLOYER_TAB.RINSE_EXCLUSIVE;
+  const lockedEmployerTab = display.employer_tab || ENTITY_TAB.RINSE_EXCLUSIVE;
+  const entityScope = data?.entity_scope || {};
+  const organizationSlug = entityScope.organization_slug || null;
+  const entityTabs = visibleEntityTabs(entityScope);
   const scheduleEndTimeEnabled = display.schedule_end_time_enabled !== false;
   const daysOnly = !scheduleEndTimeEnabled;
 
@@ -307,19 +314,19 @@ export default function WeeklySchedulePage() {
       setEmployerTab(lockedEmployerTab);
       return;
     }
-    if (data?.employees?.length) {
-      setEmployerTab(pickDefaultEmployerTab(data.employees, data.entries));
+    if (data?.employees?.length || data?.entries?.length) {
+      setEmployerTab(pickDefaultEmployerTab(entityScope, data.employees, data.entries));
     }
-  }, [data?.week_start, lockEmployerTab, lockedEmployerTab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [data?.week_start, lockEmployerTab, lockedEmployerTab, entityScope?.organization_slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tabEntries = useMemo(
-    () => filterEntriesByEmployerTab(data?.entries || [], employerTab, data?.employees || []),
-    [data?.entries, data?.employees, employerTab],
+    () => filterEntriesByEmployerTab(data?.entries || [], employerTab, data?.employees || [], organizationSlug),
+    [data?.entries, data?.employees, employerTab, organizationSlug],
   );
 
   const tabEmployees = useMemo(
-    () => filterEmployeesByEmployerTab(data?.employees || [], employerTab, data?.entries || []),
-    [data?.employees, data?.entries, employerTab],
+    () => filterEmployeesByEmployerTab(data?.employees || [], employerTab, data?.entries || [], organizationSlug),
+    [data?.employees, data?.entries, employerTab, organizationSlug],
   );
 
   const entriesByCell = useMemo(() => {
@@ -504,7 +511,7 @@ export default function WeeklySchedulePage() {
       employees: visibleEmployees,
       entries: tabEntries,
       weekStart,
-      tabLabel: EMPLOYER_TAB_LABELS[employerTab],
+      tabLabel: ENTITY_TAB_LABELS[employerTab],
       showRoleLabels,
       scheduleEndTimeEnabled,
     });
@@ -513,7 +520,7 @@ export default function WeeklySchedulePage() {
   const handleBulkMoveToRinseExclusive = async () => {
     if (
       !window.confirm(
-        "Move every shift this week to Rinse Exclusive? Shifts on the Washpro tab will move to Rinse Exclusive.",
+        "Move every shift this week to Rinse Exclusive? Shifts on other entity tabs will move where permitted; cross-entity shifts are skipped.",
       )
     ) {
       return;
@@ -526,7 +533,11 @@ export default function WeeklySchedulePage() {
         employer_affiliation: SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE,
       });
       setData(res.data);
-      setEmployerTab(EMPLOYER_TAB.RINSE_EXCLUSIVE);
+      setEmployerTab(ENTITY_TAB.RINSE_EXCLUSIVE);
+      const skipped = res.data?.entries_skipped || [];
+      if (skipped.length) {
+        setError(`Moved ${res.data?.entries_updated || 0} shifts. Skipped ${skipped.length} cross-entity shift(s).`);
+      }
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to move shifts to Rinse Exclusive");
     } finally {
@@ -554,6 +565,7 @@ export default function WeeklySchedulePage() {
     handleDelete,
     handleDuplicate,
     handleSetEmployer,
+    organizationSlug,
   };
 
   return (
@@ -621,7 +633,7 @@ export default function WeeklySchedulePage() {
               </Typography>
               {hideEmployerTabs ? (
                 <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 600, lineHeight: 1.2 }}>
-                  {EMPLOYER_TAB_LABELS[employerTab]}
+                  {ENTITY_TAB_LABELS[employerTab]}
                 </Typography>
               ) : null}
             </Stack>
@@ -719,7 +731,7 @@ export default function WeeklySchedulePage() {
             </Stack>
           </Box>
 
-          {!hideEmployerTabs ? (
+              {!hideEmployerTabs ? (
             <Box sx={{ px: 2, pt: 0, pb: 0, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}` }}>
               <Tabs
                 value={employerTab}
@@ -735,18 +747,18 @@ export default function WeeklySchedulePage() {
                   },
                 }}
               >
-                <Tab
-                  value={EMPLOYER_TAB.VEEWASH}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH]} (${countEmployeesForEmployerTab(data?.employees || [], EMPLOYER_TAB.VEEWASH, data?.entries || [])})`}
-              />
-              <Tab
-                value={EMPLOYER_TAB.RINSE_EXCLUSIVE}
-                label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]} (${countEmployeesForEmployerTab(data?.employees || [], EMPLOYER_TAB.RINSE_EXCLUSIVE, data?.entries || [])})`}
-                />
-                <Tab
-                  value={EMPLOYER_TAB.COMBINED}
-                  label={`${EMPLOYER_TAB_LABELS[EMPLOYER_TAB.COMBINED]} (${(data?.employees || []).length})`}
-                />
+                {entityTabs.map((tabKey) => (
+                  <Tab
+                    key={tabKey}
+                    value={tabKey}
+                    label={`${ENTITY_TAB_LABELS[tabKey]} (${countEmployeesForEmployerTab(
+                      data?.employees || [],
+                      tabKey,
+                      data?.entries || [],
+                      organizationSlug,
+                    )})`}
+                  />
+                ))}
               </Tabs>
             </Box>
           ) : null}
@@ -822,6 +834,14 @@ export default function WeeklySchedulePage() {
               empty weeks will carry forward from the latest saved week.
             </Alert>
           ) : null}
+          {entityScope?.organization_slug ? (
+            <Alert severity="info" sx={{ mx: 2, mt: 1, mb: 0 }} className="no-print">
+              Tenant: <strong>{entityScope.organization_slug}</strong> · Active entity view:{" "}
+              <strong>{entityLabel(employerTab)}</strong>
+              {employerTab === ENTITY_TAB.COMBINED ? " (admin cleanup view)" : ""}
+            </Alert>
+          ) : null}
+
           {error ? (
             <Alert severity="error" sx={{ mb: 1.25, flexShrink: 0 }} className="no-print">
               {error}
@@ -1026,7 +1046,7 @@ export default function WeeklySchedulePage() {
         >
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
-              Weekly Schedule — {EMPLOYER_TAB_LABELS[employerTab]}
+              Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
           </div>

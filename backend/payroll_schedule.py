@@ -430,7 +430,10 @@ def _schedule_grid_display_name_expr(cursor) -> str:
 
 def list_schedule_workers_for_grid(conn, organization_id: int) -> list[dict[str, Any]]:
     """Lightweight active workers for weekly schedule — single query, no backfill."""
+    from backend.business_entity import ensure_business_entity_column
+
     c = _cursor(conn)
+    ensure_business_entity_column(c)
     oid = int(organization_id)
     user_filter = _users_list_filter(c)
     display_expr = _schedule_grid_display_name_expr(c)
@@ -444,6 +447,7 @@ def list_schedule_workers_for_grid(conn, organization_id: int) -> list[dict[str,
                COALESCE(pwp.can_work_rinse, 1) AS can_work_rinse,
                COALESCE(pwp.can_work_drop_off, 1) AS can_work_drop_off,
                COALESCE(pwp.can_work_both, 1) AS can_work_both,
+               pwp.business_entity,
                {display_expr} AS display_name
         FROM users u
         LEFT JOIN payroll_profiles pp ON pp.user_id = u.id
@@ -789,13 +793,22 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
     uid = int(user_id)
     body = dict(body or {})
     if "employer_affiliation" in body:
-        aff = normalize_employer_affiliation(body.get("employer_affiliation"))
+        from backend.payroll_employer_affiliation import _organization_slug
+
+        org_slug = _organization_slug(conn, oid)
+        aff = normalize_employer_affiliation(body.get("employer_affiliation"), organization_slug=org_slug)
         if not aff:
-            raise ValueError("employer_affiliation must be rinse_exclusive, veewash, both, or none")
+            raise ValueError(
+                "employer_affiliation must be washpro, washmate, veewash, rinse_exclusive, shared, or none"
+            )
         body.update(flags_from_employer_affiliation(aff))
+        body["business_entity"] = aff
     prof = ensure_worker_profile(conn, oid, uid)
     wpid = int(prof["id"])
     c = _cursor(conn)
+    from backend.business_entity import ensure_business_entity_column
+
+    ensure_business_entity_column(c)
     profile_fields = {}
     for fld in (
         "default_hourly_rate",
@@ -805,6 +818,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
         "can_work_rinse",
         "can_work_drop_off",
         "can_work_both",
+        "business_entity",
         "preferred_shift_id",
         "preferred_role_id",
         "notes",
@@ -850,6 +864,7 @@ def save_scheduling_profile(conn, organization_id: int, user_id: int, body: dict
             "can_work_rinse",
             "can_work_drop_off",
             "can_work_both",
+            "business_entity",
             "preferred_shift_id",
             "preferred_role_id",
             "notes",

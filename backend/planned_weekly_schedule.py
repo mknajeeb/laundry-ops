@@ -191,21 +191,29 @@ def _shift_hours_for_entry(entry: Mapping[str, Any]) -> float:
     return calc_hours(start, end, break_min)
 
 
-def _entry_employer_affiliation(row: Mapping[str, Any]) -> str | None:
+def _entry_employer_affiliation(
+    row: Mapping[str, Any],
+    *,
+    organization_slug: str | None = None,
+) -> str | None:
     from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
 
-    return normalize_shift_employer_affiliation(row.get("employer_affiliation"))
+    return normalize_shift_employer_affiliation(
+        row.get("employer_affiliation"),
+        organization_slug=organization_slug,
+    )
 
 
 def serialize_entry(
     row: Mapping[str, Any],
     *,
     schedule_end_time_enabled: bool = True,
+    organization_slug: str | None = None,
 ) -> dict[str, Any]:
     roles = parse_weekly_roles(row.get("role"))
     role = roles_to_storage(roles)
     hours = 0.0 if not schedule_end_time_enabled else _shift_hours_for_entry(row)
-    employer_affiliation = _entry_employer_affiliation(row)
+    employer_affiliation = _entry_employer_affiliation(row, organization_slug=organization_slug)
     out: dict[str, Any] = {
         "id": int(row.get("id") or 0),
         "organization_id": int(row.get("organization_id") or 0),
@@ -228,6 +236,8 @@ def serialize_entry(
 def enrich_entries_with_employer_affiliation(
     entries: Sequence[Mapping[str, Any]],
     workers_by_user_id: Mapping[int, Mapping[str, Any]],
+    *,
+    organization_slug: str | None = None,
 ) -> list[dict[str, Any]]:
     from backend.payroll_employer_affiliation import default_shift_employer_affiliation
 
@@ -236,7 +246,10 @@ def enrich_entries_with_employer_affiliation(
         row = dict(entry)
         if not row.get("employer_affiliation"):
             uid = int(row.get("user_id") or 0)
-            row["employer_affiliation"] = default_shift_employer_affiliation(workers_by_user_id.get(uid))
+            row["employer_affiliation"] = default_shift_employer_affiliation(
+                workers_by_user_id.get(uid),
+                organization_slug=organization_slug,
+            )
         out.append(row)
     return out
 
@@ -363,9 +376,15 @@ def list_week_entries(
     organization_id: int,
     *,
     week_start: date,
+    conn=None,
 ) -> list[dict[str, Any]]:
     ensure_planned_weekly_schedule_table(cursor)
     end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+    org_slug = None
+    if conn is not None:
+        from backend.payroll_employer_affiliation import _organization_slug
+
+        org_slug = _organization_slug(conn, organization_id)
     cursor.execute(
         """
         SELECT id, organization_id, week_start, user_id, day_of_week,
@@ -378,7 +397,11 @@ def list_week_entries(
     )
     rows = cursor.fetchall() or []
     return [
-        serialize_entry(r, schedule_end_time_enabled=end_time_enabled)
+        serialize_entry(
+            r,
+            schedule_end_time_enabled=end_time_enabled,
+            organization_slug=org_slug,
+        )
         for r in rows
         if isinstance(r, dict)
     ]
@@ -457,6 +480,8 @@ def get_entry(
     cursor,
     organization_id: int,
     entry_id: int,
+    *,
+    conn=None,
 ) -> dict[str, Any] | None:
     ensure_planned_weekly_schedule_table(cursor)
     cursor.execute(
@@ -473,7 +498,16 @@ def get_entry(
     if not row or not isinstance(row, dict):
         return None
     end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
-    return serialize_entry(row, schedule_end_time_enabled=end_time_enabled)
+    org_slug = None
+    if conn is not None:
+        from backend.payroll_employer_affiliation import _organization_slug
+
+        org_slug = _organization_slug(conn, organization_id)
+    return serialize_entry(
+        row,
+        schedule_end_time_enabled=end_time_enabled,
+        organization_slug=org_slug,
+    )
 
 
 def _validate_entry_payload(
@@ -481,6 +515,7 @@ def _validate_entry_payload(
     *,
     partial: bool = False,
     schedule_end_time_enabled: bool = True,
+    organization_slug: str | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     out: dict[str, Any] = {}
     if not partial or "user_id" in data:
@@ -537,9 +572,12 @@ def _validate_entry_payload(
 
         raw_aff = data.get("employer_affiliation")
         if raw_aff is not None and str(raw_aff).strip():
-            aff = normalize_shift_employer_affiliation(raw_aff)
+            aff = normalize_shift_employer_affiliation(
+                raw_aff,
+                organization_slug=organization_slug,
+            )
             if not aff:
-                return None, "employer_affiliation must be veewash or rinse_exclusive"
+                return None, "employer_affiliation must be washpro, washmate, veewash, or rinse_exclusive"
             out["employer_affiliation"] = aff
     return out, None
 
@@ -553,11 +591,16 @@ def _assert_worker_in_org(conn, organization_id: int, user_id: int) -> str | Non
 
 
 def _assert_worker_schedulable(conn, organization_id: int, user_id: int) -> str | None:
-    from backend.payroll_employer_affiliation import EMPLOYER_AFFILIATION_NONE, employer_affiliation_from_flags
+    from backend.payroll_employer_affiliation import (
+        EMPLOYER_AFFILIATION_NONE,
+        _organization_slug,
+        employer_affiliation_from_flags,
+    )
 
+    org_slug = _organization_slug(conn, organization_id)
     worker = _workers_index(_load_workers(conn, organization_id)).get(int(user_id))
-    if employer_affiliation_from_flags(worker) == EMPLOYER_AFFILIATION_NONE:
-        return "worker is not on Rinse or Washpro schedule (affiliation none)"
+    if employer_affiliation_from_flags(worker, organization_slug=org_slug) == EMPLOYER_AFFILIATION_NONE:
+        return "worker is not assigned to a schedule entity (affiliation none)"
     return None
 
 
@@ -571,9 +614,13 @@ def create_entry(
 ) -> tuple[dict[str, Any] | None, str | None]:
     ensure_planned_weekly_schedule_table(cursor)
     end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+    from backend.payroll_employer_affiliation import _organization_slug
+
+    org_slug = _organization_slug(conn, organization_id)
     payload, err = _validate_entry_payload(
         data,
         schedule_end_time_enabled=end_time_enabled,
+        organization_slug=org_slug,
     )
     if err:
         return None, err
@@ -587,7 +634,10 @@ def create_entry(
         from backend.payroll_employer_affiliation import default_shift_employer_affiliation
 
         worker = _workers_index(_load_workers(conn, organization_id)).get(int(payload["user_id"]))
-        payload["employer_affiliation"] = default_shift_employer_affiliation(worker)
+        payload["employer_affiliation"] = default_shift_employer_affiliation(
+            worker,
+            organization_slug=org_slug,
+        )
     cursor.execute(
         """
         INSERT INTO planned_weekly_schedule_entries (
@@ -608,7 +658,7 @@ def create_entry(
         ),
     )
     entry_id = int(cursor.lastrowid or 0)
-    return get_entry(cursor, organization_id, entry_id), None
+    return get_entry(cursor, organization_id, entry_id, conn=conn), None
 
 
 def update_entry(
@@ -619,7 +669,7 @@ def update_entry(
     data: Mapping[str, Any],
 ) -> tuple[dict[str, Any] | None, str | None]:
     ensure_planned_weekly_schedule_table(cursor)
-    existing = get_entry(cursor, organization_id, entry_id)
+    existing = get_entry(cursor, organization_id, entry_id, conn=conn)
     if not existing:
         return None, "schedule entry not found"
     merged = {
@@ -634,9 +684,13 @@ def update_entry(
     if "employer_affiliation" not in merged and existing.get("employer_affiliation"):
         merged["employer_affiliation"] = existing.get("employer_affiliation")
     end_time_enabled = _schedule_end_time_enabled(cursor, organization_id)
+    from backend.payroll_employer_affiliation import _organization_slug
+
+    org_slug = _organization_slug(conn, organization_id)
     payload, err = _validate_entry_payload(
         merged,
         schedule_end_time_enabled=end_time_enabled,
+        organization_slug=org_slug,
     )
     if err:
         return None, err
@@ -662,7 +716,7 @@ def update_entry(
             int(entry_id),
         ),
     )
-    return get_entry(cursor, organization_id, entry_id), None
+    return get_entry(cursor, organization_id, entry_id, conn=conn), None
 
 
 def delete_entry(
@@ -718,7 +772,7 @@ def duplicate_entry(
     user_id: int | None = None,
     day_of_week: int | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    existing = get_entry(cursor, organization_id, entry_id)
+    existing = get_entry(cursor, organization_id, entry_id, conn=conn)
     if not existing:
         return None, "schedule entry not found"
     target_user = int(user_id) if user_id is not None else int(existing["user_id"])
@@ -921,28 +975,53 @@ def ensure_week_schedule_carried_forward(
 
 
 def bulk_set_week_entry_employer_affiliation(
+    conn,
     cursor,
     organization_id: int,
     *,
     week_start: date,
     employer_affiliation: str,
-) -> tuple[int, str | None]:
-    from backend.payroll_employer_affiliation import normalize_shift_employer_affiliation
+) -> tuple[int, str | None, list[dict[str, Any]]]:
+    from backend.payroll_employer_affiliation import (
+        _organization_slug,
+        bulk_shift_entity_allowed,
+        normalize_shift_employer_affiliation,
+    )
 
     ensure_planned_weekly_schedule_table(cursor)
-    aff = normalize_shift_employer_affiliation(employer_affiliation)
+    org_slug = _organization_slug(conn, organization_id)
+    aff = normalize_shift_employer_affiliation(employer_affiliation, organization_slug=org_slug)
     if not aff:
-        return 0, "employer_affiliation must be veewash or rinse_exclusive"
-    cursor.execute(
-        """
-        UPDATE planned_weekly_schedule_entries
-        SET employer_affiliation=%s
-        WHERE organization_id=%s AND week_start=%s
-        """,
-        (aff, int(organization_id), week_start),
-    )
-    updated = int(getattr(cursor, "rowcount", 0) or 0)
-    return updated, None
+        return 0, "employer_affiliation must be washpro, washmate, veewash, or rinse_exclusive", []
+
+    workers_by_uid = _workers_index(_load_workers(conn, organization_id))
+    rows = list_week_entries(cursor, organization_id, week_start=week_start, conn=conn)
+    skipped: list[dict[str, Any]] = []
+    updated = 0
+    for row in rows:
+        entry_id = int(row.get("id") or 0)
+        uid = int(row.get("user_id") or 0)
+        worker = workers_by_uid.get(uid)
+        allowed, reason = bulk_shift_entity_allowed(worker, aff, organization_slug=org_slug)
+        if not allowed:
+            skipped.append(
+                {
+                    "entry_id": entry_id,
+                    "user_id": uid,
+                    "reason": reason or "entity mismatch",
+                }
+            )
+            continue
+        cursor.execute(
+            """
+            UPDATE planned_weekly_schedule_entries
+            SET employer_affiliation=%s
+            WHERE organization_id=%s AND id=%s
+            """,
+            (aff, int(organization_id), entry_id),
+        )
+        updated += int(getattr(cursor, "rowcount", 0) or 0)
+    return updated, None, skipped
 
 
 def build_week_payload(
@@ -953,14 +1032,17 @@ def build_week_payload(
     week_start: date,
     user_roles: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    from backend.business_entity import entity_scope_payload
+    from backend.payroll_employer_affiliation import _organization_slug, employer_affiliation_from_flags
     from backend.weekly_schedule_display_settings import effective_weekly_schedule_view, apply_rinse_viewer_scope
-    from backend.payroll_employer_affiliation import employer_affiliation_from_flags
 
+    org_slug = _organization_slug(conn, organization_id)
     workers = _load_workers(conn, organization_id)
     workers_by_uid = _workers_index(workers)
     entries = enrich_entries_with_employer_affiliation(
-        list_week_entries(cursor, organization_id, week_start=week_start),
+        list_week_entries(cursor, organization_id, week_start=week_start, conn=conn),
         workers_by_uid,
+        organization_slug=org_slug,
     )
     excluded_user_ids = list_excluded_user_ids(cursor, organization_id, week_start=week_start)
     excluded_set = set(excluded_user_ids)
@@ -989,7 +1071,8 @@ def build_week_payload(
                 "can_work_rinse": bool(worker.get("can_work_rinse", True)),
                 "can_work_drop_off": bool(worker.get("can_work_drop_off", True)),
                 "can_work_both": bool(worker.get("can_work_both", True)),
-                "employer_affiliation": employer_affiliation_from_flags(worker),
+                "employer_affiliation": employer_affiliation_from_flags(worker, organization_slug=org_slug),
+                "business_entity": employer_affiliation_from_flags(worker, organization_slug=org_slug),
                 "total_hours": stats["total_hours"],
                 "scheduled_days": stats["scheduled_days"],
                 "estimated_cost": stats["estimated_cost"],
@@ -1008,6 +1091,7 @@ def build_week_payload(
         "totals": totals,
         "excluded_user_ids": excluded_user_ids,
         "display": view,
+        "entity_scope": entity_scope_payload(organization_id, org_slug, user_roles),
     }
     if view.get("lock_employer_tab"):
         return apply_rinse_viewer_scope(payload)

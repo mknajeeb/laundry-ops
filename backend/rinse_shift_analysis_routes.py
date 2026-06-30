@@ -1044,7 +1044,8 @@ def register_rinse_shift_analysis_routes(
             employer_affiliation = (body.get("employer_affiliation") or "").strip()
             if not employer_affiliation:
                 return jsonify({"error": "employer_affiliation required"}), 400
-            updated, err = bulk_set_week_entry_employer_affiliation(
+            updated, err, skipped = bulk_set_week_entry_employer_affiliation(
+                conn,
                 cursor,
                 tenant_oid,
                 week_start=week_start,
@@ -1055,6 +1056,7 @@ def register_rinse_shift_analysis_routes(
             conn.commit()
             payload = build_week_payload(conn, cursor, tenant_oid, week_start=week_start, user_roles=me.get("roles"))
             payload["entries_updated"] = updated
+            payload["entries_skipped"] = skipped
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
             conn.rollback()

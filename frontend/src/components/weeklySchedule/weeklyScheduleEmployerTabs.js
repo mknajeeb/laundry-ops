@@ -1,117 +1,156 @@
-/** Employer tab filtering — Rinse Exclusive vs Washpro (non-Rinse; per-shift + worker profile). */
+/** Entity tab filtering for weekly schedule — WashPro / WashMate / VeeWash / Rinse Exclusive. */
 
+import { EMPLOYER_AFFILIATION, employerAffiliationFromFlags } from "../../payroll/employerAffiliation";
 import {
-  EMPLOYER_AFFILIATION,
-  NON_RINSE_EMPLOYER_LABEL,
-  employerAffiliationFromFlags,
-} from "../../payroll/employerAffiliation";
+  BUSINESS_ENTITY,
+  ENTITY_LABELS,
+  entitiesForOrganization,
+  normalizeOrgSlug,
+  normalizeShiftEntity,
+  normalizeWorkerEntity,
+  shiftMatchesEntityTab,
+  workerMatchesEntityTab,
+} from "../../payroll/businessEntity";
 
+export const ENTITY_TAB = BUSINESS_ENTITY;
+
+export const ENTITY_TAB_LABELS = ENTITY_LABELS;
+
+/** @deprecated use ENTITY_TAB */
 export const EMPLOYER_TAB = {
-  VEEWASH: "veewash",
-  RINSE_EXCLUSIVE: "rinse_exclusive",
-  COMBINED: "combined",
+  WASHPRO: BUSINESS_ENTITY.WASHPRO,
+  WASHMATE: BUSINESS_ENTITY.WASHMATE,
+  VEEWASH: BUSINESS_ENTITY.VEEWASH,
+  RINSE_EXCLUSIVE: BUSINESS_ENTITY.RINSE_EXCLUSIVE,
+  COMBINED: BUSINESS_ENTITY.COMBINED,
+  /** legacy alias */
+  VEEWASH_LEGACY: "veewash",
 };
 
-export const EMPLOYER_TAB_LABELS = {
-  [EMPLOYER_TAB.VEEWASH]: NON_RINSE_EMPLOYER_LABEL,
-  [EMPLOYER_TAB.RINSE_EXCLUSIVE]: "Rinse Exclusive",
-  [EMPLOYER_TAB.COMBINED]: "Combined",
+export const EMPLOYER_TAB_LABELS = ENTITY_TAB_LABELS;
+
+export const SHIFT_ENTITY = {
+  WASHPRO: BUSINESS_ENTITY.WASHPRO,
+  WASHMATE: BUSINESS_ENTITY.WASHMATE,
+  VEEWASH: BUSINESS_ENTITY.VEEWASH,
+  RINSE_EXCLUSIVE: BUSINESS_ENTITY.RINSE_EXCLUSIVE,
 };
 
-export const SHIFT_EMPLOYER_AFFILIATION = {
-  VEEWASH: EMPLOYER_AFFILIATION.VEEWASH,
-  RINSE_EXCLUSIVE: EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE,
-};
+/** @deprecated */
+export const SHIFT_EMPLOYER_AFFILIATION = SHIFT_ENTITY;
 
-/** @deprecated use employerAffiliationFromFlags */
-export function isRinseExclusiveEmployee(employee) {
-  return resolveEmployeeEmployerAffiliation(employee) === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
+export function resolveEmployeeEntity(employee, organizationSlug = null) {
+  const explicit = employee?.business_entity || employee?.employer_affiliation;
+  return normalizeWorkerEntity(explicit, organizationSlug) || employerAffiliationFromFlags(employee, organizationSlug);
 }
 
-export function resolveEmployeeEmployerAffiliation(employee) {
-  return employerAffiliationFromFlags(employee);
-}
-
-export function resolveEntryEmployerAffiliation(entry, employee) {
+export function resolveEntryEntity(entry, employee, organizationSlug = null) {
   const raw = entry?.employer_affiliation;
-  if (raw === SHIFT_EMPLOYER_AFFILIATION.VEEWASH || raw === SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE) {
-    return raw;
-  }
-  const profile = resolveEmployeeEmployerAffiliation(employee);
-  if (profile === EMPLOYER_AFFILIATION.NONE) return null;
-  if (profile === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE || profile === EMPLOYER_AFFILIATION.BOTH) {
-    return SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
-  }
-  return SHIFT_EMPLOYER_AFFILIATION.VEEWASH;
+  const normalized = normalizeShiftEntity(raw, organizationSlug);
+  if (normalized) return normalized;
+  const profile = resolveEmployeeEntity(employee, organizationSlug);
+  if (profile === BUSINESS_ENTITY.NONE) return null;
+  if (profile === BUSINESS_ENTITY.RINSE_EXCLUSIVE) return SHIFT_ENTITY.RINSE_EXCLUSIVE;
+  if (profile === BUSINESS_ENTITY.SHARED) return defaultShiftEntityForTab(BUSINESS_ENTITY.WASHPRO, organizationSlug);
+  if (profile === BUSINESS_ENTITY.WASHMATE) return SHIFT_ENTITY.WASHMATE;
+  if (profile === BUSINESS_ENTITY.VEEWASH) return SHIFT_ENTITY.VEEWASH;
+  return SHIFT_ENTITY.WASHPRO;
 }
 
-export function matchesEmployerTab(employee, tab) {
-  const affiliation = resolveEmployeeEmployerAffiliation(employee);
-  if (affiliation === EMPLOYER_AFFILIATION.NONE) return tab === EMPLOYER_TAB.COMBINED;
-  if (tab === EMPLOYER_TAB.COMBINED) return true;
-  if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) {
-    return affiliation === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE || affiliation === EMPLOYER_AFFILIATION.BOTH;
-  }
-  if (tab === EMPLOYER_TAB.VEEWASH) {
-    return affiliation === EMPLOYER_AFFILIATION.VEEWASH || affiliation === EMPLOYER_AFFILIATION.BOTH;
-  }
-  return true;
+export function visibleEntityTabs(entityScope) {
+  const tabs = entityScope?.entity_tabs || entitiesForOrganization(entityScope?.organization_slug, {
+    isPrivileged: entityScope?.combined_is_admin_view,
+  });
+  return tabs.filter((tab) => tab !== BUSINESS_ENTITY.COMBINED || entityScope?.combined_is_admin_view);
 }
 
-export function matchesEntryEmployerTab(entry, tab, employeesById = null) {
-  if (tab === EMPLOYER_TAB.COMBINED) return true;
+export function matchesEntityTab(employee, tab, organizationSlug = null) {
+  return workerMatchesEntityTab(resolveEmployeeEntity(employee, organizationSlug), tab, organizationSlug);
+}
+
+export function matchesEntryEntityTab(entry, tab, employeesById = null, organizationSlug = null) {
+  if (tab === BUSINESS_ENTITY.COMBINED) return true;
   const employee = employeesById?.get(Number(entry?.user_id));
-  const employeeAff = resolveEmployeeEmployerAffiliation(employee);
-  if (employeeAff === EMPLOYER_AFFILIATION.NONE) return false;
-  const affiliation = resolveEntryEmployerAffiliation(entry, employee);
-  if (!affiliation) return false;
-  if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) return affiliation === SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
-  if (tab === EMPLOYER_TAB.VEEWASH) return affiliation === SHIFT_EMPLOYER_AFFILIATION.VEEWASH;
-  return true;
+  const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
+  if (workerEntity === BUSINESS_ENTITY.NONE) return false;
+  const shiftEntity = resolveEntryEntity(entry, employee, organizationSlug);
+  return shiftMatchesEntityTab(shiftEntity, tab, organizationSlug);
 }
 
-export function filterEntriesByEmployerTab(entries, tab, employees = null) {
-  if (tab === EMPLOYER_TAB.COMBINED) return entries || [];
+export function filterEntriesByEntityTab(entries, tab, employees = null, organizationSlug = null) {
+  if (tab === BUSINESS_ENTITY.COMBINED) return entries || [];
   const employeesById = new Map((employees || []).map((row) => [Number(row.user_id), row]));
-  return (entries || []).filter((entry) => matchesEntryEmployerTab(entry, tab, employeesById));
+  return (entries || []).filter((entry) =>
+    matchesEntryEntityTab(entry, tab, employeesById, organizationSlug),
+  );
 }
 
-export function filterEmployeesByEmployerTab(employees, tab, entries = null) {
+export function filterEmployeesByEntityTab(employees, tab, entries = null, organizationSlug = null) {
   const list = employees || [];
-  if (tab === EMPLOYER_TAB.COMBINED) return list;
+  if (tab === BUSINESS_ENTITY.COMBINED) return list;
 
   const allEntries = entries || [];
-  const tabEntries = filterEntriesByEmployerTab(allEntries, tab, list);
+  const tabEntries = filterEntriesByEntityTab(allEntries, tab, list, organizationSlug);
   const userIdsWithTabEntries = new Set(tabEntries.map((entry) => Number(entry.user_id)));
 
   return list.filter((employee) => {
     const uid = Number(employee.user_id);
-    const affiliation = resolveEmployeeEmployerAffiliation(employee);
-    if (affiliation === EMPLOYER_AFFILIATION.NONE) return false;
+    const workerEntity = resolveEmployeeEntity(employee, organizationSlug);
+    if (workerEntity === BUSINESS_ENTITY.NONE) return false;
     if (userIdsWithTabEntries.has(uid)) return true;
     const hasAnyEntry = allEntries.some((entry) => Number(entry.user_id) === uid);
     if (hasAnyEntry) return false;
-    return matchesEmployerTab(employee, tab);
+    return matchesEntityTab(employee, tab, organizationSlug);
   });
 }
 
-/** Tab badge count — employees with at least one shift assigned to this employer. */
-export function countEmployeesForEmployerTab(employees, tab, entries = null) {
-  if (tab === EMPLOYER_TAB.COMBINED) {
-    return filterEmployeesByEmployerTab(employees, tab, entries).length;
+export function countEmployeesForEntityTab(employees, tab, entries = null, organizationSlug = null) {
+  if (tab === BUSINESS_ENTITY.COMBINED) {
+    return filterEmployeesByEntityTab(employees, tab, entries, organizationSlug).length;
   }
-  const tabEntries = filterEntriesByEmployerTab(entries || [], tab, employees);
+  const tabEntries = filterEntriesByEntityTab(entries || [], tab, employees, organizationSlug);
   return new Set(tabEntries.map((entry) => Number(entry.user_id))).size;
 }
 
-/** Default to whichever tab has more employees (Washpro when tied). */
-export function pickDefaultEmployerTab(employees, entries = null) {
-  const rinseCount = countEmployeesForEmployerTab(employees, EMPLOYER_TAB.RINSE_EXCLUSIVE, entries);
-  const veewashCount = countEmployeesForEmployerTab(employees, EMPLOYER_TAB.VEEWASH, entries);
-  return veewashCount >= rinseCount ? EMPLOYER_TAB.VEEWASH : EMPLOYER_TAB.RINSE_EXCLUSIVE;
+export function pickDefaultEntityTab(entityScope, employees = null, entries = null) {
+  const orgSlug = entityScope?.organization_slug;
+  const tabs = visibleEntityTabs(entityScope).filter((tab) => tab !== BUSINESS_ENTITY.COMBINED);
+  if (!tabs.length) return BUSINESS_ENTITY.WASHPRO;
+  const scored = tabs.map((tab) => ({
+    tab,
+    count: countEmployeesForEntityTab(employees, tab, entries, orgSlug),
+  }));
+  scored.sort((a, b) => b.count - a.count);
+  return scored[0]?.tab || entityScope?.default_entity || BUSINESS_ENTITY.WASHPRO;
 }
 
-export function defaultShiftEmployerForTab(tab) {
-  if (tab === EMPLOYER_TAB.RINSE_EXCLUSIVE) return SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE;
-  return SHIFT_EMPLOYER_AFFILIATION.VEEWASH;
+export function defaultShiftEntityForTab(tab, organizationSlug = null) {
+  if (tab === BUSINESS_ENTITY.RINSE_EXCLUSIVE) return SHIFT_ENTITY.RINSE_EXCLUSIVE;
+  if (tab === BUSINESS_ENTITY.WASHMATE) return SHIFT_ENTITY.WASHMATE;
+  if (tab === BUSINESS_ENTITY.VEEWASH) return SHIFT_ENTITY.VEEWASH;
+  return defaultEntityForOrgTab(organizationSlug);
 }
+
+/** Shift entity values assignable from the shift card menu for this tenant. */
+export function shiftEntityOptionsForOrg(organizationSlug = null) {
+  const slug = normalizeOrgSlug(organizationSlug);
+  if (slug === "washmate") return [SHIFT_ENTITY.WASHMATE];
+  if (slug === "veewash") return [SHIFT_ENTITY.VEEWASH];
+  return [SHIFT_ENTITY.WASHPRO, SHIFT_ENTITY.RINSE_EXCLUSIVE];
+}
+
+function defaultEntityForOrgTab(organizationSlug) {
+  const slug = normalizeOrgSlug(organizationSlug);
+  if (slug === "washmate") return SHIFT_ENTITY.WASHMATE;
+  if (slug === "veewash") return SHIFT_ENTITY.VEEWASH;
+  return SHIFT_ENTITY.WASHPRO;
+}
+
+/** Legacy exports */
+export const filterEntriesByEmployerTab = filterEntriesByEntityTab;
+export const filterEmployeesByEmployerTab = filterEmployeesByEntityTab;
+export const countEmployeesForEmployerTab = countEmployeesForEntityTab;
+export const pickDefaultEmployerTab = pickDefaultEntityTab;
+export const defaultShiftEmployerForTab = defaultShiftEntityForTab;
+export const resolveEntryEmployerAffiliation = resolveEntryEntity;
+export const resolveEmployeeEmployerAffiliation = resolveEmployeeEntity;

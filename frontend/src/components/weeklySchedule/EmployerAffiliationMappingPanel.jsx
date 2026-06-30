@@ -19,35 +19,53 @@ import {
 } from "@mui/material";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { getPayrollEmployerAffiliations, putPayrollEmployerAffiliation } from "../../api";
+import { useAuth } from "../../context/AuthContext";
 import {
   EMPLOYER_AFFILIATION,
-  EMPLOYER_AFFILIATION_OPTIONS,
-  NON_RINSE_EMPLOYER_LABEL,
   employerAffiliationFromFlags,
   employerAffiliationLabel,
+  entityLabel,
+  entitySummaryTitle,
+  workerEntityOptionsForOrganization,
 } from "../../payroll/employerAffiliation";
+import { defaultEntityForOrg, normalizeOrgSlug } from "../../payroll/businessEntity";
 
-function tabPreviewChips(affiliation) {
+function tabPreviewChips(affiliation, organizationSlug) {
+  const slug = normalizeOrgSlug(organizationSlug);
   if (affiliation === EMPLOYER_AFFILIATION.NONE) {
     return [
-      <Chip key="none" size="small" label="No schedule tabs" variant="outlined" color="default" />,
+      <Chip key="none" size="small" label="No entity tabs" variant="outlined" color="default" />,
     ];
   }
   if (affiliation === EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE) {
-    return [<Chip key="rinse" size="small" label="Rinse tab" color="primary" variant="outlined" />];
+    return [<Chip key="rinse" size="small" label="Rinse Exclusive tab" color="primary" variant="outlined" />];
   }
-  if (affiliation === EMPLOYER_AFFILIATION.BOTH) {
+  if (affiliation === EMPLOYER_AFFILIATION.SHARED) {
     return [
-      <Chip key="rinse" size="small" label="Rinse tab" color="primary" variant="outlined" />,
-      <Chip key="washpro" size="small" label={`${NON_RINSE_EMPLOYER_LABEL} tab`} color="secondary" variant="outlined" />,
+      <Chip key="shared" size="small" label="Shared (multi-entity tabs)" color="info" variant="outlined" />,
     ];
   }
+  if (affiliation === EMPLOYER_AFFILIATION.WASHMATE) {
+    return [<Chip key="washmate" size="small" label="WashMate tab" color="secondary" variant="outlined" />];
+  }
+  if (affiliation === EMPLOYER_AFFILIATION.VEEWASH || (affiliation === EMPLOYER_AFFILIATION.WASHPRO && slug === "veewash")) {
+    return [<Chip key="veewash" size="small" label="VeeWash tab" color="secondary" variant="outlined" />];
+  }
+  if (affiliation === EMPLOYER_AFFILIATION.WASHPRO) {
+    return [<Chip key="washpro" size="small" label="WashPro tab" color="secondary" variant="outlined" />];
+  }
   return [
-    <Chip key="washpro" size="small" label={`${NON_RINSE_EMPLOYER_LABEL} tab`} color="secondary" variant="outlined" />,
+    <Chip key="default" size="small" label={`${entityLabel(defaultEntityForOrg(slug))} tab`} color="secondary" variant="outlined" />,
   ];
 }
 
 export default function EmployerAffiliationMappingPanel() {
+  const { user } = useAuth();
+  const organizationSlug = user?.organization_slug || null;
+  const entityOptions = useMemo(
+    () => workerEntityOptionsForOrganization(organizationSlug),
+    [organizationSlug],
+  );
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [savingUserId, setSavingUserId] = useState(null);
@@ -60,7 +78,7 @@ export default function EmployerAffiliationMappingPanel() {
       const res = await getPayrollEmployerAffiliations();
       setRows(res.data?.items || []);
     } catch (e) {
-      setMessage(e?.response?.data?.error || e?.message || "Failed to load employer affiliations");
+      setMessage(e?.response?.data?.error || e?.message || "Failed to load business entities");
     } finally {
       setLoading(false);
     }
@@ -71,13 +89,17 @@ export default function EmployerAffiliationMappingPanel() {
   }, [load]);
 
   const counts = useMemo(() => {
-    const tally = { rinse_exclusive: 0, veewash: 0, both: 0, none: 0 };
+    const tally = Object.fromEntries(entityOptions.map((opt) => [opt.value, 0]));
     for (const row of rows) {
-      const aff = row.employer_affiliation || employerAffiliationFromFlags(row);
+      let aff = row.business_entity || row.employer_affiliation || employerAffiliationFromFlags(row, organizationSlug);
+      if (aff === "both") aff = EMPLOYER_AFFILIATION.SHARED;
+      if (normalizeOrgSlug(organizationSlug) === "veewash" && aff === EMPLOYER_AFFILIATION.WASHPRO) {
+        aff = EMPLOYER_AFFILIATION.VEEWASH;
+      }
       if (tally[aff] != null) tally[aff] += 1;
     }
     return tally;
-  }, [rows]);
+  }, [rows, entityOptions, organizationSlug]);
 
   const saveAffiliation = async (row, nextAffiliation) => {
     if (!row?.user_id || nextAffiliation === row.employer_affiliation) return;
@@ -95,32 +117,42 @@ export default function EmployerAffiliationMappingPanel() {
                 ...item,
                 ...updated,
                 employer_affiliation: updated.employer_affiliation || nextAffiliation,
+                business_entity: updated.business_entity || nextAffiliation,
               }
             : item,
         ),
       );
     } catch (e) {
-      setMessage(e?.response?.data?.error || "Could not save employer affiliation");
+      setMessage(e?.response?.data?.error || "Could not save business entity");
     } finally {
       setSavingUserId(null);
     }
   };
 
+  const resolveRowAffiliation = (row) => {
+    let aff = row.business_entity || row.employer_affiliation || employerAffiliationFromFlags(row, organizationSlug);
+    if (aff === "both") aff = EMPLOYER_AFFILIATION.SHARED;
+    if (normalizeOrgSlug(organizationSlug) === "veewash" && aff === EMPLOYER_AFFILIATION.WASHPRO) {
+      aff = EMPLOYER_AFFILIATION.VEEWASH;
+    }
+    const allowed = new Set(entityOptions.map((opt) => opt.value));
+    return allowed.has(aff) ? aff : defaultEntityForOrg(organizationSlug);
+  };
+
   return (
     <Paper sx={{ p: 2, mb: 3, border: "1px dashed", borderColor: "divider" }}>
       <Typography variant="subtitle1" fontWeight={800} gutterBottom>
-        Employer affiliation (Rinse · {NON_RINSE_EMPLOYER_LABEL} · Both · None)
+        Business entity ({entitySummaryTitle(organizationSlug)})
       </Typography>
       <Typography variant="caption" color="text.secondary" display="block" mb={1.5}>
-        Stored on each worker&apos;s payroll scheduling profile. Controls which Weekly Schedule tabs they appear on.
-        Use <strong>None</strong> for system / admin accounts that should not appear on Rinse or {NON_RINSE_EMPLOYER_LABEL} schedule tabs.
+        Stored on each worker&apos;s payroll scheduling profile. Controls which Weekly Schedule entity tabs they appear on.
+        Use <strong>None</strong> for system / admin accounts that should not appear on entity-specific schedule tabs.
         Changes here are the same as editing the profile under People → Scheduling.
       </Typography>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
-        <Chip size="small" label={`Rinse Exclusive: ${counts.rinse_exclusive}`} />
-        <Chip size="small" label={`${NON_RINSE_EMPLOYER_LABEL}: ${counts.veewash}`} />
-        <Chip size="small" label={`Both: ${counts.both}`} />
-        <Chip size="small" label={`None: ${counts.none}`} />
+        {entityOptions.map((opt) => (
+          <Chip key={opt.value} size="small" label={`${opt.label}: ${counts[opt.value] || 0}`} />
+        ))}
       </Stack>
       {message ? (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setMessage("")}>
@@ -136,7 +168,7 @@ export default function EmployerAffiliationMappingPanel() {
           <TableHead>
             <TableRow>
               <TableCell>Employee</TableCell>
-              <TableCell sx={{ minWidth: 190 }}>Employer</TableCell>
+              <TableCell sx={{ minWidth: 190 }}>Business entity</TableCell>
               <TableCell>Weekly schedule tabs</TableCell>
               <TableCell align="right">Profile</TableCell>
             </TableRow>
@@ -150,7 +182,7 @@ export default function EmployerAffiliationMappingPanel() {
               </TableRow>
             ) : (
               rows.map((row) => {
-                const affiliation = row.employer_affiliation || employerAffiliationFromFlags(row);
+                const affiliation = resolveRowAffiliation(row);
                 return (
                   <TableRow key={row.user_id} hover>
                     <TableCell>
@@ -163,13 +195,13 @@ export default function EmployerAffiliationMappingPanel() {
                     </TableCell>
                     <TableCell>
                       <FormControl size="small" fullWidth disabled={savingUserId === row.user_id}>
-                        <InputLabel>Employer</InputLabel>
+                        <InputLabel>Entity</InputLabel>
                         <Select
-                          label="Employer"
+                          label="Entity"
                           value={affiliation}
                           onChange={(e) => saveAffiliation(row, e.target.value)}
                         >
-                          {EMPLOYER_AFFILIATION_OPTIONS.map((opt) => (
+                          {entityOptions.map((opt) => (
                             <MenuItem key={opt.value} value={opt.value}>
                               {opt.label}
                             </MenuItem>
@@ -179,7 +211,7 @@ export default function EmployerAffiliationMappingPanel() {
                     </TableCell>
                     <TableCell>
                       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                        {tabPreviewChips(affiliation)}
+                        {tabPreviewChips(affiliation, organizationSlug)}
                       </Stack>
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
                         {employerAffiliationLabel(affiliation)}
@@ -195,6 +227,7 @@ export default function EmployerAffiliationMappingPanel() {
                           alignItems: "center",
                           gap: 0.5,
                           textDecoration: "none",
+                          color: "primary.main",
                           fontWeight: 600,
                         }}
                       >

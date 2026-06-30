@@ -19,11 +19,12 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import CheckIcon from "@mui/icons-material/Check";
 import { formatTime12 } from "../datetime/scheduleTimeUi";
 import {
-  EMPLOYER_TAB_LABELS,
-  EMPLOYER_TAB,
+  ENTITY_TAB_LABELS,
   resolveEntryEmployerAffiliation,
-  SHIFT_EMPLOYER_AFFILIATION,
+  shiftEntityOptionsForOrg,
+  SHIFT_ENTITY,
 } from "./weeklyScheduleEmployerTabs";
+import { entityLabel } from "../../payroll/businessEntity";
 import { entryRoleCardStyle, parseEntryRoles, roleLabels } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleShiftCard({
@@ -41,6 +42,7 @@ export default function WeeklyScheduleShiftCard({
   showRoleLabels = true,
   showBreakMinutes = true,
   scheduleEndTimeEnabled = true,
+  organizationSlug = null,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
@@ -55,8 +57,9 @@ export default function WeeklyScheduleShiftCard({
   const hoursLabel = Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
   const roleText = showRoleLabels ? roleLabels(roles) : "";
   const hasActions = Boolean((onEdit || onDuplicate || onDelete || onSetEmployer) && !muted);
-  const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee);
+  const shiftEmployer = resolveEntryEmployerAffiliation(entry, employee, organizationSlug);
   const canSetEmployer = Boolean(onSetEmployer && !muted);
+  const shiftEntityOptions = shiftEntityOptionsForOrg(organizationSlug);
 
   const closeMenu = () => setMenuAnchor(null);
 
@@ -208,12 +211,9 @@ export default function WeeklyScheduleShiftCard({
             >
               {canSetEmployer ? (
                 <>
-                  {[SHIFT_EMPLOYER_AFFILIATION.VEEWASH, SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE].map((affiliation) => {
+                  {shiftEntityOptions.map((affiliation) => {
                     const selected = shiftEmployer === affiliation;
-                    const label =
-                      affiliation === SHIFT_EMPLOYER_AFFILIATION.RINSE_EXCLUSIVE
-                        ? EMPLOYER_TAB_LABELS[EMPLOYER_TAB.RINSE_EXCLUSIVE]
-                        : EMPLOYER_TAB_LABELS[EMPLOYER_TAB.VEEWASH];
+                    const label = entityLabel(affiliation);
                     return (
                       <MenuItem
                         key={affiliation}

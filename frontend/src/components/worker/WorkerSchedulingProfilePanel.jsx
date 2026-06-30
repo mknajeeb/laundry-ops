@@ -382,7 +382,8 @@ export default forwardRef(function WorkerSchedulingProfilePanel({ userId, payrol
           </Typography>
         )}
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-          Controls Weekly Schedule tabs (Rinse Exclusive · {NON_RINSE_EMPLOYER_LABEL} · Combined). Also editable on User mapping.
+          Controls which Weekly Schedule entity tabs this worker appears on (WashPro · WashMate · VeeWash · Rinse · Shared · None).
+          Also editable on User mapping.
         </Typography>
       </ProfileSection>
 
