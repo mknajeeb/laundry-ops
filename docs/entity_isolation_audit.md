@@ -19,7 +19,7 @@ WashPro, WashMate, and VeeWash are **separate business entities**. They share on
 |----------|--------------------|------------------|
 | `washpro` | WashPro, Rinse Exclusive | Yes (privileged) |
 | `washmate` | WashMate | Yes (privileged) |
-| `veewash` | VeeWash | Yes (privileged) |
+| `veewash` | VeeWash, Rinse Exclusive | Yes (privileged) |
 
 Workers with affiliation **`none`** never appear on entity-specific tabs. They may appear only on **Combined (Admin)** for cleanup.
 

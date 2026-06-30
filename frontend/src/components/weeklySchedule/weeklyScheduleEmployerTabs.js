@@ -135,7 +135,7 @@ export function defaultShiftEntityForTab(tab, organizationSlug = null) {
 export function shiftEntityOptionsForOrg(organizationSlug = null) {
   const slug = normalizeOrgSlug(organizationSlug);
   if (slug === "washmate") return [SHIFT_ENTITY.WASHMATE];
-  if (slug === "veewash") return [SHIFT_ENTITY.VEEWASH];
+  if (slug === "veewash") return [SHIFT_ENTITY.VEEWASH, SHIFT_ENTITY.RINSE_EXCLUSIVE];
   return [SHIFT_ENTITY.WASHPRO, SHIFT_ENTITY.RINSE_EXCLUSIVE];
 }
 

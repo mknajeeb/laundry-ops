@@ -90,7 +90,7 @@ def entities_for_organization(org_slug: Any, *, is_privileged: bool = False) -> 
     if slug == "washmate":
         tabs = [ENTITY_WASHMATE]
     elif slug == "veewash":
-        tabs = [ENTITY_VEEWASH]
+        tabs = [ENTITY_VEEWASH, ENTITY_RINSE_EXCLUSIVE]
     else:
         tabs = [ENTITY_WASHPRO, ENTITY_RINSE_EXCLUSIVE]
     if is_privileged:

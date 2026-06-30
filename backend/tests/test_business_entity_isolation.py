@@ -88,7 +88,10 @@ def test_entities_for_org_slug():
         ENTITY_RINSE_EXCLUSIVE,
         "combined",
     ]
-    assert entities_for_organization("veewash", is_privileged=False) == [ENTITY_VEEWASH]
+    assert entities_for_organization("veewash", is_privileged=False) == [
+        ENTITY_VEEWASH,
+        ENTITY_RINSE_EXCLUSIVE,
+    ]
 
 
 def test_legacy_veewash_affiliation_flag_maps_to_washpro_on_washpro_org():

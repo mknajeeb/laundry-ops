@@ -319,6 +319,13 @@ export default function WeeklySchedulePage() {
     }
   }, [data?.week_start, lockEmployerTab, lockedEmployerTab, entityScope?.organization_slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    if (lockEmployerTab) return;
+    if (entityTabs.length && !entityTabs.includes(employerTab)) {
+      setEmployerTab(pickDefaultEmployerTab(entityScope, data?.employees, data?.entries));
+    }
+  }, [entityTabs, employerTab, lockEmployerTab, entityScope, data?.employees, data?.entries]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const tabEntries = useMemo(
     () => filterEntriesByEmployerTab(data?.entries || [], employerTab, data?.employees || [], organizationSlug),
     [data?.entries, data?.employees, employerTab, organizationSlug],

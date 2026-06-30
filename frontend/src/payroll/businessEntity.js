@@ -79,7 +79,9 @@ export function workerEntityOptionsForOrganization(orgSlug) {
   }
   if (slug === "veewash") {
     return WORKER_ENTITY_OPTIONS.filter((opt) =>
-      [BUSINESS_ENTITY.VEEWASH, BUSINESS_ENTITY.SHARED, BUSINESS_ENTITY.NONE].includes(opt.value),
+      [BUSINESS_ENTITY.VEEWASH, BUSINESS_ENTITY.RINSE_EXCLUSIVE, BUSINESS_ENTITY.SHARED, BUSINESS_ENTITY.NONE].includes(
+        opt.value,
+      ),
     );
   }
   return WORKER_ENTITY_OPTIONS.filter((opt) =>
@@ -95,7 +97,7 @@ export function workerEntityOptionsForOrganization(orgSlug) {
 export function entitySummaryTitle(orgSlug) {
   const slug = normalizeOrgSlug(orgSlug);
   if (slug === "washmate") return "WashMate · Shared · None";
-  if (slug === "veewash") return "VeeWash · Shared · None";
+  if (slug === "veewash") return "VeeWash · Rinse Exclusive · Shared · None";
   return "WashPro · Rinse Exclusive · Shared · None";
 }
 
@@ -110,7 +112,7 @@ export function entitiesForOrganization(orgSlug, { isPrivileged = false } = {}) 
   const slug = normalizeOrgSlug(orgSlug);
   let tabs;
   if (slug === "washmate") tabs = [BUSINESS_ENTITY.WASHMATE];
-  else if (slug === "veewash") tabs = [BUSINESS_ENTITY.VEEWASH];
+  else if (slug === "veewash") tabs = [BUSINESS_ENTITY.VEEWASH, BUSINESS_ENTITY.RINSE_EXCLUSIVE];
   else tabs = [BUSINESS_ENTITY.WASHPRO, BUSINESS_ENTITY.RINSE_EXCLUSIVE];
   if (isPrivileged) tabs = [...tabs, BUSINESS_ENTITY.COMBINED];
   return tabs;
