@@ -625,7 +625,7 @@ export default function WeeklySchedulePage() {
     <Box
       className="weekly-schedule-print-root"
       sx={{
-        p: { xs: 0, md: 1 },
+        p: { xs: 0, md: 0.5 },
         bgcolor: VEEWASH_DASHBOARD.pageBackground,
         width: "100%",
         maxWidth: "100%",
@@ -667,8 +667,8 @@ export default function WeeklySchedulePage() {
         >
           <Box
             sx={{
-              px: { xs: 1.5, md: 2 },
-              py: { xs: 0.85, md: 1 },
+              px: { xs: 1.25, md: 1.5 },
+              py: { xs: 0.5, md: 0.65 },
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
@@ -785,17 +785,17 @@ export default function WeeklySchedulePage() {
           </Box>
 
               {!hideEmployerTabs ? (
-            <Box sx={{ px: 2, pt: 0, pb: 0, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}` }}>
+            <Box sx={{ px: 1.25, pt: 0, pb: 0, borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}` }}>
               <Tabs
                 value={employerTab}
                 onChange={(_, value) => setEmployerTab(value)}
                 sx={{
-                  minHeight: 36,
+                  minHeight: 30,
                   "& .MuiTab-root": {
-                    minHeight: 36,
-                    py: 0.5,
+                    minHeight: 30,
+                    py: 0.25,
                     fontWeight: 700,
-                    fontSize: "0.8125rem",
+                    fontSize: "0.78rem",
                     textTransform: "none",
                   },
                 }}
@@ -829,12 +829,12 @@ export default function WeeklySchedulePage() {
           {showToolbarChips ? (
             <Box
               sx={{
-                px: 2,
-                py: 0.75,
+                px: 1.25,
+                py: 0.35,
                 borderTop: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
                 display: "flex",
                 alignItems: "center",
-                gap: 1,
+                gap: 0.75,
                 flexWrap: "wrap",
               }}
             >
@@ -872,7 +872,7 @@ export default function WeeklySchedulePage() {
             display: "flex",
             flexDirection: "column",
             overflow: "hidden",
-            p: { xs: 1.25, md: 1.5 },
+            p: { xs: 0.75, md: 0.85 },
           }}
         >
           {excludedCount > 0 && !showExcluded && canManageExclusions ? (
@@ -897,18 +897,15 @@ export default function WeeklySchedulePage() {
               empty weeks will carry forward from the latest saved week.
             </Alert>
           ) : null}
-          {entityScope?.organization_slug ? (
-            <Alert severity="info" sx={{ mx: 2, mt: 1, mb: 0 }} className="no-print">
-              Tenant: <strong>{entityScope.organization_slug}</strong> · Active entity view:{" "}
-              <strong>{entityLabel(employerTab)}</strong>
-              {scheduleViewLabel ? (
-                <>
-                  {" "}
-                  · Filter: <strong>{scheduleViewLabel}</strong>
-                </>
-              ) : null}
-              {employerTab === ENTITY_TAB.COMBINED ? " (admin cleanup view)" : ""}
-            </Alert>
+          {!loading && data && scheduleViewLabel ? (
+            <Typography
+              variant="caption"
+              className="no-print"
+              sx={{ display: "block", mb: 0.5, px: 0.25, color: "text.secondary", fontWeight: 600 }}
+            >
+              View: {entityLabel(employerTab)} · {scheduleViewLabel}
+              {employerTab === ENTITY_TAB.COMBINED ? " (admin)" : ""}
+            </Typography>
           ) : null}
 
           {error ? (
@@ -927,7 +924,8 @@ export default function WeeklySchedulePage() {
                 <WeeklyScheduleSummaryBar
                   summary={weekSummary}
                   showCost={showCost && costAllowed}
-                  compact={hideEmployerTabs}
+                  compact
+                  hideRoleBreakdown={roleViewTab !== SCHEDULE_VIEW_ALL || dayViewTab !== SCHEDULE_VIEW_ALL}
                 />
               </Box>
 
@@ -1056,6 +1054,7 @@ export default function WeeklySchedulePage() {
                           dayLabel={label}
                           summary={daySummary(filteredDaySummaries[dow] || dayTotals[dow])}
                           daysOnly={daysOnly}
+                          compact
                         />
                       </Box>
                     );})}

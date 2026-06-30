@@ -9,11 +9,31 @@ function roleCountLines(summary) {
   })).filter((line) => line.count > 0);
 }
 
-export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = false }) {
+export default function WeeklyScheduleDayHeader({ dayLabel, summary, daysOnly = false, compact = false }) {
   const people = Number(summary?.people || 0);
   const hours = Number(summary?.hours || 0);
   const hoursLabel = Number.isInteger(hours) ? `${hours}` : hours.toFixed(1);
   const roleLines = roleCountLines(summary);
+
+  if (compact) {
+    const roleText = roleLines.map(({ label, count }) => `${label}:${count}`).join(" ");
+    const parts = [`${people} emp`];
+    if (!daysOnly) parts.push(`${hoursLabel}h`);
+    if (roleText) parts.push(roleText);
+    return (
+      <Box sx={{ px: 0.75, py: 0.55 }}>
+        <Typography
+          variant="caption"
+          sx={{ display: "block", fontWeight: 800, letterSpacing: "0.08em", fontSize: "0.68rem", lineHeight: 1.2 }}
+        >
+          {dayLabel.toUpperCase()}
+        </Typography>
+        <Typography variant="caption" sx={{ display: "block", color: "text.secondary", fontWeight: 600, lineHeight: 1.25 }}>
+          {parts.join(" · ")}
+        </Typography>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ px: 1, py: 1 }}>

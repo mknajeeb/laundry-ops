@@ -51,7 +51,7 @@ function SummaryMetric({ label, value, accent, compact = false }) {
   );
 }
 
-export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = false }) {
+export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = false, hideRoleBreakdown = false }) {
   if (!summary) return null;
 
   const daysOnly = summary.daysOnly === true;
@@ -72,15 +72,20 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
           value: formatHours(summary.totalHours),
           accent: VEEWASH_DASHBOARD.tealDark,
         },
-    { label: "Wash", value: summary.washCount, accent: ROLE_ACCENT.wash },
-    { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
-    { label: "Weigher", value: summary.weigherCount, accent: ROLE_ACCENT.weigher },
-    { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
-    { label: "HD Operator", value: summary.hdOperatorCount, accent: ROLE_ACCENT.hd_operator },
-    { label: "HD Folder", value: summary.hdFolderCount, accent: ROLE_ACCENT.hd_folder },
-    { label: "Non-Rinse Folder", value: summary.nonRinseFolderCount, accent: ROLE_ACCENT.non_rinse_folder },
-    { label: "Attendant", value: summary.attendantCount, accent: ROLE_ACCENT.attendant },
   ];
+
+  if (!hideRoleBreakdown) {
+    metrics.push(
+      { label: "Wash", value: summary.washCount, accent: ROLE_ACCENT.wash },
+      { label: "Sort", value: summary.sortCount, accent: ROLE_ACCENT.sort },
+      { label: "Weigher", value: summary.weigherCount, accent: ROLE_ACCENT.weigher },
+      { label: "Fold", value: summary.foldCount, accent: ROLE_ACCENT.fold },
+      { label: "HD Op", value: summary.hdOperatorCount, accent: ROLE_ACCENT.hd_operator },
+      { label: "HD Fold", value: summary.hdFolderCount, accent: ROLE_ACCENT.hd_folder },
+      { label: "NR Fold", value: summary.nonRinseFolderCount, accent: ROLE_ACCENT.non_rinse_folder },
+      { label: "Attend", value: summary.attendantCount, accent: ROLE_ACCENT.attendant },
+    );
+  }
 
   if (showCost) {
     metrics.push({
@@ -94,9 +99,9 @@ export default function WeeklyScheduleSummaryBar({ summary, showCost, compact = 
     <Box
       className="weekly-schedule-print-summary"
       sx={{
-        mb: compact ? 1 : 1.5,
-        px: compact ? { xs: 1, md: 1.25 } : { xs: 1.25, md: 1.5 },
-        py: compact ? 0.65 : 1,
+        mb: compact ? 0.5 : 1.5,
+        px: compact ? { xs: 0.75, md: 1 } : { xs: 1.25, md: 1.5 },
+        py: compact ? 0.4 : 1,
         borderRadius: compact ? 1.5 : 2,
         bgcolor: "#fff",
         border: `1px solid ${VEEWASH_DASHBOARD.snapshotBorder}`,
