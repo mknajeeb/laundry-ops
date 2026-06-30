@@ -228,9 +228,9 @@ export default function EmployeeProductivityDashboard({
   const banner = section?.reconciliation_banner || recon;
   const reconciled = banner.status === "reconciled" || recon.ok === true;
   const creditedAssigned = banner.employee_completed_bags_credited ?? recon.employee_attributed_bag_count ?? 0;
-  const creditedTotal = recon.credited_total ?? (creditedAssigned + unassigned);
-  const workload = banner.workload_completed_today ?? recon.workload_completed_today ?? 0;
   const unassigned = recon.unassigned_count ?? 0;
+  const creditedTotal = recon.credited_total ?? creditedAssigned + unassigned;
+  const workload = banner.workload_completed_today ?? recon.workload_completed_today ?? 0;
   const selectedDate = section?.selected_date_et || activeDateEt;
   const productivityScopeLabel = section?.productivity_scope_label || scopeLabel || "WF Only";
 

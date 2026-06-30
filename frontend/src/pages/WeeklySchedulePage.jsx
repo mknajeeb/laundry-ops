@@ -64,6 +64,7 @@ import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedul
 import WeeklyScheduleViewTabs from "../components/weeklySchedule/WeeklyScheduleViewTabs";
 import {
   filterEntriesByScheduleView,
+  hasRoleViewFilter,
   SCHEDULE_VIEW_ALL,
   scheduleViewSummaryLabel,
   visibleDayIndices,
@@ -257,7 +258,7 @@ export default function WeeklySchedulePage() {
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [bulkEmployerSaving, setBulkEmployerSaving] = useState(false);
   const [employerTab, setEmployerTab] = useState(ENTITY_TAB.WASHPRO);
-  const [roleViewTab, setRoleViewTab] = useState(SCHEDULE_VIEW_ALL);
+  const [selectedRoleView, setSelectedRoleView] = useState([]);
   const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
   const printContentRef = useRef(null);
   const stickyHeaderRef = useRef(null);
@@ -340,7 +341,7 @@ export default function WeeklySchedulePage() {
   }, [entityTabs, employerTab, lockEmployerTab, entityScope, data?.employees, data?.entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    setRoleViewTab(SCHEDULE_VIEW_ALL);
+    setSelectedRoleView([]);
     setDayViewTab(SCHEDULE_VIEW_ALL);
   }, [data?.week_start, employerTab]);
 
@@ -355,17 +356,17 @@ export default function WeeklySchedulePage() {
   );
 
   const viewEntries = useMemo(
-    () => filterEntriesByScheduleView(tabEntries, roleViewTab, dayViewTab),
-    [tabEntries, roleViewTab, dayViewTab],
+    () => filterEntriesByScheduleView(tabEntries, selectedRoleView, dayViewTab),
+    [tabEntries, selectedRoleView, dayViewTab],
   );
 
   const viewEmployees = useMemo(() => {
-    if (roleViewTab === SCHEDULE_VIEW_ALL && dayViewTab === SCHEDULE_VIEW_ALL) {
+    if (!hasRoleViewFilter(selectedRoleView) && dayViewTab === SCHEDULE_VIEW_ALL) {
       return tabEmployees;
     }
     const userIds = new Set(viewEntries.map((entry) => Number(entry.user_id)));
     return tabEmployees.filter((employee) => userIds.has(Number(employee.user_id)));
-  }, [tabEmployees, viewEntries, roleViewTab, dayViewTab]);
+  }, [tabEmployees, viewEntries, selectedRoleView, dayViewTab]);
 
   const visibleDayColumns = useMemo(() => visibleDayIndices(dayViewTab), [dayViewTab]);
   const visibleDayLabels = useMemo(
@@ -373,8 +374,8 @@ export default function WeeklySchedulePage() {
     [visibleDayColumns],
   );
   const scheduleViewLabel = useMemo(
-    () => scheduleViewSummaryLabel(roleViewTab, dayViewTab),
-    [roleViewTab, dayViewTab],
+    () => scheduleViewSummaryLabel(selectedRoleView, dayViewTab),
+    [selectedRoleView, dayViewTab],
   );
 
   const entriesByCell = useMemo(() => {
@@ -819,8 +820,8 @@ export default function WeeklySchedulePage() {
           {!loading && data ? (
             <WeeklyScheduleViewTabs
               entries={tabEntries}
-              roleTab={roleViewTab}
-              onRoleTabChange={setRoleViewTab}
+              selectedRoles={selectedRoleView}
+              onSelectedRolesChange={setSelectedRoleView}
               dayTab={dayViewTab}
               onDayTabChange={setDayViewTab}
             />
@@ -925,7 +926,7 @@ export default function WeeklySchedulePage() {
                   summary={weekSummary}
                   showCost={showCost && costAllowed}
                   compact
-                  hideRoleBreakdown={roleViewTab !== SCHEDULE_VIEW_ALL || dayViewTab !== SCHEDULE_VIEW_ALL}
+                  hideRoleBreakdown={hasRoleViewFilter(selectedRoleView) || dayViewTab !== SCHEDULE_VIEW_ALL}
                 />
               </Box>
 

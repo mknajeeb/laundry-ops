@@ -1,4 +1,4 @@
-/** Role / day view tabs for weekly schedule visibility. */
+/** Role / day view filters for weekly schedule visibility. */
 
 import { DAY_LABELS } from "./weeklyScheduleDates";
 import {
@@ -8,58 +8,46 @@ import {
 } from "./weeklyScheduleRoles";
 
 export const SCHEDULE_VIEW_ALL = "all";
-export const ROLE_GROUP_PREFIX = "group:";
 
-/** Management role groups — filter shifts that include any role in the group. */
-export const SCHEDULE_ROLE_GROUPS = [
-  {
-    value: `${ROLE_GROUP_PREFIX}production`,
-    label: "Production",
-    roles: ["wash", "sort", "weigher", "fold"],
-  },
-  {
-    value: `${ROLE_GROUP_PREFIX}hd`,
-    label: "HD",
-    roles: ["hd_operator", "hd_folder"],
-  },
-  {
-    value: `${ROLE_GROUP_PREFIX}support`,
-    label: "Support",
-    roles: ["non_rinse_folder", "attendant"],
-  },
-];
-
-export function isRoleGroupTab(roleTab) {
-  return String(roleTab || "").startsWith(ROLE_GROUP_PREFIX);
+export function normalizeRoleViewSelection(selectedRoles) {
+  if (!Array.isArray(selectedRoles)) return [];
+  const valid = new Set(WEEKLY_SCHEDULE_ROLES.map((role) => role.value));
+  return [...new Set(selectedRoles.filter((role) => valid.has(role)))];
 }
 
-export function resolveRoleViewRoles(roleTab) {
-  if (!roleTab || roleTab === SCHEDULE_VIEW_ALL) return null;
-  if (isRoleGroupTab(roleTab)) {
-    const group = SCHEDULE_ROLE_GROUPS.find((item) => item.value === roleTab);
-    return group?.roles?.length ? group.roles : null;
+export function hasRoleViewFilter(selectedRoles) {
+  return normalizeRoleViewSelection(selectedRoles).length > 0;
+}
+
+export function resolveRoleViewRoles(selectedRoles) {
+  const roles = normalizeRoleViewSelection(selectedRoles);
+  return roles.length ? roles : null;
+}
+
+export function roleViewLabel(selectedRoles) {
+  const roles = normalizeRoleViewSelection(selectedRoles);
+  if (!roles.length) return null;
+  return roles.map((role) => ROLE_STYLES[role]?.label || role).join(" · ");
+}
+
+export function toggleRoleViewSelection(selectedRoles, roleKey) {
+  const roles = normalizeRoleViewSelection(selectedRoles);
+  if (roles.includes(roleKey)) {
+    return roles.filter((role) => role !== roleKey);
   }
-  return [roleTab];
+  return [...roles, roleKey];
 }
 
-export function roleViewLabel(roleTab) {
-  if (!roleTab || roleTab === SCHEDULE_VIEW_ALL) return null;
-  if (isRoleGroupTab(roleTab)) {
-    return SCHEDULE_ROLE_GROUPS.find((item) => item.value === roleTab)?.label || roleTab;
-  }
-  return ROLE_STYLES[roleTab]?.label || roleTab;
-}
-
-export function entryMatchesRoleView(entry, roleTab) {
-  const roles = resolveRoleViewRoles(roleTab);
+export function entryMatchesRoleView(entry, selectedRoles) {
+  const roles = resolveRoleViewRoles(selectedRoles);
   if (!roles) return true;
   const entryRoles = parseEntryRoles(entry);
   return roles.some((role) => entryRoles.includes(role));
 }
 
-export function filterEntriesByRoleView(entries, roleTab) {
-  if (!roleTab || roleTab === SCHEDULE_VIEW_ALL) return entries || [];
-  return (entries || []).filter((entry) => entryMatchesRoleView(entry, roleTab));
+export function filterEntriesByRoleView(entries, selectedRoles) {
+  if (!hasRoleViewFilter(selectedRoles)) return entries || [];
+  return (entries || []).filter((entry) => entryMatchesRoleView(entry, selectedRoles));
 }
 
 export function filterEntriesByDayView(entries, dayTab) {
@@ -69,8 +57,8 @@ export function filterEntriesByDayView(entries, dayTab) {
   return (entries || []).filter((entry) => Number(entry.day_of_week) === dow);
 }
 
-export function filterEntriesByScheduleView(entries, roleTab, dayTab) {
-  return filterEntriesByDayView(filterEntriesByRoleView(entries, roleTab), dayTab);
+export function filterEntriesByScheduleView(entries, selectedRoles, dayTab) {
+  return filterEntriesByDayView(filterEntriesByRoleView(entries, selectedRoles), dayTab);
 }
 
 export function countRoleAssignments(entries, roleKey) {
@@ -100,21 +88,12 @@ export function countDayShifts(entries, dayOfWeek) {
 
 export function buildRoleViewTabs(entries) {
   const list = entries || [];
-  const tabs = [{ value: SCHEDULE_VIEW_ALL, label: "All", count: list.length, isGroup: false }];
-  for (const group of SCHEDULE_ROLE_GROUPS) {
-    tabs.push({
-      value: group.value,
-      label: group.label,
-      count: countShiftsMatchingRoles(list, group.roles),
-      isGroup: true,
-    });
-  }
+  const tabs = [{ value: SCHEDULE_VIEW_ALL, label: "All", count: list.length }];
   for (const role of WEEKLY_SCHEDULE_ROLES) {
     tabs.push({
       value: role.value,
       label: role.label,
       count: countRoleAssignments(list, role.value),
-      isGroup: false,
     });
   }
   return tabs;
@@ -142,15 +121,15 @@ export function visibleDayIndices(dayTab) {
   return [dow];
 }
 
-export function filterEmployeesByScheduleView(employees, entries, roleTab, dayTab) {
-  const filteredEntries = filterEntriesByScheduleView(entries, roleTab, dayTab);
+export function filterEmployeesByScheduleView(employees, entries, selectedRoles, dayTab) {
+  const filteredEntries = filterEntriesByScheduleView(entries, selectedRoles, dayTab);
   const userIdsWithEntries = new Set(filteredEntries.map((entry) => Number(entry.user_id)));
   return (employees || []).filter((employee) => userIdsWithEntries.has(Number(employee.user_id)));
 }
 
-export function scheduleViewSummaryLabel(roleTab, dayTab) {
+export function scheduleViewSummaryLabel(selectedRoles, dayTab) {
   const parts = [];
-  const roleLabel = roleViewLabel(roleTab);
+  const roleLabel = roleViewLabel(selectedRoles);
   if (roleLabel) parts.push(roleLabel);
   if (dayTab && dayTab !== SCHEDULE_VIEW_ALL) {
     parts.push(DAY_LABELS[Number(dayTab)] || dayTab);

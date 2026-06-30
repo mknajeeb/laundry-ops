@@ -5,23 +5,25 @@ import {
   buildDayViewTabs,
   buildRoleViewTabs,
   filterEntriesByRoleView,
+  hasRoleViewFilter,
   SCHEDULE_VIEW_ALL,
+  toggleRoleViewSelection,
 } from "./weeklyScheduleViewFilters";
 
-function FilterChip({ label, count, selected, onClick, group = false }) {
+function FilterChip({ label, count, selected, onClick }) {
   return (
     <Chip
       size="small"
       label={`${label} (${count})`}
       onClick={onClick}
       variant={selected ? "filled" : "outlined"}
-      color={selected ? (group ? "primary" : "default") : "default"}
+      color={selected ? "primary" : "default"}
       sx={{
         height: 22,
         fontWeight: 700,
         fontSize: "0.72rem",
         borderColor: selected ? undefined : VEEWASH_DASHBOARD.snapshotBorder,
-        bgcolor: selected && !group ? VEEWASH_DASHBOARD.primaryBlueLight : undefined,
+        bgcolor: selected ? VEEWASH_DASHBOARD.primaryBlueLight : undefined,
         "& .MuiChip-label": { px: 0.85 },
       }}
     />
@@ -51,20 +53,20 @@ function ChipRow({ title, children }) {
 
 export default function WeeklyScheduleViewTabs({
   entries,
-  roleTab = SCHEDULE_VIEW_ALL,
-  onRoleTabChange,
+  selectedRoles = [],
+  onSelectedRolesChange,
   dayTab = SCHEDULE_VIEW_ALL,
   onDayTabChange,
 }) {
   const roleTabs = useMemo(() => buildRoleViewTabs(entries), [entries]);
   const dayTabs = useMemo(
-    () => buildDayViewTabs(filterEntriesByRoleView(entries, roleTab), { compact: true }),
-    [entries, roleTab],
+    () => buildDayViewTabs(filterEntriesByRoleView(entries, selectedRoles), { compact: true }),
+    [entries, selectedRoles],
   );
 
   const allRoleTab = roleTabs.find((tab) => tab.value === SCHEDULE_VIEW_ALL);
-  const groupTabs = roleTabs.filter((tab) => tab.isGroup);
-  const singleRoleTabs = roleTabs.filter((tab) => !tab.isGroup && tab.value !== SCHEDULE_VIEW_ALL);
+  const singleRoleTabs = roleTabs.filter((tab) => tab.value !== SCHEDULE_VIEW_ALL);
+  const showAllRoles = !hasRoleViewFilter(selectedRoles);
 
   return (
     <Box
@@ -79,35 +81,22 @@ export default function WeeklyScheduleViewTabs({
       }}
       className="no-print"
     >
-      <ChipRow title="Groups">
+      <ChipRow title="Roles">
         {allRoleTab ? (
           <FilterChip
             label={allRoleTab.label}
             count={allRoleTab.count}
-            selected={roleTab === allRoleTab.value}
-            onClick={() => onRoleTabChange(allRoleTab.value)}
+            selected={showAllRoles}
+            onClick={() => onSelectedRolesChange([])}
           />
         ) : null}
-        {groupTabs.map((tab) => (
-          <FilterChip
-            key={tab.value}
-            label={tab.label}
-            count={tab.count}
-            selected={roleTab === tab.value}
-            onClick={() => onRoleTabChange(tab.value)}
-            group
-          />
-        ))}
-      </ChipRow>
-
-      <ChipRow title="Roles">
         {singleRoleTabs.map((tab) => (
           <FilterChip
             key={tab.value}
             label={tab.label}
             count={tab.count}
-            selected={roleTab === tab.value}
-            onClick={() => onRoleTabChange(tab.value)}
+            selected={selectedRoles.includes(tab.value)}
+            onClick={() => onSelectedRolesChange(toggleRoleViewSelection(selectedRoles, tab.value))}
           />
         ))}
       </ChipRow>
