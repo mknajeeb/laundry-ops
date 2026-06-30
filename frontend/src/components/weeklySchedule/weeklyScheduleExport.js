@@ -57,11 +57,15 @@ export function exportWeeklyScheduleCsv({
   filename,
   showRoleLabels = true,
   scheduleEndTimeEnabled = true,
+  dayLabels = null,
+  dayIndices = null,
 }) {
+  const columnDays = dayIndices || [0, 1, 2, 3, 4, 5, 6];
+  const columnLabels = dayLabels || columnDays.map((dow) => DAY_LABELS[dow]);
   const headers = [
     "Employee",
     "Roles",
-    ...DAY_LABELS,
+    ...columnLabels,
     scheduleEndTimeEnabled ? "Total Hours" : "Total Days",
   ];
   const lines = [headers.map(csvCell).join(",")];
@@ -73,7 +77,7 @@ export function exportWeeklyScheduleCsv({
       csvCell(roles.length ? exportAsciiText(roleLabels(roles).replace(/\u00b7/g, " / ")) : ""),
     ];
 
-    for (let dow = 0; dow < 7; dow += 1) {
+    for (const dow of columnDays) {
       const cellEntries = (entries || []).filter(
         (entry) =>
           Number(entry.user_id) === Number(employee.user_id) &&

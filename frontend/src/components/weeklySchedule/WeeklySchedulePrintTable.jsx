@@ -5,15 +5,19 @@ export default function WeeklySchedulePrintTable({
   employees,
   entries,
   dayLabels,
+  dayIndices = null,
   showRoleLabels = true,
   daysOnly = false,
 }) {
+  const labels = dayLabels || [];
+  const indices = dayIndices || labels.map((_, index) => index);
+
   return (
     <table className="weekly-schedule-print-table">
       <thead>
         <tr>
           <th className="weekly-schedule-print-th-employee">Employee</th>
-          {(dayLabels || []).map((label) => (
+          {labels.map((label) => (
             <th key={label} className="weekly-schedule-print-th-day">
               {label}
             </th>
@@ -34,7 +38,8 @@ export default function WeeklySchedulePrintTable({
                   {formatEmployeeWeeklySummary(employee, { daysOnly })}
                 </div>
               </td>
-              {(dayLabels || []).map((label, dow) => {
+              {labels.map((label, index) => {
+                const dow = indices[index] ?? index;
                 const cellEntries = (entries || []).filter(
                   (entry) =>
                     Number(entry.user_id) === Number(employee.user_id) &&

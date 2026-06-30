@@ -61,6 +61,13 @@ import {
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import { exportWeeklyScheduleCsv } from "../components/weeklySchedule/weeklyScheduleExport";
 import WeeklySchedulePrintTable from "../components/weeklySchedule/WeeklySchedulePrintTable";
+import WeeklyScheduleViewTabs from "../components/weeklySchedule/WeeklyScheduleViewTabs";
+import {
+  filterEntriesByScheduleView,
+  SCHEDULE_VIEW_ALL,
+  scheduleViewSummaryLabel,
+  visibleDayIndices,
+} from "../components/weeklySchedule/weeklyScheduleViewFilters";
 import { openWeeklySchedulePrintWindow } from "../components/weeklySchedule/weeklySchedulePrint";
 import "../components/weeklySchedule/weeklySchedulePrint.css";
 import {
@@ -250,6 +257,8 @@ export default function WeeklySchedulePage() {
   const [duplicatingId, setDuplicatingId] = useState(null);
   const [bulkEmployerSaving, setBulkEmployerSaving] = useState(false);
   const [employerTab, setEmployerTab] = useState(ENTITY_TAB.WASHPRO);
+  const [roleViewTab, setRoleViewTab] = useState(SCHEDULE_VIEW_ALL);
+  const [dayViewTab, setDayViewTab] = useState(SCHEDULE_VIEW_ALL);
   const printContentRef = useRef(null);
   const stickyHeaderRef = useRef(null);
 
@@ -330,6 +339,11 @@ export default function WeeklySchedulePage() {
     }
   }, [entityTabs, employerTab, lockEmployerTab, entityScope, data?.employees, data?.entries]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    setRoleViewTab(SCHEDULE_VIEW_ALL);
+    setDayViewTab(SCHEDULE_VIEW_ALL);
+  }, [data?.week_start, employerTab]);
+
   const tabEntries = useMemo(
     () => filterEntriesByEmployerTab(data?.entries || [], employerTab, data?.employees || [], organizationSlug),
     [data?.entries, data?.employees, employerTab, organizationSlug],
@@ -340,19 +354,42 @@ export default function WeeklySchedulePage() {
     [data?.employees, data?.entries, employerTab, organizationSlug],
   );
 
+  const viewEntries = useMemo(
+    () => filterEntriesByScheduleView(tabEntries, roleViewTab, dayViewTab),
+    [tabEntries, roleViewTab, dayViewTab],
+  );
+
+  const viewEmployees = useMemo(() => {
+    if (roleViewTab === SCHEDULE_VIEW_ALL && dayViewTab === SCHEDULE_VIEW_ALL) {
+      return tabEmployees;
+    }
+    const userIds = new Set(viewEntries.map((entry) => Number(entry.user_id)));
+    return tabEmployees.filter((employee) => userIds.has(Number(employee.user_id)));
+  }, [tabEmployees, viewEntries, roleViewTab, dayViewTab]);
+
+  const visibleDayColumns = useMemo(() => visibleDayIndices(dayViewTab), [dayViewTab]);
+  const visibleDayLabels = useMemo(
+    () => visibleDayColumns.map((dow) => DAY_LABELS[dow]),
+    [visibleDayColumns],
+  );
+  const scheduleViewLabel = useMemo(
+    () => scheduleViewSummaryLabel(roleViewTab, dayViewTab),
+    [roleViewTab, dayViewTab],
+  );
+
   const entriesByCell = useMemo(() => {
     const map = {};
-    for (const entry of tabEntries) {
+    for (const entry of viewEntries) {
       const key = `${entry.user_id}:${entry.day_of_week}`;
       if (!map[key]) map[key] = [];
       map[key].push(entry);
     }
     return map;
-  }, [tabEntries]);
+  }, [viewEntries]);
 
   const tabUserIds = useMemo(
-    () => tabEmployees.map((employee) => employee.user_id),
-    [tabEmployees],
+    () => viewEmployees.map((employee) => employee.user_id),
+    [viewEmployees],
   );
 
   const weekSummary = useMemo(
@@ -361,11 +398,11 @@ export default function WeeklySchedulePage() {
         ? computeWeekSummary(data, {
             includeExcluded: showExcluded,
             userIds: tabUserIds,
-            entries: tabEntries,
+            entries: viewEntries,
             daysOnly,
           })
         : null,
-    [data, showExcluded, tabUserIds, tabEntries, daysOnly],
+    [data, showExcluded, tabUserIds, viewEntries, daysOnly],
   );
 
   const filteredDaySummaries = useMemo(
@@ -374,25 +411,27 @@ export default function WeeklySchedulePage() {
         ? computeFilteredDaySummaries(data, {
             userIds: tabUserIds,
             includeExcluded: showExcluded,
-            entries: tabEntries,
+            entries: viewEntries,
           })
         : [],
-    [data, tabUserIds, showExcluded, tabEntries],
+    [data, tabUserIds, showExcluded, viewEntries],
   );
 
   const visibleEmployees = useMemo(() => {
-    if (showExcluded) return tabEmployees;
-    return tabEmployees.filter((e) => !e.excluded);
-  }, [tabEmployees, showExcluded]);
+    if (showExcluded) return viewEmployees;
+    return viewEmployees.filter((e) => !e.excluded);
+  }, [viewEmployees, showExcluded]);
 
   const excludedCount = useMemo(
-    () => tabEmployees.filter((e) => e.excluded).length,
-    [tabEmployees],
+    () => viewEmployees.filter((e) => e.excluded).length,
+    [viewEmployees],
   );
 
   const employeeColWidth = isTablet ? "minmax(180px, 195px)" : "minmax(185px, 200px)";
   const dayColWidth = isTablet ? "minmax(128px, 1fr)" : "minmax(138px, 1fr)";
-  const gridMinWidth = isTablet ? 1088 : 1200;
+  const gridMinWidth = isTablet
+    ? 195 + visibleDayColumns.length * 128
+    : 200 + visibleDayColumns.length * 138;
 
   const handleExcludeToggle = async (employee, excluded) => {
     setExcludeSavingUserId(employee.user_id);
@@ -518,13 +557,16 @@ export default function WeeklySchedulePage() {
   };
 
   const handleExport = () => {
+    const viewSuffix = scheduleViewLabel ? ` - ${scheduleViewLabel}` : "";
     exportWeeklyScheduleCsv({
       employees: visibleEmployees,
-      entries: tabEntries,
+      entries: viewEntries,
       weekStart,
-      tabLabel: ENTITY_TAB_LABELS[employerTab],
+      tabLabel: `${ENTITY_TAB_LABELS[employerTab]}${viewSuffix}`,
       showRoleLabels,
       scheduleEndTimeEnabled,
+      dayLabels: visibleDayLabels.length === 7 ? undefined : visibleDayLabels,
+      dayIndices: visibleDayColumns.length === 7 ? undefined : visibleDayColumns,
     });
   };
 
@@ -774,6 +816,16 @@ export default function WeeklySchedulePage() {
             </Box>
           ) : null}
 
+          {!loading && data ? (
+            <WeeklyScheduleViewTabs
+              entries={tabEntries}
+              roleTab={roleViewTab}
+              onRoleTabChange={setRoleViewTab}
+              dayTab={dayViewTab}
+              onDayTabChange={setDayViewTab}
+            />
+          ) : null}
+
           {showToolbarChips ? (
             <Box
               sx={{
@@ -849,6 +901,12 @@ export default function WeeklySchedulePage() {
             <Alert severity="info" sx={{ mx: 2, mt: 1, mb: 0 }} className="no-print">
               Tenant: <strong>{entityScope.organization_slug}</strong> · Active entity view:{" "}
               <strong>{entityLabel(employerTab)}</strong>
+              {scheduleViewLabel ? (
+                <>
+                  {" "}
+                  · Filter: <strong>{scheduleViewLabel}</strong>
+                </>
+              ) : null}
               {employerTab === ENTITY_TAB.COMBINED ? " (admin cleanup view)" : ""}
             </Alert>
           ) : null}
@@ -901,7 +959,7 @@ export default function WeeklySchedulePage() {
                       >
                         <WeeklyScheduleEmployeeCell
                           employee={employee}
-                          entries={tabEntries}
+                          entries={viewEntries}
                           excluded={excluded}
                           canManageExclusions={canManageExclusions}
                           excludeSaving={excludeSavingUserId === employee.user_id}
@@ -913,7 +971,8 @@ export default function WeeklySchedulePage() {
                           onViewSchedule={openEmployeeView}
                         />
                         <Box sx={{ px: 1.25, pb: 1.25, display: "grid", gap: 0.75 }}>
-                          {DAY_LABELS.map((dayLabel, dow) => {
+                          {visibleDayColumns.map((dow) => {
+                            const dayLabel = DAY_LABELS[dow];
                             const cellKey = `${employee.user_id}:${dow}`;
                             const cellEntries = entriesByCell[cellKey] || [];
                             if (!cellEntries.length && excluded) return null;
@@ -947,7 +1006,7 @@ export default function WeeklySchedulePage() {
                   <Box
                     sx={{
                       display: "grid",
-                      gridTemplateColumns: `${employeeColWidth} repeat(7, ${dayColWidth})`,
+                      gridTemplateColumns: `${employeeColWidth} repeat(${visibleDayColumns.length}, ${dayColWidth})`,
                       minWidth: gridMinWidth,
                       gap: 0,
                       border: "1px solid #e2e8f0",
@@ -979,7 +1038,9 @@ export default function WeeklySchedulePage() {
                         Employee
                       </Typography>
                     </Box>
-                    {DAY_LABELS.map((label, dow) => (
+                    {visibleDayColumns.map((dow) => {
+                      const label = DAY_LABELS[dow];
+                      return (
                       <Box
                         key={label}
                         sx={{
@@ -997,7 +1058,7 @@ export default function WeeklySchedulePage() {
                           daysOnly={daysOnly}
                         />
                       </Box>
-                    ))}
+                    );})}
 
                     {(visibleEmployees || []).map((employee) => {
                       const excluded = Boolean(employee.excluded);
@@ -1005,7 +1066,7 @@ export default function WeeklySchedulePage() {
                         <Box key={employee.user_id} sx={{ display: "contents" }}>
                           <WeeklyScheduleEmployeeCell
                             employee={employee}
-                            entries={tabEntries}
+                            entries={viewEntries}
                             excluded={excluded}
                             canManageExclusions={canManageExclusions}
                             excludeSaving={excludeSavingUserId === employee.user_id}
@@ -1015,7 +1076,8 @@ export default function WeeklySchedulePage() {
                             costAllowed={costAllowed}
                             onViewSchedule={openEmployeeView}
                           />
-                          {DAY_LABELS.map((dayLabel, dow) => {
+                          {visibleDayColumns.map((dow) => {
+                            const dayLabel = DAY_LABELS[dow];
                             const cellKey = `${employee.user_id}:${dow}`;
                             const cellEntries = entriesByCell[cellKey] || [];
                             return (
@@ -1058,13 +1120,15 @@ export default function WeeklySchedulePage() {
           <div className="weekly-schedule-print-doc-header">
             <div className="weekly-schedule-print-doc-title">
               Weekly Schedule — {ENTITY_TAB_LABELS[employerTab]}
+              {scheduleViewLabel ? ` — ${scheduleViewLabel}` : ""}
             </div>
             <div className="weekly-schedule-print-doc-subtitle">{formatWeekRange(weekStart)}</div>
           </div>
           <WeeklySchedulePrintTable
             employees={visibleEmployees}
-            entries={tabEntries}
-            dayLabels={DAY_LABELS}
+            entries={viewEntries}
+            dayLabels={visibleDayLabels}
+            dayIndices={visibleDayColumns}
             showRoleLabels={showRoleLabels}
             daysOnly={daysOnly}
           />
