@@ -969,6 +969,8 @@ export default function ShiftMonitorPage({ user }) {
             <EmployeeProductivityDashboard
               initialSection={employeeProductivity}
               initialDateEt={dateEnd || dateStart}
+              rushFilter={avRushFilter}
+              onRushChange={setAvRushFilter}
             />
           ) : null}
 

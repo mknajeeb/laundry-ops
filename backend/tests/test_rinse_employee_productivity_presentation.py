@@ -134,7 +134,7 @@ class TestApplyEmployeeProductivityScope:
         assert alice["productive_hours"] == expected_hours
         assert alice["completed_bags_per_hour"] == round(1 / expected_hours, 4)
 
-    def test_pending_completion_from_processed_minus_completed(self):
+    def test_pending_processed_bags_are_not_credited_in_completed_only_mode(self):
         wf_done = _bag("WF1", "WF", WF_COMP, 12.0)
         hd_pending = _processed_bag("HD2", "HD", "2026-06-10T06:30:00", 11.0)
         section = _section()
@@ -143,9 +143,8 @@ class TestApplyEmployeeProductivityScope:
         ]
         scoped = apply_employee_productivity_scope(section, include_hd=True)
         alice = scoped["employees"][0]
-        assert alice["processed_bags_count"] == 2
         assert alice["completed_bags"] == 1
-        assert alice["pending_completion_count"] == 1
-        assert alice["pending_completion_bags"][0]["bag_id"] == "HD2"
-        assert alice["processed_bags_per_hour"] == round(2 / alice["productive_hours"], 4)
-        assert alice["completed_bags_per_hour"] == round(1 / alice["productive_hours"], 4)
+        assert alice["pending_completion_count"] == 0
+        assert alice["pending_completion_bags"] == []
+        assert len(alice["bags"]) == 1
+        assert alice["bags"][0]["bag_id"] == "WF1"

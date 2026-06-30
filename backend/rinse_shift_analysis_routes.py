@@ -440,6 +440,7 @@ def register_rinse_shift_analysis_routes(
                 selected = parse_date_value(raw_date)
             if not isinstance(selected, date):
                 return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            rush_filter = (request.args.get("rush_filter") or "all").strip().lower()
             baseline_ctx = build_baseline_context(
                 cursor, tenant_oid, get_shift_monitor_baseline(cursor, tenant_oid)
             )
@@ -448,6 +449,7 @@ def register_rinse_shift_analysis_routes(
                 tenant_oid,
                 selected_date_et=selected,
                 baseline_ctx=baseline_ctx,
+                rush_filter=rush_filter,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:
@@ -481,6 +483,7 @@ def register_rinse_shift_analysis_routes(
                 selected = parse_date_value(raw_date)
             if not isinstance(selected, date):
                 return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            rush_filter = (request.args.get("rush_filter") or "all").strip().lower()
             baseline_ctx = build_baseline_context(
                 cursor, tenant_oid, get_shift_monitor_baseline(cursor, tenant_oid)
             )
@@ -489,6 +492,7 @@ def register_rinse_shift_analysis_routes(
                 tenant_oid,
                 selected_date_et=selected,
                 baseline_ctx=baseline_ctx,
+                rush_filter=rush_filter,
             )
             return jsonify(json_safe_rinse(payload))
         except Exception as exc:

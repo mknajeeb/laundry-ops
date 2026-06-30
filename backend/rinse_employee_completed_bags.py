@@ -1126,15 +1126,14 @@ def build_employee_completed_bags_today(
     employees: list[dict[str, Any]] = []
     for employee, bags in sorted(by_employee.items(), key=lambda x: x[0].lower()):
         if use_workload_mode:
-            workload_sorted = sorted(
-                bags, key=lambda b: str(b.get("credit_timestamp") or b.get("bag_id") or "")
+            bags_sorted = sorted(
+                bags,
+                key=lambda b: str(
+                    b.get("credit_timestamp") or b.get("completion_time") or b.get("bag_id") or ""
+                ),
             )
-            bags_sorted = [
-                b for b in workload_sorted if str(b.get("workload_status") or "") == "completed"
-            ]
-            pending_bags_list = [
-                b for b in workload_sorted if str(b.get("workload_status") or "") == "pending"
-            ]
+            pending_bags_list: list[dict[str, Any]] = []
+            workload_sorted = bags_sorted
         else:
             workload_sorted = sorted(bags, key=lambda b: str(b.get("completion_time") or ""))
             bags_sorted = workload_sorted
@@ -1293,17 +1292,21 @@ def build_employee_completed_bags_today(
             sum(float(b["completed_lbs"]) for b in bags_sorted if b.get("completed_lbs") is not None),
             2,
         )
-        total_credited_lbs = round(
+        total_credited_lbs = total_completed_lbs if use_workload_mode else round(
             sum(
                 float(b.get("credited_lbs") or b.get("processed_lbs") or b.get("completed_lbs") or 0)
                 for b in workload_sorted
-                if (b.get("credited_lbs") is not None or b.get("processed_lbs") is not None or b.get("completed_lbs") is not None)
+                if (
+                    b.get("credited_lbs") is not None
+                    or b.get("processed_lbs") is not None
+                    or b.get("completed_lbs") is not None
+                )
             ),
             2,
         )
-        credited_bag_count = len(workload_sorted)
-        rate_bag_count = credited_bag_count if use_workload_mode else len(bags_sorted)
-        rate_lbs = total_credited_lbs if use_workload_mode else total_completed_lbs
+        credited_bag_count = len(bags_sorted)
+        rate_bag_count = len(bags_sorted)
+        rate_lbs = total_completed_lbs
         worked_hours: float | None = None
         wall_clock_hours: float | None = None
         productive_hours: float | None = None
@@ -1383,34 +1386,26 @@ def build_employee_completed_bags_today(
                 "total_completed_lbs": total_completed_lbs,
                 "credited_bags_count": credited_bag_count,
                 "total_credited_lbs": total_credited_lbs,
-                "workload_bags": workload_sorted,
+                "workload_bags": bags_sorted,
                 "processed_bags_count": credited_bag_count,
-                "processed_bags": workload_sorted,
-                "total_processed_lbs": total_credited_lbs,
-                "pending_completion_count": len(pending_bags_list),
-                "pending_completion_bags": pending_bags_list,
+                "processed_bags": bags_sorted,
+                "total_processed_lbs": total_completed_lbs,
+                "pending_completion_count": 0 if use_workload_mode else len(pending_bags_list),
+                "pending_completion_bags": [] if use_workload_mode else pending_bags_list,
                 "processed_bags_per_hour": bags_per_hour,
                 "processed_lbs_per_hour": lbs_per_hour,
-                "completed_bags_per_hour": (
-                    round(len(bags_sorted) / productive_hours, 4)
-                    if productive_hours and productive_hours > 0 and bags_sorted
-                    else None
-                ),
-                "completed_lbs_per_hour": (
-                    round(total_completed_lbs / productive_hours, 4)
-                    if productive_hours and productive_hours > 0 and total_completed_lbs
-                    else None
-                ),
+                "completed_bags_per_hour": bags_per_hour,
+                "completed_lbs_per_hour": lbs_per_hour,
                 "bags_per_hour": bags_per_hour,
                 "lbs_per_hour": lbs_per_hour,
                 "missing_weight_count": missing_weight_count,
                 "productivity_note": productivity_note or clock_diagnostic,
                 "bags": bags_sorted,
-                "show_processed_completed_split": (
-                    not use_workload_mode
-                    or len(pending_bags_list) > 0
-                    or len(bags_sorted) != credited_bag_count
+                "show_processed_completed_split": False if use_workload_mode else (
+                    len(pending_bags_list) > 0 or len(bags_sorted) != credited_bag_count
                 ),
+                "first_completed_time": first_comp.isoformat() if first_comp else None,
+                "last_completed_time": last_comp.isoformat() if last_comp else None,
             }
         )
 
@@ -1438,28 +1433,17 @@ def build_employee_completed_bags_today(
 
     employees.sort(
         key=lambda e: (
-            -(e.get("credited_bags_count") or e.get("processed_bags_count") or e.get("completed_bags") or 0),
+            -(e.get("completed_bags") or e.get("credited_bags_count") or e.get("processed_bags_count") or 0),
             str(e.get("employee") or "").lower(),
         )
     )
 
     if use_workload_mode:
         all_processed_records = list(attributed_bags)
-        for emp in employees:
-            wl = emp.get("workload_bags") or emp.get("processed_bags") or []
-            emp["processed_bags"] = wl
-            emp["processed_bags_count"] = len(wl)
-            emp["total_processed_lbs"] = emp.get("total_credited_lbs") or emp.get("total_processed_lbs") or 0
-            if emp.get("first_processed_time") is None and wl:
-                times = [
-                    datetime.fromisoformat(str(b["credit_timestamp"]))
-                    for b in wl
-                    if b.get("credit_timestamp")
-                ]
-                if times:
-                    emp["first_processed_time"] = min(times).isoformat()
-                    emp["last_processed_time"] = max(times).isoformat()
-        from backend.rinse_employee_workload_productivity import build_workload_productivity_reconciliation
+        from backend.rinse_employee_workload_productivity import (
+            build_completed_attribution_audit,
+            build_workload_productivity_reconciliation,
+        )
 
         reconciliation = build_workload_productivity_reconciliation(
             workload_rows=workload_rows or [],
@@ -1467,22 +1451,29 @@ def build_employee_completed_bags_today(
             duplicate_bag_ids=duplicate_bags,
             selected_date_et=selected_date_et,
         )
+        completed_attribution_audit = build_completed_attribution_audit(
+            workload_rows or [],
+            events_by_bag=events_by_bag,
+            selected_date_et=selected_date_et,
+            registry_meta=registry_meta,
+        )
         reconciliation_banner = {
-            "employee_completed_bags_credited": reconciliation.get("credited_total"),
+            "employee_completed_bags_credited": reconciliation.get("employee_attributed_bag_count"),
             "workload_total": reconciliation.get("workload_total"),
             "workload_completed_today": reconciliation.get("workload_completed_today"),
             "credited_completed": reconciliation.get("credited_completed"),
-            "credited_pending": reconciliation.get("credited_pending"),
+            "credited_pending": 0,
             "unassigned_count": reconciliation.get("unassigned_count"),
             "difference": reconciliation.get("difference"),
             "status": reconciliation.get("status"),
             "status_label": reconciliation.get("status_label"),
         }
-        attribution_audit = reconciliation.get("workload_attribution_audit") or []
-        processed_attribution_audit = attribution_audit
+        attribution_audit = completed_attribution_audit
+        processed_attribution_audit = completed_attribution_audit
         processed_wf_count = reconciliation.get("credited_wf_count") or 0
         processed_hd_count = reconciliation.get("credited_hd_count") or 0
     else:
+        completed_attribution_audit = []
         employees, all_processed_records = _attach_processed_productivity_metrics(
             cursor,
             org,
@@ -1582,6 +1573,7 @@ def build_employee_completed_bags_today(
         "employees": employees,
         "attribution_audit": attribution_audit,
         "processed_attribution_audit": processed_attribution_audit,
+        "completed_attribution_audit": completed_attribution_audit if use_workload_mode else attribution_audit,
         "processed_summary": {
             "total_processed_bags": len(all_processed_records),
             "wf_processed_count": processed_wf_count,
@@ -1599,6 +1591,7 @@ def build_employee_productivity_dashboard_payload(
     *,
     selected_date_et: date,
     baseline_ctx: Mapping[str, Any] | None = None,
+    rush_filter: str = "all",
 ) -> dict[str, Any]:
     """Read-only Phase 2 payload — uses frozen Phase 1 employee_completed_bags_today."""
     from backend.rinse_at_vendor_module import build_at_vendor_module
@@ -1607,6 +1600,7 @@ def build_employee_productivity_dashboard_payload(
         include_hd_in_employee_productivity,
         productivity_scope_label,
     )
+    from backend.rinse_employee_workload_productivity import normalize_rush_filter
 
     org = int(organization_id)
     av = build_at_vendor_module(
@@ -1614,7 +1608,13 @@ def build_employee_productivity_dashboard_payload(
     )
     emp = av.get("employee_completed_bags_today") or {}
     include_hd = include_hd_in_employee_productivity(cursor, org)
-    scoped_emp = apply_employee_productivity_scope(emp, include_hd=include_hd)
+    rush = normalize_rush_filter(rush_filter)
+    scoped_emp = apply_employee_productivity_scope(
+        emp,
+        include_hd=include_hd,
+        rush_filter=rush,
+        workload_rows=av.get("rows") or [],
+    )
     from backend.daily_shift_labor_summary import build_labor_summary
     from backend.daily_shift_roster import list_roster_entries
     from backend.rinse_simple_shift_performance import _load_rinse_user_maps
@@ -1631,8 +1631,12 @@ def build_employee_productivity_dashboard_payload(
         "employee_completed_bags_today": scoped_emp,
         "completed_today_kpi": av.get("completed") or av.get("completed_today_count"),
         "workload_total_kpi": av.get("total") or av.get("days_load_total"),
+        "workload_completed_kpi": av.get("completed") or av.get("completed_today_count"),
+        "rush_completed_kpi": av.get("rush_completed"),
+        "non_rush_completed_kpi": av.get("non_rush_completed"),
         "include_hd_in_employee_productivity": include_hd,
         "productivity_scope_label": productivity_scope_label(include_hd),
+        "productivity_rush_filter": rush,
         "labor_summary": labor_summary,
     }
 
@@ -1643,11 +1647,13 @@ def build_workload_productivity_debug_payload(
     *,
     selected_date_et: date,
     baseline_ctx: Mapping[str, Any] | None = None,
+    rush_filter: str = "all",
 ) -> dict[str, Any]:
     """Admin/debug payload explaining workload ↔ productivity reconciliation."""
     from backend.rinse_at_vendor_module import build_at_vendor_module
     from backend.rinse_employee_productivity_presentation import apply_employee_productivity_scope
     from backend.rinse_employee_productivity_settings import include_hd_in_employee_productivity
+    from backend.rinse_employee_workload_productivity import normalize_rush_filter
 
     org = int(organization_id)
     av = build_at_vendor_module(
@@ -1655,11 +1661,18 @@ def build_workload_productivity_debug_payload(
     )
     emp = av.get("employee_completed_bags_today") or {}
     include_hd = include_hd_in_employee_productivity(cursor, org)
-    scoped = apply_employee_productivity_scope(emp, include_hd=include_hd)
+    rush = normalize_rush_filter(rush_filter)
+    scoped = apply_employee_productivity_scope(
+        emp,
+        include_hd=include_hd,
+        rush_filter=rush,
+        workload_rows=av.get("rows") or [],
+    )
     recon = scoped.get("reconciliation") or {}
     return {
         "selected_date_et": selected_date_et.isoformat(),
         "productivity_scope": scoped.get("productivity_scope_label"),
+        "productivity_rush_filter": rush,
         "workload_summary": {
             "total": av.get("total") or av.get("days_load_total"),
             "pending": av.get("pending"),
@@ -1670,18 +1683,19 @@ def build_workload_productivity_debug_payload(
             "hd_pending": av.get("hd_pending"),
             "wf_completed": av.get("wf_completed"),
             "hd_completed": av.get("hd_completed"),
+            "rush_completed": av.get("rush_completed"),
+            "non_rush_completed": av.get("non_rush_completed"),
         },
         "productivity_reconciliation": recon,
-        "workload_attribution_audit": scoped.get("attribution_audit") or recon.get("workload_attribution_audit") or [],
+        "completed_attribution_audit": scoped.get("completed_attribution_audit") or [],
+        "workload_attribution_audit": scoped.get("completed_attribution_audit") or [],
         "employees": [
             {
                 "employee": e.get("employee"),
-                "credited_bags_count": e.get("credited_bags_count") or e.get("processed_bags_count"),
                 "completed_bags": e.get("completed_bags"),
-                "pending_completion_count": e.get("pending_completion_count"),
-                "total_credited_lbs": e.get("total_credited_lbs") or e.get("total_processed_lbs"),
-                "lbs_per_hour": e.get("processed_lbs_per_hour") or e.get("lbs_per_hour"),
-                "bags_per_hour": e.get("processed_bags_per_hour") or e.get("bags_per_hour"),
+                "total_completed_lbs": e.get("total_completed_lbs"),
+                "lbs_per_hour": e.get("completed_lbs_per_hour") or e.get("lbs_per_hour"),
+                "bags_per_hour": e.get("completed_bags_per_hour") or e.get("bags_per_hour"),
             }
             for e in (scoped.get("employees") or [])
         ],

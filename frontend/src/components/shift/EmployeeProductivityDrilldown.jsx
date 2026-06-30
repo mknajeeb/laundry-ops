@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   Box,
   Chip,
@@ -196,26 +196,16 @@ function BagTableSection({
   );
 }
 
-/** Drilldown for processed vs completed employee work. */
+/** Drilldown for completed employee production credit. */
 export default function EmployeeProductivityDrilldown({
   bags,
-  processedBags,
-  pendingBags,
   referenceDateEt,
   loading = false,
 }) {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const [expandedBagId, setExpandedBagId] = useState(null);
-
-  const completedIds = useMemo(
-    () => new Set((bags || []).map((bag) => String(bag.bag_id || "").toUpperCase())),
-    [bags],
-  );
-  const processed = processedBags || [];
-  const pending = pendingBags || (processed.filter(
-    (bag) => !completedIds.has(String(bag.bag_id || "").toUpperCase()),
-  ));
+  const completed = bags || [];
 
   if (loading) {
     return (
@@ -224,33 +214,29 @@ export default function EmployeeProductivityDrilldown({
       </Typography>
     );
   }
-  if (!processed.length && !(bags || []).length) {
+  if (!completed.length) {
     return (
       <Typography variant="body2" color="text.secondary">
-        No processed bags for this employee.
+        No completed bags for this employee.
       </Typography>
     );
   }
-
-  const statusForBag = (bag) => (
-    completedIds.has(String(bag.bag_id || "").toUpperCase()) ? "Completed" : "Pending completion"
-  );
 
   if (isMobile) {
     return (
       <Box sx={{ py: 0.5 }}>
         <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.75 }}>
-          Processed Bags
+          Completed Bags
         </Typography>
         <Stack spacing={1}>
-          {[...processed].sort((a, b) => eventTs(a).localeCompare(eventTs(b))).map((bag) => (
+          {[...completed].sort((a, b) => eventTs(a).localeCompare(eventTs(b))).map((bag) => (
             <BagMobileCard
-              key={`processed-${bag.bag_id}`}
+              key={`completed-${bag.bag_id}`}
               bag={bag}
               expanded={expandedBagId === bag.bag_id}
               onToggle={() => setExpandedBagId((prev) => (prev === bag.bag_id ? null : bag.bag_id))}
               referenceDateEt={referenceDateEt}
-              statusLabel={statusForBag(bag)}
+              statusLabel="Completed"
             />
           ))}
         </Stack>
@@ -261,26 +247,8 @@ export default function EmployeeProductivityDrilldown({
   return (
     <Box sx={{ py: 0.5 }}>
       <BagTableSection
-        title={`Processed Bags (${processed.length})`}
-        bags={processed}
-        expandedBagId={expandedBagId}
-        setExpandedBagId={setExpandedBagId}
-        referenceDateEt={referenceDateEt}
-        statusForBag={statusForBag}
-      />
-      {pending.length ? (
-        <BagTableSection
-          title={`Pending Completion (${pending.length})`}
-          bags={pending}
-          expandedBagId={expandedBagId}
-          setExpandedBagId={setExpandedBagId}
-          referenceDateEt={referenceDateEt}
-          statusForBag={() => "Pending completion"}
-        />
-      ) : null}
-      <BagTableSection
-        title={`Completed Bags (${(bags || []).length})`}
-        bags={bags}
+        title={`Completed Bags (${completed.length})`}
+        bags={completed}
         expandedBagId={expandedBagId}
         setExpandedBagId={setExpandedBagId}
         referenceDateEt={referenceDateEt}
