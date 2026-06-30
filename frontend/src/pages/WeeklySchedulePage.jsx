@@ -79,6 +79,7 @@ function daySummary(day) {
     fold: Number(day?.fold ?? day?.fold_count ?? 0),
     hd_operator: Number(day?.hd_operator ?? day?.hd_operator_count ?? 0),
     hd_folder: Number(day?.hd_folder ?? day?.hd_folder_count ?? 0),
+    attendant: Number(day?.attendant ?? day?.attendant_count ?? 0),
   };
 }
 

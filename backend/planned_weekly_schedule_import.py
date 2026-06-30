@@ -56,6 +56,8 @@ def sheet_role_to_planned_roles(sheet_role: str | None) -> list[str]:
         roles.append("hd_operator")
     if "hd folder" in text or "hd_folder" in text:
         roles.append("hd_folder")
+    if "attendant" in text:
+        roles.append("attendant")
     if "sort" in text:
         roles.append("sort")
     if "wash" in text:
