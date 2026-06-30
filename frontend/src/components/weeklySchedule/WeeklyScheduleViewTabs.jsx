@@ -57,8 +57,12 @@ export default function WeeklyScheduleViewTabs({
   onSelectedRolesChange,
   dayTab = SCHEDULE_VIEW_ALL,
   onDayTabChange,
+  hiddenRoles = [],
 }) {
-  const roleTabs = useMemo(() => buildRoleViewTabs(entries), [entries]);
+  const roleTabs = useMemo(
+    () => buildRoleViewTabs(entries, { hiddenRoles }),
+    [entries, hiddenRoles],
+  );
   const dayTabs = useMemo(
     () => buildDayViewTabs(filterEntriesByRoleView(entries, selectedRoles), { compact: true }),
     [entries, selectedRoles],

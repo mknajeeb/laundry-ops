@@ -280,6 +280,7 @@ export default function WeeklySchedulePage() {
   const organizationSlug = entityScope.organization_slug || null;
   const entityTabs = visibleEntityTabs(entityScope);
   const scheduleEndTimeEnabled = display.schedule_end_time_enabled !== false;
+  const hiddenScheduleRoles = display.hidden_schedule_roles || [];
   const daysOnly = !scheduleEndTimeEnabled;
 
   useEffect(() => {
@@ -824,6 +825,7 @@ export default function WeeklySchedulePage() {
               onSelectedRolesChange={setSelectedRoleView}
               dayTab={dayViewTab}
               onDayTabChange={setDayViewTab}
+              hiddenRoles={hiddenScheduleRoles}
             />
           ) : null}
 

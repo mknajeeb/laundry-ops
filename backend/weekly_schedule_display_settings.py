@@ -10,11 +10,12 @@ from backend.payroll_employer_affiliation import (
     EMPLOYER_AFFILIATION_BOTH,
     EMPLOYER_AFFILIATION_RINSE,
 )
+from backend.planned_weekly_schedule import VALID_ROLES, parse_weekly_roles
 from backend.ta_helpers import table_exists
 
 KEY_WEEKLY_SCHEDULE_DISPLAY = "weekly_schedule_display_settings"
 
-DEFAULTS: dict[str, bool] = {
+BOOL_DEFAULTS: dict[str, bool] = {
     "show_estimated_cost_default": False,
     "show_role_labels_default": True,
     "show_employee_rates_default": False,
@@ -24,6 +25,8 @@ DEFAULTS: dict[str, bool] = {
     "share_break_minutes_with_external": True,
     "share_rates_with_external": False,
 }
+
+DEFAULT_HIDDEN_ROLES_FOR_RINSE_VIEWERS = ("non_rinse_folder", "attendant")
 
 PRIVILEGED_ROLES = frozenset({"ADMIN", "OPS", "SUPER_ADMIN", "PLATFORM_ADMIN"})
 RINSE_SCHEDULE_VIEWER_ROLES = frozenset({"RINSE"})
@@ -43,6 +46,39 @@ def _truthy(raw: Any, default: bool = False) -> bool:
     if s in {"1", "true", "on", "yes", "enabled"}:
         return True
     return default
+
+
+def normalize_hidden_roles_for_rinse_viewers(raw: Any) -> list[str]:
+    if raw is None:
+        return list(DEFAULT_HIDDEN_ROLES_FOR_RINSE_VIEWERS)
+    items: list[Any]
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            items = parsed if isinstance(parsed, list) else [raw]
+        except (TypeError, json.JSONDecodeError):
+            items = [part.strip() for part in text.replace("|", ",").split(",")]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        return list(DEFAULT_HIDDEN_ROLES_FOR_RINSE_VIEWERS)
+    out: list[str] = []
+    for item in items:
+        role = str(item or "").strip().lower()
+        if role in VALID_ROLES and role not in out:
+            out.append(role)
+    return out
+
+
+def entry_has_hidden_schedule_role(entry: Mapping[str, Any], hidden_roles: Sequence[str]) -> bool:
+    hidden = {str(role).strip().lower() for role in (hidden_roles or []) if str(role).strip()}
+    if not hidden:
+        return False
+    roles = parse_weekly_roles(entry.get("roles") or entry.get("role"))
+    return any(role in hidden for role in roles)
 
 
 def _get_setting(cursor, organization_id: int, key: str) -> str | None:
@@ -72,9 +108,18 @@ def _set_setting(cursor, organization_id: int, key: str, value: str) -> None:
     )
 
 
-def get_weekly_schedule_display_settings(cursor, organization_id: int) -> dict[str, bool]:
+def _serialize_settings(settings: Mapping[str, Any]) -> str:
+    payload = {key: bool(settings[key]) for key in BOOL_DEFAULTS}
+    payload["hidden_roles_for_rinse_viewers"] = list(
+        normalize_hidden_roles_for_rinse_viewers(settings.get("hidden_roles_for_rinse_viewers"))
+    )
+    return json.dumps(payload)
+
+
+def get_weekly_schedule_display_settings(cursor, organization_id: int) -> dict[str, Any]:
     raw = _get_setting(cursor, int(organization_id), KEY_WEEKLY_SCHEDULE_DISPLAY)
-    out = dict(DEFAULTS)
+    out: dict[str, Any] = dict(BOOL_DEFAULTS)
+    out["hidden_roles_for_rinse_viewers"] = list(DEFAULT_HIDDEN_ROLES_FOR_RINSE_VIEWERS)
     if not raw:
         return out
     try:
@@ -83,9 +128,13 @@ def get_weekly_schedule_display_settings(cursor, organization_id: int) -> dict[s
         return out
     if not isinstance(parsed, dict):
         return out
-    for key in DEFAULTS:
+    for key in BOOL_DEFAULTS:
         if key in parsed:
-            out[key] = _truthy(parsed[key], default=DEFAULTS[key])
+            out[key] = _truthy(parsed[key], default=BOOL_DEFAULTS[key])
+    if "hidden_roles_for_rinse_viewers" in parsed:
+        out["hidden_roles_for_rinse_viewers"] = normalize_hidden_roles_for_rinse_viewers(
+            parsed["hidden_roles_for_rinse_viewers"]
+        )
     return out
 
 
@@ -93,16 +142,20 @@ def save_weekly_schedule_display_settings(
     cursor,
     organization_id: int,
     data: Mapping[str, Any],
-) -> dict[str, bool]:
+) -> dict[str, Any]:
     current = get_weekly_schedule_display_settings(cursor, organization_id)
-    for key in DEFAULTS:
+    for key in BOOL_DEFAULTS:
         if key in data:
             current[key] = _truthy(data[key], default=current[key])
+    if "hidden_roles_for_rinse_viewers" in data:
+        current["hidden_roles_for_rinse_viewers"] = normalize_hidden_roles_for_rinse_viewers(
+            data["hidden_roles_for_rinse_viewers"]
+        )
     _set_setting(
         cursor,
         int(organization_id),
         KEY_WEEKLY_SCHEDULE_DISPLAY,
-        json.dumps(current),
+        _serialize_settings(current),
     )
     return current
 
@@ -139,16 +192,22 @@ def validate_schedule_week_access(
     return None
 
 
-def apply_rinse_viewer_scope(payload: Mapping[str, Any]) -> dict[str, Any]:
+def apply_rinse_viewer_scope(
+    payload: Mapping[str, Any],
+    *,
+    hidden_roles: Sequence[str] | None = None,
+) -> dict[str, Any]:
     """Limit weekly schedule payload to Rinse Exclusive shifts for RINSE role viewers."""
     from backend.planned_weekly_schedule import compute_schedule_totals
     from backend.payroll_employer_affiliation import EMPLOYER_AFFILIATION_RINSE
 
+    hidden = normalize_hidden_roles_for_rinse_viewers(hidden_roles)
     out = dict(payload)
     entries = [
         entry
         for entry in (out.get("entries") or [])
         if entry.get("employer_affiliation") == EMPLOYER_AFFILIATION_RINSE
+        and not entry_has_hidden_schedule_role(entry, hidden)
     ]
     allowed_user_ids = {int(entry.get("user_id") or 0) for entry in entries if entry.get("user_id") is not None}
     employees = [
@@ -190,6 +249,9 @@ def effective_weekly_schedule_view(
     privileged = _is_privileged(user_roles)
     rinse_viewer = is_rinse_schedule_viewer(user_roles)
     min_week = current_schedule_week_start().isoformat() if rinse_viewer else None
+    hidden_for_rinse = normalize_hidden_roles_for_rinse_viewers(
+        settings.get("hidden_roles_for_rinse_viewers")
+    )
     if privileged:
         return {
             "is_privileged": True,
@@ -206,6 +268,7 @@ def effective_weekly_schedule_view(
             "hide_employer_tabs": False,
             "min_week_start": None,
             "can_view_past_weeks": True,
+            "hidden_schedule_roles": [],
             "org_settings": settings,
         }
     external_view = {
@@ -223,6 +286,7 @@ def effective_weekly_schedule_view(
         "hide_employer_tabs": rinse_viewer,
         "min_week_start": min_week,
         "can_view_past_weeks": not rinse_viewer,
+        "hidden_schedule_roles": hidden_for_rinse if rinse_viewer else [],
         "org_settings": {
             k: settings[k]
             for k in (
@@ -230,6 +294,7 @@ def effective_weekly_schedule_view(
                 "share_role_labels_with_external",
                 "share_break_minutes_with_external",
                 "share_rates_with_external",
+                "hidden_roles_for_rinse_viewers",
             )
         },
     }

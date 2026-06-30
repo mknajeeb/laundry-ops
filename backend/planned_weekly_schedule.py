@@ -1122,5 +1122,8 @@ def build_week_payload(
         "entity_scope": entity_scope_payload(organization_id, org_slug, user_roles),
     }
     if view.get("lock_employer_tab"):
-        return apply_rinse_viewer_scope(payload)
+        return apply_rinse_viewer_scope(
+            payload,
+            hidden_roles=view.get("hidden_schedule_roles") or [],
+        )
     return payload

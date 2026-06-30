@@ -101,6 +101,38 @@ def test_effective_view_rinse_viewer_locked_tab():
     assert view["min_week_start"] == "2026-06-21"
     assert view["can_view_past_weeks"] is False
     assert view["can_edit_schedule"] is False
+    assert view["hidden_schedule_roles"] == ["non_rinse_folder", "attendant"]
+
+
+def test_apply_rinse_viewer_scope_filters_hidden_roles():
+    payload = {
+        "employees": [
+            {"user_id": 1, "employer_affiliation": "rinse_exclusive", "default_hourly_rate": 18},
+            {"user_id": 2, "employer_affiliation": "rinse_exclusive", "default_hourly_rate": 19},
+        ],
+        "entries": [
+            {"user_id": 1, "day_of_week": 0, "hours": 7, "role": "fold", "employer_affiliation": "rinse_exclusive"},
+            {"user_id": 2, "day_of_week": 1, "hours": 6, "role": "attendant", "employer_affiliation": "rinse_exclusive"},
+        ],
+        "excluded_user_ids": [],
+        "totals": {},
+    }
+    scoped = apply_rinse_viewer_scope(payload, hidden_roles=["attendant"])
+    assert {entry["user_id"] for entry in scoped["entries"]} == {1}
+    assert {row["user_id"] for row in scoped["employees"]} == {1}
+
+
+def test_save_hidden_roles_for_rinse_viewers():
+    cursor = _FakeCursor()
+    with patch("backend.weekly_schedule_display_settings.table_exists", return_value=True):
+        saved = save_weekly_schedule_display_settings(
+            cursor,
+            3,
+            {"hidden_roles_for_rinse_viewers": ["attendant", "invalid", "wash"]},
+        )
+        assert saved["hidden_roles_for_rinse_viewers"] == ["attendant", "wash"]
+        loaded = get_weekly_schedule_display_settings(cursor, 3)
+    assert loaded["hidden_roles_for_rinse_viewers"] == ["attendant", "wash"]
 
 
 def test_validate_schedule_week_access_blocks_past_week():

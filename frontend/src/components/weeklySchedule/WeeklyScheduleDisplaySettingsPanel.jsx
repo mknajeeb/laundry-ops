@@ -3,13 +3,16 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   FormControlLabel,
+  FormGroup,
   Paper,
   Stack,
   Switch,
   Typography,
 } from "@mui/material";
 import { getWeeklyScheduleDisplaySettings, updateWeeklyScheduleDisplaySettings } from "../../api";
+import { WEEKLY_SCHEDULE_ROLES } from "./weeklyScheduleRoles";
 
 export default function WeeklyScheduleDisplaySettingsPanel() {
   const [settings, setSettings] = useState(null);
@@ -38,6 +41,19 @@ export default function WeeklyScheduleDisplaySettingsPanel() {
 
   const handleToggle = (key) => {
     setSettings((prev) => ({ ...prev, [key]: !prev?.[key] }));
+    setSuccess("");
+  };
+
+  const hiddenRoles = settings?.hidden_roles_for_rinse_viewers || [];
+
+  const handleHiddenRoleToggle = (roleValue) => {
+    setSettings((prev) => {
+      const current = prev?.hidden_roles_for_rinse_viewers || [];
+      const next = current.includes(roleValue)
+        ? current.filter((role) => role !== roleValue)
+        : [...current, roleValue];
+      return { ...prev, hidden_roles_for_rinse_viewers: next };
+    });
     setSuccess("");
   };
 
@@ -123,6 +139,32 @@ export default function WeeklyScheduleDisplaySettingsPanel() {
             ) : null}
           </Box>
         ))}
+
+        <Box>
+          <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 0.5 }}>
+            Hidden from Rinse schedule viewers
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+            Roles checked here are hidden from read-only Rinse logins (for example jordan@rinse.com).
+            Hidden shifts are removed from their schedule and role filters.
+          </Typography>
+          <FormGroup row sx={{ gap: 0.5 }}>
+            {WEEKLY_SCHEDULE_ROLES.map((role) => (
+              <FormControlLabel
+                key={role.value}
+                control={
+                  <Checkbox
+                    size="small"
+                    checked={hiddenRoles.includes(role.value)}
+                    onChange={() => handleHiddenRoleToggle(role.value)}
+                  />
+                }
+                label={role.label}
+              />
+            ))}
+          </FormGroup>
+        </Box>
+
         <Box>
           <Button variant="contained" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Save display settings"}

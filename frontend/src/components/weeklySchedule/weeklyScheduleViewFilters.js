@@ -86,10 +86,12 @@ export function countDayShifts(entries, dayOfWeek) {
   return (entries || []).filter((entry) => Number(entry.day_of_week) === dayOfWeek).length;
 }
 
-export function buildRoleViewTabs(entries) {
+export function buildRoleViewTabs(entries, { hiddenRoles = [] } = {}) {
+  const hidden = new Set(hiddenRoles || []);
+  const visibleRoles = WEEKLY_SCHEDULE_ROLES.filter((role) => !hidden.has(role.value));
   const list = entries || [];
   const tabs = [{ value: SCHEDULE_VIEW_ALL, label: "All", count: list.length }];
-  for (const role of WEEKLY_SCHEDULE_ROLES) {
+  for (const role of visibleRoles) {
     tabs.push({
       value: role.value,
       label: role.label,
