@@ -25,6 +25,8 @@ describe("positionConfirmationLetter", () => {
     expect(fields.employment_status).toBe("Regular Employee");
     expect(fields.work_location).toBe("Richmond Hill, NY 11418");
     expect(fields.signatory_name).toBe("Muhammad Kamran Najeeb");
+    expect(fields.probation_summary).toContain("operational excellence");
+    expect(fields.position_details).toBe("");
   });
 
   it("builds email subject and body", () => {

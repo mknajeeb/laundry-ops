@@ -212,6 +212,16 @@ export default function PositionConfirmationLetterDialog({
                 onChange={(e) => setDraft((d) => ({ ...d, position: e.target.value }))}
                 fullWidth
               />
+              <TextField
+                size="small"
+                label="Position details (optional)"
+                value={draft.position_details}
+                onChange={(e) => setDraft((d) => ({ ...d, position_details: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={2}
+                helperText="Department, duties, or other role details shown on the letter."
+              />
               <Stack direction="row" gap={1} flexWrap="wrap">
                 <TextField
                   size="small"
@@ -232,6 +242,46 @@ export default function PositionConfirmationLetterDialog({
                   sx={{ flex: 1, minWidth: 140 }}
                 />
               </Stack>
+              <Stack direction="row" gap={1} flexWrap="wrap">
+                <TextField
+                  size="small"
+                  type="date"
+                  label="Probation start date (optional)"
+                  value={draft.probation_start_date}
+                  onChange={(e) => setDraft((d) => ({ ...d, probation_start_date: e.target.value }))}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ flex: 1, minWidth: 140 }}
+                />
+                <TextField
+                  size="small"
+                  type="date"
+                  label="Probation end date (optional)"
+                  value={draft.probation_end_date}
+                  onChange={(e) => setDraft((d) => ({ ...d, probation_end_date: e.target.value }))}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ flex: 1, minWidth: 140 }}
+                />
+              </Stack>
+              <TextField
+                size="small"
+                label="Probation period summary"
+                value={draft.probation_summary}
+                onChange={(e) => setDraft((d) => ({ ...d, probation_summary: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={3}
+                helperText="Editable paragraph about performance during probation."
+              />
+              <TextField
+                size="small"
+                label="Custom content (optional)"
+                value={draft.custom_content}
+                onChange={(e) => setDraft((d) => ({ ...d, custom_content: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={3}
+                helperText="Extra paragraphs inserted before the standard closing terms."
+              />
               <TextField
                 size="small"
                 label="Employment status"
@@ -269,6 +319,15 @@ export default function PositionConfirmationLetterDialog({
                   sx={{ flex: 1, minWidth: 160 }}
                 />
               </Stack>
+              <TextField
+                size="small"
+                label="Additional terms (optional)"
+                value={draft.additional_terms}
+                onChange={(e) => setDraft((d) => ({ ...d, additional_terms: e.target.value }))}
+                fullWidth
+                multiline
+                minRows={2}
+              />
             </Stack>
           ) : null}
         </DialogContent>

@@ -4,6 +4,9 @@ import { formatDisplayDate, resolveOfferLetterCompanyName } from "./offerLetter"
 
 export const POSITION_CONFIRMATION_DOCUMENT_TITLE = "Position Confirmation Letter";
 
+const DEFAULT_PROBATION_SUMMARY = (companyName) =>
+  `During your probationary period, you demonstrated professionalism, dedication, and a strong commitment to supporting ${companyName}'s operational excellence. We appreciate your contributions and are pleased to have you as a permanent member of our team.`;
+
 export function defaultPositionConfirmationFields({
   prefill,
   workerName,
@@ -12,19 +15,27 @@ export function defaultPositionConfirmationFields({
 }) {
   const p = prefill || {};
   const today = new Date().toISOString().slice(0, 10);
+  const companyName = resolveOfferLetterCompanyName(p);
+  const hireDate = p.hire_date || p.start_date || "";
   return {
     employee_name: workerName || p.full_name || "",
     employee_email: String(workerEmail || p.email || "").trim(),
     employee_address: p.address || "",
     position: p.job_title || "",
+    position_details: "",
     letter_date: today,
     effective_date: today,
+    probation_start_date: hireDate ? String(hireDate).slice(0, 10) : "",
+    probation_end_date: "",
+    probation_summary: DEFAULT_PROBATION_SUMMARY(companyName),
+    custom_content: "",
+    additional_terms: "",
     employment_status: "Regular Employee",
     work_location: p.primary_location || "",
     reporting_to: "Managing Director or designated supervisor",
     signatory_name: managerName || p.company_supervisor_name || "Muhammad Kamran Najeeb",
     signatory_title: "Managing Director",
-    company_name: resolveOfferLetterCompanyName(p),
+    company_name: companyName,
   };
 }
 

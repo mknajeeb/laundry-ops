@@ -57,9 +57,8 @@ export default function PositionConfirmationPrintDocument({ fields = {}, prefill
         </p>
 
         <p>
-          During your probationary period, you demonstrated professionalism, dedication, and a strong
-          commitment to supporting {companyName}&apos;s operational excellence. We appreciate your
-          contributions and are pleased to have you as a permanent member of our team.
+          {String(fields.probation_summary || "").trim() ||
+            `During your probationary period, you demonstrated professionalism, dedication, and a strong commitment to supporting ${companyName}'s operational excellence. We appreciate your contributions and are pleased to have you as a permanent member of our team.`}
         </p>
 
         <p>Your employment is confirmed under the following terms:</p>
@@ -67,12 +66,42 @@ export default function PositionConfirmationPrintDocument({ fields = {}, prefill
         <table className="cform-offer-table">
           <tbody>
             <DetailRow label="Position" value={position} />
+            {String(fields.position_details || "").trim() ? (
+              <DetailRow label="Position details" value={String(fields.position_details).trim()} />
+            ) : null}
             <DetailRow label="Employment Status" value={employmentStatus} />
+            {fields.probation_start_date ? (
+              <DetailRow
+                label="Probation start date"
+                value={formatDisplayDate(fields.probation_start_date)}
+              />
+            ) : null}
+            {fields.probation_end_date ? (
+              <DetailRow
+                label="Probation end date"
+                value={formatDisplayDate(fields.probation_end_date)}
+              />
+            ) : null}
             <DetailRow label="Effective Date of Confirmation" value={effectiveDate} />
             <DetailRow label="Work Location" value={location} />
             <DetailRow label="Reporting To" value={reportingTo} />
           </tbody>
         </table>
+
+        {String(fields.custom_content || "").trim() ? (
+          <div className="cform-offer-additional">
+            {String(fields.custom_content)
+              .trim()
+              .split(/\n\s*\n/)
+              .map((block) => block.trim())
+              .filter(Boolean)
+              .map((block, i) => (
+                <p key={i} style={{ whiteSpace: "pre-wrap" }}>
+                  {block}
+                </p>
+              ))}
+          </div>
+        ) : null}
 
         <p>
           All other terms and conditions of your employment remain unchanged. Your employment will
@@ -83,6 +112,15 @@ export default function PositionConfirmationPrintDocument({ fields = {}, prefill
           Congratulations on successfully completing your probationary period. We look forward to your
           continued contributions and wish you every success as you grow with {companyName}.
         </p>
+
+        {String(fields.additional_terms || "").trim() ? (
+          <div className="cform-offer-additional">
+            <p>
+              <strong>Additional terms:</strong>
+            </p>
+            <p style={{ whiteSpace: "pre-wrap" }}>{String(fields.additional_terms).trim()}</p>
+          </div>
+        ) : null}
 
         <p>Sincerely,</p>
 
