@@ -78,6 +78,21 @@ function emptyEmergencyRow() {
   return { name: "", relationship: "", phone: "", alt_phone: "" };
 }
 
+function normalizeBankDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function validateDirectDepositForSave({ bankRouting, bankAccount, t }) {
+  const routing = normalizeBankDigits(bankRouting);
+  const account = normalizeBankDigits(bankAccount);
+  if (!routing && !account) return null;
+  if (routing && !account) return t("profile.errDirectDepositAccountRequired");
+  if (account && !routing) return t("profile.errDirectDepositRoutingRequired");
+  if (routing.length !== 9) return t("profile.errDirectDepositRouting9");
+  if (account.length < 4) return t("profile.errDirectDepositAccountMin");
+  return null;
+}
+
 /** True for 1099/temp-style categories: payroll may collect TIN here. W-2 workers use Compliance / I-9. */
 function employmentCategoryUsesPayrollTaxId(cats, catId) {
   const id = String(catId || "").trim();
@@ -474,6 +489,9 @@ export default function UserProfilePage({ user: sessionUser }) {
   const [clearAttendancePin, setClearAttendancePin] = useState(false);
   const [rehireParentId, setRehireParentId] = useState("");
   const [priorEmployeeId, setPriorEmployeeId] = useState("");
+  const [bankRouting, setBankRouting] = useState("");
+  const [bankAccount, setBankAccount] = useState("");
+  const [directDepositAccountType, setDirectDepositAccountType] = useState("checking");
 
   const [geofenceIds, setGeofenceIds] = useState([]);
   const [catRows, setCatRows] = useState([
@@ -745,6 +763,12 @@ export default function UserProfilePage({ user: sessionUser }) {
           home_city: addrCity.trim() || w4Compliance.home_city || null,
           nyc_resident: w4Compliance.nyc_resident !== false,
         },
+        direct_deposit: {
+          bank_routing: normalizeBankDigits(bankRouting) || null,
+          bank_account: normalizeBankDigits(bankAccount) || null,
+          account_type: directDepositAccountType || "checking",
+          deposit_full: true,
+        },
       },
     };
   },
@@ -771,6 +795,9 @@ export default function UserProfilePage({ user: sessionUser }) {
       complianceI9,
       w4Compliance,
       nyIt2104Fields,
+      bankRouting,
+      bankAccount,
+      directDepositAccountType,
     ],
   );
 
@@ -830,6 +857,11 @@ export default function UserProfilePage({ user: sessionUser }) {
       }
     }
     setNyIt2104Fields({ ...emptyNyIt2104Compliance(), ...nyPick });
+    const dd = w.direct_deposit && typeof w.direct_deposit === "object" ? w.direct_deposit : {};
+    setBankRouting(normalizeBankDigits(dd.bank_routing || dd.routing_number || ""));
+    setBankAccount(normalizeBankDigits(dd.bank_account || dd.account_number || ""));
+    const acctType = String(dd.account_type || "checking").trim().toLowerCase();
+    setDirectDepositAccountType(acctType === "saving" || acctType === "savings" ? "savings" : "checking");
   }, []);
 
   const load = useCallback(async (opts) => {
@@ -1095,6 +1127,14 @@ export default function UserProfilePage({ user: sessionUser }) {
       if (runCategoryGate && !String(catRows[0]?.employment_category_id || "").trim()) {
         setError(t("profile.errCategoryRequired"));
         return;
+      }
+
+      if (payrollBeingSaved && canEditHrExtras) {
+        const ddErr = validateDirectDepositForSave({ bankRouting, bankAccount, t });
+        if (ddErr) {
+          setError(ddErr);
+          return;
+        }
       }
 
       const runComplianceGate =
@@ -2074,6 +2114,46 @@ export default function UserProfilePage({ user: sessionUser }) {
                 {t("profile.taxIdW2ComplianceOnly")}
               </Typography>
             )}
+            <Divider sx={{ my: 0.5 }} />
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              {t("profile.directDepositTitle")}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" display="block">
+              {t("profile.directDepositHint")}
+            </Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+              <TextField
+                label={t("profile.bankRouting")}
+                value={bankRouting}
+                onChange={(e) => setBankRouting(normalizeBankDigits(e.target.value))}
+                size="small"
+                fullWidth
+                inputProps={{ maxLength: 9, inputMode: "numeric" }}
+                disabled={!canEditHrExtras}
+                autoComplete="off"
+              />
+              <TextField
+                label={t("profile.bankAccount")}
+                value={bankAccount}
+                onChange={(e) => setBankAccount(normalizeBankDigits(e.target.value))}
+                size="small"
+                fullWidth
+                inputProps={{ inputMode: "numeric" }}
+                disabled={!canEditHrExtras}
+                autoComplete="off"
+              />
+            </Stack>
+            <FormControl fullWidth size="small" disabled={!canEditHrExtras}>
+              <InputLabel>{t("profile.directDepositAccountType")}</InputLabel>
+              <Select
+                label={t("profile.directDepositAccountType")}
+                value={directDepositAccountType}
+                onChange={(e) => setDirectDepositAccountType(e.target.value)}
+              >
+                <MenuItem value="checking">{t("profile.directDepositChecking")}</MenuItem>
+                <MenuItem value="savings">{t("profile.directDepositSavings")}</MenuItem>
+              </Select>
+            </FormControl>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
               <TextField
                 label={t("profile.hireDate")}
