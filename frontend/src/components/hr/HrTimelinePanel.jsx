@@ -53,6 +53,7 @@ import {
 } from "../../hr/offerLetter";
 import { buildW2PrefillFromHrProfile } from "../../w2Forms/w2Prefill";
 import OfferLetterPrintDocument from "./OfferLetterPrintDocument";
+import PositionConfirmationLetterDialog from "./PositionConfirmationLetterDialog";
 import { VEEWASH_BRAND } from "../../theme/veewashBrand";
 
 function chipColor(entryType) {
@@ -61,6 +62,7 @@ function chipColor(entryType) {
   if (entryType === "separation_note") return "error";
   if (entryType === "recognition") return "success";
   if (entryType === "offer_letter") return "primary";
+  if (entryType === "position_confirmation_letter") return "primary";
   if (entryType === "management_note") return "default";
   return "default";
 }
@@ -104,6 +106,7 @@ export default function HrTimelinePanel({
   const [busy, setBusy] = useState(false);
   const [hrPrefill, setHrPrefill] = useState(null);
   const [offerOpen, setOfferOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [offerPreviewOpen, setOfferPreviewOpen] = useState(false);
   const [offerDraft, setOfferDraft] = useState(null);
   const offerPrintRef = useRef(null);
@@ -415,6 +418,9 @@ export default function HrTimelinePanel({
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
               <Button size="small" startIcon={<PrintIcon />} variant="outlined" onClick={openOfferLetter}>
                 Offer letter
+              </Button>
+              <Button size="small" startIcon={<PrintIcon />} variant="outlined" onClick={() => setConfirmOpen(true)}>
+                Position confirmation
               </Button>
               <Button size="small" startIcon={<EmailIcon />} onClick={() => setEmailOpen(true)}>
                 Send discipline email
@@ -807,6 +813,21 @@ export default function HrTimelinePanel({
         onCopyEmail={copyOfferEmail}
         onOpenEmail={sendOfferEmailWithPdf}
         openEmailLabel="Send email (PDF)"
+      />
+
+      <PositionConfirmationLetterDialog
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        userId={userId}
+        workerName={workerName}
+        workerEmail={workerEmail}
+        managerName={managerName}
+        hrPrefill={hrPrefill}
+        onLogged={load}
+        setError={setError}
+        setInfo={setInfo}
+        busy={busy}
+        setBusy={setBusy}
       />
 
       <Box

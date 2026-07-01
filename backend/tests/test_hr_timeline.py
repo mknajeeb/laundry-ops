@@ -8,6 +8,7 @@ from backend.hr_timeline import (
     create_discipline_email_timeline_entry,
     create_hr_timeline_entry,
     create_offer_letter_timeline_entry,
+    create_position_confirmation_timeline_entry,
     hr_timeline_meta,
     render_discipline_email_template,
 )
@@ -18,8 +19,10 @@ def test_hr_timeline_meta_includes_management_note():
     ids = [t["id"] for t in meta["entry_types"]]
     assert "management_note" in ids
     assert "offer_letter" in ids
+    assert "position_confirmation_letter" in ids
     assert any(t["label"] == "Management Note" for t in meta["entry_types"])
     assert any(t["label"] == "Offer Letter" for t in meta["entry_types"])
+    assert any(t["label"] == "Position Confirmation Letter" for t in meta["entry_types"])
 
 
 def test_coaching_late_arrival_second_is_warning_not_separation():
@@ -141,3 +144,35 @@ def test_create_offer_letter_timeline_entry():
             actor_id=3,
         )
     assert row["entry_type"] == "offer_letter"
+
+
+def test_create_position_confirmation_timeline_entry():
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value = cursor
+    cursor.lastrowid = 78
+    with patch("backend.hr_timeline.table_exists", return_value=True), patch(
+        "backend.hr_timeline.get_hr_timeline_entry",
+        return_value={
+            "id": 78,
+            "entry_type": "position_confirmation_letter",
+            "category": "General",
+            "description": "Position Confirmation Letter generated.",
+        },
+    ):
+        row = create_position_confirmation_timeline_entry(
+            conn,
+            1,
+            9,
+            {
+                "entry_type": "position_confirmation_letter",
+                "category": "General",
+                "description": "Position Confirmation Letter generated.",
+                "entry_date": "2026-07-01",
+                "email_subject": "Position Confirmation Letter — Analyst — Tarannum",
+                "email_body": "Dear Tarannum,",
+                "email_sent": True,
+            },
+            actor_id=3,
+        )
+    assert row["entry_type"] == "position_confirmation_letter"

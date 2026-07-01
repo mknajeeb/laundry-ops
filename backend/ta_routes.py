@@ -66,6 +66,7 @@ from backend.hr_timeline import (
     create_discipline_email_timeline_entry,
     create_hr_timeline_entry,
     create_offer_letter_timeline_entry,
+    create_position_confirmation_timeline_entry,
     delete_hr_timeline_entry,
     get_hr_timeline_entry,
     hr_timeline_meta,
@@ -3535,6 +3536,20 @@ def user_hr_timeline(user_id):
                     "hr_timeline_entries",
                     row.get("id"),
                     "create_offer_letter",
+                    new=body,
+                )
+                conn.commit()
+                return jsonify(row), 201
+            if str(body.get("entry_type") or "").strip().lower() == "position_confirmation_letter":
+                row = create_position_confirmation_timeline_entry(
+                    conn, oid, user_id, body, actor_id=int(g.ta_user["id"])
+                )
+                write_audit(
+                    conn,
+                    g.ta_user["id"],
+                    "hr_timeline_entries",
+                    row.get("id"),
+                    "create_position_confirmation_letter",
                     new=body,
                 )
                 conn.commit()
