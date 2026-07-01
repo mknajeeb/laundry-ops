@@ -26,6 +26,8 @@ describe("positionConfirmationLetter", () => {
     expect(fields.work_location).toBe("Richmond Hill, NY 11418");
     expect(fields.signatory_name).toBe("Muhammad Kamran Najeeb");
     expect(fields.probation_summary).toContain("operational excellence");
+    expect(fields.include_probation_dates).toBe(false);
+    expect(fields.probation_start_date).toBe("");
     expect(fields.position_details).toBe("");
   });
 

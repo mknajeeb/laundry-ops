@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   Button,
+  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControlLabel,
   Stack,
   TextField,
 } from "@mui/material";
@@ -242,26 +244,53 @@ export default function PositionConfirmationLetterDialog({
                   sx={{ flex: 1, minWidth: 140 }}
                 />
               </Stack>
-              <Stack direction="row" gap={1} flexWrap="wrap">
-                <TextField
-                  size="small"
-                  type="date"
-                  label="Probation start date (optional)"
-                  value={draft.probation_start_date}
-                  onChange={(e) => setDraft((d) => ({ ...d, probation_start_date: e.target.value }))}
-                  InputLabelProps={{ shrink: true }}
-                  sx={{ flex: 1, minWidth: 140 }}
-                />
-                <TextField
-                  size="small"
-                  type="date"
-                  label="Probation end date (optional)"
-                  value={draft.probation_end_date}
-                  onChange={(e) => setDraft((d) => ({ ...d, probation_end_date: e.target.value }))}
-                  InputLabelProps={{ shrink: true }}
-                  sx={{ flex: 1, minWidth: 140 }}
-                />
-              </Stack>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={!!draft.include_probation_dates}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setDraft((d) => {
+                        const hire =
+                          hrPrefill?.hire_date || hrPrefill?.start_date || "";
+                        return {
+                          ...d,
+                          include_probation_dates: checked,
+                          probation_start_date:
+                            checked && !d.probation_start_date && hire
+                              ? String(hire).slice(0, 10)
+                              : d.probation_start_date,
+                        };
+                      });
+                    }}
+                  />
+                }
+                label="Include probation dates on letter"
+              />
+              {draft.include_probation_dates ? (
+                <Stack direction="row" gap={1} flexWrap="wrap">
+                  <TextField
+                    size="small"
+                    type="date"
+                    label="Probation start date"
+                    value={draft.probation_start_date}
+                    onChange={(e) =>
+                      setDraft((d) => ({ ...d, probation_start_date: e.target.value }))
+                    }
+                    InputLabelProps={{ shrink: true }}
+                    sx={{ flex: 1, minWidth: 140 }}
+                  />
+                  <TextField
+                    size="small"
+                    type="date"
+                    label="Probation end date"
+                    value={draft.probation_end_date}
+                    onChange={(e) => setDraft((d) => ({ ...d, probation_end_date: e.target.value }))}
+                    InputLabelProps={{ shrink: true }}
+                    sx={{ flex: 1, minWidth: 140 }}
+                  />
+                </Stack>
+              ) : null}
               <TextField
                 size="small"
                 label="Probation period summary"

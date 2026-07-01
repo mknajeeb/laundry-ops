@@ -70,13 +70,13 @@ export default function PositionConfirmationPrintDocument({ fields = {}, prefill
               <DetailRow label="Position details" value={String(fields.position_details).trim()} />
             ) : null}
             <DetailRow label="Employment Status" value={employmentStatus} />
-            {fields.probation_start_date ? (
+            {fields.include_probation_dates && fields.probation_start_date ? (
               <DetailRow
                 label="Probation start date"
                 value={formatDisplayDate(fields.probation_start_date)}
               />
             ) : null}
-            {fields.probation_end_date ? (
+            {fields.include_probation_dates && fields.probation_end_date ? (
               <DetailRow
                 label="Probation end date"
                 value={formatDisplayDate(fields.probation_end_date)}

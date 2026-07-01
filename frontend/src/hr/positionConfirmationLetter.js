@@ -16,7 +16,6 @@ export function defaultPositionConfirmationFields({
   const p = prefill || {};
   const today = new Date().toISOString().slice(0, 10);
   const companyName = resolveOfferLetterCompanyName(p);
-  const hireDate = p.hire_date || p.start_date || "";
   return {
     employee_name: workerName || p.full_name || "",
     employee_email: String(workerEmail || p.email || "").trim(),
@@ -25,7 +24,8 @@ export function defaultPositionConfirmationFields({
     position_details: "",
     letter_date: today,
     effective_date: today,
-    probation_start_date: hireDate ? String(hireDate).slice(0, 10) : "",
+    include_probation_dates: false,
+    probation_start_date: "",
     probation_end_date: "",
     probation_summary: DEFAULT_PROBATION_SUMMARY(companyName),
     custom_content: "",
