@@ -16,7 +16,6 @@ import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import WeeklyScheduleShiftCard from "../components/weeklySchedule/WeeklyScheduleShiftCard";
 import {
   DAY_LABELS,
-  formatDayDate,
   normalizeWeekStart,
 } from "../components/weeklySchedule/weeklyScheduleDates";
 import {
@@ -192,18 +191,6 @@ export default function WeeklyScheduleEmployeeViewPage() {
                       }}
                     >
                       {dayLabel}
-                    </Typography>
-                    <Typography
-                      variant="body2"
-                      sx={{
-                        display: "block",
-                        fontWeight: 700,
-                        color: "text.secondary",
-                        fontSize: "0.8125rem",
-                        mb: 0.75,
-                      }}
-                    >
-                      {formatDayDate(weekStart, dow)}
                     </Typography>
                     {cellEntries.length ? (
                       cellEntries.map((entry) => (
