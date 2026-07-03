@@ -81,6 +81,7 @@ class TestWashingChronologyRows:
         assert summary["total_washer_loads"] == 2
         assert summary["unique_bags_washed"] == 1
         assert summary["split_bags_washed"] == 1
+        assert summary["single_bags_washed"] == 0
         assert summary["unique_bag_ids"] == 1
         assert summary["unique_washers_used"] == 2
         assert summary["most_used_washer"] in ("W24-30-VW", "W29-40-VW")
@@ -312,6 +313,7 @@ class TestWashingChronologyRows:
         summary = build_washing_chronology_summary(rows)
         assert summary["unique_bags_washed"] == 45
         assert summary["split_bags_washed"] == 0
+        assert summary["single_bags_washed"] == 45
         assert summary["unique_bag_ids"] == 45
         assert summary["total_washer_loads"] == 45
 
@@ -338,4 +340,5 @@ class TestWashingChronologyRows:
         summary = build_washing_chronology_summary(rows)
         assert summary["unique_bags_washed"] == 2
         assert summary["split_bags_washed"] == 1
+        assert summary["single_bags_washed"] == 1
         assert summary["total_washer_loads"] == 3

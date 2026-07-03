@@ -91,6 +91,7 @@ def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, An
             "total_washer_loads": 0,
             "unique_bags_washed": 0,
             "split_bags_washed": 0,
+            "single_bags_washed": 0,
             "unique_bag_ids": 0,
             "unique_washers_used": 0,
             "most_used_washer": None,
@@ -105,12 +106,14 @@ def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, An
     )
     unique_bags_washed = len(bag_load_counts)
     split_bags_washed = sum(1 for count in bag_load_counts.values() if count > 1)
+    single_bags_washed = sum(1 for count in bag_load_counts.values() if count == 1)
     counts = Counter(racks)
     timestamps = [r["timestamp_et"] for r in rows if ts_valid(r.get("timestamp_et"))]
     return {
         "total_washer_loads": len(rows),
         "unique_bags_washed": unique_bags_washed,
         "split_bags_washed": split_bags_washed,
+        "single_bags_washed": single_bags_washed,
         "unique_bag_ids": unique_bags_washed,
         "unique_washers_used": len(set(racks)),
         "most_used_washer": counts.most_common(1)[0][0] if counts else None,

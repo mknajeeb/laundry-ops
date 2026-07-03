@@ -90,6 +90,7 @@ const STAGE_SUMMARY_LABELS = {
     lastEnd: "Last Washer Load",
     totalSessions: "Total Washer Loads",
     uniqueBagsWashed: "Unique Bags Washed",
+    bagsNotSplit: "Bags Not Split",
     uniqueMachines: "Unique Washers Used",
     mostUsed: "Most Used Washer",
   },
@@ -436,10 +437,13 @@ export default function ScanChronologyPage() {
     if (activeStage !== "washing") return null;
     const apiUnique = summary.unique_bags_washed ?? summary.unique_bag_ids;
     const apiSplit = summary.split_bags_washed;
+    const apiSingle = summary.single_bags_washed;
     if (apiUnique != null && apiUnique > 0) {
+      const split = apiSplit ?? 0;
       return {
         unique: apiUnique,
-        split: apiSplit ?? 0,
+        split,
+        notSplit: apiSingle ?? Math.max(0, apiUnique - split),
       };
     }
     const loadCounts = new Map();
@@ -449,12 +453,15 @@ export default function ScanChronologyPage() {
       loadCounts.set(bagId, (loadCounts.get(bagId) || 0) + 1);
     });
     let split = 0;
+    let notSplit = 0;
     loadCounts.forEach((count) => {
       if (count > 1) split += 1;
+      else notSplit += 1;
     });
     return {
       unique: loadCounts.size,
       split,
+      notSplit,
     };
   }, [activeStage, summary, sessions]);
 
@@ -548,15 +555,21 @@ export default function ScanChronologyPage() {
           <SummaryCard label={labels.lastEnd} value={formatDateTime(summary[lastKey]) || "—"} />
           <SummaryCard label={labels.totalSessions} value={summary[totalKey] ?? 0} />
           {activeStage === "washing" ? (
-            <SummaryCard
-              label={labels.uniqueBagsWashed}
-              value={washingBagSummary?.unique ?? 0}
-              sub={
-                (washingBagSummary?.split ?? 0) > 0
-                  ? `${washingBagSummary.split} split`
-                  : undefined
-              }
-            />
+            <>
+              <SummaryCard
+                label={labels.uniqueBagsWashed}
+                value={washingBagSummary?.unique ?? 0}
+                sub={
+                  (washingBagSummary?.split ?? 0) > 0
+                    ? `${washingBagSummary.split} split`
+                    : undefined
+                }
+              />
+              <SummaryCard
+                label={labels.bagsNotSplit}
+                value={washingBagSummary?.notSplit ?? 0}
+              />
+            </>
           ) : null}
           <SummaryCard label={labels.uniqueMachines} value={summary[uniqueKey] ?? 0} />
           <SummaryCard label={labels.mostUsed} value={summary[mostUsedKey] || "—"} />
