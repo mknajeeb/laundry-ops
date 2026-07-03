@@ -29,13 +29,25 @@ function eventTs(bag) {
   );
 }
 
+function resolveBagWeightLbs(bag) {
+  if (bag.completed_lbs != null) return bag.completed_lbs;
+  if (bag.processed_lbs != null) return bag.processed_lbs;
+  if (bag.credited_lbs != null) return bag.credited_lbs;
+  if (bag.post_clean_weight != null) return bag.post_clean_weight;
+  if (bag.weight != null) return bag.weight;
+  if (bag.weight_num != null) return bag.weight_num;
+  if (bag.weight_lbs != null) return bag.weight_lbs;
+  return null;
+}
+
 function normalizeProcessedBag(bag) {
+  const completedLbs = resolveBagWeightLbs(bag);
   return {
     ...bag,
     completion_time: bag.completion_time || bag.processed_time || bag.processed_timestamp,
     completion_time_et: bag.completion_time_et || bag.processed_time_et,
     completion_signal: bag.completion_signal || bag.processed_signal,
-    completed_lbs: bag.completed_lbs ?? bag.processed_lbs,
+    completed_lbs: completedLbs,
   };
 }
 

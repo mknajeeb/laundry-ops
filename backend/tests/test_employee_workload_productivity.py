@@ -41,7 +41,7 @@ def _workload_row(
     *,
     service_type: str = "WF",
     status: str = "Completed",
-    weight: float = 12.0,
+    weight: float | None = 12.0,
     rush_bucket: str = AV_NON_RUSH,
 ) -> dict:
     tags = [MOD_AT_VENDOR_COMPLETED] if status == "Completed" else [MOD_AT_VENDOR_PENDING]
@@ -54,20 +54,29 @@ def _workload_row(
         "module_tags": tags,
         "completion_time": T2.isoformat() if status == "Completed" else None,
         "completion_signal": "post_processing_weight" if status == "Completed" else None,
-        "post_clean_weight": weight if status == "Completed" else None,
+        "post_clean_weight": weight if status == "Completed" and weight is not None else None,
         "rush_bucket": rush_bucket,
         "rush_label": "Rush" if rush_bucket == AV_RUSH else "Non-Rush",
     }
 
 
-def _wf_events(bag_id: str, post_weight: datetime, *, photo_user: str = EMPLOYEE) -> list[dict]:
-    return [
+def _wf_events(
+    bag_id: str,
+    post_weight: datetime,
+    *,
+    photo_user: str = EMPLOYEE,
+    post_weight_lbs: float | None = None,
+) -> list[dict]:
+    events = [
         {**_ev("sent-to-vendor", T0, ev_id=1), "bag_id": bag_id},
         {**_ev("weight-entry", T0, ev_id=2), "bag_id": bag_id},
         {**_ev("add-photos", T1, user_name=photo_user, ev_id=3), "bag_id": bag_id},
         {**_ev("complete-cleaning", T1, ev_id=4), "bag_id": bag_id},
         {**_ev("weight-entry", post_weight, ev_id=5), "bag_id": bag_id},
     ]
+    if post_weight_lbs is not None:
+        events[-1]["weight_lbs"] = post_weight_lbs
+    return events
 
 
 class _FakeCursor:
@@ -180,6 +189,46 @@ class TestWorkloadProductivityReconciliation:
         assert credit["credited_employee"] == UNASSIGNED_EMPLOYEE
         assert credit["workload_status"] == "completed"
         assert credit["included_in_employee_productivity"] is True
+
+    def test_completed_bag_weight_from_scan_event_when_row_missing(self):
+        row = _workload_row("WF1", weight=None)
+        events = _wf_events("WF1", T2, post_weight_lbs=18.5)
+        credit = resolve_workload_bag_credit(
+            row, events=events, selected_date_et=SELECTED, as_of_end=T2
+        )
+        assert credit["completed_lbs"] == 18.5
+        assert credit["weight_missing"] is False
+
+    @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps", return_value={EMPLOYEE.casefold(): {"user_id": 42, "display_name": EMPLOYEE}})
+    @patch("backend.rinse_processing_productivity._load_shift_sessions_bulk", return_value={})
+    @patch("backend.daily_shift_roster.list_roster_entries", return_value=[])
+    @patch("backend.rinse_employee_completed_bags._load_upstream_processing_scan_times_bulk", return_value={})
+    @patch("backend.rinse_employee_completed_bags._load_employee_day_scan_events_bulk", return_value={})
+    def test_all_completed_bags_retain_weights_after_scope(self, *_mocks):
+        rows = [
+            _workload_row("WF1", weight=11.0),
+            _workload_row("WF2", weight=22.0),
+            _workload_row("WF3", weight=33.0),
+        ]
+        events = {
+            "WF1": _wf_events("WF1", T2),
+            "WF2": _wf_events("WF2", T2),
+            "WF3": _wf_events("WF3", T2),
+        }
+        section = build_employee_completed_bags_today(
+            _FakeCursor(),
+            1,
+            completed_rows=rows,
+            workload_rows=rows,
+            events_by_bag=events,
+            selected_date_et=SELECTED,
+            registry_meta_by_bag={},
+        )
+        scoped = apply_employee_productivity_scope(section, include_hd=False, workload_rows=rows)
+        alice = next(e for e in scoped["employees"] if e["employee"] == EMPLOYEE)
+        weights = {b["bag_id"]: b["completed_lbs"] for b in alice["bags"]}
+        assert weights == {"WF1": 11.0, "WF2": 22.0, "WF3": 33.0}
+        assert all(not b.get("weight_missing") for b in alice["bags"])
 
     @patch("backend.rinse_simple_shift_performance._load_rinse_user_maps", return_value={EMPLOYEE.casefold(): {"user_id": 42, "display_name": EMPLOYEE}})
     @patch("backend.rinse_processing_productivity._load_shift_sessions_bulk", return_value={})

@@ -12,11 +12,12 @@ from typing import Any, Mapping, Sequence
 from backend.rinse_at_vendor_module import AV_NON_RUSH, AV_RUSH
 from backend.rinse_employee_completed_bags import (
     UNKNOWN_EMPLOYEE,
+    _apply_bag_weight_fields,
     _attribution_reason,
-    _completed_lbs,
     _completion_on_selected_et_day,
     _event_user_name,
     _resolve_anchor_ts,
+    _resolve_bag_display_weight_lbs,
     resolve_completion_attribution,
 )
 from backend.rinse_folding_et import naive_et_day_end_inclusive
@@ -133,13 +134,14 @@ def resolve_workload_bag_credit(
     else:
         display_employee = employee
 
-    lbs = _completed_lbs(
+    lbs = _resolve_bag_display_weight_lbs(
         row,
         meta,
         events=events,
-        service_type=svc,
+        credit_ts=credit_ts,
         anchor_ts=anchor,
         as_of_end=as_of_end,
+        service_type=svc,
     )
     from backend.rinse_at_vendor_module import _format_et_display
 
@@ -158,7 +160,8 @@ def resolve_workload_bag_credit(
         _format_et_display(completion_ts) if completion_ts is not None else None
     )
 
-    return {
+    record: dict[str, Any] = {
+        **dict(row),
         "bag_id": bid,
         "workflow": svc,
         "workload_status": workload_status,
@@ -188,10 +191,14 @@ def resolve_workload_bag_credit(
         "credited_lbs": lbs,
         "processed_lbs": lbs,
         "completed_lbs": lbs if workload_status == "completed" else None,
+        "weight": lbs,
         "weight_missing": lbs is None,
         "included_in_employee_productivity": included_in_employee_productivity,
         "excluded_reason": excluded_reason,
     }
+    if lbs is not None and workload_status == "completed":
+        _apply_bag_weight_fields(record, lbs)
+    return record
 
 
 def credit_workload_bags(

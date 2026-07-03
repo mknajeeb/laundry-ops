@@ -834,19 +834,61 @@ def _completed_lbs_from_attribution_scan(
     return parse_weight_lbs_from_scan_event(ev)
 
 
-def _completed_lbs(
+def _apply_bag_weight_fields(bag: dict[str, Any], lbs: float) -> None:
+    rounded = round(float(lbs), 4)
+    bag["completed_lbs"] = rounded
+    bag["processed_lbs"] = rounded
+    bag["credited_lbs"] = rounded
+    bag["weight"] = rounded
+    bag["weight_missing"] = False
+
+
+def _resolve_bag_display_weight_lbs(
     row: Mapping[str, Any],
     meta: Mapping[str, Any] | None,
     *,
     events: Sequence[Mapping[str, Any]] | None = None,
-    service_type: str | None = None,
+    credit_ts: datetime | None = None,
     anchor_ts: datetime | None = None,
     as_of_end: datetime | None = None,
+    processed_lbs: float | None = None,
+    service_type: str | None = None,
 ) -> float | None:
-    from_row = _completed_lbs_from_row_meta(row, meta)
-    if from_row is not None:
-        return from_row
-    if events:
+    """Resolve bag weight using the pre-refactor processed-bag fallback chain."""
+    lbs = _completed_lbs_from_row_meta(row, meta)
+    if lbs is not None:
+        return lbs
+    if processed_lbs is not None:
+        try:
+            val = float(processed_lbs)
+            if val > 0:
+                return round(val, 4)
+        except (TypeError, ValueError):
+            pass
+
+    if not events:
+        return None
+
+    from backend.rinse_employee_processed_bags import _processed_lbs_from_weight_event
+
+    meta_map = meta or {}
+    timeline = gaming_events_from_records(events)
+    if credit_ts is not None:
+        for ev in timeline:
+            if _scan_event_timestamp(ev) == credit_ts and is_weight_entry_purpose(ev.get("purpose")):
+                lbs = _processed_lbs_from_weight_event(ev, meta_map)
+                if lbs is not None:
+                    return lbs
+    if anchor_ts is not None and as_of_end is not None:
+        weight_ev, _ = _wf_completion_weight_event(
+            timeline,
+            anchor_ts=anchor_ts,
+            as_of_end=as_of_end,
+        )
+        if weight_ev is not None:
+            lbs = _processed_lbs_from_weight_event(weight_ev, meta_map)
+            if lbs is not None:
+                return lbs
         return _completed_lbs_from_attribution_scan(
             service_type=str(
                 service_type or row.get("service_type") or row.get("service_bucket") or ""
@@ -856,6 +898,80 @@ def _completed_lbs(
             as_of_end=as_of_end,
         )
     return None
+
+
+def _completed_lbs(
+    row: Mapping[str, Any],
+    meta: Mapping[str, Any] | None,
+    *,
+    events: Sequence[Mapping[str, Any]] | None = None,
+    service_type: str | None = None,
+    anchor_ts: datetime | None = None,
+    as_of_end: datetime | None = None,
+) -> float | None:
+    return _resolve_bag_display_weight_lbs(
+        row,
+        meta,
+        events=events,
+        anchor_ts=anchor_ts,
+        as_of_end=as_of_end,
+        service_type=service_type,
+    )
+
+
+def _enrich_credited_bag_weights(
+    credited_bags: list[dict[str, Any]],
+    *,
+    workload_rows: Sequence[Mapping[str, Any]],
+    events_by_bag: Mapping[str, Sequence[Mapping[str, Any]]],
+    registry_meta: Mapping[str, Mapping[str, Any]],
+    selected_date_et: date,
+    as_of_end: datetime,
+    processed_lbs_by_bag: Mapping[str, float] | None = None,
+) -> None:
+    """Attach display weights to credited bags without changing attribution."""
+    row_by_bag = {
+        str(r.get("bag_id") or "").strip().upper(): r
+        for r in workload_rows
+        if isinstance(r, dict) and r.get("bag_id")
+    }
+    processed_lookup = dict(processed_lbs_by_bag or {})
+    weight_row_keys = ("post_clean_weight", "pre_clean_weight", "weight_num", "weight_lbs", "registry_weight_num")
+    for bag in credited_bags:
+        bid = str(bag.get("bag_id") or "").strip().upper()
+        if not bid:
+            continue
+        row = row_by_bag.get(bid) or {}
+        meta = registry_meta.get(bid) or {}
+        events = events_by_bag.get(bid) or []
+        anchor = _resolve_anchor_ts(events, selected_date_et)
+        credit_ts: datetime | None = None
+        raw_credit_ts = bag.get("credit_timestamp")
+        if isinstance(raw_credit_ts, datetime):
+            credit_ts = raw_credit_ts
+        elif raw_credit_ts:
+            try:
+                credit_ts = datetime.fromisoformat(str(raw_credit_ts))
+            except ValueError:
+                credit_ts = None
+
+        if bag.get("completed_lbs") is None:
+            lbs = _resolve_bag_display_weight_lbs(
+                row,
+                meta,
+                events=events,
+                credit_ts=credit_ts,
+                anchor_ts=anchor,
+                as_of_end=as_of_end,
+                processed_lbs=processed_lookup.get(bid),
+                service_type=str(row.get("service_type") or row.get("service_bucket") or ""),
+            )
+            if lbs is not None:
+                _apply_bag_weight_fields(bag, lbs)
+
+        for key in weight_row_keys:
+            if row.get(key) is not None and bag.get(key) is None:
+                bag[key] = row[key]
 
 
 def _attach_processed_productivity_metrics(
@@ -1020,6 +1136,35 @@ def build_employee_completed_bags_today(
             events_by_bag=events_by_bag,
             selected_date_et=selected_date_et,
             registry_meta=registry_meta,
+        )
+        processed_lbs_by_bag: dict[str, float] = {}
+        credited_ids = [
+            str(b.get("bag_id") or "").strip().upper() for b in attributed_bags if b.get("bag_id")
+        ]
+        if credited_ids and hasattr(cursor, "execute"):
+            from backend.rinse_employee_processed_bags import build_employee_processed_bag_records
+            from backend.ta_helpers import table_exists
+
+            if table_exists(cursor, "rinse_bag_scan_events"):
+                for rec in build_employee_processed_bag_records(
+                    cursor,
+                    org,
+                    selected_date_et=selected_date_et,
+                    registry_meta_by_bag=registry_meta,
+                    completed_bag_ids=credited_ids,
+                ):
+                    bid = str(rec.get("bag_id") or "").strip().upper()
+                    plbs = rec.get("processed_lbs")
+                    if bid and plbs is not None:
+                        processed_lbs_by_bag[bid] = float(plbs)
+        _enrich_credited_bag_weights(
+            attributed_bags,
+            workload_rows=workload_rows or [],
+            events_by_bag=events_by_bag,
+            registry_meta=registry_meta,
+            selected_date_et=selected_date_et,
+            as_of_end=as_of_end,
+            processed_lbs_by_bag=processed_lbs_by_bag,
         )
         seen_bags = {str(b.get("bag_id") or "").upper() for b in attributed_bags if b.get("bag_id")}
     else:
