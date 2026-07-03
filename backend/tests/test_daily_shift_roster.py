@@ -64,6 +64,11 @@ class _FakeCursor:
             return
         if "update daily_shift_roster_entries" in sql_norm:
             entry_id = params[-1]
+            if "original_end_time" in sql_norm and len(params) == 3:
+                for row in self.rows:
+                    if row["id"] == entry_id:
+                        row["original_end_time"] = params[0]
+                return
             for row in self.rows:
                 if row["id"] == entry_id:
                     row.update(
@@ -337,6 +342,110 @@ class TestPayrollImport:
         assert len(saved) == 2
         names = {e["employee_name"] for e in saved}
         assert names == {"Alice Worker", "Bob Worker"}
+
+    def test_refresh_updates_open_shift_end_time(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        org = 3
+        roster_date = date(2026, 6, 18)
+
+        entry, err = create_roster_entry(
+            cursor,
+            org,
+            roster_date=roster_date,
+            data={
+                "employee_name": "Guiying Lin",
+                "role": "folder",
+                "start_time": "12:12",
+                "shift_open": True,
+                "break_minutes": 0,
+                "rate": 17.0,
+            },
+        )
+        assert err is None
+        assert entry["shift_open"] is True
+
+        payroll_rows = [
+            {
+                "id": 99,
+                "worker_name": "Guiying Lin",
+                "status": "completed",
+                "clock_in_at": "2026-06-18 12:12:00",
+                "clock_out_at": "2026-06-18 20:05:00",
+                "break_seconds": 0,
+                "hourly_rate": 17.0,
+                "worker_category": "contractor_1099",
+            }
+        ]
+        monkeypatch.setattr(
+            "backend.daily_shift_roster_payroll.list_payroll_time_records_for_date",
+            lambda *_a, **_k: payroll_rows,
+        )
+
+        from backend.daily_shift_roster_payroll import refresh_roster_from_payroll
+
+        updated, err = refresh_roster_from_payroll(
+            cursor, org, roster_date=roster_date, conn=object()
+        )
+        assert err is None
+        assert updated == 1
+        saved = list_roster_entries(cursor, org, roster_date=roster_date)
+        assert saved[0]["end_time"] == "20:05"
+        assert saved[0]["shift_open"] is False
+        assert saved[0]["hours"] == 7.8833
+
+    def test_refresh_skips_manually_modified_times(self, monkeypatch):
+        _patch_table_exists(monkeypatch)
+        cursor = _FakeCursor()
+        org = 3
+        roster_date = date(2026, 6, 18)
+
+        entry, _ = create_roster_entry(
+            cursor,
+            org,
+            roster_date=roster_date,
+            data={
+                "employee_name": "Manual Edit",
+                "role": "folder",
+                "start_time": "08:00",
+                "end_time": "16:00",
+                "break_minutes": 0,
+                "rate": 17.0,
+            },
+        )
+        update_roster_entry(
+            cursor,
+            org,
+            entry["id"],
+            {"end_time": "15:00"},
+        )
+
+        payroll_rows = [
+            {
+                "id": 1,
+                "worker_name": "Manual Edit",
+                "status": "completed",
+                "clock_in_at": "2026-06-18 08:00:00",
+                "clock_out_at": "2026-06-18 17:00:00",
+                "break_seconds": 0,
+                "hourly_rate": 17.0,
+                "worker_category": "contractor_1099",
+            }
+        ]
+        monkeypatch.setattr(
+            "backend.daily_shift_roster_payroll.list_payroll_time_records_for_date",
+            lambda *_a, **_k: payroll_rows,
+        )
+
+        from backend.daily_shift_roster_payroll import refresh_roster_from_payroll
+
+        updated, err = refresh_roster_from_payroll(
+            cursor, org, roster_date=roster_date, conn=object()
+        )
+        assert err is None
+        assert updated == 0
+        saved = list_roster_entries(cursor, org, roster_date=roster_date)
+        assert saved[0]["end_time"] == "15:00"
 
     def test_roster_entry_match_key_normalizes_name(self):
         assert roster_entry_match_key(" Alice ", "08:00") == ("alice", "08:00")

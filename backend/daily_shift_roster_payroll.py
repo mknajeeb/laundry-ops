@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from backend.daily_shift_roster import (
+    employee_names_match,
     normalize_employee_name,
     parse_time_value,
     roster_entry_match_key,
+    roster_times_modified,
     _time_to_str,
 )
 
@@ -151,3 +153,92 @@ def import_payroll_records_into_roster(
             saved.append(entry)
             existing_keys.add(key)
     return added, saved, None
+
+
+def find_matching_payroll_record(
+    entry: Mapping[str, Any],
+    payroll_records: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Match a roster row to a payroll time record by name + clock-in time."""
+    entry_name = normalize_employee_name(entry.get("employee_name"))
+    if not entry_name:
+        return None
+    entry_start = parse_time_value(entry.get("start_time"))
+    exact: list[dict[str, Any]] = []
+    by_name: list[dict[str, Any]] = []
+    for rec in payroll_records or []:
+        if not isinstance(rec, dict):
+            continue
+        mapped = map_payroll_record_to_roster_data(rec)
+        worker = mapped.get("employee_name")
+        if not worker or not employee_names_match(entry_name, worker):
+            continue
+        rec_start = parse_time_value(mapped.get("start_time"))
+        if entry_start and rec_start and entry_start == rec_start:
+            exact.append(rec)
+        else:
+            by_name.append(rec)
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        return exact[0]
+    if len(by_name) == 1:
+        return by_name[0]
+    return None
+
+
+def refresh_roster_from_payroll(
+    cursor,
+    organization_id: int,
+    *,
+    roster_date: date,
+    conn,
+) -> tuple[int, str | None]:
+    """Update open roster rows from payroll clock-out data."""
+    from backend.daily_shift_roster import list_roster_entries, update_roster_entry
+
+    org = int(organization_id)
+    if conn is None:
+        return 0, "database connection required"
+
+    entries = list_roster_entries(cursor, org, roster_date=roster_date)
+    payroll_records = list_payroll_time_records_for_date(conn, org, roster_date=roster_date)
+    updated = 0
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        if entry.get("excluded"):
+            continue
+        if not entry.get("shift_open") and entry.get("end_time"):
+            continue
+        if roster_times_modified(entry):
+            continue
+
+        rec = find_matching_payroll_record(entry, payroll_records)
+        if not rec:
+            continue
+        mapped = map_payroll_record_to_roster_data(rec)
+        if mapped.get("shift_open") or not mapped.get("end_time"):
+            continue
+
+        patch: dict[str, Any] = {
+            "end_time": mapped["end_time"],
+            "shift_open": False,
+            "break_minutes": mapped.get("break_minutes", entry.get("break_minutes") or 0),
+        }
+        _, err = update_roster_entry(cursor, org, int(entry["id"]), patch)
+        if err:
+            return updated, err
+
+        end_time = parse_time_value(mapped.get("end_time"))
+        if end_time is not None:
+            cursor.execute(
+                """
+                UPDATE daily_shift_roster_entries
+                SET original_end_time=%s
+                WHERE organization_id=%s AND id=%s
+                """,
+                (end_time, org, int(entry["id"])),
+            )
+        updated += 1
+    return updated, None

@@ -734,6 +734,50 @@ def register_rinse_shift_analysis_routes(
             cursor.close()
             conn.close()
 
+    @app.route("/rinse/shift-analysis/daily-roster/refresh-from-payroll", methods=["POST"])
+    def rinse_shift_analysis_daily_roster_refresh_payroll():
+        from backend.daily_shift_roster import build_roster_payload
+        from backend.daily_shift_roster_payroll import refresh_roster_from_payroll
+
+        conn = get_db()
+        cursor = conn.cursor(dictionary=True)
+        try:
+            me, err_resp, err_code = require_user(cursor)
+            if err_resp:
+                return err_resp, err_code
+            gate = require_admin_or_ops or require_admin
+            _, err_gate, code_gate = gate(cursor)
+            if err_gate:
+                return err_gate, code_gate
+            tenant_oid = user_org_id(me)
+            body = request.get_json(silent=True) or {}
+            raw_date = (body.get("date_et") or body.get("roster_date") or "").strip()
+            if not raw_date:
+                return jsonify({"error": "date_et required (YYYY-MM-DD)"}), 400
+            roster_date = parse_date_value(raw_date)
+            if not isinstance(roster_date, date):
+                return jsonify({"error": "date_et must be YYYY-MM-DD"}), 400
+            refreshed, err = refresh_roster_from_payroll(
+                cursor,
+                tenant_oid,
+                roster_date=roster_date,
+                conn=conn,
+            )
+            if err:
+                return jsonify({"error": err}), 400
+            conn.commit()
+            payload = build_roster_payload(
+                cursor, tenant_oid, roster_date=roster_date, conn=conn
+            )
+            payload["refreshed_count"] = refreshed
+            return jsonify(json_safe_rinse(payload))
+        except Exception as exc:
+            conn.rollback()
+            return jsonify({"error": str(exc)}), 500
+        finally:
+            cursor.close()
+            conn.close()
+
     @app.route("/rinse/shift-analysis/weekly-schedule", methods=["GET"])
     def rinse_shift_analysis_weekly_schedule_get():
         from backend.planned_weekly_schedule import (

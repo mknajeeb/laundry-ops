@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import SaveOutlinedIcon from "@mui/icons-material/SaveOutlined";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import {
@@ -22,10 +23,12 @@ import {
   deleteDailyShiftRosterEntry,
   getDailyShiftRoster,
   importDailyShiftRosterFromPayroll,
+  refreshDailyShiftRosterFromPayroll,
   updateDailyShiftRosterEntry,
 } from "../api";
 import { yesterdayRange, todayRange } from "../utils/foldingDateRange";
 import { fmtLaborValue } from "../utils/employeeProductivityHelpers";
+import { serializeRosterDraftEntry } from "../utils/dailyShiftRosterRate";
 import { VEEWASH_DASHBOARD } from "../theme/veewashDashboard";
 import DailyShiftRosterCard from "../components/shift/DailyShiftRosterCard";
 import DailyShiftRosterEntryDialog from "../components/shift/DailyShiftRosterEntryDialog";
@@ -56,6 +59,7 @@ export default function DailyShiftRosterPage() {
   const [draftEntries, setDraftEntries] = useState([]);
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
@@ -125,18 +129,23 @@ export default function DailyShiftRosterPage() {
       if (editingEntry?.id) {
         await updateDailyShiftRosterEntry(editingEntry.id, form);
         setToast("Roster entry saved");
+      } else if (editingDraft) {
+        const key = draftKey(editingEntry);
+        const nextEntry = serializeRosterDraftEntry({ ...editingEntry, ...form });
+        setDraftEntries((prev) =>
+          prev.map((e) => (draftKey(e) === key ? nextEntry : e)),
+        );
+        setToast("Draft updated");
       } else {
         await createDailyShiftRosterEntry({ ...form, date_et: activeDateEt });
-        if (editingDraft) {
-          const key = draftKey(editingEntry);
-          setDraftEntries((prev) => prev.filter((e) => draftKey(e) !== key));
-        }
         setToast("Employee added to roster");
       }
       setDialogOpen(false);
       setEditingEntry(null);
       setEditingDraft(false);
-      await load(activeDateEt);
+      if (editingEntry?.id || (!editingDraft && !editingEntry?.id)) {
+        await load(activeDateEt);
+      }
     } catch (e) {
       setError(e?.response?.data?.error || "Failed to save roster entry");
     } finally {
@@ -253,6 +262,47 @@ export default function DailyShiftRosterPage() {
   );
   const hasUnsavedDrafts = !hasRoster && pendingDraftCount > 0;
 
+  const handleRefresh = async () => {
+    if (hasUnsavedDrafts) {
+      const ok = window.confirm("Discard unsaved draft changes and refresh from payroll?");
+      if (!ok) return;
+    }
+    setRefreshing(true);
+    setError("");
+    try {
+      if (hasRoster) {
+        const res = await refreshDailyShiftRosterFromPayroll({ date_et: activeDateEt });
+        setData(res.data);
+        setDraftEntries([]);
+        const count = res.data?.refreshed_count ?? 0;
+        setToast(
+          count > 0
+            ? `Updated ${count} shift${count === 1 ? "" : "s"} from payroll`
+            : "Roster is up to date with payroll",
+        );
+      } else {
+        await load(activeDateEt);
+        setToast("Refreshed from payroll");
+      }
+    } catch (e) {
+      setError(e?.response?.data?.error || "Failed to refresh roster from payroll");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const displaySummary = useMemo(() => {
+    if (hasRoster) return summary;
+    const included = displayEntries.filter((e) => !e.excluded);
+    const totalHours = included.reduce((sum, e) => sum + (Number(e.hours) || 0), 0);
+    const totalCost = included.reduce((sum, e) => sum + (Number(e.cost) || 0), 0);
+    return {
+      employee_count: included.length,
+      total_hours: totalHours,
+      total_cost: totalCost,
+    };
+  }, [hasRoster, summary, displayEntries]);
+
   return (
     <Box sx={{ maxWidth: 1100, mx: "auto", px: { xs: 1, sm: 2 }, py: { xs: 1.5, sm: 2.5 }, pb: { xs: 10, sm: 10 } }}>
       <Paper
@@ -330,9 +380,18 @@ export default function DailyShiftRosterPage() {
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignSelf: { xs: "stretch", sm: "auto" } }}>
               <Button
                 variant="outlined"
+                startIcon={<RefreshOutlinedIcon />}
+                onClick={handleRefresh}
+                disabled={loading || refreshing || importing}
+                sx={{ fontWeight: 700 }}
+              >
+                {refreshing ? "Refreshing…" : "Refresh"}
+              </Button>
+              <Button
+                variant="outlined"
                 startIcon={<DownloadOutlinedIcon />}
                 onClick={handleImportFromPayroll}
-                disabled={loading || importing}
+                disabled={loading || importing || refreshing}
                 sx={{ fontWeight: 700 }}
               >
                 {importing ? "Importing…" : "Import from Payroll"}
@@ -356,7 +415,7 @@ export default function DailyShiftRosterPage() {
             </Alert>
           ) : null}
 
-          {hasRoster ? (
+          {(hasRoster || displayEntries.length > 0) ? (
             <Box
               sx={{
                 mb: 2,
@@ -375,7 +434,7 @@ export default function DailyShiftRosterPage() {
                   Employees
                 </Typography>
                 <Typography variant="h6" fontWeight={800}>
-                  {summary.employee_count ?? entries.filter((e) => !e.excluded).length}
+                  {displaySummary.employee_count ?? displayEntries.filter((e) => !e.excluded).length}
                 </Typography>
               </Box>
               <Box>
@@ -383,7 +442,7 @@ export default function DailyShiftRosterPage() {
                   Total Hours
                 </Typography>
                 <Typography variant="h6" fontWeight={800}>
-                  {fmtLaborValue(summary.total_hours, { digits: 2 })}
+                  {fmtLaborValue(displaySummary.total_hours, { digits: 2 })}
                 </Typography>
               </Box>
               <Box>
@@ -391,7 +450,7 @@ export default function DailyShiftRosterPage() {
                   Total Cost
                 </Typography>
                 <Typography variant="h6" fontWeight={800} sx={{ color: VEEWASH_DASHBOARD.primaryBlueDark }}>
-                  {fmtLaborValue(summary.total_cost, { currency: true })}
+                  {fmtLaborValue(displaySummary.total_cost, { currency: true })}
                 </Typography>
               </Box>
             </Box>

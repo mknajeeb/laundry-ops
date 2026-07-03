@@ -556,6 +556,9 @@ export const deleteDailyShiftRosterEntry = (entryId) =>
 export const importDailyShiftRosterFromPayroll = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/import-from-payroll`, body, { timeout: 30000 });
 
+export const refreshDailyShiftRosterFromPayroll = (body) =>
+  axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/refresh-from-payroll`, body, { timeout: 30000 });
+
 export const batchSaveDailyShiftRoster = (body) =>
   axios.post(`${API_BASE}/rinse/shift-analysis/daily-roster/batch-save`, body, { timeout: 60000 });
 
@@ -1057,6 +1060,55 @@ export const taBreakStart = () =>
 
 export const taBreakEnd = () =>
   axios.post(`${API_BASE}/api/ta/sessions/break/end`);
+
+export const getTaskTrackingTasks = (params = {}) =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/job-names`, { params });
+
+export const postTaskTrackingTask = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/job-names`, body);
+
+export const patchTaskTrackingTask = (taskId, body) =>
+  axios.patch(`${API_BASE}/api/ta/job-tracking/job-names/${taskId}`, body);
+
+export const deleteTaskTrackingTask = (taskId) =>
+  axios.delete(`${API_BASE}/api/ta/job-tracking/job-names/${taskId}`);
+
+export const postTaskTrackingTasksReorder = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/job-names/reorder`, body);
+
+export const postTaskTrackingSwitchTask = (body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/current/switch-task`, body);
+
+export const getTaskTrackingReports = (params) =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/reports`, { params });
+
+/** @deprecated use getTaskTrackingTasks */
+export const getJobTrackingJobNames = getTaskTrackingTasks;
+/** @deprecated use postTaskTrackingTask */
+export const postJobTrackingJobName = postTaskTrackingTask;
+/** @deprecated use patchTaskTrackingTask */
+export const patchJobTrackingJobName = patchTaskTrackingTask;
+/** @deprecated use postTaskTrackingTasksReorder */
+export const postJobTrackingJobNamesReorder = postTaskTrackingTasksReorder;
+/** @deprecated use postTaskTrackingSwitchTask */
+export const postJobTrackingSwitchJob = postTaskTrackingSwitchTask;
+/** @deprecated use getTaskTrackingReports */
+export const getJobTrackingReports = getTaskTrackingReports;
+
+export const postJobTrackingWaiveSessionForceCheckout = (sessionId, body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/${sessionId}/waive-force-checkout`, body);
+
+export const postJobTrackingOverrideForceCheckoutTime = (sessionId, body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/${sessionId}/override-force-checkout-time`, body);
+
+export const postJobTrackingAllowContinuation = (sessionId, body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/sessions/${sessionId}/continue`, body);
+
+export const postJobTrackingUserForceCheckoutWaiver = (userId, body) =>
+  axios.post(`${API_BASE}/api/ta/job-tracking/users/${userId}/force-checkout-waiver`, body);
+
+export const getJobTrackingUserForceCheckoutWaiver = (userId) =>
+  axios.get(`${API_BASE}/api/ta/job-tracking/users/${userId}/force-checkout-waiver`);
 
 export const getTaUsers = () => axios.get(`${API_BASE}/api/ta/users`);
 
