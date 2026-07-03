@@ -79,6 +79,7 @@ class TestWashingChronologyRows:
         )
         summary = build_washing_chronology_summary(rows)
         assert summary["total_washer_loads"] == 2
+        assert summary["unique_bag_ids"] == 1
         assert summary["unique_washers_used"] == 2
         assert summary["most_used_washer"] in ("W24-30-VW", "W29-40-VW")
         assert summary["first_washer_load_et"] == datetime(2026, 6, 18, 9, 0)
@@ -306,3 +307,6 @@ class TestWashingChronologyRows:
         rows = extract_washing_rows_from_events(events)
         assert len(rows) == 45
         assert len({r["bag_id"] for r in rows}) == 45
+        summary = build_washing_chronology_summary(rows)
+        assert summary["unique_bag_ids"] == 45
+        assert summary["total_washer_loads"] == 45

@@ -89,6 +89,7 @@ const STAGE_SUMMARY_LABELS = {
     firstStart: "First Washer Load",
     lastEnd: "Last Washer Load",
     totalSessions: "Total Washer Loads",
+    uniqueBagIds: "Unique Bag IDs",
     uniqueMachines: "Unique Washers Used",
     mostUsed: "Most Used Washer",
   },
@@ -520,6 +521,9 @@ export default function ScanChronologyPage() {
           <SummaryCard label={labels.firstStart} value={formatDateTime(summary[firstKey]) || "—"} />
           <SummaryCard label={labels.lastEnd} value={formatDateTime(summary[lastKey]) || "—"} />
           <SummaryCard label={labels.totalSessions} value={summary[totalKey] ?? 0} />
+          {activeStage === "washing" ? (
+            <SummaryCard label={labels.uniqueBagIds} value={summary.unique_bag_ids ?? 0} />
+          ) : null}
           <SummaryCard label={labels.uniqueMachines} value={summary[uniqueKey] ?? 0} />
           <SummaryCard label={labels.mostUsed} value={summary[mostUsedKey] || "—"} />
         </>

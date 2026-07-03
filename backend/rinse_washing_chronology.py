@@ -89,16 +89,23 @@ def build_washing_chronology_summary(rows: list[dict[str, Any]]) -> dict[str, An
     if not rows:
         return {
             "total_washer_loads": 0,
+            "unique_bag_ids": 0,
             "unique_washers_used": 0,
             "most_used_washer": None,
             "first_washer_load_et": None,
             "last_washer_load_et": None,
         }
     racks = [r.get("washer_rack") for r in rows if r.get("washer_rack")]
+    bag_ids = {
+        str(r.get("bag_id") or "").strip()
+        for r in rows
+        if str(r.get("bag_id") or "").strip()
+    }
     counts = Counter(racks)
     timestamps = [r["timestamp_et"] for r in rows if ts_valid(r.get("timestamp_et"))]
     return {
         "total_washer_loads": len(rows),
+        "unique_bag_ids": len(bag_ids),
         "unique_washers_used": len(set(racks)),
         "most_used_washer": counts.most_common(1)[0][0] if counts else None,
         "first_washer_load_et": min(timestamps) if timestamps else None,
