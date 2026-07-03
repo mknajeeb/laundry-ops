@@ -102,7 +102,7 @@ function EmployeeSummaryPanel({ emp }) {
   );
 }
 
-function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
+function EmployeeMobileCard({ emp, open, onToggle, selectedDate, bagsLoading }) {
   const missingClockIn = isMissingClockIn(emp);
   const tier = PERFORMANCE_TIER_STYLES[emp.performance_tier] || PERFORMANCE_TIER_STYLES.middle;
   const productiveHrs = emp.productive_hours ?? emp.worked_hours;
@@ -155,7 +155,7 @@ function EmployeeMobileCard({ emp, open, onToggle, selectedDate, loading }) {
           <EmployeeProductivityDrilldown
             bags={emp.bags}
             referenceDateEt={selectedDate}
-            loading={loading}
+            bagsLoading={bagsLoading}
           />
         </Box>
       </EmployeeProductivityDrilldownCollapse>
@@ -184,7 +184,7 @@ export default function EmployeeProductivityDashboard({
   const [datePreset, setDatePreset] = useState(() => resolvePreset(initialDateEt));
   const [customDate, setCustomDate] = useState(initialDateEt || todayRange().start);
   const [activeDateEt, setActiveDateEt] = useState(initialDateEt || todayRange().start);
-  const [section, setSection] = useState(null);
+  const [section, setSection] = useState(initialSection || null);
   const [laborSummary, setLaborSummary] = useState(null);
   const [scopeLabel, setScopeLabel] = useState(initialSection?.productivity_scope_label || "WF Only");
   const [loading, setLoading] = useState(true);
@@ -210,7 +210,11 @@ export default function EmployeeProductivityDashboard({
       setActiveDateEt(dateEt);
     } catch (e) {
       setFetchError(e?.response?.data?.error || "Failed to load employee productivity");
-      if (initialSection && dateEt === (initialDateEt || activeDateEt)) {
+      if (
+        initialSection
+        && !initialSection.bags_stripped_for_summary
+        && dateEt === (initialDateEt || activeDateEt)
+      ) {
         setSection(initialSection);
       }
     } finally {
@@ -574,7 +578,7 @@ export default function EmployeeProductivityDashboard({
                 open={expandedEmployee === emp.employee}
                 onToggle={() => setExpandedEmployee((prev) => (prev === emp.employee ? null : emp.employee))}
                 selectedDate={selectedDate}
-                loading={loading}
+                bagsLoading={loading && emp.bags == null}
               />
             ))}
           </Stack>
@@ -645,7 +649,7 @@ export default function EmployeeProductivityDashboard({
                               <EmployeeProductivityDrilldown
                                 bags={emp.bags}
                                 referenceDateEt={selectedDate}
-                                loading={loading}
+                                bagsLoading={loading && emp.bags == null}
                               />
                             </Box>
                           </EmployeeProductivityDrilldownCollapse>

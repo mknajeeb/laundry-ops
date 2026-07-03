@@ -688,9 +688,17 @@ def _completed_bag_from_wf_processed_record(
     employee = str(
         proc.get("employee_credited") or proc.get("processed_by_employee") or UNKNOWN_EMPLOYEE
     )
+    anchor = _resolve_anchor_ts(events, selected_date_et) if events else None
     lbs = proc.get("processed_lbs")
     if lbs is None:
-        lbs = _completed_lbs({}, meta)
+        lbs = _completed_lbs(
+            {},
+            meta,
+            events=events,
+            service_type="WF",
+            anchor_ts=anchor,
+            as_of_end=naive_et_day_end_inclusive(selected_date_et),
+        )
 
     from backend.rinse_at_vendor_module import _format_et_display
 
@@ -699,7 +707,6 @@ def _completed_bag_from_wf_processed_record(
         if comp_ts is not None
         else proc.get("processed_time_et")
     )
-    anchor = _resolve_anchor_ts(events, selected_date_et) if events else None
     signal = str(proc.get("processed_signal") or WF_POST_PROCESSING_WEIGHT_SIGNAL)
 
     return {
@@ -790,7 +797,7 @@ def _pending_processed_bag_ids(
     return sorted(pending_ids)
 
 
-def _completed_lbs(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> float | None:
+def _completed_lbs_from_row_meta(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> float | None:
     for source in (row, meta or {}):
         for key in ("post_clean_weight", "weight_num", "registry_weight_num", "weight_lbs"):
             raw = source.get(key)
@@ -802,6 +809,52 @@ def _completed_lbs(row: Mapping[str, Any], meta: Mapping[str, Any] | None) -> fl
                     return round(val, 4)
             except (TypeError, ValueError):
                 continue
+    return None
+
+
+def _completed_lbs_from_attribution_scan(
+    *,
+    service_type: str,
+    events: Sequence[Mapping[str, Any]],
+    anchor_ts: datetime | None,
+    as_of_end: datetime | None,
+) -> float | None:
+    """Fallback when portal/registry weight is missing but the attribution scan carries lbs."""
+    if not events or anchor_ts is None or as_of_end is None or not ts_valid(anchor_ts):
+        return None
+    svc = str(service_type or "").upper()
+    if svc != "WF":
+        return None
+    timeline = gaming_events_from_records(events)
+    ev, _ = _wf_completion_weight_event(
+        timeline, anchor_ts=anchor_ts, as_of_end=as_of_end
+    )
+    if ev is None:
+        return None
+    return parse_weight_lbs_from_scan_event(ev)
+
+
+def _completed_lbs(
+    row: Mapping[str, Any],
+    meta: Mapping[str, Any] | None,
+    *,
+    events: Sequence[Mapping[str, Any]] | None = None,
+    service_type: str | None = None,
+    anchor_ts: datetime | None = None,
+    as_of_end: datetime | None = None,
+) -> float | None:
+    from_row = _completed_lbs_from_row_meta(row, meta)
+    if from_row is not None:
+        return from_row
+    if events:
+        return _completed_lbs_from_attribution_scan(
+            service_type=str(
+                service_type or row.get("service_type") or row.get("service_bucket") or ""
+            ),
+            events=events,
+            anchor_ts=anchor_ts,
+            as_of_end=as_of_end,
+        )
     return None
 
 
@@ -1010,7 +1063,14 @@ def build_employee_completed_bags_today(
             seen_bags.add(bid)
 
             meta = registry_meta.get(bid) or {}
-            lbs = _completed_lbs(row, meta)
+            lbs = _completed_lbs(
+                row,
+                meta,
+                events=events,
+                service_type=svc,
+                anchor_ts=anchor,
+                as_of_end=as_of_end,
+            )
             attr_reason = _attribution_reason(svc, attr_signal or row.get("completion_signal"))
             if employee == UNKNOWN_EMPLOYEE:
                 if attr_comp_ts is None:

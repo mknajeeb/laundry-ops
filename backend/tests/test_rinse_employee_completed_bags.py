@@ -41,14 +41,18 @@ def _ev(
     *,
     user_name: str = "Alice Worker",
     ev_id: int = 1,
+    weight_lbs: float | None = None,
 ) -> dict:
-    return {
+    ev = {
         "purpose": purpose,
         "scanned_at_parsed": ts,
         "id": ev_id,
         "scan_index": ev_id,
         "user_name": user_name,
     }
+    if weight_lbs is not None:
+        ev["weight_lbs"] = weight_lbs
+    return ev
 
 
 def _completed_row(
@@ -306,6 +310,24 @@ class TestBuildEmployeeCompletedBagsToday:
         assert emp["completed_bags"] == 1
         assert emp["total_completed_lbs"] == 0
         assert emp["missing_weight_count"] == 1
+
+    def test_completed_lbs_from_attribution_weight_scan_when_portal_weight_missing(self):
+        row = _completed_row("BAG1", post_clean_weight=None)
+        row.pop("post_clean_weight", None)
+        events = {
+            "BAG1": [
+                _ev("sent-to-vendor", T0),
+                _ev("weight-entry", T1),
+                _ev("add-photos", T2),
+                _ev("weight-entry", T3, user_name="Weight Clerk", weight_lbs=14.2),
+            ],
+        }
+        out = self._build([row], events)
+        emp = next(e for e in out["employees"] if e["employee"] == "Weight Clerk")
+        assert emp["completed_bags"] == 1
+        assert emp["total_completed_lbs"] == 14.2
+        assert emp["missing_weight_count"] == 0
+        assert emp["bags"][0]["completed_lbs"] == 14.2
 
     def test_bags_sorted_chronologically_in_drilldown(self):
         row1 = _completed_row("BAG1")
