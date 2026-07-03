@@ -11,10 +11,10 @@ from backend.rinse_washing_chronology import (
 SELECTED = date(2026, 6, 18)
 
 
-def _ev(purpose, at, *, rack="W24-30-VW", scan_index=1, ev_id=1, user="Alex"):
+def _ev(purpose, at, *, rack="W24-30-VW", scan_index=1, ev_id=1, user="Alex", bag_id="BAG1"):
     return {
         "id": ev_id,
-        "bag_id": "BAG1",
+        "bag_id": bag_id,
         "rack": rack,
         "user_name": user,
         "purpose": purpose,
@@ -79,6 +79,8 @@ class TestWashingChronologyRows:
         )
         summary = build_washing_chronology_summary(rows)
         assert summary["total_washer_loads"] == 2
+        assert summary["unique_bags_washed"] == 1
+        assert summary["split_bags_washed"] == 1
         assert summary["unique_bag_ids"] == 1
         assert summary["unique_washers_used"] == 2
         assert summary["most_used_washer"] in ("W24-30-VW", "W29-40-VW")
@@ -308,5 +310,32 @@ class TestWashingChronologyRows:
         assert len(rows) == 45
         assert len({r["bag_id"] for r in rows}) == 45
         summary = build_washing_chronology_summary(rows)
+        assert summary["unique_bags_washed"] == 45
+        assert summary["split_bags_washed"] == 0
         assert summary["unique_bag_ids"] == 45
         assert summary["total_washer_loads"] == 45
+
+    def test_summary_split_bags_count(self):
+        rows = extract_washing_rows_from_events(
+            [
+                _ev("start-cleaning", datetime(2026, 6, 18, 9, 0), ev_id=1, rack="W24-30-VW"),
+                _ev(
+                    "start-cleaning",
+                    datetime(2026, 6, 18, 9, 5),
+                    ev_id=2,
+                    scan_index=2,
+                    rack="W25-30-VW",
+                ),
+                _ev(
+                    "start-cleaning",
+                    datetime(2026, 6, 18, 10, 0),
+                    ev_id=3,
+                    bag_id="BAG2",
+                    rack="W26-30-VW",
+                ),
+            ]
+        )
+        summary = build_washing_chronology_summary(rows)
+        assert summary["unique_bags_washed"] == 2
+        assert summary["split_bags_washed"] == 1
+        assert summary["total_washer_loads"] == 3
