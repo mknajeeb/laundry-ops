@@ -63,3 +63,97 @@ export function formatRosterRateInput(rate) {
   if (!Number.isFinite(v) || v <= 0) return "";
   return v.toFixed(2);
 }
+
+function parseRosterTimeValue(value) {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(text);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return { hours, minutes };
+}
+
+function rosterTimeToMinutes(value) {
+  const parsed = parseRosterTimeValue(value);
+  if (!parsed) return null;
+  return parsed.hours * 60 + parsed.minutes;
+}
+
+function calcRosterHours(startTime, endTime, breakMinutes = 0) {
+  const start = rosterTimeToMinutes(startTime);
+  const end = rosterTimeToMinutes(endTime);
+  if (start == null || end == null) return null;
+  let endMinutes = end;
+  if (endMinutes <= start) endMinutes += 24 * 60;
+  const workedMinutes = Math.max(0, endMinutes - start - Math.max(0, Number(breakMinutes) || 0));
+  return Math.round((workedMinutes / 60) * 10000) / 10000;
+}
+
+function calcRosterCost(hours, rate) {
+  const h = Number(hours);
+  const r = Number(rate);
+  if (!Number.isFinite(h) || !Number.isFinite(r)) return null;
+  return Math.round(h * r * 100) / 100;
+}
+
+function rosterTimesModified(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const originalStart = parseRosterTimeValue(entry.original_start_time);
+  if (!originalStart) return false;
+  const currentStart = parseRosterTimeValue(entry.start_time);
+  const currentEnd = parseRosterTimeValue(entry.end_time);
+  const originalEnd = parseRosterTimeValue(entry.original_end_time);
+  if (
+    currentStart?.hours !== originalStart.hours
+    || currentStart?.minutes !== originalStart.minutes
+  ) {
+    return true;
+  }
+  if (
+    originalEnd
+    && (
+      currentEnd?.hours !== originalEnd.hours
+      || currentEnd?.minutes !== originalEnd.minutes
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Normalize a payroll-prefill or draft roster row after dialog edits. */
+export function serializeRosterDraftEntry(data = {}) {
+  const shiftOpen = Boolean(data.shift_open || !data.end_time);
+  const breakMinutes = Math.max(0, Number(data.break_minutes) || 0);
+  const rate = Math.round(Math.max(0, Number(data.rate) || 0) * 100) / 100;
+  const startTime = data.start_time || null;
+  const endTime = shiftOpen ? null : (data.end_time || null);
+  let hours = null;
+  let cost = null;
+  if (startTime && endTime && !shiftOpen) {
+    hours = calcRosterHours(startTime, endTime, breakMinutes);
+    cost = hours != null ? calcRosterCost(hours, rate) : null;
+  }
+
+  const out = {
+    ...data,
+    employee_name: String(data.employee_name || "").trim(),
+    role: String(data.role || "folder").trim().toLowerCase() || "folder",
+    start_time: startTime,
+    end_time: endTime,
+    original_start_time: data.original_start_time || null,
+    original_end_time: data.original_end_time || null,
+    break_minutes: breakMinutes,
+    rate,
+    notes: String(data.notes || "").trim() || null,
+    excluded: Boolean(data.excluded),
+    shift_open: shiftOpen,
+    hours,
+    cost,
+  };
+  out.times_modified = rosterTimesModified(out);
+  return out;
+}
